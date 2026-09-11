@@ -132,7 +132,19 @@ export interface FsRpcMethods {
     };
   };
   listDir: {
-    params: { workdir: string; relPath?: string; hideMetaFiles?: boolean; docMode?: boolean; includeIgnored?: boolean; maxEntries?: number };
+    params: {
+      workdir: string;
+      relPath?: string;
+      hideMetaFiles?: boolean;
+      docMode?: boolean;
+      includeIgnored?: boolean;
+      maxEntries?: number;
+      /**
+       * 控制端「显示被忽略的目录」开关。可选 / append-only:老 daemon 忽略未知
+       * 字段 → 维持隐藏语义(拿不到放行,但不会报错)。
+       */
+      showIgnoredDirs?: boolean;
+    };
     result: { entries: DirEntry[] };
   };
   readFile: {
@@ -194,7 +206,7 @@ export interface FsRpcMethods {
     result: { ok: true };
   };
   watchStart: {
-    params: { workdir: string; hideMetaFiles?: boolean };
+    params: { workdir: string; hideMetaFiles?: boolean; showIgnoredDirs?: boolean };
     result: { ok: true };
   };
   watchStop: {

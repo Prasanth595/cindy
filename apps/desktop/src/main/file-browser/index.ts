@@ -144,6 +144,8 @@ interface ListDirArgs extends RemoteRoutedArgs {
   hideMetaFiles?: boolean;
   /** Doc mode: only `.md` files + dirs that contain `.md` descendants. */
   docMode?: boolean;
+  /** 用户开关「显示被忽略的目录」——列出依赖 / 构建产物 / 缓存目录。默认 false。 */
+  showIgnoredDirs?: boolean;
 }
 
 interface ReadFileArgs extends RemoteRoutedArgs {
@@ -176,6 +178,8 @@ interface StatArgs extends RemoteRoutedArgs {
 interface WatchArgs extends RemoteRoutedArgs {
   workdir: string;
   hideMetaFiles?: boolean;
+  /** 与 listDir 同源:开关变了要带新 matcher 重建 watcher。 */
+  showIgnoredDirs?: boolean;
 }
 
 /**
@@ -769,33 +773,38 @@ export function registerFileBrowserIpc(): void {
     }
   });
 
-  ipcMain.handle(FILE_BROWSER_INVOKE.LIST_DIR, async (_event, args: ListDirArgs) => {
-    if (args.remoteHostId) {
-      try {
-        const { entries } = await getRemoteFileBrowser().request(args.remoteHostId, 'listDir', {
-          workdir: args.workdir,
-          relPath: args.relPath ?? '',
-          hideMetaFiles: args.hideMetaFiles ?? true,
-          docMode: args.docMode,
-          includeIgnored: args.includeIgnored,
-        });
-        return entries;
-      } catch (err) {
-        log.warn('remote list-dir failed', { hostId: args.remoteHostId, error: String(err) });
-        throwRemoteFsIpcError(err);
-      }
-    }
-    const matcher =
-      args.includeIgnored === true
-        ? null
-        : await loadIgnoreMatcher(args.workdir, {
+  ipcMain.handle(
+    FILE_BROWSER_INVOKE.LIST_DIR,
+    async (_event, args: ListDirArgs) => {
+      if (args.remoteHostId) {
+        try {
+          const { entries } = await getRemoteFileBrowser().request(args.remoteHostId, 'listDir', {
+            workdir: args.workdir,
+            relPath: args.relPath ?? '',
             hideMetaFiles: args.hideMetaFiles ?? true,
-            honorVcsIgnore: false,
+            docMode: args.docMode,
+            includeIgnored: args.includeIgnored,
+            showIgnoredDirs: args.showIgnoredDirs === true,
           });
-    return listDir(args.workdir, args.relPath ?? '', matcher, {
-      docMode: args.includeIgnored === true ? false : args.docMode,
-    });
-  });
+          return entries;
+        } catch (err) {
+          log.warn('remote list-dir failed', { hostId: args.remoteHostId, error: String(err) });
+          throwRemoteFsIpcError(err);
+        }
+      }
+      const matcher =
+        args.includeIgnored === true
+          ? null
+          : await loadIgnoreMatcher(args.workdir, {
+              hideMetaFiles: args.hideMetaFiles ?? true,
+              honorVcsIgnore: false,
+              showIgnoredDirs: args.showIgnoredDirs === true,
+            });
+      return listDir(args.workdir, args.relPath ?? '', matcher, {
+        docMode: args.includeIgnored === true ? false : args.docMode,
+      });
+    },
+  );
 
   ipcMain.handle(
     FILE_BROWSER_INVOKE.LIST_ALL,
@@ -909,6 +918,43 @@ export function registerFileBrowserIpc(): void {
       return { ok: false as const, message: String(err) };
     }
   });
+  ipcMain.handle(
+    FILE_BROWSER_INVOKE.START_WATCH,
+    async (event, args: WatchArgs) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window) throw new Error('no window for sender');
+      if (args.remoteHostId) {
+        // 远程:daemon 内 fs.watch(recursive),fileTree 事件帧经注册表转发成
+        // 与本地完全同形的 FILE_BROWSER_PUSH.EVENT;失败不 throw(renderer 靠
+        // 聚焦刷新兜底,watch 是增强不是硬依赖)。
+        try {
+          await getRemoteWatchRegistry(getRemoteFileBrowser()).start(
+            window,
+            args.remoteHostId,
+            args.workdir,
+            { hideMetaFiles: args.hideMetaFiles ?? true, showIgnoredDirs: args.showIgnoredDirs === true },
+            (fsEvent) => {
+              if (window.isDestroyed()) return;
+              window.webContents.send(FILE_BROWSER_PUSH.EVENT, fsEvent);
+            },
+          );
+        } catch (err) {
+          log.warn('remote start-watch failed', { hostId: args.remoteHostId, error: String(err) });
+        }
+        return { ok: true };
+      }
+      await watcherManager.start(
+        window,
+        args.workdir,
+        { hideMetaFiles: args.hideMetaFiles ?? true, showIgnoredDirs: args.showIgnoredDirs === true },
+        (fsEvent: FileTreeEvent) => {
+          if (window.isDestroyed()) return;
+          window.webContents.send(FILE_BROWSER_PUSH.EVENT, fsEvent);
+        },
+      );
+      return { ok: true };
+    },
+  );
 
   ipcMain.handle(FILE_BROWSER_INVOKE.CREATE_FOLDER, async (_event, args: MutateEntryArgs) => {
     try {
@@ -960,41 +1006,6 @@ export function registerFileBrowserIpc(): void {
       log.warn('delete-entry failed', { relPath: args.relPath, error: String(err) });
       return { ok: false as const, message: String(err) };
     }
-  });
-
-  ipcMain.handle(FILE_BROWSER_INVOKE.START_WATCH, async (event, args: WatchArgs) => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) throw new Error('no window for sender');
-    if (args.remoteHostId) {
-      // 远程:daemon 内 fs.watch(recursive),fileTree 事件帧经注册表转发成
-      // 与本地完全同形的 FILE_BROWSER_PUSH.EVENT;失败不 throw(renderer 靠
-      // 聚焦刷新兜底,watch 是增强不是硬依赖)。
-      try {
-        await getRemoteWatchRegistry(getRemoteFileBrowser()).start(
-          window,
-          args.remoteHostId,
-          args.workdir,
-          { hideMetaFiles: args.hideMetaFiles ?? true },
-          (fsEvent) => {
-            if (window.isDestroyed()) return;
-            window.webContents.send(FILE_BROWSER_PUSH.EVENT, fsEvent);
-          },
-        );
-      } catch (err) {
-        log.warn('remote start-watch failed', { hostId: args.remoteHostId, error: String(err) });
-      }
-      return { ok: true };
-    }
-    await watcherManager.start(
-      window,
-      args.workdir,
-      { hideMetaFiles: args.hideMetaFiles ?? true },
-      (fsEvent: FileTreeEvent) => {
-        if (window.isDestroyed()) return;
-        window.webContents.send(FILE_BROWSER_PUSH.EVENT, fsEvent);
-      },
-    );
-    return { ok: true };
   });
 
   ipcMain.handle(FILE_BROWSER_INVOKE.STOP_WATCH, async (event, args: WatchArgs) => {
