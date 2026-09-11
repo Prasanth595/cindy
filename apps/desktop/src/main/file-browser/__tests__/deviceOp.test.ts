@@ -577,6 +577,7 @@ describe('file-browser device-op', () => {
       docMode: undefined,
       includeIgnored: true,
       maxEntries: 2000,
+      showIgnoredDirs: false,
     });
   });
 
@@ -597,6 +598,7 @@ describe('file-browser device-op', () => {
         relPath: '',
         hideMetaFiles: true,
         docMode: undefined,
+        showIgnoredDirs: false,
       });
     },
   );
@@ -630,6 +632,7 @@ describe('file-browser device-op', () => {
       relPath: '',
       hideMetaFiles: true,
       docMode: undefined,
+      showIgnoredDirs: false,
     });
     const condition = dbWhereMock.mock.calls.at(-1)?.[0];
     expect(hasDeepValue(condition, '/remote/home/user/proj')).toBe(true);
@@ -1100,8 +1103,9 @@ describe('file-browser device-op', () => {
 
   // ── gzip(应用层压缩)────────────────────────────────────────────────────
 
-  it('caps op advertises gzip; unknown op stays a deterministic negative signal', async () => {
+  it('caps op advertises gzip + showIgnoredDirs; unknown op stays a deterministic negative signal', async () => {
     // caps 与 workdir 无关,guard 之前处理——guard 拒绝也不影响探测。
+    // 控制端用 showIgnoredDirs 决定「显示被忽略的目录」开关是可点还是禁用+升级提示。
     expect(await handleRemoteOp({ op: 'caps', workdir })).toEqual({
       ok: true,
       gzip: true,
@@ -1109,8 +1113,9 @@ describe('file-browser device-op', () => {
       fileRead: true,
       dirExport: true,
       folderAttachment: true,
+      showIgnoredDirs: true,
     });
-    // 控制端把 unknown op 当"老端不支持压缩"的确定性负信号,形状不能漂。
+    // 控制端把 unknown op 当"老端不支持压缩/开关"的确定性负信号,形状不能漂。
     expect(await handleRemoteOp({ op: 'nope', workdir })).toEqual({
       ok: false,
       message: 'unknown op: nope',

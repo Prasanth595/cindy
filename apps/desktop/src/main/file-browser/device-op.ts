@@ -428,7 +428,10 @@ async function handleRemoteOp(args: RemoteOpArgs): Promise<unknown> {
       : null;
   // 能力探测:与 workdir 无关、零 fs 访问,放在 guard 之前。老被控端没有
   // 这个分支,会走到 default 返回 `unknown op: caps`——控制端把它当确定性
-  // 的"不支持压缩"信号(见 fileBrowserTransport 的 caps 缓存)。
+  // 的"能力全无"信号(见 fileBrowserTransport 的 caps 缓存)。
+  //
+  // showIgnoredDirs:listDir 支持「显示被忽略的目录」开关(控制端据此决定
+  // 标题行的开关是可点还是禁用+升级提示;老端会静默忽略该字段)。
   if (args.op === 'caps') {
     return {
       ok: true as const,
@@ -437,6 +440,7 @@ async function handleRemoteOp(args: RemoteOpArgs): Promise<unknown> {
       fileRead: true as const,
       dirExport: true as const,
       folderAttachment: !sharedTask,
+      showIgnoredDirs: true as const,
     };
   }
   const guardResult = await checkRemoteWorkingDir(args.workdir);
