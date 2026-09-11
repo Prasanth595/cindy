@@ -689,6 +689,7 @@ describe('file-browser device-op', () => {
     expect(sshRequestMock).toHaveBeenCalledWith('host-1', 'watchStart', {
       workdir: sshWorkdir,
       hideMetaFiles: true,
+      consumerId: 'device-link',
     });
     onFsWatchReleased(sshWorkdir);
   });
@@ -765,6 +766,7 @@ describe('file-browser device-op', () => {
       expect(sshRequestMock).toHaveBeenCalledWith('host-1', 'watchStart', {
         workdir: sshWorkdir,
         hideMetaFiles: true,
+        consumerId: 'device-link',
       });
     });
     onFsWatchReleased(sshWorkdir);
@@ -773,6 +775,7 @@ describe('file-browser device-op', () => {
 
     expect(sshRequestMock).toHaveBeenCalledWith('host-1', 'watchStop', {
       workdir: sshWorkdir,
+      consumerId: 'device-link',
     });
   });
 
@@ -885,6 +888,7 @@ describe('file-browser device-op', () => {
     });
     expect(sshRequestMock).toHaveBeenCalledWith('host-1', 'watchStop', {
       workdir: sshWorkdir,
+      consumerId: 'device-link',
     });
     onFsWatchReleased(sshWorkdir);
   });
@@ -1060,6 +1064,7 @@ describe('file-browser device-op', () => {
     });
     expect(sshRequestMock).toHaveBeenCalledWith('host-1', 'watchStop', {
       workdir: sshWorkdir,
+      consumerId: 'device-link',
     });
     const event = {
       event: 'fileTree',
