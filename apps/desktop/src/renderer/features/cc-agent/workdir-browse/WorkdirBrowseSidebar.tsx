@@ -47,6 +47,7 @@ import { useProjectFileList } from './hooks/useProjectFileList';
 import { useFileBrowserPreference } from '@/hooks/useFileBrowserPreference';
 import { FileTreeView, type FileTreeViewHandle, type PendingCreate } from './FileTreeView';
 import { FileTreeIgnoredDirsToggle } from './FileTreeIgnoredDirsToggle';
+import { FILE_TREE_HEADER_ICON_BUTTON_CLASS } from './fileTreeHeaderButtonClass';
 import { useRevealFileInTree } from './hooks/useRevealFileInTree';
 import { FileFilterInput } from './FileFilterInput';
 import { FilterResultList } from './FilterResultList';
@@ -690,7 +691,7 @@ export function WorkdirBrowseSidebar({
                   type="button"
                   aria-label={t('ccAgent.workdirBrowse.switchProject')}
                   className={cn(
-                    'flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1.5',
+                    'flex min-w-0 items-center gap-1.5 rounded-full px-1.5 py-1 -ml-1.5',
                     'text-sm font-semibold text-foreground transition-colors',
                     'hover:bg-sidebar-item-active hover:text-sidebar-item-active-foreground',
                     'data-[state=open]:bg-sidebar-item-active data-[state=open]:text-sidebar-item-active-foreground',
@@ -738,7 +739,7 @@ export function WorkdirBrowseSidebar({
               <button
                 type="button"
                 onClick={handleToggleSearchMode}
-                className="flex size-5 items-center justify-center rounded-md text-sidebar-action-icon hover:bg-sidebar-item-active hover:text-sidebar-item-active-foreground"
+                className={FILE_TREE_HEADER_ICON_BUTTON_CLASS}
               >
                 <XIcon size={14} strokeWidth={2} />
               </button>
@@ -749,7 +750,7 @@ export function WorkdirBrowseSidebar({
                 <button
                   type="button"
                   onClick={handleToggleSearchMode}
-                  className="flex size-5 items-center justify-center rounded-md text-sidebar-action-icon hover:bg-sidebar-item-active hover:text-sidebar-item-active-foreground"
+                  className={FILE_TREE_HEADER_ICON_BUTTON_CLASS}
                 >
                   <Search size={14} strokeWidth={2} />
                 </button>
@@ -760,7 +761,7 @@ export function WorkdirBrowseSidebar({
                 <button
                   type="button"
                   onClick={handleCollapseAll}
-                  className="flex size-5 items-center justify-center rounded-md text-sidebar-action-icon hover:bg-sidebar-item-active hover:text-sidebar-item-active-foreground"
+                  className={FILE_TREE_HEADER_ICON_BUTTON_CLASS}
                 >
                   <ChevronsDownUp size={14} strokeWidth={2} />
                 </button>
@@ -769,7 +770,7 @@ export function WorkdirBrowseSidebar({
                 <button
                   type="button"
                   onClick={handleRefresh}
-                  className="flex size-5 items-center justify-center rounded-md text-sidebar-action-icon hover:bg-sidebar-item-active hover:text-sidebar-item-active-foreground"
+                  className={FILE_TREE_HEADER_ICON_BUTTON_CLASS}
                 >
                   <RefreshCw size={14} strokeWidth={2} />
                 </button>
