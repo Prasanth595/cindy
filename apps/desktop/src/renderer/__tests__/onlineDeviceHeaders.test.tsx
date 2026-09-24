@@ -21,6 +21,16 @@ beforeEach(() => { feature.enabled = true; });
 vi.mock('@/components/ui/tooltip', () => ({
   Tip: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('@/components/cindy-make/CindyMakeCreateDialog', () => ({
+  CindyMakeCreateDialog: ({ onOpenChange }: { onOpenChange: (open: boolean) => void }) => (
+    <div role="dialog" aria-label="settings.cindyMake.create.title">
+      <textarea defaultValue="" />
+      <button type="button" onClick={() => onOpenChange(false)}>
+        settings.cindyMake.create.cancel
+      </button>
+    </div>
+  ),
+}));
 vi.mock('@/features/device-link/useMachineSwitcher', () => ({
   useEffectiveSelectedMachineId: () => 'all',
 }));
