@@ -17,6 +17,8 @@ export interface AppearanceOverrides {
   wallpaperOverlay?: number;
   /** null removes the explicit visibility override. */
   wallpaperVisibility?: number | null;
+  /** Blur radius in CSS pixels; null removes the override (default: off). */
+  wallpaperBlur?: number | null;
   wallpaperMotion?: WallpaperMotion;
 }
 
@@ -32,6 +34,7 @@ export interface AppearanceSettings {
   wallpaperOverlay: number;
   /** Absent for legacy/default preferences; derive visibility from the theme's old veil. */
   wallpaperVisibility?: number | null;
+  wallpaperBlur?: number | null;
   wallpaperMotion: WallpaperMotion;
   /** Read-only, host-owned media reference; never accepted by set-patch. */
   customWallpaperUrl?: string;
@@ -55,6 +58,7 @@ export const APPEARANCE_LIMITS = {
   windowZoom: { min: 0.5, max: 3, step: 0.1 },
   wallpaperOverlay: { min: 0, max: 1, step: 0.05 },
   wallpaperVisibility: { min: 0, max: 1, step: 0.01 },
+  wallpaperBlur: { min: 0, max: 20, step: 1 },
 } as const;
 
 export const WALLPAPER_IDS = [
@@ -88,6 +92,15 @@ export function getWallpaperVeil(overlay: number, isDark: boolean): number {
 
 export function clampAppearanceWallpaperVisibility(value: number): number {
   return Number.isFinite(value) ? roundDecimal(Math.min(1, Math.max(0, value)), 2) : 0;
+}
+
+export function clampAppearanceWallpaperBlur(value: number): number {
+  return clampInteger(
+    value,
+    APPEARANCE_LIMITS.wallpaperBlur.min,
+    APPEARANCE_LIMITS.wallpaperBlur.max,
+    0,
+  );
 }
 
 /** Old settings retain their exact Light/Dark appearance until explicitly adjusted. */
@@ -176,6 +189,9 @@ export function normalizeAppearanceSettings(raw: unknown): AppearanceSettings {
         ? clampAppearanceWallpaperOverlay(value.wallpaperOverlay)
         : DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay,
     wallpaperMotion: value.wallpaperMotion === 'dynamic' ? 'dynamic' : 'static',
+    ...(typeof value.wallpaperBlur === 'number' && Number.isFinite(value.wallpaperBlur)
+      ? { wallpaperBlur: clampAppearanceWallpaperBlur(value.wallpaperBlur) }
+      : {}),
     ...(typeof value.wallpaperVisibility === 'number' && Number.isFinite(value.wallpaperVisibility)
       ? { wallpaperVisibility: clampAppearanceWallpaperVisibility(value.wallpaperVisibility) }
       : {}),

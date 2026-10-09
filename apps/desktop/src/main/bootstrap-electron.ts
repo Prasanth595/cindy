@@ -582,6 +582,7 @@ import {
 import { closeSharedTasksBeforeLogout } from './device-link/sharedTaskRuntime.js';
 import { closeSharedTasksBeforeAccountHandover } from './device-link/sharedTaskAccountBoundary.js';
 import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
+import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -752,6 +753,7 @@ import {
   setGoalClearObserver,
   setGoalDeferredResumeCancelObserver,
   setGoalIdleObserver,
+  setGoalOwnsUsageLimitProbe,
   setGoalStopObserver,
   setGoalAskAnswerObserver,
   withSendToSessionLock,
@@ -967,7 +969,7 @@ import {
   findOpenShareFileInArgv,
   setDeepLinkMainWindow,
   focusMainWindow as activateMainWindow,
-  takePendingDeepLink,
+  takePendingDeepLinkFromRenderer,
 } from './deepLink.js';
 import { createMakeTestWindowBehavior } from './cindy-make/testWindowBehavior.js';
 import { registerFolderContextMenu } from './folderContextMenu.js';
@@ -2947,9 +2949,7 @@ ipcMain.on('app-locale:get-preferred-system-locale-sync', (event) => {
 // renderer 侧 MainLayout mount 后主动拉一次冷启动期间缓存的 deep link /
 // --open-folder payload。pull-on-mount 路径专用,take 一次清空,重复调安全。
 // 详见 deepLink.ts 的 pending buffer 段。
-ipcMain.handle('deep-link:take-pending', () => {
-  return takePendingDeepLink();
-});
+ipcMain.handle('deep-link:take-pending', takePendingDeepLinkFromRenderer);
 
 ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } => {
   currentApplicationMenuLocale = resolveApplicationMenuLocale(
@@ -5811,8 +5811,11 @@ const registerIpcHandlers = () => {
 
   ipcMain.handle('auth:get-login-state', async () => authManager.getLoginState());
 
-  ipcMain.handle('auth:dispatch-login-action', async (_event, action: unknown) => {
-    return authManager.dispatchLoginAction(action);
+  ipcMain.handle('auth:dispatch-login-action', async (event, action: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    // Login can be the first real credential operation to observe an unavailable
+    // backend. Reuse the bounded, idle-only recovery after the action settles.
+    return authManager.dispatchLoginAction(action).finally(() => authCredentialRecovery.request());
   });
 
   // 登录 captcha 托管挑战页地址(不含 query)。只返回按构建区域拼出的公开 URL,
@@ -6161,6 +6164,11 @@ const registerIpcHandlers = () => {
       });
       setGoalDeferredResumeCancelObserver((sid) => {
         getGoalController()?.cancelDeferredManualResume(sid, { restoreUsageResume: true });
+      });
+      // 目标在管的任务由 goal-host 自己等额度重置,普通任务的限额自动继续让路。
+      setGoalOwnsUsageLimitProbe(async (sid) => {
+        const goal = await getGoalController()?.getStatus(sid);
+        return goal?.status === 'active' || goal?.status === 'usageLimited';
       });
       // 用户 Stop 当前 turn → 暂停 active 目标。返回 Promise 让 ABORT_SESSION 在 abort 前 await,
       // 确保目标先 paused + detach 监听,abort 终止事件不再触发续跑判定。
@@ -9485,6 +9493,7 @@ app.on('ready', async () => {
     },
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
+  registerProviderShareIpc();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,

@@ -194,6 +194,210 @@
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
+  "providerShare": {
+    "entry": {
+      "manage": "管理分享",
+      "manageWithPending_other": "管理分享 · {{count}} 个待处理申请",
+      "disabledInvocation": "先打开「允许被远程调用」才能分享",
+      "disabledRemoteControl": "先在「远程连接」里允许同账号设备控制本机才能分享",
+      "remoteControlOff": "这台电脑还没有允许同账号设备远程控制，供应商不能被远程调用或分享。",
+      "openRemoteControl": "前往「远程连接」设置",
+      "descriptionOff": "开启后，你的其他电脑和你分享的人可以用这个供应商的模型。关闭期间，已有的分享暂时不可用，不会被删除。"
+    },
+    "manage": {
+      "title": "分享 {{provider}}",
+      "description": "分享给他人后，对方可以在自己的任务里选用 {{provider}} 的模型。Agent 在这台电脑上运行，用量计入你的 {{provider}}；对方的文件和命令仍在对方电脑上执行。",
+      "descriptionWithDevice": "分享给他人后，对方可以在自己的任务里选用 {{provider}} 的模型。Agent 在这台电脑（{{device}}）上运行，用量计入你的 {{provider}}；对方的文件和命令仍在对方电脑上执行。",
+      "createLink": "生成分享链接",
+      "loading": "正在读取分享…",
+      "notReady": "分享服务暂时不可用。确认已登录、网络正常后会自动重试。",
+      "loadFailed": "分享信息没有加载出来，请稍后重试。",
+      "gateRemoteControl": "这台电脑还没有允许远程控制，已有的分享暂时不可用，也不能生成新链接。",
+      "gateInvocation": "这个供应商还没有打开「允许被远程调用」，已有的分享暂时不可用，也不能生成新链接。",
+      "pending": {
+        "title": "待处理",
+        "applying": "申请使用",
+        "requestedAt": "{{time}}申请",
+        "expiresHint": "24 小时内未处理将自动失效"
+      },
+      "members": {
+        "title": "已分享的人",
+        "rangeAria": "用量时间段",
+        "range": {
+          "7d": "近 7 天",
+          "month": "本月",
+          "all": "全部"
+        },
+        "statusActive": "正常",
+        "statusRunning_other": "正常 · {{count}} 个任务运行中",
+        "statusPaused": "已暂停",
+        "joined": "{{date}}加入",
+        "lastUsed": "最近使用：{{time}}",
+        "neverUsed": "还未使用",
+        "tokens": "{{tokens}} tokens",
+        "amount": "约 {{amount}}",
+        "pause": "关闭分享",
+        "resume": "恢复分享",
+        "remove": "删除",
+        "removeAria": "删除对 {{name}} 的分享",
+        "expandAria": "展开 {{name}} 的模型用量",
+        "collapseAria": "收起 {{name}} 的模型用量",
+        "empty": "还没有分享给任何人。生成分享链接发给对方，对方申请、你同意后会出现在这里。",
+        "table": {
+          "model": "模型",
+          "turns": "消息",
+          "input": "输入",
+          "output": "输出",
+          "amount": "估算金额"
+        },
+        "noUsage": "这段时间没有用量",
+        "estimateNote": "金额按本地单价估算，不代表供应商实际账单。"
+      },
+      "removeConfirm": {
+        "title": "删除对 {{name}} 的分享？",
+        "description": "{{name}} 将立即无法使用 {{provider}}，正在运行的任务会停止。之后要再分享，需要重新生成链接。用量记录会保留。",
+        "confirm": "删除分享"
+      }
+    },
+    "toast": {
+      "approved": "已同意分享 {{provider}} 给 {{name}}",
+      "rejected": "已拒绝 {{name}} 的申请，链接已作废",
+      "paused": "已关闭对 {{name}} 的分享，正在运行的任务已停止",
+      "resumed": "已恢复对 {{name}} 的分享",
+      "removed": "已删除对 {{name}} 的分享"
+    },
+    "link": {
+      "title": "分享 {{provider}} 的链接已生成",
+      "description": "把链接发给你想分享的人。对方打开后会先看到说明，确认后向你发送申请，你在这台电脑上同意后分享才会生效。",
+      "fieldLabel": "分享链接",
+      "copy": "复制链接",
+      "copied": "已复制",
+      "oneTime": "只能使用一次",
+      "expiresIn": "{{time}} 后过期",
+      "expired": "已过期",
+      "regenerateHint": "过期后可以重新生成",
+      "generating": "正在生成链接…",
+      "back": "返回管理页",
+      "regenerate": "重新生成链接",
+      "regenerated": "已生成新链接",
+      "copyFailed": "没能复制链接，请手动选中后复制"
+    },
+    "pairing": {
+      "label": "配对码",
+      "ariaLabel": "配对码 {{digits}}"
+    },
+    "approve": {
+      "title": "{{name}} 申请使用你分享的 {{provider}}",
+      "requestedAt": "{{time}}通过你的分享链接申请",
+      "pairingHint": "同意前可以通过发链接的渠道问对方一句：「你看到的配对码是多少？」一致再同意。",
+      "callout": "同意后，{{name}} 可以在自己的任务里使用 {{provider}} 的模型。Agent 在这台电脑上运行，用量计入你的 {{provider}}。你可以随时在「分享 {{provider}}」里关闭或删除。",
+      "calloutUnknown": "如果你不认识申请人，请拒绝；拒绝后这条链接作废。",
+      "approve": "同意分享",
+      "reject": "拒绝申请",
+      "later": "稍后处理"
+    },
+    "apply": {
+      "loading": "正在读取分享链接…",
+      "askTitle": "{{name}} 想把 {{provider}} 分享给你",
+      "providerOnDevice": "{{provider}} · {{device}}",
+      "factRuns": "Agent 在 {{name}} 的电脑上用 {{provider}} 运行",
+      "factRunsDetail": "用量计入 {{name}} 的 {{provider}}，{{name}} 能看到你的用量",
+      "factFiles": "你的项目文件和命令仍在你自己的电脑上执行",
+      "factFilesDetail": "由你的任务权限把关",
+      "factPrivacy": "对话内容和 Agent 读取的文件内容会经过并保存在 {{name}} 的电脑上",
+      "factPrivacyDetail": "{{name}} 只会看到你的昵称和头像",
+      "factApproval": "发送申请后，需要 {{name}} 同意才会生效",
+      "factApprovalDetail": "{{name}} 可以随时关闭或删除这个分享",
+      "send": "发送申请",
+      "cancel": "取消",
+      "waitTitle": "正在等待 {{name}} 同意…",
+      "waitTitleGeneric": "正在等待对方同意…",
+      "waitDescription": "{{name}} 可能会问你看到的配对码，告诉对方这 4 位数字即可。对方的电脑不在线时，会在上线后看到你的申请；申请 24 小时内未处理会自动失效。",
+      "waitDescriptionGeneric": "对方可能会问你看到的配对码，告诉对方这 4 位数字即可。对方的电脑不在线时，会在上线后看到你的申请；申请 24 小时内未处理会自动失效。",
+      "close": "关闭窗口",
+      "withdraw": "撤回申请",
+      "withdrawn": "申请已撤回，链接已作废",
+      "doneTitle": "{{name}} 已同意分享 {{provider}}",
+      "doneTitleGeneric": "对方已同意分享",
+      "doneDescription": "在模型列表的远程供应商里可以找到「{{label}}」。",
+      "doneDescriptionGeneric": "在模型列表的远程供应商里可以找到它。",
+      "newTask": "新建任务",
+      "later": "稍后再看",
+      "usedTitle": "这个分享链接已失效",
+      "usedDescription": "链接只能使用一次，并且生成后 5 分钟内有效。它已经被使用或已经过期，请联系 {{name}} 重新生成链接。",
+      "usedDescriptionGeneric": "链接只能使用一次，并且生成后 5 分钟内有效。它已经被使用或已经过期，请联系分享者重新生成链接。",
+      "selfTitle": "这是你自己的供应商",
+      "selfDescription": "你的其他电脑可以直接使用它，不需要申请。",
+      "memberTitle": "你已经在使用这个分享",
+      "memberDescription": "在模型列表的远程供应商里可以找到它，不需要再次申请。",
+      "regionTitle": "暂不支持跨区域分享",
+      "regionDescription": "这个链接来自另一个区域的 Cindy 服务，目前还不能跨区域申请分享。",
+      "invalidTitle": "这不是有效的分享链接",
+      "invalidDescription": "检查链接是否完整，或请对方重新发送。",
+      "rejectedTitle": "{{name}} 没有同意这次申请",
+      "rejectedTitleGeneric": "对方没有同意这次申请",
+      "rejectedDescription": "这条链接已作废。如需使用，请联系对方重新生成链接。",
+      "expiredTitle": "申请已过期",
+      "expiredDescription": "对方 24 小时内没有处理，这条链接已作废。如需使用，请联系对方重新生成链接。",
+      "errorTitle": "暂时无法打开这个分享链接",
+      "retry": "重试",
+      "toastApproved": "{{name}} 已同意分享 {{provider}}",
+      "toastApprovedGeneric": "分享申请已通过",
+      "toastRejected": "{{name}} 没有同意你的分享申请",
+      "toastRejectedGeneric": "分享申请没有被同意",
+      "toastExpired": "分享申请已过期，链接已作废"
+    },
+    "received": {
+      "title": "分享给我的供应商",
+      "enterLink": "输入分享链接…",
+      "fromOwner": "来自 {{name}} 的分享",
+      "providerOnDevice": "{{provider}} · {{device}}",
+      "statusActive": "正常",
+      "statusPaused": "已暂停",
+      "hostOffline": "对方电脑不在线",
+      "hostUnavailable": "对方需要更新 Cindy",
+      "leave": "退出",
+      "leaveAria": "退出 {{name}} 分享的 {{provider}}",
+      "leaveConfirm": {
+        "title": "退出 {{name}} 分享的 {{provider}}？",
+        "description": "退出后需要对方重新生成链接才能再次使用。使用它的任务可以换成其他模型继续。",
+        "confirm": "退出分享"
+      },
+      "left": "已退出 {{name}} 分享的 {{provider}}",
+      "pasteDialog": {
+        "title": "输入分享链接",
+        "description": "把对方发给你的供应商分享链接粘贴到这里，看过说明后再决定是否申请。",
+        "label": "分享链接",
+        "placeholder": "在这里粘贴链接",
+        "empty": "请先粘贴分享链接",
+        "open": "打开链接",
+        "cancel": "取消"
+      },
+      "detailNote": "Agent 在 {{name}} 的电脑上运行，用的是对方的登录和配额。新建任务时在模型列表里选择它就能用。",
+      "modelsTitle": "可用的模型",
+      "modelsLoading": "正在读取对方开放的模型…",
+      "modelsRefused": "对方电脑暂时不让读取这个分享：可能没有允许远程控制、关了这个供应商的「允许被远程调用」，也可能对方的 Cindy 刚启动、还没准备好。请稍后重试，或让对方检查这两项设置。",
+      "modelsFailedWithCode": "暂时读不到对方开放的模型，请稍后重试。（错误代码：{{code}}）",
+      "retryModels": "重新读取模型",
+      "modelsEmpty": "对方还没有开放可用的模型。",
+      "pausedNote": "对方暂停了这个分享，恢复后才能使用。",
+      "offlineNote": "对方电脑不在线，上线后就能继续使用。",
+      "needsUpdateNote": "对方的 Cindy 更新后才能使用这个分享。"
+    },
+    "picker": {
+      "deviceName": "{{device}} · 来自 {{owner}} 的分享",
+      "unavailable": "已不可用的分享",
+      "hostOutdated": "分享者电脑上的 Cindy 版本太旧，读不到这些模型。请让对方更新 Cindy 后再试。"
+    },
+    "notification": {
+      "requestTitle": "新的分享申请",
+      "requestBody": "{{name}} 申请使用你分享的 {{provider}}",
+      "approvedTitle": "分享申请已通过",
+      "approvedBody": "{{name}} 已同意分享 {{provider}}",
+      "rejectedTitle": "分享申请未通过",
+      "rejectedBody": "{{name}} 没有同意分享 {{provider}}"
+    }
+  },
   "privacyExit": {
     "status": "正在通过 Cindy 被远程控制",
     "hint": "点击屏幕或按任意键，确认后断开连接",
@@ -315,9 +519,13 @@
       "automatic": "自动",
       "saver": "省流",
       "hd": "高清",
-      "qualityHint": "自动优先保证流畅，网络好时尽量清晰；省流会限制流量（最高 30 帧）；高清优先保证文字清晰，网络不够时会降低帧率。",
+      "qualityHint": "自动优先流畅，省流少用流量，高清优先文字清晰。",
       "resolution": "电脑分辨率",
-      "clipboardFailed": "剪贴板内容传输失败，请检查控制权限后重试。",
+      "clipboardEmpty": "剪贴板为空。",
+      "clipboardTooLong": "剪贴板内容过大，请缩小后重试。",
+      "clipboardUnsupported": "这种剪贴板内容暂不支持，请单独复制一张图片、文字或链接。文件和应用专有格式暂不能传输。",
+      "clipboardCopyFailed": "未能复制，请检查电脑选中的文字或剪贴板内容后重试。",
+      "clipboardPasteFailed": "未能粘贴，请确认远程桌面仍可操作后重试。",
       "settingsFailed": "设置未能保存，请重试。",
       "actionFailed": "操作未能完成，请重试。",
       "inputHint": "点击画面即可输入，快捷键（包括 Cmd/Ctrl+W）会发送到远端电脑。按 Ctrl+Alt+Esc 释放键盘焦点后，Cmd/Ctrl+W 关闭这个窗口。",
@@ -326,10 +534,19 @@
       "confirmDisconnect": "断开与这台电脑的连接？",
       "confirmDisconnectHint": "将结束远程桌面连接，电脑上的应用仍会继续运行。",
       "disconnectFailed": "未能断开连接，请重试。",
-      "clipboardShortcutHint": "在画面内使用 {{modifier}}+C / {{modifier}}+V 复制粘贴。支持的内容取决于远程电脑，暂不传输文件。",
-      "fitViewerDisplay": "按当前画面比例调整",
-      "restoreViewerDisplay": "恢复原始比例",
-      "fitViewerDisplayHint": "临时调整电脑桌面比例，保留当前桌面内容。退出连接后恢复原分辨率。",
+      "clipboardShortcutHint": "画面内的复制、粘贴快捷键只在远程电脑上生效。要在两台电脑之间传输，请使用上方按钮或开启剪贴板同步。支持的内容取决于远程电脑，暂不传输文件。",
+      "aspect": "画面比例",
+      "aspectOriginal": "电脑原始",
+      "aspectScreen": "本机屏幕",
+      "aspectWindow": "当前窗口",
+      "aspectCurrent": "当前",
+      "recommended": "{{label}}（推荐）",
+      "aspectHint": "选择本机比例可减少留白。会临时调整电脑桌面比例并保留桌面内容，退出连接后恢复原分辨率。",
+      "resolutionSame": "与本机一致",
+      "resolutionLarger": "字更大",
+      "resolutionMore": "更多空间",
+      "resolutionMax": "最大",
+      "resolutionTierHint": "分辨率越低字越大、越省流量；越高能放下越多窗口。",
       "resolutionHint": "分辨率修改会影响远端的实际显示器。"
     },
     "settingUnsupported": "当前电脑端暂不支持此设置",
@@ -404,7 +621,19 @@
     "REMOTE_WORKDIR_UNAVAILABLE": "远程项目目录不可访问，请恢复网络盘连接后重试。",
     "RIGHT_SIDEBAR_TOO_MANY_TABS": "当前任务已达标签数量上限，请先关闭一些标签",
     "RIGHT_SIDEBAR_STATE_TOO_LARGE": "标签内容过大，无法添加",
-    "RIGHT_SIDEBAR_UNKNOWN_KIND": "该标签类型暂不可用"
+    "RIGHT_SIDEBAR_UNKNOWN_KIND": "该标签类型暂不可用",
+    "REMOTE_AGENT_DEVICE_UNREACHABLE": "模型未切换：要运行 Agent 的那台电脑暂时连不上。确认它在线并允许远程控制后重试。",
+    "REMOTE_AGENT_MODEL_UNAVAILABLE": "模型未切换：那台电脑上没有这个模型，或没有对这个供应商打开「允许被远程调用」。请换一个模型。",
+    "PROVIDER_SHARE_LINK_USED": "这个分享链接已被使用。链接只能用一次，请联系分享者重新生成。",
+    "PROVIDER_SHARE_LINK_EXPIRED": "这个分享链接已过期。链接生成后 5 分钟内有效，请联系分享者重新生成。",
+    "PROVIDER_SHARE_SELF": "这是你自己的供应商，你的其他电脑可以直接使用。",
+    "PROVIDER_SHARE_ALREADY_MEMBER": "你已经在使用这个分享，不需要再次申请。",
+    "PROVIDER_SHARE_IDENTITY_INVALID": "无法核实账号身份。请重新登录后再试。",
+    "PROVIDER_SHARE_NOT_HOST_DEVICE": "只能在供应商所在的电脑上管理这个分享。",
+    "PROVIDER_SHARE_CROSS_REGION_DISABLED": "暂不支持跨区域分享。这个链接来自另一个区域的 Cindy 服务。",
+    "REMOTE_AGENT_SHARE_PAUSED": "模型未切换：对方已暂停对你的分享。请换一个模型。",
+    "REMOTE_AGENT_SHARE_REMOVED": "模型未切换：这个分享已不可用（对方删除了分享或你已退出）。请换一个模型。",
+    "REMOTE_AGENT_SHARE_UNAVAILABLE": "模型未切换：分享的供应商暂时不可用（对方电脑不在线，或对方暂时关闭了分享）。请稍后再试或换一个模型。"
   },
   "providerError": {
     "AUTH_INVALID": "API 密钥无效或已过期（401），请检查密钥后重试",
@@ -922,6 +1151,8 @@
         },
         "visibilityLabel": "壁纸可见度",
         "visibilityHint": "0% 隐藏壁纸，100% 完全显示壁纸。",
+        "blurLabel": "壁纸模糊",
+        "blurHint": "仅模糊壁纸，0 为关闭。动态壁纸开启模糊后会增加显卡负载。",
         "motionLabel": "展示方式",
         "motionHint": "默认静态；动态在窗口隐藏时暂停，并遵循系统减少动效设置。",
         "motionStatic": "静态",
@@ -2482,6 +2713,13 @@
           "connectionRequired": "连接后可用，已选模型会保留。"
         }
       },
+      "remote": {
+        "rowLabel": "{{provider}} · {{device}}",
+        "statusReady": "可用",
+        "detailNote": "Agent 在 {{device}} 上运行，用的是那台电脑的登录和配额。新建任务时在模型列表里选择它就能用；要修改这个供应商，请到那台电脑的「设置 → 模型供应商」。",
+        "modelsTitle": "可用的模型",
+        "modelsEmpty": "这个供应商在那台电脑上还没有开放可用的模型。"
+      },
       "genericOAuth": {
         "subtitle": "订阅账号",
         "reopenLoginPage": "重新打开登录页",
@@ -2525,6 +2763,12 @@
           "empty": "该供应商这次没有返回任何可用模型，下面是上次获取的列表。请确认账号权限后重试。"
         },
         "suspendedBanner": "该供应商已停用，凭证已保留；启用后其模型才会重新可用",
+        "remoteAccess": {
+          "label": "允许被远程调用",
+          "description": "开启后，你的其他电脑和你分享的人可以用这个供应商的模型，Agent 在这台电脑上运行，使用这台电脑的登录和配额。",
+          "ariaLabel": "允许你的其他电脑和你分享的人调用此供应商",
+          "writeFailed": "远程调用设置未能保存，请重试"
+        },
         "moreActionsAria": "更多操作"
       },
       "detect": {
@@ -3207,7 +3451,13 @@
         "permission": "查看或切换权限模式",
         "settings": "查看当前项目与 Agent 设置",
         "ctr": "接管桌面端的任务",
-        "exctr": "退出远程控制"
+        "exctr": "退出远程控制",
+        "workspace": "切换项目工作区",
+        "unbind": "清除当前项目映射",
+        "effort": "选择推理强度",
+        "agent": "选择 Agent",
+        "status": "查看关联状态",
+        "unlink": "解除 Telegram 关联"
       },
       "behavior": {
         "title": "回应与引用",
@@ -4413,7 +4663,7 @@
             "riskPublicBody": "我们的回复是一条公开推文，任何人都能看到。这个功能适合公开地找答案、解决问题，不适合处理私事 —— 那会有隐私暴露的风险。",
             "riskWorkdirBody": "X 任务都落在 X 连接设置里的默认工作目录，Agent 能读写其中文件，而结论会公开回帖 —— 默认目录指到私密仓库时，文件内容可能随之公开。",
             "withdrawLabel": "想撤回",
-            "withdrawBody": "提问者对着那条回答回复「/delete」（或「/删除」）就能删掉它。只删公开那条，本地任务记录照旧保留。",
+            "withdrawBody": "提问者在要删除的回答下回复「@askmycindy /delete」（或「@askmycindy /删除」），正文中必须手动带上 @askmycindy。只删公开回帖，本地任务记录保留。",
             "ackTitle": "X 已关联，先看一下用法与风险",
             "ackConfirm": "我已了解风险"
           },
@@ -6480,13 +6730,19 @@
       "dismiss": "关闭提示"
     },
     "dialog": {
-      "title": "系统凭证存储不可用",
-      "intro": "Cindy 无法通过系统凭证存储读取登录凭证，登录状态和相关集成会持续失效。可尝试以下步骤恢复：",
-      "stepMacKeychain": "退出 Cindy，打开「钥匙串访问」，搜索「Cindy Safe Storage」并检查其访问控制；必要时删除该条目（已保存的集成凭证会失效，需要重新连接）",
-      "stepRestart": "重新启动 Cindy",
-      "stepRelogin": "如果仍未恢复，退出登录后重新登录",
-      "confirm": "知道了"
-    }
+      "title": "登录信息暂时无法存取",
+      "intro": "Cindy 无法读取或保存这台电脑上的登录信息。这是本机存储问题，重新获取验证码无法解决。",
+      "stepMacKeychain": "解锁 Mac 和登录钥匙串。如果 macOS 询问是否允许 Cindy 访问其钥匙串条目，请选择「始终允许」。",
+      "stepLinuxKeyring": "解锁桌面的密钥环，并确认系统的密钥存储服务正在运行。",
+      "stepRestartMac": "从 Cindy 菜单选择退出（⌘Q），再重新打开。仅关闭窗口不会退出应用。",
+      "stepRestart": "从 Cindy 菜单或系统托盘选择退出，再重新打开。仅关闭窗口可能仍会在后台运行。",
+      "stepSupport": "完整退出后仍未恢复，请联系 feedback@cindy.app，提供操作系统、Cindy 版本和下方错误码。日志仅私下提供给支持人员。",
+      "preserveData": "请保留已保存的凭证和钥匙串条目，删除它们可能导致其他已连接账号无法使用。",
+      "openLogs": "打开日志文件夹",
+      "logsFailed": "无法打开日志文件夹，请重试，或将错误码发给 feedback@cindy.app",
+      "confirm": "关闭帮助"
+    },
+    "recheck": "重新尝试登录"
   },
   "localDbGate": {
     "title": "本地数据暂时无法打开",
@@ -6497,7 +6753,7 @@
   "login": {
     "title": "欢迎使用 Cindy",
     "subtitle": "选择一种方式安全登录",
-    "savedLoginPreserved": "已保存的登录信息仍在本机",
+    "savedLoginPreserved": "恢复操作会保留已保存的登录信息",
     "phonePlaceholder": "请输入手机号",
     "emailPlaceholder": "请输入邮箱",
     "invalidEmail": "请输入正确邮箱",
@@ -6597,7 +6853,7 @@
       "fallback": "登录失败，请稍后重试",
       "AUTH_SERVICE_UNAVAILABLE": "登录服务暂不可用",
       "AUTH_REQUEST_FAILED": "登录请求失败，请重试",
-      "CREDENTIAL_STORE_UNAVAILABLE": "请完全退出 Cindy 后重新打开，以恢复登录",
+      "CREDENTIAL_STORE_UNAVAILABLE": "登录存储不可用，请查看解决方法",
       "BROWSER_OPEN_FAILED": "无法打开浏览器，请重试",
       "BROWSER_OPEN_TIMEOUT": "浏览器未及时启动，请重试",
       "NETWORK_ERROR": "网络连接失败，请检查网络",
@@ -6623,6 +6879,13 @@
       "INVALID_LOGIN_TICKET": "登录会话已过期，请重新登录",
       "INVALID_BIND_TICKET": "绑定会话已过期，请重新登录",
       "REGION_MISMATCH": "登录服务区域与当前客户端不匹配"
+    },
+    "rateLimit": {
+      "retryAt": "请在 {{time}}（本机时间）之后重试。",
+      "unknownWait": "服务端未提供等待时间，请稍后再试，避免连续获取验证码。",
+      "intro": "登录服务暂时限制了请求次数。这与本机凭证存储异常是不同的问题。",
+      "guidance": "请等待后再获取验证码。重启、重装或切换网络不保证解除限流。",
+      "support": "等待后仍无法登录，请将日志私下发给 feedback@cindy.app，并提供操作系统、Cindy 版本、出错时间和下方错误码。请勿公开发布日志。"
     }
   },
   "legacyMigration": {
@@ -7759,7 +8022,12 @@
         "reset": "恢复默认",
         "reorder": "调整{{name}}顺序，按上下方向键"
       },
-      "items": { "automations": "自动化", "plugins": "插件", "bots": "伙伴", "search": "搜索" }
+      "items": {
+        "automations": "自动化",
+        "plugins": "插件",
+        "bots": "伙伴",
+        "search": "搜索"
+      }
     },
     "user": {
       "settingsLink": "设置，当前用户：{{name}}",
@@ -8266,6 +8534,7 @@
         "planDoneGeneric": "分工做完了"
       },
       "notice": {
+        "memberJoined": "{{name}}加入了群聊",
         "memberFailed": "{{name}}这次没能回复",
         "memberTimeout": "{{name}}太久没有回复，这次先跳过",
         "memberUnavailable": "{{name}}现在不可用，这次没有发言",
@@ -8370,6 +8639,7 @@
         "copied": "邀请链接已复制",
         "createLink": "生成邀请链接",
         "accept": "接受并加入",
+        "openGroup": "打开群聊",
         "previewInvite": "查看邀请",
         "invalidInvite": "邀请无效、已使用或已过期，请获取新的邀请链接。",
         "notAllowed": "当前账号没有权限，请检查账号或联系群主。",
@@ -8994,6 +9264,8 @@
         "ariaWithEffort": "选择模型。当前：{{model}}，推理强度：{{effort}}",
         "pendingAria": "选择模型。下条消息：{{agent}} · {{model}}",
         "pendingAriaWithEffort": "选择模型。下条消息：{{agent}} · {{model}}，推理强度：{{effort}}",
+        "agentDevice": "Agent 在 {{device}} 上运行",
+        "agentDeviceUnnamed": "Agent 在另一台电脑上运行",
         "agent": {
           "claudeCode": "Claude Code",
           "codex": "Codex",
@@ -9049,6 +9321,8 @@
       "unified": {
         "railFavorites": "收藏",
         "railAll": "全部",
+        "railRemoteProvider": "{{provider}} · {{device}}",
+        "remoteLoading": "正在读取那台电脑的模型…",
         "favoritesGroup": "收藏",
         "favoritesEmpty": "还没有收藏——把鼠标停到模型行上，点 ☆ 存到这里",
         "addFavorite": "存为收藏",
@@ -9334,6 +9608,13 @@
           "cancel": "保留当前 Agent",
           "dontShowAgain": "下次不再提醒"
         }
+      },
+      "agentRelocation": {
+        "titleLocal": "改回这台电脑运行 Agent？",
+        "titleOther": "改到「{{device}}」上运行 Agent？",
+        "description": "原来那台电脑上的对话记录带不过来，会整理成交接摘要接上，思考内容等不能保证完美继承。下一条消息发出时生效。",
+        "confirm": "换电脑运行",
+        "cancel": "保持不变"
       }
     },
     "agentSelect": {
@@ -9719,8 +10000,10 @@
       "retryTitle": "重新发送最后一条消息",
       "cancelTitle": "关闭错误提示",
       "retry": "重试",
-      "continueAfterReset": "恢复后继续",
-      "continueAfterResetTitle": "创建一次性自动化，在用量恢复后继续当前任务",
+      "usageLimitAutoContinueAt": "将于 {{time}} 自动继续",
+      "usageLimitAutoContinueTitle": "用量上限重置后，如果你还没处理，这个任务会自动继续",
+      "usageLimitAutoContinueCancel": "取消",
+      "usageLimitAutoContinueCancelTitle": "取消自动继续，错误与重试仍保留",
       "codexOrganizationUsageLimitWithReset": "当前连接的是企业 Codex 账号，已达到用量上限，预计于 {{resetAt}} 恢复。",
       "codexOrganizationUsageLimit": "当前连接的是企业 Codex 账号，已达到用量上限。请等待用量上限重置，或切换其他可用账号后再重试。",
       "codexUsageLimitWithReset": "当前连接的 Codex 账号已达到用量上限，预计于 {{resetAt}} 恢复。",
@@ -9944,8 +10227,10 @@
       "staleBadge": "历史副本",
       "downloadToLocal": "下载到本地",
       "downloadPacking": "远程电脑正在打包…已打包 {{size}}",
-      "downloadProgress": "正在下载…{{received}} / {{total}}",
-      "downloadProgressUnknown": "正在下载…已接收 {{received}}",
+      "downloadProgress": "正在下载…{{percent}}% · {{speed}}",
+      "downloadProgressUnknown": "正在下载…{{received}} · {{speed}}",
+      "uploadProgress": "远端正在上传…{{percent}}% · {{speed}}",
+      "uploadProgressUnknown": "远端正在上传…{{received}} · {{speed}}",
       "downloadExtracting": "正在解压…",
       "downloadUnsupported": "远程电脑暂不支持下载文件夹，请更新该电脑上的 Cindy 后重试",
       "downloadNoSpace": "磁盘空间不足，无法完成下载",
@@ -10149,6 +10434,7 @@
         "label": "已重新连接",
         "labelFailed": "重新连接未成功",
         "labelNeutral": "重新连接",
+        "labelUsageReset": "用量已恢复，已自动继续",
         "detail": {
           "reason": "中断原因",
           "attempt": "本次重试 {{attempt}}/{{total}}",
@@ -10167,7 +10453,11 @@
         "toggleHint": "查看交接内容",
         "handoffTitle": "交接内容——切换时发送给新引擎的上下文摘要(不计入对话记录，仅在此展示)",
         "handoffTitleEnglishSource": "交接内容——切换时发送给新引擎的上下文摘要，原文为英文(不计入对话记录，仅在此展示)",
-        "resumedBadge": "已续接原任务"
+        "resumedBadge": "已续接原任务",
+        "relocatedHere": "Agent 已改到这台电脑上运行",
+        "relocatedTo": "Agent 已改到 {{device}} 上运行",
+        "relocatedTaskComputer": "Agent 已改到任务所在的电脑上运行",
+        "relocatedElsewhere": "Agent 已改到另一台电脑上运行"
       },
       "contextRebuild": {
         "labelOverflow": "已整理上下文并继续",
@@ -10289,7 +10579,8 @@
         "automation": "自动化 ID：{{id}}",
         "plugin": "插件 ID：{{id}}",
         "device": "设备 ID：{{id}}",
-        "member": "成员 ID：{{id}}"
+        "member": "成员 ID：{{id}}",
+        "group": "群聊 ID：{{id}}"
       },
       "expandLongMessage": "展开全文",
       "collapseLongMessage": "收起",
@@ -10315,7 +10606,9 @@
         "sourceNeverRan": "原任务尚未运行，无法开启新任务",
         "codexStateUnavailable": "Codex Agent 会话状态不可用，无法开启新任务。{{detail}}",
         "generic": "无法开启新任务，请重试"
-      }
+      },
+      "groupSentNamed": "从群聊「{{name}}」发送",
+      "groupSent": "从群聊发送"
     },
     "threadContext": {
       "cindyFrom": "Cindy · 来自 {{platform}}",
@@ -10396,7 +10689,18 @@
       "REMOTE_PROVIDER_UNSUPPORTED": "远端任务还不能使用这个模型供应商。请换一个供应商，或在本机任务里使用它。",
       "REMOTE_PROVIDER_UPDATING": "这个模型供应商的凭据正在更新。请稍后再试。",
       "REMOTE_WORKDIR_UNAVAILABLE": "远端工作目录现在不可用。请确认那台电脑上的目录还在，然后重试。",
-      "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "电脑端暂时无法确认这条消息是否已经发出。请稍后再试，不要重复发送同一条。"
+      "REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE": "电脑端暂时无法确认这条消息是否已经发出。请稍后再试，不要重复发送同一条。",
+      "REMOTE_AGENT_UNAVAILABLE": "运行 Agent 的电脑暂时连不上。确认那台电脑在线并允许远程控制后重试。",
+      "REMOTE_AGENT_PEER_TOO_OLD": "那台电脑上的 Cindy 版本过旧，还不能替这台电脑运行 Agent。请先在那台电脑上更新 Cindy。",
+      "REMOTE_AGENT_EXPIRED": "这个任务在运行 Agent 的电脑上已经结束。请重新发送。",
+      "REMOTE_AGENT_NOT_FOUND": "这个任务在运行 Agent 的电脑上已经结束。请重新发送。",
+      "REMOTE_AGENT_BUSY": "那台电脑上同时运行的任务太多。先结束一些任务后再试。",
+      "REMOTE_AGENT_UNSUPPORTED": "那台电脑上这个 Agent 不可用。在那台电脑上安装或登录后再试，或换一个 Agent。",
+      "REMOTE_AGENT_INVALID": "和运行 Agent 的电脑通信出错。请重试；如果一直出现，请把两台电脑上的 Cindy 都更新到最新版。",
+      "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那台电脑没有允许远程调用这个供应商。请在那台电脑的「设置 → 模型供应商」里打开「允许被远程调用」，或换一个模型。",
+      "REMOTE_AGENT_SHARE_PAUSED": "对方已暂停对你的分享，恢复前不能使用这些模型。可以换成其他模型继续。",
+      "REMOTE_AGENT_SHARE_REMOVED": "这个分享已不可用（对方删除了分享或你已退出）。可以换成其他模型继续。",
+      "REMOTE_AGENT_SHARE_UNAVAILABLE": "分享的供应商暂时不可用：对方电脑可能不在线，或对方暂时关闭了分享。可以稍后再试，或换成其他模型继续。"
     },
     "generatedFiles": {
       "title": "本条消息生成的文件",
@@ -10690,7 +10994,9 @@
       "worktreeRepoHint": "可尝试重新选一次工作目录，等右下角文件夹标识刷新后再试",
       "sessionInactive": "任务已不再处于活跃状态",
       "remoteProjectBanner": "在 {{device}} 的 {{project}} 中新建任务",
-      "remoteDialogueBanner": "在 {{device}} 上新建对话（不绑定项目）"
+      "remoteDialogueBanner": "在 {{device}} 上新建对话（不绑定项目）",
+      "agentDeviceBanner": "任务和文件留在本机，Agent 在 {{device}} 上运行",
+      "agentDeviceElsewhereBanner": "Agent 在 {{device}} 上运行"
     },
     "jumpSession": {
       "emptyId": "请输入要跳转的任务 ID",
@@ -11086,7 +11392,9 @@
     },
     "sessionHeader": {
       "untitled": "未命名任务",
-      "moreActions": "更多操作"
+      "moreActions": "更多操作",
+      "agentDevice": "Agent 在 {{device}} 上运行",
+      "agentDeviceOffline": "Agent 在 {{device}} 上运行，那台电脑现在离线，连上后才能继续"
     },
     "gitContext": {
       "detached": "分离 HEAD",
@@ -11480,10 +11788,6 @@
     "empty": {
       "promptHeading": "暂无自动化",
       "promptDescription": "创建一个 cron 自动化，按计划执行你的 Prompt。"
-    },
-    "usageLimitRecovery": {
-      "name": "用量恢复后继续任务",
-      "prompt": "从中断的位置继续完成当前任务。"
     },
     "template": {
       "useTemplate": "新手帮助",
@@ -13203,6 +13507,7 @@
     "addUnavailable": "当前无法在分栏中打开该任务，请先在主区域打开一个任务再重试"
   },
   "extraDirs": {
+    "retryRemotePlugins": "远程插件加载失败，点击重试",
     "menuAria": "操作菜单",
     "tooltipEmpty": "更多操作",
     "tooltipCount": "{{count}} 个附加目录",
@@ -13299,7 +13604,8 @@
     "sessionTitle": "审查 · {{title}}",
     "toast": {
       "failed": "无法开始审查",
-      "remoteUnsupported": "当前版本只支持审查本机任务"
+      "remoteUnsupported": "当前版本只支持审查本机任务",
+      "agentDeviceUnsupported": "Agent 在另一台电脑运行的任务暂不支持审查"
     },
     "externalArtifactConfirm": {
       "title": "允许审查工作区外的成果？",
@@ -13688,6 +13994,7 @@
       "failedTitle": "套餐变更失败",
       "failedBody": "套餐变更未完成，当前套餐保持不变。",
       "requestFailed": "套餐变更请求未完成，请刷新订阅状态后重试。",
+      "renewalPrepaid": "下一期费用已提前支付，请等待本期结束后再进行升级。",
       "quoteRejected": "当前订阅无法切换到这个套餐，请选择其他套餐。",
       "chooseAnotherPlan": "选择其他套餐",
       "resyncHint": "确认结果暂时无法核实，正在重新确认最新状态…",
@@ -14548,5 +14855,15 @@
     "detail": "将此插件的 AI 权限设为“允许修改”，后续任务沿用此选择。独立作答目录不是系统沙箱；命令仍遵循 Cindy 的权限检查。你可以随时在插件 AI 设置中改回只读。",
     "allow": "允许并继续",
     "cancel": "暂不允许"
+  },
+  "groupTools": {
+    "authorizationRequired": "群内授权已失效或不允许此操作，请由伙伴主人在当前群重新发起。",
+    "localPeersOnly": "群内私聊只能发送给本机同账号伙伴。",
+    "ownerChanged": "账号已经切换，请重试。",
+    "invalidMessage": "消息或重试标识无效。",
+    "privateUnavailable": "当前伙伴私聊不可用，请稍后重试。",
+    "idempotencyConflict": "此重试标识已用于另一条消息。",
+    "privateUnconfirmed": "私聊未确认送达，请使用同一重试标识重试。",
+    "verificationUnavailable": "暂时无法核验群聊授权，请在连接恢复后重试。"
   }
 }

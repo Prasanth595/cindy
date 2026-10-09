@@ -117,7 +117,7 @@ import {
 } from '../maker-ipc/register.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
-import { remoteInvoke } from '../device-link/index.js';
+import { remoteBackgroundInvoke, remoteInvoke } from '../device-link/index.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { createHistoryRemoteDeps } from '../mcp-integrations/historyDevices.js';
 import { WorktreePool } from '../worktree/index.js';
@@ -213,7 +213,11 @@ import {
   buildDesktopClaudeRuntimeConfig,
   desktopCodexRuntimeConfig,
   ensureBundledRipgrepReady,
+  getRipgrepBinaryPath,
 } from './runtime-configs.js';
+import { createDeviceAgentStarter } from '../remote-agent/controller/service.js';
+import { extractReviewPdfTextInChild } from '../reviewer/reviewPdfProcess.js';
+import { disposeRemoteAgentHost, installRemoteAgentHost } from '../remote-agent/host/service.js';
 import {
   getClaudeEndpoint,
   setClaudeProxyGatewayKeyReader,
@@ -256,7 +260,7 @@ import {
 } from './codex-proxy-host.js';
 import { createDesktopMcpProviders } from '../mcp-integrations/mcp-providers.js';
 import { getGhostRosterPrompt } from '../mcp-integrations/ghost.js';
-import { invalidatePiEnvironment } from '../mcp-integrations/piEnvironment.js';
+import { getPiExtraSpawnConfig, invalidatePiEnvironment } from '../mcp-integrations/piEnvironment.js';
 import { readContactsSettings } from './contacts-settings-store.js';
 import { captureKnownFileBefore, noteOpaqueTurnChange } from '../turn-change-set/store.js';
 
@@ -335,9 +339,11 @@ import {
 } from './codex-custom-provider-route.js';
 import {
   buildCodexSubagentSpawnArgs,
+  codexHostUsesSmartSubagentRouting,
   resolveCodexSubagentRoutingProfile,
   type CodexSmartSubagentConfig,
 } from './codex-subagent-config.js';
+import { restrictCodexRoutesToGuestProvider } from './guest-provider-route-store.js';
 import {
   codexSmartSubagentRoutingSignature,
   prepareCodexSmartSubagentConfig,
@@ -549,6 +555,9 @@ const staleInvalidatedCcSessions = new Set<string>();
  * ensureRemoteForward 顺延探测,断线重连由 RemoteHost re-arm 保持。
  */
 const PI_MCP_FORWARD_PORT_START = 47981;
+/** Agent 在另一台电脑运行的任务里 Read 读 PDF：抽取进程超时与输入上限(与执行器的 PDF 上限一致)。 */
+const REMOTE_AGENT_PDF_TIMEOUT_MS = 30_000;
+const REMOTE_AGENT_PDF_MAX_BYTES = 32 * 1024 * 1024;
 /**
  * 本进程见过的 bridge 实例 — ensureCodexMcpBridgeStartedForRemote 据此检测
  * bridge 重建并清空 forcedFreshCcBridgeSessions (旧 bridge 的
@@ -1538,13 +1547,10 @@ export function getMaker(): Maker {
       providerId?: string;
       credentialMode?: 'oauth-bearer' | 'gateway-key' | 'provider-oauth';
       hostPurpose?: 'control-plane' | 'review' | 'custom-context';
+      deviceHostedGuestProviderId?: string;
     }): Promise<string> => {
       const settings = readSubagentModelSettings();
-      if (
-        ctx.hostPurpose === 'control-plane'
-        || ctx.hostPurpose === 'review'
-        || !settings.codexSmartSubagentRouting
-      ) return 'default';
+      if (!codexHostUsesSmartSubagentRouting(settings, ctx)) return 'default';
       const providerViews: ProviderView[] =
         await getDesktopProviderService().listProviders({ allowSideEffects: false });
       const candidates = selectCodexSmartSubagentCandidates(providerViews, {
@@ -1730,6 +1736,14 @@ export function getMaker(): Maker {
         const usesScopedProxy = needsContextScope || !!accountProxyKey;
         const scopedProxyKey = accountProxyKey || customContextHostKey;
         const usesIsolatedProxy = isControlPlane || isReview || usesScopedProxy;
+        // 供应商分享受邀者的任务：独占的 proxy 只登记分享的那个供应商的路由并过受邀者守门，
+        // 不开智能子代理调配。没有独占 proxy 就不能安全地收窄，直接失败。
+        const guestProviderId = ctx.deviceHostedGuestProviderId?.trim() || undefined;
+        if (ctx.deviceHostedGuestProviderId !== undefined && (!guestProviderId || !usesScopedProxy)) {
+          const error = new Error('shared-provider Codex host requires its own scoped proxy');
+          (error as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
+          throw error;
+        }
         const effectiveCodexHome = ctx.codexHome ?? getCodexHome();
         let mcpExtraArgs: string[] = [];
         let mcpExtraEnv: Record<string, string> = {};
@@ -1803,7 +1817,7 @@ export function getMaker(): Maker {
         setCodexSubagentOAuthReader(getChatgptBridgeAuthForDispatch);
 
         const customContextProviderRoutes = usesScopedProxy
-          ? deriveCodexCustomProviderRoutes(getActiveCatalog())
+          ? restrictCodexRoutesToGuestProvider(deriveCodexCustomProviderRoutes(getActiveCatalog()), guestProviderId)
           : [];
 
         // 这个点在 CodexAgent.createHost() 内。返回的 codexProxyActive 会被冻到 AppServerHost 实例上,
@@ -1813,7 +1827,15 @@ export function getMaker(): Maker {
             scopedProxyKey,
             authInjection,
             customContextProviderRoutes,
+            guestProviderId,
           );
+          // 受邀者不走「proxy 不可用时直连网关」的退路：那条路不经受邀者守门。
+          if (guestProviderId && !isCodexCustomContextProxyHandleReady(scopedProxyKey)) {
+            await releaseCodexCustomContextProxy(scopedProxyKey);
+            const error = new Error('shared-provider Codex host requires the local proxy, but the proxy is not ready');
+            (error as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
+            throw error;
+          }
         } else if (usesIsolatedProxy) {
           await ensureCodexControlPlaneProxyReady(authInjection);
         } else {
@@ -1861,12 +1883,7 @@ export function getMaker(): Maker {
         );
         const storedSubagentModelSettings = readSubagentModelSettings();
         let smartSubagentConfig: CodexSmartSubagentConfig | undefined;
-        if (
-          !isControlPlane
-          && !isReview
-          && ready
-          && storedSubagentModelSettings.codexSmartSubagentRouting
-        ) {
+        if (ready && codexHostUsesSmartSubagentRouting(storedSubagentModelSettings, ctx)) {
           try {
             const providerViews: ProviderView[] =
               await getDesktopProviderService().listProviders({ allowSideEffects: false });
@@ -2666,6 +2683,25 @@ export function getMaker(): Maker {
       agents: makerAgents,
       storage: desktopSessionStorage,
       logger: desktopMakerLogger,
+      // Agent 在同账号另一台电脑上运行、任务与文件留在本机(见 remote-agent/)。
+      startDeviceAgentSession: createDeviceAgentStarter({
+        remoteInvoke: remoteBackgroundInvoke,
+        rgPath: getRipgrepBinaryPath,
+        // 对方的 Codex 把本机当 exec-server 执行环境：用本机随包的同一个 codex。
+        codexPath: () => getCachedBinaryStatus('codex').binaryPath ?? undefined,
+        mcpProviders: () => _mcpProviders.pi ?? _mcpProviders.codex ?? [],
+        prepareMcpBridge: getPiExtraSpawnConfig,
+        makerMemory: () => makerMemoryManager,
+        captureKnownFileBefore,
+        noteOpaqueTurnChange,
+        // 与审查读 PDF 交付物同一个一次性抽取进程。
+        extractPdfText: (data, lastPage, maxChars) => extractReviewPdfTextInChild(data, maxChars, {
+          timeoutMs: REMOTE_AGENT_PDF_TIMEOUT_MS,
+          maxPages: lastPage,
+          maxInputBytes: REMOTE_AGENT_PDF_MAX_BYTES,
+        }),
+        logger: desktopMakerLogger,
+      }),
       makerMemory: makerMemoryManager,
       visionBridge: _visionBridgeInstance.hook,
       toolLoopReviewer: reviewToolLoop,
@@ -2674,6 +2710,20 @@ export function getMaker(): Maker {
       lifecycleHooks: {
         prepareStartOptions: async (sessionId, opts) => {
           pendingBotRuntimeSnapshots.delete(sessionId);
+          // Agent 在另一台电脑上运行的任务：所有入口(界面、定时任务、IM、协同等)恢复时都以任务
+          // 记录为准，Agent 回到原来那台电脑。读失败按本机任务处理(本机任务的启动与原来完全一致；
+          // 另一台电脑上的任务这时用的是那台的模型来源，本机没有，会在路由上明确报错)。
+          if (opts.agentDeviceId === undefined && !opts.remoteHostId) {
+            try {
+              const persisted = await desktopSessionStorage.get(sessionId);
+              if (persisted?.agentDeviceId) opts.agentDeviceId = persisted.agentDeviceId;
+            } catch (error) {
+              desktopMakerLogger.warn('session agent device lookup failed; starting the task here', {
+                sessionId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
           const providerReady = await ensureCurrentAccountProviderReadiness();
           if (!providerReady) {
             // 未登录 / 正在切账号时这里恒 false。主机通路只把失败压成 errorCode +
@@ -2872,6 +2922,8 @@ export function getMaker(): Maker {
         },
       },
     });
+    // 本机作为「Agent 运行的电脑」：同账号另一台电脑的任务可让 Agent 在这里运行。
+    installRemoteAgentHost({ getMaker: () => getMaker(), userDataDir: app.getPath('userData') });
     botRuntimeResourcePreflight = async (opts) => {
       const preflightOpts = { ...opts };
       return hydrateBotProfileRuntime(preflightOpts, buildBotRuntimeDeps(), {
@@ -3061,6 +3113,7 @@ export async function preflightBotRuntimeResources(
  * 重置 Maker 单例（切账号 / 测试用）。
  */
 export function resetMaker(): void {
+  disposeRemoteAgentHost();
   _sessionArchiveSync?.stop();
   _sessionArchiveSync = null;
   setSessionArchiveSyncRequester(null);

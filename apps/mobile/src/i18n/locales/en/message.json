@@ -164,7 +164,10 @@
     "retryToolInput": "Couldn't load input. Retry",
     "toolResultCompacted": "Full tool output was trimmed (original size {{size}})",
     "mermaidEmpty": "Empty Mermaid diagram.",
-    "diffEditCount": "{{n}} edits"
+    "diffEditCount": "{{n}} edits",
+    "groupSentNamed": "Sent from group “{{name}}”",
+    "groupSent": "Sent from a group",
+    "sourceGroupId": "Group ID: {{id}}"
   },
   "actions": {
     "attachmentsPrefix": "Attachments: {{names}}",
@@ -204,6 +207,8 @@
     "withSource": "{{source}}: {{message}}",
     "retrySend": "Retry Send",
     "clearError": "Clear Error",
+    "usageLimitAutoContinueAt": "Continues automatically at {{time}}",
+    "usageLimitAutoContinueCancel": "Cancel Auto-Continue",
     "noRetryContent": "No content is available to resend. Clear the error and enter your input again.",
     "piImageInputUnsupported": "Image input is not enabled for the current Pi model. Switch to a model that supports images. For a custom model, enable “Supports image input” in provider settings, then start a new Pi task.",
     "codexResumeNotReady": "Codex can't resume this task right now. Try again in a little while.",
@@ -252,6 +257,7 @@
       "succeeded": "Reconnected",
       "failed": "Reconnect failed",
       "neutral": "Reconnect",
+      "usageReset": "Usage reset, continued automatically",
       "pending": "Reconnecting…",
       "pendingWithProgress": "Reconnecting {{attempt}}/{{total}}…",
       "details": "Attempt {{attempt}}/{{total}} · {{count}} reconnects in this session",
@@ -265,6 +271,9 @@
     "sessionLabel": "Session",
     "sessionResumed": "Resumed",
     "agentSwitch": "Switched from {{from}} to {{to}}",
+    "agentSwitchLocation": "Agent moved to {{device}}",
+    "agentSwitchLocationThisComputer": "Agent moved back to this computer",
+    "agentSwitchLocationOtherComputer": "Agent moved to another computer",
     "learnStarted": "Skill learning started",
     "learnStartedBody": "Distillation runs in the background on desktop. When it's done, review the skill draft on desktop.",
     "learnFailed": "Skill learning couldn't start",

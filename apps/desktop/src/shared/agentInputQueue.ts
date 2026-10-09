@@ -205,6 +205,18 @@ export interface AutoResumeInfo {
   sessionTotal: number;
 }
 
+/** 账号额度重置后自动继续时 `AutoResumeInfo.reason` 的取值（活动行据此换文案）。 */
+export const USAGE_LIMIT_RESET_AUTO_RESUME_REASON = 'usage-limit-reset';
+
+/**
+ * 普通任务撞上账号 5 小时 / 周限额后的等待计划：错误照常呈现，用户可随时自己处理；
+ * 到 `resumeAt` 仍无人处理时被控端自动继续该任务。仅在本次运行内有效（不落盘）。
+ */
+export interface AgentInputUsageLimitWait {
+  /** 预计自动继续的时刻（unix ms，已含重置后的缓冲）。 */
+  resumeAt: number;
+}
+
 /**
  * Durable recovery context for a retry/continue action.
  *
@@ -232,7 +244,11 @@ export interface RecoveryCheckpoint {
   }>;
 }
 
+/** Same-process model source prefix; cannot be supplied by JSON or survive queue persistence. */
+export const HOST_ONLY_AGENT_PREFIX = Symbol('host-only-agent-prefix');
+
 export interface AgentInputQueuedMessage {
+  [HOST_ONLY_AGENT_PREFIX]?: string;
   /** Host-stamped attribution, retained in durable queue snapshots and messages. */
   sharedTaskAuthor?: SharedTaskAuthor;
   /** Host-captured authored text before plugin/reference decoration; omitted from wire projections. */
@@ -485,6 +501,11 @@ export interface AgentInputProjection {
    * 老被控端可能缺省该字段,消费方按 falsy 处理即可(退化成"没有自愈提示")。
    */
   autoResumePending?: AutoResumeInfo;
+  /**
+   * 账号限额等待中(与 `error` 同时存在:错误照常显示,横幅附「将于 X 自动继续 · 取消」)。
+   * 老被控端缺省该字段,消费方按 null 处理(退化成只有错误、没有自动继续)。
+   */
+  usageLimitWait?: AgentInputUsageLimitWait | null;
 }
 
 export type AgentInputMakerMessage =
@@ -576,7 +597,7 @@ export function sanitizeQueuedMessageForPersistence(
     // Historical plain-text queue payloads have no embedded reference bodies.
   }
 
-  if (!changed && !item.trustedSessionReferenceContexts) return item;
+  if (!changed && !item.trustedSessionReferenceContexts && item[HOST_ONLY_AGENT_PREFIX] === undefined) return item;
   const sanitized: AgentInputQueuedMessage = {
     ...item,
     persistedContent,
@@ -586,6 +607,7 @@ export function sanitizeQueuedMessageForPersistence(
       ? { sessionReferencesRequireTrustedSnapshot: true }
       : {}),
   };
+  delete sanitized[HOST_ONLY_AGENT_PREFIX];
   if (!item.agentReferences) delete sanitized.agentReferences;
   if (item.trustedSessionReferenceContexts) delete sanitized.trustedSessionReferenceContexts;
   return sanitized;
@@ -612,8 +634,9 @@ export function updateQueuedMessageText(
   newText: string,
   sessionRefs: AgentInputSessionRef[] = reconcileSessionRefsForText(newText, entry.sessionRefs),
 ): AgentInputQueuedMessage {
-  // A plugin rewrite must not turn a hidden host welcome into an editable user draft.
-  if (entry.toolsDisabled === true && entry.text.startsWith(UI_ACTION_TRIGGER_PREFIX)
+  // A plugin rewrite must not turn a hidden host message into an editable user draft.
+  if ((entry.toolsDisabled === true || entry.agentOmitsTriggerPrefix === true)
+    && entry.text.startsWith(UI_ACTION_TRIGGER_PREFIX)
     && !newText.startsWith(UI_ACTION_TRIGGER_PREFIX)) {
     newText = `${UI_ACTION_TRIGGER_PREFIX}${newText}`;
   }
@@ -1083,9 +1106,11 @@ export function buildMakerUserMessage(
   const blocks: Array<{ type: string; [k: string]: unknown }> = [];
   const facingText = getAgentFacingText(queued);
   // 主机内部消息只在排队行 / 历史里需要隐藏前缀;发给模型的正文不带它。
-  const agentFacingText = queued.agentOmitsTriggerPrefix === true && facingText.startsWith(UI_ACTION_TRIGGER_PREFIX)
+  const authoredText = queued.agentOmitsTriggerPrefix === true && facingText.startsWith(UI_ACTION_TRIGGER_PREFIX)
     ? facingText.slice(UI_ACTION_TRIGGER_PREFIX.length)
     : facingText;
+  // Combine the host source with the latest body, including any Ghost rewrite.
+  const agentFacingText = (queued[HOST_ONLY_AGENT_PREFIX] ?? '') + authoredText;
   if (agentFacingText.length > 0) {
     blocks.push({ type: 'text', text: agentFacingText });
   }

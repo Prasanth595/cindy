@@ -482,6 +482,8 @@ import {
   type CindyCapabilityKey,
 } from './cindyPrefsStore.js';
 import { isCindyOverrideModelAllowed } from './cindyOverrideWhitelist.js';
+import { createGhostComposerListHandler } from './ghostComposerIpc.js';
+import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
   isGhostDisabledForWorkdir,
   listDisabledGhostIdsForWorkdir,
@@ -7606,6 +7608,10 @@ export function registerGhostIpc(): void {
   ipcMain.on('ghosts:list', (event) => {
     event.returnValue = { ghosts: availableGhosts().map(projectGhostForRenderer) };
   });
+  ipcMain.handle(GHOST_COMPOSER_LIST_CHANNEL, createGhostComposerListHandler({
+    list: availableGhosts,
+    disabledIds: listDisabledGhostIdsForWorkdir,
+  }));
   // Author tasks may contain private context: local trusted application UI only.
   ipcMain.on('ghosts:recommendations', (event) => {
     const empty = { ownerId: null, sources: [], recentIds: [], newlyInstalledId: null };

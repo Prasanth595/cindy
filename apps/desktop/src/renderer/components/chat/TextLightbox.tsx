@@ -32,6 +32,7 @@ import { toast } from '@/lib/toast';
 import { Tooltip } from '@/components/ui/tooltip';
 import { detectRenderable } from '@/lib/textPreview';
 import { isRemoteFileOrigin } from '@/lib/sessionFileOrigin';
+import { observeFileTransferProgressText } from '@/lib/fileTransferProgress';
 import {
   chatFileErrorText,
   downloadRemoteChatEntry,
@@ -122,8 +123,7 @@ export function TextLightbox({ filePath, fileName, initialLine, triggerRef, onCl
   const sessionFileCtx = useChatSessionFile();
   const remoteOrigin = isRemoteFileOrigin(sessionFileCtx.origin) ? sessionFileCtx.origin : null;
   const [remoteCopy, setRemoteCopy] = useState<{ cachePath: string; stale: boolean } | null>(null);
-  // 远端取回进度(chat-file:fetch 的 TRANSFER push,relPath 键 = 原始 absPath)。
-  const [fetchProgress, setFetchProgress] = useState<{ received: number; total: number } | null>(null);
+  const [fetchProgressText, setFetchProgressText] = useState<string | null>(null);
   const isClosingRef = useRef(false);
   const bodyScrollRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<PlaintextEditorHandle>(null);
@@ -219,11 +219,16 @@ export function TextLightbox({ filePath, fileName, initialLine, triggerRef, onCl
   // response so we don't have to re-statically encode the MB number in two places.
   useEffect(() => {
     let cancelled = false;
+    setFetchProgressText(null);
+    const progress = remoteOrigin ? observeFileTransferProgressText(setFetchProgressText) : null;
     (async () => {
       try {
         // 远程:先取回缓存副本(同 identity 与侧边栏共享,命中秒回),再读副本。
         if (remoteOrigin) {
-          const fetched = await fetchChatFileToCache(remoteOrigin, sessionFileCtx.workingDir, filePath);
+          const fetched = await fetchChatFileToCache(
+            remoteOrigin, sessionFileCtx.workingDir, filePath, progress?.requestId,
+          );
+          progress?.dispose();
           if (cancelled) return;
           if (!fetched.ok) {
             setLoadState({ phase: 'error', message: chatFileErrorText(fetched.code) });
@@ -272,21 +277,15 @@ export function TextLightbox({ filePath, fileName, initialLine, triggerRef, onCl
           phase: 'error',
           message: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        progress?.dispose();
       }
     })();
     return () => {
       cancelled = true;
+      progress?.dispose();
     };
   }, [filePath, remoteOrigin, sessionFileCtx.workingDir, t]);
-
-  // 远程取回进度:大文件首拉可能秒级到分钟级,spinner 区显示百分比。
-  useEffect(() => {
-    if (!remoteOrigin || contentReady) return;
-    const off = window.electronAPI.fileBrowser.onTransferProgress((e) => {
-      if (e.relPath === filePath) setFetchProgress({ received: e.received, total: e.total });
-    });
-    return off;
-  }, [remoteOrigin, contentReady, filePath]);
 
 
   useEffect(() => {
@@ -556,10 +555,9 @@ export function TextLightbox({ filePath, fileName, initialLine, triggerRef, onCl
             >
               <Spinner size={32} className="text-[var(--msg-tool-card-chevron)]" />
               <div>
-                {remoteOrigin ? t('chat.remoteFile.fetching') : t('chat.textLightbox.loading')}
-                {remoteOrigin && fetchProgress && fetchProgress.total > 0
-                  ? ` ${Math.min(100, Math.round((fetchProgress.received / fetchProgress.total) * 100))}%`
-                  : null}
+                {remoteOrigin
+                  ? fetchProgressText ?? t('chat.remoteFile.fetching')
+                  : t('chat.textLightbox.loading')}
               </div>
             </div>
           ) : (

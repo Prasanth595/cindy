@@ -95,8 +95,51 @@ try {
     .raw()
     .toBuffer();
   assert.deepEqual([...hidden.subarray(0, 3)], [255, 0, 0]);
+  // A uniform poster must remain uniform even at the viewport edges with blur.
+  // This catches transparent filter margins and an accidentally blurred backing.
+  for (const surface of [[24, 24, 24], [242, 242, 237]]) {
+    await page.evaluate((surface) => {
+      const root = document.documentElement;
+      root.dataset.wallpaperBlur = 'true';
+      root.style.setProperty('--app-wallpaper-blur', '20px');
+      root.style.setProperty('--surface', `rgb(${surface.join(',')})`);
+      root.style.setProperty('--app-wallpaper-veil', '50%');
+      document.querySelector('.app-wallpaper-video').style.opacity = '1';
+    }, surface);
+    const { data, info } = await sharp(await page.screenshot()).raw().toBuffer({ resolveWithObject: true });
+    for (const [x, y] of [[0, 0], [319, 0], [0, 239], [319, 239], [160, 120]]) {
+      for (let c = 0; c < 3; c++) {
+        assert.ok(Math.abs(data[(y * info.width + x) * info.channels + c] - (surface[c] + mediaColor[c]) / 2) <= 2,
+          `blurred video edge ${x},${y} channel ${c}`);
+      }
+    }
+  }
+  const stripes = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><defs><pattern id="p" width="16" height="16" patternUnits="userSpaceOnUse"><path fill="black" d="M0 0h8v16H0z"/><path fill="white" d="M8 0h8v16H8z"/></pattern></defs><path fill="url(#p)" d="M0 0h320v240H0z"/></svg>')}`;
+  await page.evaluate(async (src) => {
+    const image = new Image(); image.src = src; await image.decode();
+    document.querySelector('video').poster = src;
+    document.documentElement.style.setProperty('--app-wallpaper-image', `url("${src}")`);
+    document.documentElement.style.setProperty('--app-wallpaper-veil', '0%');
+  }, stripes);
+  for (const mode of ['static', 'video']) {
+    for (const blur of [0, 20]) {
+      const computed = await page.evaluate(({ mode, blur }) => {
+        const root = document.documentElement;
+        if (blur) root.dataset.wallpaperBlur = 'true'; else delete root.dataset.wallpaperBlur;
+        root.style.setProperty('--app-wallpaper-blur', `${blur}px`);
+        document.querySelector('.app-wallpaper-video').style.opacity = mode === 'video' ? '1' : '0';
+        return { body: getComputedStyle(document.body).filter,
+          media: mode === 'video' ? getComputedStyle(document.querySelector('video')).filter : getComputedStyle(document.body, '::before').filter };
+      }, { mode, blur });
+      assert.equal(computed.body, 'none');
+      assert.equal(computed.media, blur ? 'blur(20px)' : 'none');
+      const pixel = await sharp(await page.screenshot({ clip: { x: 162, y: 120, width: 1, height: 1 } })).raw().toBuffer();
+      if (blur) assert.ok(pixel[0] > 100 && pixel[0] < 155, `${mode} did not soften stripes: ${pixel[0]}`);
+      else assert.ok(pixel[0] < 5, `${mode} zero blur changed the original artwork: ${pixel[0]}`);
+    }
+  }
   console.log(
-    `PASS: ${checked} light/dark visibility cases, opaque backing, and loading/exit fallback.`,
+    `PASS: ${checked} light/dark visibility cases, opaque backing, loading/exit fallback, blur edges and static/video softness.`,
   );
   console.log(
     'HDR acceptance: toggle P3/sRGB content with a fixed video frame; compare FP16 scRGB screen captures, not GDI/PNG screenshots.',

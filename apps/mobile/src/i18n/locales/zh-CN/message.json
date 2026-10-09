@@ -164,7 +164,10 @@
     "retryToolInput": "读取失败，重试",
     "toolResultCompacted": "完整工具输出已释放（原始大小 {{size}}）",
     "mermaidEmpty": "空 Mermaid 图表。",
-    "diffEditCount": "{{n}} 处编辑"
+    "diffEditCount": "{{n}} 处编辑",
+    "groupSentNamed": "从群聊「{{name}}」发送",
+    "groupSent": "从群聊发送",
+    "sourceGroupId": "群聊 ID：{{id}}"
   },
   "actions": {
     "attachmentsPrefix": "附件：{{names}}",
@@ -204,6 +207,8 @@
     "withSource": "{{source}}：{{message}}",
     "retrySend": "重试发送",
     "clearError": "清除错误",
+    "usageLimitAutoContinueAt": "将于 {{time}} 自动继续",
+    "usageLimitAutoContinueCancel": "取消自动继续",
     "noRetryContent": "没有可重发的内容，请清除错误后重新输入。",
     "piImageInputUnsupported": "当前 Pi 模型未启用图片输入。请切换到支持图片的模型；如果这是自定义模型，请在供应商设置中开启“支持图片输入”，然后新建 Pi 任务。",
     "codexResumeNotReady": "Codex 暂时无法恢复这个任务，请稍后重试",
@@ -252,6 +257,7 @@
       "succeeded": "已重新连接",
       "failed": "重新连接未成功",
       "neutral": "重新连接",
+      "usageReset": "用量已恢复，已自动继续",
       "pending": "重新连接中…",
       "pendingWithProgress": "重新连接中 {{attempt}}/{{total}}…",
       "details": "本次重试 {{attempt}}/{{total}} · 本任务累计重连 {{count}} 次",
@@ -265,6 +271,9 @@
     "sessionLabel": "任务",
     "sessionResumed": "已续接",
     "agentSwitch": "已从 {{from}} 切换到 {{to}}",
+    "agentSwitchLocation": "Agent 改到 {{device}} 运行",
+    "agentSwitchLocationThisComputer": "Agent 改回这台电脑运行",
+    "agentSwitchLocationOtherComputer": "Agent 改到另一台电脑运行",
     "learnStarted": "技能学习已启动",
     "learnStartedBody": "蒸馏在电脑端后台进行，完成后请到电脑端查看并评审技能草案。",
     "learnFailed": "技能学习未能启动",

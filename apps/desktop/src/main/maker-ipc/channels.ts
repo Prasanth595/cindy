@@ -45,6 +45,8 @@ export const MAKER_INVOKE = {
   INPUT_RESUME: 'maker:input:resume',
   INPUT_RETRY_LAST_ERROR: 'maker:input:retry-last-error',
   INPUT_CLEAR_ERROR: 'maker:input:clear-error',
+  /** 取消账号限额重置后的自动继续(只撤等待,错误与手动重试保留)。 */
+  INPUT_CANCEL_USAGE_LIMIT_WAIT: 'maker:input:cancel-usage-limit-wait',
   /**
    * Renderer 侧 auth-retry 放弃（catch 或 guard fall-through）时调用，告知 main 补落持久化。
    * main 侧在相同 isRemoteAuthRetry 条件下跳过了 onTurnErrorEvent；此 IPC 覆盖"未重试/重试失败"两路。
@@ -251,6 +253,8 @@ export const MAKER_INVOKE = {
    * **不进 device-link allowlist**(远程改被控端全局设置越权,见 allowlist.ts 准入判据)。
    */
   MODEL_DISABLE_SET: 'maker:model-disable:set',
+  /** 本机供应商是否允许同账号另一台电脑的远程 Agent 调用；仅本机可信 renderer 可写。 */
+  PROVIDER_REMOTE_ACCESS_SET: 'maker:provider:remote-access:set',
   /**
    * Owner-scoped provider display-order override.
    * Input = { dataOwnerId: string | null; ownerGeneration: number; providerIds: string[] }.

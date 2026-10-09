@@ -114,7 +114,7 @@ describe('CCAgentSessionView 接线不变式', () => {
   });
   it('已有设备互联任务与保留原路由的 SSH 任务跳过来源门禁，草稿与本地任务仍保留门禁', () => {
     expect(chatInputSrc).toContain(
-      'const enforceConnectedSourceGate = (!sessionId || !deviceLinkDeviceId) && !preserveSshCodexRoute;',
+      'const enforceConnectedSourceGate = (!sessionId || !catalogDeviceId) && !preserveSshCodexRoute;',
     );
     expect(chatInputSrc).toContain('const preserveSshCodexRoute = !!sessionId && !!sshCodexHostId &&');
     expect(chatInputSrc).toMatch(

@@ -221,6 +221,12 @@ function defaultPermissionModeForSchedule(): PermissionMode {
 export interface SchedulerQueueDeps {
   /** 目标会话当前是否忙(turn 运行中 / 队列有积压 / 凭证切换等待中)。 */
   isSessionBusy(sessionId: string): boolean;
+  /**
+   * 重启后内存还没有读回排队快照时，shouldQueueNewTurn 会把它当成忙。
+   * 指定模型的任务会因此直接顺延，永远走不到入队时的恢复。
+   * 返回 false 表示这次没恢复成功，调用方按 queue-restore-pending 顺延。
+   */
+  ensureQueueRestored?(sessionId: string): Promise<boolean>;
   /** 该 schedule 是否已有排队中(或正在派发)的心跳消息 —— 防重复入队。 */
   hasQueuedPrompt(sessionId: string, scheduleId: string): boolean;
   enqueuePrompt(req: {
@@ -285,6 +291,11 @@ export interface MakerScheduleRunnerDeps {
   onSessionCreated?: (sessionId: string) => void;
   /** 可选:撞忙排队桥。未注入时心跳撞忙回退为顺延(deferFire)旧行为。 */
   schedulerQueue?: SchedulerQueueDeps;
+  /**
+   * 任务的 Agent 在同账号另一台电脑上运行：模型与来源属于那台的目录，本机停用轴不裁决
+   * (由那台在启动 / 切换时裁决)。缺省 = 都按本机任务处理。
+   */
+  isAgentOnOtherDevice?: (sessionId: string) => Promise<boolean>;
   /**
    * 停用轴裁决(生产 = maker-host/model-route-guard-live 的 verdictForModelRoute)。
    * scheduler 的每次 fire 都是新的付费调用,不属于「运行中的会话不打断」豁免:
@@ -406,6 +417,22 @@ export class MakerScheduleRunner implements ScheduleRunner {
   /** scheduler-host/index.ts 在 startScheduler 内调一次，让 runner 反向 pause schedule */
   attachScheduler(scheduler: Scheduler): void {
     this.scheduler = scheduler;
+  }
+
+  /**
+   * 停用轴裁决。Agent 在另一台电脑运行的任务用那台的模型目录，本机不裁决(那台启动 / 切换时
+   * 会自己拒绝不可用的路由)；其余任务与原来完全一致。只在 checkModelRoute 已注入时调用。
+   */
+  private async checkRouteFor(
+    sessionId: string | undefined,
+    agent: AgentKind,
+    model: string,
+    providerId: string | null,
+  ): ReturnType<NonNullable<MakerScheduleRunnerDeps['checkModelRoute']>> {
+    if (sessionId && (await this.deps.isAgentOnOtherDevice?.(sessionId).catch(() => false))) {
+      return { kind: 'pass' };
+    }
+    return this.deps.checkModelRoute!(agent, model, providerId);
   }
 
   private async retireHeartbeat(
@@ -530,6 +557,43 @@ export class MakerScheduleRunner implements ScheduleRunner {
   private async readRoutinePermissions(sessionId: string, live?: Session) {
     const stored = await getSessionFsSnapshot(sessionId);
     return routinePermissionSnapshot(live ?? this.deps.maker.getSession(sessionId), stored);
+  }
+
+  /**
+   * 绑定会话在判断忙闲前先恢复排队快照。未恢复会被 shouldQueueNewTurn
+   * 当成忙；指定了模型的任务又会在入队前直接顺延，于是重启后永远空转。
+   * 恢复失败返回顺延结果；没有桥或已恢复则返回 undefined，继续原路径。
+   */
+  private async restoreBoundQueue(
+    schedule: Schedule,
+    ctx: FireContext,
+    sessionId: string,
+  ): Promise<FireResult | undefined> {
+    const restore = this.deps.schedulerQueue?.ensureQueueRestored;
+    if (!restore) return undefined;
+    throwIfFireAborted(ctx.signal, 'queue snapshot restore');
+    let restored = false;
+    try {
+      restored = await restore(sessionId);
+    } catch (err) {
+      this.deps.logger.warn?.('[runner] queue snapshot restore failed', {
+        scheduleId: schedule.id,
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      restored = false;
+    }
+    throwIfFireAborted(ctx.signal, 'queue snapshot restore');
+    if (restored) return undefined;
+    if (this.canDefer(schedule, ctx)) {
+      return this.deferFire(schedule, sessionId, 'queue-restore-pending');
+    }
+    const errMsg = formatSchedulerSendError(
+      buildSchedulerSendContext(schedule, ctx, sessionId),
+      'QUEUE_RESTORE_PENDING',
+    );
+    await this.notifyFailureSilent(schedule, ctx, errMsg);
+    throw new Error(errMsg);
   }
 
   private async failOrDeferSessionRunning(
@@ -759,6 +823,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
       // 直发路径不经过 makerSendTransaction。先落实 pending switch,再读取 meta/row,
       // 才能让本轮 createSession 与 send 都指向切换后的 live engine。
       throwIfFireAborted(ctx.signal, 'credential switch setup');
+      const restorePending = await this.restoreBoundQueue(schedule, ctx, sessionId);
+      if (restorePending) return restorePending;
       const selection: ScheduledModelSelection | undefined =
         schedule.modelAgentKind && schedule.model?.trim()
           ? {
@@ -1051,7 +1117,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // 可见),不能继续经停用路由扣费;隐式默认落点被停用而有启用替代拷贝时改路由过去。
     let reroutedProviderId: string | null = null;
     if (this.deps.checkModelRoute) {
-      const verdict = await this.deps.checkModelRoute(effectiveAgentKind, model, createProviderId);
+      const verdict = await this.checkRouteFor(isHeartbeat ? sessionId : undefined, effectiveAgentKind, model, createProviderId);
       if (verdict.kind === 'reject') {
         throw new Error(
           `schedule route unavailable: ${describeModelRouteRejection(verdict.reason, model, createProviderId)} (${verdict.reason})`,
@@ -1594,7 +1660,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // state bind to the Session instance. The transaction may retire it.
     if (effectiveAgentKind === 'pi' && this.deps.checkModelRoute) {
       const currentProviderId = getSessionProvider(session.id);
-      const verdict = await this.deps.checkModelRoute('pi', runtimeModel, currentProviderId);
+      const verdict = await this.checkRouteFor(session.id, 'pi', runtimeModel, currentProviderId);
       if (verdict.kind === 'reject') {
         throw new Error(`schedule route unavailable: ${describeModelRouteRejection(verdict.reason, runtimeModel, currentProviderId)} (${verdict.reason})`);
       }
@@ -1700,7 +1766,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
       // reject 即失败收口,不发出这次新的付费调用。
       if (this.deps.checkModelRoute) {
         const dispatchProviderId = getSessionProvider(session.id);
-        const verdict = await this.deps.checkModelRoute(
+        const verdict = await this.checkRouteFor(
+          session.id,
           effectiveAgentKind,
           runtimeModel,
           dispatchProviderId,
@@ -2678,7 +2745,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     const routeProviderId = explicitProviderId ?? currentProviderId;
     let providerId = routeProviderId;
     if (this.deps.checkModelRoute) {
-      const verdict = await this.deps.checkModelRoute('pi', model, routeProviderId);
+      const verdict = await this.checkRouteFor(sessionId, 'pi', model, routeProviderId);
       if (verdict.kind === 'reject') {
         throw new QueuedRouteDisabledError(
           `schedule route unavailable: ${describeModelRouteRejection(verdict.reason, model, routeProviderId)} (${verdict.reason})`,
@@ -2742,7 +2809,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
       // 误按隐式默认裁决放行,随后照旧沿停用来源派发(PR #744 review 第八轮)。
       // 两者都缺才是真正的隐式默认(reroute 才有意义)。
       const routeProviderId = explicitProviderId ?? currentProviderId;
-      const verdict = await this.deps.checkModelRoute(live.agentKind, targetModel, routeProviderId);
+      const verdict = await this.checkRouteFor(live.id, live.agentKind, targetModel, routeProviderId);
       if (verdict.kind === 'reject') {
         throw new QueuedRouteDisabledError(
           `schedule route unavailable: ${describeModelRouteRejection(verdict.reason, targetModel, routeProviderId)} (${verdict.reason})`,
@@ -2816,7 +2883,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
       // 目标来源启用但需要凭证切换、而**当前**来源在排队等待期间被停用时,不裁决
       // 就成了绕过口,照发等于继续经停用路由扣费(PR #744 review 第十轮)。
       if (this.deps.checkModelRoute) {
-        const retained = await this.deps.checkModelRoute(
+        const retained = await this.checkRouteFor(
+          live.id,
           live.agentKind,
           live.model,
           currentProviderId,
@@ -2909,7 +2977,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
     // (runtimeModel, 落地来源) 重新裁决,reject 即中止派发(与上方同语义,由排队
     // onAccepted 在 vendor dispatch 之前收口)。
     if (this.deps.checkModelRoute && runtimeModel !== targetModel) {
-      const actual = await this.deps.checkModelRoute(
+      const actual = await this.checkRouteFor(
+        live.id,
         live.agentKind,
         runtimeModel,
         applyProviderId ?? currentProviderId,
@@ -3531,6 +3600,7 @@ function extractErr(data: unknown): string {
  */
 type FireAbortStage =
   | 'runner entry'
+  | 'queue snapshot restore'
   | 'workspace allocation'
   | 'session creation'
   | 'agent turn dispatch'

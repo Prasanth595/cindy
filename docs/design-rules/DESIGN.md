@@ -104,7 +104,18 @@ Wallpaper Visibility ranges from 0% (hidden) to 100% (fully visible), in 1% step
 an opaque theme-surface backing, without a separate translucent veil; this avoids the
 observed Windows HDR brightness shift when P3 content changes the output composition.
 The video wrapper's opacity is reserved for loading/exit crossfades. Never reduce text
-or control opacity. Release video playback at 0%. Blur and blend-mode controls are out of scope.
+or control opacity. Release video playback at 0%. Blend-mode controls remain out of scope.
+Optional Wallpaper Blur (user addition, 2026-10-06) ranges from 0 (off, default) to 20
+in whole steps, applying a CSS-pixel radius only to the wallpaper image/video. No UI,
+theme backing, or text is blurred; video opacity remains on the video itself. At zero,
+retain the existing filter-free rendering path. Overscan the artwork by three radii
+and clip the video at the viewport to avoid transparent edges; static and video crops
+must match. For blurred static scenes, reuse the moving-scene message fade instead
+of repainting a sharp wallpaper behind the composer. Persist only explicit overrides;
+Reset removes the blur override. Reuse the settings Slider with a localized accessible
+label and hint, disable it for None, and explain the additional GPU cost for video.
+Dragging previews blur locally; only a committed pointer/keyboard value is saved and
+broadcast. Cancelled gestures or leaving settings discard the preview.
 Existing preferences without an explicit visibility override keep the previous Light/Dark veil
 mapping and display its equivalent visibility. The unchanged soft default is 37% visible in
 Light and 27% in Dark. Adjusting the slider saves literal visibility, shared across themes;

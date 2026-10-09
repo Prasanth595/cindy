@@ -66,6 +66,15 @@ const persisted = {
 
 describe('appearance settings IPC authorization', () => {
   it('validates literal visibility and accepts null only to reset its override', () => {
+    for (const wallpaperBlur of [0, 8, 20, null]) {
+      expect(__testing.parsePatch({ wallpaperBlur })).toEqual({ wallpaperBlur });
+    }
+    expect(__testing.parsePatch({ wallpaperBlur: 99 })).toEqual({ wallpaperBlur: 20 });
+    expect(__testing.parsePatch({ wallpaperBlur: -1 })).toEqual({ wallpaperBlur: 0 });
+    expect(__testing.parsePatch({ wallpaperBlur: 4.6 })).toEqual({ wallpaperBlur: 5 });
+    for (const wallpaperBlur of ['8', true, NaN, Infinity, {}]) {
+      expect(() => __testing.parsePatch({ wallpaperBlur })).toThrow('INVALID_PARAMS');
+    }
     for (const wallpaperVisibility of [0, 0.37, 1, null]) {
       expect(__testing.parsePatch({ wallpaperVisibility })).toEqual({ wallpaperVisibility });
     }

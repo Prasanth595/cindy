@@ -257,7 +257,7 @@ export interface OrcaMcpDeps {
     ControlResult<{ workerId: string }, 'WORKER_NOT_FOUND'>
   >;
   /** 列出 agent 可用 model 清单。 */
-  listAvailableModels: (params: { agent?: ControlWorkerAgent }) => Promise<
+  listAvailableModels: (params: { agent?: ControlWorkerAgent; callerSessionId?: string }) => Promise<
     ControlResult<{
       codex?: ModelDescriptor[];
       claude_code?: ModelDescriptor[];
@@ -546,6 +546,7 @@ export function createOrcaMcpServer(
     archiveWorker: deps.archiveWorker,
   });
   registerListAvailableModelsTool(sink, {
+    getSessionContext,
     listAvailableModels: deps.listAvailableModels,
   });
   registerOrcaDiagnosticTools(sink, deps, getSessionContext);

@@ -8,6 +8,7 @@ import type { ReviewRunMeta } from '../../shared/reviewRun';
 import type { AgentTaskTerminalStatus } from '@cindy/maker-shared/agent-task';
 import type {
   MessageSourceDevice,
+  MessageSourceGroup,
   MessageSourcePlugin,
 } from '@cindy/maker-shared/message-source';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
@@ -192,6 +193,10 @@ export interface CcMeta {
   sourceDevice?: MessageSourceDevice;
   /** 插件任务派发的消息（readMessageSourcePlugin 读取）。 */
   sourcePlugin?: MessageSourcePlugin;
+  /** Group source of an explicitly sent private assistant message. */
+  sourceGroup?: MessageSourceGroup;
+  /** Guest-safe independent assistant delivery; does not seal a model turn. */
+  explicitDelivery?: boolean;
 
   /** 历史 per-turn USD；新数据以 turnCost 为区域金额事实。 */
   turnCostUsd?: number;
@@ -403,6 +408,12 @@ export interface Session {
    * 是远端路径。null/undefined = 本地。仅 Codex 支持。
    */
   remoteHostId?: string | null;
+  /**
+   * Agent 在同账号另一台电脑上运行时，那台电脑的 deviceId。任务、项目文件与命令仍在本机
+   * (workingDir 是本机路径，文件浏览、改动对比照本机方式工作)；只有 Agent 进程、登录与供应商
+   * 在那台电脑上。null/undefined = Agent 在本机。与 remoteHostId 互斥。
+   */
+  agentDeviceId?: string | null;
   /**
    * device-link 跨设备远程控制:本 session 实际归属的**被控设备 deviceId**。
    * 仅存在于控制端**内存**里(由 remoteProjectsStore 注入),**永不落本地 DB**——
