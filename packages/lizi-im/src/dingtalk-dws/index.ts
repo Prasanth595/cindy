@@ -12,7 +12,7 @@
  *     触发，但非主人轮次受逐轮强确认约束（动手要主人拍板）。
  */
 
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +21,7 @@ import { BaseIM } from '../BaseIM.js';
 import type { ImFinalOutput } from '../channelIM.js';
 import { decodeLaneUserId, encodeLaneUserId } from '../dingtalk/codec.js';
 import { imageAttachment } from '../dingtalk/inbound.js';
-import { mimeTypeForFilename, persistWecomDownload, safeWecomFilename } from '../wecom/media.js';
+import { mimeTypeForFilename, safeWecomFilename } from '../wecom/media.js';
 import { PendingReplies, type SharedReplyDecision } from '../dingtalk/pendingReplies.js';
 import type {
   IMAttachment,
@@ -62,7 +62,6 @@ const MAX_INBOUND_IMAGES = 6;
 const MAX_INBOUND_FILES = 4;
 const MAX_CONTEXT_IMAGES = 6;
 const MAX_CONTEXT_FILES = 4;
-const MAX_INBOUND_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export const DINGTALK_DWS_ERROR = {
   notInstalled: 'DINGTALK_DWS_NOT_INSTALLED',
@@ -579,7 +578,7 @@ export class DingTalkDwsIM extends BaseIM {
       { maxImages: MAX_INBOUND_IMAGES, maxFiles: MAX_INBOUND_FILES },
     );
     if (generation !== this.generation) return;
-    const ownAttachments = media.byMessage.get(message.messageId) ?? media.unattributed;
+    const ownAttachments = media.byMessage.get(message.messageId) ?? [];
     const replyAttachments = quotedId ? (media.byMessage.get(quotedId) ?? []) : [];
 
     const event: IMMessageEvent = {
@@ -624,7 +623,7 @@ export class DingTalkDwsIM extends BaseIM {
    * - 图片（png/jpg/gif/webp）存进宿主媒体缓存，作为 image 附件；
    * - 其他文件（PDF/docx/zip…）按媒体规范不进媒体总仓，落到宿主注入的
    *   `paths.dingtalkMediaDir`（与企业微信同一套落盘规则），作为 file 附件；
-   * - 单个资源 ≤20MB，超额、超数量或逐项下载失败记 unsupported 提示。
+   * - 不另设资源体积上限；普通文件直接复制，图片经宿主媒体缓存处理。
    * 整次查询失败不臆造提示（无法判断是否真有资源）。临时目录用完即删。
    */
   private async downloadResources(
@@ -633,16 +632,13 @@ export class DingTalkDwsIM extends BaseIM {
   ): Promise<{
     unsupported: IMUnsupportedEntry[];
     byMessage: Map<string, IMAttachment[]>;
-    /** ledger 未标明所属消息的资源（按当前消息处理）。 */
-    unattributed: IMAttachment[];
   }> {
     const unsupported: IMUnsupportedEntry[] = [];
     const byMessage = new Map<string, IMAttachment[]>();
-    const unattributed: IMAttachment[] = [];
     const media = this.host.media;
     const filesDir = this.host.paths.dingtalkMediaDir;
     const ids = Array.from(new Set(messageIds.filter(Boolean))).slice(0, 50);
-    if (!media || ids.length === 0) return { unsupported, byMessage, unattributed };
+    if (!media || ids.length === 0) return { unsupported, byMessage };
     let images = 0;
     let files = 0;
     let dir: string | null = null;
@@ -666,28 +662,53 @@ export class DingTalkDwsIM extends BaseIM {
       );
       const ledger =
         isRecord(result) && isRecord(result.resourceDownloads) ? result.resourceDownloads : null;
-      if (!ledger) return { unsupported, byMessage, unattributed };
+      if (!ledger) return { unsupported, byMessage };
+      // dws 对 fileId 下载去重后可能不填 messageId；从消息的资源引用恢复全部归属。
+      const resourceOwners = new Map<string, Set<string>>();
+      const messages = isRecord(result) && Array.isArray(result.messages) ? result.messages : [];
+      for (const message of messages) {
+        if (!isRecord(message) || !ids.includes(str(message.messageId))) continue;
+        const refs = Array.isArray(message.resourceRefs) ? message.resourceRefs : [];
+        for (const ref of refs) {
+          if (!isRecord(ref) || !str(ref.resourceId)) continue;
+          const key = resourceIdentity(str(ref.resourceIdType) || str(ref.type), str(ref.resourceId));
+          const owners = resourceOwners.get(key) ?? new Set<string>();
+          owners.add(str(message.messageId));
+          resourceOwners.set(key, owners);
+        }
+      }
       const failedCount = typeof ledger.failedCount === 'number' ? ledger.failedCount : 0;
       for (let i = 0; i < failedCount && i < limits.maxImages; i += 1) {
         unsupported.push({ type: 'picture', label: '图片（下载失败）' });
       }
       const downloads = Array.isArray(ledger.downloads) ? ledger.downloads.filter(isRecord) : [];
       for (const entry of downloads) {
+        const resourceKey = resourceIdentity(str(entry.resourceType), str(entry.resourceId));
+        const explicitId = str(entry.messageId);
+        const owners = resourceOwners.get(resourceKey) ?? new Set(
+          explicitId ? (ids.includes(explicitId) ? [explicitId] : []) : (ids.length === 1 ? ids : []),
+        );
+        // 多消息查询中，无法确定来源的附件不能冒充当前发言人或被引消息的附件。
+        if (owners.size === 0) continue;
         const localPath = str(entry.localPath);
         const absPath = path.resolve(dir, localPath);
         // 只信任落在临时目录内的文件（防御异常的相对路径）。
         if (!localPath || !absPath.startsWith(dir + path.sep)) continue;
         const stat = await fs.promises.stat(absPath).catch(() => null);
         if (!stat?.isFile() || stat.size === 0) continue;
-        if (stat.size > MAX_INBOUND_IMAGE_BYTES) {
-          unsupported.push({ type: 'oversize', label: '附件过大（超过 20MB）' });
-          continue;
+        const handle = await fs.promises.open(absPath, 'r');
+        const header = Buffer.alloc(12);
+        let bytesRead: number;
+        try {
+          ({ bytesRead } = await handle.read(header, 0, header.length, 0));
+        } finally {
+          await handle.close();
         }
-        const buffer = await fs.promises.readFile(absPath);
-        const mimeType = detectImageMime(buffer);
+        const mimeType = detectImageMime(header.subarray(0, bytesRead));
         let attachment: IMAttachment;
         if (mimeType) {
           if (images >= limits.maxImages) continue;
+          const buffer = await fs.promises.readFile(absPath);
           const resourceId = str(entry.resourceId);
           const stored = await media
             .cacheImage({
@@ -710,9 +731,10 @@ export class DingTalkDwsIM extends BaseIM {
             continue;
           }
           // 单个文件落盘失败只影响它自己，不中断其余资源。
-          const persisted = await (limits.contextFiles
-            ? persistContextFile(filesDir, str(entry.resourceId) || `${str(entry.messageId)}:${localPath}`, buffer, path.basename(localPath))
-            : persistWecomDownload({ mediaDir: filesDir, buffer, filename: path.basename(localPath) })
+          const persisted = await persistDownloadedFile(
+            filesDir,
+            absPath,
+            limits.contextFiles ? (str(entry.resourceId) || `${explicitId}:${localPath}`) : undefined,
           ).catch(() => null);
           if (!persisted) {
             unsupported.push({ type: 'file', label: '文件（保存失败）' });
@@ -721,9 +743,9 @@ export class DingTalkDwsIM extends BaseIM {
           attachment = { kind: 'file', ...persisted };
           files += 1;
         }
-        const messageId = str(entry.messageId);
-        if (messageId) byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), attachment]);
-        else unattributed.push(attachment);
+        for (const messageId of owners) {
+          byMessage.set(messageId, [...(byMessage.get(messageId) ?? []), attachment]);
+        }
       }
     } catch {
       this.log.warn('dingtalk dws resource download failed');
@@ -731,7 +753,7 @@ export class DingTalkDwsIM extends BaseIM {
       if (dir) await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
     if (limits.contextFiles && filesDir) void pruneContextFiles(filesDir);
-    return { unsupported, byMessage, unattributed };
+    return { unsupported, byMessage };
   }
 
   private claimOwner(message: DwsInboundMessage): OwnerRecord | null {
@@ -944,25 +966,34 @@ const CONTEXT_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
  * 群上下文文件按资源 ID 固定落盘位置：同一资源被反复 @ 时复用同一份，而不是
  * 每次新增一份。复用时刷新 mtime，配合 pruneContextFiles 的 7 天回收。
  */
-async function persistContextFile(
+async function persistDownloadedFile(
   filesDir: string,
-  resourceKey: string,
-  buffer: Buffer,
-  filename: string,
+  sourcePath: string,
+  resourceKey?: string,
 ): Promise<{ absPath: string; originalName: string; mimeType: string }> {
-  const originalName = safeWecomFilename(filename);
+  const originalName = safeWecomFilename(path.basename(sourcePath));
+  if (resourceKey === undefined) {
+    await fs.promises.mkdir(filesDir, { recursive: true });
+    const absPath = path.join(filesDir, `${randomUUID()}-${originalName}`);
+    await fs.promises.copyFile(sourcePath, absPath, fs.constants.COPYFILE_EXCL);
+    return { absPath, originalName, mimeType: mimeTypeForFilename(originalName) };
+  }
   const digest = createHash('sha256').update(resourceKey).digest('hex').slice(0, 24);
   const dir = path.join(filesDir, CONTEXT_FILES_SUBDIR, digest);
   const absPath = path.join(dir, originalName);
   const existing = await fs.promises.stat(absPath).catch(() => null);
-  if (existing?.isFile() && existing.size === buffer.byteLength) {
+  if (existing?.isFile() && existing.size === (await fs.promises.stat(sourcePath)).size) {
     const now = new Date();
     await fs.promises.utimes(absPath, now, now).catch(() => undefined);
   } else {
     await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(absPath, buffer);
+    await fs.promises.copyFile(sourcePath, absPath);
   }
   return { absPath, originalName, mimeType: mimeTypeForFilename(originalName) };
+}
+
+function resourceIdentity(type: string, id: string): string {
+  return JSON.stringify([type, id]);
 }
 
 /** 尽力回收 7 天未再被引用的群上下文文件；失败静默，下次再试。 */

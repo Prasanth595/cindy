@@ -35,7 +35,14 @@ class FakeStream implements DwsStreamProcess {
   }
 }
 
-type Download = { localPath: string; bytes: Uint8Array; resourceId: string; messageId: string };
+type Download = {
+  localPath: string;
+  bytes: Uint8Array;
+  resourceId: string;
+  messageId: string;
+  resourceType?: string;
+  fileSize?: number;
+};
 
 function setup(
   options: {
@@ -44,6 +51,7 @@ function setup(
     mgetError?: boolean;
     filesDir?: string;
     history?: Array<Record<string, unknown>>;
+    mgetMessages?: Array<Record<string, unknown>>;
   } = {},
 ) {
   const secrets = new Map<string, string>([['dingtalk-dws-enabled', '1']]);
@@ -102,15 +110,16 @@ function setup(
           const target = path.join(opts!.cwd!, download.localPath);
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, download.bytes);
+          if (download.fileSize) fs.truncateSync(target, download.fileSize);
         }
         return {
-          messages: [],
+          messages: options.mgetMessages ?? [],
           resourceDownloads: {
             downloads: (options.downloads ?? []).map((d) => ({
               localPath: d.localPath,
               resourceId: d.resourceId,
               messageId: d.messageId,
-              resourceType: 'mediaId',
+              resourceType: d.resourceType ?? 'mediaId',
               sizeBytes: d.bytes.byteLength,
             })),
             failedCount: options.failedCount ?? 0,
@@ -416,5 +425,147 @@ describe('DingTalkDwsIM group context files', () => {
     expect(fs.existsSync(path.join(filesDir, 'context'))).toBe(false);
     fs.rmSync(filesDir, { recursive: true, force: true });
     await ctx.im.dispose();
+  });
+});
+
+describe('DingTalkDwsIM resource ownership from dws metadata', () => {
+  it.each(['', 'h1'])('associates a deduplicated file with every source message (ledger ID: %j)', async (messageId) => {
+    const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dws-resource-owners-'));
+    const history = ['h1', 'h2'].map((messageId) => ({
+      messageId, text: '[文件]', createTime: '2026-10-09 15:00:00',
+    }));
+    const ctx = setup({
+      filesDir, history,
+      mgetMessages: history.map((m) => ({
+        ...m, resourceRefs: [{ resourceId: 'file-1', resourceIdType: 'fileId', type: 'fileId' }],
+      })),
+      downloads: [{ localPath: 'downloads/log.zip', bytes: new Uint8Array([80, 75]), resourceId: 'file-1', resourceType: 'fileId', messageId }],
+    });
+    try {
+      const result = await ctx.im.fetchRecentGroupMessages('cid', 30, { withResources: 10 });
+      for (const message of result) {
+        expect(message.attachments).toEqual([expect.objectContaining({ kind: 'file', originalName: 'log.zip' })]);
+      }
+      expect(result[0].attachments[0].absPath).toBe(result[1].attachments[0].absPath);
+    } finally {
+      await ctx.im.dispose();
+      fs.rmSync(filesDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps resource ID types separate when their ID strings match', async () => {
+    const history = ['h1', 'h2'].map((messageId) => ({ messageId, text: '[图片]', createTime: '2026-10-09 15:00:00' }));
+    const ctx = setup({
+      history,
+      mgetMessages: [
+        { messageId: 'h1', resourceRefs: [{ resourceId: 'same-id', type: 'mediaId' }] },
+        { messageId: 'h2', resourceRefs: [{ resourceId: 'same-id', type: 'fileId' }] },
+      ],
+      downloads: [
+        { localPath: 'downloads/a.png', bytes: PNG, resourceId: 'same-id', resourceType: 'mediaId', messageId: '' },
+        { localPath: 'downloads/b.png', bytes: PNG, resourceId: 'same-id', resourceType: 'fileId', messageId: '' },
+      ],
+    });
+    try {
+      const result = await ctx.im.fetchRecentGroupMessages('cid', 30, { withResources: 10 });
+      expect(result[0].attachments).toEqual([expect.objectContaining({ url: 'cindy-media://blobs/1.png' })]);
+      expect(result[1].attachments).toEqual([expect.objectContaining({ url: 'cindy-media://blobs/2.png' })]);
+    } finally {
+      await ctx.im.dispose();
+    }
+  });
+
+  it('passes images above the old 20 MiB limit to the host media cache', async () => {
+    const fileSize = 20 * 1024 * 1024 + 1;
+    const ctx = setup({ downloads: [{ localPath: 'downloads/large.png', bytes: PNG, fileSize, resourceId: 'large-image', messageId: 'msg-img' }] });
+    try {
+      await connectAndPair(ctx);
+      ctx.streams[0].emit(ownerMessage());
+      await vi.waitFor(() => expect(ctx.messages).toHaveLength(1));
+      expect(ctx.messages[0].attachments).toHaveLength(1);
+      expect(ctx.messages[0].unsupported).toEqual([]);
+      expect(ctx.cached[0].size).toBe(fileSize);
+    } finally {
+      await ctx.im.dispose();
+    }
+  });
+
+  it('keeps a quoted resource separate from the sender even when both ledger message IDs are empty', async () => {
+    const ctx = setup({
+      mgetMessages: [
+        { messageId: 'msg-img', resourceRefs: [{ resourceId: 'own', type: 'mediaId' }] },
+        { messageId: 'msg-quoted', resourceRefs: [{ resourceId: 'quoted', type: 'mediaId' }] },
+      ],
+      downloads: [
+        { localPath: 'downloads/own.png', bytes: PNG, resourceId: 'own', messageId: '' },
+        { localPath: 'downloads/quoted.png', bytes: PNG, resourceId: 'quoted', messageId: '' },
+      ],
+    });
+    try {
+      await connectAndPair(ctx);
+      ctx.streams[0].emit(ownerMessage({ quoted_message: { message_id: 'msg-quoted', sender: '同事', content: '[图片]' } }));
+      await vi.waitFor(() => expect(ctx.messages).toHaveLength(1));
+      expect(ctx.messages[0].attachments).toEqual([expect.objectContaining({ url: 'cindy-media://blobs/1.png' })]);
+      expect(ctx.messages[0].replyAttachments).toEqual([expect.objectContaining({ url: 'cindy-media://blobs/2.png' })]);
+    } finally {
+      await ctx.im.dispose();
+    }
+  });
+
+  it('does not attribute an unknown resource to the sender when multiple messages were requested', async () => {
+    const ctx = setup({
+      mgetMessages: [{ messageId: 'not-requested', resourceRefs: [{ resourceId: 'unknown', type: 'mediaId' }] }],
+      downloads: [{ localPath: 'downloads/unknown.png', bytes: PNG, resourceId: 'unknown', messageId: '' }],
+    });
+    try {
+      await connectAndPair(ctx);
+      ctx.streams[0].emit(ownerMessage({ quoted_message: { message_id: 'msg-quoted', sender: '同事', content: '[图片]' } }));
+      await vi.waitFor(() => expect(ctx.messages).toHaveLength(1));
+      expect(ctx.messages[0].attachments).toEqual([]);
+      expect(ctx.messages[0].replyAttachments).toBeUndefined();
+    } finally {
+      await ctx.im.dispose();
+    }
+  });
+
+  it('retains unattributed resources for a single requested message', async () => {
+    const ctx = setup({ downloads: [{ localPath: 'downloads/own.png', bytes: PNG, resourceId: 'own', messageId: '' }] });
+    try {
+      await connectAndPair(ctx);
+      ctx.streams[0].emit(ownerMessage());
+      await vi.waitFor(() => expect(ctx.messages).toHaveLength(1));
+      expect(ctx.messages[0].attachments).toHaveLength(1);
+    } finally {
+      await ctx.im.dispose();
+    }
+  });
+
+  it.each(['direct', 'history'])('accepts a file above both old 20/50 MiB limits in %s messages', async (mode) => {
+    const filesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dws-large-file-'));
+    const fileSize = 51 * 1024 * 1024;
+    const ctx = setup({
+      filesDir,
+      history: [{ messageId: 'msg-img', text: '[文件]', createTime: '2026-10-09 15:00:00' }],
+      downloads: [{ localPath: 'downloads/large.log', bytes: new Uint8Array([65]), fileSize, resourceId: 'large-file', resourceType: 'fileId', messageId: 'msg-img' }],
+    });
+    try {
+      let attachments;
+      if (mode === 'direct') {
+        await connectAndPair(ctx);
+        ctx.streams[0].emit(ownerMessage());
+        await vi.waitFor(() => expect(ctx.messages).toHaveLength(1));
+        expect(ctx.messages[0].unsupported).toEqual([]);
+        attachments = ctx.messages[0].attachments;
+      } else {
+        const result = await ctx.im.fetchRecentGroupMessages('cid', 30, { withResources: 10 });
+        attachments = result[0].attachments;
+      }
+      expect(attachments).toHaveLength(1);
+      expect(fs.statSync(attachments[0].absPath).size).toBe(fileSize);
+      expect(ctx.cached).toHaveLength(0);
+    } finally {
+      await ctx.im.dispose();
+      fs.rmSync(filesDir, { recursive: true, force: true });
+    }
   });
 });
