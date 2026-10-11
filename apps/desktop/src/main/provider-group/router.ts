@@ -5,7 +5,11 @@
  * 分配结果写回任务记录(`sessions.agent_device_id` / `provider_id`)：选中别的电脑后，这个任务就是
  * 普通的远程 Agent 任务，复用现有的整条链路，不改协议。
  *
- * 冷却、轮询游标与「这一轮已试过」只在本次运行内有效，不落盘；重启后按组内电脑的实时状态重新判断。
+ * 组内电脑的状态以本机(组所在电脑)为准(2026-10-11 用户确认)：本机读到的在线、供应商、模型、负载，加上那台账号的问题
+ * (用量上限、登录失效、服务繁忙)记下的冷却，同步给所有使用方，使用方按它筛选；使用方自己那边的问题(连不上、版本不配等)
+ * 不记进组里。状态有延迟时使用方试过不行就换下一台，带着这一轮试过的来选时本机现读最新状态。
+ *
+ * 冷却按账号落盘(coolingStore.ts)，重启后照样避开；轮询游标与「这一轮已试过」只在本次运行内有效。
  */
 import { findCatalogModel, isModelSelectableForNewRoute } from '@cindy/model-providers';
 import type { AgentKind } from '@cindy/maker-core';
@@ -24,6 +28,15 @@ export const PROVIDER_GROUP_FAILURE_COOLDOWN_MS = 2 * 60_000;
  */
 export const PROVIDER_GROUP_TURN_WINDOW_MS = 30 * 60_000;
 
+/**
+ * 选电脑时等组内电脑状态的时间：到点已经有一台能接的就不再等更慢的那几台(那几台这次按不能用算，读取照常在后台
+ * 完成、留在缓存里)；一台能接的都还没有时照旧等全部读完，不会因为慢就误报都不能用。
+ */
+export const PROVIDER_GROUP_PICK_QUICK_MS = 3_000;
+
+/** 落盘的冷却：供应商 → 组内电脑 → 冷却到何时(unix ms)。 */
+export type ProviderGroupPersistedCooling = Record<string, Record<string, number>>;
+
 export interface ProviderGroupRouterDeps {
   directory: ProviderGroupDirectory;
   readGroup(providerId: string): ProviderGroupConfig | null;
@@ -35,6 +48,11 @@ export interface ProviderGroupRouterDeps {
    * 不提供 = 只算本机任务。
    */
   externalRunning?(providerId: string, memberKey: string): number;
+  /** 冷却的落盘位置；不提供 = 只在本次运行内有效。 */
+  coolingStore?: {
+    read(): ProviderGroupPersistedCooling;
+    write(value: ProviderGroupPersistedCooling): void;
+  };
   now(): number;
   random(): number;
 }
@@ -44,12 +62,22 @@ export interface ProviderGroupPickInput {
   agentKind: AgentKind;
   model: string;
   exclude?: ReadonlySet<string>;
+  /** 现读组内电脑的最新状态，不用短时缓存(试过不行、带着这一轮试过的来选时)。 */
+  fresh?: boolean;
   /**
    * 选中后在同一步(读负载与选电脑之间没有等待)调用，用来立即记上占用：同时来的几个请求各自读到前一个的
    * 占用，不会全落到同一台。
    */
   onPicked?(memberKey: string): void;
+  /**
+   * 本机任务：选中的同一步给这个任务记上临时占用(PROVIDER_GROUP_LOCAL_PROVISIONAL_MS)，直到它开始运行一轮
+   * (之后按运行中的绑定计)。本机同时开的几个任务不会读到同一份负载、全落到同一台。
+   */
+  reserveFor?: string;
 }
+
+/** 本机任务选中后、开始运行一轮之前的临时占用时长(与同账号电脑选中后的临时占用相同)。 */
+export const PROVIDER_GROUP_LOCAL_PROVISIONAL_MS = 30_000;
 
 export type ProviderGroupPickResult =
   | { kind: 'none' }
@@ -76,8 +104,36 @@ function coolKey(providerId: string, memberKey: string): string {
 
 export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): ProviderGroupRouter {
   const cooling = new Map<string, number>();
+  try {
+    for (const [providerId, members] of Object.entries(deps.coolingStore?.read() ?? {})) {
+      for (const [memberKey, until] of Object.entries(members)) {
+        if (until > deps.now()) cooling.set(coolKey(providerId, memberKey), until);
+      }
+    }
+  } catch {
+    // 读不到落盘的冷却：按没有冷却开始，之后撞上的照常记。
+  }
+
+  function persistCooling(): void {
+    if (!deps.coolingStore) return;
+    const now = deps.now();
+    const value: ProviderGroupPersistedCooling = {};
+    for (const [key, until] of cooling) {
+      if (until <= now) continue;
+      const split = key.indexOf('\u0000');
+      (value[key.slice(0, split)] ??= {})[key.slice(split + 1)] = until;
+    }
+    try {
+      deps.coolingStore.write(value);
+    } catch {
+      // 落盘失败只影响重启后的记忆，本次运行照常避开。
+    }
+  }
+
   const lastPicked = new Map<string, string>();
   const tried = new Map<string, { at: number; keys: Set<string> }>();
+  /** 本机任务刚选中、还没开始运行一轮的临时占用：任务 id → 那台。 */
+  const provisional = new Map<string, { providerId: string; memberKey: string; until: number }>();
 
   function currentTried(sessionId: string): Set<string> | null {
     const entry = tried.get(sessionId);
@@ -107,6 +163,15 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         count++;
       }
     }
+    const now = deps.now();
+    for (const [sessionId, entry] of provisional) {
+      // 已经开始运行一轮的按上面的绑定计，不重复计；过期的放掉(没能启动等)。
+      if (entry.until <= now || deps.isTurnRunning(sessionId)) {
+        provisional.delete(sessionId);
+        continue;
+      }
+      if (entry.providerId === providerId && entry.memberKey === memberKey) count++;
+    }
     return count + (deps.externalRunning?.(providerId, memberKey) ?? 0);
   }
 
@@ -131,10 +196,19 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
     async pick(input) {
       const config = deps.readGroup(input.providerId);
       if (!config) return { kind: 'none' };
-      const resolved = await deps.directory.resolveMembers(input.providerId, config);
+      const usable = (r: ResolvedProviderGroupMember) =>
+        offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null;
+      const resolved = await deps.directory.resolveMembers(input.providerId, config, {
+        quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
+        // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
+        enough: (r) => usable(r)
+          && !r.member.paused
+          && !input.exclude?.has(r.member.key),
+        ...(input.fresh ? { fresh: true } : {}),
+      });
       const schedulable: SchedulableMember[] = resolved.map((r) => ({
         key: r.member.key,
-        usable: offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null,
+        usable: usable(r),
         paused: r.member.paused,
         running: memberRunning(input.providerId, r),
         limit: r.member.limit,
@@ -147,6 +221,13 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       });
       if (!key) return { kind: 'unavailable', resolved };
       lastPicked.set(input.providerId, key);
+      if (input.reserveFor) {
+        provisional.set(input.reserveFor, {
+          providerId: input.providerId,
+          memberKey: key,
+          until: deps.now() + PROVIDER_GROUP_LOCAL_PROVISIONAL_MS,
+        });
+      }
       input.onPicked?.(key);
       const chosen = resolved.find((r) => r.member.key === key)!;
       return { kind: 'member', member: chosen.member, label: chosen.label, resolved };
@@ -193,6 +274,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
     markCooling(providerId, memberKey, until) {
       const key = coolKey(providerId, memberKey);
       cooling.set(key, Math.max(cooling.get(key) ?? 0, until));
+      persistCooling();
     },
 
     coolingUntil,

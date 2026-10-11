@@ -289,6 +289,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
           models: await Promise.all((record?.models ?? []).map(async (model) => ({
             kind: model.kind,
             providerId: model.providerId,
+            memberKey: model.memberKey,
             model: model.model,
             turns: model.turns,
             inputTokens: model.inputTokens,
@@ -305,7 +306,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
 
 /** 这个供应商按使用方的用量：本机与同账号的其他电脑(provider-groups.md §7)。只读本机账本，不经分享服务。 */
 async function ownUsage(providerId: string, range: ProviderShareUsageRange): Promise<ProviderOwnUsageView> {
-  const { local, devices } = currentProviderPartyUsageStore().query(providerId, range);
+  const { local, devices, relays } = currentProviderPartyUsageStore().query(providerId, range);
   const lastKnownNames = readLastKnownDeviceNames();
   const view = async (party: ProviderPartyUsage): Promise<ProviderPartyUsageView> => ({
     deviceId: party.deviceId,
@@ -316,6 +317,7 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
     models: await Promise.all(party.models.map(async (model) => ({
       kind: model.kind,
       providerId,
+      memberKey: model.memberKey,
       model: model.model,
       turns: model.turns,
       inputTokens: model.inputTokens,
@@ -329,6 +331,7 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
     providerId,
     local: local ? await view(local) : null,
     devices: await Promise.all(devices.map(view)),
+    relays: await Promise.all(relays.map(view)),
   };
 }
 

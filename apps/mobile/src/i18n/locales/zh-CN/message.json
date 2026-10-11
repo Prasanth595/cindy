@@ -272,7 +272,8 @@
         "usage-limit": "{{from}} 撞到用量上限，已换到 {{to}} 继续",
         "auth": "{{from}} 登录已失效，已换到 {{to}} 继续",
         "unavailable": "{{from}} 连不上，已换到 {{to}} 继续",
-        "overload": "{{from}} 的服务繁忙，已换到 {{to}} 继续"
+        "overload": "{{from}} 的服务繁忙，已换到 {{to}} 继续",
+        "failed": "{{from}} 出了问题，已换到 {{to}} 继续"
       },
       "agentReconnect": {
         "named": "已重新连上 {{computer}}，继续运行",

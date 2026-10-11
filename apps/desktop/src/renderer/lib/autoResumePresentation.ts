@@ -60,7 +60,7 @@ export function readAutoResumeInfo(data?: Record<string, unknown>): AutoResumeCa
   };
 }
 
-const AGENT_SWITCH_CAUSES: readonly AutoResumeAgentSwitchCause[] = ['usage-limit', 'auth', 'unavailable', 'overload'];
+const AGENT_SWITCH_CAUSES: readonly AutoResumeAgentSwitchCause[] = ['usage-limit', 'auth', 'unavailable', 'overload', 'failed'];
 
 function readAgentSwitch(value: unknown): AutoResumeAgentSwitch | null {
   if (!value || typeof value !== 'object') return null;

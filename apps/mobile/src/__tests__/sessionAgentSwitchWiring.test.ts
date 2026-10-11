@@ -13,7 +13,9 @@ describe('new task remote Agent wiring', () => {
     // 位置时协同草稿与之不互斥,旧被控电脑仍互斥。
     expect(source).toContain('const remoteAgentCatalogs = useRemoteAgentCatalogs({');
     expect(source).toContain('...(remoteAgentSupported && (!collabDraft || workerAgentLocationSupported)');
-    expect(source).toContain('remote: { catalogs: remoteAgentCatalogs, selectedDeviceId: remoteAgentPick?.deviceId ?? null }');
+    expect(source).toContain('catalogs: remoteAgentCatalogs,\n                selectedDeviceId: remoteAgentPick?.deviceId ?? null,');
+    // 供应商组:组里其他电脑收进组那一项(按被控电脑的目录比)。
+    expect(source).toContain('hostDeviceId: selectedDeviceId,');
     expect(source).toContain('&& (remoteAgentPick === null || workerAgentLocationSupported);');
     expect(source).toContain('&& capabilities?.supportsOrcaWorkerAgentDevice === true;');
     // 选中远程行单独记;选本机行清掉。
@@ -80,8 +82,14 @@ describe('session Agent switch UI wiring', () => {
     expect(source).toContain("Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId')");
     // 模型列表另列其他电脑的供应商,选中态跟着下一条消息时 Agent 所在的电脑。
     expect(source).toContain(
-      '? { remote: { catalogs: remoteAgentCatalogs, selectedDeviceId: nextAgentDeviceId } }',
+      'catalogs: remoteAgentCatalogs,\n                    selectedDeviceId: nextAgentDeviceId,',
     );
+    // 供应商组:归组的任务在组那一项里选模型留在此刻运行的那台;挂着换电脑的意图时不按组显示。
+    expect(source).toContain('providerGroup: remoteProviderGroup,');
+    expect(source).toContain(
+      'enabled: agentLocationMovable && modelSheetOpen && !intentChangesAgentLocation(agentSwitchIntent),',
+    );
+    expect(source).toContain('running: { deviceId: currentAgentDeviceId, providerId: currentProviderId },');
     // 顶部常驻说明已去掉,由换电脑前的二次确认代替。
     expect(source).not.toContain('notice={agentLocationNotice}');
 

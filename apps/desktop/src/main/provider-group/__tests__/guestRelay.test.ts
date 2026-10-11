@@ -80,15 +80,56 @@ describe('provider group guest relay planner', () => {
     expect((await env.relay.plan(PLAN))).toMatchObject({ memberKey: MINI.key });
   });
 
-  it('cools a computer that failed to start for a reason of its own', async () => {
+  it('cools a computer only for problems with its account, not when it cannot be reached', async () => {
     const env = setup([MINI]);
-    env.relay.noteStartFailure('anthropic', { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true },
-      new Error('prompt is too long'));
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    env.relay.noteStartFailure('anthropic', mini, new Error('prompt is too long'));
+    // 连不上不记进组的状态(状态以组所在电脑读到的为准)：下次选电脑时现读那台。
+    env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] gone'));
     expect(env.router.markCooling).not.toHaveBeenCalled();
-    env.relay.noteStartFailure('anthropic', { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true },
-      new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] gone'));
+    env.relay.noteStartFailure('anthropic', mini, new Error('401 unauthorized'));
     expect(env.router.markCooling).toHaveBeenCalledWith('anthropic', MINI.key, expect.any(Number));
     expect(env.router.markCooling.mock.calls[0][2]).toBeLessThan(1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+  });
+
+  it.each(['INVALID_PARAMS', 'SESSION_RUNNING', 'PRECONDITION_FAILED', 'NOT_FOUND', 'UNSUPPORTED_CAPABILITY', 'WORKDIR_MISSING'])(
+    '启动阶段的任务级 %s 错误原样返回，不换电脑也不冷却', (code) => {
+      const env = setup([MINI, FRIEND]);
+      const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+      expect(env.relay.noteStartFailure('anthropic', mini, new Error(`[${code}] task cannot start`))).toBe(false);
+      expect(env.router.markCooling).not.toHaveBeenCalled();
+    },
+  );
+
+  it('成员能力差异仍允许换电脑，组已删除或成员已移出时停止', () => {
+    const env = setup([MINI, FRIEND]);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_PEER_TOO_OLD] old'))).toBe(true);
+    expect(env.relay.noteStartFailure('anthropic', { ...mini, sameAccount: false }, new Error('[REMOTE_AGENT_MODEL_UNAVAILABLE] model'))).toBe(true);
+    expect(env.relay.noteStartFailure('openai', mini, new Error('agent failed'))).toBe(false);
+    expect(env.relay.noteStartFailure('anthropic', { ...mini, memberKey: 'device:gone:anthropic' }, new Error('401 unauthorized'))).toBe(false);
+    expect(env.router.markCooling).not.toHaveBeenCalled();
+  });
+
+  it('关闭自动换电脑后，本机、远端启动和兼容失败都不切换，账号问题仍冷却', () => {
+    const env = setup([LOCAL, MINI, FRIEND], { ...CONFIG, autoSwitch: false });
+    for (const picked of [LOCAL, MINI, FRIEND]) {
+      const target = { memberKey: picked.key, agentDeviceId: picked.agentDeviceId ?? 'owner', providerId: picked.providerId, sameAccount: picked.kind === 'device' };
+      expect(env.relay.noteStartFailure('anthropic', target, new Error('agent failed'))).toBe(false);
+      expect(env.relay.noteStartFailure('anthropic', target, new Error('401 unauthorized'))).toBe(false);
+    }
+    expect(env.router.markCooling).toHaveBeenCalledTimes(3);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_PEER_TOO_OLD] old'))).toBe(false);
+    expect(env.router.markCooling).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads the latest state when choosing again after a computer did not work', async () => {
+    const env = setup([MINI, FRIEND]);
+    await env.relay.plan(PLAN);
+    expect(env.router.pick.mock.calls[0][0].fresh).toBeUndefined();
+    await env.relay.plan({ ...PLAN, exclude: new Set([MINI.key]) });
+    expect(env.router.pick.mock.calls[1][0]).toMatchObject({ fresh: true });
   });
 
   it('cools a computer whose relayed task failed mid-run for a reason of its own', () => {
@@ -99,13 +140,24 @@ describe('provider group guest relay planner', () => {
     expect(env.router.markCooling).not.toHaveBeenCalled();
     expect(env.relay.noteRunFailure('anthropic', mini, { usageLimit: true, message: 'usage limit' })).toBe(true);
     expect(env.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    // 连不上：照常换一台，但不记进组的状态。
+    const cooled = env.router.markCooling.mock.calls.length;
     expect(env.relay.noteRunFailure('anthropic', mini, { reason: 'remote_agent_closed' })).toBe(true);
-    expect(env.router.markCooling.mock.calls.at(-1)?.[2]).toBeLessThan(1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(env.router.markCooling.mock.calls.length).toBe(cooled);
     // 没有组的供应商，或那台已被移出组：不冷却、不换(成为普通的远程 Agent 任务)。
     const calls = env.router.markCooling.mock.calls.length;
     expect(env.relay.noteRunFailure('openai', mini, { usageLimit: true })).toBe(false);
     expect(env.relay.noteRunFailure('anthropic', { ...mini, memberKey: 'device:gone:anthropic' }, { usageLimit: true })).toBe(false);
     expect(env.router.markCooling.mock.calls.length).toBe(calls);
+  });
+
+  it('does not switch or cool a member when Claude reaches its output limit', () => {
+    const env = setup([MINI, FRIEND]);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteRunFailure('anthropic', mini, {
+      sdkError: 'max_output_tokens', message: 'SDK request failed',
+    })).toBe(false);
+    expect(env.router.markCooling).not.toHaveBeenCalled();
   });
 
   it('cools until the reported reset time, trusting it at most 8 days', () => {

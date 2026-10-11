@@ -453,7 +453,9 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
           data: {
             message: message ?? `[REMOTE_AGENT_UNAVAILABLE] The agent on the other computer stopped (${reason}).`,
             isTerminal: true,
-            reason: 'remote_agent_closed',
+            // 拉不到那台(连续 2 分钟)只说明连接断了，那台本身可能没事：供应商组先等它恢复、恢复了留在原电脑继续；
+            // 其余(对方出错收尾、撤权、流不可信等)是那台那边的问题(provider-group/failurePolicy)。
+            reason: reason === 'unreachable' ? 'remote_agent_lost' : 'remote_agent_closed',
           },
           source: started.agentKind,
         });

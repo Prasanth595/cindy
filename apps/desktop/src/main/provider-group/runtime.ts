@@ -3,7 +3,8 @@
  * 这样设置页看到的「正在运行 / 冷却中」与实际分配一致。
  *
  * 目录缓存、冷却、轮询位置都属于当前账号：换账号后另起一份，旧账号还在路上的远端读取只落进旧的那份，
- * 新账号看不到旧账号的电脑与冷却。调用方拿到的是固定的门面，每次调用按当前账号转发。
+ * 新账号看不到旧账号的电脑与冷却。冷却按账号落盘(coolingStore.ts)，新起的那份先读回来。
+ * 调用方拿到的是固定的门面，每次调用按当前账号转发。
  */
 import type { ProviderView } from '@cindy/model-providers';
 
@@ -17,6 +18,7 @@ import { deviceName } from '../device-link/deviceName.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { listProviderGroupBindings } from './bindings.js';
+import { readProviderGroupCooling, writeProviderGroupCooling } from './coolingStore.js';
 import { createProviderGroupDirectory, type ProviderGroupDirectory } from './directory.js';
 import { createProviderGroupExternalLoad, type ProviderGroupExternalLoad } from './externalLoad.js';
 import { createProviderGroupRemoteClient, type ProviderGroupRemoteClient } from './remoteClient.js';
@@ -56,6 +58,13 @@ function runtimeForActiveOwner(): OwnerRuntime {
     listBindings: listProviderGroupBindings,
     isTurnRunning: (sessionId) => isTurnRunning(sessionId),
     externalRunning: (providerId, memberKey) => externalLoad.running(providerId, memberKey),
+    coolingStore: {
+      read: readProviderGroupCooling,
+      // 换账号后旧账号那份还在路上的写入不落进新账号的文件。
+      write: (value) => {
+        if (activeOwnerScopeKey() === owner) writeProviderGroupCooling(value);
+      },
+    },
     now: () => Date.now(),
     random: () => Math.random(),
   });
@@ -64,11 +73,12 @@ function runtimeForActiveOwner(): OwnerRuntime {
 }
 
 const directoryFacade: ProviderGroupDirectory = {
-  resolveMembers: (providerId, config) => runtimeForActiveOwner().directory.resolveMembers(providerId, config),
+  resolveMembers: (providerId, config, options) => runtimeForActiveOwner().directory.resolveMembers(providerId, config, options),
   listCandidates: (providerId, config) => runtimeForActiveOwner().directory.listCandidates(providerId, config),
   readDeviceCatalog: (agentDeviceId) => runtimeForActiveOwner().directory.readDeviceCatalog(agentDeviceId),
   probe: (agentDeviceId, providerId) => runtimeForActiveOwner().directory.probe(agentDeviceId, providerId),
   memberLabel: (member) => runtimeForActiveOwner().directory.memberLabel(member),
+  offlineForMs: async (agentDeviceId) => (await runtimeForActiveOwner().directory.offlineForMs?.(agentDeviceId)) ?? null,
   invalidate: (agentDeviceId) => runtimeForActiveOwner().directory.invalidate(agentDeviceId),
 };
 

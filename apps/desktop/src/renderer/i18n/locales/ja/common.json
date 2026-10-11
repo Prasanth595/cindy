@@ -402,9 +402,28 @@
     },
     "usage": {
       "title": "使用量",
-      "description": "{{provider}} の使用量を利用者ごとに表示します。このパソコンとほかのパソコンの分は、今回のアップデートから記録します。",
+      "description": "{{provider}} の使用量を人ごとに表示します。あなた自身の分は、今回のアップデートから記録します。",
       "shareSource": "共有相手",
-      "unknownDevice": "別のパソコン"
+      "unknownDevice": "別のパソコン",
+      "descriptionGroup": "{{provider}} の使用量を人ごとに表示します。展開すると、グループ内のパソコンごとに分けて表示します。あなた自身の分は、今回のアップデートから記録します。",
+      "summary": {
+        "total": "合計使用量",
+        "amount": "推定金額",
+        "people": "利用者",
+        "models": "モデル"
+      },
+      "selfTag": "あなた",
+      "relayName": "{{device}} 経由",
+      "computerCount_other": "{{count}} 台のパソコン",
+      "lastUsedOn": "{{lastUsed}} · {{computers}}で利用",
+      "unattributed": "以前の記録",
+      "unattributedSource": "パソコンを区別せずに記録",
+      "removedMember": "グループから外したパソコン",
+      "expandAria": "{{name}} の使用量の内訳を表示",
+      "collapseAria": "{{name}} の使用量の内訳を閉じる",
+      "table": {
+        "member": "パソコン / モデル"
+      }
     },
     "section": {
       "title": "プロバイダーグループ",
@@ -461,6 +480,7 @@
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
         "offline": "オフライン",
+        "unreachableHere": "このパソコンから接続できません",
         "unavailable": {
           "provider-off": "そのパソコンでこのプロバイダーの「リモート利用を許可」がオフです",
           "disconnected": "プロバイダーが未接続か無効です",
@@ -10871,7 +10891,8 @@
           "usage-limit": "{{from}} が使用量の上限に達したため、{{to}} で続行しました",
           "auth": "{{from}} のログインが切れたため、{{to}} で続行しました",
           "unavailable": "{{from}} に接続できないため、{{to}} で続行しました",
-          "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました"
+          "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました",
+          "failed": "{{from}} で問題が起きたため、{{to}} で続行しました"
         },
         "agentReconnect": {
           "named": "{{computer}} に再接続し、続行しました",

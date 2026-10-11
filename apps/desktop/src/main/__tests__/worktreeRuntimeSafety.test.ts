@@ -161,6 +161,45 @@ describe('worktree runtime evidence and physical locks', () => {
     expect(await fs.readFile(file, 'utf8')).toBe(change === 'edited' ? 'keep my checkout' : lease.keepSentinel!.content);
   });
 
+  it('distinguishes exact file IDs that collide as Numbers when creation time is inherited', async () => {
+    const lease = await seedLegacyLease();
+    const oldIno = 9_007_199_254_740_992n;
+    const replacementIno = oldIno + 1n;
+    expect(Number(oldIno)).toBe(Number(replacementIno));
+    const lstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
+      const identity = await lstat(...args);
+      if (args[0] === gitLock) Object.assign(identity, { dev: 1n, ino: replacementIno, birthtimeNs: 42_000_000n });
+      return identity;
+    });
+    await releaseWorktreeRuntimeLease({
+      ...lease, keepSentinel: { ...lease.keepSentinel!, identity: `bigint:1:${oldIno}:42000000` },
+    });
+    expect(await hasGitLock()).toBe(true);
+    expect(await fs.readFile(gitLock, 'utf8')).toBe(lease.keepSentinel!.content);
+  });
+
+  it.each([
+    { label: 'matching safe legacy ID', recordedIno: 123, observedIno: 123, preserved: false },
+    { label: 'replaced safe legacy ID', recordedIno: 123, observedIno: 124, preserved: true },
+    { label: 'rounded legacy ID', recordedIno: 2 ** 53, observedIno: 2 ** 53, preserved: true },
+    { label: 'missing legacy ID', recordedIno: 0, observedIno: 0, preserved: true },
+  ])('releases old receipts only with unambiguous ownership: $label', async ({ recordedIno, observedIno, preserved }) => {
+    const lease = await seedLegacyLease();
+    const lstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (...args) => {
+      const identity = await lstat(...args);
+      if (args[0] === gitLock) Object.assign(identity, { dev: 1, ino: observedIno, birthtimeMs: 42 });
+      return identity;
+    });
+    await releaseWorktreeRuntimeLease({
+      ...lease, keepSentinel: { ...lease.keepSentinel!, identity: `1:${recordedIno}:42` },
+    });
+    expect(await hasGitLock()).toBe(preserved);
+    if (preserved) expect(await fs.readFile(gitLock, 'utf8')).toBe(lease.keepSentinel!.content);
+    await expect(fs.stat(lease.file)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('does not remove legacy protection when another borrower crashes', async () => {
     const crashed = await seedLegacyLease();
     const active = await seedLegacyLease();

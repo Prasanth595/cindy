@@ -272,7 +272,8 @@
         "usage-limit": "{{from}} hit its usage limit; continued on {{to}}",
         "auth": "{{from}} is signed out; continued on {{to}}",
         "unavailable": "Couldn’t reach {{from}}; continued on {{to}}",
-        "overload": "{{from}} was overloaded; continued on {{to}}"
+        "overload": "{{from}} was overloaded; continued on {{to}}",
+        "failed": "{{from}} ran into a problem; continued on {{to}}"
       },
       "agentReconnect": {
         "named": "Reconnected to {{computer}}; continued there",

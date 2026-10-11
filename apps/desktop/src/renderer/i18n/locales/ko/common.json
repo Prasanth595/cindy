@@ -402,9 +402,28 @@
     },
     "usage": {
       "title": "사용량",
-      "description": "{{provider}} 사용량을 사용한 곳별로 보여 줍니다. 이 컴퓨터와 내 다른 컴퓨터는 이번 업데이트부터 기록합니다.",
+      "description": "{{provider}} 사용량을 사람별로 보여 줍니다. 내 사용량은 이번 업데이트부터 기록합니다.",
       "shareSource": "공유한 사람",
-      "unknownDevice": "다른 컴퓨터"
+      "unknownDevice": "다른 컴퓨터",
+      "descriptionGroup": "{{provider}} 사용량을 사람별로 보여 줍니다. 펼치면 그룹 안의 컴퓨터별로 나눠 보여 줍니다. 내 사용량은 이번 업데이트부터 기록합니다.",
+      "summary": {
+        "total": "총 사용량",
+        "amount": "예상 금액",
+        "people": "사용자",
+        "models": "모델"
+      },
+      "selfTag": "나",
+      "relayName": "{{device}} 경유",
+      "computerCount_other": "컴퓨터 {{count}}대",
+      "lastUsedOn": "{{lastUsed}} · {{computers}}에서 사용",
+      "unattributed": "이전 기록",
+      "unattributedSource": "컴퓨터를 구분하지 않고 기록",
+      "removedMember": "그룹에서 뺀 컴퓨터",
+      "expandAria": "{{name}}의 사용량 내역 펼치기",
+      "collapseAria": "{{name}}의 사용량 내역 접기",
+      "table": {
+        "member": "컴퓨터 / 모델"
+      }
     },
     "section": {
       "title": "제공자 그룹",
@@ -461,6 +480,7 @@
         "cooling": "대기 중",
         "coolingUntil": "대기 중 · {{time}}쯤 복구",
         "offline": "오프라인",
+        "unreachableHere": "이 컴퓨터에서 연결할 수 없음",
         "unavailable": {
           "provider-off": "그 컴퓨터에서 이 제공자의 원격 사용 허용이 꺼져 있습니다",
           "disconnected": "제공자가 연결되지 않았거나 꺼져 있습니다",
@@ -10871,7 +10891,8 @@
           "usage-limit": "{{from}}이(가) 사용량 한도에 도달해 {{to}}에서 이어서 진행했습니다",
           "auth": "{{from}}의 로그인이 만료되어 {{to}}에서 이어서 진행했습니다",
           "unavailable": "{{from}}에 연결할 수 없어 {{to}}에서 이어서 진행했습니다",
-          "overload": "{{from}}의 서비스가 혼잡해 {{to}}에서 이어서 진행했습니다"
+          "overload": "{{from}}의 서비스가 혼잡해 {{to}}에서 이어서 진행했습니다",
+          "failed": "{{from}}에서 문제가 생겨 {{to}}에서 이어서 진행했습니다"
         },
         "agentReconnect": {
           "named": "{{computer}}에 다시 연결되어 이어서 진행했습니다",

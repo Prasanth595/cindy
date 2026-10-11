@@ -688,6 +688,25 @@ it.each(['failed', 'cancelled', 'retrying'] as const)('shows %s consistently in 
   expect(card()!.textContent).toContain('40');
 });
 
+it.each([
+  { label: 'switching computers' },
+  { label: 'reconnecting', attempt: 2, maxAttempts: 5 },
+])('keeps $label above a retained failure and slow-send status without token metadata', async (pendingRecovery) => {
+  const responseSpeed: ResponseSpeedSnapshot = {
+    phase: 'complete', outcome: 'failed', waitOrigin: 'turn', firstResponseMs: 1000,
+    waitingMs: 0, durationMs: 2000, outputTokens: 80, estimated: true,
+    recentRate: null, averageRate: 40, samples: [], sampledAt: Date.now(),
+  };
+  await act(async () => root.render(createElement(ActivityStatus, {
+    ...base, visible: false, tokenUsage: 500, sideTaskRunning: false, reconnectAttempt: null,
+    responseSpeed, slowSendPhase: 'sending', pendingRecovery,
+  })));
+  const progress = pendingRecovery.attempt ? `${pendingRecovery.attempt}/${pendingRecovery.maxAttempts}` : '';
+  expect(host.textContent).toBe(pendingRecovery.label + progress);
+  expect(host.querySelector('[data-testid="session.composerActivityPill"]')).not.toBeNull();
+  expect(host.querySelector('[data-testid="session.tokenRate.trigger"]')).toBeNull();
+});
+
 it('keeps a slow new-task send in the activity row, then continues as thinking', async () => {
   const show = async (slowSendPhase: string | null) => act(async () => root.render(createElement(ActivityStatus, {
     ...base, visible: true, tokenUsage: 0, sideTaskRunning: false, reconnectAttempt: null, slowSendPhase,

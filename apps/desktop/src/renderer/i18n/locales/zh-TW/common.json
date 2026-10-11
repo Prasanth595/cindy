@@ -402,9 +402,28 @@
     },
     "usage": {
       "title": "用量",
-      "description": "依使用方統計 {{provider}} 的用量。本機與我的其他電腦從這次更新後開始記錄。",
+      "description": "依人統計 {{provider}} 的用量。你自己的用量從這次更新後開始記錄。",
       "shareSource": "分享的人",
-      "unknownDevice": "另一台電腦"
+      "unknownDevice": "另一台電腦",
+      "descriptionGroup": "依人統計 {{provider}} 的用量，展開後依組內每台電腦分開。你自己的用量從這次更新後開始記錄。",
+      "summary": {
+        "total": "總用量",
+        "amount": "估算金額",
+        "people": "使用方",
+        "models": "模型"
+      },
+      "selfTag": "你",
+      "relayName": "經 {{device}} 轉來",
+      "computerCount_other": "{{count}} 台電腦",
+      "lastUsedOn": "{{lastUsed}} · 用了 {{computers}}",
+      "unattributed": "更早的記錄",
+      "unattributedSource": "當時沒有區分電腦",
+      "removedMember": "已移出組",
+      "expandAria": "展開 {{name}} 的用量明細",
+      "collapseAria": "收起 {{name}} 的用量明細",
+      "table": {
+        "member": "組內電腦 / 模型"
+      }
     },
     "section": {
       "title": "供應商組",
@@ -461,6 +480,7 @@
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
+        "unreachableHere": "從這台電腦連不上",
         "unavailable": {
           "provider-off": "那臺電腦沒有對這個供應商開啟「允許遠端呼叫」",
           "disconnected": "供應商未連線或已停用",
@@ -10870,7 +10890,8 @@
           "usage-limit": "{{from}} 達到用量上限，已換到 {{to}} 繼續",
           "auth": "{{from}} 登入已失效，已換到 {{to}} 繼續",
           "unavailable": "{{from}} 連不上，已換到 {{to}} 繼續",
-          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續"
+          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續",
+          "failed": "{{from}} 出了問題，已換到 {{to}} 繼續"
         },
         "agentReconnect": {
           "named": "已重新連上 {{computer}}，繼續執行",

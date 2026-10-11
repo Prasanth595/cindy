@@ -272,7 +272,8 @@
         "usage-limit": "{{from}} が使用量の上限に達したため、{{to}} で続行しました",
         "auth": "{{from}} のログインが切れたため、{{to}} で続行しました",
         "unavailable": "{{from}} に接続できないため、{{to}} で続行しました",
-        "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました"
+        "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました",
+        "failed": "{{from}} で問題が起きたため、{{to}} で続行しました"
       },
       "agentReconnect": {
         "named": "{{computer}} に再接続し、続行しました",

@@ -1607,10 +1607,13 @@ function ModelSelectorContentView({
     };
   }, [readProviderGroup, remoteAgentDeviceId, currentProviderId]);
   // 归的组那一项此刻在列表里(组所在电脑在线、组还在)才按组显示；不然照常列出任务实际所在的那台。
+  // 任务所在电脑自己建的组：本机任务看本机设置，被控电脑上的任务看那台目录里的组摘要。
   const boundEntry = useMemo(() => {
     if (!boundGroup) return null;
     const visible = boundGroup.deviceId === null
-      ? !homeDeviceId && localProviderGroups[boundGroup.providerId] !== undefined
+      ? homeDeviceId
+        ? remoteProviderGroups.groups.has(remoteProviderEntryKey(homeDeviceId, boundGroup.providerId))
+        : localProviderGroups[boundGroup.providerId] !== undefined
       : remoteProviderGroups.groups.has(remoteProviderEntryKey(boundGroup.deviceId, boundGroup.providerId));
     return visible ? boundGroup : null;
   }, [boundGroup, homeDeviceId, localProviderGroups, remoteProviderGroups]);

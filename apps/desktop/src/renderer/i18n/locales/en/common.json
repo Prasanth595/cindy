@@ -404,9 +404,29 @@
     },
     "usage": {
       "title": "Usage",
-      "description": "{{provider}} usage by who used it. This computer and your other computers are counted from this update on.",
+      "description": "{{provider}} usage by person. Your own usage is counted from this update on.",
       "shareSource": "Shared with",
-      "unknownDevice": "Another computer"
+      "unknownDevice": "Another computer",
+      "descriptionGroup": "{{provider}} usage by person. Expand a row to see each computer in the group. Your own usage is counted from this update on.",
+      "summary": {
+        "total": "Total usage",
+        "amount": "Estimated cost",
+        "people": "People",
+        "models": "Models"
+      },
+      "selfTag": "You",
+      "relayName": "Via {{device}}",
+      "computerCount_one": "{{count}} computer",
+      "computerCount_other": "{{count}} computers",
+      "lastUsedOn": "{{lastUsed}} · on {{computers}}",
+      "unattributed": "Earlier usage",
+      "unattributedSource": "Computer not recorded",
+      "removedMember": "Removed from the group",
+      "expandAria": "Show usage details for {{name}}",
+      "collapseAria": "Hide usage details for {{name}}",
+      "table": {
+        "member": "Computer / model"
+      }
     },
     "section": {
       "title": "Provider Group",
@@ -465,6 +485,7 @@
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",
+        "unreachableHere": "Can’t reach it from this computer",
         "unavailable": {
           "provider-off": "“Allow remote use” is off for this provider on that computer",
           "disconnected": "Provider not connected or turned off",
@@ -10912,7 +10933,8 @@
           "usage-limit": "{{from}} hit its usage limit; continued on {{to}}",
           "auth": "{{from}} is signed out; continued on {{to}}",
           "unavailable": "Couldn’t reach {{from}}; continued on {{to}}",
-          "overload": "{{from}} was overloaded; continued on {{to}}"
+          "overload": "{{from}} was overloaded; continued on {{to}}",
+          "failed": "{{from}} ran into a problem; continued on {{to}}"
         },
         "agentReconnect": {
           "named": "Reconnected to {{computer}}; continued there",

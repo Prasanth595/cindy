@@ -83,3 +83,17 @@ describe('provider group held Worker terminals', () => {
     expect(deps.deliver).not.toHaveBeenCalled();
   });
 });
+
+describe('has', () => {
+  it('tells whether a Worker report is still held for that registration', () => {
+    const delivered: string[] = [];
+    const held = createProviderGroupHeldWorkerTerminals<string>({ deliver: (_id, t) => delivered.push(t), ownerKey: () => 'me' });
+    expect(held.has('w1', 1)).toBe(false);
+    held.stash('w1', 1, 'aborted');
+    expect(held.has('w1', 1)).toBe(true);
+    expect(held.has('w1', 2)).toBe(false);
+    held.discard('w1', 1);
+    expect(held.has('w1', 1)).toBe(false);
+    expect(delivered).toEqual([]);
+  });
+});

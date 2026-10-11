@@ -120,9 +120,12 @@ function MemberRow({
     : member.kind === 'device'
       ? t('providerGroup.member.sourceDevice')
       : t('providerGroup.member.sourceShare', { name: ownerName ?? '' });
-  const ready = status?.state === 'available' || status?.state === 'full';
+  // 组所在电脑看它能用，这台电脑却连不上(换电脑时会跳过它)：不显示成能用。
+  const unreachableHere = status?.unreachableHere === true;
+  const ready = !unreachableHere && (status?.state === 'available' || status?.state === 'full');
   const running = status?.running ?? 0;
-  const appendRunning = running > 0 && status != null && status.state !== 'available' && status.state !== 'full';
+  const appendRunning = running > 0 && status != null
+    && (unreachableHere || (status.state !== 'available' && status.state !== 'full'));
   // 点这一行展开这台的剩余额度(2026-10-10 用户要求)；收起时不读。
   const [quotaOpen, setQuotaOpen] = useState(false);
   const quotaId = useId();
@@ -131,6 +134,7 @@ function MemberRow({
     <div
       data-testid="remote-provider-group-member"
       data-member-state={status?.state ?? 'loading'}
+      data-unreachable-here={unreachableHere || undefined}
       className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
       <button
@@ -165,7 +169,11 @@ function MemberRow({
               className="h-1.5 w-1.5 shrink-0 rounded-full"
               style={{ background: ready ? 'var(--remote-status-ready)' : 'var(--remote-status-disconnected)' }}
             />
-            <span>{memberStatusText(t, status, i18n.language)}</span>
+            <span>
+              {unreachableHere
+                ? t('providerGroup.member.status.unreachableHere')
+                : memberStatusText(t, status, i18n.language)}
+            </span>
             {appendRunning && (
               <>
                 <span aria-hidden="true">·</span>
