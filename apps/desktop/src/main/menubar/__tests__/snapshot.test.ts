@@ -103,6 +103,24 @@ describe('buildMenubarView', () => {
     expect(view.sources[0].fill).toBeCloseTo(0.6);
   });
 
+  it('says nothing was read instead of "used up" when no level is known', () => {
+    const unread = buildMenubarView(input([codex('alpha', 0, { windows: [] })]));
+    expect(unread.headlinePrimary).toBe('Quota not read yet.');
+    expect(unread.sources[0].fill).toBeNull();
+    const empty = buildMenubarView(input([]));
+    expect(empty.headlinePrimary).toBe('Nothing with a quota yet.');
+    const usedUp = buildMenubarView(input([codex('alpha', 100)]));
+    expect(usedUp.headlinePrimary).toBe('Everything is used up.');
+  });
+
+  it('carries the sign-in gate with no status text', () => {
+    const view = buildMenubarView({ ...input([]), gate: 'sign-in' });
+    expect(view.gate).toBe('sign-in');
+    expect(Object.values(view.statusTextByMode).every((text) => text === null)).toBe(true);
+    expect(view.strings.gateTitle).toBeTruthy();
+    expect(buildMenubarView(input([codex('alpha', 10)])).gate).toBeUndefined();
+  });
+
   it('localizes the headline', () => {
     const view = buildMenubarView(input([codex('alpha', 80), codex('beta', 20)], { locale: 'zh-CN' }));
     expect(view.headlinePrimary).toBe('beta 余量最足。');

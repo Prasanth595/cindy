@@ -14,6 +14,7 @@ import {
   type MenubarColor,
   type MenubarDetail,
   type MenubarFact,
+  type MenubarGate,
   type MenubarLevel,
   type MenubarManageRow,
   type MenubarModelUsage,
@@ -135,6 +136,8 @@ export interface MenubarBuildInput {
   /** Raw templates the helper fills itself (relative times, clocks, page chrome). */
   uiStrings: MenubarStrings;
   t: MenubarTranslate;
+  /** Shows the gate instead of data; callers pass empty sources, tasks and usage with it. */
+  gate?: MenubarGate;
 }
 
 const HOUR_MS = 3_600_000;
@@ -476,6 +479,16 @@ class Builder {
     const sentence = (items: string[]): string | null =>
       items.length ? this.t('headline.sentence', { text: items.join(this.t('headline.joiner')) }) : null;
     if (!recommended) {
+      // "Used up" is only true when something was actually measured empty.
+      const measured =
+        this.visible.some((source) => source.kind === 'balance')
+        || this.visibleSubscriptions().some((source) => this.remaining(source) !== null);
+      if (!measured) {
+        const unread = this.visibleSubscriptions().length > 0;
+        return unread
+          ? { primary: this.t('headline.unread'), secondary: null }
+          : { primary: this.t('headline.empty'), secondary: this.t('headline.emptyHint') };
+      }
       return {
         primary: this.t('headline.none'),
         secondary: sentence(parts.length ? [parts[0]!] : [this.t('headline.waitReset')]),
@@ -950,7 +963,7 @@ class Builder {
       locale: this.input.locale,
       moneySymbol: this.input.moneySymbol,
       strings: this.input.uiStrings,
-      statusTextByMode: this.statusTexts(),
+      statusTextByMode: this.input.gate ? { icon: null, lowest: null, today: null, task: null } : this.statusTexts(),
       updatedAtMs: this.input.updatedAtMs,
       headlinePrimary: headline.primary,
       headlineSecondary: headline.secondary,
@@ -962,6 +975,7 @@ class Builder {
       usage: this.usage(),
       manage: this.manage(),
       settings: this.input.settings,
+      ...(this.input.gate ? { gate: this.input.gate } : {}),
     };
   }
 

@@ -197,7 +197,14 @@ export interface MenubarView {
   usage: MenubarUsage;
   manage: MenubarManageRow[];
   settings: MenubarSettings;
+  /**
+   * Set while nothing may be read yet: "sign-in" until the user signs in or skips sign-in.
+   * The panel then shows only the prompt and the icon carries no text.
+   */
+  gate?: MenubarGate;
 }
+
+export type MenubarGate = 'sign-in';
 
 /** Messages the helper sends to main. */
 export type MenubarHelperMessage =

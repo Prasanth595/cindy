@@ -145,6 +145,8 @@ struct MBView: Decodable, Equatable {
   let usage: MBUsage
   let manage: [MBManageRow]
   let settings: MBSettings
+  /// "sign-in" until the user signs in or skips sign-in; nothing was read.
+  let gate: String?
 }
 
 struct MBIncoming: Decodable {
@@ -349,9 +351,11 @@ enum Logos {
   }
 
   /// Cindy "A" mark on an 18 pt canvas with 14 pt ink, the menu bar size from the brand kit.
+  /// The mark is fitted to 17pt of the 18pt canvas (its path bounds are x 2.4–21.5,
+  /// y 1.2–22 in a 24-unit box) so it matches the optical size of other menu bar extras.
   static let statusIcon: NSImage? = {
     let svg = """
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path fill="#000" fill-rule="evenodd" transform="translate(0.6 0.6) scale(0.7)" d="\(cindyMarkPath)"/></svg>
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path fill="#000" fill-rule="evenodd" transform="translate(-0.765 -0.445) scale(0.8157)" d="\(cindyMarkPath)"/></svg>
     """
     guard let data = svg.data(using: .utf8), let image = NSImage(data: data) else { return nil }
     image.isTemplate = true
@@ -440,6 +444,7 @@ final class MenubarStore: ObservableObject {
     }
     if firstView { wideScope = next.settings.scope }
     if case .detail(let id) = page, next.details[id] == nil { page = .main }
+    if next.gate != nil, page == .wide { page = .main }
   }
 
   private func draftMatches(_ next: MBView) -> Bool {
@@ -566,6 +571,8 @@ final class StatusController: NSObject, NSWindowDelegate {
   private(set) var isOpen = false
   private var closing = false
   private var openRetries = 0
+  /** True while the open animation runs; a frame set directly then would be overwritten. */
+  private var openAnimating = false
 
   init(store: MenubarStore) {
     self.store = store
@@ -653,12 +660,21 @@ final class StatusController: NSObject, NSWindowDelegate {
     panel.setFrame(target.offsetBy(dx: 0, dy: 6), display: false)
     panel.alphaValue = 0
     panel.makeKeyAndOrderFront(nil)
-    NSAnimationContext.runAnimationGroup { context in
+    openAnimating = true
+    NSAnimationContext.runAnimationGroup({ context in
       context.duration = 0.22
       context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
       panel.animator().alphaValue = 1
       panel.animator().setFrame(target, display: true)
-    }
+    }, completionHandler: { [weak self] in
+      Task { @MainActor in
+        guard let self else { return }
+        self.openAnimating = false
+        // Opening asks main for fresh data, which often lands mid-animation and changes the
+        // content height; settle on the latest frame once the animation is done.
+        if self.isOpen { self.layoutPanel(for: self.store.page, animated: false) }
+      }
+    })
     statusItem.button?.highlight(true)
     installMonitors()
     Bridge.emit(["type": "panel", "open": true])
@@ -765,6 +781,15 @@ final class StatusController: NSObject, NSWindowDelegate {
   func layoutPanel(for page: Page, animated: Bool) {
     guard let panel, isOpen, let target = targetFrame(for: page) else { return }
     if panel.frame.equalTo(target) { return }
+    if openAnimating {
+      // Retarget the running open animation instead of being overwritten by it.
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.18
+        context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+        panel.animator().setFrame(target, display: true)
+      }
+      return
+    }
     let widthChanged = abs(panel.frame.width - target.width) > 0.5
     let heightChanged = abs(panel.frame.height - target.height) > 0.5
     if animated && (widthChanged || heightChanged) && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -874,7 +899,14 @@ struct PanelRoot: View {
   @ViewBuilder
   private func pages(_ view: MBView) -> some View {
     ZStack(alignment: .topTrailing) {
-      if store.page == .main {
+      if store.page == .main, view.gate != nil {
+        GatePage(store: store, controller: controller)
+          .frame(width: StatusController.narrowWidth)
+          .transition(.asymmetric(
+            insertion: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity),
+            removal: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity)
+          ))
+      } else if store.page == .main {
         MainPage(store: store, view: view, controller: controller)
           .frame(width: StatusController.narrowWidth)
           .transition(.asymmetric(
@@ -1169,8 +1201,19 @@ struct MainPage: View {
       }
       .padding(EdgeInsets(top: 22, leading: 24, bottom: 12, trailing: 24))
 
-      Cells(store: store, cells: view.sources)
-        .padding(.horizontal, 22)
+      // Only sources with a level get a tube; the rest (not read yet, pay-as-you-go) are
+      // listed as quiet rows so an empty tube never stands in for missing data.
+      let measured = view.sources.filter { $0.fill != nil }
+      let unmeasured = view.sources.filter { $0.fill == nil }
+      if !measured.isEmpty {
+        Cells(store: store, cells: measured)
+          .padding(.horizontal, 22)
+      }
+      if !unmeasured.isEmpty {
+        UnmeasuredSources(store: store, cells: unmeasured)
+          .padding(.horizontal, 14)
+          .padding(.top, measured.isEmpty ? 0 : 8)
+      }
 
       Caption(title: store.s("tasks"), detail: view.taskSummary) {
         TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"))
@@ -1194,6 +1237,62 @@ struct MainPage: View {
       }
     }
     .padding(EdgeInsets(top: 12, leading: 18, bottom: 18, trailing: 18))
+  }
+}
+
+/// Shown before the user signs in or skips sign-in: nothing has been read, so there is
+/// nothing to show but the way in.
+struct GatePage: View {
+  @ObservedObject var store: MenubarStore
+  let controller: StatusController
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Wordmark().frame(height: 15)
+        .padding(EdgeInsets(top: 22, leading: 22, bottom: 0, trailing: 22))
+
+      Image(systemName: "person.crop.circle")
+        .font(.system(size: 30, weight: .regular))
+        .foregroundStyle(Palette.ink3)
+        .accessibilityHidden(true)
+        .padding(EdgeInsets(top: 30, leading: 24, bottom: 14, trailing: 24))
+
+      Text(store.s("gateTitle"))
+        .font(.system(size: 22, weight: .semibold))
+        .tracking(-0.4)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityAddTraits(.isHeader)
+        .padding(.horizontal, 24)
+
+      Text(store.s("gateBody"))
+        .font(.system(size: 13))
+        .lineSpacing(3)
+        .foregroundStyle(Palette.ink3)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(EdgeInsets(top: 8, leading: 24, bottom: 0, trailing: 24))
+
+      HStack(spacing: 6) {
+        InkPillButton(title: store.s("openApp"), shortcut: "⌘O") { controller.openApp() }
+        Spacer(minLength: 0)
+        IconButton(systemName: "gearshape", label: store.s("settings"), help: store.s("settings") + " ⌘,") {
+          store.go(.manage)
+        }
+      }
+      .padding(EdgeInsets(top: 26, leading: 18, bottom: 18, trailing: 18))
+    }
+    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .fixedSize(horizontal: false, vertical: true)
+    .background(GeometryReader { g in
+      Color.clear
+        .onAppear { report(g.size.height) }
+        .onChange(of: g.size.height) { _, h in report(h) }
+    })
+    .frame(maxHeight: .infinity, alignment: .top)
+  }
+
+  private func report(_ height: CGFloat) {
+    let natural = (height + 1).rounded(.up)
+    if natural > 0, abs(store.mainContentHeight - natural) > 0.5 { store.mainContentHeight = natural }
   }
 }
 
@@ -1310,6 +1409,61 @@ struct Cells: View {
         }
       }
     }
+  }
+}
+
+/// Sources without a level: logo, name and why there is no tube, opening the detail page.
+struct UnmeasuredSources: View {
+  @ObservedObject var store: MenubarStore
+  let cells: [MBCell]
+
+  var body: some View {
+    VStack(spacing: 2) {
+      ForEach(cells) { cell in
+        UnmeasuredRow(cell: cell) { store.go(.detail(cell.id)) }
+      }
+    }
+  }
+}
+
+struct UnmeasuredRow: View {
+  let cell: MBCell
+  let action: () -> Void
+  @State private var hovering = false
+
+  private var status: String {
+    [cell.valueLabel, cell.when]
+      .compactMap { $0 }
+      .filter { !$0.isEmpty && $0 != "—" }
+      .joined(separator: " · ")
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 10) {
+        LogoView(svg: cell.logoSvg, size: 13)
+          .frame(width: 26, height: 26)
+          .background(RoundedRectangle(cornerRadius: 8, style: .circular).fill(Palette.ink5))
+        Text(cell.name)
+          .font(.system(size: 13, weight: .semibold))
+          .tracking(-0.1)
+          .lineLimit(1)
+        Spacer(minLength: 8)
+        Text(status)
+          .font(.system(size: 12))
+          .foregroundStyle(Palette.ink3)
+          .lineLimit(1)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(Palette.ink4)
+      }
+      .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12))
+      .background(RoundedRectangle(cornerRadius: 12, style: .circular).fill(hovering ? Palette.ink5 : .clear))
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .circular))
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering in withAnimation(.easeOut(duration: 0.15)) { self.hovering = hovering } }
+    .accessibilityLabel(cell.accessibilityLabel)
   }
 }
 

@@ -16,6 +16,7 @@ import { isSessionActivityRunning } from '@cindy/maker-shared/session-activity';
 import type { ModelAccessCreditUsage } from '../../shared/modelAccess.js';
 import {
   isMenubarSupportedPlatform,
+  type MenubarGate,
   type MenubarHelperMessage,
   type MenubarSettings,
   type MenubarSettingsPatch,
@@ -26,6 +27,7 @@ import {
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { getAgentIslandService } from '../agent-island/service.js';
 import { getAppCapabilities } from '../appCapabilities.js';
+import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 import * as authManager from '../authManager.js';
 import { projectModelAccessBalance, projectModelAccessCreditUsage } from '../billing/projection.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
@@ -58,6 +60,7 @@ import { providerWeeklyQuotaSource } from '../../shared/providerQuotaSource.js';
 import { CreditSampleStore, estimateDailyBurn, largestCreditSample } from './creditSamples.js';
 import {
   collectMenubarInputs,
+  emptyMenubarInputs,
   MENUBAR_USAGE_DAYS,
   type MenubarBalanceReading,
   type MenubarCollected,
@@ -117,7 +120,7 @@ class MenubarService {
   private balance: BalanceCache | null = null;
   private balanceInFlight: Promise<MenubarBalanceReading | null> | null = null;
   private readonly usageCache = new Map<MenubarUsageScope, UsageCacheEntry>();
-  private usageUserId: string | null = null;
+  private usageOwnerId: string | null = null;
   /** Serializes history reads so the two ranges never recompute at the same time. */
   private usageChain: Promise<unknown> = Promise.resolve();
 
@@ -168,17 +171,17 @@ class MenubarService {
     if (this.started) return;
     this.started = true;
     this.wasLow = null;
-    this.usageUserId = authManager.getAuthState().user?.id ?? null;
+    this.usageOwnerId = getActiveAppSession().dataOwnerId;
     this.host.resetFailure();
     this.host.prepare();
     this.disposers.push(
       observeUsageChanges(() => this.scheduleRebuild()),
       authManager.onAuthStateChange((state) => {
         if (!state.isAuthenticated) this.balance = null;
-        // Usage history belongs to the signed-in account; token refreshes keep the cache.
-        const userId = state.isAuthenticated ? state.user?.id ?? null : null;
-        if (userId !== this.usageUserId) {
-          this.usageUserId = userId;
+        // Usage history belongs to the data owner; token refreshes keep the cache.
+        const ownerId = getActiveAppSession().dataOwnerId;
+        if (ownerId !== this.usageOwnerId) {
+          this.usageOwnerId = ownerId;
           this.usageCache.clear();
         }
         this.scheduleRebuild();
@@ -245,28 +248,17 @@ class MenubarService {
     let stale = false;
     try {
       const nowMs = Date.now();
-      const collected = await collectMenubarInputs({
-        nowMs,
-        listProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
-        readCodex: (providerId) => readCodexAccountUsageSnapshot(providerId),
-        readClaude: (providerId) => readClaudeSubscriptionUsageSnapshotForDeviceLink(providerId),
-        readXai: (providerId) => readXaiSubscriptionUsageSnapshotForDeviceLink(providerId),
-        readBalance: () => this.readBalance(force, nowMs),
-        readUsage: async (scope: MenubarUsageScope) => {
-          const payload = await this.readUsage(scope, force, nowMs);
-          if (payload.stale) stale = true;
-          return payload;
-        },
-        activities: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
-        sessionRow: async (sessionId) => {
-          const row = await getSessionRowSnapshot(sessionId);
-          return row ? { title: row.title, model: row.model ?? null, agentKind: row.agentKind ?? null } : null;
-        },
-        selfDeviceName: deviceName(),
-        onError: (scope, error) => log.warn('menu bar source failed', { scope, error: errorMessage(error) }),
-      });
-      if (!this.started) return;
-      this.publish(collected, nowMs);
+      // Until the user signs in or skips sign-in there is no data owner: read nothing and
+      // show the prompt. A pending owner switch keeps the last view; its commit rebuilds.
+      if (isAppSessionBoundaryPending()) {
+        // Nothing to publish yet.
+      } else if (!hasDataOwner()) {
+        this.publish(emptyMenubarInputs(nowMs, deviceName()), nowMs, 'sign-in');
+      } else {
+        await this.collectAndPublish(nowMs, force, () => {
+          stale = true;
+        });
+      }
     } catch (error) {
       log.warn('menu bar rebuild failed', { error: errorMessage(error) });
     } finally {
@@ -282,6 +274,34 @@ class MenubarService {
       this.rebuildQueued = false;
       this.scheduleRebuild();
     }
+  }
+
+  private async collectAndPublish(nowMs: number, force: boolean, markStale: () => void): Promise<void> {
+    const generation = getActiveAppSession().generation;
+    const collected = await collectMenubarInputs({
+      nowMs,
+      listProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
+      readCodex: (providerId) => readCodexAccountUsageSnapshot(providerId),
+      readClaude: (providerId) => readClaudeSubscriptionUsageSnapshotForDeviceLink(providerId),
+      readXai: (providerId) => readXaiSubscriptionUsageSnapshotForDeviceLink(providerId),
+      readBalance: () => this.readBalance(force, nowMs),
+      readUsage: async (scope: MenubarUsageScope) => {
+        const payload = await this.readUsage(scope, force, nowMs);
+        if (payload.stale) markStale();
+        return payload;
+      },
+      activities: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
+      sessionRow: async (sessionId) => {
+        const row = await getSessionRowSnapshot(sessionId);
+        return row ? { title: row.title, model: row.model ?? null, agentKind: row.agentKind ?? null } : null;
+      },
+      selfDeviceName: deviceName(),
+      onError: (scope, error) => log.warn('menu bar source failed', { scope, error: errorMessage(error) }),
+    });
+    // An owner switch that started during the reads makes them the old owner's data.
+    const after = getActiveAppSession();
+    if (!this.started || isAppSessionBoundaryPending() || after.generation !== generation) return;
+    this.publish(collected, nowMs);
   }
 
   /** Cached usage history; a stale payload is re-read on the next build. */
@@ -304,7 +324,7 @@ class MenubarService {
     return payload;
   }
 
-  private publish(collected: MenubarCollected, nowMs: number): void {
+  private publish(collected: MenubarCollected, nowMs: number, gate?: MenubarGate): void {
     const locale = getResolvedMainLocale();
     const raw = (key: string) => rawMainString(key, locale);
     const input: MenubarBuildInput = {
@@ -319,10 +339,16 @@ class MenubarService {
       harnessLogos: MENUBAR_HARNESS_LOGOS,
       uiStrings: buildMenubarUiStrings(mainStringKeysUnder('menubar.ui'), raw, locale),
       t: createMenubarTranslate(locale, raw),
+      ...(gate ? { gate } : {}),
     };
     const view = buildMenubarView(input);
     this.lastView = view;
     this.host.publish(view);
+    if (gate) {
+      // The first real build after signing in counts as a first build again.
+      this.wasLow = null;
+      return;
+    }
     this.updateLowAlert(isLowOnEverything(input), input);
   }
 
@@ -479,6 +505,11 @@ class MenubarService {
 
   /** Asks every subscription reader to refresh; their broadcasts trigger the rebuild. */
   private refreshSources(force: boolean): void {
+    // Behind the sign-in gate nothing is read, so there is nothing to refresh either.
+    if (!hasDataOwner()) {
+      this.scheduleRebuild(0, force);
+      return;
+    }
     void getDesktopProviderService()
       .listProviders({ allowSideEffects: false })
       .then((providers) => {
@@ -554,6 +585,12 @@ export function refreshMenubarLocalization(): void {
 
 export function stopMenubarService(): void {
   service?.stop();
+}
+
+/** Signed in or sign-in skipped: there is an owner whose data may be read. */
+function hasDataOwner(): boolean {
+  const session = getActiveAppSession();
+  return session.mode !== 'signed-out' && session.dataOwnerId !== null;
 }
 
 function errorMessage(error: unknown): string {

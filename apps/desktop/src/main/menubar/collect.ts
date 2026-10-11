@@ -144,6 +144,18 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
   return { sources, tasks, usage, updatedAtMs };
 }
 
+/** Nothing read: the inputs behind the sign-in gate. */
+export function emptyMenubarInputs(nowMs: number, selfDeviceName: string): MenubarCollected {
+  const days = dayKeysEndingAt(localDayKey(nowMs), MENUBAR_USAGE_DAYS);
+  const self = [{ name: selfDeviceName, isSelf: true, syncedAtMs: null }];
+  return {
+    sources: [],
+    tasks: [],
+    usage: { days, scopes: { local: emptyScope(days, self), all: emptyScope(days, self) } },
+    updatedAtMs: null,
+  };
+}
+
 // ── Sources ──────────────────────────────────────────────────────────────────
 
 function balanceSource(balance: MenubarBalanceReading): MenubarBalanceInput {
