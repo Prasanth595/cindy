@@ -1054,7 +1054,6 @@
       "privacySub": "账号只显示首尾字母，任务标题也会隐藏，适合录屏和截图",
       "usageScope": "用量统计范围",
       "manageFoot": "账号登录和连接在 Cindy 设置 › 模型供应商 里管理。",
-      "quit": "退出 Cindy",
       "showSource": "在菜单里显示 {{name}}",
       "reorderHint": "拖动，或用操作菜单调整顺序",
       "moveUp": "上移",

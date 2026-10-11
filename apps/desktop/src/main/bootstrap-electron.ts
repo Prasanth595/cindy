@@ -3148,7 +3148,7 @@ function buildWindowsTrayMenu(): Menu {
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
-      click: () => quitWithBusyConfirmation(),
+      click: () => quitFromWindowsTray(),
     },
   ]);
 }
@@ -3190,8 +3190,7 @@ function openWindowsTrayMenu(): void {
   });
 }
 
-/** Quit from the Windows tray or the macOS menu bar panel: confirm first during an active turn. */
-function quitWithBusyConfirmation(): void {
+function quitFromWindowsTray(): void {
   requestWindowsTrayQuit({
     hasActiveTurn: () => {
       try {
@@ -4358,7 +4357,6 @@ const registerIpcHandlers = () => {
 
   // macOS 菜单栏余量:原生 helper 在 Agent Island 之后启动,复用它的任务活动订阅。
   initMenubarService({
-    quit: quitWithBusyConfirmation,
     openNewTask: () => {
       const win = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
       if (win) dispatchApplicationMenuCommand(win, resolveNewMakerMenuCommand(false));

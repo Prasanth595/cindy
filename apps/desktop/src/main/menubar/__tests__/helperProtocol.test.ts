@@ -8,7 +8,7 @@ describe('parseHelperMessage', () => {
   it('accepts well-formed messages', () => {
     expect(parseHelperMessage({ type: 'panel', open: true })).toEqual({ type: 'panel', open: true });
     expect(parseHelperMessage({ type: 'open-session', sessionId: 's1' })).toEqual({ type: 'open-session', sessionId: 's1' });
-    expect(parseHelperMessage({ type: 'quit', extra: 1 })).toEqual({ type: 'quit' });
+    expect(parseHelperMessage({ type: 'refresh', extra: 1 })).toEqual({ type: 'refresh' });
   });
 
   it('rejects malformed or unknown messages', () => {
@@ -16,6 +16,7 @@ describe('parseHelperMessage', () => {
     expect(parseHelperMessage({ type: 'panel', open: 'yes' })).toBeNull();
     expect(parseHelperMessage({ type: 'open-session', sessionId: '' })).toBeNull();
     expect(parseHelperMessage({ type: 'exec', command: 'rm' })).toBeNull();
+    expect(parseHelperMessage({ type: 'quit' })).toBeNull();
   });
 
   it('keeps only valid settings keys from the helper', () => {

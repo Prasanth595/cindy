@@ -872,8 +872,6 @@ final class StatusController: NSObject, NSWindowDelegate {
       openApp()
     case ",":
       store.go(.manage)
-    case "q":
-      Bridge.emit(["type": "quit"])
     case "w":
       close()
     default:
@@ -893,7 +891,15 @@ final class StatusController: NSObject, NSWindowDelegate {
   }
 
   func windowDidResignKey(_ notification: Notification) {
-    // Clicking another window of ours (none) or another app: behave like a menu.
+    // A press on our own status item takes focus first; its click then toggles the panel
+    // closed. Closing here too would let that click reopen it.
+    if let event = NSApp.currentEvent,
+       event.type == .leftMouseDown || event.type == .rightMouseDown,
+       let buttonWindow = statusItem.button?.window,
+       event.window === buttonWindow {
+      return
+    }
+    // Clicking another app: behave like a menu.
     if isOpen { close() }
   }
 
@@ -2557,32 +2563,15 @@ struct ManagePage: View {
       }
       .padding(.horizontal, 16)
 
-      VStack(alignment: .leading, spacing: 18) {
-        Button { controller.emitAndClose(["type": "open-provider-settings"]) } label: {
-          Text(store.s("manageFoot"))
-            .font(.system(size: 11.5))
-            .foregroundStyle(Palette.ink3)
-            .lineSpacing(4)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .buttonStyle(.plain)
-        Button { Bridge.emit(["type": "quit"]) } label: {
-          HStack {
-            Text(store.s("quit"))
-            Spacer()
-            Text("⌘Q").foregroundStyle(Palette.ink3)
-          }
-          .font(.system(size: 13))
-          .foregroundStyle(Palette.ink2)
-          .padding(.horizontal, 14)
-          .frame(height: 40)
-          .background(RoundedRectangle(cornerRadius: 14, style: .circular).fill(Palette.tile))
-          .overlay(RoundedRectangle(cornerRadius: 14, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
-          .contentShape(RoundedRectangle(cornerRadius: 14, style: .circular))
-        }
-        .buttonStyle(PressScaleStyle())
+      Button { controller.emitAndClose(["type": "open-provider-settings"]) } label: {
+        Text(store.s("manageFoot"))
+          .font(.system(size: 11.5))
+          .foregroundStyle(Palette.ink3)
+          .lineSpacing(4)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
       }
+      .buttonStyle(.plain)
       .padding(EdgeInsets(top: 20, leading: 24, bottom: 22, trailing: 24))
     }
   }

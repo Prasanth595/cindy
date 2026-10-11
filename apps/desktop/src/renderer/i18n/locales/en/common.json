@@ -1075,7 +1075,6 @@
       "privacySub": "Shows only the first and last letter of accounts and hides task titles. Good for recordings and screenshots.",
       "usageScope": "Usage covers",
       "manageFoot": "Sign in to accounts and connect them in Cindy Settings › Model Providers.",
-      "quit": "Quit Cindy",
       "showSource": "Show {{name}} in the menu",
       "reorderHint": "Drag, or use the actions menu to reorder",
       "moveUp": "Move up",

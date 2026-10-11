@@ -1054,7 +1054,6 @@
       "privacySub": "帳號只顯示首尾字母，任務標題也會隱藏，適合錄影和截圖",
       "usageScope": "用量統計範圍",
       "manageFoot": "帳號登入和連線在 Cindy 設定 › 模型供應商 裡管理。",
-      "quit": "退出 Cindy",
       "showSource": "在選單裡顯示 {{name}}",
       "reorderHint": "拖動，或用操作選單調整順序",
       "moveUp": "上移",

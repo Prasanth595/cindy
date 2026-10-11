@@ -91,8 +91,6 @@ const USAGE_FRESH_WHILE_CLOSED_MS = 5 * 60_000;
 export interface MenubarServiceDeps {
   /** Opens a new task in the main window (the app menu's "New Task" command). */
   openNewTask(): void;
-  /** Quits the app, confirming first while a task turn is running. */
-  quit(): void;
 }
 
 interface UsageCacheEntry {
@@ -487,9 +485,6 @@ class MenubarService {
         return;
       case 'settings':
         this.applySettingsPatch(message.patch);
-        return;
-      case 'quit':
-        this.deps.quit();
         return;
     }
   }

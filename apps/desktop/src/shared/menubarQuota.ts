@@ -215,8 +215,7 @@ export type MenubarHelperMessage =
   | { type: 'open-session'; sessionId: string }
   | { type: 'detail-action'; sourceId: string }
   | { type: 'open-provider-settings' }
-  | { type: 'settings'; patch: MenubarSettingsPatch }
-  | { type: 'quit' };
+  | { type: 'settings'; patch: MenubarSettingsPatch };
 
 /** Settings → Window behavior toggle; only the local app renderer may call these. */
 export const MENUBAR_GET_STATE_CHANNEL = 'menubar:get-state';
