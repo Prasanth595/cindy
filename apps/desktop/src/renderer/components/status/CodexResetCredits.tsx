@@ -7,11 +7,12 @@ import { Collapse } from '@/components/ui/collapse';
 import { formatQuotaResetAt } from './usageCardModel';
 
 /** Shared reset list for provider settings and the usage dialog. */
-export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }: {
+export function CodexResetCredits({ snapshot, busy, canReset, canRetry = false, onReset, variant }: {
   variant: 'embedded' | 'dialog';
   snapshot: MobileCodexRateLimitsResult | null;
   busy: boolean;
   canReset: boolean;
+  canRetry?: boolean;
   onReset: (credit?: MobileCodexRateLimitResetCredit) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -20,9 +21,10 @@ export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }
   const triggerId = useId();
   const panelId = useId();
   const credits = snapshot?.rateLimitResetCredits;
-  if (!credits) return null;
+  const retryOnly = snapshot?.resetOffer?.retryOnly === true;
+  if (!credits && !retryOnly) return null;
   const now = Date.now();
-  const available = (credits.credits ?? [])
+  const available = (credits?.credits ?? [])
     .filter(credit => credit.status === 'available' && credit.resetType === 'codexRateLimits'
       && (credit.expiresAt === null || credit.expiresAt * 1000 > now))
     .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.grantedAt - b.grantedAt);
@@ -38,22 +40,31 @@ export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }
 
   const earliestExpiresAt = available[0]?.expiresAt ?? snapshot?.resetOffer?.expiresAt;
   const earliestExpiry = earliestExpiresAt == null ? null : formatQuotaResetAt(earliestExpiresAt, now, locale);
-  const count = (
+  const availableCount = credits?.availableCount ?? 0;
+  const count = credits ? (
     <span className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-12 text-[var(--text-secondary)]">
       <span className="shrink-0 text-12 tabular-nums text-[var(--text-secondary)]">
-        {t('codexResets.available', { count: credits.availableCount })}
+        {t('codexResets.available', { count: availableCount })}
       </span>
-      {embedded && credits.availableCount > 0 && earliestExpiry ? (
+      {embedded && availableCount > 0 && earliestExpiry ? (
         <span>{t('todaySpend.codex.resetCreditEarliestExpiryLine', { at: earliestExpiry })}</span>
       ) : null}
     </span>
-  );
+  ) : null;
   const content = (
     <>
-      {!canReset && credits.availableCount > 0 ? (
+      {retryOnly ? (
+        <div className="mt-2 flex items-center justify-between gap-3 py-3">
+          <p className="text-12 text-[var(--text-secondary)]">{t('codexResets.retryPending')}</p>
+          <Button size="sm" compact variant="secondary" disabled={!canRetry} loading={busy} onClick={() => onReset()}>
+            {t('codexResets.retryReset')}
+          </Button>
+        </div>
+      ) : null}
+      {!canReset && !retryOnly && availableCount > 0 ? (
         <p className="mt-2 text-12 text-[var(--text-secondary)]">{t('codexResets.availableAtLimit')}</p>
       ) : null}
-      {available.length > 0 && credits.availableCount > 0 ? (
+      {available.length > 0 && availableCount > 0 ? (
         <ul className="mt-2 divide-y divide-[var(--border-default)]">
           {available.map((credit, index) => (
             <li key={`${credit.grantedAt}-${credit.expiresAt}-${index}`} className="flex items-center justify-between gap-3 py-3">
@@ -61,7 +72,7 @@ export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }
                 <div className="text-13 text-[var(--text-primary)]">{credit.title || t('codexResets.fullReset')}</div>
                 <div className="mt-0.5 text-12 text-[var(--text-secondary)]">{formatExpiry(credit.expiresAt)}</div>
               </div>
-              <Button size="sm" compact variant="secondary" disabled={!canReset || !credit.resetOffer}
+              <Button size="sm" compact variant="secondary" disabled={retryOnly || !canReset || !credit.resetOffer}
                 loading={busy} onClick={() => onReset(credit)}>
                 {t('codexResets.useReset')}
               </Button>
@@ -69,11 +80,11 @@ export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }
           ))}
         </ul>
       ) : null}
-      {credits.availableCount === 0 ? (
+      {!retryOnly && (availableCount === 0 ? (
         <p className="mt-2 text-12 text-[var(--text-secondary)]">{t('codexResets.noCredit')}</p>
       ) : (
         <>
-          {available.length < credits.availableCount && (
+          {available.length < availableCount && (
             <p className="mt-2 text-12 text-[var(--text-secondary)]">{t('codexResets.detailsUnavailable')}</p>
           )}
           {available.length === 0 ? (
@@ -82,7 +93,7 @@ export function CodexResetCredits({ snapshot, busy, canReset, onReset, variant }
             </Button>
           ) : null}
         </>
-      )}
+      ))}
     </>
   );
 

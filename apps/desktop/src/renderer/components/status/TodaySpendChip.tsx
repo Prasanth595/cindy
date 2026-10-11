@@ -1713,14 +1713,14 @@ export function TodaySpendChip({
             dashboardLabel={usageDashboardLabel}
             onOpenDashboard={handleClick}
             dashboardButtonRef={quotaPopoverDashboardButtonRef}
-            windowAction={usesCodexQuotaForm && !isAnyRemoteSession && codexRateLimits?.rateLimitResetCredits ? (
+            windowAction={usesCodexQuotaForm && !isAnyRemoteSession && (codexRateLimits?.rateLimitResetCredits || manualReset.canRetry) ? (
               <Button size="xs" compact tone="quiet" aria-label={t('codexResets.title')} title={t('codexResets.title')}
                 onClick={() => {
                   quotaPopoverFocusTakenRef.current = false;
                   closeQuotaPopoverImmediately();
                   setResetListOpen(true);
                 }}>
-                {t('codexResets.available', { count: codexRateLimits.rateLimitResetCredits.availableCount })}
+                {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.available', { count: codexRateLimits?.rateLimitResetCredits?.availableCount ?? 0 })}
               </Button>
             ) : null}
           />
@@ -1745,9 +1745,14 @@ export function TodaySpendChip({
             <Dialog.Title className="sr-only">{t('codexResets.title')}</Dialog.Title>
             <div className="max-h-[60vh] overflow-y-auto">
               <CodexResetCredits variant="dialog" snapshot={codexRateLimits} busy={manualReset.busy}
-                canReset={manualReset.canReset} onReset={(credit) => {
+                canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => {
                   setResetListOpen(false);
-                  void manualReset.reset(credit);
+                  const context = quotaPopoverContextRef.current.identity;
+                  void manualReset.reset(credit).finally(() => {
+                    if (quotaPopoverContextRef.current.identity !== context) return;
+                    quotaPopoverFocusTakenRef.current = true;
+                    restoreQuotaPopoverFocus();
+                  });
                 }} />
             </div>
             <Dialog.Close asChild>

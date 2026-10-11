@@ -110,6 +110,15 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
     return count + (deps.externalRunning?.(providerId, memberKey) ?? 0);
   }
 
+  /**
+   * 分配与设置页共用的运行数。那台实际跑着的数(本机现算、同账号电脑报来那台的总数、分享来的电脑报来本账号
+   * 在那里的数，都含不经组直接用的)里已包含经组分过去的，取两者较大的：刚选中、还没开始跑的任务仍按经组的
+   * 计数占着；那台较旧报不出时照旧只算经组的。
+   */
+  function memberRunning(providerId: string, resolved: ResolvedProviderGroupMember): number {
+    return Math.max(running(providerId, resolved.member.key), resolved.reportedRunning ?? 0);
+  }
+
   /** 那台能为新会话提供这个模型：停用、已退役、需要付费的都不算(与新建任务、切模型同一准入)。 */
   function offersModel(resolved: ResolvedProviderGroupMember, agentKind: AgentKind, model: string): boolean {
     if (resolved.state !== 'ok' || !resolved.view) return false;
@@ -127,7 +136,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         key: r.member.key,
         usable: offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null,
         paused: r.member.paused,
-        running: running(input.providerId, r.member.key),
+        running: memberRunning(input.providerId, r),
         limit: r.member.limit,
         weight: r.member.weight,
       }));
@@ -152,7 +161,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         config,
         members: resolved.map((r) => {
           const until = coolingUntil(providerId, r.member.key);
-          const count = running(providerId, r.member.key);
+          const count = memberRunning(providerId, r);
           const state = r.member.paused
             ? 'paused' as const
             : r.state !== 'ok'

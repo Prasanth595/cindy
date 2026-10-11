@@ -454,7 +454,7 @@ describe('TodaySpendChip Claude subscription popover', () => {
     expect(trigger.querySelector('[class*="error-fg"]')).toBeNull();
   });
 
-  it('can confirm one reset after closing the usage popover', async () => {
+  it.each([true, false])('returns focus after reset confirmation accepted=%s', async accepted => {
     mocks.codexAuthInjection = 'oauth-bearer';
     mocks.codexSnapshot = { primary: { usedPercent: 100, windowMinutes: 300 } };
     mocks.resetSnapshot = {
@@ -476,9 +476,16 @@ describe('TodaySpendChip Claude subscription popover', () => {
     expect(screen.queryByTestId('quota-hover-card')).toBeNull();
     const dialog = screen.getByRole('alertdialog');
     expect(dialog.contains(document.activeElement)).toBe(true);
-    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'codexResets.consumeOnce' })));
-    expect(mocks.consumeReset).toHaveBeenCalledExactlyOnceWith(mocks.resetSnapshot.resetOffer!.idempotencyKey, 'openai');
-    expect(mocks.refreshCodexRateLimits).toHaveBeenCalled();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: accepted ? 'codexResets.consumeOnce' : 'commonUi.confirmDialog.cancel' })));
+    act(() => vi.advanceTimersByTime(250));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '打开 Codex 用量页面' }));
+    expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+    if (accepted) {
+      expect(mocks.consumeReset).toHaveBeenCalledExactlyOnceWith(mocks.resetSnapshot.resetOffer!.idempotencyKey, 'openai');
+      expect(mocks.refreshCodexRateLimits).toHaveBeenCalled();
+    } else {
+      expect(mocks.consumeReset).not.toHaveBeenCalled();
+    }
   });
 
   it('closes the reset list with X and restores focus without reopening the quota card', async () => {

@@ -217,6 +217,8 @@ export interface MobileCodexRateLimitResetCredit {
 
 /** Desktop-issued, account-bound reset offer used as the idempotency key for one attempt. */
 export interface MobileCodexRateLimitResetOffer {
+  /** Only retry the existing attempt; do not consume another credit. */
+  retryOnly?: boolean;
   idempotencyKey: string;
   /** Unix epoch seconds for the selected banked credit, when details are available. */
   expiresAt: number | null;

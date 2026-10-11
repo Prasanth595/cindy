@@ -33,6 +33,19 @@ describe('available reset list', () => {
     expect(mocks.reset).toHaveBeenCalledExactlyOnceWith(mocks.snapshot!.rateLimitResetCredits!.credits![0]);
   });
 
+  it.each([true, false])('offers only the frozen retry even with remaining rows: %s', withRows => {
+    mocks.snapshot!.resetOffer = { idempotencyKey: 'frozen', expiresAt: null, validUntil: Date.now() + 60_000, retryOnly: true };
+    if (!withRows) mocks.snapshot!.rateLimitResetCredits = null;
+    render(<CodexResetCredits variant="dialog" snapshot={mocks.snapshot} busy={false} canReset={false} canRetry onReset={mocks.reset} />);
+    for (const button of screen.queryAllByRole('button', { name: 'codexResets.useReset' }) as HTMLButtonElement[]) {
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    expect(mocks.reset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'codexResets.retryReset' }));
+    expect(mocks.reset).toHaveBeenCalledExactlyOnceWith();
+  });
+
   it('keeps provider settings collapsed until its header is opened', async () => {
     render(<CodexResetCredits variant="embedded" snapshot={mocks.snapshot} busy={false} canReset onReset={mocks.reset} />);
     const header = screen.getByRole('button', { name: /codexResets.title/ });

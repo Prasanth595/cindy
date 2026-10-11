@@ -147,8 +147,28 @@ describe('Codex rate-limit reset control plane', () => {
     await expect(service.consume(key)).rejects.toThrow('offline');
     const refreshed = await service.read();
     expect(refreshed.resetOffer!.idempotencyKey).toBe(key);
+    expect(refreshed.resetOffer!.retryOnly).toBe(true);
     await expect(service.consume(snapshot.resetOffer!.idempotencyKey)).rejects.toMatchObject({ reason: 'RESET_IN_PROGRESS' });
     await service.consume(key);
+    expect(consumeResetCredit.mock.calls).toEqual([
+      [{ idempotencyKey: key, creditId: 'later' }], [{ idempotencyKey: key, creditId: 'later' }],
+    ]);
+  });
+
+  it('keeps a retry offer after all credits disappear and quota is restored', async () => {
+    const consumeResetCredit = vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ outcome: 'alreadyRedeemed' });
+    const { deps, service } = detailedHarness({ consumeResetCredit });
+    const first = await service.read();
+    const key = first.rateLimitResetCredits!.credits![0].resetOffer!.idempotencyKey;
+    await expect(service.consume(key)).rejects.toThrow('offline');
+    const restored = response();
+    restored.rateLimits = { primary: { usedPercent: 0 } };
+    restored.rateLimitResetCredits = { availableCount: 0, credits: [] };
+    vi.mocked(deps.readRateLimits).mockResolvedValue(restored);
+    const refreshed = await service.read();
+    expect(refreshed.resetOffer).toMatchObject({ idempotencyKey: key, retryOnly: true });
+    await expect(service.consume(refreshed.resetOffer!.idempotencyKey)).resolves.toMatchObject({ outcome: 'alreadyRedeemed' });
     expect(consumeResetCredit.mock.calls).toEqual([
       [{ idempotencyKey: key, creditId: 'later' }], [{ idempotencyKey: key, creditId: 'later' }],
     ]);

@@ -408,6 +408,7 @@ import { createWorkLouderCodexVoiceGesture } from '@/lib/workLouderCodexVoiceGes
 import { appendMentionChip } from './mentionChipInsertion';
 // device-link 远程会话:设置变更不落本地 DB(会 404),改写远程内存层 + 运行时隧道。
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
+import { readSessionProviderGroup } from '@/features/provider-group/sessionProviderGroup';
 import { makerApiFor, makerApiForDevice, makerApiForSticky, subscribeRemoteCredentialSwitchOutcome } from '@/lib/makerTransport';
 import { SESSION_LINK_DROP_MIME } from '@/lib/sessionLinkDrop';
 
@@ -1298,6 +1299,11 @@ export function ChatInput({
   /** 下一条消息时 Agent 所在的电脑(null = 任务所在电脑)。 */
   const effectiveAgentDeviceId =
     intentAgentDeviceId !== undefined ? intentAgentDeviceId : agentDeviceId;
+  /** 有过 Agent 回复:供应商组已为这个任务选好电脑(provider-groups.md §6)。 */
+  const taskStarted = useMemo(
+    () => !!sessionId && (messages ?? []).some((message) => message.role === 'assistant'),
+    [sessionId, messages],
+  );
   /** 模型目录所在的电脑:Agent 在另一台电脑运行时是那台;否则远程任务在被控电脑,本机任务在本机。 */
   const catalogDeviceId = effectiveAgentDeviceId ?? deviceLinkDeviceId ?? undefined;
   const { t } = useTranslation();
@@ -7189,8 +7195,15 @@ export function ChatInput({
       selectedDeviceId: effectiveAgentDeviceId,
       // 被控电脑上的任务:没在浏览其他电脑时列被控电脑自己的目录与它的镜像记忆。
       ...(deviceLinkDeviceId ? { homeDeviceId: deviceLinkDeviceId } : {}),
+      ...(deviceLinkDeviceId && deviceLinkDeviceName ? { homeDeviceName: deviceLinkDeviceName } : {}),
+      selfDeviceId: selfDeviceId ?? null,
       ...(taskComputerModelMemory ? { localModelMemory: taskComputerModelMemory } : {}),
       deviceModelMemory: agentDeviceModelMemoryAccessors,
+      // 归组的任务在组那一项下显示与选择(provider-groups.md §10)。组的绑定记在任务所在电脑上，被控电脑上的
+      // 任务不读(那台的绑定不对控制端开放)，按没归组的处理；挂着换位置的意图时下一条消息就不在原处了，也不按组显示。
+      ...(!deviceLinkDeviceId && intentAgentDeviceId === undefined
+        ? { readProviderGroup: () => readSessionProviderGroup(sessionId) }
+        : {}),
       onRelocate: async (selection) => {
         if (!(await confirmAgentRelocation(selection.agentDevice))) return false;
         return performAgentSwitchRef.current(selection.agent, selection.modelId, selection.providerId, {
@@ -7204,11 +7217,14 @@ export function ChatInput({
     sessionId,
     agentLocationAware,
     deviceLinkDeviceId,
+    deviceLinkDeviceName,
+    selfDeviceId,
     taskComputerModelMemory,
     remoteHostId,
     sessionEngineFilter,
     remoteAgentDevices,
     effectiveAgentDeviceId,
+    intentAgentDeviceId,
     confirmAgentRelocation,
   ]);
 
@@ -9374,6 +9390,8 @@ export function ChatInput({
                     // 已建会话按实际路由口径解析当前来源(含停用拷贝,跟真实扣费路由);
                     // 草稿是新路由选择,保持准入口径(PR #744 review 第十轮)。
                     actualRoute={!!sessionId}
+                    // 有过 Agent 回复 = 供应商组已为这个任务选好电脑,组那一项的用量按那台显示。
+                    taskStarted={taskStarted}
                     onProviderChange={(providerId, modelId, effort, fast) =>
                       handleProviderChange(providerId, modelId, effort, undefined, fast)
                     }

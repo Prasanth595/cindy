@@ -269,6 +269,7 @@ export function createCodexRateLimitResetService(
       // refreshed count/credit rows changed, so Mobile can safely recover an ambiguous result.
       resetOffer = {
         idempotencyKey: existing[0],
+        retryOnly: true,
         expiresAt: existing[1].creditExpiresAt,
         validUntil: existing[1].validUntil,
       };

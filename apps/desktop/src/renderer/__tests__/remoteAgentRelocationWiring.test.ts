@@ -46,8 +46,14 @@ describe('ModelSelector:浏览别的电脑的目录时改道换位置', () => {
     );
   });
 
-  it('改道的行带上所属电脑', () => {
-    expect(selectorSource).toContain('relocate!({ ...row, agentDevice: remoteBrowseDevice })');
+  it('普通改道带上浏览电脑，供应商组内改选保留实际运行电脑', () => {
+    const start = selectorSource.indexOf('const relocateRow =');
+    expect(start).toBeGreaterThan(0);
+    const block = selectorSource.slice(start, selectorSource.indexOf('const panelSessionEngineFilter =', start));
+    expect(block).toContain('relocate!(');
+    expect(block).toContain('browsingBoundGroupEntry && row.providerId === boundEntry!.providerId && currentProviderId');
+    expect(block).toContain('? { ...row, providerId: currentProviderId, agentDevice: currentAgentDevice }');
+    expect(block).toContain(': { ...row, agentDevice: remoteBrowseDevice }');
   });
 });
 

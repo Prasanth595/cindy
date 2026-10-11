@@ -85,6 +85,7 @@ interface ErrorBannerProps {
   /** 当前 session 的 agent kind。codex 的 401 / Missing bearer 必须 hide Retry,
    *  否则 retry 撞同一个 in-memory auth retry-loop 产生重复失败 turn。 */
   agentKind?: 'cc' | 'codex' | 'pi';
+  agentDeviceId?: string | null;
   /** 当前 session 的远端 host id;非空 + agentKind='codex' 时显「同步登录态」按钮。
    *  本地 codex 401 仍 hide Retry, 但只能提示用户去自己 fix login (没有 sync 入口)。 */
   remoteHostId?: string;
@@ -139,6 +140,7 @@ export function ErrorBanner({
   usageLimitRecovery,
   agentKind,
   remoteHostId,
+  agentDeviceId,
   deviceLinkDeviceId,
   modelId,
   providerId,
@@ -317,7 +319,7 @@ export function ErrorBanner({
   const isCodexUsageLimitError =
     agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true;
   const { snapshot: resetSnapshot, refresh: refreshResets } = useCodexRateLimits(
-    isCodexUsageLimitError && isCodexOpenAiSource && !isAnyRemoteSession,
+    isCodexUsageLimitError && isCodexOpenAiSource && !isAnyRemoteSession && !agentDeviceId,
     normalizedProviderId ?? 'openai',
   );
   const manualReset = useCodexRateLimitReset(resetSnapshot, refreshResets, normalizedProviderId ?? 'openai');
@@ -782,9 +784,9 @@ export function ErrorBanner({
           {t('chat.errorBanner.usageLimitAutoContinueAt', { time: usageLimitResumeAt })}
         </span>
       )}
-      {manualReset.canReset && (
+      {(manualReset.canReset || manualReset.canRetry) && (
         <Button size="sm" compact loading={manualReset.busy} onClick={() => void manualReset.reset()}>
-          {t('codexResets.limitAction', { count: resetSnapshot?.rateLimitResetCredits?.availableCount ?? 0 })}
+          {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.limitAction', { count: resetSnapshot?.rateLimitResetCredits?.availableCount ?? 0 })}
         </Button>
       )}
       {usageLimitResumeAt && onCancelUsageLimitWait && (

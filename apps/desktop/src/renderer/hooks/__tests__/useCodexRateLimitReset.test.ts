@@ -122,11 +122,57 @@ describe('manual Codex resets', () => {
     const hook = renderHook(() => useCodexRateLimitReset(value, refresh));
     await act(async () => hook.result.current.reset());
     expect(mocks.error).toHaveBeenCalledWith('codexResets.resetFailed');
+    expect(refresh).toHaveBeenCalledOnce();
     consume.mockResolvedValueOnce({ outcome: 'alreadyRedeemed', rateLimits: null });
     await act(async () => hook.result.current.reset());
     expect(consume.mock.calls).toEqual([
       [value.resetOffer!.idempotencyKey, 'openai'], [value.resetOffer!.idempotencyKey, 'openai'],
     ]);
+  });
+
+  it('retries the frozen request after its credit disappears and quota recovers', async () => {
+    const value = snapshot();
+    value.resetOffer = { ...value.resetOffer!, retryOnly: true };
+    value.rateLimits = { primary: { usedPercent: 0 } };
+    value.rateLimitResetCredits = { availableCount: 0, credits: [] };
+    const hook = renderHook(() => useCodexRateLimitReset(value, refresh));
+    expect(hook.result.current.canReset).toBe(false);
+    expect(hook.result.current.canRetry).toBe(true);
+    await act(async () => hook.result.current.reset());
+    expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: 'codexResets.confirmRetryBody' }));
+    expect(consume).toHaveBeenCalledExactlyOnceWith(value.resetOffer!.idempotencyKey, 'openai');
+  });
+
+  it('refuses another row while an ambiguous request needs retry', async () => {
+    const { value, selected } = withRows();
+    value.resetOffer = { ...value.resetOffer!, retryOnly: true };
+    const hook = renderHook(() => useCodexRateLimitReset(value, refresh));
+    await act(async () => hook.result.current.reset(selected));
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('does not offer an expired frozen request for retry', async () => {
+    const value = snapshot();
+    value.resetOffer = { ...value.resetOffer!, retryOnly: true, validUntil: Date.now() - 1 };
+    const hook = renderHook(() => useCodexRateLimitReset(value, refresh));
+    expect(hook.result.current.canRetry).toBe(false);
+    await act(async () => hook.result.current.reset());
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('does not retry when the frozen request is withdrawn during confirmation', async () => {
+    let accept!: (value: boolean) => void;
+    mocks.confirm.mockImplementation(() => new Promise<boolean>(resolve => { accept = resolve; }));
+    const value = snapshot();
+    value.resetOffer = { ...value.resetOffer!, retryOnly: true };
+    value.rateLimits = { primary: { usedPercent: 0 } };
+    const hook = renderHook(({ current }) => useCodexRateLimitReset(current, refresh), { initialProps: { current: value } });
+    let request!: Promise<void>;
+    act(() => { request = hook.result.current.reset(); });
+    hook.rerender({ current: { ...value, resetOffer: null } });
+    await act(async () => { accept(true); await request; });
+    expect(consume).not.toHaveBeenCalled();
   });
 
   it('refuses an expired offer instead of consuming a replacement', async () => {

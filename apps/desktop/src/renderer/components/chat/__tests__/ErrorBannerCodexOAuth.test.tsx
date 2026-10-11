@@ -1001,7 +1001,7 @@ describe('ErrorBanner OpenAI connection recovery', () => {
     expect(retry).not.toHaveBeenCalled();
   });
 
-  it.each([{ remoteHostId: 'ssh-host' }, { deviceLinkDeviceId: 'other-device' }])(
+  it.each([{ remoteHostId: 'ssh-host' }, { deviceLinkDeviceId: 'other-device' }, { agentDeviceId: 'agent-device' }])(
     'does not offer local reset credits in a remote task %j', async (remote) => {
       render(<ErrorBanner error="usageLimitExceeded" retryText="retry this turn" onRetry={vi.fn()}
         agentKind="codex" providerId="openai" usageLimitRecovery={{ resetAtMs: null, isAccountUsageLimit: true }} {...remote} />);

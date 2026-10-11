@@ -27,9 +27,13 @@ export function useCodexRateLimitReset(
   }, []);
   const summary = summarizeCodexRateLimitReset(snapshot, Date.now());
 
+  const canRetry = snapshot?.resetOffer?.retryOnly === true && snapshot.resetOffer.validUntil > Date.now();
+  const canReset = summary?.canReset === true && !snapshot?.resetOffer?.retryOnly;
+
   const reset = useCallback(async (credit?: MobileCodexRateLimitResetCredit) => {
     const offer = credit ? credit.resetOffer : snapshot?.resetOffer;
-    if (pending.current || !snapshot || !offer || !summary?.canReset) return;
+    const retry = !credit && snapshot?.resetOffer?.retryOnly === true;
+    if (pending.current || !snapshot || !offer || (retry ? !canRetry : !canReset)) return;
     pending.current = true;
     setBusy(true);
     const owner = getDataOwnerGeneration();
@@ -44,16 +48,19 @@ export function useCodexRateLimitReset(
         .filter(Boolean).join(' · ') || t('codexResets.currentAccount');
       const accepted = await confirm({
         presentation: 'standard',
-        title: t('codexResets.confirmTitle'),
-        description: credit ? t('codexResets.confirmSelectedBody', {
+        title: t(retry ? 'codexResets.confirmRetryTitle' : 'codexResets.confirmTitle'),
+        description: retry ? t('codexResets.confirmRetryBody', { account }) : credit ? t('codexResets.confirmSelectedBody', {
           account, title: credit.title || t('codexResets.fullReset'),
           expiry: formatQuotaResetAt(credit.expiresAt, Date.now(), i18n?.resolvedLanguage ?? i18n?.language)
             || t('codexResets.expiryUnknown'),
         }) : t('codexResets.confirmBody', { account }),
-        confirmText: t('codexResets.consumeOnce'),
+        confirmText: t(retry ? 'codexResets.retryReset' : 'codexResets.consumeOnce'),
       });
-      if (!accepted || !stillCurrent()
-        || !summarizeCodexRateLimitReset(current.current.snapshot, Date.now())?.canReset) return;
+      const currentSnapshot = current.current.snapshot;
+      const eligible = retry
+        ? currentSnapshot?.resetOffer?.retryOnly === true && currentSnapshot.resetOffer.idempotencyKey === key
+        : !currentSnapshot?.resetOffer?.retryOnly && summarizeCodexRateLimitReset(currentSnapshot, Date.now())?.canReset;
+      if (!accepted || !stillCurrent() || !eligible) return;
       if (offer.validUntil <= Date.now()) {
         refresh();
         toast.error(t('codexResets.offerExpired'));
@@ -78,14 +85,14 @@ export function useCodexRateLimitReset(
         refresh();
         toast.error(t('codexResets.offerExpired'));
       } else {
-        // An ambiguous result must retry the same Main-issued key.
+        refresh();
         toast.error(t('codexResets.resetFailed'));
       }
     } finally {
       pending.current = false;
       if (mounted.current) setBusy(false);
     }
-  }, [confirm, providerId, refresh, snapshot, summary?.canReset, t, i18n?.resolvedLanguage, i18n?.language]);
+  }, [confirm, providerId, refresh, snapshot, canReset, canRetry, t, i18n?.resolvedLanguage, i18n?.language]);
 
-  return { busy, canReset: summary?.canReset === true, reset };
+  return { busy, canReset, canRetry, reset };
 }

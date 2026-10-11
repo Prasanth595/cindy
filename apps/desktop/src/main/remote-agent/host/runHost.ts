@@ -42,7 +42,7 @@ import {
   type RemoteAgentReverseRequest,
   type RemoteAgentTeardownReason,
 } from '@cindy/device-link';
-import type { AgentEvent, AgentSessionHandle, InteractionRequest } from '@cindy/maker-core';
+import type { AgentEvent, AgentSessionHandle, DeviceHostedLinkActivity, InteractionRequest } from '@cindy/maker-core';
 
 import { RemoteAgentRunClient, type RemoteAgentInvoke, type RemoteAgentPoller } from '../controller/runClient';
 import { EventLog, waitForAny } from '../eventLog';
@@ -129,7 +129,8 @@ export interface HostedStartInput {
   personalInstructions?: string;
   options: RemoteAgentWireStartOptions;
   workspace: RemoteAgentWireWorkspace;
-  tunnel: { url: string; token: string };
+  /** linkActivity：隧道上的往来记录，Codex 据此判断慢启动是否仍在推进。 */
+  tunnel: { url: string; token: string; linkActivity?: () => DeviceHostedLinkActivity };
   mcpServers: string[];
   onInvalidResumeSession?: (expectedSdkSessionId: string) => Promise<boolean>;
   /** 控制端是其他账号(供应商分享的受邀者)：Agent 不加载本机的个人化配置与可执行配置。 */
@@ -170,6 +171,8 @@ export interface RemoteAgentHostDeps {
   purgeHostedTranscripts?(hostSessionIds: readonly string[], nativeIds: readonly string[]): Promise<void>;
   /** 记录受邀者每一轮的用量(分享者的管理页按人、按模型展示)。只对 guest 调用。 */
   recordGuestUsage?(controller: string, usage: { kind: RemoteAgentKind; providerId: string | null; samples: GuestUsageSample[] }): void;
+  /** 记录同账号其他电脑每一轮的用量(远程与分享页按使用方展示)。只对 owner 调用。 */
+  recordOwnerUsage?(controller: string, usage: { kind: RemoteAgentKind; providerId: string | null; samples: GuestUsageSample[] }): void;
   /**
    * 「允许被远程调用」(供应商级授权，默认关)。不提供 = 不做供应商级限制(测试 / 旧接线)。
    *  - resolve：把对方要用的来源落到本机已开放的供应商上。providerId 是字符串时只核对它是否开放；
@@ -816,6 +819,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         ? Buffer.from(neutralizeExternalImports(data.toString('utf8'), fileDir, sessionRoot), 'utf8')
         : data
     );
+    // 受邀者的 Markdown(与导入的纯文本)一律按说明文件处理：命令、子代理、规则里的 `@文件` 同样会被 Claude Code 读进上下文，
+    // 指向会话目录之外(本机用户的文件)的引用要断开。
+    const markdownBytes = (data: Buffer, file: string): Buffer => (
+      /\.(?:md|markdown|txt)$/i.test(file) ? instructionBytes(data, path.dirname(file)) : data
+    );
     const mirrorRoot = path.join(sessionRoot, 'fs');
     // 固定短层级承载最多 MAX_ANCESTOR_LEVELS 个上级说明文件，不带控制端目录名。
     const segments = payload.virtualWorkspace
@@ -883,7 +891,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       await fsp.mkdir(path.dirname(target), { recursive: true });
       const data = projectBytes(Buffer.from(file.data, 'base64'));
       const isInstruction = (PROJECT_INSTRUCTION_FILES as readonly string[]).includes(file.path);
-      await fsp.writeFile(target, isInstruction ? instructionBytes(data, path.dirname(target)) : data);
+      await fsp.writeFile(target, isInstruction ? instructionBytes(data, path.dirname(target)) : markdownBytes(data, target));
     }
     for (const file of payload.ancestorFiles) {
       if (file.up > segments.length - 1) continue;
@@ -900,7 +908,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     for (const file of personal.files) {
       const target = path.join(shadowDir, ...file.path.split('/'));
       if (!inside(target, shadowDir)) continue;
-      await writeNew(target, projectBytes(Buffer.from(file.data, 'base64')));
+      await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
+    }
+    // 说明文件里 `@` 导入的文件：workspace 相对影子目录(可落在上级目录的镜像里)，session 相对会话目录
+    // (个人说明旁边，不进虚拟工作区)。已有同名文件的不覆盖。
+    for (const file of payload.importFiles ?? []) {
+      const base = file.base === 'workspace' ? shadowDir : sessionRoot;
+      const target = path.resolve(base, ...file.path.split('/'));
+      const allowed = file.base === 'workspace'
+        ? inside(target, mirrorRoot)
+        : inside(target, sessionRoot) && target !== mirrorRoot && !inside(target, mirrorRoot);
+      if (!allowed) continue;
+      await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
     }
     if (personal.permissions) await mergeLocalPermissions(path.join(shadowDir, '.claude', 'settings.local.json'), Object.fromEntries(Object.entries(personal.permissions).map(([key, rules]) => [key, rules?.map(projectText)])));
     return { shadowDir, mirrorRoot, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
@@ -974,7 +993,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         ...(payload.personal.instructions ? { personalInstructions: projectText(payload.personal.instructions) } : {}),
         options: Object.fromEntries(Object.entries(payload.options).map(([key, value]) => [key, typeof value === 'string' ? projectText(value) : value])) as unknown as RemoteAgentWireStartOptions,
         workspace: payload.workspace,
-        tunnel: { url: tunnel.url, token: tunnel.token },
+        tunnel: { url: tunnel.url, token: tunnel.token, linkActivity: () => tunnel.linkActivity() },
         mcpServers: payload.mcpServers,
         ...(run.trust === 'guest' ? { guest: true, ...(guestHome ? { guestHome } : {}), ...(guestProvider ? { guestProvider } : {}) } : {}),
         ...(payload.options.invalidResumeCallback
@@ -1018,7 +1037,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       for await (const event of handle.events()) {
         if (run.closing) break;
         lastEventType = event.type;
-        if (run.trust === 'guest') meterGuestUsage(run, handle.model, event);
+        meterRunUsage(run, handle.model, event);
         if (run.acceptsGroupSwitch) {
           // 受邀者的任务按组分到了本机这一台：本机运行中失败时同样可以换一台(凭证排在错误前面)。
           const failure = relayRunFailureOf(event);
@@ -1064,14 +1083,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     await finishRun(run, 'ended', 'navigation', false);
   }
 
-  function meterGuestUsage(run: Run, model: string | undefined, event: AgentEvent): void {
-    if (!deps.recordGuestUsage || event.type !== 'done') return;
+  function meterRunUsage(run: Run, model: string | undefined, event: AgentEvent): void {
+    const record = run.trust === 'guest' ? deps.recordGuestUsage : deps.recordOwnerUsage;
+    // 换了账号之后迟到的这一轮不记：用量账本按账号存放，记进去会落到新账号名下。
+    if (!record || event.type !== 'done' || !deps.isOwnerCurrent(run.owner)) return;
     run.usageMeter ??= createGuestUsageMeter(run.kind);
     try {
       const samples = run.usageMeter.observe(event, model ?? '');
-      if (samples.length > 0) deps.recordGuestUsage(run.controller, { kind: run.kind, providerId: run.providerId ?? null, samples });
+      if (samples.length > 0) record(run.controller, { kind: run.kind, providerId: run.providerId ?? null, samples });
     } catch (error) {
-      deps.log?.warn('remote agent guest usage record failed', { runId: run.id, error: String(error) });
+      deps.log?.warn('remote agent usage record failed', { runId: run.id, error: String(error) });
     }
   }
 
@@ -1261,7 +1282,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       backend.client = new RemoteAgentRunClient(randomUUID(), connection.poller, {
         onEvent: (event) => {
           if (run.closing || run.relay !== backend) return;
-          meterGuestUsage(run, backend.model, event as AgentEvent);
+          meterRunUsage(run, backend.model, event as AgentEvent);
           const deliver = () => {
             if (!run.closing) append(run, { t: 'event', event });
           };
@@ -2092,6 +2113,28 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     /** 有进行中任务的控制端(分享管理页显示「几个任务运行中」)。 */
     activeControllers(): string[] {
       return [...runs.values()].filter((run) => run.closedAt === undefined && !run.closing).map((run) => run.controller);
+    },
+    /**
+     * 正在运行一轮的任务的控制端(每个任务一项)：受邀者读分享目录时据此告诉它自己在本机跑着几个(供应商组的
+     * 「N 个任务运行中」)。本机 Agent 的任务现问会话；转给组内电脑的按那台报来的状态。
+     */
+    turnRunningControllers(): string[] {
+      return [...runs.values()]
+        .filter((run) => run.closedAt === undefined && !run.closing)
+        .filter((run) => (run.relay
+          ? run.relay.turnRunning
+          : (safeCall(run.handle?.isTurnRunning?.bind(run.handle)) ?? run.turnRunning) === true))
+        .map((run) => run.controller);
+    },
+    /**
+     * 在本机 Agent 上正在运行一轮的任务用的本机供应商(每个任务一项)：组所在电脑据此显示组里这台在跑几个。
+     * 转给组内电脑的不算(在那台运行，由那台报)；没接供应商授权、不知道用哪个供应商的不算。
+     */
+    turnRunningProviders(): string[] {
+      return [...runs.values()]
+        .filter((run) => run.closedAt === undefined && !run.closing && !run.relay && run.providerId)
+        .filter((run) => (safeCall(run.handle?.isTurnRunning?.bind(run.handle)) ?? run.turnRunning) === true)
+        .map((run) => run.providerId!);
     },
     /** 测试与诊断用。 */
     runCount(): number {
