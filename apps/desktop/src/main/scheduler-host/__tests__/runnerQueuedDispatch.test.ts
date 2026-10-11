@@ -30,6 +30,7 @@ vi.mock('original-fs', async () => {
 });
 
 import { AcceptedCallbackDispatchCancelled } from '../../maker-ipc/acceptedCallbackRunner.js';
+import { isBotCandidateUnavailable } from '../../maker-ipc/botCandidateRecovery.js';
 
 import type { AgentEvent, Maker, Session, SessionSendResult } from '@cindy/maker-core';
 import { SCHEDULER_RUN_ID_VENDOR_OPTION } from '@cindy/maker-scheduler';
@@ -938,6 +939,48 @@ describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
     harness.emit({ type: 'done', data: {}, source: 'claude-code' });
 
     await expect(firePromise).resolves.toMatchObject({ resultText: 'owned result' });
+  });
+
+  it.each([false, true])('keeps an initially busy=%s Bot routine run open when quota recovery is claimed by a later listener', async (busy) => {
+    let autoResumePending = false;
+    const quota = {
+      message: "You've hit your session limit · resets 1:00pm (Asia/Shanghai)",
+      sdkError: 'rate_limit', usageLimit: true, isTerminal: true,
+    };
+    const original = createSessionHarness(async () => ({ accepted: true }));
+    const replacement = createSessionHarness(async () => ({ accepted: true }));
+    const queue = createQueueHarness({ busy, autoResumePending: () => autoResumePending });
+    const { runner, notifier, replaceLiveSession } = createRunnerHarness(original.session, queue.deps);
+    const firePromise = runner.fire(heartbeatSchedule({ source: 'bot' }), createFireContext());
+    const settled = vi.fn();
+    void firePromise.then(() => settled('resolved'), () => settled('rejected'));
+    await vi.waitFor(() => expect(queue.enqueueCalls).toHaveLength(1));
+    await queue.accept();
+    // Runner subscribed first. The host claims the error later in the same event
+    // emission, so completion must wait until all listeners have seen it.
+    const offRecovery = original.session.onEvent(event => {
+      if (event.type === 'error' && event.data === quota && isBotCandidateUnavailable(quota)) autoResumePending = true;
+    });
+    original.emit({
+      type: 'error', source: 'claude-code',
+      data: quota,
+    });
+    original.emit({ type: 'done', data: {}, source: 'claude-code' });
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(original.vendorOptions[SCHEDULER_RUN_ID_VENDOR_OPTION]).toBe('run-q1');
+
+    original.emitStatus('closed');
+    replaceLiveSession(replacement.session);
+    autoResumePending = false;
+    replacement.emit({ type: 'text', data: { text: 'routine recovered', isFinal: true }, source: 'claude-code' });
+    replacement.emit({ type: 'done', data: {}, source: 'claude-code' });
+    await expect(firePromise).resolves.toMatchObject({ sessionId: SESSION_ID, resultText: 'routine recovered' });
+    expect(queue.enqueueCalls).toHaveLength(1);
+    expect(latestNotifiedRun(notifier).status).toBe('success');
+    expect(replacement.listenerCount()).toBe(0);
+    offRecovery();
   });
 
   it('keeps the same run open when ordinary auto-resume claims a capacity interruption', async () => {

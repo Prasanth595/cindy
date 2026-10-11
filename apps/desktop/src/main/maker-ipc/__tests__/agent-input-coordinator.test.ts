@@ -8,6 +8,7 @@ import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type A
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
+import { isBotCandidateUnavailable } from '../botCandidateRecovery.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
 import {
@@ -12119,6 +12120,62 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
 });
 
 describe('AgentInputCoordinator 中断自动续跑', () => {
+  it.each([
+    { stage: 'before collection', completed: [] },
+    { stage: 'before processing', completed: ['collection completed'] },
+    { stage: 'before delivery', completed: ['collection completed', 'processing completed; delivery pending'] },
+  ])('resumes scheduled Bot quota recovery $stage with the original run and durable progress', async ({ completed }) => {
+    const snapshot = vi.fn(async (): Promise<RecoveryContextSnapshot> => ({
+      contextTokens: 150_000,
+      contextWindow: 200_000,
+      progressCount: completed.length,
+      recentProgress: completed.map(summary => ({ role: 'tool_use', summary })),
+    }));
+    const h = createHarness({ getRecoveryContextSnapshot: snapshot });
+    const sid = 'scheduled-bot-quota';
+    const origin = { kind: 'scheduler', scheduleId: 'schedule', scheduleName: 'Routine', runId: 'run' } as const;
+    const item = makeItem('scheduled-input', 'collect, process, then deliver the report', { origin });
+    const signals = {
+      sdkError: 'rate_limit', usageLimit: true,
+      message: "You've hit your session limit · resets 1:00pm (Asia/Shanghai)",
+    };
+    h.isResumableTurnErrorCandidate.mockImplementation(isBotCandidateUnavailable);
+    h.onResumableTurnError.mockImplementation((_sid, error) =>
+      isBotCandidateUnavailable(error) ? { attempt: 1, maxAttempts: 5, sessionTotal: 1, error: error.message } : null);
+    h.setHasAssistantProgressAfter(async () => completed.length > 0);
+    h.coordinator.enqueue(sid, item);
+    await flush();
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'error', signals.message, signals);
+    h.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+    expect(h.coordinator.isAutoResumePending(sid)).toBe(true);
+    expect(h.coordinator.getProjection(sid).error).toBeNull();
+
+    // The host switches the configured candidate before this coordinator entry.
+    await expect(h.coordinator.autoRetryLastError(sid, 1)).resolves.toBe('resumed');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    const [, sent, , sendOpts] = h.sendToAgent.mock.calls[1]!;
+    expect(sendOpts.origin).toEqual(origin);
+    expect(sendOpts.persistUserMessage).toMatchObject({ autoResume: true });
+    expect(h.onDispatchedUserTurn.mock.calls[1]?.[1]).toMatchObject({ retrySourceClientId: item.clientId });
+    if (completed.length === 0) {
+      expect(sent).toEqual({ type: 'user', content: item.text });
+      expect(snapshot).not.toHaveBeenCalled();
+    } else {
+      const content = (sent as { content: string }).content;
+      expect(content).toContain(CONTINUE_AFTER_ERROR_PROMPT);
+      expect(content).toContain('[CINDY_RECOVERY_CHECKPOINT v1]');
+      expect(content).not.toContain(item.text);
+      for (const summary of completed) expect(content).toContain(summary);
+      expect(snapshot).toHaveBeenCalledExactlyOnceWith(sid, item.clientId);
+    }
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+  });
+
   const availabilityError = "Error Code null: Service temporarily unavailable. The model's availability is currently degraded.";
 
   // Offline provider -> real Pi translator -> real host classifier/guard ->
