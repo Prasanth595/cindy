@@ -1061,6 +1061,7 @@ struct TubeView: View {
   let emphasized: Bool
   let index: Int
   let fillToken: Int
+  var width: CGFloat = 46
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var shown = true
 
@@ -1100,7 +1101,7 @@ struct TubeView: View {
           .strokeBorder(emphasized ? Palette.ink : Palette.ink4, lineWidth: emphasized ? 1.5 : 0.5)
       }
     }
-    .frame(maxWidth: 46)
+    .frame(maxWidth: width)
     .frame(height: Self.height)
     .onChange(of: fillToken) { replay() }
     .onAppear { replay() }
@@ -1401,11 +1402,34 @@ struct Cells: View {
   @ObservedObject var store: MenubarStore
   let cells: [MBCell]
 
+  /// Four or more tubes share the row evenly. Fewer tubes widen and gather in the middle,
+  /// so one or two sources don't sit alone in a wide, empty row.
+  private var compact: (tube: CGFloat, cell: CGFloat)? {
+    switch cells.count {
+    case 1: return (78, 132)
+    case 2: return (66, 116)
+    case 3: return (56, 104)
+    default: return nil
+    }
+  }
+
   var body: some View {
-    HStack(alignment: .top, spacing: cells.count > 6 ? 6 : 10) {
-      ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-        CellView(cell: cell, index: index, fillToken: store.fillToken) {
-          store.go(.detail(cell.id))
+    if let compact {
+      HStack(alignment: .top, spacing: 8) {
+        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+          CellView(cell: cell, index: index, fillToken: store.fillToken, tubeWidth: compact.tube) {
+            store.go(.detail(cell.id))
+          }
+          .frame(width: compact.cell)
+        }
+      }
+      .frame(maxWidth: .infinity)
+    } else {
+      HStack(alignment: .top, spacing: cells.count > 6 ? 6 : 10) {
+        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+          CellView(cell: cell, index: index, fillToken: store.fillToken) {
+            store.go(.detail(cell.id))
+          }
         }
       }
     }
@@ -1471,6 +1495,7 @@ struct CellView: View {
   let cell: MBCell
   let index: Int
   let fillToken: Int
+  var tubeWidth: CGFloat = 46
   let action: () -> Void
   @State private var hovering = false
 
@@ -1484,7 +1509,8 @@ struct CellView: View {
           reserve: cell.reserve,
           emphasized: cell.emphasized,
           index: index,
-          fillToken: fillToken
+          fillToken: fillToken,
+          width: tubeWidth
         )
         VStack(spacing: 5) {
           LogoView(svg: cell.logoSvg, size: 13)
