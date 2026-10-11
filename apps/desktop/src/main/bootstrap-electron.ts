@@ -454,6 +454,7 @@ import {
 } from './localDb/index';
 import { createDbClient, createInprocDbClient } from './localDb/client/DbClient';
 import { createLifecycleDbClientManager } from './localDb/client/lifecycleDbClient';
+import { deliverPendingAgentAppUpdateResult } from './agent-app-update/index';
 import {
   clearCurrentDbClient,
   getCurrentDbClientUserId,
@@ -584,6 +585,7 @@ import { closeSharedTasksBeforeAccountHandover } from './device-link/sharedTaskA
 import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
 import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
 import { registerProviderGroupIpc } from './provider-group/ipc.js';
+import { registerProviderGroupRemoteHandler } from './provider-group/remoteRegistration.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -9051,6 +9053,8 @@ app.on('ready', async () => {
       void restoreBotRuntimeForCurrentOwner();
       void restoreOrcaRemoteWorkersForCurrentOwner();
       startReadyWorktreeMaintenance();
+      // An Agent-approved update restarted the app: write its outcome back to the task.
+      void deliverPendingAgentAppUpdateResult();
       if (dbClientTakeover.mode === 'unchanged') {
         // 副窗口会再次走 localDb.ensureReady；同 owner 的 lifecycle client 已由首个
         // onReady 完整启动，因此这里只保留 DB 连接交接，不重复执行账号级启动维护。
@@ -9505,6 +9509,7 @@ app.on('ready', async () => {
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
   registerProviderGroupIpc();
+  registerProviderGroupRemoteHandler();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,

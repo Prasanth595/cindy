@@ -27,3 +27,12 @@ export function isPiImageCapabilityRefreshFailedError(value: unknown): boolean {
     message.includes(PI_IMAGE_CAPABILITY_REFRESH_FAILED_MARKER)
   );
 }
+
+/** The existing Pi prompt RPC expiry signal, shared by native recovery and group settlement. */
+export function isPiPromptRpcTimeoutError(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const rec = data as { message?: unknown; sdkError?: unknown };
+  return [rec.message, rec.sdkError].some(
+    value => typeof value === 'string' && /pi rpc timeout after \d+ms: prompt\b/i.test(value),
+  );
+}

@@ -58,6 +58,7 @@ import { isTerminalAgentErrorEvent, parseToolLoopErrorDetails, isTurnWatchdogLiv
 import type { ContextUsageData } from './types/context-usage.js';
 import type { PiRuntimeCapabilityManifest } from './types/pi-runtime-capabilities.js';
 import type {
+  AgentMcpServerToolsReport,
   AgentSessionHandle,
   PiModelSwitchPreview,
   AgentSessionTeardownOptions,
@@ -1620,6 +1621,15 @@ export class Session {
   }
 
   /**
+   * The engine's own view of one MCP server in this session. Null when the
+   * engine has no per-session MCP status entry; never starts or calls a server.
+   */
+  async readMcpServerTools(serverName: string): Promise<AgentMcpServerToolsReport | null> {
+    this.ensureActive();
+    return await this.handle.readMcpServerTools?.(serverName) ?? null;
+  }
+
+  /**
    * 当前 session 生命周期状态 ('active' / 'aborting' / 'closed' / 'error')。
    * 这是内存里的 SDK 子进程视角, 不持久化。区分:
    *   - 'active'      : 子进程存活, 可正常 send / 切配置
@@ -2094,6 +2104,11 @@ export class Session {
 
   getCurrentTurnId(): string | null {
     return this.handle.getCurrentTurnId?.() ?? null;
+  }
+
+  /** Product origin of the dispatched turn; Host owner-only actions refuse automated turns. */
+  getCurrentTurnOrigin(): SendOrigin | null {
+    return this.currentTurnOrigin;
   }
 
   /**
