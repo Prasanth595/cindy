@@ -126,7 +126,7 @@ describe('buildMenubarView', () => {
     const facts = buildMenubarView(input([wallet])).details.cindy.facts;
     expect(facts.map((fact) => fact.label)).toEqual(['Balance', 'Daily spend', 'Runs out', 'Top-up balance', 'Promo balance', 'Used for']);
     expect(facts.find((fact) => fact.label === 'Promo balance')).toMatchObject({ value: '$5.00' });
-    expect(facts.find((fact) => fact.label === 'Promo balance')?.sub).toMatch(/^\$5\.00 expires /);
+    expect(facts.find((fact) => fact.label === 'Promo balance')?.sub).toMatch(/^Expires /);
   });
 
   it('offers a Codex reset when the window is used up and resets are left', () => {

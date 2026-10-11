@@ -986,6 +986,7 @@
       "poolPromo": "Promo balance",
       "poolPromoSub": "From promotions",
       "promoExpires": "{{value}} expires {{date}}",
+      "promoExpiresAll": "Expires {{date}}",
       "resetCredits": "Usage limit resets",
       "resetCount_one": "{{n}} reset",
       "resetCount_other": "{{n}} resets",

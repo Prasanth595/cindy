@@ -314,9 +314,6 @@ export function registerMakerUsageIpc(maker: Maker): void {
   registerMakerUsageHandlers(createElectronIpcHandlerRegistry(), {
     readAgentTodayUsage,
     readCodexAccountUsageSnapshot: readCodexAccountUsageSnapshotWithWebRefresh,
-    // Bind recovery confirmation to the exact owner, marker and OAuth credential observed before
-    // this account-level RPC. A stale response still returns its usage payload but cannot consume a
-    // newer recovery state.
     readCodexRateLimits,
     consumeCodexRateLimitReset: async (key, providerId) => {
       const scope = activeOwnerScopeKey();

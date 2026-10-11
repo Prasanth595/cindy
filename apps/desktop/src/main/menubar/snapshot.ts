@@ -718,12 +718,15 @@ class Builder {
         poolFacts.push({
           label: this.t('fact.poolPromo'),
           value: pools ? this.exactMoney(pools.promotional, source.currency) : '—',
-          sub: promo
-            ? this.t('fact.promoExpires', {
-                value: this.balanceMoney(promo.amount, source.currency),
-                date: this.dateFormat.format(promo.expiresAtMs),
-              })
-            : this.t('fact.poolPromoSub'),
+          // Name the amount only when just part of the gifts runs out first.
+          sub: !promo
+            ? this.t('fact.poolPromoSub')
+            : pools && promo.amount < pools.promotional - 0.005
+              ? this.t('fact.promoExpires', {
+                  value: this.balanceMoney(promo.amount, source.currency),
+                  date: this.dateFormat.format(promo.expiresAtMs),
+                })
+              : this.t('fact.promoExpiresAll', { date: this.dateFormat.format(promo.expiresAtMs) }),
         });
       }
       facts.push(...poolFacts);
