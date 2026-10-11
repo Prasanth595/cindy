@@ -916,6 +916,18 @@
             "text": "重置次數",
             "when": "reset credits——指可用的配額重置次數，與計費點數無關"
           }
+        ],
+        "ja": [
+          {
+            "text": "credits",
+            "when": "サードパーティ自身の credits（Codex / ChatGPT のサブスクリプション残量など）は原語のまま表記する"
+          }
+        ],
+        "ko": [
+          {
+            "text": "credits",
+            "when": "서드파티 자체의 credits(Codex / ChatGPT 구독 잔량 등)는 원래 이름 그대로 표기"
+          }
         ]
       },
       "forbidden": {
