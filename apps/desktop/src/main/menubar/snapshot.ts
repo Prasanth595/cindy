@@ -601,16 +601,6 @@ class Builder {
     };
   }
 
-  private sourceSummary(): string {
-    const counted = this.visible.filter((source) => source.kind !== 'payg');
-    const ok = counted.filter((source) =>
-      source.kind === 'balance' ? source.available > 0 : (this.remaining(source as MenubarSubscriptionInput) ?? 0) > 0,
-    ).length;
-    const credits = this.visibleSubscriptions().reduce((sum, source) => sum + (source.credits ?? 0), 0);
-    const base = this.t('summary.sources', { ok, total: counted.length });
-    return credits > 0 ? this.t('summary.withCredits', { base, credits: this.compact(credits) }) : base;
-  }
-
   // ── Details ───────────────────────────────────────────────────────────────
 
   private details(): Record<string, MenubarDetail> {
@@ -967,7 +957,6 @@ class Builder {
       updatedAtMs: this.input.updatedAtMs,
       headlinePrimary: headline.primary,
       headlineSecondary: headline.secondary,
-      sourceSummary: this.sourceSummary(),
       sources: this.cells(),
       details: this.details(),
       taskSummary: tasks.summary,

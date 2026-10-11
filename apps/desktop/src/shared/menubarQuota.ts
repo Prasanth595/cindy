@@ -189,7 +189,6 @@ export interface MenubarView {
   updatedAtMs: number | null;
   headlinePrimary: string;
   headlineSecondary: string | null;
-  sourceSummary: string;
   sources: MenubarSourceCell[];
   details: Record<string, MenubarDetail>;
   taskSummary: string;

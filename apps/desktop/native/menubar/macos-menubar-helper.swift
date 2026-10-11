@@ -137,7 +137,6 @@ struct MBView: Decodable, Equatable {
   let updatedAtMs: Double?
   let headlinePrimary: String
   let headlineSecondary: String?
-  let sourceSummary: String
   let sources: [MBCell]
   let details: [String: MBDetail]
   let taskSummary: String
@@ -417,6 +416,8 @@ final class MenubarStore: ObservableObject {
   @Published var narrowWidth: CGFloat = StatusController.narrowWidth
   /// Natural height of the open detail page; the panel grows to fit it when main is shorter.
   @Published var detailContentHeight: CGFloat = 0
+  /// Natural height of the manage page; the panel takes it instead of the main page's height.
+  @Published var manageContentHeight: CGFloat = 0
   @Published var shakeId: String?
 
   var strings: [String: String] { view?.strings ?? [:] }
@@ -627,6 +628,14 @@ final class StatusController: NSObject, NSWindowDelegate {
         self.layoutPanel(for: self.store.page, animated: true)
       }
       .store(in: &cancellables)
+    store.$manageContentHeight
+      .removeDuplicates()
+      .receive(on: RunLoop.main)
+      .sink { [weak self] _ in
+        guard let self, self.isOpen, self.store.page == .manage else { return }
+        self.layoutPanel(for: .manage, animated: true)
+      }
+      .store(in: &cancellables)
     store.$detailContentHeight
       .removeDuplicates()
       .receive(on: RunLoop.main)
@@ -797,6 +806,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     } else {
       var natural = store.mainContentHeight > 0 ? store.mainContentHeight : 640
       if case .detail = page { natural = max(natural, store.detailContentHeight) }
+      if page == .manage, store.manageContentHeight > 0 { natural = store.manageContentHeight }
       height = min(maxHeight, natural)
     }
     return NSRect(x: x, y: top - height, width: width, height: height)
@@ -1220,11 +1230,6 @@ struct MainPage: View {
       Headline(primary: view.headlinePrimary, secondary: view.headlineSecondary)
         .padding(EdgeInsets(top: 20, leading: 24, bottom: 2, trailing: 24))
 
-      Caption(title: store.s("quota"), detail: view.sourceSummary) {
-        TextPillButton(title: store.s("edit")) { store.go(.manage) }
-      }
-      .padding(EdgeInsets(top: 22, leading: 24, bottom: 12, trailing: 24))
-
       // Only sources with a level get a tube; the rest (not read yet, pay-as-you-go) are
       // listed as quiet rows so an empty tube never stands in for missing data.
       let measured = view.sources.filter { $0.fill != nil }
@@ -1232,11 +1237,12 @@ struct MainPage: View {
       if !measured.isEmpty {
         Cells(store: store, cells: measured)
           .padding(.horizontal, 22)
+          .padding(.top, 22)
       }
       if !unmeasured.isEmpty {
         UnmeasuredSources(store: store, cells: unmeasured)
           .padding(.horizontal, 14)
-          .padding(.top, measured.isEmpty ? 0 : 8)
+          .padding(.top, measured.isEmpty ? 18 : 8)
       }
 
       Caption(title: store.s("tasks"), detail: view.taskSummary) {
@@ -1398,26 +1404,6 @@ struct Caption<Trailing: View>: View {
       Spacer(minLength: 4)
       trailing
     }
-  }
-}
-
-struct TextPillButton: View {
-  let title: String
-  let action: () -> Void
-  @State private var hovering = false
-
-  var body: some View {
-    Button(action: action) {
-      Text(title)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(hovering ? Palette.ink : Palette.ink2)
-        .padding(.horizontal, 10)
-        .frame(height: 24)
-        .background(Capsule().fill(hovering ? Palette.ink5 : .clear))
-        .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
   }
 }
 
@@ -2463,6 +2449,7 @@ struct ManagePage: View {
   let controller: StatusController
   @State private var offset: CGFloat = 0
   @State private var contentHeight: CGFloat = 0
+  @State private var headerHeight: CGFloat = 0
   @State private var dragging: String?
 
   var body: some View {
@@ -2483,11 +2470,25 @@ struct ManagePage: View {
         .keyboardShortcut(.defaultAction)
       }
       .padding(EdgeInsets(top: 18, leading: 18, bottom: 10, trailing: 18))
+      .background(GeometryReader { g in
+        Color.clear
+          .onAppear { headerHeight = g.size.height }
+          .onChange(of: g.size.height) { _, h in headerHeight = h }
+      })
       EdgeLine(visible: offset > 2)
       TrackedScroll(offset: $offset, contentHeight: $contentHeight) {
         content
       }
     }
+    .onChange(of: contentHeight) { report() }
+    .onChange(of: headerHeight) { report() }
+  }
+
+  /// Sizes the panel to the whole page; it only scrolls when the screen is shorter.
+  private func report() {
+    guard contentHeight > 0 else { return }
+    let natural = (headerHeight + contentHeight + 1).rounded(.up)
+    if abs(store.manageContentHeight - natural) > 0.5 { store.manageContentHeight = natural }
   }
 
   private var content: some View {

@@ -855,10 +855,6 @@
       "sentence": "{{text}}。",
       "joiner": "、"
     },
-    "summary": {
-      "sources": "{{total}} 件中 {{ok}} 件に余裕",
-      "withCredits": "{{base}} · 予備 {{credits}} credits"
-    },
     "cell": {
       "payg": "従量",
       "plan": "プラン",
@@ -999,8 +995,6 @@
       "updatedMinutes_other": "{{n}} 分前に更新",
       "updatedHours_other": "{{n}} 時間前に更新",
       "updatedDays_other": "{{n}} 日前に更新",
-      "quota": "残り",
-      "edit": "編集",
       "tasks": "タスク",
       "tokenUnit": "token",
       "noTasksToday": "今日のタスクはまだありません",

@@ -866,10 +866,6 @@
       "sentence": "{{text}}.",
       "joiner": ", "
     },
-    "summary": {
-      "sources": "{{ok}} of {{total}} have room",
-      "withCredits": "{{base}} · {{credits}} credits in reserve"
-    },
     "cell": {
       "payg": "API",
       "plan": "Plan",
@@ -1016,8 +1012,6 @@
       "updatedHours_other": "Updated {{n}} hr ago",
       "updatedDays_one": "Updated {{n}} day ago",
       "updatedDays_other": "Updated {{n}} days ago",
-      "quota": "Remaining",
-      "edit": "Edit",
       "tasks": "Tasks",
       "tokenUnit": "tokens",
       "noTasksToday": "No tasks yet today",

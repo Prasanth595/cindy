@@ -855,10 +855,6 @@
       "sentence": "{{text}}。",
       "joiner": "，"
     },
-    "summary": {
-      "sources": "{{ok}} / {{total}} 有余量",
-      "withCredits": "{{base}} · {{credits}} credits 备用"
-    },
     "cell": {
       "payg": "按量",
       "plan": "订阅",
@@ -999,8 +995,6 @@
       "updatedMinutes_other": "{{n}} 分钟前更新",
       "updatedHours_other": "{{n}} 小时前更新",
       "updatedDays_other": "{{n}} 天前更新",
-      "quota": "余量",
-      "edit": "编辑",
       "tasks": "任务",
       "tokenUnit": "token",
       "noTasksToday": "今天还没有任务",

@@ -855,10 +855,6 @@
       "sentence": "{{text}}.",
       "joiner": ", "
     },
-    "summary": {
-      "sources": "{{total}}개 중 {{ok}}개 여유 있음",
-      "withCredits": "{{base}} · 예비 {{credits}} credits"
-    },
     "cell": {
       "payg": "종량",
       "plan": "플랜",
@@ -999,8 +995,6 @@
       "updatedMinutes_other": "{{n}}분 전 업데이트",
       "updatedHours_other": "{{n}}시간 전 업데이트",
       "updatedDays_other": "{{n}}일 전 업데이트",
-      "quota": "남은 양",
-      "edit": "편집",
       "tasks": "작업",
       "tokenUnit": "token",
       "noTasksToday": "오늘은 아직 작업이 없어요",
