@@ -913,7 +913,8 @@
       "full": "가득 찼어요.",
       "relaxed": "속도에 여유가 있어요.",
       "onPace": "속도가 적당해요.",
-      "windowRefresh": "{{window}} 구간은 {{at}}에 갱신"
+      "windowRefresh": "{{window}} 구간은 {{at}}에 갱신",
+      "usedUpWithResets_other": "초기화를 {{n}}회 더 쓸 수 있어요. 쓰면 바로 다시 채워져요."
     },
     "fact": {
       "balance": "잔액",
@@ -962,12 +963,29 @@
       "noCredits": "예비 credits 없음",
       "prepaid": "선불 잔액",
       "xaiAccount": "xAI 계정",
-      "account": "계정"
+      "account": "계정",
+      "todaySpent": "오늘 사용액",
+      "dailySuggested": "하루 {{value}} 이내 권장",
+      "poolPlan": "요금제 잔액",
+      "poolPlanSub": "요금제로 지급",
+      "poolPurchased": "충전 잔액",
+      "poolPurchasedSub": "직접 충전",
+      "poolPromo": "프로모션 잔액",
+      "poolPromoSub": "프로모션 지급",
+      "promoExpires": "{{value}}이(가) {{date}}에 만료",
+      "resetCredits": "사용 한도 초기화",
+      "resetCount_other": "{{n}}회",
+      "resetExpires": "{{date}}까지 유효",
+      "resetAtLimit": "한도에 도달하면 사용 가능",
+      "device": "컴퓨터",
+      "deviceSub": "내 다른 컴퓨터"
     },
     "action": {
       "newTask": "{{name}}(으)로 새 작업 시작",
       "topUp": "Cindy에서 충전",
-      "manage": "Cindy 설정에서 관리"
+      "manage": "Cindy 설정에서 관리",
+      "openApp": "Cindy 열기",
+      "useReset": "Cindy 설정에서 초기화 사용"
     },
     "tasks": {
       "today_other": "오늘 {{n}}개",
@@ -993,7 +1011,8 @@
       "quota": "할당량 · 기간마다 초기화",
       "payg": "API Key · 종량, 잔액 없음",
       "plan": "구독 · 남은 양을 알 수 없음",
-      "subscription": "구독 · {{plan}} · {{windows}}"
+      "subscription": "구독 · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
     },
     "notify": {
       "lowTitle": "곧 소진돼요",

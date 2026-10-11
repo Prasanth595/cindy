@@ -913,7 +913,8 @@
       "full": "満タンです。",
       "relaxed": "ペースに余裕があります。",
       "onPace": "ペースは標準です。",
-      "windowRefresh": "{{window}}の枠は{{at}}に更新"
+      "windowRefresh": "{{window}}の枠は{{at}}に更新",
+      "usedUpWithResets_other": "リセットがあと {{n}} 回使えます。使うとすぐ満タンに戻ります。"
     },
     "fact": {
       "balance": "残高",
@@ -962,12 +963,29 @@
       "noCredits": "予備の credits なし",
       "prepaid": "前払い残高",
       "xaiAccount": "xAI アカウント",
-      "account": "アカウント"
+      "account": "アカウント",
+      "todaySpent": "今日の使用額",
+      "dailySuggested": "1 日 {{value}} 以内が目安",
+      "poolPlan": "プラン残高",
+      "poolPlanSub": "プランで付与",
+      "poolPurchased": "チャージ残高",
+      "poolPurchasedSub": "自分でチャージ",
+      "poolPromo": "特典残高",
+      "poolPromoSub": "キャンペーン特典",
+      "promoExpires": "{{value}} が {{date}} に期限切れ",
+      "resetCredits": "利用上限のリセット",
+      "resetCount_other": "{{n}} 回",
+      "resetExpires": "{{date}}まで有効",
+      "resetAtLimit": "上限に達すると使用可能",
+      "device": "コンピュータ",
+      "deviceSub": "自分の別のコンピュータ"
     },
     "action": {
       "newTask": "{{name}} で新しいタスクを開始",
       "topUp": "Cindy でチャージ",
-      "manage": "Cindy の設定で管理"
+      "manage": "Cindy の設定で管理",
+      "openApp": "Cindy を開く",
+      "useReset": "Cindy の設定でリセットを使う"
     },
     "tasks": {
       "today_other": "今日 {{n}} 件",
@@ -993,7 +1011,8 @@
       "quota": "クォータ · 期間ごとにリセット",
       "payg": "API Key · 従量、残高なし",
       "plan": "サブスクリプション · 残りを取得できない",
-      "subscription": "サブスクリプション · {{plan}} · {{windows}}"
+      "subscription": "サブスクリプション · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
     },
     "notify": {
       "lowTitle": "残りわずかです",

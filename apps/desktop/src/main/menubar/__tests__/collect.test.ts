@@ -6,10 +6,12 @@ import {
   codexSource,
   collectMenubarInputs,
   dayKeysEndingAt,
+  distinctRemoteSubscriptions,
   paygSource,
   planLabel,
   type MenubarCollectDeps,
 } from '../collect';
+import type { MenubarSubscriptionInput } from '../snapshot';
 
 const NOW = Date.UTC(2026, 9, 11, 3, 0, 0);
 const nowSec = NOW / 1000;
@@ -166,5 +168,55 @@ describe('collectMenubarInputs', () => {
       expect.objectContaining({ sessionId: 's1', title: 'Fix the chart', harness: 'codex', running: true, startedAtMs: NOW - 60_000 }),
     ]);
     expect(collected.usage.days).toHaveLength(90);
+  });
+});
+
+describe('distinctRemoteSubscriptions', () => {
+  const week = (usedPercent: number, resetsAtMs = NOW + 3 * 86_400_000) =>
+    ({ kind: 'week' as const, usedPercent, resetsAtMs, windowMinutes: 10_080 });
+
+  function sub(id: string, extra: Partial<MenubarSubscriptionInput> = {}): MenubarSubscriptionInput {
+    return {
+      kind: 'subscription', id, providerId: 'anthropic', family: 'claude', logoSvg: '', brand: 'Claude',
+      account: null, plan: 'Max', windows: [week(40)], credits: null, creditsUnlimited: false, prepaidUsd: null,
+      updatedAtMs: NOW, accountKeys: [], ...extra,
+    };
+  }
+  const remote = (id: string, extra: Partial<MenubarSubscriptionInput> = {}) =>
+    sub(`remote:${id}`, { device: { id, name: id }, ...extra });
+
+  it('drops an account this computer already shows, matched by its fingerprint', () => {
+    const local = sub('anthropic', { accountKeys: ['claude:fp:abc'], windows: [week(40)] });
+    const same = remote('studio', { accountKeys: ['claude:fp:abc'], windows: [week(55)] });
+    expect(distinctRemoteSubscriptions([local], [same])).toEqual([]);
+  });
+
+  it('keeps a different account even when its numbers happen to match', () => {
+    const local = sub('anthropic', { accountKeys: ['claude:fp:abc'] });
+    const other = remote('studio', { accountKeys: ['claude:fp:xyz'] });
+    expect(distinctRemoteSubscriptions([local], [other])).toEqual([other]);
+  });
+
+  it('does not merge two people in one Codex workspace', () => {
+    const local = sub('openai', { family: 'codex', accountKeys: ['codex:id:ws-1', 'codex:identity:a@x.com'] });
+    const teammate = remote('studio', { family: 'codex', accountKeys: ['codex:id:ws-1', 'codex:identity:b@x.com'] });
+    expect(distinctRemoteSubscriptions([local], [teammate])).toEqual([teammate]);
+  });
+
+  it('falls back to identical windows when neither side names the account', () => {
+    const local = sub('anthropic', { windows: [week(40)] });
+    const mirror = remote('studio', { windows: [week(41, NOW + 3 * 86_400_000 + 30_000)] });
+    const other = remote('laptop', { windows: [week(70)] });
+    expect(distinctRemoteSubscriptions([local], [mirror, other])).toEqual([other]);
+  });
+
+  it('lists an account shared by two other computers once, from the fresher reading', () => {
+    const older = remote('studio', { accountKeys: ['claude:fp:abc'], updatedAtMs: NOW - 600_000 });
+    const newer = remote('laptop', { accountKeys: ['claude:fp:abc'], updatedAtMs: NOW });
+    expect(distinctRemoteSubscriptions([], [older, newer])).toEqual([newer]);
+  });
+
+  it('leaves out other-computer accounts it could not read', () => {
+    expect(distinctRemoteSubscriptions([], [remote('studio', { windows: [] })])).toEqual([]);
   });
 });

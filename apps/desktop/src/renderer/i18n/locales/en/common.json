@@ -925,7 +925,9 @@
       "full": "Full.",
       "relaxed": "Plenty of room at this pace.",
       "onPace": "On pace.",
-      "windowRefresh": "{{window}} window refreshes {{at}}"
+      "windowRefresh": "{{window}} window refreshes {{at}}",
+      "usedUpWithResets_one": "{{n}} reset is available; using it refills right away.",
+      "usedUpWithResets_other": "{{n}} resets are available; using one refills right away."
     },
     "fact": {
       "balance": "Balance",
@@ -974,12 +976,30 @@
       "noCredits": "No extra credits",
       "prepaid": "Prepaid balance",
       "xaiAccount": "xAI account",
-      "account": "Account"
+      "account": "Account",
+      "todaySpent": "Spent today",
+      "dailySuggested": "Suggested under {{value}} a day",
+      "poolPlan": "Plan balance",
+      "poolPlanSub": "From your plan",
+      "poolPurchased": "Top-up balance",
+      "poolPurchasedSub": "Added by you",
+      "poolPromo": "Promo balance",
+      "poolPromoSub": "From promotions",
+      "promoExpires": "{{value}} expires {{date}}",
+      "resetCredits": "Usage limit resets",
+      "resetCount_one": "{{n}} reset",
+      "resetCount_other": "{{n}} resets",
+      "resetExpires": "Valid until {{date}}",
+      "resetAtLimit": "Usable at a usage limit",
+      "device": "Computer",
+      "deviceSub": "One of your other computers"
     },
     "action": {
       "newTask": "Start a task with {{name}}",
       "topUp": "Top up in Cindy",
-      "manage": "Manage in Cindy settings"
+      "manage": "Manage in Cindy settings",
+      "openApp": "Open Cindy",
+      "useReset": "Use a reset in Cindy settings"
     },
     "tasks": {
       "today_one": "{{n}} today",
@@ -1007,7 +1027,8 @@
       "quota": "Quota · resets each period",
       "payg": "API Key · pay per use, no balance",
       "plan": "Subscription · remaining amount unavailable",
-      "subscription": "Subscription · {{plan}} · {{windows}}"
+      "subscription": "Subscription · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
     },
     "notify": {
       "lowTitle": "Running low",

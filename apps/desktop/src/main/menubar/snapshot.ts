@@ -13,6 +13,7 @@
 import {
   type MenubarColor,
   type MenubarDetail,
+  type MenubarDetailAction,
   type MenubarFact,
   type MenubarGate,
   type MenubarLevel,
@@ -61,6 +62,23 @@ export interface MenubarSubscriptionInput {
   /** xAI prepaid balance in USD. */
   prepaidUsd: number | null;
   updatedAtMs: number | null;
+  /** Identity keys used only to recognize one account read on two computers; never shown. */
+  accountKeys?: readonly string[];
+  /** Set when the account is signed in on another of the user's computers. */
+  device?: MenubarRemoteDevice | null;
+  /** Codex rate-limit resets the user can redeem. */
+  resetCredits?: MenubarResetCredits | null;
+}
+
+export interface MenubarRemoteDevice {
+  id: string;
+  name: string;
+}
+
+export interface MenubarResetCredits {
+  count: number;
+  /** Soonest expiry among the available resets; null when none expires. */
+  earliestExpiryMs: number | null;
 }
 
 export interface MenubarBalanceInput {
@@ -78,11 +96,23 @@ export interface MenubarBalanceInput {
   currency: 'USD' | 'CNY';
   /** Set for a period quota (organization or gateway key) rather than a wallet. */
   quota: MenubarQuotaPeriod | null;
+  /** What is left in each wallet pool; null when the server did not report them. */
+  pools?: MenubarWalletPools | null;
+  /** The promotional grant with money left that expires first. */
+  promoExpiry?: { amount: number; expiresAtMs: number } | null;
+}
+
+export interface MenubarWalletPools {
+  plan: number;
+  purchased: number;
+  promotional: number;
 }
 
 /** A gateway budget that refills each period, unlike a wallet that only grows by top-ups. */
 export interface MenubarQuotaPeriod {
   resetsAtMs: number | null;
+  /** Spent today (UTC day) across every client; null when the gateway did not say. */
+  todaySpend: number | null;
 }
 
 export interface MenubarPaygInput {
@@ -156,6 +186,8 @@ const RESTORE_HORIZON_MS = 7 * DAY_MS;
 const MIN_PACE_ELAPSED = 0.03;
 /** Up to this many visible cells have room for the full "resets in …" phrase. */
 const ROOMY_CELL_LIMIT = 4;
+/** Settings' soft daily limit for a period quota: period total / 30 × 4.5 (a display hint, not a cap). */
+const DAILY_SOFT_LIMIT_FACTOR = 4.5;
 const FAMILY_ORDER: Record<MenubarFamily, number> = { claude: 0, codex: 1, grok: 2 };
 const FAMILY_COLORS: Record<MenubarFamily, MenubarColor[]> = {
   claude: ['claude', 'claude2', 'claude3'],
@@ -401,13 +433,13 @@ class Builder {
 
   /** Short name under a tube and in sentences: the account handle, else the brand. */
   private who(source: MenubarSourceInput): string {
-    if (source.kind === 'subscription') return this.handle(source) ?? source.brand;
+    if (source.kind === 'subscription') return this.handle(source) ?? source.device?.name ?? source.brand;
     if (source.kind === 'balance') return this.t('balance.short');
     return source.name;
   }
 
   private sourceTitle(source: MenubarSourceInput): string {
-    if (source.kind === 'subscription') return this.handle(source) ?? source.brand;
+    if (source.kind === 'subscription') return this.handle(source) ?? source.device?.name ?? source.brand;
     if (source.kind === 'balance') return this.t(source.quota ? 'balance.quotaName' : 'balance.name');
     return source.name;
   }
@@ -636,36 +668,68 @@ class Builder {
     const days = burn ? source.available / burn : null;
     const quota = source.quota;
     const resetsAtMs = quota?.resetsAtMs ?? null;
-    const facts: MenubarFact[] = [
-      {
-        label: this.t(quota ? 'fact.quotaLeft' : 'fact.balance'),
-        value: this.exactMoney(source.available, source.currency),
-        sub: source.observedAtMs ? this.t('fact.updatedAgo', { ago: this.ago(source.observedAtMs) }) : '',
-      },
-      {
-        label: this.t('fact.dailyUse'),
-        value: burn ? this.t('fact.about', { value: this.balanceMoney(burn, source.currency) }) : this.t('fact.estimating'),
-        sub: burn ? this.t('fact.last7Days') : this.t('fact.estimatingSub'),
-      },
-      {
-        label: this.t('fact.runsOut'),
-        value: days !== null ? this.t('fact.aroundDate', { date: this.dateFormat.format(this.input.nowMs + days * DAY_MS) }) : '—',
-        sub: days !== null ? this.t('fact.atThisPace') : this.t('fact.estimatingSub'),
-      },
-      quota
-        ? {
-            label: this.t('fact.quotaTotal'),
-            value: source.fullAmount !== null ? this.exactMoney(source.fullAmount, source.currency) : '—',
-            sub: resetsAtMs !== null
-              ? this.t('fact.timeLeft', { duration: this.duration(resetsAtMs - this.input.nowMs) })
-              : this.t('fact.cindyModels'),
-          }
-        : {
-            label: this.t('fact.usedFor'),
-            value: this.t('fact.cindyModels'),
-            sub: this.t('fact.chargedPerUse'),
-          },
-    ];
+    const updated = source.observedAtMs ? this.t('fact.updatedAgo', { ago: this.ago(source.observedAtMs) }) : '';
+    const dailyUse: MenubarFact = {
+      label: this.t('fact.dailyUse'),
+      value: burn ? this.t('fact.about', { value: this.balanceMoney(burn, source.currency) }) : this.t('fact.estimating'),
+      sub: burn ? this.t('fact.last7Days') : this.t('fact.estimatingSub'),
+    };
+    const runsOutAtMs = days !== null ? this.input.nowMs + days * DAY_MS : null;
+    const runsOut: MenubarFact = {
+      label: this.t('fact.runsOut'),
+      value: runsOutAtMs !== null ? this.t('fact.aroundDate', { date: this.dateFormat.format(runsOutAtMs) }) : '—',
+      sub: runsOutAtMs !== null ? this.t('fact.atThisPace') : this.t('fact.estimatingSub'),
+    };
+    const facts: MenubarFact[] = [];
+    if (quota) {
+      facts.push(
+        { label: this.t('fact.quotaLeft'), value: this.exactMoney(source.available, source.currency), sub: updated },
+        {
+          label: this.t('fact.quotaTotal'),
+          value: source.fullAmount !== null ? this.exactMoney(source.fullAmount, source.currency) : '—',
+          sub: resetsAtMs !== null
+            ? this.t('fact.timeLeft', { duration: this.duration(resetsAtMs - this.input.nowMs) })
+            : this.t('fact.cindyModels'),
+        },
+      );
+      if (quota.todaySpend !== null) {
+        const suggested = source.fullAmount ? (source.fullAmount / 30) * DAILY_SOFT_LIMIT_FACTOR : null;
+        facts.push({
+          label: this.t('fact.todaySpent'),
+          value: this.exactMoney(quota.todaySpend, source.currency),
+          sub: suggested ? this.t('fact.dailySuggested', { value: this.balanceMoney(suggested, source.currency) }) : '',
+        });
+      }
+      facts.push(dailyUse);
+      // A quota that refills before it would run out has no run-out date worth showing.
+      if (runsOutAtMs !== null && (resetsAtMs === null || runsOutAtMs < resetsAtMs)) facts.push(runsOut);
+    } else {
+      facts.push({ label: this.t('fact.balance'), value: this.exactMoney(source.available, source.currency), sub: updated }, dailyUse, runsOut);
+      const pools = source.pools ?? null;
+      const promo = source.promoExpiry ?? null;
+      const poolFacts: MenubarFact[] = [];
+      if (pools && pools.plan > 0) {
+        poolFacts.push({ label: this.t('fact.poolPlan'), value: this.exactMoney(pools.plan, source.currency), sub: this.t('fact.poolPlanSub') });
+      }
+      if (pools && pools.purchased > 0) {
+        poolFacts.push({ label: this.t('fact.poolPurchased'), value: this.exactMoney(pools.purchased, source.currency), sub: this.t('fact.poolPurchasedSub') });
+      }
+      if ((pools && pools.promotional > 0) || promo) {
+        poolFacts.push({
+          label: this.t('fact.poolPromo'),
+          value: pools ? this.exactMoney(pools.promotional, source.currency) : '—',
+          sub: promo
+            ? this.t('fact.promoExpires', {
+                value: this.balanceMoney(promo.amount, source.currency),
+                date: this.dateFormat.format(promo.expiresAtMs),
+              })
+            : this.t('fact.poolPromoSub'),
+        });
+      }
+      facts.push(...poolFacts);
+      // The grid has two columns; the general note fills an odd row or stands in for the pools.
+      if (facts.length % 2 === 1) facts.push({ label: this.t('fact.usedFor'), value: this.t('fact.cindyModels'), sub: this.t('fact.chargedPerUse') });
+    }
     const lasts = days !== null
       ? this.t('say.balanceLasts', { count: Math.floor(days), n: Math.floor(days) })
       : this.t('say.balanceEstimating');
@@ -726,8 +790,14 @@ class Builder {
     const state = this.state(source);
     const limit = state.limit;
     const handle = this.handle(source);
-    const actionLabel = this.t('action.newTask', { name: handle ?? source.brand });
-    const action = { kind: 'new-task' as const, providerId: source.providerId };
+    const resets = source.resetCredits?.count ?? 0;
+    // An account on another computer runs there; this computer cannot start a task on it directly.
+    let actionLabel = source.device
+      ? this.t('action.openApp')
+      : this.t('action.newTask', { name: handle ?? source.brand });
+    let action: MenubarDetailAction = source.device
+      ? { kind: 'open-app' }
+      : { kind: 'new-task', providerId: source.providerId };
     if (!limit || state.remaining === null) {
       return {
         id: source.id,
@@ -775,6 +845,11 @@ class Builder {
         saySecondary = resetAt
           ? this.t('say.usedUpWithCredits', { at: resetAt, credits: creditsLabel })
           : this.t('say.creditsOnly', { credits: creditsLabel });
+      } else if (resets > 0 && !source.device) {
+        saySecondary = this.t('say.usedUpWithResets', { count: resets, n: resets });
+        // Resets are spent from Settings, next to the account.
+        actionLabel = this.t('action.useReset');
+        action = { kind: 'open-settings' };
       } else if (resetAt) {
         saySecondary = this.t('say.resetsAt', { at: resetAt });
       }
@@ -828,6 +903,16 @@ class Builder {
         sub: source.creditsUnlimited || credits > 0 ? this.t('fact.creditsUsedAfter') : this.t('fact.noCredits'),
       });
     }
+    if (resets > 0) {
+      const expiry = source.resetCredits?.earliestExpiryMs ?? null;
+      facts.push({
+        label: this.t('fact.resetCredits'),
+        value: this.t('fact.resetCount', { count: resets, n: resets }),
+        sub: expiry !== null
+          ? this.t('fact.resetExpires', { date: this.dateFormat.format(expiry) })
+          : this.t('fact.resetAtLimit'),
+      });
+    }
     if (source.prepaidUsd !== null) {
       facts.push({ label: this.t('fact.prepaid'), value: `$${source.prepaidUsd.toFixed(2)}`, sub: this.t('fact.xaiAccount') });
     }
@@ -858,14 +943,12 @@ class Builder {
   }
 
   private accountFacts(source: MenubarSubscriptionInput): MenubarFact[] {
-    if (!source.account) return [];
-    return [
-      {
-        label: this.t('fact.account'),
-        value: this.email(source),
-        sub: source.updatedAtMs ? this.t('fact.updatedAgo', { ago: this.ago(source.updatedAtMs) }) : '',
-      },
-    ];
+    const updated = source.updatedAtMs ? this.t('fact.updatedAgo', { ago: this.ago(source.updatedAtMs) }) : '';
+    const facts: MenubarFact[] = [];
+    if (source.device) facts.push({ label: this.t('fact.device'), value: source.device.name, sub: this.t('fact.deviceSub') });
+    if (source.account) facts.push({ label: this.t('fact.account'), value: this.email(source), sub: updated });
+    else if (source.device) facts[0] = { ...facts[0]!, sub: updated || this.t('fact.deviceSub') };
+    return facts;
   }
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
@@ -946,12 +1029,14 @@ class Builder {
     if (source.kind === 'balance') return this.t(source.quota ? 'manage.quota' : 'manage.balance');
     if (source.kind === 'payg') return this.t(source.billing === 'api' ? 'manage.payg' : 'manage.plan');
     const plan = source.plan ? ` · ${source.plan}` : '';
-    if (source.family === 'codex') return `Codex${plan}`;
     const windows = source.windows
       .filter((window) => window.kind !== 'scoped')
       .map((window) => this.windowLabel(window))
       .join(' + ');
-    return this.t('manage.subscription', { plan: source.plan ?? source.brand, windows: windows || '—' });
+    const subtitle = source.family === 'codex'
+      ? `Codex${plan}`
+      : this.t('manage.subscription', { plan: source.plan ?? source.brand, windows: windows || '—' });
+    return source.device ? this.t('manage.onDevice', { name: source.device.name, subtitle }) : subtitle;
   }
 
   private manageValue(source: MenubarSourceInput): string {

@@ -98,6 +98,7 @@ export type MenubarDetailAction =
   | { kind: 'new-task'; providerId: string }
   | { kind: 'open-billing' }
   | { kind: 'open-settings' }
+  | { kind: 'open-app' }
   | { kind: 'none' };
 
 export interface MenubarDetail {

@@ -13,6 +13,8 @@ import os from 'node:os';
 
 import { isSessionActivityRunning } from '@cindy/maker-shared/session-activity';
 
+import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
+
 import type { ModelAccessCreditUsage } from '../../shared/modelAccess.js';
 import {
   isMenubarSupportedPlatform,
@@ -26,7 +28,7 @@ import {
 } from '../../shared/menubarQuota.js';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
 import { getAgentIslandService } from '../agent-island/service.js';
-import { getAppCapabilities } from '../appCapabilities.js';
+import { getAppCapabilities, requireAppCapability } from '../appCapabilities.js';
 import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 import * as authManager from '../authManager.js';
 import { projectModelAccessBalance, projectModelAccessCreditUsage } from '../billing/projection.js';
@@ -37,6 +39,8 @@ import {
   openMainWindowSession,
   openMainWindowVoiceSettings,
 } from '../deepLink.js';
+import { remoteBackgroundInvoke } from '../device-link/index.js';
+import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { deviceName } from '../device-link/deviceName.js';
 import { getResolvedMainLocale, mainStringKeysUnder, rawMainString } from '../i18n.js';
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
@@ -46,6 +50,7 @@ import { inspectAppDefaultModel } from '../maker-ipc/appDefaultModelControl.js';
 import { applyNewMakerDraftRoute } from '../maker-ipc/register.js';
 import {
   readClaudeSubscriptionUsageSnapshotForDeviceLink,
+  readCodexRateLimitsForHost,
   readXaiSubscriptionUsageSnapshotForDeviceLink,
   triggerClaudeSubscriptionUsageRefresh,
   triggerCodexAccountUsageRefresh,
@@ -68,8 +73,15 @@ import {
 } from './collect.js';
 import { MacMenubarNativeHost } from './MacMenubarNativeHost.js';
 import { MENUBAR_HARNESS_LOGOS } from './logos.js';
+import { readRemoteSubscriptions } from './remoteSubscriptions.js';
 import { readMenubarSettings, writeMenubarSettings } from './settingsStore.js';
-import { buildMenubarView, isLowOnEverything, type MenubarBuildInput } from './snapshot.js';
+import {
+  buildMenubarView,
+  isLowOnEverything,
+  type MenubarBuildInput,
+  type MenubarResetCredits,
+  type MenubarSubscriptionInput,
+} from './snapshot.js';
 import { buildMenubarUiStrings, createMenubarTranslate } from './strings.js';
 
 const log = createLogger('menubar');
@@ -88,6 +100,15 @@ const BALANCE_TIMEOUT_MS = 20_000;
  */
 const USAGE_FRESH_WHILE_OPEN_MS = 30_000;
 const USAGE_FRESH_WHILE_CLOSED_MS = 5 * 60_000;
+/**
+ * Other computers are read over a background device link, and Codex reset credits through the
+ * Codex account RPC. Both are slower and costlier than the local caches, so they keep their own
+ * longer cadence; opening the panel shortens it.
+ */
+const REMOTE_FRESH_WHILE_OPEN_MS = 60_000;
+const REMOTE_FRESH_WHILE_CLOSED_MS = 10 * 60_000;
+const RESETS_FRESH_WHILE_OPEN_MS = 3 * 60_000;
+const RESETS_FRESH_WHILE_CLOSED_MS = 30 * 60_000;
 
 export interface MenubarServiceDeps {
   /** Opens a new task in the main window (the app menu's "New Task" command). */
@@ -106,6 +127,13 @@ interface BalanceCache {
   fetchedAtMs: number;
 }
 
+interface TimedCache<T> {
+  /** Data owner the reading belongs to; another owner invalidates it. */
+  ownerId: string | null;
+  value: T;
+  readAtMs: number;
+}
+
 class MenubarService {
   private readonly host: MacMenubarNativeHost;
   private readonly creditSamples = new CreditSampleStore();
@@ -122,6 +150,9 @@ class MenubarService {
   private usageOwnerId: string | null = null;
   /** Serializes history reads so the two ranges never recompute at the same time. */
   private usageChain: Promise<unknown> = Promise.resolve();
+  private remote: TimedCache<MenubarSubscriptionInput[]> | null = null;
+  private remoteInFlight: Promise<MenubarSubscriptionInput[]> | null = null;
+  private readonly resets = new Map<string, TimedCache<MenubarResetCredits | null>>();
 
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private periodicTimer: ReturnType<typeof setInterval> | null = null;
@@ -182,6 +213,8 @@ class MenubarService {
         if (ownerId !== this.usageOwnerId) {
           this.usageOwnerId = ownerId;
           this.usageCache.clear();
+          this.remote = null;
+          this.resets.clear();
         }
         this.scheduleRebuild();
       }),
@@ -217,6 +250,8 @@ class MenubarService {
     this.panelOpen = false;
     this.lastView = null;
     this.usageCache.clear();
+    this.remote = null;
+    this.resets.clear();
     this.lowNotification?.close();
     this.lowNotification = null;
     this.host.suspend();
@@ -283,6 +318,8 @@ class MenubarService {
       readCodex: (providerId) => readCodexAccountUsageSnapshot(providerId),
       readClaude: (providerId) => readClaudeSubscriptionUsageSnapshotForDeviceLink(providerId),
       readXai: (providerId) => readXaiSubscriptionUsageSnapshotForDeviceLink(providerId),
+      readCodexResets: (providerId) => this.readCodexResets(providerId, force, nowMs),
+      readRemoteSubscriptions: () => this.readRemote(force, nowMs),
       readBalance: () => this.readBalance(force, nowMs),
       readUsage: async (scope: MenubarUsageScope) => {
         const payload = await this.readUsage(scope, force, nowMs);
@@ -321,6 +358,59 @@ class MenubarService {
     const payload = await read;
     this.usageCache.set(scope, { payload, readAtMs: Date.now() });
     return payload;
+  }
+
+  // ── Other computers and Codex resets ───────────────────────────────────────
+
+  /** Subscription accounts on the user's other computers; deduplicated later against local ones. */
+  private async readRemote(force: boolean, nowMs: number): Promise<MenubarSubscriptionInput[]> {
+    // Same gate as the device-link IPC: no device directory or peer link without an account.
+    if (!getAppCapabilities().canUseDeviceLink) {
+      this.remote = null;
+      return [];
+    }
+    const ownerId = getActiveAppSession().dataOwnerId;
+    const cached = this.remote?.ownerId === ownerId ? this.remote : null;
+    const maxAge = this.panelOpen ? REMOTE_FRESH_WHILE_OPEN_MS : REMOTE_FRESH_WHILE_CLOSED_MS;
+    if (cached && !force && nowMs - cached.readAtMs < maxAge) return cached.value;
+    if (!this.remoteInFlight) {
+      this.remoteInFlight = readRemoteSubscriptions({
+        nowMs,
+        listDevices: () => {
+          requireAppCapability('canUseDeviceLink', 'Device Link requires a Cindy account.');
+          return handleListDevices(deviceDirectoryDeps());
+        },
+        invoke: (deviceId, channel, args) => remoteBackgroundInvoke(deviceId, channel, args),
+        onError: (scope, error) => log.info('menu bar remote source failed', { scope, error: errorMessage(error) }),
+      }).finally(() => {
+        this.remoteInFlight = null;
+      });
+    }
+    const value = await this.remoteInFlight;
+    if (getActiveAppSession().dataOwnerId !== ownerId) return [];
+    this.remote = { ownerId, value, readAtMs: Date.now() };
+    return value;
+  }
+
+  /** Codex reset credits for one account; a failed read keeps the last known count. */
+  private async readCodexResets(providerId: string, force: boolean, nowMs: number): Promise<MenubarResetCredits | null> {
+    const ownerId = getActiveAppSession().dataOwnerId;
+    const entry = this.resets.get(providerId);
+    const cached = entry?.ownerId === ownerId ? entry : null;
+    const maxAge = this.panelOpen ? RESETS_FRESH_WHILE_OPEN_MS : RESETS_FRESH_WHILE_CLOSED_MS;
+    if (cached && !force && nowMs - cached.readAtMs < maxAge) return cached.value;
+    try {
+      const result = await readCodexRateLimitsForHost(providerId);
+      const value = resetCreditsOf(result, nowMs);
+      if (getActiveAppSession().dataOwnerId !== ownerId) return null;
+      this.resets.set(providerId, { ownerId, value, readAtMs: Date.now() });
+      return value;
+    } catch (error) {
+      log.info('menu bar codex resets unavailable', { providerId, error: errorMessage(error) });
+      // Do not retry on every rebuild; the next window of the cadence tries again.
+      this.resets.set(providerId, { ownerId, value: cached?.value ?? null, readAtMs: Date.now() });
+      return cached?.value ?? null;
+    }
   }
 
   private publish(collected: MenubarCollected, nowMs: number, gate?: MenubarGate): void {
@@ -443,7 +533,10 @@ class MenubarService {
       burnPerDay: estimateDailyBurn(samples, quota.fetchedAt),
       observedAtMs: quota.fetchedAt,
       currency: quota.currency,
-      quota: { resetsAtMs: Number.isFinite(resetsAtMs) ? resetsAtMs : null },
+      quota: {
+        resetsAtMs: Number.isFinite(resetsAtMs) ? resetsAtMs : null,
+        todaySpend: Number.isFinite(quota.todaySpend) ? quota.todaySpend : null,
+      },
     };
   }
 
@@ -452,9 +545,10 @@ class MenubarService {
     const options = { timeoutMs: BALANCE_TIMEOUT_MS, redactErrorDetails: true, baseUrl };
     let available: number;
     let pools: number | null = null;
+    let usage: ModelAccessCreditUsage | null = null;
     let observedAt: string;
     try {
-      const usage: ModelAccessCreditUsage = projectModelAccessCreditUsage(
+      usage = projectModelAccessCreditUsage(
         await serverApiFetch<unknown>('/api/model-access/credit-usage', options),
       );
       available = Number(usage.available);
@@ -483,6 +577,8 @@ class MenubarService {
       observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
       currency,
       quota: null,
+      pools: usage ? walletPools(usage) : null,
+      promoExpiry: usage ? nearestPromoExpiry(usage, atMs) : null,
     };
   }
 
@@ -566,6 +662,9 @@ class MenubarService {
       case 'open-settings':
         openMainWindowVoiceSettings('providers');
         return;
+      case 'open-app':
+        this.showMainWindow();
+        return;
       case 'none':
         return;
     }
@@ -615,6 +714,41 @@ export function stopMenubarService(): void {
 function hasDataOwner(): boolean {
   const session = getActiveAppSession();
   return session.mode !== 'signed-out' && session.dataOwnerId !== null;
+}
+
+function resetCreditsOf(result: MobileCodexRateLimitsResult | null, nowMs: number): MenubarResetCredits | null {
+  const credits = result?.rateLimitResetCredits;
+  if (!credits) return null;
+  const count = Number.isFinite(credits.availableCount) ? Math.max(0, Math.floor(credits.availableCount)) : 0;
+  let earliestExpiryMs: number | null = null;
+  for (const credit of credits.credits ?? []) {
+    if (credit.status !== 'available' || credit.expiresAt === null) continue;
+    const expiresAtMs = credit.expiresAt * 1000;
+    if (expiresAtMs <= nowMs) continue;
+    if (earliestExpiryMs === null || expiresAtMs < earliestExpiryMs) earliestExpiryMs = expiresAtMs;
+  }
+  return { count, earliestExpiryMs };
+}
+
+function walletPools(usage: ModelAccessCreditUsage): MenubarBalanceReading['pools'] {
+  const plan = Number(usage.plan.remaining);
+  const purchased = Number(usage.purchased.remaining);
+  const promotional = Number(usage.promotional.remaining);
+  if (![plan, purchased, promotional].every(Number.isFinite)) return null;
+  return { plan, purchased, promotional };
+}
+
+/** The active gift that runs out first while it still has money left. */
+function nearestPromoExpiry(usage: ModelAccessCreditUsage, nowMs: number): MenubarBalanceReading['promoExpiry'] {
+  let nearest: { amount: number; expiresAtMs: number } | null = null;
+  for (const grant of usage.promotionalGrants) {
+    if (grant.state !== 'active') continue;
+    const amount = Number(grant.remainingAmount);
+    const expiresAtMs = Date.parse(grant.expiresAt);
+    if (!(amount > 0) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) continue;
+    if (!nearest || expiresAtMs < nearest.expiresAtMs) nearest = { amount, expiresAtMs };
+  }
+  return nearest;
 }
 
 function errorMessage(error: unknown): string {

@@ -913,7 +913,8 @@
       "full": "满格。",
       "relaxed": "节奏宽松。",
       "onPace": "节奏正常。",
-      "windowRefresh": "{{window}}窗口{{at}}刷新"
+      "windowRefresh": "{{window}}窗口{{at}}刷新",
+      "usedUpWithResets_other": "还有 {{n}} 次额度重置可用，用一次立即回满。"
     },
     "fact": {
       "balance": "余额",
@@ -962,12 +963,29 @@
       "noCredits": "没有备用 credits",
       "prepaid": "预付余额",
       "xaiAccount": "xAI 账户",
-      "account": "账号"
+      "account": "账号",
+      "todaySpent": "今日已用",
+      "dailySuggested": "每日建议 {{value}} 以内",
+      "poolPlan": "套餐余额",
+      "poolPlanSub": "随套餐发放",
+      "poolPurchased": "充值余额",
+      "poolPurchasedSub": "自己充值",
+      "poolPromo": "赠送余额",
+      "poolPromoSub": "活动赠送",
+      "promoExpires": "{{value}} 将于 {{date}} 到期",
+      "resetCredits": "额度重置",
+      "resetCount_other": "{{n}} 次",
+      "resetExpires": "{{date}}前有效",
+      "resetAtLimit": "达到用量上限时可用",
+      "device": "所在电脑",
+      "deviceSub": "我的其他电脑"
     },
     "action": {
       "newTask": "用 {{name}} 开新任务",
       "topUp": "在 Cindy 里充值",
-      "manage": "在 Cindy 设置中管理"
+      "manage": "在 Cindy 设置中管理",
+      "openApp": "打开 Cindy",
+      "useReset": "在 Cindy 设置中使用重置"
     },
     "tasks": {
       "today_other": "今天 {{n}} 个",
@@ -993,7 +1011,8 @@
       "quota": "配额 · 按周期重置",
       "payg": "API Key · 按量，查不到余额",
       "plan": "订阅 · 查不到余量",
-      "subscription": "订阅 · {{plan}} · {{windows}}"
+      "subscription": "订阅 · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
     },
     "notify": {
       "lowTitle": "余量快用完了",

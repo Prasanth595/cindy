@@ -106,13 +106,46 @@ describe('buildMenubarView', () => {
   it('shows an organization quota with its reset and sends it to Settings', () => {
     const quota: MenubarSourceInput = {
       kind: 'balance', id: 'cindy', logoSvg: MENUBAR_CINDY_LOGO, available: 19_996.38, fullAmount: 20_000,
-      burnPerDay: null, observedAtMs: NOW, currency: 'USD', quota: { resetsAtMs: NOW + 20 * DAY + 3 * HOUR },
+      burnPerDay: null, observedAtMs: NOW, currency: 'USD', quota: { resetsAtMs: NOW + 20 * DAY + 3 * HOUR, todaySpend: 3.62 },
     };
     const view = buildMenubarView(input([quota], { locale: 'zh-CN' }));
     expect(view.sources[0]).toMatchObject({ when: '20天3时后重置' });
     expect(view.sources[0].fill).toBeCloseTo(0.9998);
     expect(view.headlinePrimary).toBe('Cindy 本期配额还能用。');
     expect(view.details.cindy).toMatchObject({ title: 'Cindy 本期配额', action: { kind: 'open-settings' } });
+    expect(view.details.cindy.facts).toContainEqual({ label: '今日已用', value: '$3.62', sub: '每日建议 $3,000 以内' });
+  });
+
+  it('splits a wallet into its pools and names the gift that expires first', () => {
+    const wallet: MenubarSourceInput = {
+      kind: 'balance', id: 'cindy', logoSvg: MENUBAR_CINDY_LOGO, available: 17, fullAmount: 20,
+      burnPerDay: 1, observedAtMs: NOW, currency: 'USD', quota: null,
+      pools: { plan: 0, purchased: 12, promotional: 5 },
+      promoExpiry: { amount: 5, expiresAtMs: NOW + 9 * DAY },
+    };
+    const facts = buildMenubarView(input([wallet])).details.cindy.facts;
+    expect(facts.map((fact) => fact.label)).toEqual(['Balance', 'Daily spend', 'Runs out', 'Top-up balance', 'Promo balance', 'Used for']);
+    expect(facts.find((fact) => fact.label === 'Promo balance')).toMatchObject({ value: '$5.00' });
+    expect(facts.find((fact) => fact.label === 'Promo balance')?.sub).toMatch(/^\$5\.00 expires /);
+  });
+
+  it('offers a Codex reset when the window is used up and resets are left', () => {
+    const view = buildMenubarView(input([codex('alpha', 100, { resetCredits: { count: 2, earliestExpiryMs: NOW + 5 * DAY } })]));
+    const detail = view.details.alpha;
+    expect(detail.saySecondary).toBe('2 resets are available; using one refills right away.');
+    expect(detail.action).toEqual({ kind: 'open-settings' });
+    expect(detail.facts).toContainEqual(expect.objectContaining({ label: 'Usage limit resets', value: '2 resets' }));
+  });
+
+  it('names an account on another computer by that computer and does not start a task on it', () => {
+    const remote = codex('alpha', 30, {
+      id: 'remote:dev-2:anthropic', account: null, device: { id: 'dev-2', name: 'Studio' },
+    });
+    const view = buildMenubarView(input([remote]));
+    expect(view.sources[0].name).toBe('Studio');
+    expect(view.manage[0].subtitle).toBe('Studio · Codex · Pro');
+    expect(view.details[remote.id].action).toEqual({ kind: 'open-app' });
+    expect(view.details[remote.id].facts).toContainEqual(expect.objectContaining({ label: 'Computer', value: 'Studio' }));
   });
 
   it('says nothing was read instead of "used up" when no level is known', () => {

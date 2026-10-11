@@ -27,11 +27,13 @@ import {
   type MenubarHarness,
   type MenubarPaygInput,
   type MenubarQuotaPeriod,
+  type MenubarResetCredits,
   type MenubarSourceInput,
   type MenubarSubscriptionInput,
   type MenubarTaskInput,
   type MenubarUsageInput,
   type MenubarUsageScopeInput,
+  type MenubarWalletPools,
   type MenubarWindowInput,
 } from './snapshot.js';
 
@@ -52,6 +54,8 @@ export interface MenubarBalanceReading {
   currency: 'USD' | 'CNY';
   /** Set for a period quota (organization or gateway key) rather than a wallet. */
   quota: MenubarQuotaPeriod | null;
+  pools?: MenubarWalletPools | null;
+  promoExpiry?: { amount: number; expiresAtMs: number } | null;
 }
 
 export interface MenubarSessionRow {
@@ -66,6 +70,10 @@ export interface MenubarCollectDeps {
   readCodex(providerId: string): Promise<CodexAccountUsagePayload | RateLimitSnapshot | null>;
   readClaude(providerId: string): Promise<ClaudeSubscriptionUsageSnapshot | null>;
   readXai(providerId: string): Promise<XaiSubscriptionUsageSnapshot | null>;
+  /** Codex resets left on a local account; absent in tests that do not cover them. */
+  readCodexResets?(providerId: string): Promise<MenubarResetCredits | null>;
+  /** Subscriptions on the user's other computers, already read and mapped. */
+  readRemoteSubscriptions?(): Promise<MenubarSubscriptionInput[]>;
   /** Null when the account has no Cindy balance (organization accounts, signed out). */
   readBalance(): Promise<MenubarBalanceReading | null>;
   readUsage(scope: MenubarUsageScope): Promise<UsageHistoryPayload | null>;
@@ -93,11 +101,12 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
     }
   };
 
-  const [providers, balance, localUsage, allUsage] = await Promise.all([
+  const [providers, balance, localUsage, allUsage, remote] = await Promise.all([
     safe('providers', () => deps.listProviders(), [] as ProviderView[]),
     safe('balance', () => deps.readBalance(), null),
     safe('usage:local', () => deps.readUsage('local'), null),
     safe('usage:all', () => deps.readUsage('all'), null),
+    safe('remote', async () => (await deps.readRemoteSubscriptions?.()) ?? [], [] as MenubarSubscriptionInput[]),
   ]);
 
   const sources: MenubarSourceInput[] = [];
@@ -109,8 +118,11 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
     // of falling into the hidden pay-as-you-go group.
     if (!kind && needsCodexReconnect(provider)) return codexSource(provider, null, deps.nowMs);
     if (kind === 'codex') {
-      const payload = await safe(`codex:${provider.id}`, () => deps.readCodex(provider.id), null);
-      return codexSource(provider, payload, deps.nowMs);
+      const [payload, resets] = await Promise.all([
+        safe(`codex:${provider.id}`, () => deps.readCodex(provider.id), null),
+        safe(`codex-resets:${provider.id}`, async () => (await deps.readCodexResets?.(provider.id)) ?? null, null),
+      ]);
+      return { ...codexSource(provider, payload, deps.nowMs), resetCredits: resets };
     }
     if (kind === 'claude') {
       const snapshot = await safe(`claude:${provider.id}`, () => deps.readClaude(provider.id), null);
@@ -125,6 +137,7 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
   for (const source of await Promise.all(subscriptionReads)) {
     if (source) sources.push(source);
   }
+  sources.push(...distinctRemoteSubscriptions(sources, remote));
 
   const today = (allUsage ?? localUsage)?.todayKey ?? localDayKey(deps.nowMs);
   const days = dayKeysEndingAt(today, MENUBAR_USAGE_DAYS);
@@ -172,7 +185,91 @@ function balanceSource(balance: MenubarBalanceReading): MenubarBalanceInput {
     observedAtMs: balance.observedAtMs,
     currency: balance.currency,
     quota: balance.quota,
+    pools: balance.pools ?? null,
+    promoExpiry: balance.promoExpiry ?? null,
   };
+}
+
+// ── Accounts on other computers ──────────────────────────────────────────────
+
+/** A reset this close (and usage this close) means two readings describe the same window. */
+const SAME_RESET_TOLERANCE_MS = 2 * 60_000;
+const SAME_USAGE_TOLERANCE = 3;
+
+/** Key kind before the value: "codex:id", "claude:fp", "claude:identity". */
+function keyKind(key: string): string {
+  return key.split(':', 2).join(':');
+}
+
+function sameWindows(a: MenubarSubscriptionInput, b: MenubarSubscriptionInput): boolean {
+  const limits = (source: MenubarSubscriptionInput) => source.windows.filter((window) => window.kind !== 'scoped');
+  const left = limits(a);
+  const right = limits(b);
+  if (left.length === 0 || left.length !== right.length) return false;
+  return left.every((window) =>
+    right.some(
+      (other) =>
+        other.kind === window.kind &&
+        window.resetsAtMs !== null &&
+        other.resetsAtMs !== null &&
+        Math.abs(other.resetsAtMs - window.resetsAtMs) <= SAME_RESET_TOLERANCE_MS &&
+        Math.abs(other.usedPercent - window.usedPercent) <= SAME_USAGE_TOLERANCE,
+    ),
+  );
+}
+
+/**
+ * Whether two readings are one account. The same kind of key with different values rules it out
+ * (a ChatGPT workspace id can be shared by two people, their emails cannot); otherwise a shared
+ * key decides it; with nothing to compare, identical reset times do, since the service sets a
+ * window's reset per account.
+ */
+export function sameSubscriptionAccount(a: MenubarSubscriptionInput, b: MenubarSubscriptionInput): boolean {
+  if (a.family !== b.family) return false;
+  const left = a.accountKeys ?? [];
+  const right = b.accountKeys ?? [];
+  const valuesByKind = new Map<string, Set<string>>();
+  for (const key of right) {
+    const kind = keyKind(key);
+    valuesByKind.set(kind, (valuesByKind.get(kind) ?? new Set()).add(key));
+  }
+  if (left.some((key) => valuesByKind.has(keyKind(key)) && !valuesByKind.get(keyKind(key))!.has(key))) return false;
+  if (left.some((key) => right.includes(key))) return true;
+  return sameWindows(a, b);
+}
+
+/**
+ * Accounts on other computers that are not already listed. The same account signed in on this
+ * computer and on others is one source: this computer's reading wins, then the freshest remote
+ * one. Remote accounts without a reading add nothing and are left out.
+ */
+export function distinctRemoteSubscriptions(
+  listed: readonly MenubarSourceInput[],
+  remote: readonly MenubarSubscriptionInput[],
+): MenubarSubscriptionInput[] {
+  const kept: MenubarSubscriptionInput[] = listed.filter(
+    (source): source is MenubarSubscriptionInput => source.kind === 'subscription',
+  );
+  const added: MenubarSubscriptionInput[] = [];
+  const ordered = [...remote]
+    .filter((source) => source.windows.length > 0)
+    .sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0));
+  for (const source of ordered) {
+    if (kept.some((other) => sameSubscriptionAccount(source, other))) continue;
+    kept.push(source);
+    added.push(source);
+  }
+  return added;
+}
+
+function identityKeys(family: string, provider: ProviderView, ...ids: [string, unknown][]): string[] {
+  const keys: string[] = [];
+  for (const [kind, value] of ids) {
+    if (typeof value === 'string' && value.trim()) keys.push(`${family}:${kind}:${value.trim()}`);
+  }
+  const identity = accountIdentity(provider);
+  if (identity) keys.push(`${family}:identity:${identity.toLowerCase()}`);
+  return keys;
 }
 
 function accountIdentity(provider: ProviderView): string | null {
@@ -249,6 +346,7 @@ export function codexSource(
     creditsUnlimited: credits?.unlimited === true,
     prepaidUsd: null,
     updatedAtMs: bucket?.updatedAt ?? full?.updatedAt ?? null,
+    accountKeys: identityKeys('codex', provider, ['id', (full as { accountId?: unknown } | null)?.accountId]),
   };
 }
 
@@ -283,6 +381,7 @@ export function claudeSource(
     creditsUnlimited: false,
     prepaidUsd: null,
     updatedAtMs: snapshot?.updatedAt ?? null,
+    accountKeys: identityKeys('claude', provider, ['fp', snapshot?.accountFingerprint]),
   };
 }
 
@@ -314,6 +413,7 @@ export function xaiSource(
     creditsUnlimited: false,
     prepaidUsd: typeof prepaid === 'number' && Number.isFinite(prepaid) ? prepaid : null,
     updatedAtMs: snapshot?.updatedAt ?? null,
+    accountKeys: identityKeys('xai', provider, ['fp', snapshot?.accountFingerprint]),
   };
 }
 
