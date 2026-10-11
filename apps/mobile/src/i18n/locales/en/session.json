@@ -31,7 +31,12 @@
     "openMicPermission": "Open microphone settings",
     "maxAttachments": "You can add up to {{max}} attachments.",
     "voiceStopRecording": "Stop Recording",
-    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again."
+    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again.",
+    "plugins": "Plugins",
+    "pluginsChooseDevice": "Choose a Device",
+    "pluginsLoading": "Loading plugins…",
+    "pluginsEmpty": "No Installed Plugins",
+    "pluginsReload": "Reload Plugins"
   },
   "presentation": {
     "collaboration": {
@@ -370,7 +375,6 @@
     "worktreeBranchesLoading": "Loading branches…",
     "worktreeBranchSaving": "Syncing the selected branch…",
     "worktreeBranchSyncFailed": "Could not confirm the saved source branch — retry the branch selection",
-    "worktreeSettingsSaving": "Syncing the worktree setting…",
     "worktreeSettingsSyncFailed": "Could not save the worktree default. You can still use this selection.",
     "worktreeBranchesRetry": "Could not load branches. Tap to retry",
     "worktreeDetecting": "Detecting environment…",

@@ -191,8 +191,10 @@ const bindings = {
   Text: ({ children }: any) => createElement("span", {}, children),
   BlurBackdrop: () => null,
   FLOATING_CHROME_BLUR_INTENSITY: 55,
-  Platform: { OS: "ios" },
-  Sparkles: () => null,
+  makeComposerActivityPillStyles: () => ({}),
+  composerActivityPillOverlayColor: () => "transparent",
+  ComposerActivityPill: ({ label, live, children }: any) =>
+    createElement("span", { "data-testid": "session.composerActivityPill", "aria-live": live ? "polite" : undefined }, label, children),
   ArrowDown: () => null,
   iconSize: {},
   iconStroke: {},
@@ -684,4 +686,21 @@ it.each(['failed', 'cancelled', 'retrying'] as const)('shows %s consistently in 
   expect(card()!.textContent).toContain(`session.screen.${key}`);
   expect(card()!.textContent).not.toContain('session.screen.finalAverage');
   expect(card()!.textContent).toContain('40');
+});
+
+it('keeps a slow new-task send in the activity row, then continues as thinking', async () => {
+  const show = async (slowSendPhase: string | null) => act(async () => root.render(createElement(ActivityStatus, {
+    ...base, visible: true, tokenUsage: 0, sideTaskRunning: false, reconnectAttempt: null, slowSendPhase,
+  })));
+  const pillNode = () => host.querySelector('[data-testid="session.composerActivityPill"]');
+  const pill = () => pillNode()?.textContent;
+  await show('connecting');
+  expect(pill()).toBe('session.new.slowSend.connecting');
+  // Phases are announced (the old in-composer notice was a polite live region); thinking is not.
+  expect(pillNode()?.getAttribute('aria-live')).toBe('polite');
+  await show('sending');
+  expect(pill()).toBe('session.new.slowSend.sending');
+  await show(null);
+  expect(pill()).toBe('session.screen.thinking');
+  expect(pillNode()?.getAttribute('aria-live')).toBeNull();
 });

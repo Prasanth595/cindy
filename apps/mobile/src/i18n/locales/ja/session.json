@@ -31,7 +31,12 @@
     "openMicPermission": "マイクの権限設定を開く",
     "maxAttachments": "添付は最大 {{max}} 件までです。",
     "voiceStopRecording": "録音を停止",
-    "capabilitiesUnsupported": "パソコンからコマンドとリソースの一覧を読み込めませんでした。パソコンの Cindy を更新してから再試行してください"
+    "capabilitiesUnsupported": "パソコンからコマンドとリソースの一覧を読み込めませんでした。パソコンの Cindy を更新してから再試行してください",
+    "plugins": "プラグイン",
+    "pluginsChooseDevice": "デバイスを選択",
+    "pluginsLoading": "プラグインを読み込み中…",
+    "pluginsEmpty": "インストール済みプラグインなし",
+    "pluginsReload": "プラグインを再読み込み"
   },
   "presentation": {
     "collaboration": {
@@ -370,7 +375,6 @@
     "worktreeBranchesLoading": "ブランチを読み込み中…",
     "worktreeBranchSaving": "選択したブランチを同期中…",
     "worktreeBranchSyncFailed": "保存済みのソースブランチを確認できません。ブランチを再選択してください",
-    "worktreeSettingsSaving": "worktree 設定を同期中…",
     "worktreeSettingsSyncFailed": "worktree の既定設定を保存できませんでした。現在の選択で続行できます。",
     "worktreeBranchesRetry": "ブランチを読み込めません。タップして再試行",
     "worktreeDetecting": "環境を検出中…",

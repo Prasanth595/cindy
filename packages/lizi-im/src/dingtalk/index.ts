@@ -682,7 +682,7 @@ export class DingTalkIM extends BaseIM implements ChannelIM {
       buffer: downloaded.buffer,
       mimeType: downloaded.mimeType,
     });
-    return imageAttachment(stored.absPath, stored.url, downloaded.mimeType);
+    return imageAttachment(stored.absPath, stored.url, stored.mimeType ?? downloaded.mimeType);
   }
 
   private tryResolvePendingReply(

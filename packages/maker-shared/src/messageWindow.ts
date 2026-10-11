@@ -1,7 +1,7 @@
 export { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from './remoteTextStream.js';
 export * from './historyView.js';
 export * from './historyWorkLines.js';
-export { projectHistoryView, historySubagentScopes, isHistoryDetailTool, hasVisibleHistoryResult } from './historyViewProjection.js';
+export { projectHistoryView, historySubagentScopes, isHistoryDetailTool, hasVisibleHistoryResult, completesHistoryTurn } from './historyViewProjection.js';
 export * from './historyViewController.js';
 export { renderHistoryView } from './historyViewRender.js';
 export { HistoryViewHandoff } from './historyViewHandoff.js';
