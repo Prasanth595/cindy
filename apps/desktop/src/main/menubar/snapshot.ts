@@ -441,12 +441,15 @@ class Builder {
   private restores(): { atMs: number; sources: MenubarSubscriptionInput[] }[] {
     const events: { atMs: number; source: MenubarSubscriptionInput }[] = [];
     for (const source of this.visibleSubscriptions()) {
-      for (const state of this.state(source).windows) {
-        if (state.window.kind === 'scoped' || state.window.resetsAtMs === null) continue;
-        if (100 - state.remaining < 1) continue;
-        if (state.window.resetsAtMs - this.input.nowMs > RESTORE_HORIZON_MS) continue;
-        events.push({ atMs: state.window.resetsAtMs, source });
-      }
+      // A source is full again only once every window still short of full has reset: a
+      // 5-hour window coming back does not refill a weekly window that is still down.
+      const pending = this.state(source).windows.filter(
+        (state) => state.window.kind !== 'scoped' && 100 - state.remaining >= 1,
+      );
+      if (pending.length === 0 || pending.some((state) => state.window.resetsAtMs === null)) continue;
+      const atMs = Math.max(...pending.map((state) => state.window.resetsAtMs!));
+      if (atMs - this.input.nowMs > RESTORE_HORIZON_MS) continue;
+      events.push({ atMs, source });
     }
     events.sort((a, b) => a.atMs - b.atMs);
     const groups: { atMs: number; sources: MenubarSubscriptionInput[] }[] = [];

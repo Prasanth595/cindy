@@ -121,6 +121,19 @@ describe('buildMenubarView', () => {
     expect(buildMenubarView(input([codex('alpha', 10)])).gate).toBeUndefined();
   });
 
+  it('says a source refills only when its last short window resets', () => {
+    const claude = codex('alpha', 0, {
+      windows: [
+        { kind: 'session', usedPercent: 32, resetsAtMs: NOW + 2 * HOUR, windowMinutes: 300 },
+        { kind: 'week', usedPercent: 9, resetsAtMs: NOW + 6 * DAY, windowMinutes: 10_080 },
+      ],
+    });
+    const weekday = new Date(NOW + 6 * DAY).toLocaleDateString('en', { weekday: 'short' });
+    const view = buildMenubarView(input([claude]));
+    expect(view.headlineSecondary).not.toContain('today');
+    expect(view.headlineSecondary).toContain(weekday);
+  });
+
   it('localizes the headline', () => {
     const view = buildMenubarView(input([codex('alpha', 80), codex('beta', 20)], { locale: 'zh-CN' }));
     expect(view.headlinePrimary).toBe('beta 余量最足。');
