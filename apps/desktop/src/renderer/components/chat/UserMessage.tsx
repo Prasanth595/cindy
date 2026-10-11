@@ -56,7 +56,6 @@ import { isRealAutomationOrigin } from '@/lib/messageAutomationOrigin';
 import { SHARE_SOURCE_ATTR } from '@/lib/shareConversationImage';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '../../../shared/agentInputQueue';
-import type { PersistedSessionReferenceMetadata } from '../../../shared/sessionReferenceMetadata';
 import {
   buildRewindDraftAttachments,
   startRewindSourceProbe,
@@ -105,7 +104,7 @@ import {
 import { findLinkifyMatches } from './userMessageLinkify';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
-import { buildSessionMessageDeepLink, parseSessionDeepLinkHref } from '@/lib/deepLink';
+import { buildSessionMessageDeepLink } from '@/lib/deepLink';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { insertSessionLinkIntoComposer } from '@/lib/composerActionsBus';
 import { MENTION_TOKEN_SPLIT, parseMentionToken } from '@/lib/mentionRefFormat';
@@ -161,8 +160,6 @@ interface UserMessageProps {
    */
   allowPrivilegedLinks?: boolean;
   content: string;
-  /** Resolved range summaries for session links in this user message. */
-  sessionReferences?: PersistedSessionReferenceMetadata[];
   /** chat-text-quote:content 开头 blockquote 为引用功能产出(胶囊化渲染判据)。 */
   quotesEncoded?: boolean;
   /** Hidden semantic reference ranges; preserved only while visible text is unchanged. */
@@ -286,7 +283,6 @@ function renderTextWithLinks(
   keyPrefix: string,
   onImageClick: ((xdtFileUrl: string) => void) | undefined,
   sessionId?: string,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   if (!interactive) return [text];
@@ -309,14 +305,6 @@ function renderTextWithLinks(
         />,
       );
     } else if (match.kind === 'session') {
-      const target = parseSessionDeepLinkHref(match.href);
-      const referenceMetadata = target
-        ? sessionReferences?.find(
-            (reference) =>
-              reference.sessionId === target.sessionId &&
-              (reference.messageClientId ?? null) === target.messageClientId,
-          )
-        : undefined;
       // 会话深链 → chip(显式 label / 标题 / 短 ID),点击跳会话、带锚点定位
       // 消息。`[标题](深链)` markdown 形式(输入框粘贴 chip 化的序列化产物)
       // 带显式 label,SessionLinkChip 优先展示、不查库。
@@ -325,7 +313,6 @@ function renderTextWithLinks(
           key={`${keyPrefix}-session-${match.index}`}
           href={match.href}
           label={match.label}
-          referenceMetadata={referenceMetadata}
         />,
       );
     } else if (match.kind === 'project') {
@@ -427,7 +414,6 @@ function renderContentWithoutPastedText(
   /** remote 会话:@-chip 点击跳过本机 smart resolve,按 workdir 风格直接 join。 */
   remoteJoin = false,
   renderLegacySlashCommands = true,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -472,7 +458,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -488,7 +473,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -582,7 +566,6 @@ function renderContentWithoutPastedText(
             `${li}-${pi}`,
             onImageClick,
             sessionId,
-            sessionReferences,
             interactive,
           ),
         );
@@ -754,7 +737,6 @@ export function renderContent(
   remoteJoin = false,
   pastedTextRanges: readonly PastedTextRange[] = [],
   slashCommandRanges?: readonly SlashCommandRange[],
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   /**
    * 粘贴段胶囊的点击入口(issue #946)。不传时胶囊退回不可交互,只剩 hover
    * tooltip —— 那正是"发出去就再也看不到全文"的旧行为,新调用点都应该传。
@@ -824,7 +806,6 @@ export function renderContent(
           sessionId,
           remoteJoin,
           useLegacySlashHeuristic,
-          sessionReferences,
           interactive,
         )}
       </span>
@@ -842,7 +823,6 @@ export function UserMessage({
   workingDir,
   allowPrivilegedLinks = true,
   content,
-  sessionReferences,
   quotesEncoded,
   agentReferences,
   pastedTextRanges,
@@ -1629,7 +1609,6 @@ export function UserMessage({
                                         : ghostBodySourceStart + quoteTextSegmentStarts[index]!,
                                       segment.text.length,
                                     ),
-                                sessionReferences,
                                 longMessageCollapsed ? undefined : handlePastedTextChipClick,
                                 projectSentRanges(
                                   validAgentReferences,
@@ -1670,7 +1649,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               undefined,
                               bubbleAgentReferences,
                               false,
@@ -1703,7 +1681,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               handlePastedTextChipClick,
                               bubbleAgentReferences,
                             )}

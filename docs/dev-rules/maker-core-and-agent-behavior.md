@@ -300,6 +300,18 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
 - 打算用 prompt 解决某个问题前先自问：这件事用代码能不能做？能就用代码。
 - 把本应由代码保证的确定性逻辑（格式校验、字段抽取、流程跳转、是否调用某个工具等）
   交给模型自由发挥，会引入不可复现的行为漂移，属于本规则明确禁止的做法。
+- 下游 harness 自带的能力与 Cindy 重叠、或结果只在厂商自家界面可见（如 Claude Code 的
+  `SendUserFile`／`Artifact`、claude.ai 连接器、Codex 的 `visualize` 插件）时，不靠 prompt
+  劝模型别用，而是在 host 能力路由表
+  （`apps/desktop/src/main/maker-host/capability-routing.ts`）加一条 `disabled` 路由，由各
+  harness 适配层从模型可见面移除：Claude 用 SDK `disallowedTools`、flag settings 的
+  `deniedMcpServers` 与 `skillOverrides`，Codex 用线程级 `plugins`／`mcp_servers`／
+  `skills.config`。各 harness 适配层用同一个判断函数决定能否执行某条路由并生成参数，
+  `findUnenforcedCapabilityRoutes`（`packages/maker-core/src/agents/capability-route-support.ts`）
+  直接复用这些判断；路由表里有执行不了的规则（来源类型不对、缺必填字段、Pi 等没有适配的
+  harness）会被测试拦下，不会静默失效。Claude 的 `skillOverrides` 与 `deniedMcpServers` 都只按名字
+  匹配，分不清来源，同名的用户／项目 Skill 或 MCP 会被一起关掉；路由表只写 harness 专属名字（如
+  `artifact-*`、带命名空间的插件 Skill、`claude.ai ` 前缀的账号连接器），`design` 这类通用名不关。
 - Cindy 的目标模式由 `goal-host` 统一管理续跑、预算与暂停／恢复。Codex 创建和恢复线程时
   使用会话级 `features.goals=false`，避免模型另建原生目标，形成绕过宿主调度与来源标记的
   第二套循环；不写用户的全局 Codex 配置。不能仅把无来源事件改判为目标事件，否则用户

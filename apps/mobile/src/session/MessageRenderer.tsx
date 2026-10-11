@@ -229,14 +229,8 @@ import {
   parseProjectDeepLinkUrl,
   parseSessionDeepLinkUrl,
   projectDisplayName,
-  shortSessionId,
   type SessionDeepLinkTarget,
 } from '@/session/sessionLinks';
-import {
-  formatMobileSessionReferenceMetadata,
-  mobileSessionReferenceMetadataKey,
-  type MobilePersistedSessionReferenceMetadata,
-} from '@/session/sessionReferences';
 import {
   canOpenChatPathChip,
   chatPathLabelReadsAsFileReference,
@@ -274,8 +268,8 @@ import {
   sourcePluginLabel,
 } from '@/session/messageSourceLabels';
 import {
-  compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
+  sentSessionMessageChipLabel,
 } from '@/session/sessionMessageText';
 import { buildMobileMarkdownTableColumnWidths } from '@/session/messageTableLayout';
 import { buildPayloadHeaderLayout, buildPayloadModalSafeArea } from '@/session/payloadHeaderLayout';
@@ -3797,7 +3791,6 @@ function MessageBubble({
                   onOpenSessionLink={actions.onOpenSessionLink}
                   pinContentWidth={!isUser}
                   selectable={canSelectVisibleText}
-                  sessionReferences={item.message.sessionReferences}
                   streaming={false}
                   text={text}
                 />
@@ -3813,7 +3806,6 @@ function MessageBubble({
             onOpenPayload={actions.onOpenPayload}
             onOpenSessionLink={actions.onOpenSessionLink}
             pinContentWidth={!isUser}
-            sessionReferences={item.message.sessionReferences}
             selectable={canSelectVisibleText}
             streaming={isStreamingAssistant}
             text={bubbleBody}
@@ -5596,7 +5588,6 @@ function MarkdownBody({
   onOpenPayload,
   onOpenSessionLink,
   pinContentWidth = false,
-  sessionReferences,
   selectable,
   streaming,
   text,
@@ -5614,8 +5605,6 @@ function MarkdownBody({
    * 气泡(长代码围栏横向裁切 + 纵向巨高空白)。
    */
   pinContentWidth?: boolean;
-  /** 当前落库消息里的展示安全引用摘要，按 sessionId + anchor 精确匹配链接。 */
-  sessionReferences?: readonly MobilePersistedSessionReferenceMetadata[];
   /** 完成态消息为 true:各块 Text 开原生选中(含内嵌图片 View 的块除外,Android 上有风险)。 */
   selectable?: boolean;
   /** 消息流式中:文件 chip 层跳过远端验证。 */
@@ -5731,15 +5720,6 @@ function MarkdownBody({
   // changes; referenced task title changes still refresh every affected chip.
   const remoteSessions = useRemoteSessions();
   const sessionLinkTitles = useMarkdownSessionLinkTitles(text, remoteSessions);
-  const sessionReferenceDetails = useMemo(() => {
-    if (!sessionReferences?.length) return undefined;
-    const details: Record<string, string> = {};
-    for (const metadata of sessionReferences) {
-      details[mobileSessionReferenceMetadataKey(metadata.sessionId, metadata.messageClientId)] =
-        formatMobileSessionReferenceMetadata(metadata);
-    }
-    return details;
-  }, [sessionReferences]);
   const renderInlines = useCallback(
     (
       inlines: readonly MobileMarkdownInline[],
@@ -5754,7 +5734,6 @@ function MarkdownBody({
         renderManagedImage,
         onOpenMedia: openMarkdownMedia,
         onOpenSessionLink,
-        sessionReferenceDetails,
         sessionLinkTitles,
         SpanText,
         streaming,
@@ -5762,7 +5741,7 @@ function MarkdownBody({
     ),
     // renderInline also reads translated fallback labels. Invalidate completed
     // memoized text blocks when useTranslation refreshes its bound translator.
-    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
+    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, streaming, styles, t],
   );
   const textRunGroupingOptions = useMemo(() => ({
     ...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
@@ -6308,7 +6287,6 @@ function renderInline(
     onOpenMedia?: (url: string, title: string, kind: 'video') => void;
     onOpenPayload?: (payload: MessagePayload) => void;
     onOpenSessionLink?: (url: string) => void;
-    sessionReferenceDetails?: Readonly<Record<string, string>>;
     sessionLinkTitles?: Readonly<Record<string, string>>;
     /** 块可选中且 iOS 时为 MarkdownSelectableSpan(嵌套进 UITextView 原生树);缺省 RN Text。 */
     SpanText?: typeof Text;
@@ -6362,7 +6340,6 @@ function renderInline(
             key={spanKey(`session-link:${index}:${inline.url}`)}
             onOpenSessionLink={ctx.onOpenSessionLink}
             session={session}
-            sessionReferenceDetails={ctx.sessionReferenceDetails}
             sessionLinkTitles={ctx.sessionLinkTitles}
             SpanText={SpanText}
             styles={styles}
@@ -6500,7 +6477,6 @@ function MarkdownSessionLinkSpan({
   inline,
   onOpenSessionLink,
   session,
-  sessionReferenceDetails,
   sessionLinkTitles,
   SpanText,
   styles,
@@ -6509,7 +6485,6 @@ function MarkdownSessionLinkSpan({
   inline: Extract<MobileMarkdownInline, { type: 'link' }>;
   onOpenSessionLink?: (url: string) => void;
   session: SessionDeepLinkTarget;
-  sessionReferenceDetails?: Readonly<Record<string, string>>;
   sessionLinkTitles?: Readonly<Record<string, string>>;
   SpanText: typeof Text;
   styles: ReturnType<typeof makeStyles>;
@@ -6522,24 +6497,26 @@ function MarkdownSessionLinkSpan({
         message.clientId === session.messageClientId || message.id === session.messageClientId
       ))
     : null;
-  const messageLabel = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+  // 消息数组更新(流式 / 列表重渲)时,目标消息没变就不重算摘要。
+  const messageLabel = useMemo(() => {
+    const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+    return messageText ? sentSessionMessageChipLabel(messageText) : '';
+  }, [targetMessage]);
   const title = session.messageClientId
-    ? compactSessionMessageLabel(messageLabel ?? shortSessionId(session.messageClientId))
+    ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit
       ?? sessionLinkTitles?.[session.sessionId]
-      ?? i18n.t('message.renderer.sessionChipFallback', { id: shortSessionId(session.sessionId) });
-  const detail = sessionReferenceDetails?.[
-    mobileSessionReferenceMetadataKey(session.sessionId, session.messageClientId)
-  ];
+      ?? i18n.t('message.renderer.sessionChipFallback');
   // handler 由上层可选注入 → 缺席时 chip 不可点,下划线也必须跟着不加
   // (clickableInlineStyle 保证两者同源)。
   const openSessionLink = onOpenSessionLink ? () => onOpenSessionLink(inline.url) : undefined;
+  // 发给模型的上下文范围(条数 / 是否截断)不在气泡里展示:用户无从理解也无从操作。
   return (
     <SpanText
       onPress={openSessionLink}
       style={clickableInlineStyle(styles, openSessionLink, baseStyle, styles.sessionLinkChipText)}
     >
-      {`${session.messageClientId ? '❝' : '↳'} ${title}${detail ? ` · ${detail}` : ''}`}
+      {`${session.messageClientId ? '❝' : '↳'} ${title}`}
     </SpanText>
   );
 }
