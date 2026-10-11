@@ -657,6 +657,15 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
                     onReply={group.serverBacked ? () => {
                       threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                      if (threadCloseAnimationRef.current) {
+                        threadCloseAnimationRef.current.cancel();
+                        threadCloseAnimationRef.current = null;
+                        const panel = threadLayoutRef.current?.querySelector('aside');
+                        if (panel) panel.inert = false;
+                        if (message.id === threadRootId) {
+                          (panel?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)') ?? panel?.querySelector<HTMLButtonElement>('header button'))?.focus();
+                        }
+                      }
                       setThreadRootId(message.id);
                     } : undefined}
                     onChanged={() => loadRef.current()} /> : undefined}

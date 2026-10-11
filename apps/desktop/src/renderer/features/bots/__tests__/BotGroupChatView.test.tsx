@@ -395,6 +395,38 @@ describe('BotGroupChatView', () => {
     } finally { cleanup(); motion.restore(); }
   });
 
+  it('cancels closing when Enter reopens the same thread and restores its input and draft', async () => {
+    const motion = mockThreadMotion('200ms');
+    try {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      const user = userEvent.setup();
+      renderView();
+      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+      await user.click(trigger);
+      await act(async () => motion.animations[0]!.finish());
+      const panel = screen.getByRole('complementary');
+      const input = within(panel).getByRole('textbox');
+      await user.type(input, 'Still editing');
+      await user.keyboard('{Escape}');
+      const closing = motion.animations[1]!;
+      expect(panel.inert).toBe(true);
+      expect(document.activeElement).toBe(trigger);
+      await user.keyboard('{Enter}');
+      expect(closing.cancel).toHaveBeenCalled();
+      expect(panel.inert).toBe(false);
+      expect(document.activeElement).toBe(input);
+      expect(motion.animate).toHaveBeenCalledTimes(2);
+      await act(async () => closing.finish());
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await user.keyboard(' now');
+      expect((input as HTMLTextAreaElement).value).toBe('Still editing now');
+      await user.click(within(panel).getByRole('button', { name: 'bots.close' }));
+      await act(async () => motion.animations[2]!.finish());
+      expect(screen.queryByRole('complementary')).toBeNull();
+    } finally { cleanup(); motion.restore(); }
+  });
+
   it('expands a sibling thread panel, keeps the group usable, switches threads and restores the layout on close', async () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
