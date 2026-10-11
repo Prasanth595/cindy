@@ -399,6 +399,102 @@ describe('DingTalkDwsIM inbound', () => {
     await im.dispose();
   });
 
+  it.each([DWS_EVENT_DIRECT, DWS_EVENT_MENTION])(
+    'delivers one message once when %s redelivers it with different event ids',
+    async (type) => {
+      const { im, streams, messages } = await connected();
+      try {
+        await bindOwner(im, streams[0]);
+        const event = directEvent({ type, event_id: 'delivery-1' });
+        // 重投发生在异步附件处理 / 同一 lane 排队期间，也只能触发一次。
+        streams[0].emit(event);
+        streams[0].emit({ ...event, event_id: 'delivery-2' });
+        await flush();
+        // 已派发后再次重投，或有的投递缺少 event_id，也仍是同一条消息。
+        streams[0].emit({ ...event, event_id: 'delivery-3' });
+        streams[0].emit({ ...event, event_id: undefined });
+        await flush();
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({ messageId: event.message_id, text: event.content });
+      } finally {
+        await im.dispose();
+      }
+    },
+  );
+
+  it('keeps separate messages with identical text', async () => {
+    const { im, streams, messages } = await connected();
+    try {
+      await bindOwner(im, streams[0]);
+      streams[0].emit(directEvent({ event_id: 'delivery-1', message_id: 'first' }));
+      streams[0].emit(directEvent({ event_id: 'delivery-2', message_id: 'second' }));
+      await flush();
+      expect(messages.map(({ messageId, text }) => ({ messageId, text }))).toEqual([
+        { messageId: 'first', text: '你好' },
+        { messageId: 'second', text: '你好' },
+      ]);
+    } finally {
+      await im.dispose();
+    }
+  });
+
+  it('scopes message ids to the conversation, not the delivery event', async () => {
+    const { im, streams, messages } = await connected();
+    try {
+      await bindOwner(im, streams[0]);
+      const event = directEvent({ type: DWS_EVENT_MENTION, event_id: 'same-delivery' });
+      streams[0].emit({ ...event, conversation_id: 'group-a' });
+      streams[0].emit({ ...event, conversation_id: 'group-b' });
+      await flush();
+      expect(messages.map(({ chatId }) => chatId)).toEqual(['group-a', 'group-b']);
+    } finally {
+      await im.dispose();
+    }
+  });
+
+  it('deduplicates a message redelivered after stream reconnection', async () => {
+    const { im, streams, messages } = await connected();
+    try {
+      await bindOwner(im, streams[0]);
+      streams[0].emit(directEvent({ event_id: 'before-reconnect' }));
+      await flush();
+      vi.useFakeTimers();
+      streams[0].exit(1);
+      await vi.advanceTimersByTimeAsync(2_001);
+      vi.useRealTimers();
+      expect(streams).toHaveLength(2);
+      streams[1].emit(directEvent({ event_id: 'after-reconnect' }));
+      await flush();
+      expect(messages).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      await im.dispose();
+    }
+  });
+
+  it('does not suppress another account with the same conversation and message ids', async () => {
+    const identity = { ...IDENTITY };
+    const { im, streams, messages } = await connected({ identity });
+    try {
+      await bindOwner(im, streams[0]);
+      const event = directEvent({ event_id: 'same-delivery' });
+      streams[0].emit(event);
+      await flush();
+      await im.disable();
+      identity.user_id = 'another-agent';
+      await im.enable();
+      await bindOwner(im, streams[1]);
+      streams[1].emit(event);
+      await flush();
+      expect(messages.map(({ contextId }) => contextId)).toEqual([
+        'corp-1:agent-user',
+        'corp-1:another-agent',
+      ]);
+    } finally {
+      await im.dispose();
+    }
+  });
+
   it('ignores unrelated event types and malformed lines', async () => {
     const { im, streams, messages } = await connected();
     await bindOwner(im, streams[0]);

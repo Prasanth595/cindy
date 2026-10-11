@@ -526,7 +526,10 @@ export class DingTalkDwsIM extends BaseIM {
   // ── 入站 ────────────────────────────────────────────────────────────────
 
   private accept(message: DwsInboundMessage, generation: number): void {
-    if (this.isDuplicate(message.dedupeKey)) return;
+    // event_id 标识一次事件投递，同一消息重投时可能变化；按账号、会话和消息本身
+    // 去重，并在异步附件处理 / lane 排队之前占位。不同消息的相同正文仍正常派发。
+    const dedupeKey = JSON.stringify([this.contextId, message.conversationId, message.messageId]);
+    if (this.isDuplicate(dedupeKey)) return;
     const userId =
       message.kind === 'mention' ? encodeLaneUserId(message.conversationId) : message.senderOpenId;
     const accountToken = this.host.accountScope?.capture();

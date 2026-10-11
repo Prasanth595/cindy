@@ -21,7 +21,7 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |
 |---|---|---|---|
 | 入站 | 各渠道 adapter → `im/shared/messageHandler.ts`（微信经 `WechatTaskStore` 持久队列） | `hook-control/manager.ts` 收 `task.dispatch` → `dispatcher.handleDispatch` | 渠道适配（入站来源各自保留） |
-| 幂等与重投 | 无（个人连接无重投） | `ackHistory` / `inflightRequests` / `terminalLedger` | 渠道适配（服务端重投是 hook 的传输语义） |
+| 幂等与重投 | 各传输层处理；钉钉账号按账号 + 会话 + `message_id` 在入队前去重，不用投递的 `event_id`（见下文） | `ackHistory` / `inflightRequests` / `terminalLedger` | 渠道适配（按各渠道传输语义去重） |
 | 找任务 | `turnRunner.resolveRouteTarget`：通知回复 → `/ctr` 绑定 → 确定性 id 通道行（`sessionRepo.findActiveSession` 复活归档行） | `dispatcher.resolveTarget`：接管 sessionId → 绑定复用（每条消息按工作目录映射现场重算）→ 失效则换任务并交接 | 共用流程的「定位」骨架 + 渠道策略（台账第三节「绑定的任务失效后怎么接续」有意不同） |
 | 建任务 | `sessionRepo.createSession` 确定性 id upsert；`createFreshSession`（`/new` 轮换事务）；随后 `maker.createSession` —— 2026-10 起两处建行都经 `openChannelSession` → **`openSession`**（模型准入） | `session-runner` 新任务的 `maker.createSession`、`/new` 的 `desktopSessionStorage.create` —— 同样经 `openChannelSession` → **`openSession`** | **公共入口 `openSession`**（已完成，批次 2）；渠道专属建行在 commit 回调里。live session 仍各自 `maker.createSession`，未改用 register 内部的 `bootstrapSession`（会新增项目上下文 / Orca 指令注入等行为，见 §6） |
 | 默认配置 | `resolveImSessionDefaults(channel)` + 跟随渠道默认（`channelDefaultRouteSync`） | `resolveNewSessionConfig`（目录偏好 > 全局 IM 默认 > 清单首项；权限档规则见 `defaults.ts`） | 渠道策略（台账第三节「新会话的默认…从哪读」有意不同） |
@@ -36,6 +36,12 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | 收尾 | `handleTurnDoneAsync` / `handleTurnErrorAsync` → 流式 handle finalize | `execute` 收口 → `turnCarrier.publishFinal` → `turn.end`（持久出箱） | 共用流程的收口骨架 + 渠道出站载体 |
 | 停止 | `turnRunner.stopActiveTurn`：清 `sendQueue` + 撤自动续跑 + `abort()`；**不暂停 Goal、不停 coordinator** | `dispatcher.cancel` → `abortSession`：只 `abort()`；**不撤自动续跑、不暂停 Goal** | **公共入口：统一明确停止**（`stopSessionTurnExplicitly`，与桌面 Stop 同一套清理） |
 | 重启恢复 | 无（微信例外：`WechatTaskStore`） | 终稿持久出箱（`requestLedger`，24h） | 渠道适配（终稿必达是 hook 的保障；台账缺口 3） |
+
+钉钉账号的去重在 [`DingTalkDwsIM.accept`](../../packages/lizi-im/src/dingtalk-dws/index.ts)
+进入异步附件处理和 lane 队列前同步登记，重投即使更换或省略 `event_id` 也不再次派发。
+缓存沿用进程内 5 分钟 TTL、最多 2048 条，保留于事件流重连期间，不提供应用重启后的持久去重。
+相同文字但 `message_id` 不同仍是两条请求；不同账号、不同会话的编号互不影响。
+回归见 [`dingtalkDwsIM.test.ts`](../../packages/lizi-im/src/dingtalk-dws/__tests__/dingtalkDwsIM.test.ts)。
 
 ## 2. 状态清单
 
