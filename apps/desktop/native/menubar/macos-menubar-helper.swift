@@ -413,6 +413,8 @@ final class MenubarStore: ObservableObject {
   /// Manage list order while the user drags, before main echoes the saved settings back.
   @Published var draftOrder: [String]?
   @Published var mainContentHeight: CGFloat = 0
+  /// Width of the narrow pages; follows the number of tubes so a few don't sit in a wide panel.
+  @Published var narrowWidth: CGFloat = StatusController.narrowWidth
   /// Natural height of the open detail page; the panel grows to fit it when main is shorter.
   @Published var detailContentHeight: CGFloat = 0
   @Published var shakeId: String?
@@ -445,6 +447,19 @@ final class MenubarStore: ObservableObject {
     if firstView { wideScope = next.settings.scope }
     if case .detail(let id) = page, next.details[id] == nil { page = .main }
     if next.gate != nil, page == .wide { page = .main }
+    let width = Self.narrowWidth(tubes: next.gate == nil ? next.sources.filter { $0.fill != nil }.count : 0)
+    if width != narrowWidth { narrowWidth = width }
+  }
+
+  /// Five or more tubes use the full 404pt; fewer give width back, down to 340pt, which still
+  /// fits the captions, task rows and the month card.
+  static func narrowWidth(tubes: Int) -> CGFloat {
+    switch tubes {
+    case ...2: return 340
+    case 3: return 356
+    case 4: return 380
+    default: return StatusController.narrowWidth
+    }
   }
 
   private func draftMatches(_ next: MBView) -> Bool {
@@ -603,6 +618,15 @@ final class StatusController: NSObject, NSWindowDelegate {
         self.layoutPanel(for: self.store.page, animated: false)
       }
       .store(in: &cancellables)
+    store.$narrowWidth
+      .removeDuplicates()
+      .dropFirst()
+      .receive(on: RunLoop.main)
+      .sink { [weak self] _ in
+        guard let self, self.isOpen, self.store.page != .wide else { return }
+        self.layoutPanel(for: self.store.page, animated: true)
+      }
+      .store(in: &cancellables)
     store.$detailContentHeight
       .removeDuplicates()
       .receive(on: RunLoop.main)
@@ -758,14 +782,14 @@ final class StatusController: NSObject, NSWindowDelegate {
       guard let main = NSScreen.main ?? NSScreen.screens.first else { return nil }
       screen = main
       let frame = main.frame
-      buttonRect = NSRect(x: frame.maxX - Self.narrowWidth / 2 - Self.sideMargin, y: main.visibleFrame.maxY, width: 0, height: 0)
+      buttonRect = NSRect(x: frame.maxX - store.narrowWidth / 2 - Self.sideMargin, y: main.visibleFrame.maxY, width: 0, height: 0)
     }
     let visible = screen.visibleFrame
     let top = min(buttonRect.minY, visible.maxY) - Self.screenGap
     let maxHeight = max(320, top - visible.minY - Self.sideMargin)
     let wide = page == .wide
-    let width = min(wide ? Self.wideWidth : Self.narrowWidth, visible.width - Self.sideMargin * 2)
-    let right = min(visible.maxX - Self.sideMargin, buttonRect.midX + Self.narrowWidth / 2)
+    let width = min(wide ? Self.wideWidth : store.narrowWidth, visible.width - Self.sideMargin * 2)
+    let right = min(visible.maxX - Self.sideMargin, buttonRect.midX + store.narrowWidth / 2)
     let x = max(visible.minX + Self.sideMargin, right - width)
     let height: CGFloat
     if wide {
@@ -901,27 +925,27 @@ struct PanelRoot: View {
     ZStack(alignment: .topTrailing) {
       if store.page == .main, view.gate != nil {
         GatePage(store: store, controller: controller)
-          .frame(width: StatusController.narrowWidth)
+          .frame(width: store.narrowWidth)
           .transition(.asymmetric(
-            insertion: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity),
-            removal: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity)
+            insertion: .offset(x: -store.narrowWidth * 0.3).combined(with: .opacity),
+            removal: .offset(x: -store.narrowWidth * 0.3).combined(with: .opacity)
           ))
       } else if store.page == .main {
         MainPage(store: store, view: view, controller: controller)
-          .frame(width: StatusController.narrowWidth)
+          .frame(width: store.narrowWidth)
           .transition(.asymmetric(
-            insertion: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity),
-            removal: .offset(x: -StatusController.narrowWidth * 0.3).combined(with: .opacity)
+            insertion: .offset(x: -store.narrowWidth * 0.3).combined(with: .opacity),
+            removal: .offset(x: -store.narrowWidth * 0.3).combined(with: .opacity)
           ))
       }
       if case .detail(let id) = store.page, let detail = view.details[id] {
         DetailPage(store: store, detail: detail, controller: controller)
-          .frame(width: StatusController.narrowWidth)
+          .frame(width: store.narrowWidth)
           .transition(.move(edge: .trailing).combined(with: .opacity))
       }
       if store.page == .manage {
         ManagePage(store: store, view: view, controller: controller)
-          .frame(width: StatusController.narrowWidth)
+          .frame(width: store.narrowWidth)
           .transition(.move(edge: .trailing).combined(with: .opacity))
       }
       if store.page == .wide {
@@ -1061,7 +1085,6 @@ struct TubeView: View {
   let emphasized: Bool
   let index: Int
   let fillToken: Int
-  var width: CGFloat = 46
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var shown = true
 
@@ -1101,7 +1124,7 @@ struct TubeView: View {
           .strokeBorder(emphasized ? Palette.ink : Palette.ink4, lineWidth: emphasized ? 1.5 : 0.5)
       }
     }
-    .frame(maxWidth: width)
+    .frame(maxWidth: 46)
     .frame(height: Self.height)
     .onChange(of: fillToken) { replay() }
     .onAppear { replay() }
@@ -1217,7 +1240,7 @@ struct MainPage: View {
       }
 
       Caption(title: store.s("tasks"), detail: view.taskSummary) {
-        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"))
+        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"), showsTokens: store.narrowWidth >= 380)
       }
       .padding(EdgeInsets(top: 28, leading: 24, bottom: 12, trailing: 24))
 
@@ -1402,34 +1425,11 @@ struct Cells: View {
   @ObservedObject var store: MenubarStore
   let cells: [MBCell]
 
-  /// Four or more tubes share the row evenly. Fewer tubes widen and gather in the middle,
-  /// so one or two sources don't sit alone in a wide, empty row.
-  private var compact: (tube: CGFloat, cell: CGFloat)? {
-    switch cells.count {
-    case 1: return (78, 132)
-    case 2: return (66, 116)
-    case 3: return (56, 104)
-    default: return nil
-    }
-  }
-
   var body: some View {
-    if let compact {
-      HStack(alignment: .top, spacing: 8) {
-        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-          CellView(cell: cell, index: index, fillToken: store.fillToken, tubeWidth: compact.tube) {
-            store.go(.detail(cell.id))
-          }
-          .frame(width: compact.cell)
-        }
-      }
-      .frame(maxWidth: .infinity)
-    } else {
-      HStack(alignment: .top, spacing: cells.count > 6 ? 6 : 10) {
-        ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-          CellView(cell: cell, index: index, fillToken: store.fillToken) {
-            store.go(.detail(cell.id))
-          }
+    HStack(alignment: .top, spacing: cells.count > 6 ? 6 : 10) {
+      ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+        CellView(cell: cell, index: index, fillToken: store.fillToken) {
+          store.go(.detail(cell.id))
         }
       }
     }
@@ -1495,7 +1495,6 @@ struct CellView: View {
   let cell: MBCell
   let index: Int
   let fillToken: Int
-  var tubeWidth: CGFloat = 46
   let action: () -> Void
   @State private var hovering = false
 
@@ -1509,8 +1508,7 @@ struct CellView: View {
           reserve: cell.reserve,
           emphasized: cell.emphasized,
           index: index,
-          fillToken: fillToken,
-          width: tubeWidth
+          fillToken: fillToken
         )
         VStack(spacing: 5) {
           LogoView(svg: cell.logoSvg, size: 13)
@@ -1567,12 +1565,14 @@ struct CellView: View {
 struct TaskTotal: View {
   let tasks: [MBTask]
   let tokenUnit: String
+  /// A narrow panel keeps just the money; each task row still shows its tokens.
+  var showsTokens = true
 
   var body: some View {
     let money = tasks.reduce(0) { $0 + $1.value }
     let tokens = tasks.reduce(0) { $0 + $1.tokens }
     (Text(Fmt.money(money)).foregroundColor(Palette.ink).fontWeight(.semibold)
-      + Text(" · \(Fmt.tokens(tokens)) \(tokenUnit)"))
+      + Text(showsTokens ? " · \(Fmt.tokens(tokens)) \(tokenUnit)" : ""))
       .font(.system(size: 12))
       .foregroundStyle(Palette.ink3)
       .monospacedDigit()
