@@ -479,7 +479,7 @@ import {
   orcaWorkerCreationReservations,
   sessions,
 } from '../localDb/schema.js';
-import { nextBotModelRoute, normalizeBotModelChain } from '../../shared/botModelChain.js';
+import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
 import { readEffectiveBotModelChain, readEffectiveBotModelSelection } from '../maker-host/bot-model-chain-settings-store.js';
 import {
@@ -5550,6 +5550,21 @@ export interface RegisterMakerIpcOptions {
 }
 
 let disposePiPackagesChangedBroadcast: (() => void) | null = null;
+
+/**
+ * Preselects a route in the local new-task draft, the same push the app-default model
+ * selection uses. The menu bar calls it before opening a new task for one account.
+ */
+export function applyNewMakerDraftRoute(route: BotModelRoute): void {
+  broadcastToAllWindows(MAKER_PUSH.DRAFT_PREF_APPLY, {
+    agent: route.harness === 'claude' ? 'claude-code' : route.harness,
+    providerId: route.providerId ?? '',
+    modelId: route.model,
+    active: true,
+    ...(route.effort ? { effort: route.effort } : {}),
+    ...(route.fastMode ? { fast: true } : {}),
+  });
+}
 
 /**
  * Register before the first BrowserWindow: modelVisibilityPrefs mirrors its initial snapshot as

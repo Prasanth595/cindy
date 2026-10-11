@@ -196,6 +196,9 @@ Desktop 的运行时 refresh 遇到瞬时失败后，主动调用与定时重试
 | 跨 profile 的 worktree 回收日志位置 | `app.getPath('appData')/Cindy/shared-worktree-recycle-journals`，仍按日志目录哈希发布原 profile 日志位置，兼容可能同时运行的旧客户端；新客户端不再读取其他 profile 的日志来借用工程。不复制恢复状态、不代替 owner 执行恢复                                                                                                                                                                                      |
 | 供应商分享：分享者电脑上的受邀者用量 | `userData/remote-agent/provider-share-usage.json`，按（日期、分享、成员、Agent、供应商、模型）聚合 token 与轮次，原子替换写入，保留 400 天；只含服务端生成的分享与成员 id，不含昵称、对话或凭证。成员删除后保留（管理页不再显示），同一人重新加入时接续 |
 | 供应商按使用方的用量 | `userData/owners/<账号>/provider-usage-by-party.json`，按（日期、供应商、使用方：本机或同账号另一台电脑的设备 id、Agent、模型）聚合 token 与轮次，原子替换写入，保留 400 天；只含供应商 id、设备 id 与模型名，不含对话或凭证。按账号存放（供应商 id 在不同账号下会重复），从开始记录起不补历史 |
+| macOS 菜单栏余量设置 | `userData/menubar-settings.json`，本机偏好：是否显示、来源顺序与显隐、菜单栏文字、快见底通知、隐藏个人信息、统计范围；只含供应商 id，不含凭证或用量数值 |
+| macOS 菜单栏 Cindy 余额样本 | `userData/owners/<账号>/menubar-credit-samples.json`，只记录观测到的余额数值与时间（按区域与币种分组），用于估算日均消耗；保留 30 天、原子替换写入，不含凭证或账号标识 |
+| macOS 菜单栏 helper（开发构建） | `userData/menubar/`，开发时由 `swiftc` 编译的 helper 及其 wordmark 图片和源码哈希；打包版改用 `resources/tools/menubar/`，不在 userData 落盘 |
 | 供应商分享：受邀者会话登记 | `userData/remote-agent/guest-sessions.json`（控制端摘要 → 本机侧任务与原生会话 id），只用来限制受邀者只能恢复自己的会话，并在分享删除时精确清理影子工作区、附件与会话记录 |
 | 供应商分享：跨区域标记 | `userData/remote-agent/provider-share-regions.json`，账号摘要 → 对方区域；**不含凭证**。跨区连接凭证只在内存里，用新身份名片重新换取；没有标记的账号从不联系对方区域 |
 | 用户明确导出的文件                  | 用户选择或任务明确指定的目标路径                                                                                                                                                                                                                                                                                                                                                                                |

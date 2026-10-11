@@ -1914,6 +1914,8 @@ interface ElectronAPI {
   windowBehavior: {
     getLoginItem: () => Promise<import('../shared/loginItem').LoginItemState>;
     setLoginItem: (enabled: boolean) => Promise<import('../shared/loginItem').LoginItemState>;
+    getMenubarState: () => Promise<import('../shared/menubarQuota').MenubarState>;
+    setMenubarEnabled: (enabled: boolean) => Promise<import('../shared/menubarQuota').MenubarState>;
     setSwallowActivationClick: (enabled: boolean) => Promise<{ ok: true }>;
     getWindowsCloseBehavior: () => Promise<'quit' | 'tray' | null>;
     setWindowsCloseBehavior: (behavior: 'quit' | 'tray') => Promise<'quit' | 'tray'>;
@@ -2958,7 +2960,7 @@ interface ElectronAPI {
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'provider-share-join'; link: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => void,
   ) => () => void;
 
@@ -2977,7 +2979,7 @@ interface ElectronAPI {
     | { type: 'shared-task-join'; invitation: string; server: string }
     | { type: 'chat-invite'; token: string }
     | { type: 'provider-share-join'; link: string }
-    | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
+    | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
     | null
   >;
 

@@ -812,6 +812,256 @@
       "deny": "거부"
     }
   },
+  "menubar": {
+    "balance": {
+      "name": "Cindy 잔액",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "오늘 {{time}}",
+      "tomorrow": "내일 {{time}}",
+      "weekday": "{{day}} {{time}}",
+      "date": "{{date}} {{time}}",
+      "todayWord": "오늘",
+      "tomorrowWord": "내일",
+      "tomorrowShort": "내일",
+      "minutesAgo_other": "{{n}}분 전",
+      "hoursAgo_other": "{{n}}시간 전",
+      "daysAgo_other": "{{n}}일 전"
+    },
+    "duration": {
+      "daysHours": "{{d}}일 {{h}}시간",
+      "days_other": "{{d}}일",
+      "hoursMinutes": "{{h}}시간 {{m}}분",
+      "hours_other": "{{h}}시간",
+      "minutes_other": "{{m}}분"
+    },
+    "window": {
+      "session": "{{hours}}시간",
+      "week": "이번 주",
+      "scoped": "{{model}} 이번 주"
+    },
+    "headline": {
+      "recommend": "{{name}}에 가장 많이 남았어요.",
+      "balance": "Cindy 잔액은 아직 쓸 수 있어요.",
+      "none": "모두 다 썼어요.",
+      "restore": "{{name}} {{day}} 초기화",
+      "soon": "{{name}} 곧 소진",
+      "subscriptionsUsed": "구독은 모두 다 썼어요",
+      "waitReset": "구독 초기화를 기다리는 중",
+      "sentence": "{{text}}.",
+      "joiner": ", "
+    },
+    "summary": {
+      "sources": "{{total}}개 중 {{ok}}개 여유 있음",
+      "withCredits": "{{base}} · 예비 {{credits}} credits"
+    },
+    "cell": {
+      "payg": "종량",
+      "plan": "플랜",
+      "noBalance": "잔액 없음",
+      "unknown": "알 수 없음",
+      "noData": "없음",
+      "lastsDays": "약 {{n}}일",
+      "lastsDaysShort": "{{n}}일",
+      "resets": "{{day}} 초기화",
+      "emptyInDays": "{{n}}일 후 소진",
+      "emptyInDaysShort": "{{n}}일",
+      "emptyInHours": "{{n}}시간 후 소진",
+      "emptyInHoursShort": "{{n}}시간",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}, 종량 과금, 잔액을 알 수 없음",
+      "plan": "{{name}}, 구독, 남은 양을 알 수 없음",
+      "balance": "Cindy 잔액 {{amount}}",
+      "balanceDays": "Cindy 잔액 {{amount}}, 약 {{n}}일 분량",
+      "noData": "{{name}}, 데이터 없음",
+      "reserve": "{{name}}, 다 씀, credits 사용 가능",
+      "remaining": "{{name}} {{n}}% 남음"
+    },
+    "detail": {
+      "balanceCaption": "잔액",
+      "apiKey": "API Key",
+      "subscription": "구독",
+      "noBalance": "잔액을 알 수 없음",
+      "unknownRemaining": "남은 양을 알 수 없음",
+      "noData": "데이터 없음",
+      "windowLeft": "{{window}} 남음"
+    },
+    "say": {
+      "balance": "잔액은 자동으로 다시 채워지지 않아요.",
+      "balanceLasts_other": "최근 7일 속도라면 약 {{n}}일 쓸 수 있어요.",
+      "balanceEstimating": "사용 기록을 모으는 중이에요. 며칠 뒤면 남은 기간을 추정할 수 있어요.",
+      "payg": "{{name}}은(는) 쓴 만큼 과금돼요.",
+      "paygSub": "API가 잔액을 알려 주지 않아 여기에는 표시할 수 없어요. 쓴 만큼은 Cindy 사용량에 그대로 포함돼요.",
+      "plan": "{{name}}은(는) 구독 연결이에요.",
+      "planSub": "Cindy가 아직 남은 양을 읽지 못해요. 쓴 만큼은 Cindy 사용량에 그대로 포함돼요.",
+      "noData": "아직 읽지 못했어요.",
+      "noDataSub": "새로 고치거나 이것으로 작업을 한 번 실행하면 표시돼요.",
+      "usedUp": "{{window}} 사용량을 다 썼어요.",
+      "usedUpWithCredits": "{{at}}에 초기화돼요. 그때까지는 Codex가 {{credits}} credits로 계속 작업해요.",
+      "creditsOnly": "Codex가 {{credits}} credits로 계속 작업해요.",
+      "resetsAt": "{{at}}에 초기화돼요.",
+      "emptyIn": "지금 속도라면 약 {{duration}} 후 소진돼요.",
+      "beforeReset": "초기화보다 {{duration}} 빨라요.",
+      "full": "가득 찼어요.",
+      "relaxed": "속도에 여유가 있어요.",
+      "onPace": "속도가 적당해요.",
+      "windowRefresh": "{{window}} 구간은 {{at}}에 갱신"
+    },
+    "fact": {
+      "balance": "잔액",
+      "updatedAgo": "{{ago}} 업데이트",
+      "dailyUse": "하루 평균 소비",
+      "about": "약 {{value}}",
+      "estimating": "추정 중",
+      "estimatingSub": "데이터 부족",
+      "last7Days": "최근 7일",
+      "runsOut": "소진 예상",
+      "aroundDate": "{{date}}쯤",
+      "atThisPace": "현재 속도 기준",
+      "usedFor": "사용처",
+      "cindyModels": "Cindy가 제공하는 모델",
+      "chargedPerUse": "사용량만큼 차감",
+      "billing": "과금",
+      "perUse": "종량",
+      "subscription": "구독",
+      "connected": "연결됨",
+      "notProvided": "API가 제공하지 않음",
+      "notReadable": "아직 읽을 수 없음",
+      "inMenu": "메뉴",
+      "hidden": "숨김",
+      "shown": "표시",
+      "editHint": "「편집」에서 바꿀 수 있어요",
+      "usage": "사용량",
+      "counted": "그대로 집계",
+      "countedSub": "Cindy 사용량에 포함",
+      "resetsFull": "초기화",
+      "windowResets": "{{window}} 초기화",
+      "timeLeft": "{{duration}} 남음",
+      "remainingPercent": "{{n}}% 남음",
+      "perModel": "모델별로 계산",
+      "pace": "속도",
+      "paceNormal": "보통",
+      "paceAhead": "{{n}}% 빠름",
+      "paceReserve": "{{n}}% 여유",
+      "paceSub": "고르게 쓰면 {{n}}% 남음",
+      "paceUsedUp": "다 씀",
+      "paceWaiting": "초기화 대기",
+      "extraCredits": "추가 credits",
+      "unlimited": "무제한",
+      "creditsUsedAfter": "한도 소진 후 Codex가 사용",
+      "noCredits": "예비 credits 없음",
+      "prepaid": "선불 잔액",
+      "xaiAccount": "xAI 계정",
+      "account": "계정"
+    },
+    "action": {
+      "newTask": "{{name}}(으)로 새 작업 시작",
+      "topUp": "Cindy에서 충전",
+      "manage": "Cindy 설정에서 관리"
+    },
+    "tasks": {
+      "today_other": "오늘 {{n}}개",
+      "withRunning_other": "{{base}} · {{n}}개 진행 중",
+      "context": "컨텍스트 {{n}}%",
+      "private": "{{harness}} 작업"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "구독 환산 = 구독에서 쓴 양을 API 참고 가격으로 환산한 금액이며, 청구서가 아니에요.",
+      "deviceSelf": "이 {{name}}(실시간)",
+      "deviceSynced": "{{name}}({{date}}까지 동기화)",
+      "deviceNotSynced": "{{name}}(아직 동기화 안 됨)",
+      "deviceJoiner": " + ",
+      "allDevices": "모든 기기 = {{list}}."
+    },
+    "manage": {
+      "balance": "잔액 · 자동으로 채워지지 않음",
+      "payg": "API Key · 종량, 잔액 없음",
+      "plan": "구독 · 남은 양을 알 수 없음",
+      "subscription": "구독 · {{plan}} · {{windows}}"
+    },
+    "notify": {
+      "lowTitle": "곧 소진돼요",
+      "lowBody": "여유가 남은 소스가 모두 거의 다 찼어요. 메뉴 막대의 Cindy 아이콘에서 초기화 시간을 확인하세요."
+    },
+    "ui": {
+      "updatedJustNow": "방금 업데이트",
+      "updatedMinutes_other": "{{n}}분 전 업데이트",
+      "updatedHours_other": "{{n}}시간 전 업데이트",
+      "updatedDays_other": "{{n}}일 전 업데이트",
+      "quota": "남은 양",
+      "edit": "편집",
+      "tasks": "작업",
+      "tokenUnit": "token",
+      "noTasksToday": "오늘은 아직 작업이 없어요",
+      "moreTasks_other": "작업 {{n}}개 더",
+      "running": "진행 중",
+      "openApp": "Cindy 열기",
+      "settings": "관리",
+      "refresh": "새로 고침",
+      "monthScopeLocal": "최근 30일 · 이 컴퓨터",
+      "monthScopeAll": "최근 30일 · 모든 기기",
+      "expand": "펼치기",
+      "expandUsage": "사용량 펼치기",
+      "back": "뒤로",
+      "usageTitle": "사용량",
+      "wideCaptionMoney_other": "최근 {{n}}일 · 구독 환산",
+      "wideCaptionTokens_other": "최근 {{n}}일 · Token",
+      "scopeLocal": "이 컴퓨터",
+      "scopeAll": "모든 기기",
+      "noUsage": "사용량 없음",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "하루 평균",
+      "paid": "실제 결제",
+      "tokenUnitTitle": "Token",
+      "peakDay": "최고 하루",
+      "range7": "7일",
+      "range30": "30일",
+      "range90": "90일",
+      "metricMoney": "금액",
+      "metricTokens": "Token",
+      "listModels_other": "최근 {{n}}일 모델",
+      "listTasks": "오늘의 작업",
+      "today": "오늘",
+      "manageTitle": "관리",
+      "done": "완료",
+      "manageHero": "메뉴에 무엇을,\n어떤 순서로 보여 줄지.",
+      "manageHeroSub": "드래그해서 순서를 바꿔요. 끈 소스는 메뉴에 나타나지 않고 위의 판단에도 포함되지 않아요.",
+      "sources": "소스",
+      "sourcesShown": "{{b}}개 중 {{a}}개 표시",
+      "statusIcon": "메뉴 막대 아이콘",
+      "statusIconSub": "단색이며 메뉴 막대 밝기에 맞춰 바뀌어요",
+      "statusIconMode": {
+        "icon": "아이콘만",
+        "lowest": "가장 적게 남음",
+        "today": "오늘 사용량",
+        "task": "현재 작업"
+      },
+      "other": "기타",
+      "lowAlert": "곧 소진될 때 알림",
+      "lowAlertSub": "여유가 남은 소스가 모두 거의 다 찼을 때 시스템 알림을 보내요",
+      "privacy": "개인 정보 숨기기",
+      "privacySub": "계정은 첫 글자와 마지막 글자만 보이고 작업 제목도 숨겨요. 녹화나 스크린샷에 좋아요",
+      "usageScope": "사용량 집계 범위",
+      "manageFoot": "계정 로그인과 연결은 Cindy 설정 › 모델 제공자에서 관리해요.",
+      "quit": "Cindy 종료",
+      "showSource": "메뉴에 {{name}} 표시",
+      "reorderHint": "드래그하거나 작업 메뉴로 순서를 바꿔요",
+      "moveUp": "위로 이동",
+      "moveDown": "아래로 이동"
+    }
+  },
   "settings": {
     "title": "설정",
     "search": {
@@ -1332,6 +1582,10 @@
       "wecomGroupClearFailed": "Webhook을 삭제하지 못했습니다"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "메뉴 막대에 남은 양 표시",
+        "hint": "macOS 메뉴 막대에 Cindy 아이콘을 둬요. 클릭하면 구독의 남은 양, Cindy 잔액, 오늘 사용량을 볼 수 있어요."
+      },
       "loginItem": {
         "label": "로그인 시 시작",
         "hint": "컴퓨터에 로그인하면 Cindy를 엽니다. 기본값은 꺼짐입니다.",

@@ -5,6 +5,8 @@ import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/re
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerTaskMigrationIpc } from './task-migration/service';
 import { registerLoginItemIpc } from './login-item-ipc.js';
+import { registerMenubarIpc } from './menubar/ipc.js';
+import { initMenubarService, refreshMenubarLocalization, stopMenubarService } from './menubar/service.js';
 import {
   createLatestSourceVersionReader,
   sourceChannel,
@@ -2409,6 +2411,7 @@ registerAppShortcutIpc();
 registerAppearanceSettingsIpc();
 registerAccessibilitySupportIpc();
 registerLoginItemIpc();
+registerMenubarIpc();
 
 // ── 资源用量面板 IPC ─────────────────────────────────────────────────
 // 订阅驱动采样(面板不开不采样),interval 已 unref 不拖退出;terminate 只认
@@ -2976,6 +2979,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   }
   invalidateWindowsTrayMenu();
   getAgentIslandService()?.refreshLocalization();
+  refreshMenubarLocalization();
   return { ok: true };
 });
 
@@ -3144,7 +3148,7 @@ function buildWindowsTrayMenu(): Menu {
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
-      click: () => quitFromWindowsTray(),
+      click: () => quitWithBusyConfirmation(),
     },
   ]);
 }
@@ -3186,7 +3190,8 @@ function openWindowsTrayMenu(): void {
   });
 }
 
-function quitFromWindowsTray(): void {
+/** Quit from the Windows tray or the macOS menu bar panel: confirm first during an active turn. */
+function quitWithBusyConfirmation(): void {
   requestWindowsTrayQuit({
     hasActiveTurn: () => {
       try {
@@ -4350,6 +4355,16 @@ const registerIpcHandlers = () => {
       pushSessionActivityToController(controllerDeviceId, payload);
     });
   });
+
+  // macOS 菜单栏余量:原生 helper 在 Agent Island 之后启动,复用它的任务活动订阅。
+  initMenubarService({
+    quit: quitWithBusyConfirmation,
+    openNewTask: () => {
+      const win = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+      if (win) dispatchApplicationMenuCommand(win, resolveNewMakerMenuCommand(false));
+    },
+  });
+  app.once('will-quit', stopMenubarService);
 
   // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session, 初始 bounds 取主窗。
   ipcMain.handle(

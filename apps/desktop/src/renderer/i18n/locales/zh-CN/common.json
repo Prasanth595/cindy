@@ -812,6 +812,256 @@
       "deny": "拒绝"
     }
   },
+  "menubar": {
+    "balance": {
+      "name": "Cindy 余额",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "今天 {{time}}",
+      "tomorrow": "明天 {{time}}",
+      "weekday": "{{day}} {{time}}",
+      "date": "{{date}} {{time}}",
+      "todayWord": "今天",
+      "tomorrowWord": "明天",
+      "tomorrowShort": "明天",
+      "minutesAgo_other": "{{n}} 分钟前",
+      "hoursAgo_other": "{{n}} 小时前",
+      "daysAgo_other": "{{n}} 天前"
+    },
+    "duration": {
+      "daysHours": "{{d}} 天 {{h}} 小时",
+      "days_other": "{{d}} 天",
+      "hoursMinutes": "{{h}} 小时 {{m}} 分",
+      "hours_other": "{{h}} 小时",
+      "minutes_other": "{{m}} 分钟"
+    },
+    "window": {
+      "session": "{{hours}} 小时",
+      "week": "本周",
+      "scoped": "{{model}} 本周"
+    },
+    "headline": {
+      "recommend": "{{name}} 余量最足。",
+      "balance": "Cindy 余额还能用。",
+      "none": "余量都用完了。",
+      "restore": "{{name}} {{day}}回满",
+      "soon": "{{name}} 快见底",
+      "subscriptionsUsed": "订阅都用完了",
+      "waitReset": "等订阅回满",
+      "sentence": "{{text}}。",
+      "joiner": "，"
+    },
+    "summary": {
+      "sources": "{{ok}} / {{total}} 有余量",
+      "withCredits": "{{base}} · {{credits}} credits 备用"
+    },
+    "cell": {
+      "payg": "按量",
+      "plan": "订阅",
+      "noBalance": "无余额",
+      "unknown": "查不到",
+      "noData": "暂无",
+      "lastsDays": "约{{n}}天",
+      "lastsDaysShort": "{{n}}天",
+      "resets": "{{day}}回满",
+      "emptyInDays": "{{n}}天见底",
+      "emptyInDaysShort": "{{n}}天",
+      "emptyInHours": "{{n}}小时见底",
+      "emptyInHoursShort": "{{n}}时",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}，按量计费，查不到余额",
+      "plan": "{{name}}，订阅，查不到余量",
+      "balance": "Cindy 余额 {{amount}}",
+      "balanceDays": "Cindy 余额 {{amount}}，约够 {{n}} 天",
+      "noData": "{{name}}，暂无数据",
+      "reserve": "{{name}}，已用完，还有 credits 可用",
+      "remaining": "{{name}} 剩余 {{n}}%"
+    },
+    "detail": {
+      "balanceCaption": "余额",
+      "apiKey": "API Key",
+      "subscription": "订阅",
+      "noBalance": "查不到余额",
+      "unknownRemaining": "查不到余量",
+      "noData": "暂无数据",
+      "windowLeft": "{{window}}剩余"
+    },
+    "say": {
+      "balance": "余额不会自动回满。",
+      "balanceLasts_other": "按近 7 天的消耗，约够 {{n}} 天。",
+      "balanceEstimating": "消耗记录还在积累，过几天就能估算还能用多久。",
+      "payg": "{{name}} 按用量付费。",
+      "paygSub": "它的接口不提供余额，所以这里没有余量；用掉的部分照常计入 Cindy 用量。",
+      "plan": "{{name}} 是订阅连接。",
+      "planSub": "Cindy 还读不到它的余量；用掉的部分照常计入 Cindy 用量。",
+      "noData": "还没读到余量。",
+      "noDataSub": "稍后刷新，或用它跑一次任务后就会显示。",
+      "usedUp": "{{window}}的用量已用完。",
+      "usedUpWithCredits": "{{at}}回满；在那之前 Codex 会扣 {{credits}} credits 继续工作。",
+      "creditsOnly": "Codex 会扣 {{credits}} credits 继续工作。",
+      "resetsAt": "{{at}}回满。",
+      "emptyIn": "按现在的速度，约 {{duration}}后见底。",
+      "beforeReset": "比重置早 {{duration}}。",
+      "full": "满格。",
+      "relaxed": "节奏宽松。",
+      "onPace": "节奏正常。",
+      "windowRefresh": "{{window}}窗口{{at}}刷新"
+    },
+    "fact": {
+      "balance": "余额",
+      "updatedAgo": "{{ago}}更新",
+      "dailyUse": "日均消耗",
+      "about": "约 {{value}}",
+      "estimating": "估算中",
+      "estimatingSub": "数据还不够",
+      "last7Days": "近 7 天",
+      "runsOut": "预计用完",
+      "aroundDate": "{{date}}前后",
+      "atThisPace": "按当前速度",
+      "usedFor": "用于",
+      "cindyModels": "Cindy 提供的模型",
+      "chargedPerUse": "按实际用量扣费",
+      "billing": "计费",
+      "perUse": "按量",
+      "subscription": "订阅",
+      "connected": "已连接",
+      "notProvided": "接口不提供",
+      "notReadable": "暂时读不到",
+      "inMenu": "在菜单里",
+      "hidden": "已隐藏",
+      "shown": "显示",
+      "editHint": "可在「编辑」里调整",
+      "usage": "用量",
+      "counted": "照常统计",
+      "countedSub": "计入 Cindy 用量",
+      "resetsFull": "回满",
+      "windowResets": "{{window}}重置",
+      "timeLeft": "还有 {{duration}}",
+      "remainingPercent": "剩 {{n}}%",
+      "perModel": "按模型单独计算",
+      "pace": "节奏",
+      "paceNormal": "正常",
+      "paceAhead": "超前 {{n}}%",
+      "paceReserve": "储备 {{n}}%",
+      "paceSub": "均匀用应剩 {{n}}%",
+      "paceUsedUp": "已用完",
+      "paceWaiting": "等待回满",
+      "extraCredits": "额外 credits",
+      "unlimited": "不限",
+      "creditsUsedAfter": "配额用完后由 Codex 扣除",
+      "noCredits": "没有备用 credits",
+      "prepaid": "预付余额",
+      "xaiAccount": "xAI 账户",
+      "account": "账号"
+    },
+    "action": {
+      "newTask": "用 {{name}} 开新任务",
+      "topUp": "在 Cindy 里充值",
+      "manage": "在 Cindy 设置中管理"
+    },
+    "tasks": {
+      "today_other": "今天 {{n}} 个",
+      "withRunning_other": "{{base}} · {{n}} 个运行中",
+      "context": "上下文 {{n}}%",
+      "private": "{{harness}} 任务"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "订阅等值 = 按 API 参考价折算订阅里用掉的量，不是账单。",
+      "deviceSelf": "这台 {{name}}（实时）",
+      "deviceSynced": "{{name}}（同步到 {{date}}）",
+      "deviceNotSynced": "{{name}}（还没同步）",
+      "deviceJoiner": " + ",
+      "allDevices": "全部设备 = {{list}}。"
+    },
+    "manage": {
+      "balance": "余额 · 不会自动回满",
+      "payg": "API Key · 按量，查不到余额",
+      "plan": "订阅 · 查不到余量",
+      "subscription": "订阅 · {{plan}} · {{windows}}"
+    },
+    "notify": {
+      "lowTitle": "余量快用完了",
+      "lowBody": "所有还有余量的来源都快见底了。点菜单栏的 Cindy 图标，看看哪些什么时候回满。"
+    },
+    "ui": {
+      "updatedJustNow": "刚刚更新",
+      "updatedMinutes_other": "{{n}} 分钟前更新",
+      "updatedHours_other": "{{n}} 小时前更新",
+      "updatedDays_other": "{{n}} 天前更新",
+      "quota": "余量",
+      "edit": "编辑",
+      "tasks": "任务",
+      "tokenUnit": "token",
+      "noTasksToday": "今天还没有任务",
+      "moreTasks_other": "另外 {{n}} 个任务",
+      "running": "运行中",
+      "openApp": "打开 Cindy",
+      "settings": "管理",
+      "refresh": "刷新",
+      "monthScopeLocal": "近 30 天 · 这台电脑",
+      "monthScopeAll": "近 30 天 · 全部设备",
+      "expand": "展开",
+      "expandUsage": "展开用量",
+      "back": "返回",
+      "usageTitle": "用量",
+      "wideCaptionMoney_other": "近 {{n}} 天 · 订阅等值估算",
+      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
+      "scopeLocal": "这台电脑",
+      "scopeAll": "全部设备",
+      "noUsage": "没有用量",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "日均",
+      "paid": "实付",
+      "tokenUnitTitle": "Token",
+      "peakDay": "最高单日",
+      "range7": "7 天",
+      "range30": "30 天",
+      "range90": "90 天",
+      "metricMoney": "金额",
+      "metricTokens": "Token",
+      "listModels_other": "近 {{n}} 天模型",
+      "listTasks": "今天的任务",
+      "today": "今天",
+      "manageTitle": "管理",
+      "done": "完成",
+      "manageHero": "菜单里显示什么，\n按什么顺序。",
+      "manageHeroSub": "拖动调整顺序；关掉的来源不在菜单里出现，也不参与上面的余量判断。",
+      "sources": "余量来源",
+      "sourcesShown": "{{a}} / {{b}} 显示",
+      "statusIcon": "菜单栏图标",
+      "statusIconSub": "单色，随菜单栏深浅变化",
+      "statusIconMode": {
+        "icon": "只图标",
+        "lowest": "最低余量",
+        "today": "今日用量",
+        "task": "当前任务"
+      },
+      "other": "其他",
+      "lowAlert": "快用完时通知",
+      "lowAlertSub": "所有还有余量的来源都快见底时，发一条系统通知",
+      "privacy": "隐藏个人信息",
+      "privacySub": "账号只显示首尾字母，任务标题也会隐藏，适合录屏和截图",
+      "usageScope": "用量统计范围",
+      "manageFoot": "账号登录和连接在 Cindy 设置 › 模型供应商 里管理。",
+      "quit": "退出 Cindy",
+      "showSource": "在菜单里显示 {{name}}",
+      "reorderHint": "拖动，或用操作菜单调整顺序",
+      "moveUp": "上移",
+      "moveDown": "下移"
+    }
+  },
   "settings": {
     "title": "设置",
     "search": {
@@ -1332,6 +1582,10 @@
       "wecomGroupClearFailed": "Webhook 移除失败"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "在菜单栏显示余量",
+        "hint": "在 macOS 菜单栏放一个 Cindy 图标，点开查看订阅余量、Cindy 余额和今天的用量。"
+      },
       "loginItem": {
         "label": "自动启动",
         "hint": "登录电脑后打开 Cindy，默认关闭",
