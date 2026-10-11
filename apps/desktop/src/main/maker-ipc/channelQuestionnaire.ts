@@ -9,6 +9,7 @@ export async function presentChannelQuestionnaire(
   signal?: AbortSignal,
   onPage?: (requestId: string) => void,
   supportsFreeTextInput = false,
+  onAnswers?: (answers: Record<string, string>) => void,
 ): Promise<InteractionDecision> {
   let answers: Record<string, string> = {};
   const dismissed = (): InteractionDecision => ({ kind: 'ask_user_question', answers, dismissed: true });
@@ -34,6 +35,7 @@ export async function presentChannelQuestionnaire(
       // Text adapters return no answer when their own reply wait expires.
       if (supportsFreeTextInput && !Object.hasOwn(decision.answers, question.question)) return dismissed();
       answers = { ...answers, ...decision.answers };
+      onAnswers?.({ ...answers });
       if (decision.dismissed) return { ...decision, answers };
     }
     return { kind: 'ask_user_question', answers };

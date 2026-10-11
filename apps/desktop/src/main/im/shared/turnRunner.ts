@@ -2001,6 +2001,7 @@ export function createTurnRunner(
     entry: {
       sharedPermission?: SharedPermission;
       signal?: AbortSignal;
+      onAnswers?: (answers: Record<string, string>) => void;
       requestId: string;
       request: InteractionRequest;
       resolve: (decision: InteractionDecision) => void;
@@ -2036,6 +2037,7 @@ export function createTurnRunner(
           req, (page, signal) => handle(page, undefined, signal), entry.signal,
           requestId => { pageId = requestId; },
           !richIm && !!adapter.handleTextInteraction,
+          entry.onAnswers,
         );
         resolve(decision);
       } catch {

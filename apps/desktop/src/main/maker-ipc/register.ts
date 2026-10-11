@@ -2625,6 +2625,7 @@ interface PendingInteractionEntry {
   /** IM owns presentation/timeouts; Host retains the execution and cancellation boundary. */
   migrated?: boolean;
   migrationController?: AbortController;
+  migrationAnswers?: Record<string, string>;
   deferredDecision?: InteractionDecision;
 }
 
@@ -3083,7 +3084,10 @@ function cleanupPendingAgentInteractionsForSession(sessionId: string, reason: st
   for (const [requestId, entry] of entries) {
     clearPendingInteraction(requestId);
     handleAgentIslandInteractionDismissed(sessionId, requestId);
-    const decision = defaultDecisionForPending(entry.kind, reason);
+    const decision: InteractionDecision = entry.kind === 'ask_user_question' && entry.migrated
+      ? { kind: 'ask_user_question', answers: entry.deferredDecision?.kind === 'ask_user_question'
+        ? entry.deferredDecision.answers : entry.migrationAnswers ?? {}, dismissed: true }
+      : defaultDecisionForPending(entry.kind, reason);
     entry.resolve(decision);
     persistInteractionDecision(sessionId, entry.persistId, entry.kind, entry.request, decision);
     dismissRendererInteraction(entry, requestId, reason, 'deny');
@@ -3131,6 +3135,7 @@ function cleanupPendingInteractionsForSession(sessionId: string, reason: string)
 export function takePendingInteractionsForSession(sessionId: string): Array<{
   sharedPermission?: SharedPermission;
   signal?: AbortSignal;
+  onAnswers?: (answers: Record<string, string>) => void;
   requestId: string;
   request: InteractionRequest;
   resolve: (decision: InteractionDecision) => void;
@@ -3141,6 +3146,7 @@ export function takePendingInteractionsForSession(sessionId: string): Array<{
   const taken: Array<{
     sharedPermission?: SharedPermission;
     signal?: AbortSignal;
+    onAnswers?: (answers: Record<string, string>) => void;
     requestId: string;
     request: InteractionRequest;
     resolve: (decision: InteractionDecision) => void;
@@ -3160,7 +3166,13 @@ export function takePendingInteractionsForSession(sessionId: string): Array<{
     entry.timeoutId = undefined;
     entry.migrated = true;
     entry.migrationController = new AbortController();
-    taken.push({ requestId, request: entry.request, signal: entry.migrationController.signal, resolve: decision => {
+    taken.push({ requestId, request: entry.request, signal: entry.migrationController.signal,
+      // Cleanup is synchronous; retain completed pages before abort removes this entry.
+      onAnswers: answers => {
+        if (pendingInteractionResolvers.get(requestId) === entry && entry.kind === 'ask_user_question') {
+          entry.migrationAnswers = { ...answers };
+        }
+      }, resolve: decision => {
       if (pendingInteractionResolvers.get(requestId) !== entry || entry.deferredDecision) return;
       if (agentInputCoordinatorHolder?.isExecutionPaused(sessionId)) {
         entry.deferredDecision = decision;

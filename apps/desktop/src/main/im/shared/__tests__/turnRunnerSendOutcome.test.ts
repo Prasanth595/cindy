@@ -1039,6 +1039,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     setupAttachedSession(async () => ({ accepted: true }));
     const controller = new AbortController();
     const resolve = vi.fn();
+    const onAnswers = vi.fn();
     const handleTextInteraction = vi.fn(async (_userId: string, request: InteractionRequest): Promise<InteractionDecision> => {
       if (request.kind !== 'ask_user_question') throw new Error('Expected question');
       if (request.questions[0].question === 'First?') return { kind: 'ask_user_question', answers: { 'First?': 'answer' } };
@@ -1047,7 +1048,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     const cancelTextInteraction = vi.fn(() => true);
     mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
       requestId: 'text-cancel', request: { kind: 'ask_user_question', requestId: 'text-cancel', questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })) },
-      resolve, signal: controller.signal,
+      resolve, onAnswers, signal: controller.signal,
     }]);
     const localRunner = createTurnRunner({
       ...fakeAdapter, channel: 'wechat',
@@ -1057,6 +1058,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     try {
       await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'text-cancel', text: 'ask', attachments: [] });
       await waitForAssertion(() => expect(handleTextInteraction).toHaveBeenCalledTimes(2));
+      expect(onAnswers).toHaveBeenCalledExactlyOnceWith({ 'First?': 'answer' });
       controller.abort();
       await waitForAssertion(() => expect(resolve).toHaveBeenCalledWith({ kind: 'ask_user_question', answers: { 'First?': 'answer' }, dismissed: true }));
       expect(cancelTextInteraction).toHaveBeenCalledExactlyOnceWith('ou_user', 'text-cancel:question:1', expect.objectContaining({ dismissed: true }));
