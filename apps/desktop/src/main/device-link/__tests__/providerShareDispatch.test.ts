@@ -230,6 +230,39 @@ describe('provider share invoke', () => {
     }, 'openai') as { providers: Array<Record<string, unknown>> };
     expect(ungrouped.providers[0]).not.toHaveProperty('groupSize');
   });
+
+  it('tells the guest only its own running tasks on this share', async () => {
+    state.access = ACCESS;
+    const otherDevice = providerShareGuestPeer('share-1', 'member-1', 'desktop');
+    setRemoteAgentHandler({
+      handle: vi.fn(),
+      abortAll: vi.fn(),
+      // 同一成员两台电脑各一个在跑；其他受邀者、其他分享与分享者本人(同账号)的都不算。
+      turnRunningControllers: () => [
+        GUEST,
+        otherDevice,
+        providerShareGuestPeer('share-1', 'member-2', 'laptop'),
+        providerShareGuestPeer('share-2', 'member-1', 'laptop'),
+        'same-account-mac',
+      ],
+    });
+    const { __testing: registry } = await import('../invoke-registry');
+    registry.reset();
+    registry.register('maker:provider:list', async () => ({
+      providers: [{ id: 'anthropic', name: 'Anthropic', remoteInvocationEnabled: true, guestRunning: 99 }],
+    }));
+    try {
+      const listed = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [] }) as { ok: true; result: { providers: Array<Record<string, unknown>> } };
+      expect(listed.result.providers[0]).toMatchObject({ id: 'anthropic', guestRunning: 2 });
+
+      // 远程 Agent 服务较旧、给不出时不带这个字段(目录里原有的值也去掉)。
+      setRemoteAgentHandler({ handle: vi.fn(), abortAll: vi.fn() });
+      const old = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [] }) as { ok: true; result: { providers: Array<Record<string, unknown>> } };
+      expect(old.result.providers[0]).not.toHaveProperty('guestRunning');
+    } finally {
+      registry.reset();
+    }
+  });
 });
 
 describe('provider group channel', () => {
@@ -245,6 +278,33 @@ describe('provider group channel', () => {
     await expect(runInvoke(GUEST, { channel: 'provider-group:remote', args: [{ action: 'view', providerId: 'anthropic' }] }))
       .resolves.toMatchObject({ ok: false, error: { code: 'CHANNEL_NOT_ALLOWED' } });
     expect(handle).not.toHaveBeenCalled();
+  });
+
+  it('gives this computer’s running counts to same-account computers only', async () => {
+    const decorateProviderList = vi.fn(async (result: unknown) => {
+      const value = result as { providers: Array<Record<string, unknown>> };
+      return { ...value, providers: value.providers.map((p) => ({ ...p, runningTurns: 2 })) };
+    });
+    setProviderGroupRemoteHandler({ handle: vi.fn(), decorateProviderList, sharedGroupSize: () => null });
+    const { __testing: registry } = await import('../invoke-registry');
+    registry.reset();
+    registry.register('maker:provider:list', async () => ({
+      providers: [{ id: 'anthropic', name: 'Anthropic', remoteInvocationEnabled: true, runningTurns: 9 }],
+    }));
+    try {
+      const listed = await runInvoke('same-account-mac', { channel: 'maker:provider:list', args: [] }) as { ok: true; result: { providers: Array<Record<string, unknown>> } };
+      expect(listed.result.providers[0]).toMatchObject({ id: 'anthropic', runningTurns: 2 });
+
+      // 受邀者看不到分享者电脑上的总运行数(含分享者本人与其他受邀者的任务)。
+      state.access = ACCESS;
+      decorateProviderList.mockClear();
+      const guest = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [] }) as { ok: true; result: { providers: Array<Record<string, unknown>> } };
+      expect(guest.result.providers[0]).toMatchObject({ id: 'anthropic' });
+      expect(guest.result.providers[0]).not.toHaveProperty('runningTurns');
+      expect(decorateProviderList).not.toHaveBeenCalled();
+    } finally {
+      registry.reset();
+    }
   });
 });
 

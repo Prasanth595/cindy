@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   collectAncestorInstructionFiles,
+  collectInstructionImports,
   collectPersonalConfig,
   collectProjectInstructionFiles,
 } from '../controller/projectFiles';
@@ -183,6 +184,37 @@ describe('collectProjectInstructionFiles', () => {
   });
 });
 
+describe('what gets synced', () => {
+  it('includes project rules, .claude/CLAUDE.md and Codex project skills', async () => {
+    const project = path.join(root, 'proj');
+    write(path.join(project, '.claude', 'CLAUDE.md'), 'project memory');
+    write(path.join(project, '.claude', 'rules', 'style.md'), 'style rule');
+    write(path.join(project, '.claude', 'rules', 'frontend', 'react.md'), 'react rule');
+    write(path.join(project, '.codex', 'skills', 'ship', 'SKILL.md'), 'ship');
+    write(path.join(project, '.codex', 'config.toml'), 'model = "x"');
+    expect(decode(await collectProjectInstructionFiles(project))).toEqual({
+      '.claude/CLAUDE.md': 'project memory',
+      '.claude/rules/style.md': 'style rule',
+      '.claude/rules/frontend/react.md': 'react rule',
+      '.codex/skills/ship/SKILL.md': 'ship',
+    });
+  });
+
+  it('gives every Skill entry file a place before any supporting file', async () => {
+    const project = path.join(root, 'proj');
+    const big = path.join(project, '.claude', 'skills', 'big');
+    write(path.join(big, 'SKILL.md'), 'big');
+    for (let index = 0; index < 600; index += 1) write(path.join(big, 'references', `r${index}.txt`), 'x');
+    write(path.join(project, '.claude', 'skills', 'zz-small', 'SKILL.md'), 'small');
+    write(path.join(project, '.claude', 'agents', 'helper.md'), 'helper');
+    const files = decode(await collectProjectInstructionFiles(project));
+    expect(Object.keys(files)).toHaveLength(512);
+    expect(files['.claude/skills/big/SKILL.md']).toBe('big');
+    expect(files['.claude/skills/zz-small/SKILL.md']).toBe('small');
+    expect(files['.claude/agents/helper.md']).toBe('helper');
+  });
+});
+
 describe('collectPersonalConfig', () => {
   it("collects Claude Code's personal memory, skills, agents, commands and permission rules", async () => {
     const home = path.join(root, 'home');
@@ -231,6 +263,38 @@ describe('collectPersonalConfig', () => {
     expect(Object.keys(decode(whole.personal.files)).sort()).toEqual(['.claude/skills/git/SKILL.md', '.claude/skills/git/reference.md']);
   });
 
+  it("collects personal rules for Claude Code", async () => {
+    const home = path.join(root, 'home');
+    write(path.join(home, '.claude', 'rules', 'tone.md'), 'be brief');
+    const { personal, roots } = await collectPersonalConfig('claude-code', [
+      { path: '.claude/rules/shared.md', data: '' },
+    ], { env: {}, home });
+    expect(decode(personal.files)).toEqual({ '.claude/rules/tone.md': 'be brief' });
+    expect(roots).toEqual([{ relative: '.claude/rules/tone.md', local: path.join(home, '.claude', 'rules', 'tone.md') }]);
+  });
+
+  it('collects personal Skills for Codex and Pi where they look for Skills, leaving managed ones', async () => {
+    const home = path.join(root, 'home');
+    write(path.join(home, '.agents', 'skills', 'review', 'SKILL.md'), 'review');
+    write(path.join(home, '.agents', 'skills', 'cindy-built-in', 'SKILL.md'), 'managed');
+    write(path.join(home, '.codex', 'skills', 'deploy', 'SKILL.md'), 'deploy');
+    write(path.join(home, '.codex', 'skills', '.system', 'skill-creator', 'SKILL.md'), 'system');
+    write(path.join(home, '.codex', 'skills', 'xdt-agents', 'SKILL.md'), 'managed link');
+    const codex = await collectPersonalConfig('codex', [], { env: {}, home });
+    expect(decode(codex.personal.files)).toEqual({
+      '.agents/skills/review/SKILL.md': 'review',
+      '.codex/skills/deploy/SKILL.md': 'deploy',
+    });
+    expect(codex.roots).toEqual([
+      { relative: '.agents/skills/review', local: path.join(home, '.agents', 'skills', 'review') },
+      { relative: '.codex/skills/deploy', local: path.join(home, '.codex', 'skills', 'deploy') },
+    ]);
+    const pi = await collectPersonalConfig('pi', [
+      { path: '.agents/skills/review/SKILL.md', data: '' },
+    ], { env: {}, home });
+    expect(pi.personal.files).toEqual([]);
+  });
+
   it('leaves credential files in personal Skills for later on a shared provider', async () => {
     const home = path.join(root, 'home');
     write(path.join(home, '.claude', 'skills', 'deploy', 'SKILL.md'), 'deploy');
@@ -256,6 +320,63 @@ describe('collectPersonalConfig', () => {
     write(path.join(codexHome, 'AGENTS.override.md'), 'override');
     expect((await collectPersonalConfig('codex', [], { env: { CODEX_HOME: codexHome }, home: root })).personal.instructions)
       .toBe('override');
+  });
+});
+
+describe('collectInstructionImports', () => {
+  const b64 = (text: string) => Buffer.from(text).toString('base64');
+  const text = (data: string) => Buffer.from(data, 'base64').toString();
+
+  it('brings imported files along and rewrites imports that would not resolve on the other computer', async () => {
+    const home = path.join(root, 'home');
+    const project = path.join(home, 'code', 'proj');
+    write(path.join(project, 'docs', 'rules.md'), 'rules @more.md');
+    write(path.join(project, 'docs', 'more.md'), 'more');
+    write(path.join(project, 'docs', 'agents-extra.md'), 'extra');
+    write(path.join(project, 'ignored.md'), 'ignored');
+    write(path.join(project, 'AGENTS.md'), 'agents @docs/agents-extra.md');
+    write(path.join(home, '.claude', 'style.md'), 'style');
+    write(path.join(home, '.claude', 'RTK.md'), 'rtk');
+    write(path.join(home, '.claude', 'tools.md'), 'tools');
+    const claude = { path: 'CLAUDE.md', data: b64('See @docs/rules.md and @~/.claude/style.md.\n\`\`\`\n@ignored.md\n\`\`\`\nAlso @AGENTS.md, ask @someone') };
+    const agents = { path: 'AGENTS.md', data: b64('agents @docs/agents-extra.md') };
+    const rule = { path: '.claude/rules/team.md', data: b64('team rule @../style.md') };
+    const personal = { memory: 'memory @RTK.md and @~/.claude/tools.md', files: [rule] };
+    const files = await collectInstructionImports(
+      { workingDir: project, projectFiles: [claude, agents], ancestorFiles: [], personal },
+      { env: {}, home },
+    );
+    expect(Object.fromEntries(files.map((file) => [`${file.base}:${file.path}`, text(file.data)]))).toEqual({
+      'workspace:docs/rules.md': 'rules @more.md',
+      'workspace:docs/more.md': 'more',
+      'workspace:../../.claude/style.md': 'style',
+      'workspace:docs/agents-extra.md': 'extra',
+      'session:RTK.md': 'rtk',
+      'session:tools.md': 'tools',
+    });
+    expect(text(claude.data)).toBe('See @docs/rules.md and @../../.claude/style.md.\n\`\`\`\n@ignored.md\n\`\`\`\nAlso @AGENTS.md, ask @someone');
+    expect(text(agents.data)).toBe('agents @docs/agents-extra.md');
+    expect(text(rule.data)).toBe('team rule @../../../../.claude/style.md');
+    expect(personal.memory).toBe('memory @RTK.md and @tools.md');
+  });
+
+  it('follows imports five levels deep, like Claude Code', async () => {
+    const project = path.join(root, 'proj');
+    for (let level = 1; level <= 7; level += 1) write(path.join(project, `l${level}.md`), `@l${level + 1}.md`);
+    const files = await collectInstructionImports(
+      { workingDir: project, projectFiles: [{ path: 'CLAUDE.md', data: b64('@l1.md') }], ancestorFiles: [], personal: { files: [] } },
+      { env: {}, home: path.join(root, 'home') },
+    );
+    expect(files.map((file) => file.path)).toEqual(['l1.md', 'l2.md', 'l3.md', 'l4.md', 'l5.md']);
+  });
+
+  it('leaves imported credential files for later on a shared provider', async () => {
+    const project = path.join(root, 'proj');
+    write(path.join(project, '.env'), 'TOKEN=1');
+    write(path.join(project, 'notes.md'), 'notes');
+    const input = { workingDir: project, projectFiles: [{ path: 'CLAUDE.md', data: b64('@.env @notes.md') }], ancestorFiles: [], personal: { files: [] } };
+    expect((await collectInstructionImports(input, { env: {}, home: root, skipCredentials: true })).map((file) => file.path))
+      .toEqual(['notes.md']);
   });
 });
 

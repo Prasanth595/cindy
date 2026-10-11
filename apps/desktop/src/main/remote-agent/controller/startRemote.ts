@@ -27,6 +27,7 @@ import type {
   RemoteAgentOpenPayload,
   RemoteAgentWireAncestorFile,
   RemoteAgentWireFile,
+  RemoteAgentWireImportFile,
   RemoteAgentWirePersonal,
 } from '../wire';
 import { encodeStartOptions } from '../wire';
@@ -69,6 +70,15 @@ export interface StartRemoteAgentDeps {
     personal: RemoteAgentWirePersonal;
     roots: Array<{ relative: string; local: string }>;
   }>;
+  /**
+   * 说明文件里 `@` 导入的文件(只对 Claude Code)；会就地改写传入说明文件里的引用。缺省不同步。
+   */
+  collectImports?(input: {
+    workingDir: string;
+    projectFiles: RemoteAgentWireFile[];
+    ancestorFiles: RemoteAgentWireAncestorFile[];
+    personal: RemoteAgentWirePersonal;
+  }): Promise<RemoteAgentWireImportFile[]>;
   isGitRepo(workingDir: string): Promise<boolean>;
   /** Read 读 PDF 时取文字(Claude Code)。 */
   extractPdfText?: PdfTextExtractor;
@@ -319,6 +329,10 @@ export async function startRemoteAgentSession(
   const collectedPersonal = await (deps.collectPersonal?.(kind, projectFiles) ?? Promise.resolve(null))
     .catch(() => null);
   personalRoots = collectedPersonal?.roots ?? [];
+  const personal = collectedPersonal?.personal ?? { files: [] };
+  const importFiles = kind === 'claude-code' && deps.collectImports
+    ? await deps.collectImports({ workingDir: opts.workingDir, projectFiles, ancestorFiles, personal }).catch(() => [])
+    : [];
   const payload: RemoteAgentOpenPayload = {
     sessionId: opts.sessionId,
     virtualWorkspace: true,
@@ -336,7 +350,8 @@ export async function startRemoteAgentSession(
     },
     projectFiles,
     ancestorFiles,
-    personal: collectedPersonal?.personal ?? { files: [] },
+    ...(importFiles.length ? { importFiles } : {}),
+    personal,
     mcpServers: [...mcp.servers.keys()],
     ...(deps.groupAssigned ? { groupAssigned: true } : {}),
     ...(deps.groupSwitch ? { acceptsGroupSwitch: true } : {}),

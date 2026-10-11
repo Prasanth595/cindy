@@ -21,6 +21,7 @@
  */
 
 import {
+  describeDeviceHostedLinkActivity,
   deviceHostedEnvironmentNote,
   deviceHostedGuestSessionRoot,
   isInsideDeviceHostedRoot,
@@ -215,7 +216,7 @@ import { resolveForkTurnAnchor } from './fork-turn-anchor.js';
 import { parseReconnectAttemptMessage } from '../shared/network-error.js';
 import { extractNonSecretErrorSignals } from '@cindy/maker-shared/error-redaction';
 import { AppServerHost, CodexNativeInitializationStoppedError, type ThreadEventHandlers, type ThreadSubscription } from './app-server/host.js';
-import { AppServerRequestTimeoutError } from './app-server/client.js';
+import { AppServerRequestTimeoutError, type RequestProgressDeadline } from './app-server/client.js';
 import { useCodexHistoryHome, type CodexExternalAuth } from './app-server/external-auth.js';
 import {
   isTerminalRateLimitRetryExhaustion,
@@ -1181,6 +1182,13 @@ const TIGHTEN_INTERRUPT_ACK_TIMEOUT_MS = 10_000;
 // bounded so a live-but-unresponsive daemon cannot freeze the queued message or
 // ignore Stop.
 const PROFILE_LIFECYCLE_ACK_TIMEOUT_MS = 10_000;
+// 生命周期请求内层 host.request 在接受期限之外保留的晚到响应窗口(#5772 review): 外层
+// requestProfileLifecycle 到点按「did not acknowledge」收口, 但请求可能已在服务端执行
+// (thread/start 可能已建出新线程)。内层必须严格晚于外层收口, 晚到响应才能到达 resolveOnce
+// 的迟到分支跑 onLateResolve 清理(退订脱线线程 / 退役不确定的 host); 两层同上限会让
+// AppServerClient 到点删除 pending、丢弃晚到响应, 清理永远不会执行。窗口到点后由
+// AppServerClient 显式删除 pending, 作为超时响应的显式清理。
+const PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS = 5 * 60_000;
 
 // The Browser fallback route is resolved before thread/start, so the app-server
 // can only answer its readiness query against the global MCP inventory. Keep
@@ -1201,6 +1209,11 @@ const CODEX_BROWSER_USE_READINESS_PROBE_ATTEMPTS = 2;
 // (terminal error + Done status)。注意: 超时只代表**我们不再等**, server 侧
 // 可能实际已建 thread/turn — 迟到事件按 stale turn 丢弃, 不影响 UI 复位。
 const CRITICAL_THREAD_RPC_TIMEOUT_MS = 60_000;
+// 设备托管会话(项目在另一台电脑)的上述 RPC 在任务隧道还有往来时顺延(#5764): 线程启动经设备
+// 互联逐个读项目说明与 Skill, 实测约 35 轮串行往返, 慢链路下合法地超过 60s。隧道连续 30s 没有
+// 往来、或从发出起等满 5 分钟, 仍按超时收口(错误里带链路计数)。
+const HOSTED_THREAD_RPC_IDLE_MS = 30_000;
+const HOSTED_THREAD_RPC_MAX_MS = 5 * 60_000;
 
 /**
  * upstream-response-idle watchdog 阈值 — codex 侧对齐 claude-code 的同名机制
@@ -6396,6 +6409,33 @@ assertRouteCurrent();
       };
     }
 
+    /**
+     * thread/start、thread/resume、turn/start 的等待上限。设备托管且宿主提供了隧道往来记录时，链路上
+     * 还有往来就顺延(见 HOSTED_THREAD_RPC_IDLE_MS)；其它会话保持固定 60s。
+     */
+    function criticalThreadRpcOptions(): { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline } {
+      const linkActivity = hosted?.linkActivity;
+      if (!linkActivity) return { timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS };
+      return {
+        timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+        extendWhileProgress: {
+          lastProgressAt: () => linkActivity().lastActivityAt,
+          idleMs: HOSTED_THREAD_RPC_IDLE_MS,
+          maxMs: HOSTED_THREAD_RPC_MAX_MS,
+          describe: () => describeDeviceHostedLinkActivity(linkActivity()),
+        },
+      };
+    }
+
+    function profileLifecycleRpcOptions(): { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline } {
+      // Profile refresh/replacement has its own acceptance wrapper. Keep the
+      // historical short bound for local sessions; hosted sessions follow the
+      // same progress-aware deadline as thread/start (old wiring without tunnel
+      // activity records keeps the fixed 60s bound).
+      if (!hosted) return { timeoutMs: PROFILE_LIFECYCLE_ACK_TIMEOUT_MS };
+      return criticalThreadRpcOptions();
+    }
+
     function currentThreadWorkspaceConfig(contextLimit = currentContextLimit()): Pick<
       ThreadStartParams,
       | 'approvalPolicy'
@@ -6959,7 +6999,7 @@ assertRouteCurrent();
       const resp = await withMcpDiscoveryContext(() => {
           assertCurrentHost('thread/start dispatch');
           return host.request<ThreadStartResponse>(Method.ThreadStart, params, {
-            timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+            ...criticalThreadRpcOptions(),
             beforeDispatch: () => {
               assertCurrentHost('thread/start write');
               startup.threadDispatched = true;
@@ -7101,7 +7141,7 @@ assertRouteCurrent();
         const resp = await withMcpDiscoveryContext(() => {
           assertCurrentHost('thread/resume dispatch');
           return host.request<ThreadResumeResponse>(Method.ThreadResume, params, {
-            timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+            ...criticalThreadRpcOptions(),
             beforeDispatch: () => {
               assertCurrentHost('thread/resume write');
               startup.threadDispatched = true;
@@ -7256,12 +7296,28 @@ assertRouteCurrent();
     }: {
       action: 'refresh' | 'replacement';
       signal?: AbortSignal;
-      request: () => Promise<Response>;
+      request: (options: { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline }) => Promise<Response>;
       onLateResolve?: (response: Response) => Promise<void> | void;
     }): Promise<Response> =>
       new Promise<Response>((resolve, reject) => {
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        const rpcOptions = profileLifecycleRpcOptions();
+        // 内层 host.request 的三条边界(基准 / 静默 / 顺延封顶)都比外层接受期限多留一段
+        // 晚到响应窗口, 保证任何收口路径下内层都严格晚于外层(见
+        // PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS)。
+        const lateResponseOptions: { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline } = rpcOptions.extendWhileProgress
+          ? {
+              timeoutMs: rpcOptions.timeoutMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+              extendWhileProgress: {
+                ...rpcOptions.extendWhileProgress,
+                idleMs: rpcOptions.extendWhileProgress.idleMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+                maxMs: rpcOptions.extendWhileProgress.maxMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+              },
+            }
+          : { timeoutMs: rpcOptions.timeoutMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS };
+        const startedAt = Date.now();
+        let extended = false;
         const cleanup = () => {
           if (timer) clearTimeout(timer);
           signal?.removeEventListener('abort', onAbort);
@@ -7296,16 +7352,42 @@ assertRouteCurrent();
           onAbort();
           return;
         }
-        timer = setTimeout(() => {
+        const expire = () => {
+          const progress = rpcOptions.extendWhileProgress;
+          if (progress) {
+            const now = Date.now();
+            let last: number | null = null;
+            try {
+              last = progress.lastProgressAt();
+            } catch {
+              last = null;
+            }
+            const idleLeft = last === null ? 0 : progress.idleMs - (now - last);
+            const capLeft = progress.maxMs - (now - startedAt);
+            if (idleLeft > 0 && capLeft > 0) {
+              extended = true;
+              timer = setTimeout(expire, Math.min(idleLeft, capLeft));
+              timer.unref?.();
+              return;
+            }
+          }
+          let detail: string | undefined;
+          try {
+            detail = rpcOptions.extendWhileProgress?.describe?.();
+          } catch {
+            detail = undefined;
+          }
+          const waitedMs = extended ? Date.now() - startedAt : rpcOptions.timeoutMs;
           rejectOnce(
             new Error(
-              `Codex workspace permission profile ${action} did not acknowledge within ${PROFILE_LIFECYCLE_ACK_TIMEOUT_MS}ms`,
+              `Codex workspace permission profile ${action} did not acknowledge within ${waitedMs}ms${detail ? ` (${detail})` : ''}`,
             ),
           );
-        }, PROFILE_LIFECYCLE_ACK_TIMEOUT_MS);
+        };
+        timer = setTimeout(expire, rpcOptions.timeoutMs);
         timer.unref?.();
         try {
-          request().then(
+          request(lateResponseOptions).then(
             resolveOnce,
             (error) => rejectOnce(
               error instanceof Error ? error : new Error(String(error)),
@@ -7335,7 +7417,7 @@ assertRouteCurrent();
         const resp = await requestProfileLifecycle<ThreadStartResponse>({
           action: 'replacement',
           signal,
-          request: () => withMcpDiscoveryContext(() => host.request<ThreadStartResponse>(retainHistory ? Method.ThreadFork : Method.ThreadStart, {
+          request: (options) => withMcpDiscoveryContext(() => host.request<ThreadStartResponse>(retainHistory ? Method.ThreadFork : Method.ThreadStart, {
             ...(retainHistory ? { threadId: previousThreadId, excludeTurns: true } : {}),
             cwd: opts.workingDir,
             // Recovery belongs to the running send, whose catalog/window is already frozen.
@@ -7346,7 +7428,7 @@ assertRouteCurrent();
             ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
             ...(mutableServiceTier !== undefined ? { serviceTier: mutableServiceTier } : {}),
             ...(developerInstructions && !useProxyChannel ? { developerInstructions } : {}),
-          })),
+          }, options)),
           onLateResolve: async (lateResp) => {
             const lateThreadId = lateResp.thread.id;
             if (lateThreadId === previousThreadId) return;
@@ -7478,7 +7560,7 @@ assertRouteCurrent();
             resp = await requestProfileLifecycle<ThreadResumeResponse>({
               action: 'refresh',
               signal,
-              request: () => host.request<ThreadResumeResponse>(Method.ThreadResume, {
+              request: (options) => host.request<ThreadResumeResponse>(Method.ThreadResume, {
                 threadId,
                 ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
                 cwd: opts.workingDir,
@@ -7486,7 +7568,7 @@ assertRouteCurrent();
                 ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
                 ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
                 ...(mutableServiceTier !== undefined ? { serviceTier: mutableServiceTier } : {}),
-              }),
+              }, options),
             });
           } catch (e) {
             if (!isExactNoRolloutThreadResumeError(e, threadId)) throw e;
@@ -7536,7 +7618,7 @@ assertRouteCurrent();
             const workspaceConfig = currentThreadWorkspaceConfig(desired);
             const resp = await requestProfileLifecycle<ThreadResumeResponse>({
               action: 'refresh', signal,
-              request: () => host.request<ThreadResumeResponse>(Method.ThreadResume, {
+              request: (options) => host.request<ThreadResumeResponse>(Method.ThreadResume, {
                 threadId, cwd: opts.workingDir,
                 ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
                 ...workspaceConfig,
@@ -7544,7 +7626,7 @@ assertRouteCurrent();
                 ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
                 ...(mutableServiceTier !== undefined ? { serviceTier: mutableServiceTier } : {}),
                 ...(developerInstructions && !useProxyChannel ? { developerInstructions } : {}),
-              }),
+              }, options),
               onLateResolve: async () => {
                 await runThreadCleanupOrRetire({
                   cleanupThreadId: threadId, reason: 'late context settings refresh',
@@ -13452,7 +13534,7 @@ assertRouteCurrent();
               // 且无人可解（review #844 codex P1）。与正常 turn/start 同款边界。
               const resp = await host.request<TurnStartResponse>(Method.TurnStart,
                 { ...turnParams, threadId, ...(continueNativeHistory ? { input: [] } : {}) }, {
-                timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+                ...criticalThreadRpcOptions(),
               });
               // **发出后再复检**：RPC 在途期间 Stop / close / 撤单都拦不住它——
               // 计时器早已清空，cancelOverloadRetry 无从取消；abort() 又因为
@@ -13553,7 +13635,7 @@ assertRouteCurrent();
         let initialStartSettledByCancel = false;
         try {
           const resp = await host.request<TurnStartResponse>(Method.TurnStart, turnParams, {
-            timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+            ...criticalThreadRpcOptions(),
           });
           markTurnConfigAccepted();
           adoptUnidentifiedDeadTurn(resp, initialStartSeq);
@@ -13599,7 +13681,7 @@ assertRouteCurrent();
                 ...(developerInstructions && !useProxyChannel ? { developerInstructions } : {}),
               };
               const resumeResp = await host.request<ThreadResumeResponse>(Method.ThreadResume, resumeParams, {
-                timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+                ...criticalThreadRpcOptions(),
               });
               if (mutableModel === resumeModel && resumeModel === 'gpt-5' && resumeResp.model) {
                 mutableModel = resumeResp.model;
@@ -13655,7 +13737,7 @@ assertRouteCurrent();
               }
               log.info('thread/resume after stale daemon ok, retrying turn/start', { threadId });
               const resp = await host.request<TurnStartResponse>(Method.TurnStart, turnParams, {
-                timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS,
+                ...criticalThreadRpcOptions(),
               });
               markTurnConfigAccepted();
               adoptUnidentifiedDeadTurn(resp, initialStartSeq);

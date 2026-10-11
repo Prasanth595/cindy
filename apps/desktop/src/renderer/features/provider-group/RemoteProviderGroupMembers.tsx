@@ -3,10 +3,11 @@
  * 供应商被建成了组时，详情里列出组内电脑与它们的状态(在线、正在运行几个任务、冷却到何时)。
  * 组的设置只能在组所在电脑上改。状态没有推送，打开期间定时重读。
  */
-import { Monitor } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ChevronRight, Monitor } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
 import type {
@@ -16,6 +17,7 @@ import type {
   ProviderGroupView,
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
+import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
 import { memberStatusText } from './ProviderGroupSection';
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -81,6 +83,7 @@ export function RemoteProviderGroupMembers({
             member={member}
             status={view?.members.find((m) => m.key === member.key)}
             first={index === 0}
+            ownerDeviceId={deviceId}
           />
         ))}
       </div>
@@ -97,10 +100,13 @@ function MemberRow({
   member,
   status,
   first,
+  ownerDeviceId,
 }: {
   member: ProviderGroupMember;
   status: ProviderGroupMemberStatus | undefined;
   first: boolean;
+  /** 组所在电脑：组里的「组所在电脑自己」读它的账号额度。 */
+  ownerDeviceId: string;
 }) {
   const { t, i18n } = useTranslation();
   const ownerNameOf = useProviderShareOwnerNameOf();
@@ -117,43 +123,68 @@ function MemberRow({
   const ready = status?.state === 'available' || status?.state === 'full';
   const running = status?.running ?? 0;
   const appendRunning = running > 0 && status != null && status.state !== 'available' && status.state !== 'full';
+  // 点这一行展开这台的剩余额度(2026-10-10 用户要求)；收起时不读。
+  const [quotaOpen, setQuotaOpen] = useState(false);
+  const quotaId = useId();
+  const selfDeviceId = useOptionalAuthDeviceId();
   return (
     <div
       data-testid="remote-provider-group-member"
       data-member-state={status?.state ?? 'loading'}
-      className={cn(
-        'flex items-center gap-3 px-3 py-2.5',
-        !first && 'border-t border-[var(--settings-theme-card-border)]',
-      )}
+      className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
-      <span
-        aria-hidden="true"
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-chip)] text-[var(--text-secondary)]"
+      <button
+        type="button"
+        aria-expanded={quotaOpen}
+        aria-controls={quotaOpen ? quotaId : undefined}
+        onClick={() => setQuotaOpen((open) => !open)}
+        className="group flex w-full items-center gap-3 px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]"
       >
-        <Monitor size={14} />
-      </span>
-      <div className={cn('flex min-w-0 flex-1 flex-col gap-0.5', member.paused && 'opacity-60')}>
-        <div className="flex min-w-0 flex-wrap items-baseline gap-2 text-13">
-          <span className="truncate font-medium text-[var(--text-primary)]">{label}</span>
-          <span className="text-12 text-[var(--text-secondary)]">{source}</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-12 text-[var(--text-secondary)]">
-          <span
-            aria-hidden="true"
-            className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ background: ready ? 'var(--remote-status-ready)' : 'var(--remote-status-disconnected)' }}
-          />
-          <span>{memberStatusText(t, status, i18n.language)}</span>
-          {appendRunning && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="[font-variant-numeric:tabular-nums]">
-                {t('providerGroup.member.runningCount', { count: running })}
-              </span>
-            </>
-          )}
-        </div>
-      </div>
+        <span
+          aria-hidden="true"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-chip)] text-[var(--text-secondary)]"
+        >
+          <Monitor size={14} />
+        </span>
+        <span className={cn('flex min-w-0 flex-1 flex-col gap-0.5', member.paused && 'opacity-60')}>
+          <span className="flex min-w-0 flex-wrap items-baseline gap-2 text-13">
+            <span className="truncate font-medium text-[var(--text-primary)]">{label}</span>
+            <span className="text-12 text-[var(--text-secondary)]">{source}</span>
+            <ChevronRight
+              aria-hidden="true"
+              size={14}
+              className={cn(
+                'shrink-0 self-center text-[var(--text-tertiary)] transition-transform group-hover:text-[var(--text-secondary)]',
+                quotaOpen && 'rotate-90',
+              )}
+            />
+          </span>
+          <span className="flex flex-wrap items-center gap-1.5 text-12 text-[var(--text-secondary)]">
+            <span
+              aria-hidden="true"
+              className="h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{ background: ready ? 'var(--remote-status-ready)' : 'var(--remote-status-disconnected)' }}
+            />
+            <span>{memberStatusText(t, status, i18n.language)}</span>
+            {appendRunning && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="[font-variant-numeric:tabular-nums]">
+                  {t('providerGroup.member.runningCount', { count: running })}
+                </span>
+              </>
+            )}
+          </span>
+        </span>
+      </button>
+      {quotaOpen && (
+        <GroupMemberQuota
+          id={quotaId}
+          inset="pl-9"
+          target={groupMemberQuotaTarget(member, ownerDeviceId, selfDeviceId)}
+          offline={status?.state === 'offline'}
+        />
+      )}
     </div>
   );
 }

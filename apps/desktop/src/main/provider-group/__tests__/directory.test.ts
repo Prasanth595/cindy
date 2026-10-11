@@ -128,6 +128,78 @@ describe('resolveMembers', () => {
     ]);
   });
 
+  it('takes the running count a shared computer reports for this account', async () => {
+    const catalogs: Record<string, ProviderView[]> = {
+      mini: [view('anthropic-1a2b3c4d', 'Claude', { guestRunning: 5 } as unknown as Partial<ProviderView>)],
+      'share:s1': [view('anthropic', 'Anthropic', { guestRunning: 3 } as unknown as Partial<ProviderView>)],
+      'share:s3': [view('anthropic', 'Anthropic', { guestRunning: -1 } as unknown as Partial<ProviderView>)],
+      'share:s4': [view('anthropic', 'Anthropic')],
+    };
+    const directory = createProviderGroupDirectory(deps({
+      readDeviceProviders: async (id: string) => catalogs[id] ?? [],
+      listReceivedShares: () => [share('s1'), share('s3'), share('s4')],
+    }));
+    const member = (key: string, kind: 'device' | 'share', agentDeviceId: string, providerId: string) => ({
+      key, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,
+    });
+    const resolved = await directory.resolveMembers('anthropic', {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [
+        member('device:mini:anthropic-1a2b3c4d', 'device', 'mini', 'anthropic-1a2b3c4d'),
+        member('share:s1:anthropic', 'share', 'share:s1', 'anthropic'),
+        member('share:s3:anthropic', 'share', 'share:s3', 'anthropic'),
+        member('share:s4:anthropic', 'share', 'share:s4', 'anthropic'),
+      ],
+    });
+    // 只认分享来的电脑报来的合理值；同账号电脑的目录不带这个字段，带了也不认；旧分享者不报时没有。
+    expect(resolved.map((r) => r.reportedRunning ?? null)).toEqual([null, 3, null, null]);
+  });
+
+  it('takes the running count of this computer and of same-account computers', async () => {
+    const catalogs: Record<string, ProviderView[]> = {
+      mini: [view('anthropic-1a2b3c4d', 'Claude', { runningTurns: 2 } as unknown as Partial<ProviderView>)],
+      studio: [view('anthropic', 'Anthropic', { runningTurns: 2.5 } as unknown as Partial<ProviderView>)],
+      old: [view('anthropic', 'Anthropic')],
+      'share:s1': [view('anthropic', 'Anthropic', { runningTurns: 7 } as unknown as Partial<ProviderView>)],
+    };
+    const localRunning = vi.fn(async (providerId: string) => (providerId === 'anthropic' ? 4 : null));
+    const directory = createProviderGroupDirectory(deps({
+      listDevices: async () => [device('mini'), device('studio'), device('old')],
+      readDeviceProviders: async (id: string) => catalogs[id] ?? [],
+      listReceivedShares: () => [share('s1')],
+      localRunning,
+    }));
+    const member = (key: string, kind: 'local' | 'device' | 'share', agentDeviceId: string | null, providerId: string) => ({
+      key, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,
+    });
+    const resolved = await directory.resolveMembers('anthropic', {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [
+        member('local', 'local', null, 'anthropic'),
+        member('device:mini:anthropic-1a2b3c4d', 'device', 'mini', 'anthropic-1a2b3c4d'),
+        member('device:studio:anthropic', 'device', 'studio', 'anthropic'),
+        member('device:old:anthropic', 'device', 'old', 'anthropic'),
+        member('share:s1:anthropic', 'share', 'share:s1', 'anthropic'),
+      ],
+    });
+    // 本机现算；同账号电脑只认合理值，旧版不报时没有；分享来的电脑只认本账号的数，不认那台的总数。
+    expect(resolved.map((r) => r.reportedRunning ?? null)).toEqual([4, 2, null, null, null]);
+    expect(localRunning).toHaveBeenCalledWith('anthropic');
+  });
+
+  it('leaves the local count out when it cannot be read', async () => {
+    const directory = createProviderGroupDirectory(deps({ localRunning: async () => { throw new Error('db busy'); } }));
+    const [resolved] = await directory.resolveMembers('anthropic', {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [{ key: 'local', kind: 'local', agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false }],
+    });
+    expect(resolved).toMatchObject({ state: 'ok' });
+    expect(resolved.reportedRunning).toBeUndefined();
+  });
+
   it('names members for activity records without the sharer’s computer name', () => {
     const directory = createProviderGroupDirectory(deps());
     const member = (patch: Partial<ProviderGroupConfig['members'][number]>) => ({
@@ -152,6 +224,58 @@ describe('resolveMembers', () => {
     expect(d.readDeviceProviders).toHaveBeenCalledTimes(1);
     directory.invalidate('mini');
     await directory.resolveMembers('anthropic', config);
+    expect(d.readDeviceProviders).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('probe (waiting for a computer to come back, §6.1)', () => {
+  it('tells apart a computer that cannot be reached from one whose provider cannot be used', async () => {
+    const directory = createProviderGroupDirectory(deps());
+    expect(await directory.probe('mini', 'anthropic-1a2b3c4d')).toBe('ok');
+    expect(await directory.probe('off', 'anthropic')).toBe('offline');
+    expect(await directory.probe('mini', 'gone')).toBe('unavailable');
+    expect(await directory.probe('share:s1', 'anthropic')).toBe('ok');
+    expect(await directory.probe('share:s2', 'anthropic')).toBe('unavailable');
+  });
+
+  it('does not wait for a computer that is online but turned off remote control', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listDevices: async () => [device('mini', { remoteControlEnabled: false })],
+    }));
+    expect(await directory.probe('mini', 'anthropic-1a2b3c4d')).toBe('unavailable');
+  });
+
+  it('reads a shared computer directly instead of trusting the periodically refreshed online flag', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listReceivedShares: () => [share('s1', { hostOnline: false })],
+    }));
+    // 快照还说离线，其实已经能读到那台的目录：按恢复算。
+    expect(await directory.probe('share:s1', 'anthropic')).toBe('ok');
+    // 真读不到时仍是离线。
+    const unreachable = createProviderGroupDirectory(deps({
+      listReceivedShares: () => [share('s1', { hostOnline: false })],
+      readDeviceProviders: async () => {
+        throw new Error('unreachable');
+      },
+    }));
+    expect(await unreachable.probe('share:s1', 'anthropic')).toBe('offline');
+  });
+
+  it('reads the current state instead of the cached one', async () => {
+    let miniOnline = true;
+    const d = deps({ listDevices: async () => [device('self', { isSelf: true }), device('mini', { online: miniOnline })] });
+    const directory = createProviderGroupDirectory(d);
+    const config: ProviderGroupConfig = {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [{ key: 'device:mini:anthropic-1a2b3c4d', kind: 'device', agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false }],
+    };
+    await directory.resolveMembers('anthropic', config);
+    miniOnline = false;
+    expect(await directory.probe('mini', 'anthropic-1a2b3c4d')).toBe('offline');
+    miniOnline = true;
+    expect(await directory.probe('mini', 'anthropic-1a2b3c4d')).toBe('ok');
+    // 那台的目录也现读，不用短时缓存。
     expect(d.readDeviceProviders).toHaveBeenCalledTimes(2);
   });
 });

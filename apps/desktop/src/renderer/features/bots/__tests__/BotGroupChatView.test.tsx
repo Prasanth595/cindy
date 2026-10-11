@@ -530,6 +530,53 @@ describe('BotGroupChatView', () => {
     expect((composer as HTMLTextAreaElement).value).toBe('Main draft continues');
   });
 
+  it.each(['main', 'thread'])('lets %s image selection consume Escape before the thread', async scope => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    await user.click(trigger);
+    const panel = screen.getByRole('complementary');
+    await user.type(within(panel).getByRole('textbox'), 'Thread draft');
+    const owner = scope === 'main' ? screen.getByRole('main') : panel;
+    await user.click(within(owner).getAllByRole('button', { name: 'chat.shareImage.entry' })[0]!);
+    expect(shareSelectionStore.getActiveSessionId()).not.toBeNull();
+    await user.keyboard('{Escape}');
+    expect(shareSelectionStore.getActiveSessionId()).toBeNull();
+    expect(screen.getByRole('complementary')).toBe(panel);
+    expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Thread draft');
+    await user.click(within(panel).getByRole('textbox'));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('closes with Escape from the separate group header, yielding to consumed and IME events', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const header = screen.getByTestId('content-header');
+    for (const button of within(header).getAllByRole('button')) {
+      await user.click(trigger);
+      const panel = screen.getByRole('complementary');
+      button.focus();
+      expect(panel.parentElement?.contains(button)).toBe(false);
+      if (button.getAttribute('aria-label') === 'bots.groupChat.settings.open') await screen.findByRole('tooltip');
+      fireEvent.keyDown(button, { key: 'Escape', isComposing: true, keyCode: 229 });
+      const consumed = createEvent.keyDown(button, { key: 'Escape', bubbles: true, cancelable: true });
+      consumed.preventDefault();
+      fireEvent(button, consumed);
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  });
+
   it.each(['image', 'text-trigger', 'text-control', 'text-body'])('lets %s attachment preview close first with Escape and retains the thread draft', async kind => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({

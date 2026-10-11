@@ -9,6 +9,7 @@ import {
   decodeSessionTagCatalog,
   scrubSharedProvider,
   PROVIDER_SHARE_GROUP_SIZE_FIELD,
+  PROVIDER_SHARE_GUEST_RUNNING_FIELD,
   CONTROLLER_CAPABILITY_SESSION_LIST_MESSAGES_V1,
   isListMessagePush,
   mapMessageBodies,
@@ -390,6 +391,8 @@ export interface RemoteAgentHandler {
   purgeControllers?(match: (controller: string) => boolean): Promise<void>;
   /** 有进行中任务的控制端。 */
   activeControllers?(): string[];
+  /** 正在运行一轮的任务的控制端(每个任务一项)。 */
+  turnRunningControllers?(): string[];
 }
 let remoteAgentHandler: RemoteAgentHandler | null = null;
 
@@ -401,8 +404,11 @@ export function setRemoteAgentHandler(handler: RemoteAgentHandler | null): void 
 export interface ProviderGroupRemoteHandler {
   /** `provider-group:remote` 请求。 */
   handle(controller: string, raw: unknown): Promise<unknown>;
-  /** 给同账号电脑的 `maker:provider:list` 补上组摘要(组所属供应商的 `group` 字段)。 */
-  decorateProviderList(result: unknown): unknown;
+  /**
+   * 给同账号电脑的 `maker:provider:list` 补上组摘要(组所属供应商的 `group` 字段)与这台电脑上每个开放的
+   * 供应商正在运行的任务数(`runningTurns`)。
+   */
+  decorateProviderList(result: unknown): unknown | Promise<unknown>;
   /** 分享出去的这个供应商建了组时组里有几台电脑(只给受邀者看台数，不给名单)；没有组返回 null。 */
   sharedGroupSize(providerId: string): number | null;
 }
@@ -4126,7 +4132,9 @@ async function sharedProviderView(
 async function projectProviderShareRead(
   src: string, channel: string, args: unknown[], result: unknown, providerId: string,
 ): Promise<{ ok: true; value: unknown } | Extract<InvokeResultPayload, { ok: false }>> {
-  if (channel === 'maker:provider:list') return { ok: true, value: projectProviderListForShare(result, providerId) };
+  if (channel === 'maker:provider:list') {
+    return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src)) };
+  }
   const view = await sharedProviderView(src, providerId);
   if (view && 'ok' in view) return view;
   if (channel === 'maker:agent:status') {
@@ -4154,8 +4162,27 @@ async function projectProviderShareRead(
   };
 }
 
-/** Keep only the shared provider (and only while it stays open for remote use). */
-function projectProviderListForShare(result: unknown, providerId: string): unknown {
+/**
+ * 读目录的这个受邀者(同一成员的每台电脑，不分设备)此刻在这个分享上正在运行一轮的任务数；不含分享者本人与
+ * 其他受邀者。远程 Agent 服务较旧、给不出时返回 null(目录里不带这个字段)。
+ */
+function providerShareGuestRunning(src: string): number | null {
+  const caller = parseProviderSharePeer(src);
+  const controllers = remoteAgentHandler?.turnRunningControllers?.();
+  if (caller?.role !== 'guest' || !controllers) return null;
+  let count = 0;
+  for (const controller of controllers) {
+    const peer = parseProviderSharePeer(controller);
+    if (peer?.role === 'guest' && peer.shareId === caller.shareId && peer.memberId === caller.memberId) count++;
+  }
+  return count;
+}
+
+/**
+ * Keep only the shared provider (and only while it stays open for remote use). `guestRunning` is the
+ * calling guest's own running count on this share (null = not known, the field is left out).
+ */
+function projectProviderListForShare(result: unknown, providerId: string, guestRunning: number | null = null): unknown {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const value = result as { providers?: unknown; modelVisibilityOverrides?: unknown; providerOrder?: unknown };
   const providers = Array.isArray(value.providers)
@@ -4175,6 +4202,9 @@ function projectProviderListForShare(result: unknown, providerId: string): unkno
       const scrubbed: Record<string, unknown> = { ...scrubSharedProvider(provider) };
       delete scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD];
       if (groupSize !== null) scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD] = groupSize;
+      // 只来自本机远程 Agent 服务按调用方统计的数，目录里原有的值不算。
+      delete scrubbed[PROVIDER_SHARE_GUEST_RUNNING_FIELD];
+      if (guestRunning !== null) scrubbed[PROVIDER_SHARE_GUEST_RUNNING_FIELD] = guestRunning;
       return scrubbed;
     }),
     modelVisibilityOverrides: overrides,
@@ -4582,9 +4612,9 @@ async function executeRemoteInvoke(src: string, payload: InvokePayload | undefin
         || listingCapabilities.includes(CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2),
         args,
       ));
-    // 供应商组摘要只给同账号电脑(受邀者与共享任务访客另有投影，这里不加，scrubSharedProvider 再兜一层)。
+    // 供应商组摘要与运行数只给同账号电脑(受邀者与共享任务访客另有投影，这里不加，scrubSharedProvider 再兜一层)。
     const decorated = payload.channel === 'maker:provider:list' && isSameAccountController(src) && providerGroupRemoteHandler
-      ? providerGroupRemoteHandler.decorateProviderList(projected)
+      ? await providerGroupRemoteHandler.decorateProviderList(projected)
       : projected;
     if (!broadcastTap.isDataOwnerBroadcastScopeCurrent(invocationOwner)) throw new Error('[NOT_FOUND] Session does not exist');
     return { ok: true, result: decorated };

@@ -30,6 +30,7 @@ import type { GuardedFetch } from '../executor/webFetch';
 import { remoteAgentEventMapper } from './eventMap';
 import {
   collectAncestorInstructionFiles,
+  collectInstructionImports,
   collectPersonalConfig,
   collectProjectInstructionFiles,
 } from './projectFiles';
@@ -225,6 +226,7 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         ? undefined
         : (workingDir) => collectAncestorInstructionFiles(workingDir, collect),
       collectPersonal: (kind, projectFiles) => collectPersonalConfig(kind, projectFiles, collect),
+      collectImports: (imports) => collectInstructionImports(imports, collect),
       isGitRepo,
       ...(deps.extractPdfText ? { extractPdfText: deps.extractPdfText } : {}),
       mapEvent: deps.mapEvent ?? remoteAgentEventMapper,

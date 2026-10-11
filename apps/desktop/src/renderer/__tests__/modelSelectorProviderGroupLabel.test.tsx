@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * 模型列表里供应商组的一行说明(provider-groups.md §10，2026-10-10 用户要求)：
- *   1. 浏览同账号另一台电脑的组：标题下列出组里有几台、是哪几台(组所在电脑、我的其他电脑、分享来的电脑)；
- *   2. 分享来的电脑只用分享者昵称称呼(「Magi 的电脑」)，不出现分享者的电脑名(provider-sharing.md §6)；
- *   3. 分享给我的供应商建了组：只写组里有几台，不写是哪几台，左栏也标出「供应商组」；
- *   4. 本机建的组：本机那一格同样有这行说明，组所在电脑写「本机」；
- *   5. 没有组的供应商不显示说明。
+ * 模型列表里供应商组的标题(provider-groups.md §10，2026-10-10 用户要求)：只写组里有几台，不写是哪几台，
+ * 不另起一行。分组标题与左栏提示同一句：
+ *   1. 同账号另一台电脑的组：「C Open · Studio · 供应商组 · 3 台电脑」，组内电脑的名字(含分享者的电脑名)都不出现；
+ *   2. 分享给我的供应商建了组：同样只写台数；
+ *   3. 本机建的组：「A Local · 供应商组 · 2 台电脑」，每行模型的来源名不带台数；
+ *   4. 没有组的供应商不带「供应商组」。
  */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import React from 'react';
@@ -23,12 +23,9 @@ vi.mock('react-i18next', async (importOriginal) => ({
         'newChat.modelSelector.unified.customize': '自定义',
         'newChat.modelSelector.unified.railAll': '全部',
         'newChat.modelSelector.unified.railRemoteProvider': `${o.provider} · ${o.device}`,
-        'newChat.modelSelector.unified.railRemoteProviderGroup': `${o.provider} · ${o.device} · 供应商组`,
-        'newChat.modelSelector.unified.groupNote': `供应商组 · ${o.count} 台电脑`,
-        'newChat.modelSelector.unified.groupNoteMembers': `供应商组 · ${o.count} 台电脑：${o.names}`,
-        'providerGroup.member.local': '本机',
-        'providerGroup.member.shareComputer': `${o.name} 的电脑`,
-        'providerGroup.member.shareComputerUnknown': '分享来的电脑',
+        'newChat.modelSelector.unified.railRemoteProviderGroup': `${o.provider} · ${o.device} · ${o.group}`,
+        'newChat.modelSelector.unified.providerGroupLabel': `${o.provider} · ${o.group}`,
+        'settings.providers.remote.groupBadge': `供应商组 · ${o.count} 台电脑`,
         'effortLevels.low': '低',
         'effortLevels.high': '高',
       };
@@ -196,9 +193,8 @@ function renderLocalTaskPanel() {
 }
 
 const list = () => screen.getByRole('listbox');
-// 测试里没有 i18n 实例，名单按运行环境的默认语言拼接(与组件同一种写法)。
-const names = (items: string[]) => new Intl.ListFormat(undefined, { style: 'short', type: 'conjunction' }).format(items);
-const notes = () => Array.from(list().querySelectorAll('[data-group-note]')).map((node) => node.textContent);
+const headings = () =>
+  Array.from(list().querySelectorAll('[data-group-label]')).map((node) => node.getAttribute('data-group-label'));
 
 async function browse(name: string) {
   await act(async () => {
@@ -215,35 +211,37 @@ afterEach(() => {
   cleanup();
 });
 
-describe('模型列表顶部的供应商组说明', () => {
-  it('同账号另一台电脑的组：列出组里有几台、是哪几台，分享来的电脑只写分享者昵称', async () => {
+describe('模型列表里供应商组的标题', () => {
+  it('同账号另一台电脑的组：标题与左栏只写台数，不列组内电脑', async () => {
     renderLocalTaskPanel();
     // 组员 Laptop 收进了组，左栏只剩组那一项。
     expect(screen.queryByRole('button', { name: 'D Open · Laptop' })).toBeNull();
-    await browse('C Open · Studio · 供应商组');
-    expect(notes()).toEqual([`供应商组 · 3 台电脑：${names(['Studio', 'Laptop', 'Magi 的电脑'])}`]);
-    expect(list().textContent).not.toContain('Mac Mini');
+    await browse('C Open · Studio · 供应商组 · 3 台电脑');
+    expect(headings()).toEqual(['C Open · Studio · 供应商组 · 3 台电脑']);
+    expect(list().textContent).not.toMatch(/Mac Mini|Laptop|Magi/);
   });
 
-  it('没有组的供应商不显示说明', async () => {
+  it('没有组的供应商不带供应商组', async () => {
     renderLocalTaskPanel();
     await browse('C Solo · Studio');
     expect(within(list()).getByText('Solo Model')).toBeTruthy();
-    expect(notes()).toEqual([]);
+    expect(headings()).toEqual(['C Solo · Studio']);
   });
 
-  it('分享来的组只写台数，左栏标出供应商组', async () => {
+  it('分享来的组只写台数', async () => {
     renderLocalTaskPanel();
-    await browse('S Shared · 来自 Kai 的分享 · 供应商组');
+    await browse('S Shared · 来自 Kai 的分享 · 供应商组 · 3 台电脑');
     expect(within(list()).getByText('S Model')).toBeTruthy();
-    expect(notes()).toEqual(['供应商组 · 3 台电脑']);
+    expect(headings()).toEqual(['S Shared · 来自 Kai 的分享 · 供应商组 · 3 台电脑']);
   });
 
-  it('本机建的组：本机那一格同样有说明，组所在电脑写「本机」', async () => {
+  it('本机建的组：标题与左栏带台数，每行的来源名不带', async () => {
     renderLocalTaskPanel();
-    // 「全部」视图里当前模型收进了推荐小节，供应商标题要点进那一格才出现。
-    await browse('A Local');
+    // 「全部」视图：当前模型收进推荐小节，行上的来源名是普通供应商名。
+    expect(list().textContent).not.toContain('供应商组');
+    await browse('A Local · 供应商组 · 2 台电脑');
     expect(within(list()).getByText('A Model')).toBeTruthy();
-    expect(notes()).toEqual([`供应商组 · 2 台电脑：${names(['本机', 'Laptop'])}`]);
+    expect(headings()).toEqual(['A Local · 供应商组 · 2 台电脑']);
+    expect(screen.getByRole('button', { name: 'A Plain' })).toBeTruthy();
   });
 });

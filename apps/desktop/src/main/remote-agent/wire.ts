@@ -127,11 +127,25 @@ export interface RemoteAgentWireAncestorFile {
   data: string;
 }
 
+/**
+ * Claude Code 说明文件里 `@` 导入的文件(controller/projectFiles.ts collectInstructionImports)。
+ * `workspace`：相对影子目录(可带 `..`，落在工作目录的各级上级目录镜像里，须在虚拟工作区根内)；
+ * `session`：相对会话目录(个人说明所在的那一级，只放 ~/.claude 下被个人说明导入的文件)。
+ */
+export interface RemoteAgentWireImportFile {
+  base: 'workspace' | 'session';
+  path: string;
+  data: string;
+}
+
 /** 你这台的个人配置(用户级)，在那台电脑上以项目级配置的形式提供给 Agent。 */
 export interface RemoteAgentWirePersonal {
   /** 个人说明(Claude Code 的 ~/.claude/CLAUDE.md)：放在影子目录最外层，最先加载、优先级最低。 */
   memory?: string;
-  /** 个人 Skill / 子代理 / 命令(相对影子目录的路径，如 `.claude/skills/x/SKILL.md`)；项目里有同名的以项目为准。 */
+  /**
+   * 个人 Skill / 子代理 / 命令 / 规则(相对影子目录的路径，如 `.claude/skills/x/SKILL.md`；Codex / Pi 的个人
+   * Skill 在 `.agents/skills`、`.codex/skills`)；项目里有同名的以项目为准。
+   */
   files: RemoteAgentWireFile[];
   /** 个人权限规则(并入项目 local 设置)。 */
   permissions?: { allow?: string[]; deny?: string[]; ask?: string[] };
@@ -167,6 +181,8 @@ export interface RemoteAgentOpenPayload {
   projectFiles: RemoteAgentWireFile[];
   /** 项目上级目录里的说明文件。 */
   ancestorFiles: RemoteAgentWireAncestorFile[];
+  /** 说明文件里 `@` 导入的文件；旧被控端不认识，按没有处理。 */
+  importFiles?: RemoteAgentWireImportFile[];
   /** 你这台的个人配置。 */
   personal: RemoteAgentWirePersonal;
   /** 控制端经隧道提供的 Cindy MCP 服务名。 */
@@ -181,18 +197,20 @@ export const MAX_ANCESTOR_LEVELS = 24;
  * 工作目录根上的说明文件、Claude Code 项目设置(只保留权限规则)，以及这些目录下的
  * Skill / 子代理 / 命令 / 提示词模板。
  */
-export const PROJECT_INSTRUCTION_FILES = ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', 'AGENTS.override.md'] as const;
+export const PROJECT_INSTRUCTION_FILES = ['CLAUDE.md', 'CLAUDE.local.md', '.claude/CLAUDE.md', 'AGENTS.md', 'AGENTS.override.md'] as const;
 export const PROJECT_SETTINGS_FILES = ['.claude/settings.json', '.claude/settings.local.json'] as const;
 export const PROJECT_INSTRUCTION_DIRECTORIES = [
   '.claude/skills',
   '.claude/agents',
   '.claude/commands',
+  '.claude/rules',
   '.agents/skills',
+  '.codex/skills',
   '.pi/skills',
   '.pi/prompts',
 ] as const;
-/** 个人配置只能落在这些子目录下。 */
-const PERSONAL_PREFIXES = ['.claude/skills/', '.claude/agents/', '.claude/commands/'];
+/** 个人配置只能落在这些子目录下(Codex / Pi 的个人 Skill 放在它们找项目 Skill 的位置)。 */
+const PERSONAL_PREFIXES = ['.claude/skills/', '.claude/agents/', '.claude/commands/', '.claude/rules/', '.agents/skills/', '.codex/skills/'];
 
 const START_STRING_FIELDS = [
   'effort', 'userPrompt', 'botProfilePrompt', 'botProfileContextPrompt', 'botUserProfilePrompt',
@@ -312,9 +330,28 @@ export function decodeOpenPayload(value: unknown): RemoteAgentOpenPayload {
     workspace: decodeWorkspace(value.workspace),
     projectFiles,
     ancestorFiles,
+    ...decodeImportFiles(value.importFiles),
     personal: decodePersonal(value.personal),
     mcpServers: (stringArray(value.mcpServers, 128) ?? []).filter((name) => /^[a-z0-9_-]{1,64}$/i.test(name)),
   };
+}
+
+/** 导入文件的相对路径：和项目文件一样，只是允许 `..`(落点由被控端按根目录再核对)。 */
+export function isSafeImportPath(relative: string): boolean {
+  if (!relative || relative.length > 1024 || relative.includes('\0') || relative.includes('\\')) return false;
+  if (relative.startsWith('/') || /^[A-Za-z]:/.test(relative)) return false;
+  return relative.split('/').every((part) => part !== '' && part !== '.');
+}
+
+function decodeImportFiles(value: unknown): { importFiles?: RemoteAgentWireImportFile[] } {
+  if (!Array.isArray(value)) return {};
+  if (value.length > MAX_PROJECT_FILES) throw new Error('REMOTE_AGENT_INVALID');
+  const importFiles = value.flatMap((item): RemoteAgentWireImportFile[] => {
+    if (!isRecord(item) || typeof item.path !== 'string' || typeof item.data !== 'string') return [];
+    if (item.base !== 'workspace' && item.base !== 'session') return [];
+    return isSafeImportPath(item.path) ? [{ base: item.base, path: item.path, data: item.data }] : [];
+  });
+  return importFiles.length ? { importFiles } : {};
 }
 
 function decodePersonal(value: unknown): RemoteAgentWirePersonal {

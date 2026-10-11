@@ -270,6 +270,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
   const threadOpenerRef = useRef<HTMLElement | null>(null);
   const threadLayoutRef = useRef<HTMLDivElement>(null);
+  const threadHeaderRef = useRef<HTMLDivElement>(null);
   const threadCloseAnimationRef = useRef<Animation | null>(null);
   const threadWasOpenRef = useRef(false);
   useLayoutEffect(() => {
@@ -304,21 +305,22 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     if (!group?.serverBacked || !threadRootId) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-      if (event.target !== document.body && !threadLayoutRef.current?.contains(event.target as Node)) return;
+      if (event.target !== document.body && !threadLayoutRef.current?.contains(event.target as Node) && !threadHeaderRef.current?.contains(event.target as Node)) return;
       if (document.querySelector('[data-text-lightbox-overlay], [data-mermaid-lightbox-overlay]')) return;
+      if (shareSelectionStore.isActive(shareScope) || shareSelectionStore.isActive(`${shareScope}:thread:${threadRootId}`)) return;
       event.stopPropagation();
       closeThread();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [group?.serverBacked, threadRootId, closeThread]);
+  }, [group?.serverBacked, threadRootId, closeThread, shareScope]);
   const settingsLabel = t('bots.groupChat.settings.open');
   const headerMembers = group ? memberKey(group.members) : '';
   const header = useMemo(() => {
     if (!group) return null;
     const names = botGroupMemberNames(group.members, separator);
     return (
-      <div data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
+      <div ref={threadHeaderRef} data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
         <button
           type="button"
           onClick={openSettings}
