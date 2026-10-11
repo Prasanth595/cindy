@@ -680,6 +680,8 @@ export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   // maker-ipc MAKER_PUSH
   'maker:event',
   'maker:history-view-changed',
+  // Running work item replacement for controllers whose latest view read asked for work lines.
+  'maker:history-work-patch',
   // Device-level runtime Agent roster changes; controllers refresh their local availability cache.
   'maker:agents:changed',
   // Host-owned resource provider 的通用失效通知；payload 只含 collection/ref/revision。

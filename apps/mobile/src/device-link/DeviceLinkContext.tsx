@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { tryMobilePeerInvoke, resetMobilePeer } from './peerFileRegistry';
-import { isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
+import { isHistoryViewUnavailable, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import { findRemoteHistoryView } from '@/session/remoteHistoryView';
 import { createBackgroundConnection } from './backgroundConnection';
 import { invokeWithHistoryViewCapability } from './historyViewCapability';
@@ -1713,6 +1713,10 @@ export function routeFrame(env: Envelope, handlers: {
   const historyView = typeof historySessionId === 'string' ? findRemoteHistoryView(env.src, historySessionId) : undefined;
   if (push.channel === 'maker:history-view-changed') {
     historyView?.invalidate();
+    return;
+  }
+  if (push.channel === 'maker:history-work-patch') {
+    historyView?.applyWorkPatch(push.payload as HistoryWorkPatch);
     return;
   }
   remoteSessionStore.applyRemotePush(env.src, push.channel, push.payload);

@@ -414,6 +414,32 @@ Mobile 的「仅查看」改为纯本地开关：只停止转发输入、关闭�
 raw history 降级。任务列表活动推送不变，当前轮的正文、工具卡和可见进度继续实时更新。
 没有新增 channel、relay 类型、数据库 schema 或 Mobile 原生依赖，云端无需改动。
 
+### 运行中工作组的单行活动与就地更新
+
+同账号控制端读取最新一页时可再带 `{ workLines: true }`。被控 Desktop 只为顶层、无嵌套、
+运行中的工作组摘要附加可选 `lines`：最多 5 行，用与两端相同的共享投影（Codex 拆行、
+重复读取去重）从完整记录算出，并从组尾向前有界地补读，直到凑足 5 个展示活动。每行只含
+工具名、按完整输入解析后再截短的展示描述、状态、是否失败，或思考开头的单行文字；不含
+工具结果、diff 与完整输入。每行和整窗都有严格的 UTF-8 字节上限，超出时逐级缩短文字与
+列表（列表保留条目数），最后只保留工具名。控制端据此显示运行中的最近 5 行，不再为预览
+读取 `work-details`。
+
+轻量读取为每行附带仅在主机内使用的正文戳（长度与末尾片段），参与工作组修订号，使后续
+全文覆盖、后台完成等原地改写也会改变修订号；该字段不进入线上内容。它是近似判据：长度
+与末尾 24 个字符都不变的原地改写检测不到；读取正文本已发生，额外成本只是逐行的少量计算。
+
+声明过 `workLines` 的控制端，折叠工作组的活动通知改为新推送 `maker:history-work-patch`
+`{ version: 1, sessionId, baseRevision, item }`：仅当它上次收到的最新一页里，除这一个运行中
+条目外的所有条目指纹都未变（指纹在库级写入计数后缀之前计算）时才发送，`baseRevision`
+是该条目上次送达的修订号。控制端只在条目存在、修订号与范围起点一致、且没有读取进行中时
+原地替换，其余情况退回原有的页面刷新；新分组、正文、卡片、清空或回退都继续走
+`maker:history-view-changed`。思考增量按与投影相同的空白归一化计算可见前缀，只在这一行
+还会变化时触发通知。
+
+旧控制端不带参数，收不到 `lines` 与新推送；旧主机忽略参数：新 Mobile 只显示卡头（与此前相同），
+新 Desktop 继续用原有 5 条明细预览。共享任务访客与供应商分享不启用这两项，读取与授权路径不变。
+没有新增 relay 类型、数据库 schema、权限或 Mobile 原生依赖，云端无需改动。
+
 现有 `maker:list-active` 的可选 `{ summary: true }` 响应在运行标记之外增加
 `activityPhase` / `activityAttention` 两个可选字段。被控端从现有会话活动投影提供这两个
 状态字段；活动服务已就绪但该会话不在活动账本中时，明确返回 `idle` / `false`，不下发活动正文。
@@ -1384,3 +1410,23 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
 去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
+
+## 移动插件只读权限摘要
+
+plugin-capabilities.data 可选追加 permissions（title/description 字符串数组），仅由 Host 从
+PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 locale 使用 PC 文案插值。
+包含作者声明的 OAuth scope，不包含凭证、已存配置值或本机路径；不表示已授予运行权限。
+旧控制端忽略该字段，新手机遇到旧 Host 缺字段或格式不完整时明确未提供，不推断无权限。
+空数组仅表示 Host 明确投影的声明为空。工具、about 和 version 使用原字段。
+不增加 channel、allowlist、relay 帧、授权或协议版本，服务端无改动，Mobile 指纹不变。
+
+
+## 移动插件 Details 事实
+
+同一 plugin-capabilities.data 可选追加 details（key/title/value 数组），由本插件 InstalledGhost
+投影 PC 同源版本、作者、签名来源、标识、包含能力与面板声明。签名标签复用 shared ghostTrustLabelKey，
+不传签名文件、批准记录或密钥标识，不用作者自报推断官方。安装目录按用户明确要求单独只读投影本插件
+的 ghost.dir，仅走原同账号、当前 owner 的资源通道；不提供路径写入或文件操作，不扩 IPC 白名单。
+当前 PC 窗口的停靠位置不在此声明投影内，有面板只报告存在，无面板沿用 PC 文案。
+旧 Host 缺字段时新手机仅显示原有 Version 与资源 Identifier，说明其余数据未提供；旧控制端忽略新增字段。
+服务端、relay、协议版本及原生 fingerprint 均不变。

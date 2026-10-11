@@ -400,6 +400,12 @@
       "title": "{{provider}} · 远程与分享",
       "shareTitle": "分享"
     },
+    "usage": {
+      "title": "用量",
+      "description": "按使用方统计 {{provider}} 的用量。本机与我的其他电脑从这次更新后开始记录。",
+      "shareSource": "分享的人",
+      "unknownDevice": "另一台电脑"
+    },
     "section": {
       "title": "供应商组",
       "addComputer": "添加电脑",
@@ -8036,6 +8042,39 @@
       "message": "将 {{appName}} 移动到「应用程序」文件夹可获得更好的体验，包括自动更新。",
       "move": "移动（推荐）",
       "later": "暂不"
+    },
+    "agentInstall": {
+      "title": "更新 {{appName}} 到 {{version}}？",
+      "versions": "从 {{from}} 更新到 {{to}}。确认后 {{appName}} 会用内置更新器下载并安装，然后自动重启。",
+      "otherTasks": "另有 {{count}} 个任务正在运行，重启会中断它们；重启后可在对应任务中点「继续」恢复。",
+      "backgroundWork": "还有后台工作正在进行（如后台命令、媒体生成、Subagent 或自动化运行），重启也会中断它们。",
+      "noOtherTasks": "目前没有其他正在运行的任务。",
+      "thisTask": "本任务会在这轮回复结束后随 {{appName}} 重启。",
+      "remote": "重启期间手机等远程连接会暂时断开，重连后可在本任务中查看更新结果。",
+      "linuxAuth": "安装时需要在这台电脑上输入系统密码。",
+      "succeeded": "{{appName}} 已更新到 {{version}}（原版本 {{from}}）。",
+      "failed": "{{appName}} 更新没有完成，当前仍是 {{version}}。",
+      "retryHint": "可以稍后再让我更新，或在「设置 → 关于」中检查更新。",
+      "reasons": {
+        "downloadFailed": "下载更新失败，请稍后重试。",
+        "manifestFailed": "无法读取当前渠道的更新信息。",
+        "manualDownload": "当前安装需要手动下载新版本。",
+        "noUpdate": "当前渠道没有适用于这台设备的可安装更新。",
+        "versionChanged": "当前渠道的新版本已变成 {{version}}，与确认的 {{confirmed}} 不同，本次没有安装。",
+        "notRestarted": "更新已下载，但本次没有重启（例如期间退出或切换了账号）。",
+        "notReady": "已下载的更新不再可用。",
+        "updaterNotStarted": "更新器没有启动，{{appName}} 未重启。",
+        "unsupported": "当前安装环境不支持应用内更新。",
+        "generic": "安装过程中出现错误。",
+        "relaunchInProgress": "{{appName}} 已经在通过设置页或空闲自动安装重启更新，本次请求没有另外安装。"
+      }
+    },
+    "agentAutoUpdate": {
+      "enableTitle": "开启空闲时自动安装更新？",
+      "disableTitle": "关闭空闲时自动安装更新？",
+      "enableDescription": "开启后，更新下载完成时，如果这台电脑已空闲 10 分钟且没有正在运行的任务，{{appName}} 会自动重启完成安装。",
+      "disableDescription": "关闭后，更新下载完成时需要你手动重启才会安装。",
+      "settingsHint": "也可以随时在「设置 → 关于」中修改。"
     }
   },
   "sidebar": {
@@ -9420,7 +9459,10 @@
         "crossEngineWarning": "切换引擎会重建上下文，可能丢失内容",
         "favoritesSyncFailed": "收藏未能同步。请重新打开重试；被控电脑可能需要更新。",
         "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
-        "providerGroupLabel": "{{provider}} · {{group}}"
+        "providerGroupLabel": "{{provider}} · {{group}}",
+        "providerGroupRunningOn": "当前在 {{device}} 上运行",
+        "providerGroupRunningHere": "当前在这台电脑上运行",
+        "providerGroupUnassigned": "开始后由供应商组选一台电脑，用量按那台显示"
       }
     },
     "permissionSelector": {
@@ -15078,5 +15120,30 @@
     "continue": "继续",
     "addTime": "添加时间",
     "dateOnly": "仅日期"
+  },
+  "codexResets": {
+    "retryReset": "重试重置",
+    "retryPending": "重置结果尚未确认，请重试原请求。",
+    "confirmRetryTitle": "重试 Codex 重置？",
+    "confirmRetryBody": "使用原请求重试为 {{account}} 确认过的重置，不会消耗另一张重置。",
+    "title": "额度重置",
+    "available": "可用 {{count}} 次",
+    "fullReset": "完整重置",
+    "expiresAt": "到期时间： {{at}}",
+    "expiryUnknown": "未提供到期时间",
+    "useReset": "使用重置",
+    "availableAtLimit": "达到用量上限时可使用",
+    "noCredit": "暂无可用重置",
+    "detailsUnavailable": "部分重置详情暂未提供",
+    "currentAccount": "当前 ChatGPT 账号",
+    "confirmTitle": "使用一次 Codex 重置？",
+    "confirmSelectedBody": "为 {{account}} 使用所选重置：{{title}}（{{expiry}}）。将恢复符合条件的用量上限，此操作无法撤销。",
+    "confirmBody": "将为 {{account}} 消耗 1 次重置，优先使用最早到期的一次。可重置的用量额度将恢复，此操作无法撤销。",
+    "consumeOnce": "使用一次重置",
+    "resetDone": "Codex 用量额度已恢复",
+    "nothingToReset": "当前没有需要重置的用量上限",
+    "offerExpired": "账号或重置状态已变化，请刷新用量后再使用重置",
+    "resetFailed": "无法确认重置结果，请刷新用量查看额度是否已恢复",
+    "limitAction": "使用重置 · 剩余 {{count}} 次"
   }
 }
