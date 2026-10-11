@@ -43,7 +43,7 @@ import {
   withMenuLabels,
 } from '@/components/ui/menu-row';
 import { ModelSourceUsageProvider } from './ModelSourceDetails';
-import type { ProviderUsageScope } from './useProviderWeeklyQuota';
+import type { ProviderGroupUsageOf, ProviderUsageScope } from './useProviderWeeklyQuota';
 import {
   anchorKey,
   favoriteMatchesSelection,
@@ -133,11 +133,21 @@ export interface UnifiedModelPanelProps {
   /** 价格 / 折扣查询。**modelId 传该引擎的 wire id**(报价表按 wire id 索引)。 */
   priceOf: (providerId: string, modelId: string, agent: AgentKind) => ModelPricePresentation | null;
   providerLabel: (providerId: string) => string;
+  /**
+   * 分组标题与左栏提示用的名字；缺省同 providerLabel。供应商组在这里带上台数
+   * (「Anthropic · 供应商组 · 3 台电脑」，provider-groups.md §10)，每行的来源名不带。
+   */
+  providerHeading?: (providerId: string) => string;
   effortLabelOf: (agent: AgentKind, effort: Effort) => string;
   listMaxHeight?: number;
   interactionDisabled?: boolean;
   /** Whose subscription accounts the directory may show: this desktop or its linked device. */
   providerUsage?: ProviderUsageScope | null;
+  /**
+   * 供应商组那一项的用量读谁(provider-groups.md §10):任务正经组在某台运行时读那台,还没分到电脑时
+   * 不显示某一台的配额。缺省 = 都按目录归属读。
+   */
+  providerGroupUsage?: ProviderGroupUsageOf;
   /** 保留付费模型为锁定展示行，并把点击交给统一付费提示。 */
   includePaymentRequired?: boolean;
   paymentRequiredLabel?: string;
@@ -319,10 +329,12 @@ export function UnifiedModelPanel({
   agentFastModeCapable,
   priceOf,
   providerLabel,
+  providerHeading = providerLabel,
   effortLabelOf,
   listMaxHeight,
   interactionDisabled = false,
   providerUsage = null,
+  providerGroupUsage,
   includePaymentRequired = false,
   paymentRequiredLabel,
   paymentRequiredUnlockLabel,
@@ -960,7 +972,7 @@ export function UnifiedModelPanel({
       : section.kind === 'recommended'
         ? t('newChat.modelSelector.unified.recommended')
       : section.group
-        ? providerLabel(section.group.providerId)
+        ? providerHeading(section.group.providerId)
         : '';
 
   const rows = sections.flatMap((section) => section.rows);
@@ -1052,11 +1064,12 @@ export function UnifiedModelPanel({
     >
       <UnifiedModelRail
         providerUsage={providerUsage}
+        {...(providerGroupUsage ? { providerGroupUsage } : {})}
         items={railItems}
         active={effectiveRail}
         onSelect={handleRailSelect}
         providers={providers}
-        providerLabel={providerLabel}
+        providerLabel={providerHeading}
         interactionDisabled={interactionDisabled || actionPending}
         {...(remoteSources
           ? {
@@ -1366,7 +1379,16 @@ export function UnifiedModelPanel({
     </div>
   );
   return (
-    <ModelSourceUsageProvider providers={providers} scope={providerUsage}>
+    <ModelSourceUsageProvider
+      providers={providers}
+      scope={providerUsage}
+      {...(providerGroupUsage
+        ? {
+            groupUsageOf: (providerId: string) =>
+              providerGroupUsage(remoteSources?.active?.deviceId ?? null, providerId),
+          }
+        : {})}
+    >
       {panelContent}
     </ModelSourceUsageProvider>
   );

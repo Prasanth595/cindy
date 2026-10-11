@@ -34,6 +34,7 @@ import {
 } from "@cindy/maker-shared/device-link-contract";
 import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
+  ORCA_EXECUTION_DEVICES_CHANNEL,
   readDeviceFile,
   FILE_PEER_MAX_BYTES,
   createDeviceFileOperations,
@@ -744,6 +745,7 @@ export interface MobileMakerTransport {
    * 写操作(enable / create / archive / disable)一律不自动重试:超时不代表被控端没执行。
    */
   orca: {
+    listExecutionDevices(): Promise<unknown>;
     /** 被控端协同插件开关(项目级 / 对话用户级);结果形状见 readOrcaCollabPolicy。 */
     getCollabPolicy(workingDir: string | undefined, workspaceKind: 'project' | 'dialogue'): Promise<unknown>;
     enable(leadSessionId: string, options: MobileOrcaEnableOptions): Promise<MobileOrcaEnableResult>;
@@ -940,7 +942,11 @@ export interface MobileOrcaEnableOptions {
   fast?: boolean;
   providerId?: string;
   delegateTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
+  /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaEnableResult {
@@ -962,6 +968,10 @@ export interface MobileOrcaCreateWorkerInput {
   providerId?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
   initialTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
+  /** Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaCreateWorkerResult {
@@ -1127,7 +1137,8 @@ export function createMobileMakerTransport({
     listMessages: (sessionId, opts) =>
       call("local-db:messages:list", [sessionId, opts]),
     readHistoryView: (sessionId, before) =>
-      call("local-db:messages:view", [sessionId, { before, lazyDetails: true }]),
+      // workLines: the Host projects running single-line activities and may send work patches.
+      call("local-db:messages:view", [sessionId, { before, lazyDetails: true, workLines: true }]),
     readWorkDetails: (sessionId, ref, after) =>
       call("local-db:messages:work-details", [sessionId, ref, { after }]),
     setHistoryExpanded: (sessionId, refs) =>
@@ -1322,6 +1333,7 @@ export function createMobileMakerTransport({
       call("maker:message:delete", [sessionId, clientId]),
     closeSession: (sessionId) => call("maker:close-session", [sessionId]),
     orca: {
+      listExecutionDevices: () => call(ORCA_EXECUTION_DEVICES_CHANNEL),
       getCollabPolicy: (workingDir, workspaceKind) =>
         call("maker:plugins:get-state", ["collab", workingDir, workspaceKind]),
       enable: (leadSessionId, options) =>

@@ -733,6 +733,13 @@ export interface AgentActionRowProps {
    * isSessionStreaming 计算后传入;缺省按已完成渲染(历史消息路径)。
    */
   status?: 'running' | 'done';
+  /**
+   * Host-resolved descriptor of a remote single-line activity. Its input is not on this
+   * device, so the row never re-describes a partial input.
+   */
+  descriptorOverride?: ToolUseDescriptor;
+  /** Replaces the row's own details: a remote line opens its whole work group instead. */
+  onActivateOverride?: () => void;
 }
 
 type LightboxState =
@@ -769,6 +776,8 @@ export function AgentActionRow({
   showRawCommand = false,
   intentOverride,
   status = 'done',
+  descriptorOverride,
+  onActivateOverride,
 }: AgentActionRowProps) {
   const { t } = useTranslation();
   const compactedToolResult = parseToolResultCompactionMarker(toolResult);
@@ -797,10 +806,11 @@ export function AgentActionRow({
   }, [toolName, inp, installedGhosts]);
 
   const descriptor = useMemo(() => {
+    if (descriptorOverride) return descriptorOverride;
     const resolved = describeToolUse(toolName, inp);
     if (!intentOverride || resolved.kind !== 'command' || resolved.description) return resolved;
     return { ...resolved, intent: intentOverride };
-  }, [toolName, inp, intentOverride]);
+  }, [toolName, inp, intentOverride, descriptorOverride]);
   const isFileChange = descriptor.kind === 'fileChange';
   // command 类带模型 description 时,description 自含动词语义("查看工作区
   // 状态"),再渲染英文动词 label 会变成"Ran 查看工作区状态"的中英混排 —
@@ -921,6 +931,10 @@ export function AgentActionRow({
    *   - Read → 文稿/图片 lightbox
    */
   const onActivate = async (anchor: HTMLElement) => {
+    if (onActivateOverride) {
+      onActivateOverride();
+      return;
+    }
     const diffPayload = buildDiffPayload(descriptor, inp, asyncDiff ?? syncDiff);
     if (diffPayload) {
       triggerRef.current = anchor;
@@ -1058,7 +1072,7 @@ export function AgentActionRow({
         onClick={(e) => void onActivate(e.currentTarget)}
         onContextMenu={onRowContextMenu}
         onKeyDown={onRowKeyDown}
-        aria-expanded={isInlineExpand ? expanded : undefined}
+        aria-expanded={isInlineExpand && !onActivateOverride ? expanded : undefined}
         aria-label={
           ghostInfo
             ? `${rowVerbLabel} ${ghostInfo.name} ${ghostInfo.tool}`

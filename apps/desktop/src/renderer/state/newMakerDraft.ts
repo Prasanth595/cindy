@@ -83,6 +83,18 @@ export interface CollabWorkerConfig {
   initialTask?: string;
   /** 当前协同 Team 后续新 Worker 共用的默认权限。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
+  /**
+   * 首个 Worker 的运行设备与那台上的目录。与 initialTask 一样不跨重启持久化：设备在线与
+   * 版本随时会变，重启后回到这台电脑，由用户重新选择。
+   */
+  executionDeviceId?: string;
+  executionWorkingDir?: string;
+  /**
+   * 首个 Worker 的 Agent 所在电脑(远程供应商)：string = 那台电脑或分享，null = 任务所在电脑，
+   * 缺省 = 跟 Lead。模型与来源是按这个位置的目录选的；与草稿自己的 agentDeviceId 一样不跨重启
+   * 保留，带着它的整份配置在加载时丢弃(只丢位置会让模型落到别的目录上)。
+   */
+  agentDeviceId?: string | null;
 }
 
 export interface CollabDraft {
@@ -329,6 +341,8 @@ function sanitize(raw: unknown): NewMakerDraft {
   const workerConfig: CollabWorkerConfig | undefined = (() => {
     const wc = collabRaw?.workerConfig;
     if (!wc || typeof wc !== 'object') return undefined;
+    // 按另一台电脑(远程供应商)目录选的配置不跨重启保留，见 CollabWorkerConfig.agentDeviceId。
+    if (typeof wc.agentDeviceId === 'string') return undefined;
     const model = typeof wc.model === 'string' && wc.model.trim() ? wc.model : undefined;
     if (!model) return undefined;
     const role = typeof wc.role === 'string' && wc.role.trim() ? wc.role.trim() : 'developer';

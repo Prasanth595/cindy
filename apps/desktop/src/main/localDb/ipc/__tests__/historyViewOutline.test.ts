@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { describe, expect, it } from 'vitest';
-import { historyOutlineContent, withHistoryArtifacts } from '../historyViewOutline';
+import { historyOutlineContent, historyOutlineContentStamp, withHistoryArtifacts } from '../historyViewOutline';
 
 function outline(role: string, content: unknown, agentMeta: unknown = null, raw = false) {
   const db = new DatabaseSync(':memory:');
@@ -14,7 +14,24 @@ function outline(role: string, content: unknown, agentMeta: unknown = null, raw 
   } finally { db.close(); }
 }
 
+function stamp(content: string) {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE messages (content TEXT)');
+    db.prepare('INSERT INTO messages VALUES (?)').run(content);
+    const query = new SQLiteSyncDialect().sqlToQuery(historyOutlineContentStamp());
+    return db.prepare(`SELECT ${query.sql} AS stamp FROM messages`).get(...query.params as string[])!.stamp as string;
+  } finally { db.close(); }
+}
+
 describe('SQLite history outline', () => {
+  it('stamps a body with a short fact that changes when it is rewritten in place', () => {
+    const summary = JSON.stringify('build summary');
+    const full = JSON.stringify(`build summary\n${'full log line\n'.repeat(50000)}`);
+    expect(stamp(summary)).not.toBe(stamp(full));
+    expect(stamp(full).length).toBeLessThan(64);
+    expect(stamp(JSON.stringify('结果：完成'))).toBe(stamp(JSON.stringify('结果：完成')));
+  });
   it('does not return folded thinking, tool outputs or file bodies to the main thread', () => {
     const body = 'private heavy body '.repeat(100000);
     expect(JSON.stringify(outline('thinking', { text: body, durationMs: 1000 })).length).toBeLessThan(100);
