@@ -25,6 +25,7 @@ export type { Logger } from './logger.js';
 
 export type {
   IMHost,
+  IMHostFileStaging,
   IMAttachment,
   IMUnsupportedEntry,
   IMMessageEvent,

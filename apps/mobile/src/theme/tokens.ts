@@ -848,4 +848,10 @@ export const navigationChrome = {
       selected: 'rgba(255, 255, 255, 0.18)',
     },
   },
+  // Regular glass over arbitrary page content (in-app browser): a theme tint keeps the
+  // material in the app's polarity instead of adapting to the page behind it.
+  pageTint: {
+    light: '#FFFFFCB3',
+    dark: '#1E1E1EB3',
+  },
 } as const;

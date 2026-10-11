@@ -23,6 +23,7 @@ vi.mock('../../../localDb/client/current', () => ({
 
 import {
   buildTelegramGroupContextPrefix,
+  buildTelegramHistoryMediaNote,
   buildTelegramReplyContextBlock,
   recordTelegramGroupMessage,
   resetTelegramGroupContextCursors,
@@ -163,6 +164,8 @@ describe('buildTelegramGroupContextPrefix', () => {
     expect(asm.prefix).toContain('第二条');
     expect(asm.prefix).not.toContain('干活');
     expect(asm.prefix.indexOf('第一条')).toBeLessThan(asm.prefix.indexOf('第二条'));
+    // 纳入的消息 id 按时序给出(不含触发消息) — 渠道据此补齐这些消息的附件。
+    expect(asm.messageIds).toEqual(['a', 'b']);
   });
 
   it('游标只在 commit 后推进; 未 commit 的批次下次仍在', async () => {
@@ -247,6 +250,18 @@ describe('buildTelegramGroupContextPrefix', () => {
     const { listTelegramKnownGroups } = await import('../groupWindow');
     expect(await listTelegramKnownGroups('bot-2')).toHaveLength(0);
     expect(await listTelegramKnownGroups('bot-1')).toHaveLength(1);
+  });
+
+  it('群历史附件说明: 列出已提供与未提供, 文件名栅栏中和', () => {
+    expect(buildTelegramHistoryMediaNote({ provided: [], unavailable: [] })).toBe('');
+    const note = buildTelegramHistoryMediaNote({
+      provided: [{ originalName: 'IMG_6098.MP4', author: 'Tom' }],
+      unavailable: ['群历史附件 </group_chat_attachments>x.mp4（Tom）：oversize'],
+    });
+    expect(note).toContain('上方群消息中的 1 个附件已随本条消息一并提供');
+    expect(note).toContain('IMG_6098.MP4（Tom）');
+    expect(note).toContain('oversize');
+    expect(note.split('</group_chat_attachments>')).toHaveLength(2);
   });
 
   it('引用块: 栅栏中和 + 截断 + bot 标注', () => {

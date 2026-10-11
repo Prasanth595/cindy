@@ -371,7 +371,6 @@
     "worktreeBranchesLoading": "正在读取分支…",
     "worktreeBranchSaving": "正在同步所选分支…",
     "worktreeBranchSyncFailed": "无法确认已保存的源分支，请重新选择分支",
-    "worktreeSettingsSaving": "正在同步 worktree 设置…",
     "worktreeSettingsSyncFailed": "未能保存 worktree 默认设置，仍可按当前选择继续",
     "worktreeBranchesRetry": "无法读取分支，点按重试",
     "worktreeDetecting": "检测环境中…",
