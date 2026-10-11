@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import i18n from '@/i18n';
 import { RemoteDesktopViewerWindow } from '../RemoteDesktopViewerWindow';
 import type { ViewerSnapshot } from '../viewerController';
@@ -15,9 +15,15 @@ const lifecycle = vi.hoisted(() => ({
   actualSize: vi.fn(),
   keys: vi.fn(),
   workspaceAction: vi.fn(async () => {}),
+  resolutionModes: vi.fn(async (): Promise<unknown[]> => []),
+  fitDisplay: vi.fn(async () => {}),
+  restoreDisplay: vi.fn(async () => {}),
+  resolution: vi.fn(async () => {}),
+  clipboard: vi.fn(async (_action: 'copy' | 'paste') => {}),
   update: null as ((state: ViewerSnapshot) => void) | null,
 }));
-vi.mock('../viewerController', () => ({
+vi.mock('../viewerController', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../viewerController')>()),
   DesktopViewerController: class {
     constructor(
       private _api: { close(generation: number): Promise<void> },
@@ -35,6 +41,11 @@ vi.mock('../viewerController', () => ({
     actualSize = lifecycle.actualSize;
     keys = lifecycle.keys;
     workspaceAction = lifecycle.workspaceAction;
+    resolutionModes = lifecycle.resolutionModes;
+    fitDisplay = lifecycle.fitDisplay;
+    restoreDisplay = lifecycle.restoreDisplay;
+    resolution = lifecycle.resolution;
+    clipboard = lifecycle.clipboard;
     close = () => this._api.close(1);
   },
 }));
@@ -510,4 +521,215 @@ it('releases shortcut capture when the picture input loses focus programmaticall
   // Ctrl+Alt+Esc and control loss blur the input without focusing another element.
   act(() => input.blur());
   expect(inputFocus).toHaveBeenLastCalledWith(1, false);
+});
+
+it('splits display size into a ratio choice and recommended resolutions for this screen', async () => {
+  await i18n.changeLanguage('zh-CN');
+  // jsdom has no scrollIntoView; Radix Select calls it when its list opens.
+  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  onTestFinished(() => {
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+  });
+  Object.defineProperties(window.screen, {
+    width: { configurable: true, value: 1512 },
+    height: { configurable: true, value: 982 },
+  });
+  Object.assign(window, {
+    electronAPI: {
+      remoteDesktopViewer: {
+        onActive: () => () => {},
+        onLocale: () => () => {},
+        onCloseRequested: () => () => {},
+        state: async () => ({ generation: 1 }),
+        rendererReady: async () => {},
+        presentationReady: async () => {},
+        inputFocus: async () => {},
+      },
+    },
+  });
+  lifecycle.resolutionModes.mockResolvedValue([
+    { id: 'hd', width: 1920, height: 1080, current: false },
+    { id: 'qhd', width: 2560, height: 1440, current: true, native: true },
+  ]);
+  render(<RemoteDesktopViewerWindow />);
+  const state: ViewerSnapshot = {
+    target: { deviceId: 'host', name: 'Mac' },
+    status: 'live',
+    error: null,
+    controlling: true,
+    controlPending: false,
+    caps: {
+      version: 1,
+      enabled: true,
+      canControl: true,
+      platform: 'darwin',
+      displays: [{ id: 'one', name: 'Display', width: 2560, height: 1440 }],
+      displayModes: true,
+      viewerDisplay: true,
+      viewerDisplayRestore: true,
+    },
+    displayId: 'one',
+    transport: 'direct',
+    latency: null,
+    settings: { fps: 30, quality: 'auto', audio: false },
+    ready: true,
+    preferences: {
+      audio: false,
+      privacyScreen: false,
+      hostMute: false,
+      clipboardSync: false,
+      lockOnExit: false,
+    },
+    safety: { privacyActive: false, notice: null, clipboardProgress: null },
+    receiveRate: null,
+    closing: false,
+    credential: null,
+    credentialBusy: false,
+    credentialNotice: null,
+    fittedDisplay: null,
+  };
+  await act(async () => lifecycle.update?.(state));
+  fireEvent.click(screen.getByRole('button', { name: '影音' }));
+  const panel = within(screen.getByRole('dialog', { name: '影音' }));
+  const aspect = panel.getByRole('combobox', { name: '画面比例' });
+  const resolution = await panel.findByRole('combobox', { name: '电脑分辨率' });
+  expect(aspect.textContent).toBe('电脑原始 · 16:9');
+  expect(resolution.textContent).toBe('2560 × 1440 · 原生');
+  // Each field's hint is announced with its control.
+  expect(document.getElementById(aspect.getAttribute('aria-describedby')!)?.textContent).toBe(
+    i18n.t('remoteDesktop.viewer.aspectHint'),
+  );
+  // Choices follow this screen: one already at the computer's ratio needs no other ratio.
+  Object.defineProperties(window.screen, {
+    width: { configurable: true, value: 1600 },
+    height: { configurable: true, value: 900 },
+  });
+  act(() => {
+    window.dispatchEvent(new Event('resize'));
+  });
+  expect(aspect.textContent).toBe('电脑原始 · 16:9（推荐）');
+  Object.defineProperties(window.screen, {
+    width: { configurable: true, value: 1512 },
+    height: { configurable: true, value: 982 },
+  });
+  act(() => {
+    window.dispatchEvent(new Event('resize'));
+  });
+  expect(aspect.textContent).toBe('电脑原始 · 16:9');
+  fireEvent.keyDown(aspect, { key: 'ArrowDown' });
+  const choice = await screen.findByRole('option', { name: '本机屏幕 · 1.54:1（推荐）' });
+  expect(screen.queryByRole('option', { name: /当前窗口/ })).toBeNull();
+  lifecycle.resolutionModes.mockResolvedValue([
+    { id: 'fitted:1512x982', width: 1512, height: 982, current: true },
+  ]);
+  fireEvent.keyDown(choice, { key: 'Enter' });
+  await waitFor(() =>
+    expect(lifecycle.fitDisplay).toHaveBeenCalledWith(1512, 982, true, undefined, {
+      ratio: { width: 1512, height: 982 },
+    }),
+  );
+  await act(async () =>
+    lifecycle.update?.({ ...state, fittedDisplay: { width: 1512, height: 982 } }),
+  );
+  await waitFor(() => expect(resolution.textContent).toBe('1512 × 982 · 与本机一致'));
+  expect(aspect.textContent).toBe('本机屏幕 · 1.54:1（推荐）');
+  expect(document.getElementById(resolution.getAttribute('aria-describedby')!)?.textContent).toBe(
+    i18n.t('remoteDesktop.viewer.resolutionTierHint'),
+  );
+  fireEvent.keyDown(resolution, { key: 'ArrowDown' });
+  fireEvent.keyDown(await screen.findByRole('option', { name: '1210 × 786 · 字更大' }), {
+    key: 'Enter',
+  });
+  await waitFor(() =>
+    expect(lifecycle.resolution).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 1210, height: 786 }),
+    ),
+  );
+  fireEvent.keyDown(aspect, { key: 'ArrowDown' });
+  fireEvent.keyDown(await screen.findByRole('option', { name: '电脑原始 · 16:9' }), {
+    key: 'Enter',
+  });
+  await waitFor(() => expect(lifecycle.restoreDisplay).toHaveBeenCalledOnce());
+});
+
+it('explains why a manual clipboard transfer failed and clears it on the next attempt', async () => {
+  await i18n.changeLanguage('zh-CN');
+  Object.assign(window, {
+    electronAPI: {
+      remoteDesktopViewer: {
+        onActive: () => () => {},
+        onLocale: () => () => {},
+        onCloseRequested: () => () => {},
+        state: async () => ({ generation: 1 }),
+        rendererReady: async () => {},
+        presentationReady: async () => {},
+        inputFocus: async () => {},
+      },
+    },
+  });
+  render(<RemoteDesktopViewerWindow />);
+  await act(async () =>
+    lifecycle.update?.({
+      preferences: {
+        audio: true,
+        privacyScreen: false,
+        hostMute: false,
+        clipboardSync: false,
+        lockOnExit: false,
+      },
+      safety: { privacyActive: false, notice: null, clipboardProgress: null },
+      receiveRate: null,
+      closing: false,
+      credential: null,
+      credentialBusy: false,
+      credentialNotice: null,
+      fittedDisplay: null,
+      target: { deviceId: 'host', name: 'Mac' },
+      ready: true,
+      controlling: true,
+      controlPending: false,
+      status: 'live',
+      error: null,
+      displayId: 'one',
+      transport: 'direct',
+      latency: null,
+      settings: { fps: 30, quality: 'auto', audio: false },
+      caps: {
+        version: 1,
+        enabled: true,
+        canControl: true,
+        clipboardContent: true,
+        platform: 'darwin',
+        displays: [],
+      },
+    }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: '剪贴板' }));
+  const panel = within(screen.getByRole('dialog', { name: '剪贴板' }));
+  expect(panel.getByText(i18n.t('remoteDesktop.viewer.clipboardShortcutHint'))).toBeDefined();
+  const paste = panel.getByRole('button', { name: i18n.t('remoteDesktop.paste') });
+  lifecycle.clipboard.mockRejectedValueOnce(new Error('CLIPBOARD_UNSUPPORTED'));
+  fireEvent.click(paste);
+  expect(lifecycle.clipboard).toHaveBeenCalledWith('paste');
+  const unsupported = i18n.t('remoteDesktop.viewer.clipboardUnsupported');
+  await waitFor(() => expect(screen.getByText(unsupported)).toBeDefined());
+  fireEvent.click(paste);
+  await waitFor(() => expect(screen.queryByText(unsupported)).toBeNull());
+  // An earlier queued transfer failing late must not overwrite the latest result.
+  let failEarlier!: (error: Error) => void;
+  lifecycle.clipboard.mockImplementationOnce(
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        failEarlier = reject;
+      }),
+  );
+  fireEvent.click(paste);
+  fireEvent.click(panel.getByRole('button', { name: i18n.t('remoteDesktop.copy') }));
+  await act(async () => failEarlier(new Error('CLIPBOARD_UNSUPPORTED')));
+  expect(screen.queryByText(unsupported)).toBeNull();
+  // A stopped connection reports itself; no clipboard notice.
+  lifecycle.clipboard.mockRejectedValueOnce(new Error('DESKTOP_STOPPED'));
+  await act(async () => fireEvent.click(paste));
+  expect(screen.queryByText(i18n.t('remoteDesktop.viewer.clipboardPasteFailed'))).toBeNull();
 });

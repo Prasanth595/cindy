@@ -214,7 +214,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   );
   const remoteWritesBlocked = isRemoteSessionWriteBlocked(session);
   const isAutomationGenerated = isAutomationGeneratedSession(session);
-  const boundSchedules = useSessionBoundSchedules(session.id);
+  const boundSchedules = useSessionBoundSchedules(session.id, session.deviceLinkDeviceId);
   const showScheduleBindingBadge = boundSchedules.length > 0;
   const showAutomationTimer = !showScheduleBindingBadge && isAutomationGenerated;
   const displayTitle = getSessionDisplayTitle(
@@ -544,7 +544,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     !isEmpty &&
     !session.remoteHostId &&
     session.orcaRole !== 'worker' &&
-    !session.deviceLinkDeviceId;
+    !session.deviceLinkDeviceId &&
+    // Agent 在另一台电脑运行：转录在那台，本机打包不全。
+    !session.agentDeviceId;
 
   const exportShareMenuItem = canExportShare ? (
     <DropdownMenuItem onSelect={handleExportShareSelect} className={MENU_ITEM_CLASS}>
@@ -558,6 +560,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     !isEmpty &&
     !session.remoteHostId &&
     !session.deviceLinkDeviceId &&
+    // Agent 在另一台电脑运行的任务也可移动：那台按任务 id 定址 Agent 工作区，与本机路径无关。
     session.status !== 'archived';
 
   const moveToProjectSubmenu = canMoveToProject ? (
@@ -590,6 +593,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     showScheduleBindingBadge ? (
       <ScheduleBindingBadge
         schedules={boundSchedules}
+        deviceLinkDeviceId={session.deviceLinkDeviceId}
         size={iconSize}
         activeForeground={isActive}
       />
@@ -811,6 +815,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                       }
                     />
                   )}
+                  {/* Agent 在另一台电脑运行(任务在本机)的标识在 Agent 图标上(信号波纹)。 */}
                   {sourceLabel ? (
                     <span
                       title={sourceLabel}

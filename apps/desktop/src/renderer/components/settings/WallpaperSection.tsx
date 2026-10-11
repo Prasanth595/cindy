@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { extractIpcError } from '@/utils/ipcError';
 
 import { Button } from '@/components/ui/button';
@@ -31,15 +31,30 @@ export function WallpaperSection() {
     wallpaperId,
     wallpaperOverlay,
     wallpaperVisibility,
+    wallpaperBlur,
     visibility,
     wallpaperMotion,
     customWallpaperUrl,
     playbackFailed,
     setWallpaper,
     setVisibility,
+    setBlur,
+    previewBlur,
     setMotion,
     resetWallpaper,
   } = useWallpaperSettings();
+  // The shared slider restores its starting value during cancellation. Clear
+  // that temporary preview after its handler, returning to the latest saved value.
+  const cancelBlurPreview = useCallback(() => {
+    queueMicrotask(() => previewBlur(null));
+  }, [previewBlur]);
+  useEffect(() => {
+    window.addEventListener('blur', cancelBlurPreview);
+    return () => {
+      window.removeEventListener('blur', cancelBlurPreview);
+      previewBlur(null);
+    };
+  }, [cancelBlurPreview, previewBlur]);
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
   const chooseWallpaper = async () => {
     setBusy(true);
@@ -100,6 +115,7 @@ export function WallpaperSection() {
             (wallpaperId === DEFAULT_APPEARANCE_SETTINGS.wallpaperId &&
               wallpaperOverlay === DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay &&
               wallpaperVisibility == null &&
+              wallpaperBlur == null &&
               wallpaperMotion === DEFAULT_APPEARANCE_SETTINGS.wallpaperMotion)
           }
         >
@@ -262,6 +278,34 @@ export function WallpaperSection() {
           className="text-12 text-[var(--settings-section-sublabel)]"
         >
           {t('settings.appearance.wallpaper.visibilityHint')}
+        </p>
+        <div className="flex items-center gap-3">
+          <span className="shrink-0 text-12 text-[var(--settings-section-sublabel)]">
+            {t('settings.appearance.wallpaper.blurLabel')}
+          </span>
+          <Slider
+            min={APPEARANCE_LIMITS.wallpaperBlur.min}
+            max={APPEARANCE_LIMITS.wallpaperBlur.max}
+            step={APPEARANCE_LIMITS.wallpaperBlur.step}
+            value={[wallpaperBlur ?? 0]}
+            disabled={wallpaperId === 'none'}
+            onValueChange={([value]) => {
+              if (typeof value === 'number') previewBlur(value);
+            }}
+            onValueCommit={([value]) => {
+              if (typeof value === 'number') setBlur(value);
+            }}
+            onPointerCancel={cancelBlurPreview}
+            onLostPointerCapture={cancelBlurPreview}
+            aria-label={t('settings.appearance.wallpaper.blurLabel')}
+            aria-describedby="wallpaper-blur-hint"
+          />
+          <span className="w-10 shrink-0 text-right font-mono text-12 text-[var(--settings-section-sublabel)]">
+            {wallpaperBlur ?? 0}
+          </span>
+        </div>
+        <p id="wallpaper-blur-hint" className="text-12 text-[var(--settings-section-sublabel)]">
+          {t('settings.appearance.wallpaper.blurHint')}
         </p>
       </div>
     </div>

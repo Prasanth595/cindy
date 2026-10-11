@@ -6,6 +6,7 @@ import {
   WALLPAPER_IDS,
   clampAppearanceWallpaperOverlay,
   clampAppearanceWallpaperVisibility,
+  clampAppearanceWallpaperBlur,
   clampAppearanceCodeSize,
   clampAppearanceUiSize,
   clampAppearanceWindowZoom,
@@ -144,6 +145,7 @@ function appearanceForWindow(
 ): AppearanceSettings {
   if (isAppContentWindow(win)) return settings;
   const { customWallpaperUrl: _privateUrl, ...publicSettings } = settings;
+  void _privateUrl;
   return {
     ...publicSettings,
     wallpaperId: settings.wallpaperId === 'custom' ? 'none' : settings.wallpaperId,
@@ -175,6 +177,7 @@ function parsePatch(rawPatch: unknown): AppearanceOverrides {
     'wallpaperId',
     'wallpaperOverlay',
     'wallpaperVisibility',
+    'wallpaperBlur',
     'wallpaperMotion',
   ]);
   for (const key of Object.keys(raw)) {
@@ -237,6 +240,17 @@ function parsePatch(rawPatch: unknown): AppearanceOverrides {
             'wallpaperVisibility',
             clampAppearanceWallpaperVisibility,
             APPEARANCE_LIMITS.wallpaperVisibility,
+          );
+  }
+  if ('wallpaperBlur' in raw) {
+    patch.wallpaperBlur =
+      raw.wallpaperBlur === null
+        ? null
+        : parseNumber(
+            raw.wallpaperBlur,
+            'wallpaperBlur',
+            clampAppearanceWallpaperBlur,
+            APPEARANCE_LIMITS.wallpaperBlur,
           );
   }
   return patch;

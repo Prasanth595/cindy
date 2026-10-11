@@ -1,4 +1,7 @@
-import { isOpenAiSubscriptionProvider } from '@cindy/model-providers';
+import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
+import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
+import { Button } from '@/components/ui/button';
+import { isCodexGatewayWireModel, isOpenAiSubscriptionProvider } from '@cindy/model-providers';
 import { useProviders } from '@/hooks/useProviders';
 /**
  * ErrorBanner — 错误横幅 + Retry / Cancel
@@ -73,13 +76,16 @@ interface ErrorBannerProps {
   onCancel?: () => void;
   /** silent-stop 耗尽横幅「继续」:清横幅 + 发隐藏续跑指令(见 makerChatStore)。 */
   onSilentStopContinue?: () => void;
-  /** 账号用量限制：打开预填好的一次性 Automation，由用户确认后创建。 */
-  onContinueAfterUsageReset?: () => void;
+  /** 账号限额等待中：额度重置后到这个时刻(unix ms)若无人处理，被控端自动继续任务。 */
+  usageLimitWait?: { resumeAt: number } | null;
+  /** 取消自动继续(错误与重试保留)。 */
+  onCancelUsageLimitWait?: () => void;
   /** 已识别的账号用量限制及恢复时间；用于替换上游 429 JSON 为可读提示。 */
   usageLimitRecovery?: UsageLimitRecoveryHint | null;
   /** 当前 session 的 agent kind。codex 的 401 / Missing bearer 必须 hide Retry,
    *  否则 retry 撞同一个 in-memory auth retry-loop 产生重复失败 turn。 */
   agentKind?: 'cc' | 'codex' | 'pi';
+  agentDeviceId?: string | null;
   /** 当前 session 的远端 host id;非空 + agentKind='codex' 时显「同步登录态」按钮。
    *  本地 codex 401 仍 hide Retry, 但只能提示用户去自己 fix login (没有 sync 入口)。 */
   remoteHostId?: string;
@@ -129,10 +135,12 @@ export function ErrorBanner({
   onRetry,
   onCancel,
   onSilentStopContinue,
-  onContinueAfterUsageReset,
+  usageLimitWait,
+  onCancelUsageLimitWait,
   usageLimitRecovery,
   agentKind,
   remoteHostId,
+  agentDeviceId,
   deviceLinkDeviceId,
   modelId,
   providerId,
@@ -233,7 +241,7 @@ export function ErrorBanner({
   const hasImplicitOpenAiProvider =
     normalizedProviderId === null &&
     codexAuthInjection !== 'provider-oauth' &&
-    !modelId?.startsWith('codex/') &&
+    !isCodexGatewayWireModel(modelId) &&
     !modelId?.startsWith('xai/');
   const isCodexOpenAiSource =
     agentKind === 'codex' && (hasExplicitOpenAiProvider || hasImplicitOpenAiProvider);
@@ -310,6 +318,11 @@ export function ErrorBanner({
   const terminalRateLimitRetryProgress = parseTerminalRateLimitRetryProgress(error, errorReason);
   const isCodexUsageLimitError =
     agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true;
+  const { snapshot: resetSnapshot, refresh: refreshResets } = useCodexRateLimits(
+    isCodexUsageLimitError && isCodexOpenAiSource && !isAnyRemoteSession && !agentDeviceId,
+    normalizedProviderId ?? 'openai',
+  );
+  const manualReset = useCodexRateLimitReset(resetSnapshot, refreshResets, normalizedProviderId ?? 'openai');
   const usageLimitResetDate =
     usageLimitRecovery?.resetAtMs && Number.isFinite(usageLimitRecovery.resetAtMs)
       ? new Date(usageLimitRecovery.resetAtMs)
@@ -324,8 +337,15 @@ export function ErrorBanner({
   const isOrganizationCodexPlan = ['business', 'enterprise', 'team'].includes(
     usageLimitRecovery?.planType?.toLowerCase() ?? '',
   );
-  const canContinueAfterUsageReset =
-    Boolean(onContinueAfterUsageReset) && (agentKind !== 'codex' || isCodexUsageLimitError);
+  const usageLimitResumeAt = (() => {
+    if (!usageLimitWait || !Number.isFinite(usageLimitWait.resumeAt)) return null;
+    const resumeDate = new Date(usageLimitWait.resumeAt);
+    const sameDay = resumeDate.toDateString() === new Date().toDateString();
+    return new Intl.DateTimeFormat(
+      i18n?.resolvedLanguage ?? i18n?.language,
+      sameDay ? { timeStyle: 'short' } : { dateStyle: 'medium', timeStyle: 'short' },
+    ).format(resumeDate);
+  })();
   // Retry 的显示条件与网络错误文案必须共用同一个判定。外部发起的 turn（例如
   // scheduler / goal）失败时没有安全的 recovery target，errorRetryText 会是 null；
   // 此时不能一边隐藏按钮，一边仍提示用户“点击重试”。
@@ -754,20 +774,33 @@ export function ErrorBanner({
           {t('chat.errorBanner.silentStopContinue')}
         </button>
       )}
-      {canContinueAfterUsageReset && onContinueAfterUsageReset && (
+      {usageLimitResumeAt && (
+        // 额度重置后自动继续:只是告知,不是按钮;用户仍可重试、换模型或发新消息接手。
+        <span
+          className="shrink-0 flex select-none items-center gap-1 text-xs text-[var(--error-fg)]"
+          title={t('chat.errorBanner.usageLimitAutoContinueTitle')}
+        >
+          <Timer size={12} />
+          {t('chat.errorBanner.usageLimitAutoContinueAt', { time: usageLimitResumeAt })}
+        </span>
+      )}
+      {(manualReset.canReset || manualReset.canRetry) && (
+        <Button size="sm" compact loading={manualReset.busy} onClick={() => void manualReset.reset()}>
+          {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.limitAction', { count: resetSnapshot?.rateLimitResetCredits?.availableCount ?? 0 })}
+        </Button>
+      )}
+      {usageLimitResumeAt && onCancelUsageLimitWait && (
         <button
           type="button"
-          data-split-pane-route-action=""
-          onClick={onContinueAfterUsageReset}
+          onClick={onCancelUsageLimitWait}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
             'text-[var(--error-fg)]',
             'hover:opacity-70 transition-opacity',
           )}
-          title={t('chat.errorBanner.continueAfterResetTitle')}
+          title={t('chat.errorBanner.usageLimitAutoContinueCancelTitle')}
         >
-          <Timer size={12} />
-          {t('chat.errorBanner.continueAfterReset')}
+          {t('chat.errorBanner.usageLimitAutoContinueCancel')}
         </button>
       )}
       {safeRetryText && (

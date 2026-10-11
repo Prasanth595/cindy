@@ -1,6 +1,6 @@
 import {
   readHistoryWorkDetails, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
-  type HistoryViewItem, type HistoryViewPage, type HistoryWorkSummary,
+  type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
 
 export interface HistoryWorkDetailState<T extends HistoryMessageSource> {
@@ -125,6 +125,29 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     }, 500);
   }
 
+  /**
+   * Replace one running top-level work item in place. Anything this controller cannot
+   * prove to be the Host's base (a read in flight, a missing or reshaped item, another
+   * revision) falls back to the ordinary page refresh the notice used to trigger.
+   */
+  applyWorkPatch(patch: HistoryWorkPatch): void {
+    if (!this.isActive()) return;
+    const index = this.state.items.findIndex((item) => item.key === patch.item.key);
+    const current = this.state.items[index];
+    if (this.pagePromise || this.refreshTimer || !this.state.ready || !current || current.type !== 'work' || current.children
+      || current.summary.revision !== patch.baseRevision
+      || current.summary.firstMessageId !== patch.item.summary.firstMessageId) {
+      this.invalidate();
+      return;
+    }
+    const items = [...this.state.items];
+    items[index] = patch.item;
+    this.publish({ items });
+    for (const summary of historyWorkSummaries([patch.item])) {
+      if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
+    }
+  }
+
   private async readPage(older: boolean): Promise<void> {
     if (!this.isActive() || this.state.loading || (older && !this.state.hasMore)) return;
     const generation = this.generation;
@@ -230,7 +253,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const completed = this.state.details.get(summary.key);
       if (completed?.complete && completed.revision === summary.revision && !patch.complete) return;
       const details = new Map(this.state.details);
-      details.set(summary.key, { messages: collected.length ? collected : (existing?.messages ?? []), revision: summary.revision,
+      // A reread keeps the previous window until it settles. Publishing each
+      // incoming page would replace the old window with a partial slice of the
+      // new range: the rendered list collapses to the first page and shifts a
+      // bottom-pinned stream before the tail lands.
+      const settled = patch.complete === true;
+      const messages = !settled && existing?.messages?.length ? existing.messages
+        : collected.length ? collected : (existing?.messages ?? []);
+      details.set(summary.key, { messages, revision: summary.revision,
         lastMessageId: summary.lastMessageId, loading: true, complete: false, error: null, ...patch });
       this.publish({ details });
     };

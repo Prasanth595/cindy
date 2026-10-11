@@ -22,6 +22,7 @@ export function NewTaskSelectionSheet(p: NewTaskSelectionSheetProps) {
     <ComposerSheet
       visible={p.page !== null}
       onClose={p.onClose}
+      onClosed={p.onClosed}
       onBack={browsing ? p.onBack : undefined}
       backLabel={t('shared.back')}
       title={t(p.page === 'device' ? 'session.new.selectControlledDevice' : browsing ? 'session.new.chooseOtherFolder' : 'session.new.selectWorkspace')}
@@ -33,7 +34,7 @@ export function NewTaskSelectionSheet(p: NewTaskSelectionSheetProps) {
           modifiers={[...glassStyle, disabled(unavailable || !p.path || !!p.error)]}
           testID="newSession.remoteBrowseSelectCurrent"
         >
-          <Text modifiers={[frame({ maxWidth: Infinity, minHeight: 44 })]}>{t('session.new.useCurrent')}</Text>
+          <Text modifiers={[foregroundStyle(colors.ctaText), frame({ maxWidth: Infinity, minHeight: 44 })]}>{t('session.new.useCurrent')}</Text>
         </Button>
       ) : undefined}
     >

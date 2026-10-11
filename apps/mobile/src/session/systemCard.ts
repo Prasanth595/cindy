@@ -11,7 +11,10 @@ import {
   type SystemCardType,
 } from '@cindy/maker-shared/system-card';
 import { i18n } from '@/i18n';
-import { mobileAgentLabelFromUnknown } from '@/session/sessionAgentSwitch';
+import {
+  mobileAgentLabelFromUnknown,
+  readAgentSwitchLocationTarget,
+} from '@/session/sessionAgentSwitch';
 import { formatCompactTokens } from '@cindy/maker-shared/usage-format';
 
 /**
@@ -180,14 +183,41 @@ function formatAutoResumeCard(data: Record<string, unknown> | undefined): System
   const outcome = data?.outcome === 'succeeded' || data?.outcome === 'failed' ? data.outcome : undefined;
   const hasInterruptionContext = !!(data?.live === true || error || attempt || maxAttempts || sessionTotal || outcome);
   if (!hasInterruptionContext) return { title: i18n.t('message.systemCard.autoResume.separator'), rows: [] };
+  // 供应商组正在换电脑:错误先不呈现,只写「正在换一台电脑继续」。
+  const groupSwitchPending = data?.live === true && !!data.groupSwitchPending && typeof data.groupSwitchPending === 'object';
   const title = data?.live === true
-    ? attempt && maxAttempts
+    ? groupSwitchPending
+      ? i18n.t('message.systemCard.autoResume.groupSwitchPending')
+      : attempt && maxAttempts
       ? i18n.t('message.systemCard.autoResume.pendingWithProgress', { attempt, total: maxAttempts })
       : i18n.t('message.systemCard.autoResume.pending')
     : i18n.t(`message.systemCard.autoResume.${outcome ?? 'neutral'}`);
   const subtitle = attempt && maxAttempts && sessionTotal
     ? i18n.t('message.systemCard.autoResume.details', { attempt, total: maxAttempts, count: sessionTotal }) : undefined;
-  return { title, ...(error ? { body: error } : {}), subtitle, rows: [] };
+  return { title, ...(error && !groupSwitchPending ? { body: error } : {}), subtitle, rows: [] };
+}
+
+type AgentSwitchTranslate = (key: string, options?: Record<string, unknown>) => string;
+
+/**
+ * 远程 Agent:边界行带 toAgentDeviceId 键 = 这次切换把 Agent 换到了另一台电脑上运行
+ * (null = 被控电脑本机),标题改说位置;引擎同时换了再以「 · 目标引擎」带上。没换电脑
+ * 返回 null,调用方沿用「已从 X 切换到 Y」。名称是切换时的快照,缺名时按位置给通用说法。
+ */
+export function formatAgentSwitchLocationLabel(
+  data: Record<string, unknown> | undefined,
+  translate: AgentSwitchTranslate,
+): string | null {
+  const location = readAgentSwitchLocationTarget(data);
+  if (!location) return null;
+  const label = location.kind === 'named'
+    ? translate('message.systemCard.agentSwitchLocation', { device: location.name })
+    : translate(location.kind === 'thisComputer'
+      ? 'message.systemCard.agentSwitchLocationThisComputer'
+      : 'message.systemCard.agentSwitchLocationOtherComputer');
+  const from = mobileAgentLabelFromUnknown(data?.fromAgentKind);
+  const to = mobileAgentLabelFromUnknown(data?.toAgentKind);
+  return from === to ? label : `${label} · ${to}`;
 }
 
 /**
@@ -204,7 +234,8 @@ function formatAgentSwitchCard(data: Record<string, unknown> | undefined): Syste
   // Phase 2:resumed = 目标引擎续接了自己的停泊原生会话(增量交接)。
   if (data?.resumed === true) rows.push({ label: i18n.t('message.systemCard.sessionLabel'), value: i18n.t('message.systemCard.sessionResumed') });
   return {
-    title: i18n.t('message.systemCard.agentSwitch', { from, to }),
+    title: formatAgentSwitchLocationLabel(data, (key, options) => i18n.t(key, options))
+      ?? i18n.t('message.systemCard.agentSwitch', { from, to }),
     rows,
   };
 }

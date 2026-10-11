@@ -14,6 +14,8 @@ function Controls() {
       <button onClick={() => settings.setMotion('dynamic')}>Animate</button>
       <button onClick={() => settings.setVisibility(1)}>Show Fully</button>
       <button onClick={() => settings.setVisibility(0)}>Hide</button>
+      <button onClick={() => settings.setBlur(12)}>Blur</button>
+      <button onClick={() => settings.setBlur(0)}>Clear Blur</button>
       <span data-testid="visibility">{settings.visibility}</span>
       <span data-testid="motion">{settings.wallpaperMotion}</span>
     </>
@@ -34,6 +36,79 @@ afterEach(() => {
 });
 
 describe('application wallpaper lifecycle', () => {
+  it.each(['webp', 'mp4'])(
+    'applies blur to %s, follows window updates and clears on hide/reset',
+    async (ext) => {
+      let changed: (value: typeof DEFAULT_APPEARANCE_SETTINGS) => void = () => {};
+      const initial = {
+        ...DEFAULT_APPEARANCE_SETTINGS,
+        wallpaperId: 'custom' as const,
+        wallpaperMotion: 'dynamic' as const,
+        customWallpaperUrl: `cindy-media://client-wallpaper/${'a'.repeat(64)}.${ext}`,
+      };
+      const setPatch = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal('electronAPI', {
+        appearanceSettings: {
+          getSync: () => initial,
+          onChanged: (fn: typeof changed) => {
+            changed = fn;
+            return () => {};
+          },
+          setPatch,
+        },
+      });
+      const { unmount } = render(
+        <WallpaperSettingsProvider>
+          <Controls />
+        </WallpaperSettingsProvider>,
+      );
+      const root = document.documentElement;
+      expect(root.dataset.wallpaperBlur).toBeUndefined();
+      const video = document.querySelector('video');
+      fireEvent.click(screen.getByText('Blur'));
+      expect(root.style.getPropertyValue('--app-wallpaper-blur')).toBe('12px');
+      expect(root.dataset.wallpaperBlur).toBe('true');
+      expect(document.querySelector('video')).toBe(video);
+      await waitFor(() => expect(setPatch).toHaveBeenCalledWith({ wallpaperBlur: 12 }));
+      act(() => changed({ ...initial, wallpaperBlur: 8 }));
+      expect(root.style.getPropertyValue('--app-wallpaper-blur')).toBe('8px');
+      fireEvent.click(screen.getByText('Hide'));
+      expect(root.dataset.wallpaperBlur).toBeUndefined();
+      expect(root.style.getPropertyValue('--app-wallpaper-blur')).toBe('');
+      fireEvent.click(screen.getByText('Reset'));
+      await waitFor(() =>
+        expect(setPatch).toHaveBeenLastCalledWith(expect.objectContaining({ wallpaperBlur: null })),
+      );
+      expect(root.dataset.wallpaperBlur).toBeUndefined();
+      unmount();
+      expect(root.style.getPropertyValue('--app-wallpaper-blur')).toBe('');
+    },
+  );
+  it('restores the confirmed blur when saving fails', async () => {
+    const setPatch = vi.fn().mockRejectedValue(new Error('save failed'));
+    vi.stubGlobal('electronAPI', {
+      appearanceSettings: {
+        getSync: () => ({
+          ...DEFAULT_APPEARANCE_SETTINGS,
+          wallpaperId: 'cindy-window',
+          wallpaperBlur: 4,
+        }),
+        onChanged: () => () => {},
+        setPatch,
+      },
+    });
+    render(
+      <WallpaperSettingsProvider>
+        <Controls />
+      </WallpaperSettingsProvider>,
+    );
+    fireEvent.click(screen.getByText('Blur'));
+    expect(document.documentElement.style.getPropertyValue('--app-wallpaper-blur')).toBe('12px');
+    await waitFor(() => expect(setPatch).toHaveBeenCalledWith({ wallpaperBlur: 12 }));
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue('--app-wallpaper-blur')).toBe('4px'),
+    );
+  });
   it('updates literal visibility and restores the previous value when saving fails', async () => {
     const setPatch = vi.fn().mockRejectedValue(new Error('save failed'));
     vi.stubGlobal('electronAPI', {

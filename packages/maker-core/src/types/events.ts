@@ -69,6 +69,8 @@ export interface AgentErrorEventData {
   willRetry?: boolean;
   sdkError?: string;
   reason?: string;
+  /** 账号用量受限时上游给出的重置时刻(unix ms)；未知时省略。 */
+  usageResetAt?: number;
   /** Structured details for reason='tool_use_loop_detected'. */
   toolLoop?: ToolLoopErrorDetails;
   [key: string]: unknown;
@@ -315,6 +317,8 @@ export type InteractionRequest =
   | (InteractionRequestBase & {
       kind: 'ask_user_question';
       questions: AskUserQuestionItem[];
+      /** Optional question: the provider keeps running; absence means a blocking question. */
+      delivery?: 'async';
     })
   | (InteractionRequestBase & {
       kind: 'plan_review';
@@ -402,6 +406,7 @@ export interface InteractionDismissedEvent {
  * 注: isRunning / status text 不属于 usage, 由 translator 在 emit status event 时单独拼。
  */
 export interface UsageSnapshot {
+  responseSpeed?: import("@cindy/maker-shared/usage-format").ResponseSpeedSnapshot;
   tokenUsage: number;
   contextTokens: number;
   contextWindow: number;

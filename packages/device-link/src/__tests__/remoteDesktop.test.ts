@@ -11,6 +11,24 @@ import {
 } from "../remoteDesktop";
 import { REMOTE_INVOKE_ALLOWLIST, PUSH_FORWARD_ALLOWLIST } from "../allowlist";
 describe("remote desktop wire boundary", () => {
+  it.each([
+    { op: "start", displayId: "1" },
+    { op: "heartbeat", lease: "a" },
+  ])(
+    "accepts an optional boolean lock policy on $op without changing legacy requests",
+    (request) => {
+      expect(parseRemoteDesktopRequest(request)).toEqual(request);
+      for (const lockOnExit of [true, false])
+        expect(parseRemoteDesktopRequest({ ...request, lockOnExit })).toEqual({
+          ...request,
+          lockOnExit,
+        });
+      for (const lockOnExit of ["true", 1, null, {}])
+        expect(() =>
+          parseRemoteDesktopRequest({ ...request, lockOnExit }),
+        ).toThrow("INVALID_REQUEST");
+    },
+  );
   it("preserves legacy stop and accepts only a boolean explicit lock request", () => {
     expect(parseRemoteDesktopRequest({ op: "stop", lease: "a" })).toEqual({ op: "stop", lease: "a" });
     expect(parseRemoteDesktopRequest({ op: "stop", lease: "a", lockScreen: true })).toEqual({ op: "stop", lease: "a", lockScreen: true });
@@ -92,7 +110,7 @@ describe("remote desktop wire boundary", () => {
         expect(
           offer(remoteDesktopVideoSettingsWire({ fps: 60, quality, audio: true })),
         ).toMatchObject({
-          settings: { fps: quality === "saver" ? 30 : 60, quality, audio: true },
+          settings: { fps: 60, quality, audio: true },
         });
       expect(
         offer({ fps: 30, quality: "hd", bitrate: 20_000_000, audio: false }),
@@ -128,10 +146,10 @@ describe("remote desktop wire boundary", () => {
       expect(
         offer({ fps: 30, quality: "ultra", bitrate: 20_000_000, audio: false }),
       ).toMatchObject({ settings: { quality: "hd" } });
-      // Older hosts ignore `quality`, so Saver's 30 fps cap travels in `fps`.
+      // Saver only lowers the bitrate; the viewer's frame rate is sent as chosen.
       expect(
         remoteDesktopVideoSettingsWire({ fps: 60, quality: "saver", audio: false }),
-      ).toEqual({ fps: 30, quality: "saver", audio: false, bitrate: 2_000_000 });
+      ).toEqual({ fps: 60, quality: "saver", audio: false, bitrate: 2_000_000 });
       expect(
         remoteDesktopVideoSettingsWire({ fps: 60, quality: "auto", audio: false }).fps,
       ).toBe(60);

@@ -151,6 +151,7 @@ export interface RoutableMaker {
     | 'updateText'
     | 'updateContent'
     | 'clearError'
+    | 'cancelUsageLimitWait'
     | 'retryLastError'
     | 'clearSession'
     | 'persistTurnErrorDeferred'
@@ -265,6 +266,7 @@ function remoteMakerApi(deviceId: string): RoutableMaker {
       updateText: t('maker:input:update-text') as FullMaker['input']['updateText'],
       updateContent: t('maker:input:update-content') as FullMaker['input']['updateContent'],
       clearError: t('maker:input:clear-error') as FullMaker['input']['clearError'],
+      cancelUsageLimitWait: t('maker:input:cancel-usage-limit-wait') as FullMaker['input']['cancelUsageLimitWait'],
       retryLastError: t('maker:input:retry-last-error') as FullMaker['input']['retryLastError'],
       clearSession: t('maker:input:clear-session') as FullMaker['input']['clearSession'],
       // device-link:auth error 重试失败/放弃时在被控端落库,经隧道路由到被控端 main。
@@ -906,6 +908,7 @@ export interface RoutableOrcaWorkflows {
   archiveWorker: FullOrca['archiveWorker'];
   endTeam: FullOrca['endTeam'];
   getCollaborationSettings: FullOrca['getCollaborationSettings'];
+  listExecutionDevices: FullOrca['listExecutionDevices'];
 }
 
 /**
@@ -951,6 +954,7 @@ function remoteOrcaWorkflows(deviceId: string): RoutableOrcaWorkflows {
     getCollaborationSettings: t(
       'maker:collaboration-settings:get',
     ) as FullOrca['getCollaborationSettings'],
+    listExecutionDevices: t('maker:orca:execution-devices') as FullOrca['listExecutionDevices'],
   };
 }
 

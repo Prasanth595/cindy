@@ -114,7 +114,7 @@ describe('CCAgentSessionView 接线不变式', () => {
   });
   it('已有设备互联任务与保留原路由的 SSH 任务跳过来源门禁，草稿与本地任务仍保留门禁', () => {
     expect(chatInputSrc).toContain(
-      'const enforceConnectedSourceGate = (!sessionId || !deviceLinkDeviceId) && !preserveSshCodexRoute;',
+      'const enforceConnectedSourceGate = (!sessionId || !catalogDeviceId) && !preserveSshCodexRoute;',
     );
     expect(chatInputSrc).toContain('const preserveSshCodexRoute = !!sessionId && !!sshCodexHostId &&');
     expect(chatInputSrc).toMatch(
@@ -154,12 +154,12 @@ describe('CCAgentSessionView 接线不变式', () => {
     expect(menuSource).toContain("item('openInNewWindow', onOpenInNewWindow, ownerActionsBlocked)");
     expect(menuSource).toContain('disabled={disabled}');
   });
-  it('live / 历史错误横幅都携带 SSH 与 device-link 执行端归属', () => {
+  it('live / 历史错误横幅都携带 SSH、device-link 与远程 Agent 执行端归属', () => {
     expect(sessionViewSrc).toMatch(
-      /<ErrorTailErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}/,
+      /<ErrorTailErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}[\s\S]*?agentDeviceId=\{session\?\.agentDeviceId\}/,
     );
     expect(sessionViewSrc).toMatch(
-      /<ErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}/,
+      /<ErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}[\s\S]*?agentDeviceId=\{session\?\.agentDeviceId\}/,
     );
   });
   it('远程活动镜像在 turn 执行或等待交互时压过中断时间戳启发式', () => {

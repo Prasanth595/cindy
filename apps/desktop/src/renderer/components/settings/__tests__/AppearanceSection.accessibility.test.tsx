@@ -47,6 +47,7 @@ vi.mock('@/hooks/useWallpaperSettings', () => ({
     setWallpaper: vi.fn(),
     visibility: 0.37,
     setVisibility: vi.fn(),
+    previewBlur: vi.fn(),
     setMotion: vi.fn(),
     resetWallpaper: vi.fn(),
   }),
@@ -78,11 +79,17 @@ vi.mock('@/components/ui/slider', () => ({
   Slider: ({
     value,
     onValueChange: _onValueChange,
+    onValueCommit: _onValueCommit,
     ...props
   }: React.InputHTMLAttributes<HTMLInputElement> & {
     value?: number[];
     onValueChange?: (value: number[]) => void;
-  }) => <input type="range" value={value?.[0]} readOnly {...props} />,
+    onValueCommit?: (value: number[]) => void;
+  }) => {
+    void _onValueChange;
+    void _onValueCommit;
+    return <input type="range" value={value?.[0]} readOnly {...props} />;
+  },
 }));
 
 vi.mock('../FontFamilyPicker', () => ({ FontFamilyPicker: () => null }));
@@ -99,6 +106,12 @@ describe('AppearanceSection accessibility', () => {
     expect(visibility.getAttribute('step')).toBe('0.01');
     expect(visibility.getAttribute('aria-describedby')).toBe('wallpaper-visibility-hint');
     expect(screen.getByText('37%')).toBeTruthy();
+    const blur = screen.getByRole('slider', { name: 'settings.appearance.wallpaper.blurLabel' });
+    expect(blur.getAttribute('min')).toBe('0');
+    expect(blur.getAttribute('max')).toBe('20');
+    expect(blur.getAttribute('step')).toBe('1');
+    expect(blur.getAttribute('aria-describedby')).toBe('wallpaper-blur-hint');
+    expect(blur.hasAttribute('disabled')).toBe(true);
 
     const wallpapers = within(
       screen.getByRole('radiogroup', { name: 'settings.appearance.wallpaper.aria' }),

@@ -116,6 +116,13 @@ it('loads only on open and groups task organization, sharing, viewing and remova
   expect(state.rowClick).not.toHaveBeenCalled();
 });
 
+it('offers moving a task whose agent runs on another computer to another project', () => {
+  render(<Harness target={{ ...session, agentDeviceId: 'device-b' } as Session} />);
+  openMenu();
+  expect(labels()).toContain('moveToProject');
+  expect(labels()).toContain('openInNewWindow');
+});
+
 it('shows unpin without a branch entry even for a forked Pi task', () => {
   render(
     <Harness

@@ -100,7 +100,6 @@ import {
 } from '@cindy/maker-shared/chat-quotes';
 import { formatCompactTokens } from '@cindy/maker-shared/usage-format';
 import { QuoteCapsule } from '@/session/QuoteCapsule';
-import { StreamingStatusText } from '@/session/StreamingStatusText';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { motionDuration, motionEasing } from '@/theme/tokens';
 import { mobileAgentLabelFromUnknown } from '@/session/sessionAgentSwitch';
@@ -220,6 +219,7 @@ import {
   type MobileMarkdownBlock,
   type MobileMarkdownBlockGroup,
   type MobileMarkdownInline,
+  type MobileMarkdownInlineMark,
   type MobileMarkdownTextRunGroupingOptions,
 } from '@/session/messageMarkdown';
 import { MarkdownBlockContent } from '@/session/MarkdownBlockContent';
@@ -317,6 +317,7 @@ import {
 } from '@cindy/maker-shared/agent-task';
 import {
   buildMessageActionBarPresentation,
+  formatToolRowText,
   summarizeMessageBubblePresentation,
   summarizeTodoCardPresentation,
   summarizeToolGroupPresentation,
@@ -347,7 +348,7 @@ import type {
   MobileMediaPlayerKind,
   MobileMediaPlayerStatus,
 } from '@/session/mediaPlayerWebViewHtml';
-import { formatMobileSystemCard } from '@/session/systemCard';
+import { formatAgentSwitchLocationLabel, formatMobileSystemCard } from '@/session/systemCard';
 import { MobileBoundaryNotice } from '@/session/MobileBoundaryNotice';
 import {
   getMobileAutoResumePresentation,
@@ -418,6 +419,7 @@ import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { mobileToolRowWording } from '@/i18n/toolWording';
+import type { HistoryWorkLine } from '@cindy/maker-shared/message-window';
 
 const MESSAGE_CONTROL_HIT_SLOP = { bottom: 10, left: 10, right: 10, top: 10 };
 const MESSAGE_CONTROL_TOUCH_SIZE = 44;
@@ -3447,8 +3449,7 @@ function MessageBubble({
   // 操作行只挂在每轮收尾正文、且该行确实是一条发言(判据见
   // mobileMessageShowsActionBar):中间句不再逐条带复制/分叉/时间,系统边界卡整行
   // 不挂。分享态只保留与导出图片一致的消息内容,不显示操作图标、时间或费用。
-  // user 消息、流式「生成中」状态与正文的文本选择(canSelectVisibleText)
-  // 不受影响。
+  // 流式回复不挂操作行或状态占位；任务运行状态由底部状态栏展示。
   const showCompletedActionBar = !shareSelectionActive && mobileMessageShowsActionBar({
     hasSystemCard: !!item.message.systemCardType,
     isStreamingAssistant,
@@ -3690,15 +3691,6 @@ function MessageBubble({
       {turnTokens}
     </Text>
   ) : null;
-  const streamingStatus = isStreamingAssistant ? (
-    <StreamingStatusText
-      accessibilityLabel={t('message.renderer.messageGenerating')}
-      style={styles.streamingStatus}
-      testID="message.streamingStatus"
-    >
-      {t('message.renderer.generating')}
-    </StreamingStatusText>
-  ) : null;
   // 附件条对齐桌面版:渲染在气泡外、文字气泡上方(用户消息右对齐);
   // 纯图片消息(无正文)不再渲染空气泡背景。
   const attachmentStripNode = item.message.attachments?.length ? (
@@ -3902,6 +3894,16 @@ function MessageBubble({
           testID="message.sharedAuthor"
         />
       ) : null}
+      {item.message.kind === 'assistant' && item.message.sourceGroup ? (
+        <SourceLabelWithId
+          align="agent"
+          label={item.message.sourceGroup.name
+            ? t('message.renderer.groupSentNamed', { name: item.message.sourceGroup.name })
+            : t('message.renderer.groupSent')}
+          idText={t('message.renderer.sourceGroupId', { id: item.message.sourceGroup.groupId })}
+          testID="message.groupSource"
+        />
+      ) : null}
       {automationOrigin ? (
         // 自动化任务注入的消息:气泡上方渲来源标签(对齐桌面;手机版暂不做
         // 点击跳转自动化页)。共享任务访客的脱敏来源没有名字与 ID,显示通用文案。
@@ -3975,7 +3977,6 @@ function MessageBubble({
           testID="message.actionBar"
         >
           {actionBar.items.map((id) => {
-            if (id === 'streaming') return <View key="streaming">{streamingStatus}</View>;
             if (id === 'time') return timeText;
             if (id === 'cost') return costText;
             if (id === 'more') {
@@ -4729,6 +4730,9 @@ function WorkGroupCard({
   ].filter(Boolean).join(' · ');
   const onToggle = item.deferred?.setVisible ? toggleExpanded : item.deferred?.toggle ?? toggleExpanded;
   const pluginWork = actions.companionPluginWork?.get(item.key);
+  // The Host projects running lines for this view; folded groups render them as they are,
+  // without building the hidden activity tree or reading any work details.
+  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4738,6 +4742,13 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
+      collapsedBody={lines?.length ? (
+        <Rail layout={layout}>
+          <View style={styles.workActivityStack}>
+            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+          </View>
+        </Rail>
+      ) : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4793,6 +4804,48 @@ function WorkGroupCard({
     </>
   );
 }
+
+/** One Host-projected running line; pressing it opens the whole work group. */
+const WorkLineRow = memo(function WorkLineRow({
+  line,
+  onPress,
+}: {
+  line: HistoryWorkLine;
+  onPress: () => void;
+}) {
+  const { colors } = useTheme();
+  const { i18n } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const label = useMemo(
+    () => (line.kind === 'tool' ? formatToolRowText(line.descriptor, mobileToolRowWording).label || line.toolName : line.text),
+    [i18n.language, line],
+  );
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [line.kind === 'tool' ? styles.toolRowHeader : styles.workThinkingRow, pressed && styles.pressed]}
+      testID="message.workLine"
+    >
+      {line.kind === 'tool' ? (
+        <>
+          <ToolRowStatusIcon hasError={line.hasError === true} status={line.status} />
+          <Text numberOfLines={1} style={[styles.toolName, styles.toolNameFlex]}>{label}</Text>
+        </>
+      ) : (
+        <>
+          <View style={stylesStatic.workActivityIconSlot}>
+            <Sparkles color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+          </View>
+          <Text numberOfLines={1} style={[styles.workActivityText, styles.italicText, styles.workThinkingText]}>
+            <ThinkingInlineText content={label} />
+          </Text>
+        </>
+      )}
+    </Pressable>
+  );
+});
 
 /** The clock must not re-render an expanded group's entire activity tree. */
 function WorkGroupElapsed({ sinceIso }: { sinceIso: string | undefined }) {
@@ -4972,6 +5025,7 @@ function FoldablePanel({
   title,
   subtitle,
   children,
+  collapsedBody,
   controlledExpanded,
   defaultExpanded = false,
   layout,
@@ -4993,6 +5047,8 @@ function FoldablePanel({
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Running work lines shown under a folded header; the full body is still built only when expanded. */
+  collapsedBody?: ReactNode;
   /** Controlled mode used by work groups. */
   controlledExpanded?: boolean;
   /** 仅无 blockId 的本地 state 路径生效;blockId 存在时由共享记忆决定(默认折叠)。 */
@@ -5075,6 +5131,18 @@ function FoldablePanel({
             },
         ]}>
           {children}
+        </View>
+      ) : collapsedBody ? (
+        <View style={[
+          styles.foldBody,
+          variant === 'plain'
+            ? styles.foldBodyPlain
+            : {
+              paddingBottom: layout.foldBodyPaddingBottom,
+              paddingHorizontal: layout.foldBodyPaddingHorizontal,
+            },
+        ]}>
+          {collapsedBody}
         </View>
       ) : null}
     </View>
@@ -5201,7 +5269,9 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const toModel = typeof data?.toModel === 'string' ? data.toModel : '';
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
-  const label = t('message.renderer.agentSwitchLabel', { from, to });
+  // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
+  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+    ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
     <View style={styles.agentSwitchWrap} testID="message.systemCard.agent-switch">
@@ -5323,7 +5393,22 @@ function MobileAutoResumeActionRow({
     );
   }
 
-  const label = state === 'live'
+  const label = info.groupSwitchPending
+    ? t('message.systemCard.autoResume.groupSwitchPending')
+    : info.agentSwitch
+    ? t(`message.systemCard.autoResume.agentSwitch.${info.agentSwitch.cause}`, {
+        from: info.agentSwitch.from,
+        to: info.agentSwitch.to,
+      })
+    : info.agentReconnect
+    ? info.agentReconnect.computer
+      ? t('message.systemCard.autoResume.agentReconnect.named', { computer: info.agentReconnect.computer })
+      : t('message.systemCard.autoResume.agentReconnect.unnamed')
+    : info.groupSwitch
+    ? t('message.systemCard.autoResume.groupSwitch')
+    : info.usageLimitReset
+    ? t('message.systemCard.autoResume.usageReset')
+    : state === 'live'
     ? hasProgress
       ? t('message.systemCard.autoResume.pendingWithProgress', {
           attempt: info.attempt,
@@ -6106,7 +6191,30 @@ function clickableInlineStyle(
   base: StyleProp<TextStyle>,
   extra?: StyleProp<TextStyle>,
 ): StyleProp<TextStyle> {
-  return [base, onPress ? styles.markdownLink : undefined, extra];
+  return [base, onPress ? underlineDecoration(styles, base, styles.markdownLink) : undefined, extra];
+}
+
+/**
+ * 可点下划线与外层删除线共存:RN 的 textDecorationLine 是单值,后叠的 underline 会盖掉
+ * `~~链接~~` 的 line-through。base 已带删除线时改用合并值,两条线都画。
+ */
+function underlineDecoration(
+  styles: ReturnType<typeof makeStyles>,
+  base: StyleProp<TextStyle>,
+  underline: StyleProp<TextStyle>,
+): StyleProp<TextStyle> {
+  return StyleSheet.flatten(base)?.textDecorationLine === 'line-through'
+    ? [underline, styles.markdownUnderlineStrike]
+    : underline;
+}
+
+function markdownMarkStyle(
+  styles: ReturnType<typeof makeStyles>,
+  mark: MobileMarkdownInlineMark,
+): StyleProp<TextStyle> {
+  if (mark === 'strong') return styles.markdownStrong;
+  if (mark === 'emphasis') return styles.markdownEmphasis;
+  return styles.markdownStrike;
 }
 
 /** 本地路径链接形态的路径 chip 包装:candidate 按 url memo,保证引用稳定——
@@ -6148,8 +6256,8 @@ function LinkPathChipSpan({
       candidate={candidate}
       chipStyle={
         codeStyled
-          ? [baseStyle, styles.markdownInlineCode, styles.markdownPathChip]
-          : [baseStyle, styles.markdownPathChip]
+          ? [baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
+          : [baseStyle, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
       }
       display={display}
       // 未点亮一律回落正文样式(与桌面一致:未解析的 local-candidate 渲染成纯 span)。
@@ -6178,7 +6286,7 @@ function InlineCodePathSpan({
   return (
     <ChatPathChipSpan
       candidate={candidate}
-      chipStyle={[baseStyle, styles.markdownInlineCode, styles.markdownPathChip]}
+      chipStyle={[baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]}
       display={text}
       plainStyle={[baseStyle, styles.markdownInlineCode]}
       SpanText={SpanText}
@@ -6209,6 +6317,13 @@ function renderInline(
     streaming?: boolean;
   } = {},
 ): ReactNode {
+  // 强调里的链接 / 代码等:外层强调样式叠进 baseStyle,其余照常渲染(span 平铺,不嵌套)。
+  if (inline.marks?.length) {
+    return renderInline({ ...inline, marks: undefined }, index, styles, {
+      ...ctx,
+      baseStyle: [ctx.baseStyle, ...inline.marks.map((mark) => markdownMarkStyle(styles, mark))],
+    });
+  }
   const SpanText = ctx.SpanText ?? MessageBodyText;
   const openImage = ctx.onOpenImage ?? (ctx.onOpenPayload
     ? (url: string, alt?: string) => {
@@ -8940,6 +9055,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   // 与普通强调的区别只在语义,视觉上沿用 italic 已足够。
   markdownMathInline: { fontStyle: 'italic' },
   markdownStrike: { textDecorationLine: 'line-through' },
+  markdownUnderlineStrike: { textDecorationLine: 'underline line-through' },
   // 行内 code:零底色 + 等宽字体 + 文字压暗(参照 Codex 客户端)。
   // 不给底色是平台约束:RN 嵌套在 Text 内的 inline 片段只认 backgroundColor,不认
   // borderRadius(同 sessionLinkChipText 的注释),底色在这里只能是直角方块,成段
@@ -9195,13 +9311,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textTertiary,
     fontSize: typeScale.caption,
     lineHeight: lineHeight.bodyRelaxed,
-  },
-  streamingStatus: {
-    alignSelf: 'center',
-    color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.regular,
-    lineHeight: lineHeight.listTitle,
   },
   foldPlain: { alignSelf: 'stretch' },
   foldCard: {

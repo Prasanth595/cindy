@@ -2417,9 +2417,28 @@ html[data-wallpaper-active='true'] .wallpaper-composer-fade {
 }
 /* Fade the message layer itself, so the moving scene remains continuous behind
    the composer. Repainting a static copy there would create a visible seam. */
-html[data-wallpaper-motion='dynamic'] .wallpaper-message-viewport [data-scroll-container] {
+html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true']) .wallpaper-message-viewport [data-scroll-container] {
   mask-image: linear-gradient(to bottom, black calc(100% - var(--wallpaper-composer-height)), transparent calc(100% - var(--wallpaper-composer-height) + 32px));
 }
-html[data-wallpaper-motion='dynamic'] :is(.wallpaper-composer-zone, .wallpaper-composer-fade) {
+html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true']) :is(.wallpaper-composer-zone, .wallpaper-composer-fade) {
   background: transparent;
+}
+
+/* Opt-in media-only blur. Overscan by three radii before clipping to avoid
+   sampling transparent edges. Static and moving canvases share the same crop;
+   zero blur leaves the original compositor path entirely unchanged. */
+html[data-wallpaper-blur='true'] body::before {
+  inset: calc(-3 * var(--app-wallpaper-blur));
+  filter: blur(var(--app-wallpaper-blur));
+}
+html[data-wallpaper-blur='true'] .app-wallpaper-video {
+  overflow: hidden;
+}
+html[data-wallpaper-blur='true'] .app-wallpaper-video video {
+  position: absolute;
+  inset: calc(-3 * var(--app-wallpaper-blur));
+  width: calc(100% + 6 * var(--app-wallpaper-blur));
+  height: calc(100% + 6 * var(--app-wallpaper-blur));
+  max-width: none;
+  filter: blur(var(--app-wallpaper-blur));
 }

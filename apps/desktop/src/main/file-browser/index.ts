@@ -62,6 +62,7 @@ import {
   type ChatFileFetchArgs,
   buildDevicePathUrl,
 } from './chat-file.js';
+import { createFileTransferProgressReporter } from './transfer-progress.js';
 import { downloadChatEntry, type ChatDownloadDeps } from './chat-download.js';
 import { isTransientDeviceExportStatusError } from './device-export-status-error.js';
 import { makeSshChunkExecutor } from './ssh-media.js';
@@ -109,7 +110,7 @@ export const FILE_BROWSER_INVOKE = {
 
 export const FILE_BROWSER_PUSH = {
   EVENT: 'maker:file-browser:event',
-  /** 大文件取回进度(仅发给发起窗口):{ workdir, relPath, received, total }。 */
+  /** 文件取回进度(仅发给发起窗口),订阅按 requestId 区分设备与并发请求。 */
   TRANSFER: 'maker:file-browser:transfer',
 } as const;
 
@@ -296,6 +297,7 @@ async function fetchRemoteBigFile(
               return { ossKey: key, size: args.size, mimeType: 'application/octet-stream' };
             },
             signal: transferSignal,
+            onProgress: progress,
           },
         );
         if ('path' in fetched) {
@@ -416,24 +418,13 @@ export function registerFileBrowserIpc(): void {
         mtimeMs: number;
         remoteHostId?: string | null;
         deviceId?: string | null;
+        requestId?: string;
       },
     ) => {
       const wc = event.sender;
-      let lastPush = 0;
-      const onProgress = (received: number, total: number, phase?: 'upload' | 'download') => {
-        const now = Date.now();
-        if (now - lastPush < 100 && received < total) return;
-        lastPush = now;
-        if (!wc.isDestroyed()) {
-          wc.send(FILE_BROWSER_PUSH.TRANSFER, {
-            workdir: args.workdir,
-            relPath: args.relPath,
-            received,
-            total,
-            phase: phase ?? 'download',
-          });
-        }
-      };
+      const onProgress = createFileTransferProgressReporter(args, (progress) => {
+        if (!wc.isDestroyed()) wc.send(FILE_BROWSER_PUSH.TRANSFER, progress);
+      });
       try {
         const cachePath = await fetchRemoteBigFile(args, onProgress);
         return { ok: true as const, cachePath, stale: false };
@@ -462,8 +453,8 @@ export function registerFileBrowserIpc(): void {
   );
 
   // ── 聊天流文件取回:远端绝对路径 → 本地缓存副本(chat-file.ts 编排)────
-  // 进度沿用 FILE_BROWSER_PUSH.TRANSFER,relPath 键固定用原始 absPath(renderer
-  // 不做 abs→rel,单一实现点在 main;订阅方按 absPath 过滤)。
+  // 进度沿用 FILE_BROWSER_PUSH.TRANSFER,relPath 保留原始 absPath;
+  // 订阅以 requestId 关联,同路径跨设备与并发操作不串线。
   const chatFileDeps: ChatFileDeps = {
     sshStat: (hostId, workdir, relPath) =>
       getRemoteFileBrowser().request(hostId, 'stat', { workdir, relPath }) as Promise<{
@@ -478,8 +469,8 @@ export function registerFileBrowserIpc(): void {
         relPath,
       }),
     fetchBigFile: fetchRemoteBigFile,
-    deviceMediaFetch: async (deviceId, url, signal) => {
-      return readRemoteDeviceFile(deviceId, url, remoteInvoke, signal ? { signal } : {});
+    deviceMediaFetch: async (deviceId, url, signal, onProgress) => {
+      return readRemoteDeviceFile(deviceId, url, remoteInvoke, { signal, onProgress });
     },
     downloadToFile,
     removeRemote: (key) => void removeRemote(key),
@@ -488,21 +479,12 @@ export function registerFileBrowserIpc(): void {
   };
   ipcMain.handle(FILE_BROWSER_INVOKE.CHAT_FILE_FETCH, async (event, args: ChatFileFetchArgs) => {
     const wc = event.sender;
-    let lastPush = 0;
-    const onProgress = (received: number, total: number, phase?: 'upload' | 'download') => {
-      const now = Date.now();
-      if (now - lastPush < 100 && received < total) return;
-      lastPush = now;
-      if (!wc.isDestroyed()) {
-        wc.send(FILE_BROWSER_PUSH.TRANSFER, {
-          workdir: args?.workdir ?? '',
-          relPath: args?.absPath ?? '',
-          received,
-          total,
-          phase: phase ?? 'download',
-        });
-      }
-    };
+    const onProgress = createFileTransferProgressReporter(
+      { workdir: args?.workdir ?? '', relPath: args?.absPath ?? '', requestId: args?.requestId },
+      (progress) => {
+        if (!wc.isDestroyed()) wc.send(FILE_BROWSER_PUSH.TRANSFER, progress);
+      },
+    );
     const result = await fetchChatFile(args, onProgress, chatFileDeps);
     if (!result.ok) {
       log.warn('chat-file fetch failed', {
@@ -591,29 +573,16 @@ export function registerFileBrowserIpc(): void {
       const onGone = () => abort.abort();
       wc.once('destroyed', onGone);
       wc.once('render-process-gone', onGone);
-      let lastPush = 0;
       // 进度带上发起方的请求 id:同一路径同时有取回 / 下载时 renderer 不串线。
-      const requestId =
-        typeof args?.requestId === 'string' && args.requestId.length <= 64
-          ? args.requestId
-          : undefined;
+      const onProgress = createFileTransferProgressReporter(
+        { workdir: args?.workdir ?? '', relPath: args?.absPath ?? '', requestId: args?.requestId },
+        (progress) => {
+          if (!wc.isDestroyed()) wc.send(FILE_BROWSER_PUSH.TRANSFER, progress);
+        },
+      );
       const result = await downloadChatEntry(
         args,
-        (received, total, phase) => {
-          const now = Date.now();
-          if (now - lastPush < 100 && (total === 0 || received < total)) return;
-          lastPush = now;
-          if (!wc.isDestroyed()) {
-            wc.send(FILE_BROWSER_PUSH.TRANSFER, {
-              workdir: args?.workdir ?? '',
-              relPath: args?.absPath ?? '',
-              received,
-              total,
-              phase,
-              requestId,
-            });
-          }
-        },
+        onProgress,
         chatDownloadDeps,
         abort.signal,
       ).finally(() => {

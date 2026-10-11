@@ -407,6 +407,25 @@ describe("ConversationShareSvg", () => {
     );
   });
 
+  it("wraps a strikethrough range split by a link once in the redacted fallback", () => {
+    const layout = buildConversationShareSvgLayout({
+      allShareableIds: ["m"],
+      colors,
+      messages: [
+        {
+          body: "改为 ~~见 https://a.example/x 旧版~~ 新版\n\npassword: private-secret",
+          clientId: "m",
+          kind: "assistant",
+        },
+      ],
+      width: 390,
+    });
+    const text = layout.bubbles[0]!.textBlocks.flatMap((block) => block.lines).join("");
+    expect(text).toContain("改为 ~~见 https://a.example/x 旧版~~ 新版");
+    expect(text).not.toContain("~~~~");
+    expect(text).not.toContain("private-secret");
+  });
+
   it("waits for both footer assets before allowing export", async () => {
     const gate = createConversationShareAssetGate(["character", "logo"]);
     let ready = false;

@@ -8,10 +8,15 @@ import { cn } from '@/lib/utils';
 import { providerAccountLabel } from '@/lib/providerDisplayName';
 import { Tip } from '@/components/ui/tooltip';
 
-import { useProviderWeeklyQuota, type ProviderUsageScope } from './useProviderWeeklyQuota';
+import {
+  useProviderWeeklyQuota,
+  type ProviderGroupUsageOf,
+  type ProviderUsageScope,
+} from './useProviderWeeklyQuota';
 import { formatQuotaResetCountdown } from '../status/usageCardModel';
 import { agentOptionOf } from './agentOptions';
 import { ProviderRailMark } from './UnifiedFlyoutHost';
+import { RemoteSourceMark } from '@/components/icons/RemoteSourceMark';
 import {
   engineOfAgentKind,
   railItemKey,
@@ -23,7 +28,8 @@ import {
  * UnifiedModelRail —— 统一面板左侧的视图筛选栏(model-selector-unified §1.2 / §1.6)。
  *
  * 格位由数据派生(见 `buildUnifiedRail`),这里只负责画:
- *   ★收藏 → 同引擎(仅会话内,图标 = 当前会话引擎的品牌 mark)→ ──分隔── → 全部 → 各来源。
+ *   ★收藏 → 同引擎(仅会话内,图标 = 当前会话引擎的品牌 mark)→ ──分隔── → 全部 → 各来源
+ *   → (新任务草稿)──分隔── → 其他电脑上的供应商(带信号波纹的 Logo,每台电脑一段)。
  * rail 常驻(2026-08-13 裁决),分隔线与设计稿 .rail-sep 同构:「个人钉的」与
  * 「目录本身的视图」两段之间画一条 22px 细线。
  */
@@ -35,6 +41,8 @@ export function UnifiedModelRail({
   providerLabel,
   interactionDisabled = false,
   providerUsage = null,
+  providerGroupUsage,
+  remoteSources,
 }: {
   items: readonly UnifiedRailItem[];
   active: UnifiedRailFilter;
@@ -44,6 +52,18 @@ export function UnifiedModelRail({
   interactionDisabled?: boolean;
   /** Whose account usage the directory may show; null hides it. */
   providerUsage?: ProviderUsageScope | null;
+  /** 供应商组那一格的用量读谁(provider-groups.md §10);缺省 = 都按格所在目录读。 */
+  providerGroupUsage?: ProviderGroupUsageOf;
+  /**
+   * 远程供应商格的数据(只有可选远程 Agent 的新任务草稿传)。传了它,本机供应商格的
+   * 图标 / 名字 / 用量一律按本机读 —— 面板此刻可能正列着某台电脑的目录。
+   */
+  remoteSources?: {
+    localProviders: readonly ProviderView[];
+    localProviderLabel: (providerId: string) => string;
+    providersOf: (deviceId: string) => readonly ProviderView[];
+    labelOf: (deviceId: string, providerId: string) => string;
+  };
 }) {
   const { t } = useTranslation();
   // rail 常驻,不做「项数少就整条隐藏」——设计稿的分类栏在单来源时也在(★/全部/来源),
@@ -53,20 +73,59 @@ export function UnifiedModelRail({
     // 设计稿 .rail:宽 48(含 6px 侧距 + 1px 右分隔线)、纵向 8px、格间 2px。
     // 与侧栏窄图标栏一致：滚动条不占宽度，避免挤压按钮并触发横向溢出。
     <div className="flex min-h-0 w-12 shrink-0 flex-col items-center gap-0.5 overflow-x-hidden overflow-y-auto scrollbar-hide border-r border-[var(--model-dropdown-border)] px-1.5 py-2">
-      {items.map((item) => {
+      {items.map((item, index) => {
         const key = railItemKey(item);
         const isActive = activeKey === key;
-        // 设计稿 .rail-sep:「★/同引擎」与「全部/来源」两段之间的 22px 细线。
-        const separatorBefore = item.kind === 'all';
+        // 设计稿 .rail-sep:「★/同引擎」与「全部/来源」两段之间的 22px 细线;
+        // 远程供应商每台电脑一段,段首同样一条细线。
+        const previous = index > 0 ? items[index - 1] : undefined;
+        const separatorBefore =
+          item.kind === 'all' ||
+          (item.kind === 'remote-provider' &&
+            (previous?.kind !== 'remote-provider' || previous.deviceId !== item.deviceId));
         const engineOption =
           item.kind === 'engine' ? agentOptionOf(engineOfAgentKind(item.agent)) : null;
+        const railProviders =
+          item.kind === 'remote-provider'
+            ? (remoteSources?.providersOf(item.deviceId) ?? [])
+            : (remoteSources?.localProviders ?? providers);
         const provider =
-          item.kind === 'provider'
-            ? providers.find((entry) => entry.id === item.providerId)
+          item.kind === 'provider' || item.kind === 'remote-provider'
+            ? railProviders.find((entry) => entry.id === item.providerId)
             : undefined;
+        // 用量跟随该格目录的归属:远程格读那台电脑的镜像,本机格在远程 Agent 模式下恒读本机。
+        const usageDeviceId =
+          item.kind === 'remote-provider'
+            ? item.deviceId
+            : remoteSources
+              ? null
+              : (providerUsage?.deviceId ?? null);
+        // 供应商组那一格代表组里的几台电脑：任务正经组在某台运行时读那台的账号(与输入框下方的用量
+        // 一致)，还没分到电脑时不显示某一台的配额；悬停多写一句说明是哪台。
+        const groupUsage =
+          provider && (item.kind === 'provider' || item.kind === 'remote-provider')
+            ? (providerGroupUsage?.(
+                item.kind === 'remote-provider' ? item.deviceId : null,
+                item.providerId,
+              ) ?? null)
+            : null;
+        const usageProvider = groupUsage
+          ? groupUsage.kind === 'running'
+            ? groupUsage.usage?.provider
+            : undefined
+          : provider;
         const accountIdentity =
-          provider?.openAiAccount?.identity?.trim() ||
-          provider?.subscriptionAccount?.identity?.trim();
+          usageProvider?.openAiAccount?.identity?.trim() ||
+          usageProvider?.subscriptionAccount?.identity?.trim();
+        const groupNote = groupUsage
+          ? groupUsage.kind !== 'running'
+            ? t('newChat.modelSelector.unified.providerGroupUnassigned')
+            : groupUsage.deviceName === null
+              ? t('newChat.modelSelector.unified.providerGroupRunningHere')
+              : t('newChat.modelSelector.unified.providerGroupRunningOn', {
+                  device: groupUsage.deviceName,
+                })
+          : undefined;
         const label =
           item.kind === 'favorites'
             ? t('newChat.modelSelector.unified.railFavorites')
@@ -76,7 +135,9 @@ export function UnifiedModelRail({
                 })
               : item.kind === 'all'
                 ? t('newChat.modelSelector.unified.railAll')
-                : providerLabel(item.providerId);
+                : item.kind === 'remote-provider'
+                  ? (remoteSources?.labelOf(item.deviceId, item.providerId) ?? item.providerId)
+                  : (remoteSources?.localProviderLabel ?? providerLabel)(item.providerId);
         return (
           <div key={key} className="contents">
             {separatorBefore && (
@@ -88,12 +149,17 @@ export function UnifiedModelRail({
             <RailButton
               label={label}
               accountIdentity={accountIdentity}
+              {...(groupNote ? { groupNote } : {})}
               isActive={isActive}
               itemKey={key}
               onClick={() => onSelect(item)}
               disabled={interactionDisabled}
-              provider={providerUsage ? provider : undefined}
-              usageDeviceId={providerUsage?.deviceId ?? null}
+              provider={providerUsage ? usageProvider : undefined}
+              usageDeviceId={
+                groupUsage?.kind === 'running' && groupUsage.usage
+                  ? groupUsage.usage.scope.deviceId
+                  : usageDeviceId
+              }
             >
               {item.kind === 'favorites' ? (
                 // ☆ 未激活与其它格同灰(hover 提亮)—— 常亮金色会在没进收藏视图时也
@@ -106,7 +172,11 @@ export function UnifiedModelRail({
               ) : item.kind === 'all' ? (
                 <LayoutGrid size={16} />
               ) : item.kind === 'provider' ? (
-                <ProviderRailMark providerId={item.providerId} providers={providers} />
+                <ProviderRailMark providerId={item.providerId} providers={railProviders} />
+              ) : item.kind === 'remote-provider' ? (
+                <RemoteSourceMark>
+                  <ProviderRailMark providerId={item.providerId} providers={railProviders} />
+                </RemoteSourceMark>
               ) : null}
             </RailButton>
           </div>
@@ -119,6 +189,8 @@ export function UnifiedModelRail({
 interface RailButtonProps {
   label: string;
   accountIdentity?: string;
+  /** 供应商组那一格:用量读的是哪台(或还没分到电脑),账号名跟在这一句后面。 */
+  groupNote?: string;
   isActive: boolean;
   itemKey: string;
   onClick: () => void;
@@ -146,6 +218,7 @@ function ProviderQuotaButton(props: RailButtonProps & { provider: ProviderView }
 function RailButtonView({
   label,
   accountIdentity,
+  groupNote,
   isActive,
   itemKey,
   onClick,
@@ -162,16 +235,21 @@ function RailButtonView({
       ? null
       : `${t('quotaCard.weeklyLabel')} · ${t('quotaCard.remainingPercent', { percent: remaining })}`;
   const reset = formatQuotaResetCountdown(quota?.resetsAt, Date.now(), t);
-  const displayLabel = providerAccountLabel(label, accountIdentity);
-  const tooltip = quotaLabel ? (
-    <>
-      <div>{displayLabel}</div>
-      {quotaLabel && <div>{quotaLabel}</div>}
-      {reset && <div>{reset}</div>}
-    </>
-  ) : (
-    displayLabel
-  );
+  // 供应商组：组名不带某一台的账号，账号跟在「当前在 {电脑} 上运行」后面。
+  const displayLabel = groupNote ? label : providerAccountLabel(label, accountIdentity);
+  const note = groupNote ? providerAccountLabel(groupNote, accountIdentity) : null;
+  const description = [note, quotaLabel].filter(Boolean).join(' · ');
+  const tooltip =
+    quotaLabel || note ? (
+      <>
+        <div>{displayLabel}</div>
+        {note && <div>{note}</div>}
+        {quotaLabel && <div>{quotaLabel}</div>}
+        {reset && <div>{reset}</div>}
+      </>
+    ) : (
+      displayLabel
+    );
   return (
     <Tip
       text={tooltip}
@@ -184,7 +262,7 @@ function RailButtonView({
         disabled={disabled}
         onClick={onClick}
         aria-label={displayLabel}
-        aria-description={quotaLabel ?? undefined}
+        aria-description={description || undefined}
         aria-pressed={isActive}
         data-rail-item={itemKey}
         className={cn(

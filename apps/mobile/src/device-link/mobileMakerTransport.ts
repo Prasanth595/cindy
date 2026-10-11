@@ -34,6 +34,7 @@ import {
 } from "@cindy/maker-shared/device-link-contract";
 import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
+  ORCA_EXECUTION_DEVICES_CHANNEL,
   readDeviceFile,
   FILE_PEER_MAX_BYTES,
   createDeviceFileOperations,
@@ -562,7 +563,11 @@ export interface MobileMakerTransport {
     providerId?: string,
     selection?: { effort: string | null; fastMode: boolean },
   ): Promise<{ deferred?: boolean; superseded?: boolean } | undefined>;
-  /** 登记跨 Agent 切换意图；真正切换在下一条消息发送时由 desktop main 执行。 */
+  /**
+   * 登记跨 Agent 切换意图；真正切换在下一条消息发送时由 desktop main 执行。
+   * 可选 options.agentDeviceId(远程 Agent)同时换 Agent 所在电脑:null = 改回被控电脑本机
+   * 运行;只在显式传入时作为第 7 个 wire 参数发送,缺省 = 位置不变(旧被控端忽略多余参数)。
+   */
   switchSessionAgent(
     sessionId: string,
     targetAgentKind: MobileAgentKind,
@@ -570,6 +575,7 @@ export interface MobileMakerTransport {
     providerId: string | null,
     effort?: string,
     fastMode?: boolean,
+    options?: { agentDeviceId?: string | null },
   ): Promise<MobileSessionAgentSwitchResult>;
   /** 读取 desktop main 的权威 pending intent，用于重连 / 重进页面恢复。 */
   getSessionAgentSwitchIntent(
@@ -739,6 +745,7 @@ export interface MobileMakerTransport {
    * 写操作(enable / create / archive / disable)一律不自动重试:超时不代表被控端没执行。
    */
   orca: {
+    listExecutionDevices(): Promise<unknown>;
     /** 被控端协同插件开关(项目级 / 对话用户级);结果形状见 readOrcaCollabPolicy。 */
     getCollabPolicy(workingDir: string | undefined, workspaceKind: 'project' | 'dialogue'): Promise<unknown>;
     enable(leadSessionId: string, options: MobileOrcaEnableOptions): Promise<MobileOrcaEnableResult>;
@@ -834,6 +841,8 @@ export interface MobileMakerTransport {
     resume(sessionId: string): Promise<InputProjection>;
     retryLastError(sessionId: string): Promise<InputProjection>;
     clearError(sessionId: string): Promise<InputProjection>;
+    /** 取消账号限额重置后的自动继续;老被控端没有该通道时会被拒(调用方只在投影带等待时显示入口)。 */
+    cancelUsageLimitWait(sessionId: string): Promise<InputProjection>;
     remove(sessionId: string, clientId: string): Promise<InputProjection>;
     updateText(
       sessionId: string,
@@ -880,7 +889,11 @@ export interface MobileMakerTransport {
       relPath: string,
       signal?: AbortSignal,
       beforeInvoke?: () => Promise<unknown>,
-      options?: { stream?: boolean },
+      options?: {
+        stream?: boolean;
+        /** Upload progress while the computer stages the file in cloud storage. */
+        onProgress?: (uploaded: number, total: number) => void;
+      },
     ): Promise<MobileRemoteMediaFetchResult>;
     caps(workdir: string): Promise<FileBrowserCapsResult>;
     /** 返回裸 entries(unknown),消费方用 normalizeRemoteOpDirEntries 归一化。 */
@@ -929,7 +942,11 @@ export interface MobileOrcaEnableOptions {
   fast?: boolean;
   providerId?: string;
   delegateTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
+  /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaEnableResult {
@@ -951,6 +968,10 @@ export interface MobileOrcaCreateWorkerInput {
   providerId?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
   initialTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
+  /** Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaCreateWorkerResult {
@@ -1116,7 +1137,8 @@ export function createMobileMakerTransport({
     listMessages: (sessionId, opts) =>
       call("local-db:messages:list", [sessionId, opts]),
     readHistoryView: (sessionId, before) =>
-      call("local-db:messages:view", [sessionId, { before, lazyDetails: true }]),
+      // workLines: the Host projects running single-line activities and may send work patches.
+      call("local-db:messages:view", [sessionId, { before, lazyDetails: true, workLines: true }]),
     readWorkDetails: (sessionId, ref, after) =>
       call("local-db:messages:work-details", [sessionId, ref, { after }]),
     setHistoryExpanded: (sessionId, refs) =>
@@ -1159,15 +1181,22 @@ export function createMobileMakerTransport({
       providerId,
       effort,
       fastMode,
+      options,
     ) =>
-      call("maker:switch-session-agent", [
-        sessionId,
-        targetAgentKind,
-        model,
-        providerId,
-        effort,
-        fastMode,
-      ]),
+      call(
+        "maker:switch-session-agent",
+        options?.agentDeviceId !== undefined
+          ? [
+              sessionId,
+              targetAgentKind,
+              model,
+              providerId,
+              effort ?? null,
+              fastMode ?? null,
+              { agentDeviceId: options.agentDeviceId },
+            ]
+          : [sessionId, targetAgentKind, model, providerId, effort, fastMode],
+      ),
     getSessionAgentSwitchIntent: (sessionId) =>
       call("maker:get-session-agent-switch-intent", [sessionId]),
     setEffort: (sessionId, effort) =>
@@ -1304,6 +1333,7 @@ export function createMobileMakerTransport({
       call("maker:message:delete", [sessionId, clientId]),
     closeSession: (sessionId) => call("maker:close-session", [sessionId]),
     orca: {
+      listExecutionDevices: () => call(ORCA_EXECUTION_DEVICES_CHANNEL),
       getCollabPolicy: (workingDir, workspaceKind) =>
         call("maker:plugins:get-state", ["collab", workingDir, workspaceKind]),
       enable: (leadSessionId, options) =>
@@ -1376,6 +1406,8 @@ export function createMobileMakerTransport({
       retryLastError: (sessionId) =>
         call("maker:input:retry-last-error", [sessionId]),
       clearError: (sessionId) => call("maker:input:clear-error", [sessionId]),
+      cancelUsageLimitWait: (sessionId) =>
+        call("maker:input:cancel-usage-limit-wait", [sessionId]),
       remove: (sessionId, clientId) =>
         call("maker:input:remove", [sessionId, clientId]),
       updateText: (
@@ -1428,7 +1460,7 @@ export function createMobileMakerTransport({
         });
         assertFileReadActive(signal);
         const fallback = () =>
-          exportDeviceFile(retryOp, workdir, relPath, signal);
+          exportDeviceFile(retryOp, workdir, relPath, signal, options?.onProgress);
         if (!caps.fileRead) {
           mobileDebugLog("debug", "files", "file export without direct read", {
             reason: "host-lacks-file-read",
