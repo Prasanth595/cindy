@@ -827,9 +827,6 @@
       "tomorrow": "tomorrow at {{time}}",
       "weekday": "{{day}} at {{time}}",
       "date": "{{date}} at {{time}}",
-      "todayWord": "today",
-      "tomorrowWord": "tomorrow",
-      "tomorrowShort": "Tmrw",
       "minutesAgo_one": "{{n}} min ago",
       "minutesAgo_other": "{{n}} min ago",
       "hoursAgo_one": "{{n}} hr ago",
@@ -847,6 +844,13 @@
       "minutes_one": "{{m}} minute",
       "minutes_other": "{{m}} minutes"
     },
+    "durationShort": {
+      "daysHours": "{{d}}d {{h}}h",
+      "days": "{{d}}d",
+      "hoursMinutes": "{{h}}h {{m}}m",
+      "hours": "{{h}}h",
+      "minutes": "{{m}}m"
+    },
     "window": {
       "session": "{{hours}}-hour",
       "week": "Weekly",
@@ -859,7 +863,7 @@
       "unread": "Quota not read yet.",
       "empty": "Nothing with a quota yet.",
       "emptyHint": "Connect a subscription in Cindy to see what's left here.",
-      "restore": "{{name}} resets {{day}}",
+      "restore": "{{name}} resets in {{duration}}",
       "soon": "{{name}} is running low",
       "subscriptionsUsed": "Subscriptions are used up",
       "waitReset": "Wait for subscriptions to reset",
@@ -874,11 +878,7 @@
       "noData": "No data yet",
       "lastsDays": "~{{n}}d left",
       "lastsDaysShort": "{{n}}d",
-      "resets": "Back {{day}}",
-      "emptyInDays": "Out in {{n}}d",
-      "emptyInDaysShort": "{{n}}d",
-      "emptyInHours": "Out in {{n}}h",
-      "emptyInHoursShort": "{{n}}h",
+      "resetsIn": "Resets in {{duration}}",
       "credits": "credits"
     },
     "a11y": {

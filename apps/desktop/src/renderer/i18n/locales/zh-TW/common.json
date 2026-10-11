@@ -822,9 +822,6 @@
       "tomorrow": "明天 {{time}}",
       "weekday": "{{day}} {{time}}",
       "date": "{{date}} {{time}}",
-      "todayWord": "今天",
-      "tomorrowWord": "明天",
-      "tomorrowShort": "明天",
       "minutesAgo_other": "{{n}} 分鐘前",
       "hoursAgo_other": "{{n}} 小時前",
       "daysAgo_other": "{{n}} 天前"
@@ -835,6 +832,13 @@
       "hoursMinutes": "{{h}} 小時 {{m}} 分",
       "hours_other": "{{h}} 小時",
       "minutes_other": "{{m}} 分鐘"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}天{{h}}時",
+      "days": "{{d}}天",
+      "hoursMinutes": "{{h}}時{{m}}分",
+      "hours": "{{h}}時",
+      "minutes": "{{m}}分"
     },
     "window": {
       "session": "{{hours}} 小時",
@@ -848,10 +852,10 @@
       "unread": "還沒讀到餘量。",
       "empty": "還沒有帶餘量的帳號。",
       "emptyHint": "在 Cindy 裡連上訂閱，這裡就會顯示餘量。",
-      "restore": "{{name}} {{day}}回滿",
+      "restore": "{{name}} {{duration}}後重置",
       "soon": "{{name}} 快見底",
       "subscriptionsUsed": "訂閱都用完了",
-      "waitReset": "等訂閱回滿",
+      "waitReset": "等訂閱重置",
       "sentence": "{{text}}。",
       "joiner": "，"
     },
@@ -863,11 +867,7 @@
       "noData": "還沒讀到餘量",
       "lastsDays": "約{{n}}天",
       "lastsDaysShort": "{{n}}天",
-      "resets": "{{day}}回滿",
-      "emptyInDays": "{{n}}天見底",
-      "emptyInDaysShort": "{{n}}天",
-      "emptyInHours": "{{n}}小時見底",
-      "emptyInHoursShort": "{{n}}時",
+      "resetsIn": "{{duration}}後重置",
       "credits": "credits"
     },
     "a11y": {

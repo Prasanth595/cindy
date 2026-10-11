@@ -822,9 +822,6 @@
       "tomorrow": "내일 {{time}}",
       "weekday": "{{day}} {{time}}",
       "date": "{{date}} {{time}}",
-      "todayWord": "오늘",
-      "tomorrowWord": "내일",
-      "tomorrowShort": "내일",
       "minutesAgo_other": "{{n}}분 전",
       "hoursAgo_other": "{{n}}시간 전",
       "daysAgo_other": "{{n}}일 전"
@@ -835,6 +832,13 @@
       "hoursMinutes": "{{h}}시간 {{m}}분",
       "hours_other": "{{h}}시간",
       "minutes_other": "{{m}}분"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}일 {{h}}시간",
+      "days": "{{d}}일",
+      "hoursMinutes": "{{h}}시간 {{m}}분",
+      "hours": "{{h}}시간",
+      "minutes": "{{m}}분"
     },
     "window": {
       "session": "{{hours}}시간",
@@ -848,7 +852,7 @@
       "unread": "남은 양을 아직 읽지 못했어요.",
       "empty": "남은 양을 보여 줄 계정이 아직 없어요.",
       "emptyHint": "Cindy에서 구독을 연결하면 여기에 남은 양이 표시돼요.",
-      "restore": "{{name}} {{day}} 초기화",
+      "restore": "{{name}} {{duration}} 후 초기화",
       "soon": "{{name}} 곧 소진",
       "subscriptionsUsed": "구독은 모두 다 썼어요",
       "waitReset": "구독 초기화를 기다리는 중",
@@ -863,11 +867,7 @@
       "noData": "남은 양을 아직 읽지 못했어요",
       "lastsDays": "약 {{n}}일",
       "lastsDaysShort": "{{n}}일",
-      "resets": "{{day}} 초기화",
-      "emptyInDays": "{{n}}일 후 소진",
-      "emptyInDaysShort": "{{n}}일",
-      "emptyInHours": "{{n}}시간 후 소진",
-      "emptyInHoursShort": "{{n}}시간",
+      "resetsIn": "{{duration}} 후 초기화",
       "credits": "credits"
     },
     "a11y": {

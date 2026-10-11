@@ -121,17 +121,26 @@ describe('buildMenubarView', () => {
     expect(buildMenubarView(input([codex('alpha', 10)])).gate).toBeUndefined();
   });
 
-  it('says a source refills only when its last short window resets', () => {
+  it('counts down to the reset of the window each cell shows', () => {
     const claude = codex('alpha', 0, {
       windows: [
-        { kind: 'session', usedPercent: 32, resetsAtMs: NOW + 2 * HOUR, windowMinutes: 300 },
-        { kind: 'week', usedPercent: 9, resetsAtMs: NOW + 6 * DAY, windowMinutes: 10_080 },
+        { kind: 'session', usedPercent: 0, resetsAtMs: NOW + 4 * HOUR + 46 * 60_000, windowMinutes: 300 },
+        { kind: 'week', usedPercent: 10, resetsAtMs: NOW + 6 * DAY + 7 * HOUR + 30 * 60_000, windowMinutes: 10_080 },
       ],
     });
-    const weekday = new Date(NOW + 6 * DAY).toLocaleDateString('en', { weekday: 'short' });
-    const view = buildMenubarView(input([claude]));
-    expect(view.headlineSecondary).not.toContain('today');
-    expect(view.headlineSecondary).toContain(weekday);
+    const view = buildMenubarView(input([claude], { locale: 'zh-CN' }));
+    expect(view.sources[0]).toMatchObject({ value: '90', when: '6天7时后重置', whenLevel: 'normal' });
+    // Plenty left: the headline does not narrate a reset.
+    expect(view.headlineSecondary).toBeNull();
+  });
+
+  it('names when a nearly empty source resets', () => {
+    const low = codex('alpha', 92, {
+      windows: [{ kind: 'session', usedPercent: 92, resetsAtMs: NOW + 3 * HOUR + 5 * 60_000, windowMinutes: 300 }],
+    });
+    const view = buildMenubarView(input([low, codex('beta', 20)]));
+    expect(view.sources.find((cell) => cell.id === 'alpha')).toMatchObject({ when: 'Resets in 3h 5m', whenLevel: 'warn' });
+    expect(view.headlineSecondary).toBe('alpha resets in 3h 5m.');
   });
 
   it('localizes the headline', () => {

@@ -147,8 +147,8 @@ const SOON_MS = 12 * HOUR_MS;
 const RESTORE_GROUP_MS = 6 * HOUR_MS;
 const RESTORE_HORIZON_MS = 7 * DAY_MS;
 const MIN_PACE_ELAPSED = 0.03;
-/** Fewer than this many visible cells use the roomy layout with full "when" phrases. */
-const ROOMY_CELL_LIMIT = 6;
+/** Up to this many visible cells have room for the full "resets in …" phrase. */
+const ROOMY_CELL_LIMIT = 4;
 const FAMILY_ORDER: Record<MenubarFamily, number> = { claude: 0, codex: 1, grok: 2 };
 const FAMILY_COLORS: Record<MenubarFamily, MenubarColor[]> = {
   claude: ['claude', 'claude2', 'claude3'],
@@ -332,21 +332,15 @@ class Builder {
     return this.t('time.date', { date: this.dateFormat.format(ms), time });
   }
 
-  /** Short form for under a tube: "14:00" / "明天" / "周三" / "10月14日". */
-  private shortDay(ms: number): string {
-    const offset = this.dayOffset(ms);
-    if (offset === 0) return this.timeFormat.format(ms);
-    if (offset === 1) return this.t('time.tomorrowShort');
-    if (offset > 1 && offset < 7) return this.weekdayFormat.format(ms);
-    return this.dateFormat.format(ms);
-  }
-
-  private weekday(ms: number): string {
-    const offset = this.dayOffset(ms);
-    if (offset === 0) return this.t('time.todayWord');
-    if (offset === 1) return this.t('time.tomorrowWord');
-    if (offset > 1 && offset < 7) return this.weekdayFormat.format(ms);
-    return this.dateFormat.format(ms);
+  /** "6天7时" / "4时46分" / "12分": the same two units, compact enough for under a tube. */
+  private shortDuration(ms: number): string {
+    const minutes = Math.max(1, Math.floor(ms / 60_000));
+    const d = Math.floor(minutes / 1440);
+    const h = Math.floor((minutes % 1440) / 60);
+    const m = minutes % 60;
+    if (d) return h ? this.t('durationShort.daysHours', { d, h }) : this.t('durationShort.days', { d });
+    if (h) return m ? this.t('durationShort.hoursMinutes', { h, m }) : this.t('durationShort.hours', { h });
+    return this.t('durationShort.minutes', { m });
   }
 
   /** "3 天 4 小时" / "2 小时 5 分" / "12 分钟". */
@@ -437,17 +431,16 @@ class Builder {
     );
   }
 
-  /** Upcoming resets within a week, grouped when the same family resets within 6 hours. */
+  /**
+   * When nearly-empty sources get their limiting window back, within a week, grouped when the
+   * same family resets within 6 hours. Sources with plenty left are not worth a headline.
+   */
   private restores(): { atMs: number; sources: MenubarSubscriptionInput[] }[] {
     const events: { atMs: number; source: MenubarSubscriptionInput }[] = [];
     for (const source of this.visibleSubscriptions()) {
-      // A source is full again only once every window still short of full has reset: a
-      // 5-hour window coming back does not refill a weekly window that is still down.
-      const pending = this.state(source).windows.filter(
-        (state) => state.window.kind !== 'scoped' && 100 - state.remaining >= 1,
-      );
-      if (pending.length === 0 || pending.some((state) => state.window.resetsAtMs === null)) continue;
-      const atMs = Math.max(...pending.map((state) => state.window.resetsAtMs!));
+      const { limit, remaining } = this.state(source);
+      const atMs = limit?.window.resetsAtMs ?? null;
+      if (remaining === null || remaining > WARN_REMAINING || atMs === null) continue;
       if (atMs - this.input.nowMs > RESTORE_HORIZON_MS) continue;
       events.push({ atMs, source });
     }
@@ -476,9 +469,10 @@ class Builder {
     if (big) {
       const first = big.sources[0]!;
       const name = big.sources.length > 1 ? first.brand : this.who(first);
-      parts.push(this.t('headline.restore', { name, day: this.weekday(big.atMs) }));
+      parts.push(this.t('headline.restore', { name, duration: this.duration(big.atMs - this.input.nowMs) }));
     }
-    if (soon) parts.push(this.t('headline.soon', { name: this.who(soon.source) }));
+    // A source already named for its reset does not also need "running low".
+    if (soon && !big?.sources.includes(soon.source)) parts.push(this.t('headline.soon', { name: this.who(soon.source) }));
     const sentence = (items: string[]): string | null =>
       items.length ? this.t('headline.sentence', { text: items.join(this.t('headline.joiner')) }) : null;
     if (!recommended) {
@@ -572,21 +566,13 @@ class Builder {
     const level = levelOf(remaining);
     const reserve = remaining <= 0 && (source.creditsUnlimited || (source.credits ?? 0) > 0);
     const limit = state.limit;
+    // Read together with the percentage above: "90% · resets in 6d 7h", for the window shown.
     let when = '';
-    let whenLevel: MenubarLevel = 'normal';
-    if (remaining <= 0 && limit.window.resetsAtMs !== null) {
-      const day = this.shortDay(limit.window.resetsAtMs);
-      when = roomy ? this.t('cell.resets', { day }) : day;
-    } else if (limit.etaMs !== null) {
-      whenLevel = 'warn';
-      if (limit.etaMs >= DAY_MS) {
-        const n = Math.floor(limit.etaMs / DAY_MS);
-        when = this.t(roomy ? 'cell.emptyInDays' : 'cell.emptyInDaysShort', { n });
-      } else {
-        const n = Math.max(1, Math.floor(limit.etaMs / HOUR_MS));
-        when = this.t(roomy ? 'cell.emptyInHours' : 'cell.emptyInHoursShort', { n });
-      }
+    if (limit.window.resetsAtMs !== null) {
+      const duration = this.shortDuration(limit.window.resetsAtMs - this.input.nowMs);
+      when = roomy ? this.t('cell.resetsIn', { duration }) : duration;
     }
+    const whenLevel: MenubarLevel = level;
     return {
       ...base,
       name,

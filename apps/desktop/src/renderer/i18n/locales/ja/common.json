@@ -822,9 +822,6 @@
       "tomorrow": "明日 {{time}}",
       "weekday": "{{day}} {{time}}",
       "date": "{{date}} {{time}}",
-      "todayWord": "今日",
-      "tomorrowWord": "明日",
-      "tomorrowShort": "明日",
       "minutesAgo_other": "{{n}} 分前",
       "hoursAgo_other": "{{n}} 時間前",
       "daysAgo_other": "{{n}} 日前"
@@ -835,6 +832,13 @@
       "hoursMinutes": "{{h}} 時間 {{m}} 分",
       "hours_other": "{{h}} 時間",
       "minutes_other": "{{m}} 分"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}日{{h}}時間",
+      "days": "{{d}}日",
+      "hoursMinutes": "{{h}}時間{{m}}分",
+      "hours": "{{h}}時間",
+      "minutes": "{{m}}分"
     },
     "window": {
       "session": "{{hours}} 時間",
@@ -848,10 +852,10 @@
       "unread": "残りをまだ取得できていません。",
       "empty": "残りを表示できるアカウントがまだありません。",
       "emptyHint": "Cindy でサブスクリプションを接続すると、ここに残りが表示されます。",
-      "restore": "{{name}} は{{day}}に回復",
+      "restore": "{{name}} は{{duration}}後にリセット",
       "soon": "{{name}} はまもなく上限",
       "subscriptionsUsed": "サブスクリプションはすべて使い切り",
-      "waitReset": "サブスクリプションの回復待ち",
+      "waitReset": "サブスクリプションのリセット待ち",
       "sentence": "{{text}}。",
       "joiner": "、"
     },
@@ -863,11 +867,7 @@
       "noData": "残りをまだ取得できていません",
       "lastsDays": "約{{n}}日",
       "lastsDaysShort": "{{n}}日",
-      "resets": "{{day}}回復",
-      "emptyInDays": "{{n}}日で上限",
-      "emptyInDaysShort": "{{n}}日",
-      "emptyInHours": "{{n}}時間で上限",
-      "emptyInHoursShort": "{{n}}時",
+      "resetsIn": "{{duration}}後にリセット",
       "credits": "credits"
     },
     "a11y": {
