@@ -3638,10 +3638,26 @@ export function createTurnRunner(
               };
             }
           }
-          return adapter.handleTextInteraction(userId, req, {
+          if (req.kind === 'ask_user_question' && signal?.aborted) {
+            return { kind: 'ask_user_question', answers: {}, dismissed: true };
+          }
+          const decision = await adapter.handleTextInteraction(userId, req, {
             sharedPermission,
             ...(confirmationTimeoutMs ? { timeoutMs: confirmationTimeoutMs } : {}),
           });
+          if (req.kind === 'ask_user_question' && signal?.aborted) {
+            // Text adapters await prompt delivery before returning their reply
+            // result. Close a cancelled page only after that send settles, so
+            // an in-flight question cannot arrive after its expiry notice.
+            try {
+              await output.im.sendText(userId,
+                adapter.interactionExpiredNotice ?? t('settings.imBot.interactionExpired'));
+            } catch {
+              log.warn('cancelled text interaction expiry could not be delivered');
+            }
+            return { kind: 'ask_user_question', answers: {}, dismissed: true };
+          }
+          return decision;
         }
         if (req.kind === 'ask_user_question') {
           return { kind: 'ask_user_question', answers: {} };

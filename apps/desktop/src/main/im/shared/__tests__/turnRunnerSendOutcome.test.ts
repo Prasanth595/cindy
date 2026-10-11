@@ -23,7 +23,8 @@ import type {
   SessionSendResult,
   TurnPermissionPolicy,
 } from '@cindy/maker-core';
-import type { ChannelIM } from '@cindy/im';
+import type { ChannelIM, IMMessageEvent, WecomIM } from '@cindy/im';
+import { WecomTextInteractions } from '../../wecom/textInteractions';
 import { setMainLocale, t } from '../../../i18n';
 import { enqueueAskCardPatch } from '../askCardPatchQueue';
 import { createSerializedConnectionLifecycle } from '../../connectionLifecycle';
@@ -1065,6 +1066,75 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       expect(handleTextInteraction).toHaveBeenCalledTimes(2);
     } finally { await localRunner.disposeAllSessions(); }
   });
+
+  it.each(['stop', 'dispose', 'desktop'] as const)(
+    'closes a late text page after %s without losing earlier answers', async (cancellation) => {
+      const h = cancellation === 'desktop'
+        ? setupAttachedSession(async () => ({ accepted: true }))
+        : setupSession(async () => ({ accepted: true }));
+      const controller = new AbortController();
+      const resolve = vi.fn();
+      const delivered: string[] = [];
+      const delivery = deferred<void>();
+      let intercept!: (event: IMMessageEvent) => boolean;
+      const sendMarkdownText = vi.fn(async (_userId: string, text: string) => {
+        if (text.includes('Second?')) await delivery.promise;
+        delivered.push(text);
+        return { messageId: 'prompt' };
+      });
+      const im = {
+        ...mocks.feishuIm,
+        onTextMessageIntercept: (handler: typeof intercept) => { intercept = handler; },
+        onStatusChange: vi.fn(),
+        sendMarkdownText,
+        sendText: vi.fn(async (_userId: string, text: string) => {
+          delivered.push(text);
+          return { messageId: 'text' };
+        }),
+      };
+      const interactions = new WecomTextInteractions(im as unknown as WecomIM);
+      const request: InteractionRequest = {
+        kind: 'ask_user_question', requestId: 'late-text',
+        questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })),
+      };
+      if (cancellation === 'desktop') mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+        requestId: request.requestId, request, resolve, signal: controller.signal,
+      }]);
+      const localRunner = createTurnRunner({
+        ...fakeAdapter, channel: 'wecom', interactionExpiredNotice: 'expired',
+        output: { kind: 'chunked-text', im: im as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+        handleTextInteraction: interactions.handle.bind(interactions),
+        cancelTextInteraction: interactions.cancel.bind(interactions),
+      }, fakeRepo, fakeCards);
+      try {
+        await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'late-text', text: 'ask', attachments: [] });
+        const answer = cancellation === 'desktop' ? undefined : h.dispatchInteraction(request);
+        await waitForAssertion(() => expect(sendMarkdownText).toHaveBeenCalledOnce());
+        expect(intercept({ senderId: 'ou_user', text: 'first answer' } as IMMessageEvent)).toBe(true);
+        await waitForAssertion(() => expect(sendMarkdownText).toHaveBeenCalledTimes(2));
+        if (cancellation === 'desktop') controller.abort();
+        else if (cancellation === 'dispose') await localRunner.disposeAllSessions();
+        else {
+          await localRunner.stopActiveTurn({ botContextId: 'cli_test_bot', userId: 'ou_user' });
+          h.emit({ type: 'done', data: {} });
+        }
+        const expected = { kind: 'ask_user_question', answers: { 'First?': 'first answer' }, dismissed: true };
+        if (answer) await expect(answer).resolves.toEqual(expected);
+        else await waitForAssertion(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(expected));
+        expect(delivered).not.toContain('expired');
+        delivery.resolve(undefined);
+        await waitForAssertion(() => expect(delivered.at(-1)).toBe('expired'));
+        expect(delivered.at(-2)).toContain('Second?');
+        expect(sendMarkdownText).toHaveBeenCalledTimes(2);
+        expect(intercept({ senderId: 'ou_user', text: 'late answer' } as IMMessageEvent)).toBe(false);
+        expect(delivered.filter(text => text === 'expired')).toHaveLength(1);
+      } finally {
+        delivery.resolve(undefined);
+        h.emit({ type: 'done', data: {} });
+        await localRunner.disposeAllSessions();
+      }
+    },
+  );
 
   it('preserves complete free-text questionnaires on chunked-text adapters', async () => {
     const h = setupSession(async () => ({ accepted: true }));

@@ -312,6 +312,24 @@ describe('WechatIM host boundary', () => {
     });
   });
 
+  it('waits for an in-flight question send before returning its cancellation', async () => {
+    const im = new WechatIM(deps());
+    let finishSend!: (value: { messageId: string }) => void;
+    vi.spyOn(im, 'sendText').mockImplementation(() => new Promise(resolve => { finishSend = resolve; }));
+    const pending = im.handleTextInteraction('peer-1', {
+      kind: 'ask_user_question', requestId: 'late-question', questions: [{ question: 'Next?' }],
+    });
+    const settled = vi.fn();
+    void pending.then(settled);
+    const decision = { kind: 'ask_user_question' as const, answers: {}, dismissed: true };
+    expect(im.cancelTextInteraction('peer-1', 'late-question', decision)).toBe(true);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    finishSend({ messageId: 'late-question' });
+    await expect(pending).resolves.toEqual(decision);
+    expect(im.cancelTextInteraction('peer-1', 'late-question', decision)).toBe(false);
+  });
+
   it('投递失败时用稳定系统码收口，不把 Error.message 当成拒绝原因', async () => {
     const im = new WechatIM(deps());
     vi.spyOn(im, 'sendText').mockRejectedValue(new Error('socket hang up'));

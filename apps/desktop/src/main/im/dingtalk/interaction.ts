@@ -1,6 +1,7 @@
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
 import type { DingTalkIM } from '@cindy/im';
 
+import { t } from '../../i18n';
 import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
 import type { SharedPermission } from '../../maker-ipc/sharedPermission';
 import { permissionOutcomeText } from '../shared/permissionPresentation';
@@ -85,11 +86,17 @@ function formatQuestionPrompt(
   index: number,
   total: number,
 ): string {
-  const lines = [`需要你补充信息（${index + 1}/${total}）：${question.question}`];
+  // A shared questionnaire page contains one question; its local count is not
+  // the progress of the original questionnaire.
+  const prompt = t(total > 1 ? 'settings.imBot.textQuestionWithProgress' : 'settings.imBot.textQuestion')
+    .replace('{{index}}', String(index + 1))
+    .replace('{{total}}', String(total))
+    .replace('{{question}}', () => question.question);
+  const lines = [prompt];
   question.options?.forEach((option, optionIndex) => {
     lines.push(`${optionIndex + 1}) ${option.label}`);
   });
-  lines.push('请回复选项序号或你的答案。');
+  lines.push(t('settings.imBot.textQuestionReplyHint'));
   return lines.join('\n');
 }
 
