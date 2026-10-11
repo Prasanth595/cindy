@@ -73,6 +73,7 @@ import {
 } from './collect.js';
 import { MacMenubarNativeHost } from './MacMenubarNativeHost.js';
 import { MENUBAR_HARNESS_LOGOS } from './logos.js';
+import { OwnedInFlight } from './ownedInFlight.js';
 import { readRemoteSubscriptions } from './remoteSubscriptions.js';
 import { readMenubarSettings, writeMenubarSettings } from './settingsStore.js';
 import {
@@ -147,13 +148,13 @@ class MenubarService {
   private wasLow: boolean | null = null;
   private lowNotification: Notification | null = null;
   private balance: BalanceCache | null = null;
-  private balanceInFlight: { accountKey: string; read: Promise<MenubarBalanceReading | null> } | null = null;
+  private readonly balanceInFlight = new OwnedInFlight<MenubarBalanceReading | null>();
   private readonly usageCache = new Map<MenubarUsageScope, UsageCacheEntry>();
   private usageOwnerId: string | null = null;
   /** Serializes history reads so the two ranges never recompute at the same time. */
   private usageChain: Promise<unknown> = Promise.resolve();
   private remote: TimedCache<MenubarSubscriptionInput[]> | null = null;
-  private remoteInFlight: Promise<MenubarSubscriptionInput[]> | null = null;
+  private readonly remoteInFlight = new OwnedInFlight<MenubarSubscriptionInput[]>();
   private readonly resets = new Map<string, TimedCache<MenubarResetCredits | null>>();
 
   private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
@@ -377,8 +378,9 @@ class MenubarService {
     const cached = this.remote?.ownerId === ownerId ? this.remote : null;
     const maxAge = this.panelOpen ? REMOTE_FRESH_WHILE_OPEN_MS : REMOTE_FRESH_WHILE_CLOSED_MS;
     if (cached && !force && nowMs - cached.readAtMs < maxAge) return cached.value;
-    if (!this.remoteInFlight) {
-      this.remoteInFlight = readRemoteSubscriptions({
+    // Joined only by callers of the same account; after a switch the new account reads its own.
+    const value = await this.remoteInFlight.run(ownerId, () =>
+      readRemoteSubscriptions({
         nowMs,
         listDevices: () => {
           requireAppCapability('canUseDeviceLink', 'Device Link requires a Cindy account.');
@@ -386,11 +388,8 @@ class MenubarService {
         },
         invoke: (deviceId, channel, args) => remoteBackgroundInvoke(deviceId, channel, args),
         onError: (scope, error) => log.info('menu bar remote source failed', { scope, error: errorMessage(error) }),
-      }).finally(() => {
-        this.remoteInFlight = null;
-      });
-    }
-    const value = await this.remoteInFlight;
+      }),
+    );
     if (getActiveAppSession().dataOwnerId !== ownerId) return [];
     this.remote = { ownerId, value, readAtMs: Date.now() };
     return value;
@@ -505,18 +504,11 @@ class MenubarService {
     const maxAge = this.panelOpen ? BALANCE_FRESH_WHILE_OPEN_MS : BALANCE_FRESH_WHILE_CLOSED_MS;
     if (cached && !force && nowMs - cached.fetchedAtMs < maxAge) return cached.reading;
     // A read still out for the previous account cannot answer for this one.
-    if (this.balanceInFlight?.accountKey !== accountKey) {
-      const fetch = accountKey.startsWith('quota:') ? this.fetchQuota(accountKey, force) : this.fetchBalance(accountKey);
-      const inFlight = {
-        accountKey,
-        read: fetch.finally(() => {
-          if (this.balanceInFlight === inFlight) this.balanceInFlight = null;
-        }),
-      };
-      this.balanceInFlight = inFlight;
-    }
+    const read = this.balanceInFlight.run(accountKey, () =>
+      accountKey.startsWith('quota:') ? this.fetchQuota(accountKey, force) : this.fetchBalance(accountKey),
+    );
     try {
-      const reading = await this.balanceInFlight.read;
+      const reading = await read;
       // A sign-out or account switch while the request was out drops the result.
       if (this.balanceAccountKey() !== accountKey) return null;
       this.balance = { accountKey, reading, fetchedAtMs: Date.now() };
