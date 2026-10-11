@@ -589,6 +589,8 @@ final class StatusController: NSObject, NSWindowDelegate {
   private var openRetries = 0
   /** True while the open animation runs; a frame set directly then would be overwritten. */
   private var openAnimating = false
+  /** When a press on the status item closed the panel; that click's own action is then ignored. */
+  private var closedByStatusPressAt: TimeInterval?
 
   init(store: MenubarStore) {
     self.store = store
@@ -670,6 +672,10 @@ final class StatusController: NSObject, NSWindowDelegate {
   }
 
   @objc func toggle() {
+    if let at = closedByStatusPressAt {
+      closedByStatusPressAt = nil
+      if ProcessInfo.processInfo.systemUptime - at < 0.6 { return }
+    }
     isOpen ? close() : open()
   }
 
@@ -844,9 +850,14 @@ final class StatusController: NSObject, NSWindowDelegate {
     outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
       Task { @MainActor in
         guard let self else { return }
-        // The menu bar delivers a press on our own status item here too; its click then
-        // toggles the panel closed, so closing now would let that click reopen it.
-        if self.statusAnchor()?.rect.contains(NSEvent.mouseLocation) == true { return }
+        // The menu bar reports a press on our own status item here too, and a quick tap may
+        // never reach the item's action. Close on the press and let `toggle` skip that click.
+        if self.statusAnchor()?.rect.contains(NSEvent.mouseLocation) == true {
+          guard self.isOpen else { return }
+          self.close()
+          self.closedByStatusPressAt = ProcessInfo.processInfo.systemUptime
+          return
+        }
         self.close()
       }
     }
