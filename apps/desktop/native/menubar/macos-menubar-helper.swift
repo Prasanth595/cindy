@@ -842,7 +842,13 @@ final class StatusController: NSObject, NSWindowDelegate {
   private func installMonitors() {
     removeMonitors()
     outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-      Task { @MainActor in self?.close() }
+      Task { @MainActor in
+        guard let self else { return }
+        // The menu bar delivers a press on our own status item here too; its click then
+        // toggles the panel closed, so closing now would let that click reopen it.
+        if self.statusAnchor()?.rect.contains(NSEvent.mouseLocation) == true { return }
+        self.close()
+      }
     }
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
       guard let self, self.isOpen else { return event }
