@@ -26,6 +26,7 @@ import {
   type MenubarBalanceInput,
   type MenubarHarness,
   type MenubarPaygInput,
+  type MenubarQuotaPeriod,
   type MenubarSourceInput,
   type MenubarSubscriptionInput,
   type MenubarTaskInput,
@@ -49,6 +50,8 @@ export interface MenubarBalanceReading {
   burnPerDay: number | null;
   observedAtMs: number | null;
   currency: 'USD' | 'CNY';
+  /** Set for a period quota (organization or gateway key) rather than a wallet. */
+  quota: MenubarQuotaPeriod | null;
 }
 
 export interface MenubarSessionRow {
@@ -168,6 +171,7 @@ function balanceSource(balance: MenubarBalanceReading): MenubarBalanceInput {
     burnPerDay: balance.burnPerDay,
     observedAtMs: balance.observedAtMs,
     currency: balance.currency,
+    quota: balance.quota,
   };
 }
 

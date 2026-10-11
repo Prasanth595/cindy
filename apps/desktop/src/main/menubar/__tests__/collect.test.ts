@@ -156,7 +156,7 @@ describe('collectMenubarInputs', () => {
   it('puts the Cindy balance first and lists running tasks', async () => {
     const collected = await collectMenubarInputs(
       deps({
-        readBalance: async () => ({ available: 5, fullAmount: 10, burnPerDay: 1, observedAtMs: NOW, currency: 'USD' }),
+        readBalance: async () => ({ available: 5, fullAmount: 10, burnPerDay: 1, observedAtMs: NOW, currency: 'USD', quota: null }),
         activities: () => [{ sessionId: 's1', phase: 'running', startedAtMs: NOW - 60_000, lastActivityAtMs: NOW } as never],
         sessionRow: async () => ({ title: 'Fix the chart', model: 'gpt-6-astra', agentKind: 'codex' }),
       }),

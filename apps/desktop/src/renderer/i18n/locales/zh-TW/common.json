@@ -815,6 +815,7 @@
   "menubar": {
     "balance": {
       "name": "Cindy 餘額",
+      "quotaName": "Cindy 本期配額",
       "short": "Cindy"
     },
     "time": {
@@ -848,6 +849,7 @@
     "headline": {
       "recommend": "{{name}} 餘量最足。",
       "balance": "Cindy 餘額還能用。",
+      "quota": "Cindy 本期配額還能用。",
       "none": "餘量都用完了。",
       "unread": "還沒讀到餘量。",
       "empty": "還沒有帶餘量的帳號。",
@@ -875,12 +877,14 @@
       "plan": "{{name}}，訂閱，查不到餘量",
       "balance": "Cindy 餘額 {{amount}}",
       "balanceDays": "Cindy 餘額 {{amount}}，約夠 {{n}} 天",
+      "quota": "Cindy 本期配額剩餘 {{amount}}",
       "noData": "{{name}}，暫無資料",
       "reserve": "{{name}}，已用完，還有 credits 可用",
       "remaining": "{{name}} 剩餘 {{n}}%"
     },
     "detail": {
       "balanceCaption": "餘額",
+      "quotaCaption": "本期剩餘配額",
       "apiKey": "API Key",
       "subscription": "訂閱",
       "noBalance": "查不到餘額",
@@ -890,6 +894,8 @@
     },
     "say": {
       "balance": "餘額不會自動回滿。",
+      "quota": "配額按週期發放，不在這裡儲值。",
+      "quotaResets": "配額將於 {{at}} 重置為滿額。",
       "balanceLasts_other": "按近 7 天的消耗，約夠 {{n}} 天。",
       "balanceEstimating": "消耗記錄還在積累，過幾天就能估算還能用多久。",
       "payg": "{{name}} 按用量付費。",
@@ -911,6 +917,8 @@
     },
     "fact": {
       "balance": "餘額",
+      "quotaLeft": "本期剩餘配額",
+      "quotaTotal": "本期配額",
       "updatedAgo": "{{ago}}更新",
       "dailyUse": "日均消耗",
       "about": "約 {{value}}",
@@ -982,6 +990,7 @@
     },
     "manage": {
       "balance": "餘額 · 不會自動回滿",
+      "quota": "配額 · 按週期重置",
       "payg": "API Key · 按量，查不到餘額",
       "plan": "訂閱 · 查不到餘量",
       "subscription": "訂閱 · {{plan}} · {{windows}}"

@@ -96,11 +96,23 @@ describe('buildMenubarView', () => {
   it('sends the balance detail to top-up instead of a new task', () => {
     const balance: MenubarSourceInput = {
       kind: 'balance', id: 'cindy', logoSvg: MENUBAR_CINDY_LOGO, available: 12, fullAmount: 20,
-      burnPerDay: 3, observedAtMs: NOW, currency: 'USD',
+      burnPerDay: 3, observedAtMs: NOW, currency: 'USD', quota: null,
     };
     const view = buildMenubarView(input([balance]));
     expect(view.details.cindy.action).toEqual({ kind: 'open-billing' });
     expect(view.sources[0].fill).toBeCloseTo(0.6);
+  });
+
+  it('shows an organization quota with its reset and sends it to Settings', () => {
+    const quota: MenubarSourceInput = {
+      kind: 'balance', id: 'cindy', logoSvg: MENUBAR_CINDY_LOGO, available: 19_996.38, fullAmount: 20_000,
+      burnPerDay: null, observedAtMs: NOW, currency: 'USD', quota: { resetsAtMs: NOW + 20 * DAY + 3 * HOUR },
+    };
+    const view = buildMenubarView(input([quota], { locale: 'zh-CN' }));
+    expect(view.sources[0]).toMatchObject({ when: '20天3时后重置' });
+    expect(view.sources[0].fill).toBeCloseTo(0.9998);
+    expect(view.headlinePrimary).toBe('Cindy 本期配额还能用。');
+    expect(view.details.cindy).toMatchObject({ title: 'Cindy 本期配额', action: { kind: 'open-settings' } });
   });
 
   it('says nothing was read instead of "used up" when no level is known', () => {

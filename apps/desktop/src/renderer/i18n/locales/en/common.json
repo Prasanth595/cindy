@@ -820,6 +820,7 @@
   "menubar": {
     "balance": {
       "name": "Cindy balance",
+      "quotaName": "Cindy quota",
       "short": "Cindy"
     },
     "time": {
@@ -859,6 +860,7 @@
     "headline": {
       "recommend": "{{name}} has the most left.",
       "balance": "Your Cindy balance still works.",
+      "quota": "Your Cindy quota still has room.",
       "none": "Everything is used up.",
       "unread": "Quota not read yet.",
       "empty": "Nothing with a quota yet.",
@@ -886,12 +888,14 @@
       "plan": "{{name}}, subscription, remaining amount unavailable",
       "balance": "Cindy balance {{amount}}",
       "balanceDays": "Cindy balance {{amount}}, lasts about {{n}} days",
+      "quota": "Cindy quota {{amount}} left",
       "noData": "{{name}}, no data yet",
       "reserve": "{{name}}, used up, credits still available",
       "remaining": "{{name}}, {{n}}% left"
     },
     "detail": {
       "balanceCaption": "Balance",
+      "quotaCaption": "Quota left",
       "apiKey": "API Key",
       "subscription": "Subscription",
       "noBalance": "No balance available",
@@ -901,6 +905,8 @@
     },
     "say": {
       "balance": "The balance doesn't refill on its own.",
+      "quota": "The quota is granted each period; it isn't topped up here.",
+      "quotaResets": "The quota resets to full {{at}}.",
       "balanceLasts_one": "At the last 7 days' pace, it lasts about {{n}} day.",
       "balanceLasts_other": "At the last 7 days' pace, it lasts about {{n}} days.",
       "balanceEstimating": "Spending history is still building up. An estimate appears in a few days.",
@@ -923,6 +929,8 @@
     },
     "fact": {
       "balance": "Balance",
+      "quotaLeft": "Quota left",
+      "quotaTotal": "Quota this period",
       "updatedAgo": "Updated {{ago}}",
       "dailyUse": "Daily spend",
       "about": "~{{value}}",
@@ -996,6 +1004,7 @@
     },
     "manage": {
       "balance": "Balance · doesn't refill on its own",
+      "quota": "Quota · resets each period",
       "payg": "API Key · pay per use, no balance",
       "plan": "Subscription · remaining amount unavailable",
       "subscription": "Subscription · {{plan}} · {{windows}}"

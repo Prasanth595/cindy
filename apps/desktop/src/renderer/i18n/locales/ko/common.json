@@ -815,6 +815,7 @@
   "menubar": {
     "balance": {
       "name": "Cindy 잔액",
+      "quotaName": "Cindy 이번 기간 할당량",
       "short": "Cindy"
     },
     "time": {
@@ -848,6 +849,7 @@
     "headline": {
       "recommend": "{{name}}에 가장 많이 남았어요.",
       "balance": "Cindy 잔액은 아직 쓸 수 있어요.",
+      "quota": "Cindy 이번 기간 할당량이 아직 남아 있어요.",
       "none": "모두 다 썼어요.",
       "unread": "남은 양을 아직 읽지 못했어요.",
       "empty": "남은 양을 보여 줄 계정이 아직 없어요.",
@@ -875,12 +877,14 @@
       "plan": "{{name}}, 구독, 남은 양을 알 수 없음",
       "balance": "Cindy 잔액 {{amount}}",
       "balanceDays": "Cindy 잔액 {{amount}}, 약 {{n}}일 분량",
+      "quota": "Cindy 할당량 {{amount}} 남음",
       "noData": "{{name}}, 데이터 없음",
       "reserve": "{{name}}, 다 씀, credits 사용 가능",
       "remaining": "{{name}} {{n}}% 남음"
     },
     "detail": {
       "balanceCaption": "잔액",
+      "quotaCaption": "남은 할당량",
       "apiKey": "API Key",
       "subscription": "구독",
       "noBalance": "잔액을 알 수 없음",
@@ -890,6 +894,8 @@
     },
     "say": {
       "balance": "잔액은 자동으로 다시 채워지지 않아요.",
+      "quota": "할당량은 기간마다 지급되며 여기서 충전하지 않아요.",
+      "quotaResets": "할당량은 {{at}}에 전액으로 초기화돼요.",
       "balanceLasts_other": "최근 7일 속도라면 약 {{n}}일 쓸 수 있어요.",
       "balanceEstimating": "사용 기록을 모으는 중이에요. 며칠 뒤면 남은 기간을 추정할 수 있어요.",
       "payg": "{{name}}은(는) 쓴 만큼 과금돼요.",
@@ -911,6 +917,8 @@
     },
     "fact": {
       "balance": "잔액",
+      "quotaLeft": "남은 할당량",
+      "quotaTotal": "이번 기간 할당량",
       "updatedAgo": "{{ago}} 업데이트",
       "dailyUse": "하루 평균 소비",
       "about": "약 {{value}}",
@@ -982,6 +990,7 @@
     },
     "manage": {
       "balance": "잔액 · 자동으로 채워지지 않음",
+      "quota": "할당량 · 기간마다 초기화",
       "payg": "API Key · 종량, 잔액 없음",
       "plan": "구독 · 남은 양을 알 수 없음",
       "subscription": "구독 · {{plan}} · {{windows}}"

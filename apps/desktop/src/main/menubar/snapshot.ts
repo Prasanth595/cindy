@@ -76,6 +76,13 @@ export interface MenubarBalanceInput {
   observedAtMs: number | null;
   /** Billing currency, which can differ from the usage ledger currency. */
   currency: 'USD' | 'CNY';
+  /** Set for a period quota (organization or gateway key) rather than a wallet. */
+  quota: MenubarQuotaPeriod | null;
+}
+
+/** A gateway budget that refills each period, unlike a wallet that only grows by top-ups. */
+export interface MenubarQuotaPeriod {
+  resetsAtMs: number | null;
 }
 
 export interface MenubarPaygInput {
@@ -296,6 +303,12 @@ class Builder {
     return this.money(value, currency === 'CNY' ? '¥' : '$');
   }
 
+  /** Full amount to the cent, for the detail facts where the tube's rounding would hide spend. */
+  private exactMoney(value: number, currency: 'USD' | 'CNY'): string {
+    const amount = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `${currency === 'CNY' ? '¥' : '$'}${amount}`;
+  }
+
   private tokens(value: number): string {
     const millions = value / 1e6;
     if (millions >= 1000) return `${(millions / 1000).toFixed(1)}B`;
@@ -395,7 +408,7 @@ class Builder {
 
   private sourceTitle(source: MenubarSourceInput): string {
     if (source.kind === 'subscription') return this.handle(source) ?? source.brand;
-    if (source.kind === 'balance') return this.t('balance.name');
+    if (source.kind === 'balance') return this.t(source.quota ? 'balance.quotaName' : 'balance.name');
     return source.name;
   }
 
@@ -492,7 +505,8 @@ class Builder {
       };
     }
     if (recommended.kind === 'balance') {
-      return { primary: this.t('headline.balance'), secondary: sentence([this.t('headline.subscriptionsUsed'), ...parts]) };
+      const primary = this.t(recommended.quota ? 'headline.quota' : 'headline.balance');
+      return { primary, secondary: sentence([this.t('headline.subscriptionsUsed'), ...parts]) };
     }
     return { primary: this.t('headline.recommend', { name: this.who(recommended) }), secondary: sentence(parts) };
   }
@@ -503,6 +517,16 @@ class Builder {
     const recommended = this.recommended();
     const roomy = this.visible.length <= ROOMY_CELL_LIMIT;
     return this.visible.map((source) => this.cell(source, source === recommended, roomy));
+  }
+
+  /** A quota counts down to its reset like a subscription; a wallet says how long it lasts. */
+  private balanceWhen(source: MenubarBalanceInput, days: number | null, roomy: boolean): string {
+    const resetsAtMs = source.quota?.resetsAtMs ?? null;
+    if (resetsAtMs !== null) {
+      const duration = this.shortDuration(resetsAtMs - this.input.nowMs);
+      return roomy ? this.t('cell.resetsIn', { duration }) : duration;
+    }
+    return days === null ? '' : this.t(roomy ? 'cell.lastsDays' : 'cell.lastsDaysShort', { n: days });
   }
 
   private cell(source: MenubarSourceInput, emphasized: boolean, roomy: boolean): MenubarSourceCell {
@@ -537,11 +561,13 @@ class Builder {
         level: source.available > 0 ? 'normal' : 'error',
         fill,
         reserve: false,
-        when: days === null ? '' : this.t(roomy ? 'cell.lastsDays' : 'cell.lastsDaysShort', { n: days }),
+        when: this.balanceWhen(source, days, roomy),
         whenLevel: 'normal',
-        accessibilityLabel: days === null
-          ? this.t('a11y.balance', { amount })
-          : this.t('a11y.balanceDays', { amount, n: days }),
+        accessibilityLabel: source.quota
+          ? this.t('a11y.quota', { amount })
+          : days === null
+            ? this.t('a11y.balance', { amount })
+            : this.t('a11y.balanceDays', { amount, n: days }),
       };
     }
     const state = this.state(source);
@@ -608,10 +634,12 @@ class Builder {
     const fraction = source.fullAmount && source.fullAmount > 0 ? clamp(source.available / source.fullAmount, 0, 1) : source.available > 0 ? 1 : 0;
     const burn = source.burnPerDay && source.burnPerDay > 0 ? source.burnPerDay : null;
     const days = burn ? source.available / burn : null;
+    const quota = source.quota;
+    const resetsAtMs = quota?.resetsAtMs ?? null;
     const facts: MenubarFact[] = [
       {
-        label: this.t('fact.balance'),
-        value: this.balanceMoney(source.available, source.currency),
+        label: this.t(quota ? 'fact.quotaLeft' : 'fact.balance'),
+        value: this.exactMoney(source.available, source.currency),
         sub: source.observedAtMs ? this.t('fact.updatedAgo', { ago: this.ago(source.observedAtMs) }) : '',
       },
       {
@@ -624,31 +652,45 @@ class Builder {
         value: days !== null ? this.t('fact.aroundDate', { date: this.dateFormat.format(this.input.nowMs + days * DAY_MS) }) : '—',
         sub: days !== null ? this.t('fact.atThisPace') : this.t('fact.estimatingSub'),
       },
-      {
-        label: this.t('fact.usedFor'),
-        value: this.t('fact.cindyModels'),
-        sub: this.t('fact.chargedPerUse'),
-      },
+      quota
+        ? {
+            label: this.t('fact.quotaTotal'),
+            value: source.fullAmount !== null ? this.exactMoney(source.fullAmount, source.currency) : '—',
+            sub: resetsAtMs !== null
+              ? this.t('fact.timeLeft', { duration: this.duration(resetsAtMs - this.input.nowMs) })
+              : this.t('fact.cindyModels'),
+          }
+        : {
+            label: this.t('fact.usedFor'),
+            value: this.t('fact.cindyModels'),
+            sub: this.t('fact.chargedPerUse'),
+          },
     ];
+    const lasts = days !== null
+      ? this.t('say.balanceLasts', { count: Math.floor(days), n: Math.floor(days) })
+      : this.t('say.balanceEstimating');
     return {
       id: source.id,
       logoSvg: source.logoSvg,
-      title: this.t('balance.name'),
+      title: this.t(quota ? 'balance.quotaName' : 'balance.name'),
       plan: '',
       rings: [{ fraction, color: 'ink' }],
       bigValue: this.balanceMoney(source.available, source.currency),
       bigUnit: null,
       bigColor: source.available > 0 ? null : 'error',
       bigCompact: true,
-      bigCaption: this.t('detail.balanceCaption'),
+      bigCaption: this.t(quota ? 'detail.quotaCaption' : 'detail.balanceCaption'),
       legend: [],
-      sayPrimary: this.t('say.balance'),
-      saySecondary: days !== null
-        ? this.t('say.balanceLasts', { count: Math.floor(days), n: Math.floor(days) })
-        : this.t('say.balanceEstimating'),
+      sayPrimary: !quota
+        ? this.t('say.balance')
+        : resetsAtMs !== null
+          ? this.t('say.quotaResets', { at: this.at(resetsAtMs) })
+          : this.t('say.quota'),
+      saySecondary: lasts,
       facts,
-      actionLabel: this.t('action.topUp'),
-      action: { kind: 'open-billing' },
+      // An organization quota is not topped up from here; its connection lives in Settings.
+      actionLabel: this.t(quota ? 'action.manage' : 'action.topUp'),
+      action: { kind: quota ? 'open-settings' : 'open-billing' },
     };
   }
 
@@ -901,7 +943,7 @@ class Builder {
   }
 
   private manageSubtitle(source: MenubarSourceInput): string {
-    if (source.kind === 'balance') return this.t('manage.balance');
+    if (source.kind === 'balance') return this.t(source.quota ? 'manage.quota' : 'manage.balance');
     if (source.kind === 'payg') return this.t(source.billing === 'api' ? 'manage.payg' : 'manage.plan');
     const plan = source.plan ? ` · ${source.plan}` : '';
     if (source.family === 'codex') return `Codex${plan}`;

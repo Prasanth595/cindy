@@ -815,6 +815,7 @@
   "menubar": {
     "balance": {
       "name": "Cindy 残高",
+      "quotaName": "Cindy の今期クォータ",
       "short": "Cindy"
     },
     "time": {
@@ -848,6 +849,7 @@
     "headline": {
       "recommend": "{{name}} がいちばん余裕があります。",
       "balance": "Cindy 残高はまだ使えます。",
+      "quota": "Cindy の今期クォータはまだ使えます。",
       "none": "すべて使い切りました。",
       "unread": "残りをまだ取得できていません。",
       "empty": "残りを表示できるアカウントがまだありません。",
@@ -875,12 +877,14 @@
       "plan": "{{name}}、サブスクリプション、残りは取得できません",
       "balance": "Cindy 残高 {{amount}}",
       "balanceDays": "Cindy 残高 {{amount}}、約 {{n}} 日分",
+      "quota": "Cindy クォータ残り {{amount}}",
       "noData": "{{name}}、データなし",
       "reserve": "{{name}}、使い切り、credits は使用可能",
       "remaining": "{{name}} 残り {{n}}%"
     },
     "detail": {
       "balanceCaption": "残高",
+      "quotaCaption": "今期のクォータ残り",
       "apiKey": "API Key",
       "subscription": "サブスクリプション",
       "noBalance": "残高を取得できません",
@@ -890,6 +894,8 @@
     },
     "say": {
       "balance": "残高は自動では回復しません。",
+      "quota": "クォータは期間ごとに付与され、ここではチャージしません。",
+      "quotaResets": "クォータは{{at}}に満額へリセットされます。",
       "balanceLasts_other": "直近 7 日のペースで約 {{n}} 日分です。",
       "balanceEstimating": "利用記録を集めています。数日で残り日数を見積もれます。",
       "payg": "{{name}} は従量課金です。",
@@ -911,6 +917,8 @@
     },
     "fact": {
       "balance": "残高",
+      "quotaLeft": "今期のクォータ残り",
+      "quotaTotal": "今期のクォータ",
       "updatedAgo": "{{ago}}に更新",
       "dailyUse": "1 日の平均消費",
       "about": "約 {{value}}",
@@ -982,6 +990,7 @@
     },
     "manage": {
       "balance": "残高 · 自動では回復しない",
+      "quota": "クォータ · 期間ごとにリセット",
       "payg": "API Key · 従量、残高なし",
       "plan": "サブスクリプション · 残りを取得できない",
       "subscription": "サブスクリプション · {{plan}} · {{windows}}"

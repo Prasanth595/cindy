@@ -53,6 +53,7 @@ import {
 } from '../maker-ipc/usage.js';
 import { getDesktopNotificationsEnabled } from '../notificationService.js';
 import { serverApiFetch } from '../serverApiClient.js';
+import { readClaudeAccountUsageSnapshot, triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { readUsageHistory, type UsageHistoryPayload } from '../usage/usageHistory.js';
 import { observeUsageChanges, readCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
@@ -385,10 +386,18 @@ class MenubarService {
 
   // ── Cindy balance ──────────────────────────────────────────────────────────
 
+  /**
+   * Personal accounts have a wallet; organization accounts and a hand-entered gateway key have a
+   * period quota instead (what Settings shows as "本期剩余额度"). Null when there is neither.
+   */
   private balanceAccountKey(): string | null {
+    const auth = authManager.getAuthState();
+    if (auth.mode === 'local') return auth.dataOwnerId ? `quota:local:${auth.dataOwnerId}` : null;
     if (!getAppCapabilities().canUseCindyAccountServices) return null;
-    const user = authManager.getAuthState().user;
-    if (!user || user.membershipKind !== 'personal') return null;
+    const user = auth.user;
+    if (!user) return null;
+    if (user.membershipKind === 'org') return auth.dataOwnerId ? `quota:cloud:${auth.dataOwnerId}` : null;
+    if (user.membershipKind !== 'personal') return null;
     return `${user.id}:${CURRENT_CINDY_REGION}`;
   }
 
@@ -402,7 +411,8 @@ class MenubarService {
     const maxAge = this.panelOpen ? BALANCE_FRESH_WHILE_OPEN_MS : BALANCE_FRESH_WHILE_CLOSED_MS;
     if (cached && !force && nowMs - cached.fetchedAtMs < maxAge) return cached.reading;
     if (!this.balanceInFlight) {
-      this.balanceInFlight = this.fetchBalance().finally(() => {
+      const fetch = accountKey.startsWith('quota:') ? this.fetchQuota(force) : this.fetchBalance();
+      this.balanceInFlight = fetch.finally(() => {
         this.balanceInFlight = null;
       });
     }
@@ -417,6 +427,24 @@ class MenubarService {
       // Keep showing the last known amount; its "updated" time tells the age.
       return cached?.reading ?? null;
     }
+  }
+
+  /** The gateway's period quota; the same reading Settings shows, refreshed through its throttle. */
+  private async fetchQuota(force: boolean): Promise<MenubarBalanceReading | null> {
+    await triggerClaudeAccountUsageRefresh(force);
+    const quota = readClaudeAccountUsageSnapshot();
+    if (!quota || !(quota.maxBudget > 0)) return null;
+    const available = Math.max(0, quota.maxBudget - quota.spend);
+    const samples = this.creditSamples.record(`quota:${CURRENT_CINDY_REGION}:${quota.currency}`, available, quota.fetchedAt);
+    const resetsAtMs = quota.budgetResetAt ? Date.parse(quota.budgetResetAt) : NaN;
+    return {
+      available,
+      fullAmount: quota.maxBudget,
+      burnPerDay: estimateDailyBurn(samples, quota.fetchedAt),
+      observedAtMs: quota.fetchedAt,
+      currency: quota.currency,
+      quota: { resetsAtMs: Number.isFinite(resetsAtMs) ? resetsAtMs : null },
+    };
   }
 
   private async fetchBalance(): Promise<MenubarBalanceReading | null> {
@@ -454,6 +482,7 @@ class MenubarService {
       burnPerDay: estimateDailyBurn(samples, atMs),
       observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
       currency,
+      quota: null,
     };
   }
 
