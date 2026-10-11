@@ -10,8 +10,6 @@ export const DWS_EVENT_MENTION = 'user_im_message_receive_at';
 
 export interface DwsInboundMessage {
   kind: 'direct' | 'mention';
-  /** 去重键：优先 event_id，缺省退回 message_id。 */
-  dedupeKey: string;
   messageId: string;
   conversationId: string;
   senderOpenId: string;
@@ -44,7 +42,6 @@ export function parseDwsEventLine(line: string): DwsInboundMessage | null {
   const quotedMessageId = quoted ? str(quoted.message_id) : '';
   return {
     kind,
-    dedupeKey: str(raw.event_id) || messageId,
     messageId,
     conversationId,
     senderOpenId,
