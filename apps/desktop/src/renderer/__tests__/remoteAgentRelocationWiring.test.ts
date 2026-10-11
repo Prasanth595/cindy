@@ -46,14 +46,14 @@ describe('ModelSelector:浏览别的电脑的目录时改道换位置', () => {
     );
   });
 
-  it('普通改道带上浏览电脑，供应商组内改选保留实际运行电脑', () => {
-    const start = selectorSource.indexOf('const relocateRow =');
+  it('改道的行带上所属电脑', () => {
+    const start = selectorSource.indexOf('relocate!(');
     expect(start).toBeGreaterThan(0);
-    const block = selectorSource.slice(start, selectorSource.indexOf('const panelSessionEngineFilter =', start));
-    expect(block).toContain('relocate!(');
-    expect(block).toContain('browsingBoundGroupEntry && row.providerId === boundEntry!.providerId && currentProviderId');
-    expect(block).toContain('? { ...row, providerId: currentProviderId, agentDevice: currentAgentDevice }');
-    expect(block).toContain(': { ...row, agentDevice: remoteBrowseDevice }');
+    const call = selectorSource.slice(start, selectorSource.indexOf('.then(', start));
+    // 默认:带上正在浏览的那台电脑。
+    expect(call).toContain('{ ...row, agentDevice: remoteBrowseDevice }');
+    // 任务归组、在组那一项里选同一供应商:留在此刻运行的那台,只换模型(provider-groups.md §10)。
+    expect(call).toContain('{ ...row, providerId: currentProviderId, agentDevice: currentAgentDevice }');
   });
 });
 
