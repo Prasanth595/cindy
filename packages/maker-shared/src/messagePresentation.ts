@@ -673,6 +673,12 @@ export function isToolErrorLike(
     .test(text);
 }
 
+/** Same failure decision as a tool row, for a Host that only holds the descriptor and result text. */
+export function isToolResultFailureLike(descriptor: ToolUseDescriptor, result: string): boolean {
+  const tool = { body: '', secondaryBody: result };
+  return isContentOutputDescriptor(descriptor) ? isContentToolFailureLike(tool) : isToolErrorLike(tool);
+}
+
 /** 结果正文是「内容」的工具(读文件 / 搜索 / 网页):对其输出跑全文错误关键词匹配没有意义。 */
 function isContentOutputDescriptor(descriptor: ToolUseDescriptor): boolean {
   if (descriptor.kind === 'file') return descriptor.action === 'read';

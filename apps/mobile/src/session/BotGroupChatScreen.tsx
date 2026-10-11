@@ -533,7 +533,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   // Full width so the bubble keeps its 86% cap and attachments their own size limits.
   userColumn: { flex: 1, minWidth: 0, alignItems: 'flex-end', gap: spacing.xs },
-  // The 1:1 user bubble (MessageRenderer userBubble + companion border): 86% wide, padding 12, compact 8/12.
+  // The 1:1 user bubble (MessageRenderer userBubble): 86% wide, padding 12, compact 8/12.
   userBubble: { maxWidth: '86%', backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.container, padding: spacing.md },
   userBubbleCompact: { paddingVertical: spacing.sm },

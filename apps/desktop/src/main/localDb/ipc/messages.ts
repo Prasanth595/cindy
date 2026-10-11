@@ -23,7 +23,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
-import { historyOutlineContent, withHistoryArtifacts } from './historyViewOutline';
+import { historyOutlineContent, historyOutlineContentStamp, withHistoryArtifacts } from './historyViewOutline';
 import { historyViewLeaves, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 
 import { getDbClient, getCurrentDbClientSnapshot } from '../client/current';
@@ -68,7 +68,8 @@ import { capReferenceMessageRows } from './history.js';
 import type { Message, MessageRole, AgentMeta } from '../../../renderer/lib/ccAgent.types';
 import { scheduleBotRemoteResourceChangedForSession } from '../../maker-ipc/botRemoteResourceInvalidation';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer';
-import { createHistoryViewReader, MAX_HISTORY_SCAN_ROWS } from './historyViewReader';
+import { createHistoryViewReader, MAX_HISTORY_SCAN_ROWS, type HistoryPageShape } from './historyViewReader';
+import { setHistoryWorkPageReader } from '../../device-link/historyViewPush';
 
 const log = createLogger('localDb/messages');
 
@@ -319,7 +320,7 @@ export async function readMessagesList(sessionId: unknown, opts: unknown, skipIm
     const rows = await db
       .select({
         ...getMessageSelectFields(),
-        ...(outline ? { content: historyOutlineContent() } : {}),
+        ...(outline ? { content: historyOutlineContent(), historyContentStamp: historyOutlineContentStamp() } : {}),
         rowid: messageRowid,
       })
       .from(messages)
@@ -332,7 +333,9 @@ export async function readMessagesList(sessionId: unknown, opts: unknown, skipIm
     const orderedRows = afterCursor ? rows.slice().reverse() : rows;
     const restored = await restoreTaskImageRows(imageDbClient, orderedRows);
     const listed = await hydrateLegacyUserTurnCosts(restored.map(messageToCamelWithRowid));
-    return outline ? listed.map(withHistoryArtifacts) : listed;
+    if (!outline) return listed;
+    const stamps = new Map(orderedRows.map((row) => [row.id, (row as { historyContentStamp?: string }).historyContentStamp]));
+    return listed.map((row) => withHistoryArtifacts({ ...row, historyContentStamp: stamps.get(row.id) ?? undefined }));
 }
 
 export function registerMessageIpc(
@@ -418,18 +421,25 @@ export function registerMessageIpc(
     if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
     const sid = requireString(sessionId, 'sessionId');
     const before = (opts as { before?: unknown } | null)?.before;
+    const context = getDeviceLinkInvokeContext();
+    // Work lines and their patches serve same-account remote controllers only; a shared
+    // guest keeps the existing projection and authorization path unchanged.
+    const workLines = (opts as { workLines?: unknown } | null)?.workLines === true && !!context?.historyView && !context.sharedTask;
+    let shape: HistoryPageShape | undefined;
     const page = await historyView.page(sid, before == null ? undefined : requireString(before, 'before'),
-      (opts as { lazyDetails?: unknown } | null)?.lazyDetails === true).catch((error) => {
-      if (isHistoryViewUnavailable(error)) getDeviceLinkInvokeContext()?.historyView?.disable();
+      (opts as { lazyDetails?: unknown } | null)?.lazyDetails === true,
+      workLines ? { workLines, onShape: (value) => { shape = value; } } : {}).catch((error) => {
+      if (isHistoryViewUnavailable(error)) context?.historyView?.disable();
       throw error;
     });
     if (before == null) {
       const liveKeys = historyViewLeaves(page.items)
         .filter((item) => item.type === 'work' && item.summary.isStreaming).map((item) => item.key);
-      getDeviceLinkInvokeContext()?.historyView?.update(liveKeys);
+      context?.historyView?.update(liveKeys, { workLines, shape });
     }
     return page;
   });
+  setHistoryWorkPageReader((sid, onShape) => historyView.page(sid, undefined, true, { workLines: true, onShape }));
   ipcMain.handle('local-db:messages:view-intent', (event, sessionId: unknown, refs: unknown) => {
     if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
     requireString(sessionId, 'sessionId');

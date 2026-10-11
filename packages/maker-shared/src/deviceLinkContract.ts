@@ -205,6 +205,8 @@ export interface MobileCodexRateLimitAccount {
 
 /** Display-safe metadata for one banked reset credit; its opaque backend id stays on desktop. */
 export interface MobileCodexRateLimitResetCredit {
+  /** Optional per-credit offer; older hosts/clients keep using the account-level offer. */
+  resetOffer?: MobileCodexRateLimitResetOffer | null;
   status: 'available' | 'redeeming' | 'redeemed' | 'unknown';
   resetType: 'codexRateLimits' | 'unknown';
   grantedAt: number;
@@ -215,6 +217,8 @@ export interface MobileCodexRateLimitResetCredit {
 
 /** Desktop-issued, account-bound reset offer used as the idempotency key for one attempt. */
 export interface MobileCodexRateLimitResetOffer {
+  /** Only retry the existing attempt; do not consume another credit. */
+  retryOnly?: boolean;
   idempotencyKey: string;
   /** Unix epoch seconds for the selected banked credit, when details are available. */
   expiresAt: number | null;

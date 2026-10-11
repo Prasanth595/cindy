@@ -7,6 +7,7 @@ import {
   type ShareSvgRect,
 } from "@/session/conversationShareRichSvg";
 import {
+  mobileMarkdownInlineHasMark,
   parseMobileMarkdown,
   type MobileMarkdownBlock,
   type MobileMarkdownInline,
@@ -412,27 +413,32 @@ function markdownInlineParts(
   images: ConversationShareMessage["images"],
 ): ShareBodyPart[] {
   const parts: ShareBodyPart[] = [];
+  const appendText = (text: string) => {
+    const last = parts[parts.length - 1];
+    if (last && "text" in last) last.text += text;
+    else parts.push({ text });
+  };
+  // 删除线里的链接等会把一段删除线拆成多个 inline:`~~` 只加在连续删除线范围的两端,
+  // 不给每个片段各包一层(否则边界处出现 `~~~~`)。
+  let struck = false;
   for (const inline of inlines) {
     const image = inline.type === "image" ? images?.get(inline.url) : undefined;
+    const nextStruck = !image && mobileMarkdownInlineHasMark(inline, "strikethrough");
+    if (struck !== nextStruck) {
+      appendText("~~");
+      struck = nextStruck;
+    }
     if (image) {
       parts.push({ image });
       continue;
     }
-    const text = (() => {
-      if (inline.type === "image") {
-        return (
-          inline.alt.trim() || i18n.t("message.renderer.imageFallbackTitle")
-        );
-      }
-      if (inline.type === "strikethrough") {
-        return `~~${inline.text}~~`;
-      }
-      return inline.text;
-    })();
-    const last = parts[parts.length - 1];
-    if (last && "text" in last) last.text += text;
-    else parts.push({ text });
+    appendText(
+      inline.type === "image"
+        ? inline.alt.trim() || i18n.t("message.renderer.imageFallbackTitle")
+        : inline.text,
+    );
   }
+  if (struck) appendText("~~");
   return parts;
 }
 

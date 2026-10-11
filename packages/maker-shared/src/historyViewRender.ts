@@ -154,10 +154,12 @@ export function renderHistoryView<T extends HistoryMessageSource, TItem>(options
         if (summary.preview) view.setExpanded(summary.preview.key, !full && preview);
       }
     };
+    const lines = [...summaries].reverse().find((summary) => summary.lines)?.lines;
     return structure.rebuild(item, next, {
       owner: view, key: summaries.map((summary) => summary.key).join('|'), expanded,
       revision: summaries.map((summary) => summary.revision).join('|'),
       previewComplete: summaries.every((summary) => summary.preview?.firstMessageId === summary.firstMessageId),
+      ...(lines ? { lines } : {}),
       loading: states.some((state) => state?.loading), failed: states.some((state) => !!state?.error),
       setVisible,
       toggle: () => setVisible(!expanded, false),

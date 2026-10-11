@@ -1137,7 +1137,8 @@ export function createMobileMakerTransport({
     listMessages: (sessionId, opts) =>
       call("local-db:messages:list", [sessionId, opts]),
     readHistoryView: (sessionId, before) =>
-      call("local-db:messages:view", [sessionId, { before, lazyDetails: true }]),
+      // workLines: the Host projects running single-line activities and may send work patches.
+      call("local-db:messages:view", [sessionId, { before, lazyDetails: true, workLines: true }]),
     readWorkDetails: (sessionId, ref, after) =>
       call("local-db:messages:work-details", [sessionId, ref, { after }]),
     setHistoryExpanded: (sessionId, refs) =>

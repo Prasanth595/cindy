@@ -175,6 +175,9 @@ export function terminalErrorText(data: unknown): string {
   if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
     return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
   }
+  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'silent-stop-exhausted') {
+    return '模型连续多次返回空响应，自动续跑已暂停。';
+  }
   const record =
     data && typeof data === 'object'
       ? (data as { message?: unknown; errorStatus?: unknown; codexErrorInfo?: unknown })

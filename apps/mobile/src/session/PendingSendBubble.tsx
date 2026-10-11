@@ -1,7 +1,7 @@
 /**
  * 待发送消息气泡(渲染在消息流里,不再是列表 footer)。
  *
- * 形态与已发送用户气泡同款(右对齐、surfaceElevated + borderStrong)但整体半透明——
+ * 形态与已发送用户气泡同款(右对齐、surfaceElevated + border)但整体半透明——
  * 「这就是你的消息,只是还没生效」;落定时提高不透明度,回流后同一个列表位置换成正式
  * 消息,原地变实。徽标语义:
  *  - 转圈 = 还没有「已被收下」这个事实(enqueue 在途 / 已出队待回流 / 附件上传中);
@@ -617,7 +617,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   bubbleRich: { gap: spacing.sm },
   bubble: {
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.xs,
