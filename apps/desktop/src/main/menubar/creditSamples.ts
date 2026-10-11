@@ -39,9 +39,10 @@ interface CreditSampleFile {
 /** Adds a sample, keeping the list sorted, pruned and not denser than one per 10 minutes. */
 export function appendCreditSample(samples: readonly CreditSample[], next: CreditSample, nowMs: number): CreditSample[] {
   const kept = samples.filter((sample) => nowMs - sample.atMs <= CREDIT_SAMPLE_RETENTION_MS && sample.atMs < next.atMs);
-  const last = kept[kept.length - 1];
-  if (last && next.atMs - last.atMs < MIN_SAMPLE_GAP_MS && kept.length >= 2) {
-    // Keep the first sample of the window so the span is preserved; replace the latest.
+  // Measured from the sample before the newest one: the newest is the running tail of the current
+  // 10 minutes and gets replaced, so frequent reads still leave one sample per 10 minutes.
+  const anchor = kept[kept.length - 2];
+  if (anchor && next.atMs - anchor.atMs < MIN_SAMPLE_GAP_MS) {
     kept[kept.length - 1] = next;
   } else {
     kept.push(next);

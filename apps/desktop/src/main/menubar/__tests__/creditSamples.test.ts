@@ -35,6 +35,18 @@ describe('credit samples', () => {
     expect(samples).toEqual([{ atMs: T0, available: 10 }, { atMs: T0 + 120_000, available: 8 }]);
   });
 
+  it('still keeps one sample per 10 minutes when read every minute', () => {
+    let samples: ReturnType<typeof appendCreditSample> = [];
+    for (let minute = 0; minute <= 60; minute += 1) {
+      const atMs = T0 + minute * 60_000;
+      samples = appendCreditSample(samples, { atMs, available: 100 - minute }, atMs);
+    }
+    expect(samples.length).toBeGreaterThanOrEqual(6);
+    // No gap longer than the sampling period, so a dip between reads is never far from a kept sample.
+    for (let i = 1; i < samples.length; i += 1) expect(samples[i].atMs - samples[i - 1].atMs).toBeLessThanOrEqual(600_000);
+    expect(samples[samples.length - 1]).toEqual({ atMs: T0 + 3_600_000, available: 40 });
+  });
+
   it('drops samples past the retention window', () => {
     const now = T0 + 40 * DAY;
     const samples = appendCreditSample([{ atMs: T0, available: 10 }], { atMs: now, available: 5 }, now);

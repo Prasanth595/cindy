@@ -431,15 +431,15 @@ class Builder {
     return domain ? `${this.handle(source)}@${domain}` : this.handle(source) ?? '';
   }
 
-  /** Short name under a tube and in sentences: the account handle, else the brand. */
+  /** Short name under a tube and in sentences: the other computer, else the account handle, else the brand. */
   private who(source: MenubarSourceInput): string {
-    if (source.kind === 'subscription') return this.handle(source) ?? source.device?.name ?? source.brand;
+    if (source.kind === 'subscription') return source.device?.name ?? this.handle(source) ?? source.brand;
     if (source.kind === 'balance') return this.t('balance.short');
     return source.name;
   }
 
   private sourceTitle(source: MenubarSourceInput): string {
-    if (source.kind === 'subscription') return this.handle(source) ?? source.device?.name ?? source.brand;
+    if (source.kind === 'subscription') return source.device?.name ?? this.handle(source) ?? source.brand;
     if (source.kind === 'balance') return this.t(source.quota ? 'balance.quotaName' : 'balance.name');
     return source.name;
   }
@@ -1118,7 +1118,10 @@ export function isLowOnEverything(input: MenubarBuildInput): boolean {
   return new Builder(input).lowOnEverything();
 }
 
-/** Merges per-harness model rows into the menu's top models list. */
+/**
+ * Merges per-harness model rows into the menu's top models list: the leaders by money and by
+ * tokens, so the panel can rank either metric without losing a model that leads only one.
+ */
 export function topModels(rows: readonly MenubarModelUsage[], limit = 8): MenubarModelUsage[] {
   const merged = new Map<string, MenubarModelUsage>();
   for (const row of rows) {
@@ -1131,10 +1134,10 @@ export function topModels(rows: readonly MenubarModelUsage[], limit = 8): Menuba
       merged.set(key, { ...row });
     }
   }
-  return [...merged.values()]
-    .filter((row) => row.money > 0 || row.tokens > 0)
-    .sort((a, b) => b.money - a.money || b.tokens - a.tokens)
-    .slice(0, limit);
+  const used = [...merged.values()].filter((row) => row.money > 0 || row.tokens > 0);
+  const byMoney = [...used].sort((a, b) => b.money - a.money || b.tokens - a.tokens).slice(0, limit);
+  const byTokens = [...used].sort((a, b) => b.tokens - a.tokens || b.money - a.money).slice(0, limit);
+  return [...byMoney, ...byTokens.filter((row) => !byMoney.includes(row))];
 }
 
 export { HARNESS_ORDER as MENUBAR_HARNESS_ORDER };

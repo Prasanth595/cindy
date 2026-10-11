@@ -148,6 +148,12 @@ describe('buildMenubarView', () => {
     expect(view.details[remote.id].facts).toContainEqual(expect.objectContaining({ label: 'Computer', value: 'Studio' }));
   });
 
+  it('names a signed-in account on another computer by that computer, not the handle', () => {
+    const remote = codex('alpha', 30, { id: 'remote:dev-2:openai', device: { id: 'dev-2', name: 'Studio' } });
+    const view = buildMenubarView(input([remote]));
+    expect(view.sources[0].name).toBe('Studio');
+  });
+
   it('says nothing was read instead of "used up" when no level is known', () => {
     const unread = buildMenubarView(input([codex('alpha', 0, { windows: [] })]));
     expect(unread.headlinePrimary).toBe('Quota not read yet.');

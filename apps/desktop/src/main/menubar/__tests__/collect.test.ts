@@ -11,7 +11,7 @@ import {
   planLabel,
   type MenubarCollectDeps,
 } from '../collect';
-import type { MenubarSubscriptionInput } from '../snapshot';
+import { topModels, type MenubarSubscriptionInput } from '../snapshot';
 
 const NOW = Date.UTC(2026, 9, 11, 3, 0, 0);
 const nowSec = NOW / 1000;
@@ -218,5 +218,15 @@ describe('distinctRemoteSubscriptions', () => {
 
   it('leaves out other-computer accounts it could not read', () => {
     expect(distinctRemoteSubscriptions([], [remote('studio', { windows: [] })])).toEqual([]);
+  });
+});
+
+describe('topModels', () => {
+  it('keeps the token leaders even when they cost little', () => {
+    const rows = Array.from({ length: 10 }, (_, i) => ({ name: `paid-${i}`, harness: 'codex' as const, money: 100 - i, tokens: 10 }));
+    rows.push({ name: 'free-heavy', harness: 'codex' as const, money: 0, tokens: 1_000_000 });
+    const top = topModels(rows);
+    expect(top.slice(0, 8).map((row) => row.name)).toEqual(rows.slice(0, 8).map((row) => row.name));
+    expect(top.map((row) => row.name)).toContain('free-heavy');
   });
 });

@@ -116,6 +116,8 @@ export interface MenubarServiceDeps {
 }
 
 interface UsageCacheEntry {
+  /** Data owner the history belongs to; a read that outlives an account switch is dropped. */
+  ownerId: string | null;
   payload: UsageHistoryPayload;
   readAtMs: number;
 }
@@ -145,7 +147,7 @@ class MenubarService {
   private wasLow: boolean | null = null;
   private lowNotification: Notification | null = null;
   private balance: BalanceCache | null = null;
-  private balanceInFlight: Promise<MenubarBalanceReading | null> | null = null;
+  private balanceInFlight: { accountKey: string; read: Promise<MenubarBalanceReading | null> } | null = null;
   private readonly usageCache = new Map<MenubarUsageScope, UsageCacheEntry>();
   private usageOwnerId: string | null = null;
   /** Serializes history reads so the two ranges never recompute at the same time. */
@@ -342,7 +344,9 @@ class MenubarService {
 
   /** Cached usage history; a stale payload is re-read on the next build. */
   private async readUsage(scope: MenubarUsageScope, force: boolean, nowMs: number): Promise<UsageHistoryPayload> {
-    const cached = this.usageCache.get(scope);
+    const ownerId = getActiveAppSession().dataOwnerId;
+    const entry = this.usageCache.get(scope);
+    const cached = entry?.ownerId === ownerId ? entry : null;
     const maxAge = this.panelOpen ? USAGE_FRESH_WHILE_OPEN_MS : USAGE_FRESH_WHILE_CLOSED_MS;
     if (cached && !force && !cached.payload.stale && nowMs - cached.readAtMs < maxAge) return cached.payload;
     const read = this.usageChain.then(() =>
@@ -356,7 +360,7 @@ class MenubarService {
     );
     this.usageChain = read.catch(() => undefined);
     const payload = await read;
-    this.usageCache.set(scope, { payload, readAtMs: Date.now() });
+    if (getActiveAppSession().dataOwnerId === ownerId) this.usageCache.set(scope, { ownerId, payload, readAtMs: Date.now() });
     return payload;
   }
 
@@ -500,14 +504,19 @@ class MenubarService {
     const cached = this.balance?.accountKey === accountKey ? this.balance : null;
     const maxAge = this.panelOpen ? BALANCE_FRESH_WHILE_OPEN_MS : BALANCE_FRESH_WHILE_CLOSED_MS;
     if (cached && !force && nowMs - cached.fetchedAtMs < maxAge) return cached.reading;
-    if (!this.balanceInFlight) {
-      const fetch = accountKey.startsWith('quota:') ? this.fetchQuota(force) : this.fetchBalance();
-      this.balanceInFlight = fetch.finally(() => {
-        this.balanceInFlight = null;
-      });
+    // A read still out for the previous account cannot answer for this one.
+    if (this.balanceInFlight?.accountKey !== accountKey) {
+      const fetch = accountKey.startsWith('quota:') ? this.fetchQuota(accountKey, force) : this.fetchBalance(accountKey);
+      const inFlight = {
+        accountKey,
+        read: fetch.finally(() => {
+          if (this.balanceInFlight === inFlight) this.balanceInFlight = null;
+        }),
+      };
+      this.balanceInFlight = inFlight;
     }
     try {
-      const reading = await this.balanceInFlight;
+      const reading = await this.balanceInFlight.read;
       // A sign-out or account switch while the request was out drops the result.
       if (this.balanceAccountKey() !== accountKey) return null;
       this.balance = { accountKey, reading, fetchedAtMs: Date.now() };
@@ -520,8 +529,10 @@ class MenubarService {
   }
 
   /** The gateway's period quota; the same reading Settings shows, refreshed through its throttle. */
-  private async fetchQuota(force: boolean): Promise<MenubarBalanceReading | null> {
+  private async fetchQuota(accountKey: string, force: boolean): Promise<MenubarBalanceReading | null> {
     await triggerClaudeAccountUsageRefresh(force);
+    // Samples go to the signed-in account's folder; a switch mid-read must not file them there.
+    if (this.balanceAccountKey() !== accountKey) return null;
     const quota = readClaudeAccountUsageSnapshot();
     if (!quota || !(quota.maxBudget > 0)) return null;
     const available = Math.max(0, quota.maxBudget - quota.spend);
@@ -540,7 +551,7 @@ class MenubarService {
     };
   }
 
-  private async fetchBalance(): Promise<MenubarBalanceReading | null> {
+  private async fetchBalance(accountKey: string): Promise<MenubarBalanceReading | null> {
     const baseUrl = () => getClientEndpoint('modelAccessApiBaseUrl');
     const options = { timeoutMs: BALANCE_TIMEOUT_MS, redactErrorDetails: true, baseUrl };
     let available: number;
@@ -564,6 +575,8 @@ class MenubarService {
       observedAt = balance.observedAt;
     }
     if (!Number.isFinite(available)) return null;
+    // The request used the old account's token; its amount must not land in the new account's samples.
+    if (this.balanceAccountKey() !== accountKey) return null;
     const observedAtMs = Date.parse(observedAt);
     const atMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
     const currency = CURRENT_CINDY_REGION === 'global' ? 'USD' : 'CNY';
