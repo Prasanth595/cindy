@@ -97,3 +97,17 @@ describe('dingtalk text interactions', () => {
     expect(requestTextReply).toHaveBeenCalledTimes(2);
   });
 });
+
+it('preserves earlier answers and stops after a question times out', async () => {
+  const requestTextReply = vi.fn().mockResolvedValueOnce('first answer')
+    .mockRejectedValueOnce(new Error('DINGTALK_INTERACTION_TIMEOUT'));
+  const im = { requestTextReply } as unknown as DingTalkIM;
+  await expect(handleDingTalkTextInteraction(im, 'owner', {
+    kind: 'ask_user_question', requestId: 'questions',
+    questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })),
+  }, { timeoutMs: 123 })).resolves.toEqual({
+    kind: 'ask_user_question', answers: { 'First?': 'first answer' }, dismissed: true,
+  });
+  expect(requestTextReply).toHaveBeenCalledTimes(2);
+  expect(requestTextReply.mock.calls[1].slice(3)).toEqual([123, undefined, 'questions']);
+});

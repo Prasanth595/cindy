@@ -89,6 +89,7 @@ interface Credentials {
 }
 
 interface PendingReply<T = unknown> {
+  requestId?: string;
   parse(text: string): T | null;
   resolve(value: T): void;
   reject(error: Error): void;
@@ -354,6 +355,7 @@ export class DingTalkIM extends BaseIM implements ChannelIM {
     parse: (text: string) => T | null,
     timeoutMs = INTERACTION_TIMEOUT_MS,
     shared?: { result: Promise<T>; decide(value: T): boolean },
+    requestId?: string,
   ): Promise<T> {
     if (this.pendingReplies.has(userId)) {
       throw new Error("DINGTALK_INTERACTION_ALREADY_PENDING");
@@ -364,11 +366,14 @@ export class DingTalkIM extends BaseIM implements ChannelIM {
       resolveReply = resolve;
       rejectReply = reject;
     });
+    // Cancellation may reject while sendText is still pending below.
+    void reply.catch(() => {});
     const timer = setTimeout(() => {
       this.pendingReplies.delete(userId);
       rejectReply(new Error("DINGTALK_INTERACTION_TIMEOUT"));
     }, timeoutMs);
     const pending: PendingReply<T> = {
+      requestId,
       parse,
       resolve: (value) => { if (shared) shared.decide(value); else resolveReply(value); },
       reject: rejectReply,
@@ -391,6 +396,16 @@ export class DingTalkIM extends BaseIM implements ChannelIM {
       throw error;
     }
     return reply;
+  }
+
+  // Request identity prevents an old page cancellation from clearing a newer reply.
+  cancelTextReply(userId: string, requestId: string): boolean {
+    const pending = this.pendingReplies.get(userId);
+    if (!pending || pending.requestId !== requestId) return false;
+    this.pendingReplies.delete(userId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error("DINGTALK_INTERACTION_CANCELLED"));
+    return true;
   }
 
   private async saveAndConnect(

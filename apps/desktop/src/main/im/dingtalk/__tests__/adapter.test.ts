@@ -98,3 +98,7 @@ describe('dingtalk turn permission boundary', () => {
     expect(policy?.forceConfirmToolCall('file_change', {})).toBe(true);
   });
 });
+
+it('uses shared questionnaire pagination for cancellation and partial answers', () => {
+  expect(buildDingTalkAdapter({} as DingTalkIM, CONFIG).supportsMultiQuestionInput).not.toBe(true);
+});

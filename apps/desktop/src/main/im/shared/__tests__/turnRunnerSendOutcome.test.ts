@@ -982,7 +982,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     expect(isHeadlessGhostSetupTurn('feishu-session')).toBe(false);
   });
 
-  it.each(['wechat', 'wecom'] as const)(
+  it.each(['wechat', 'wecom', 'dingtalk'] as const)(
     'collects all free-text answers from the single-question %s adapter',
     async (channel) => {
       const h = setupSession(async () => ({ accepted: true }));
@@ -1008,7 +1008,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     },
   );
 
-  it.each(['wechat', 'wecom'] as const)(
+  it.each(['wechat', 'wecom', 'dingtalk'] as const)(
     'collects every question when %s takes over a Desktop questionnaire',
     async (channel) => {
       setupAttachedSession(async () => ({ accepted: true }));

@@ -72,6 +72,15 @@ export class WecomTextInteractions {
     return result;
   }
 
+  cancel(userId: string, requestId: string, decision: InteractionDecision): boolean {
+    const pending = this.pending.get(userId);
+    if (!pending || pending.request.requestId !== requestId) return false;
+    clearTimeout(pending.timer);
+    this.pending.delete(userId);
+    pending.resolve(decision);
+    return true;
+  }
+
   private cancelAll(reason: string): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);

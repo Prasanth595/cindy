@@ -745,3 +745,35 @@ describe("DingTalkIM", () => {
     ]);
   });
 });
+
+it("cancels only the matching pending text reply and permits a new one", async () => {
+  const { host } = makeHost();
+  const im = new DingTalkIM(host, { clientFactory: () => new FakeClient(), fetcher: validCredentialFetcher() });
+  vi.spyOn(im, "sendText").mockResolvedValue({ messageId: "prompt" });
+  const reply = im.requestTextReply("owner", "question", text => text, 60_000, undefined, "page:1");
+  const rejected = expect(reply).rejects.toThrow("DINGTALK_INTERACTION_CANCELLED");
+  await Promise.resolve();
+  expect(im.cancelTextReply("owner", "page:0")).toBe(false);
+  expect(im.cancelTextReply("owner", "page:1")).toBe(true);
+  await rejected;
+  const next = im.requestTextReply("owner", "next", text => text, 60_000, undefined, "page:2");
+  const nextRejected = expect(next).rejects.toThrow("DINGTALK_INTERACTION_CANCELLED");
+  await Promise.resolve();
+  expect(im.cancelTextReply("owner", "page:1")).toBe(false);
+  expect(im.cancelTextReply("owner", "page:2")).toBe(true);
+  await nextRejected;
+});
+
+it("cleans up a cancelled reply while its prompt is still sending", async () => {
+  const { host } = makeHost();
+  const im = new DingTalkIM(host, { clientFactory: () => new FakeClient(), fetcher: validCredentialFetcher() });
+  let finishSend!: (value: { messageId: string }) => void;
+  vi.spyOn(im, "sendText").mockImplementation(() => new Promise(resolve => { finishSend = resolve; }));
+  const reply = im.requestTextReply("owner", "question", text => text, 60_000, undefined, "page:1");
+  const rejected = expect(reply).rejects.toThrow("DINGTALK_INTERACTION_CANCELLED");
+  expect(im.cancelTextReply("owner", "page:1")).toBe(true);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  finishSend({ messageId: "late-prompt" });
+  await rejected;
+  expect(im.cancelTextReply("owner", "page:1")).toBe(false);
+});

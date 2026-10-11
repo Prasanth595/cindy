@@ -213,3 +213,22 @@ describe('formatWecomInteractionPrompt', () => {
       });
   });
 });
+
+it('cancels only the matching question and releases late messages', async () => {
+  let intercept!: (event: IMMessageEvent) => boolean;
+  const im = {
+    onTextMessageIntercept: (handler: typeof intercept) => { intercept = handler; },
+    onStatusChange: vi.fn(),
+    sendMarkdownText: vi.fn(async () => ({ messageId: 'prompt' })),
+    sendText: vi.fn(async () => ({ messageId: 'result' })),
+  } as unknown as WecomIM;
+  const interactions = new WecomTextInteractions(im);
+  const request: InteractionRequest = { kind: 'ask_user_question', requestId: 'page:1', questions: [{ question: 'Next?' }] };
+  const pending = interactions.handle('owner', request);
+  const decision = { kind: 'ask_user_question' as const, answers: {}, dismissed: true };
+  expect(interactions.cancel('owner', 'page:0', decision)).toBe(false);
+  expect(interactions.cancel('owner', 'page:1', decision)).toBe(true);
+  await expect(pending).resolves.toEqual(decision);
+  expect(intercept({ senderId: 'owner', text: 'late answer' } as IMMessageEvent)).toBe(false);
+  expect(interactions.cancel('owner', 'page:1', decision)).toBe(false);
+});
