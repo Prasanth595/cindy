@@ -267,6 +267,7 @@ export interface MobileSessionAgentSwitchResult {
 }
 
 export const MOBILE_REMOTE_INVOKE_CHANNELS = [
+  'ghosts:composer-list',
   'maker:create-session',
   'maker:get-capabilities',
   'maker:provider:list',
