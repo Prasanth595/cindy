@@ -893,5 +893,22 @@
     "continue": "继续",
     "addTime": "添加时间",
     "dateOnly": "仅日期"
+  },
+  "cloudCompanion": {
+    "homeOffline": "主力电脑「{{device}}」离线",
+    "switchAction": "换一台电脑继续",
+    "composerHint": "主力电脑离线，换一台电脑后继续",
+    "readOnlyNote": "这里是云端保存的对话，只能查看。",
+    "empty": "还没有云端对话。",
+    "loadFailed": "暂时无法读取云端对话。",
+    "loadOlder": "加载更早的消息",
+    "noTargets": "没有其他可用的电脑。在另一台电脑上打开 Cindy、登录同一账号，并开启「允许同账号设备控制本机」后再试。",
+    "devicesFailed": "暂时无法读取你的电脑列表，请稍后再试。",
+    "preparing": "正在「{{device}}」上准备…",
+    "preparingHint": "那台电脑会按云端资料接手伙伴，准备好后自动打开。",
+    "timeout": "「{{device}}」还没准备好。请确认那台电脑上的 Cindy 已打开并联网，再试一次。",
+    "conflict": "{{name}} 已经换到「{{device}}」继续了。",
+    "switchFailed": "暂时无法更换主力电脑，请稍后再试。",
+    "unknownDevice": "另一台电脑"
   }
 }

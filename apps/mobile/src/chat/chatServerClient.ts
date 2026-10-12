@@ -25,7 +25,13 @@ export interface ChatExecutionFailure {
   failure_code?: unknown; updated_at?: string; plan_id?: string | null;
 }
 export interface ChatPage { snapshot: ChatSnapshot; messages: ChatMessage[]; before: string | null; failures?: ChatExecutionFailure[] }
-export type ChatRequest = <T>(path: string, method?: 'GET' | 'POST', body?: unknown) => Promise<T>;
+export type ChatRequest = <T>(path: string, method?: 'GET' | 'POST' | 'PATCH', body?: unknown) => Promise<T>;
+/** An actor the account owns; a companion's `externalId` is its bot id on every computer. */
+export interface ChatActor { id: string; kind: string; externalId: string; name: string; avatar: string | null; homeDeviceId: string | null }
+export interface ChatCapabilities { companionHome: boolean }
+/** Compare-and-set result: a conflict carries the main computer another device already chose. */
+export type ChatSetHomeResult = { ok: true; homeDeviceId: string } | { ok: false; homeDeviceId: string | null };
+export interface ChatHistoryPage { messages: ChatMessage[]; before: string | null }
 
 export function chatId(value: string): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error('INVALID_CHAT_ID');
@@ -43,8 +49,16 @@ export function chatHttpsUrl(value: string): string {
 export function chatAccessLost(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'status' in error && (error.status === 403 || error.status === 404);
 }
+/** A typed server rejection: its `details` object (possibly empty), or null when it is another error. */
+export function chatRejection(error: unknown, status: number, code: string): Record<string, unknown> | null {
+  if (!error || typeof error !== 'object' || !('status' in error) || error.status !== status) return null;
+  if ((error as { code?: unknown }).code !== code) return null;
+  const details = (error as { details?: unknown }).details;
+  return details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {};
+}
 const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
   ? `${member.name} (${member.ownerName.trim()})` : member.name;
+export const chatMessageText = (message: ChatMessage) => contentText(message);
 const contentText = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? '' : message.content
   .map(block => block.text ?? block.fallback ?? (block.type === 'media' ? block.caption ?? '' : '')).join('\n');
 
@@ -172,6 +186,13 @@ export function createChatServerClient(request: ChatRequest) {
     if (!Array.isArray(value)) throw new Error('INVALID_CHAT_EXECUTIONS');
     return value.filter(row => sources.has(row.source_message_id));
   }
+  async function history(roomId: string, before?: string | null): Promise<ChatHistoryPage> {
+    const messages = await request<ChatMessage[]>(`/conversations/${chatId(roomId)}/messages?limit=100${before ? `&before=${chatCursor(before)}` : ''}`);
+    if (!Array.isArray(messages)) throw new Error('INVALID_CHAT_MESSAGES');
+    const next = messages.length === 100 ? chatCursor(messages.at(-1)!.seq) : null;
+    if (before && next && BigInt(next) >= BigInt(before)) throw new Error('INVALID_CHAT_PAGE');
+    return { messages, before: next };
+  }
   return {
     async list(): Promise<ChatRoom[]> {
       const rooms = new Map<string, ChatRoom>();
@@ -195,6 +216,51 @@ export function createChatServerClient(request: ChatRequest) {
       if (actor.kind !== 'human') throw new Error('INVALID_CHAT_IDENTITY');
       return chatId(actor.id);
     },
+    /** Server feature switches; an older server without them keeps per-computer companions. */
+    async capabilities(): Promise<ChatCapabilities> {
+      const me = await request<{ actor?: { kind?: string }; capabilities?: { companionHome?: unknown } }>('/me');
+      return { companionHome: me?.actor?.kind === 'human' && me.capabilities?.companionHome === true };
+    },
+    async actors(): Promise<ChatActor[]> {
+      const rows = await request<ChatActor[]>('/actors');
+      if (!Array.isArray(rows)) throw new Error('INVALID_CHAT_ACTORS');
+      return rows.flatMap(row => {
+        try { chatId(row.id); } catch { return []; }
+        if (typeof row.externalId !== 'string' && row.externalId != null) return [];
+        return [{ id: row.id, kind: String(row.kind), externalId: row.externalId ?? '', name: typeof row.name === 'string' ? row.name : '',
+          avatar: typeof row.avatar === 'string' ? row.avatar : null, homeDeviceId: typeof row.homeDeviceId === 'string' && row.homeDeviceId ? row.homeDeviceId : null }];
+      });
+    },
+    /** Move a companion's main computer only if it is still `expected` (no two devices race it). */
+    async setHome(actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> {
+      try {
+        const actor = await request<{ homeDeviceId?: unknown } | null>(`/actors/${chatId(actorId)}`, 'PATCH', { homeDeviceId, expectedHomeDeviceId: expected });
+        return { ok: true, homeDeviceId: typeof actor?.homeDeviceId === 'string' ? actor.homeDeviceId : homeDeviceId };
+      } catch (error) {
+        const conflict = chatRejection(error, 409, 'HOME_DEVICE_CONFLICT');
+        if (!conflict) throw error;
+        return { ok: false, homeDeviceId: typeof conflict.homeDeviceId === 'string' && conflict.homeDeviceId ? conflict.homeDeviceId : null };
+      }
+    },
+    /**
+     * The companion's fixed 1:1 room. Every device asks with the same operation and gets the same
+     * room; a room first created under another name answers OPERATION_CONFLICT, then the name-keyed
+     * operation (the desktop's) resolves the same room.
+     */
+    async companionRoom(actorId: string, name: string, hash: (text: string) => Promise<string>): Promise<string> {
+      const body = { kind: 'direct', name: name.trim().slice(0, 160) || '伙伴', participants: [chatId(actorId)], sourceId: actorId };
+      let room: { id: string };
+      try {
+        room = await request<{ id: string }>('/conversations', 'POST', { operationId: `companion-room:${actorId}`, ...body });
+      } catch (error) {
+        if (!chatRejection(error, 409, 'OPERATION_CONFLICT')) throw error;
+        const suffix = (await hash(body.name)).slice(0, 12);
+        room = await request<{ id: string }>('/conversations', 'POST', { operationId: `companion-room:${actorId}:${suffix}`, ...body });
+      }
+      return chatId(room?.id ?? '');
+    },
+    /** Main-timeline messages of any room kind (a companion's room is `direct`), newest first. */
+    history,
     async snapshot(roomId: string): Promise<ChatSnapshot> {
       return request(`/conversations/${chatId(roomId)}/snapshot`);
     },

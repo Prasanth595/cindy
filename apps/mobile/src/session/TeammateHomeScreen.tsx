@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Alert, Keyboard, Pressable, StyleSheet, View } from 'react-native';
 import { Stack, useIsFocused, useRouter } from 'expo-router';
 import { ChevronDown, Menu } from 'lucide-react-native';
@@ -22,10 +22,14 @@ import { useTeammateRoster } from './useTeammateRoster';
 import { useBotGroupRoster } from './useBotGroupRoster';
 import { useTeammateNavigation } from './useTeammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
+import { cloudActorForRow, suppressDemotedCompanions } from '@/chat/cloudCompanion';
+import { useCloudCompanionHome } from '@/chat/useCloudCompanion';
+import { cloudCompanionRoute } from './teammateNavigation';
+import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
 /** The teammate home is the roster: launch and every entry land on the list, never inside a chat. */
 export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const auth = useAuth();
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -39,6 +43,11 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   const ownGroups = useBotGroupRoster(ownRoster.groupTargets, focused && !sharedRoster);
   const roster = sharedRoster?.roster ?? ownRoster;
   const groups = sharedRoster?.groups ?? ownGroups;
+  // Main computers (cloud-companions.md): only with a server that declares companionHome.
+  const cloud = useCloudCompanionHome(focused);
+  const items = useMemo(() => cloud.supported ? suppressDemotedCompanions(roster.items, cloud.actors) : roster.items,
+    [cloud.actors, cloud.supported, roster.items]);
+  const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && !roster.isOnline(row.host) ? cloudActorForRow(cloud.actors, row) : null;
   const counts = useHomeUnreadCounts();
   const [drawer, setDrawer] = useState(false);
   const [accounts, setAccounts] = useState(false);
@@ -108,12 +117,17 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       </View>
     </View>
     {navigation.saveFailed ? <Text accessibilityRole="alert" style={styles.notice}>{t('devices.companions.preferenceSaveFailed')}</Text> : null}
-    <TeammateList key={searchEpoch} {...roster} autoFocusSearch={searchEpoch > 0}
+    <TeammateList key={searchEpoch} {...roster} items={items} autoFocusSearch={searchEpoch > 0}
+      cloudOpenable={(row) => !!cloudActor(row)}
       loading={roster.items.length + groups.items.length === 0 && (roster.loading || groups.loading)}
       refreshing={roster.refreshing || groups.refreshing}
       error={groups.error ?? roster.error}
       onRefresh={() => { void roster.refresh(); if (groups.supported) void groups.refresh(); }}
-      onSelect={(item) => { void navigation.openTeammate(item); }}
+      onSelect={(item) => {
+        const actor = cloudActor(item);
+        if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(item, actor.id, i18n.language)); }
+        else void navigation.openTeammate(item);
+      }}
       groups={groups.supported || groups.items.length > 0 ? {
         items: groups.items,
         isOnline: groups.isOnline,

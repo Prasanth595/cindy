@@ -25,8 +25,9 @@ export function ChatIdentityHeader({
   identityHint?: string;
   controlsReady?: boolean;
   onBack(): void;
-  onOpenSettings(): void;
-  settingsLabel: string;
+  /** Omitted when there is nothing to open (the identity is then plain, without a settings button). */
+  onOpenSettings?(): void;
+  settingsLabel?: string;
   testIDPrefix: string;
   /** Defaults to `${testIDPrefix}.settings`. */
   settingsTestID?: string;
@@ -34,14 +35,16 @@ export function ChatIdentityHeader({
   const { t } = useTranslation();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const open = () => { if (controlsReady) { Keyboard.dismiss(); onOpenSettings(); } };
+  const settings = !!onOpenSettings;
+  const open = () => { if (controlsReady && onOpenSettings) { Keyboard.dismiss(); onOpenSettings(); } };
   return <View style={styles.header} testID={`${testIDPrefix}.header`}>
     <HomeHeaderGlassButton testID={`${testIDPrefix}.back`} accessibilityLabel={t('shared.back')} onPress={() => { Keyboard.dismiss(); onBack(); }}>
       <ChevronLeft size={iconSize.action} strokeWidth={iconStroke.regular} color={colors.textPrimary} />
     </HomeHeaderGlassButton>
-    <Pressable style={({ pressed }) => [styles.identity, pressed && styles.pressed]} accessibilityRole="button"
-      accessibilityLabel={identityLabel} accessibilityHint={identityHint} accessibilityState={{ disabled: !controlsReady }}
-      disabled={!controlsReady} onPress={open} testID={`${testIDPrefix}.identity`}>
+    <Pressable style={({ pressed }) => [styles.identity, pressed && styles.pressed]} accessibilityRole={settings ? 'button' : 'header'}
+      accessibilityLabel={identityLabel} accessibilityHint={settings ? identityHint : undefined}
+      accessibilityState={settings ? { disabled: !controlsReady } : undefined}
+      disabled={!controlsReady || !settings} onPress={open} testID={`${testIDPrefix}.identity`}>
       <View style={styles.mark}>{mark}</View>
       <View style={styles.identityText}>
         <Text numberOfLines={1} style={styles.title}>{title}</Text>
@@ -49,9 +52,9 @@ export function ChatIdentityHeader({
       </View>
     </Pressable>
     {accessory}
-    <HomeHeaderGlassButton testID={settingsTestID ?? `${testIDPrefix}.settings`} disabled={!controlsReady} accessibilityLabel={settingsLabel} onPress={open}>
+    {settings ? <HomeHeaderGlassButton testID={settingsTestID ?? `${testIDPrefix}.settings`} disabled={!controlsReady} accessibilityLabel={settingsLabel ?? ''} onPress={open}>
       <Settings2 size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textPrimary} />
-    </HomeHeaderGlassButton>
+    </HomeHeaderGlassButton> : null}
   </View>;
 }
 

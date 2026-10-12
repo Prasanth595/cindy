@@ -5,6 +5,8 @@ export class ApiError extends Error {
     public readonly code: string,
     public readonly status: number,
     message: string,
+    /** The server's structured `error.details`, when it sent an object. */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -121,7 +123,7 @@ export async function apiFetchRaw<T>(
         // Preserve the original typed API error even if local cleanup fails.
       }
     }
-    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'));
+    throw new ApiError(code, response.status, error.message ?? i18n.t('apiErrors.requestFailed'), error.details);
   }
 
   return data as T;
@@ -131,7 +133,7 @@ function isAbortError(err: unknown): boolean {
   return !!err && typeof err === 'object' && 'name' in err && err.name === 'AbortError';
 }
 
-function readError(data: unknown): { code?: string; message?: string } {
+function readError(data: unknown): { code?: string; message?: string; details?: Record<string, unknown> } {
   if (!data || typeof data !== 'object') return {};
   const payload = data as Record<string, unknown>;
   const nested = payload.error;
@@ -141,5 +143,7 @@ function readError(data: unknown): { code?: string; message?: string } {
   return {
     code: typeof record.code === 'string' ? record.code : undefined,
     message: typeof record.message === 'string' ? record.message : undefined,
+    details: record.details && typeof record.details === 'object' && !Array.isArray(record.details)
+      ? record.details as Record<string, unknown> : undefined,
   };
 }
