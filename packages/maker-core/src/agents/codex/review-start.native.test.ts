@@ -21,10 +21,7 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
     const home = path.join(root, 'codex');
     const workingDir = path.join(root, 'repo', 'work');
     const projectRule = 'ANCESTOR_PROJECT_RULE_MUST_NOT_REACH_REVIEW';
-    await mkdir(home);
-    await mkdir(path.join(root, 'repo', '.git'), { recursive: true });
-    await mkdir(workingDir, { recursive: true });
-    await writeFile(path.join(root, 'repo', 'AGENTS.md'), projectRule);
+    const reviewEvidence = 'CINDY_STRUCTURED_REVIEW_EVIDENCE';
     const requests: unknown[] = [];
     const server = createServer(async (req, res) => {
       const chunks = [];
@@ -40,38 +37,43 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
       ];
       res.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    await writeFile(path.join(home, 'config.toml'), [
-      'model="fixture-model"',
-      'model_provider="fixture"',
-      'cli_auth_credentials_store="ephemeral"',
-      'check_for_update_on_startup=false',
-      '[analytics]', 'enabled=false',
-      '[model_providers.fixture]', 'name="Fixture"',
-      `base_url="${endpoint}"`, 'wire_api="responses"',
-      'requires_openai_auth=false', 'request_max_retries=0',
-    ].join('\n'));
-    const agent = new CodexAgent({
-      binaryPath: binaryPath!, logger, runtimeConfig: {},
-      resolveCodexLocalAuthPolicy: () => 'isolated',
-      prepareCodexExtraSpawnConfig: async () => ({
-        extraArgs: [], extraEnv: {}, codexProxyActive: true,
-      }),
-      auth: {
-        getState: async () => ({ authenticated: true }),
-        triggerLogin: async () => ({ authenticated: true }),
-        logout: async () => {},
-        getAuthEnv: async () => ({
-          HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root,
-          CODEX_HOME: home, TMPDIR: root,
-          OPENAI_API_KEY: '', CODEX_API_KEY: '',
-          HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1',
-          ALL_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1,localhost',
-        }),
-      },
-    });
+    let agent: CodexAgent | undefined;
     try {
+      await mkdir(home);
+      await mkdir(path.join(root, 'repo', '.git'), { recursive: true });
+      await mkdir(workingDir, { recursive: true });
+      await writeFile(path.join(root, 'repo', 'AGENTS.md'), projectRule);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await writeFile(path.join(home, 'config.toml'), [
+        'model="fixture-model"',
+        'model_provider="fixture"',
+        'cli_auth_credentials_store="ephemeral"',
+        'check_for_update_on_startup=false',
+        '[analytics]', 'enabled=false',
+        '[model_providers.fixture]', 'name="Fixture"',
+        `base_url="${endpoint}"`, 'wire_api="responses"',
+        'requires_openai_auth=false', 'request_max_retries=0',
+      ].join('\n'));
+      agent = new CodexAgent({
+        binaryPath: binaryPath!, logger, runtimeConfig: {},
+        resolveCodexLocalAuthPolicy: () => 'isolated',
+        prepareCodexExtraSpawnConfig: async () => ({
+          extraArgs: [], extraEnv: {}, codexProxyActive: true,
+        }),
+        auth: {
+          getState: async () => ({ authenticated: true }),
+          triggerLogin: async () => ({ authenticated: true }),
+          logout: async () => {},
+          getAuthEnv: async () => ({
+            HOME: root, USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root,
+            CODEX_HOME: home, TMPDIR: root,
+            OPENAI_API_KEY: '', CODEX_API_KEY: '',
+            HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1',
+            ALL_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1,localhost',
+          }),
+        },
+      });
       const handle = await agent.startSession({
         sessionId: 'review-project-doc', providerId: 'cprov-fixture',
         model: 'fixture-model', workingDir, reviewMode: true,
@@ -83,15 +85,25 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
           if (event.type === 'done') return;
         }
       })();
-      await handle.send({ type: 'user', content: 'Review the fixture' }, { throwOnStartFailure: true });
+      await handle.send({ type: 'user', content: `Review the fixture: ${reviewEvidence}` }, { throwOnStartFailure: true });
       await events;
       expect(requests).toHaveLength(1);
-      expect(JSON.stringify(requests)).not.toContain(projectRule);
+      const requestPayload = JSON.stringify(requests);
+      expect(requestPayload).toContain(reviewEvidence);
+      expect(requestPayload).not.toContain(projectRule);
       await handle.close();
     } finally {
-      await agent.dispose();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      try {
+        await agent?.dispose();
+      } finally {
+        try {
+          if (server.listening) {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+          }
+        } finally {
+          await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        }
+      }
     }
   }, 30_000);
 });
