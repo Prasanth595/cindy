@@ -1,4 +1,9 @@
-import type { GhostCommandSource } from '@cindy/maker-shared/ghost-command';
+import {
+  formatGhostCommandInsertion,
+  ghostCommandTokenLength,
+  parseGhostCommandToken,
+  type GhostCommandSource,
+} from '@cindy/maker-shared/ghost-command';
 import {
   composerDocumentProjectedText,
   normalizeComposerDocument,
@@ -41,7 +46,8 @@ export function placeComposerPlugin(
   plugin: GhostCommandSource,
   roster: readonly GhostCommandSource[],
 ): ComposerDocument {
-  if (!plugin.manifest.command || !plugin.enabled) return document;
+  const insertion = formatGhostCommandInsertion(plugin, roster);
+  if (!insertion || !plugin.enabled) return document;
   let normalized = normalizeComposerDocument(document);
   const text = composerDocumentProjectedText(normalized);
   const trigger = detectComposerPluginTrigger(text);
@@ -64,14 +70,15 @@ export function placeComposerPlugin(
     if (node.type !== 'text') break;
     leadingText += node.text;
   }
-  const match = /^\s*[$＄¥￥](\S{1,32})(?=\s|$)/u.exec(leadingText);
-  const replace = match && roster.some((entry) =>
-    entry.manifest.command?.toLowerCase() === match[1].toLowerCase());
-  const end = replace ? match[0].length : 0;
+  const leadingSpace = leadingText.match(/^\s*/u)?.[0].length ?? 0;
+  const token = parseGhostCommandToken(leadingText.slice(leadingSpace));
+  const replace = !!token && roster.some((entry) =>
+    entry.manifest.command?.toLowerCase() === token.word.toLowerCase());
+  const end = replace && token ? leadingSpace + 1 + ghostCommandTokenLength(token) : 0;
   const nextCharacter = leadingText[end];
   const nodes: ComposerDocument['nodes'] = [{
     type: 'text',
-    text: '$' + plugin.manifest.command + (nextCharacter && /\s/u.test(nextCharacter) ? '' : ' '),
+    text: insertion + (nextCharacter && /\s/u.test(nextCharacter) ? '' : ' '),
   }];
   let remaining = end;
   for (const node of normalized.nodes) {

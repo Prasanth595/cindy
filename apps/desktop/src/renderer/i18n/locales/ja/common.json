@@ -6040,7 +6040,7 @@
         "installed": "インストール済み",
         "replace": "置き換え",
         "replaceAria": "{{name}} をこのマーケット版で置き換える",
-        "replaceDescription": "同じ ID のプラグインがすでにインストールされています。続行するとこのマーケット版で置き換え、プラグインのデータは保持されます。",
+        "replaceDescription": "同じ ID のプラグインがすでにインストールされています。続行すると提供元が切り替わります。元のデータは別に保持されますが、アカウントやシークレットは引き継がれず、再接続が必要です。",
         "unavailable": "プラグインマーケットを一時的に利用できません。インストール済みプラグインは引き続き利用できます。",
         "customSourcesUnavailable": "次のカスタムマーケットは一時的に利用できません：{{names}}。他のマーケットには影響しません。",
         "authenticationRequired": "プラグインマーケットを表示するには Cindy にログインしてください。",
@@ -10955,6 +10955,7 @@
         },
         "directory": "フォルダー：",
         "baseline": "基準ブランチ：",
+        "additionalDirectories": "ほかに：",
         "unverifiedResult": "以下の指摘は生成されましたが、現在も有効か確認できませんでした。"
       }
     },
@@ -11413,6 +11414,7 @@
       },
       "dialogueLabel": "対話",
       "backToAutomations": "Automations に戻る",
+      "backToReviewSource": "元のタスクに戻る",
       "waitForReply": "ドキュメント領域での返信を待っています…",
       "modelSwitchedFastModeOff": "モデルを切り替えました。Fast Mode は無効になりました"
     },
@@ -14105,6 +14107,18 @@
       "current": "このフォルダーを確認",
       "choose": "別のフォルダーを選択",
       "open": "レビュー"
+    },
+    "inputSummary": {
+      "title": "独立レビュー（読み取り専用・開発メモリなし）",
+      "directory": "ディレクトリ：{{dir}}",
+      "baseline": "{{base}} と比較",
+      "uncommitted": "未コミットの変更を含む",
+      "additionalDirectories": "ほかに：{{dirs}}",
+      "uncovered": "対象外：{{dirs}}",
+      "uncheckedDirs": "ほかに {{count}} 個のタスクディレクトリは未確認",
+      "artifacts": "成果物：{{count}} 件",
+      "focus": "重点：{{focus}}",
+      "task": "タスクの目標に照らして現在の成果をレビュー"
     }
   },
   "learn": {

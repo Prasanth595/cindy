@@ -112,7 +112,7 @@ function mapReviewWorkspace(
  * The branch's own commits. Read independently of current uncommitted edits;
  * a last-turn record is not a faithful substitute for the whole deliverable.
  */
-async function loadReviewBranchEvidence(
+export async function loadReviewBranchEvidence(
   sessionId: string,
   readBranchDiff: typeof readReviewBranchDiff,
 ): Promise<{ branch: ReviewBranchEvidence | null; unavailableReason?: string }> {
@@ -462,6 +462,19 @@ function hasReviewRunMeta(raw: unknown): boolean {
   return readReviewRunFromAgentMeta(raw) !== null;
 }
 
+/**
+ * Progress narration between tool calls is the development agent talking to
+ * itself; it is neither the user's requirement nor the delivered result. Only
+ * each turn's final answer stays (as an unverified claim), so narration cannot
+ * crowd the bounded context or read as evidence. Every harness marks that row:
+ * `turnCompleted` on Claude Code, Codex and Pi, plus Codex's `final_answer`
+ * phase. An unfinished turn has no final answer and contributes no claim.
+ */
+function isAssistantFinalAnswer(row: Pick<ReviewVisibleRow, 'agentMeta'>): boolean {
+  const meta = parseJsonRecord(row.agentMeta);
+  return meta?.turnCompleted === true || meta?.assistantPhase === 'final_answer';
+}
+
 type ReviewVisibleRow = {
   role: 'user' | 'assistant';
   content: string;
@@ -514,6 +527,11 @@ async function readReviewVisibleRows(sourceSessionId: string): Promise<ReviewVis
       const hasVisibleText =
         visibleMessageTextForConversationSearch(visibleRow.role, visibleRow.content).length > 0;
       const hasHistoricalArtifact = historicalAttachmentsFromRows([visibleRow]).length > 0;
+      // Narration is dropped; a narration row that carries a produced artifact
+      // stays so the artifact remains reviewable.
+      if (visibleRow.role === 'assistant' && !isAssistantFinalAnswer(visibleRow) && !hasHistoricalArtifact) {
+        continue;
+      }
       if (!hasVisibleText && !hasHistoricalArtifact) continue;
       rows.push(visibleRow);
       if (rows.length === MAX_CONTEXT_ROWS) break;

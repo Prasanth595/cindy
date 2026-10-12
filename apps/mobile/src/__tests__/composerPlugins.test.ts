@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { appendComposerPluginTrigger, detectComposerPluginTrigger, filterComposerPlugins, placeComposerPlugin } from '@/session/composerPlugins';
 import { textComposerDocument, composerDocumentProjectedText, serializeComposerDocument, type ComposerDocument } from '@/session/composerDocument';
 import { expandGhostCommand, parseGhostCommandWord } from '@cindy/maker-shared/ghost-command';
+import { composerPluginListSchema } from '@/session/remoteComposerPlugins';
 
 const art = { manifest: { id: 'art', name: 'Art', command: 'art' }, enabled: true };
 const old = { manifest: { id: 'old', name: 'Old', command: 'old' }, enabled: false };
@@ -160,5 +161,40 @@ describe('mobile composer plugin selection', () => {
     expect(selected.nodes).toEqual([
       { type: 'text', text: '$art ' }, atom, quote, { type: 'text', text: 'ar' },
     ]);
+  });
+
+  it('keeps desktop namespace and instanceKey, and qualifies same-name commands', () => {
+    const parsed = composerPluginListSchema.parse([
+      { manifest: { id: 'draw', name: 'Root', command: 'draw' }, enabled: true, namespace: null, instanceKey: 'draw' },
+      { manifest: { id: 'draw', name: 'Org', command: 'draw' }, enabled: true, namespace: 'acme', instanceKey: '_ns__acme__draw' },
+    ]);
+    expect(parsed.map((plugin) => [plugin.namespace, plugin.instanceKey])).toEqual([
+      [null, 'draw'],
+      ['acme', '_ns__acme__draw'],
+    ]);
+    const rootText = composerDocumentProjectedText(placeComposerPlugin(textComposerDocument('a cat'), parsed[0], parsed));
+    const orgText = composerDocumentProjectedText(placeComposerPlugin(textComposerDocument('a cat'), parsed[1], parsed));
+    expect(rootText).toBe('$draw/@root a cat');
+    expect(orgText).toBe('$draw/acme a cat');
+    const rootDirective = expandGhostCommand(rootText, parsed);
+    const orgDirective = expandGhostCommand(orgText, parsed);
+    expect(rootDirective).toContain('namespace: null');
+    expect(rootDirective).not.toContain('存在多个实例');
+    expect(orgDirective).toContain('namespace: acme');
+    expect(orgDirective).toContain('ghost_id: draw');
+    expect(orgDirective).not.toContain('存在多个实例');
+  });
+  it('keeps an old desktop list without namespace on the unqualified command', () => {
+    const parsed = composerPluginListSchema.parse([
+      { manifest: { id: 'art', name: 'Art', command: 'art' }, enabled: true },
+    ]);
+    expect(parsed[0].namespace).toBeUndefined();
+    expect(parsed[0].instanceKey).toBeUndefined();
+    const text = composerDocumentProjectedText(placeComposerPlugin(textComposerDocument('draw'), parsed[0], parsed));
+    expect(text).toBe('$art draw');
+    const directive = expandGhostCommand(text, parsed);
+    expect(directive).toContain('(id: art)');
+    expect(directive).not.toContain('ghost_id:');
+    expect(directive).not.toContain('namespace: ');
   });
 });

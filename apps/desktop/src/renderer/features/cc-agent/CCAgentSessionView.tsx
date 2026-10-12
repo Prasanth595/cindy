@@ -307,7 +307,7 @@ import { hasSplitGroupSessionType } from './splitGroupDnd';
 import { splitGroupStore } from './splitGroupStore';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import {
@@ -844,8 +844,14 @@ export function CCAgentSessionView({
   const [forkStripEncryptedRunning, setForkStripEncryptedRunning] = useState(false);
   // 从 Automations 的 RunHistoryCard 跳过来的 navigate 会带 state.from='automations'，
   // 在聊天区左上角显示一个返回按钮；点别的 session 入口（不带 state）时按钮自然消失。
-  const navState = location.state as { from?: string } | null;
+  const navState = location.state as { from?: string; sourceSessionId?: unknown } | null;
   const cameFromAutomations = navState?.from === 'automations';
+  // /review 审查任务不在任务列表里,从来源任务的审查卡片进入时带上来源 id,
+  // 左上角给出回到来源任务的返回按钮(侧栏收起时这是唯一的回路)。
+  const reviewSourceSessionId =
+    navState?.from === 'review-source' && typeof navState.sourceSessionId === 'string'
+      ? navState.sourceSessionId
+      : null;
   const handoffFrom = useMemo(() => parseHandoffState(location.state), [location.state]);
   const locationSearchJump = useMemo(() => parseSearchJumpState(location.state), [location.state]);
   const searchJump = searchJumpProp !== undefined ? searchJumpProp : locationSearchJump;
@@ -4987,7 +4993,7 @@ export function CCAgentSessionView({
           // 意识面板拖来的产物(cindy-ghost:// 媒体地址,不带 files):落在聊天区
           // 任意位置都算数,与 ChatInput 自己的 onDrop 同一条引渡链路——
           // main 验归属后图片落图片附件、视频落路径引用的 file 附件(托盘可见)。
-          const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+          const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
           if (ghostMediaUri) {
             if (sessionId) void attachGhostMediaToSession(ghostMediaUri, sessionId, t);
             return;
@@ -5967,6 +5973,20 @@ export function CCAgentSessionView({
           type="button"
           onClick={() => navigate('/cc-agent/scheduled')}
           aria-label={t('ccAgent.layout.backToAutomations')}
+          className={cn(
+            'absolute left-[14px] top-[14px] z-40 inline-flex items-center justify-center',
+            'text-[var(--settings-section-desc)] transition-colors hover:text-foreground',
+          )}
+        >
+          <ArrowLeft size={18} strokeWidth={2} />
+        </button>
+      )}
+      {ownsWindowRoute && !cameFromAutomations && reviewSourceSessionId && (
+        <button
+          type="button"
+          onClick={() => navigate(`/cc-agent/${reviewSourceSessionId}`)}
+          aria-label={t('ccAgent.layout.backToReviewSource')}
+          title={t('ccAgent.layout.backToReviewSource')}
           className={cn(
             'absolute left-[14px] top-[14px] z-40 inline-flex items-center justify-center',
             'text-[var(--settings-section-desc)] transition-colors hover:text-foreground',

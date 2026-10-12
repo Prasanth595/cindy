@@ -13,6 +13,7 @@ import { resolveSettingsSearchEntry } from './settingsSearchCatalog';
 import { SettingsSearchNavigationContext } from './SettingsSearchNavigation';
 import type { SettingsSearchContext } from './settingsSearchTypes';
 import { useSettingsSectionTarget } from './useSettingsSectionTarget';
+import { useSettingsEscape } from './useSettingsEscape';
 import { UserProfileCard } from './UserProfileCard';
 import { VoiceInputSection } from './VoiceInputSection';
 import { AppearanceSection } from './AppearanceSection';
@@ -201,6 +202,17 @@ export function SettingsView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  // 设置是主窗口里的路由，Esc 与左上角返回按钮走同一出口，不关窗。
+  const exitSettings = useCallback(() => navigate('/'), [navigate]);
+  const settingsRootRef = useRef<HTMLDivElement | null>(null);
+
+  // Esc 逐层返回：PI 扩展子页先回到「通用」，其余退出设置；帮助面板开着时归它。
+  const handleSettingsEscape = useCallback(() => {
+    if (piExtensionsPanelOpen) handleClosePiExtensions();
+    else exitSettings();
+  }, [exitSettings, handleClosePiExtensions, piExtensionsPanelOpen]);
+  useSettingsEscape(settingsRootRef, !helpAssistantOpen, handleSettingsEscape);
+
   useEffect(() => {
     if (activeTab !== 'help') {
       setHelpAssistantOpen(false);
@@ -244,6 +256,7 @@ export function SettingsView() {
   return (
     <SettingsSearchNavigationContext.Provider value={searchNavigation}>
     <div
+      ref={settingsRootRef}
       className="h-full w-full overflow-hidden bg-[var(--settings-bg)]"
       role="main"
       aria-label={t('settings.title')}
@@ -262,7 +275,7 @@ export function SettingsView() {
             <Tip text={t('settings.back')} side="bottom">
               <button
                 type="button"
-                onClick={() => navigate('/')}
+                onClick={exitSettings}
                 aria-label={t('settings.back')}
                 className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--settings-back-icon)] transition-[color,background-color,transform] duration-150 hover:bg-titlebar-button-hover hover:text-[var(--settings-back-text)] active:scale-[0.98]"
               >

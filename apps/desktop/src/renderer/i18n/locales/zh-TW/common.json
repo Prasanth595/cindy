@@ -6132,7 +6132,7 @@
         "customSourcesUnavailable": "以下自訂市場暫時無法存取：{{names}}，其他市場不受影響。",
         "replace": "取代",
         "replaceAria": "以此市場版本取代 {{name}}",
-        "replaceDescription": "已安裝相同 ID 的插件，繼續將以市場版本取代，原有資料會保留。"
+        "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
       "install": "安裝插件…",
       "empty": "還沒有安裝任何插件",
@@ -10954,6 +10954,7 @@
         },
         "directory": "目錄：",
         "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
@@ -11413,6 +11414,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },
@@ -14105,6 +14107,18 @@
       "current": "審查目前目錄",
       "choose": "選擇其他目錄",
       "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
     }
   },
   "learn": {

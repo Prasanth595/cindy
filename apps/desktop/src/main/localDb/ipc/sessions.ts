@@ -68,6 +68,7 @@ import { imAttachmentsRoot, removeImSessionAttachmentDirs } from '../../im/share
 import { upsertRecentWorkdir } from './recentWorkdirs';
 import { createLogger } from '../../logger';
 import {
+  DESKTOP_TASK_LIST_SESSION_SOURCES,
   DESKTOP_VISIBLE_SESSION_SOURCES,
   isRetainableProjectSession,
 } from '../../../shared/sessionSource.js';
@@ -1282,8 +1283,9 @@ export function registerSessionIpc(
       const loadRows = async () => {
         // 按 DESKTOP_VISIBLE_SESSION_SOURCES 白名单过滤 — 包含 IM 渠道
         // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
-        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。
-        const sourceFilter = inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES);
+        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。/review 审查任务
+        // 只从来源任务的审查卡片打开,不进普通任务列表(用量历史仍包含)。
+        const sourceFilter = inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES);
         const statusWhere = () =>
           statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
         const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere()), cap, before);

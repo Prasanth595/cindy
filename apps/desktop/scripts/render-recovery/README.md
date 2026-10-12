@@ -1,7 +1,7 @@
 # Windows 窗口恢复对照
 
 为 [Cindy #5627](https://github.com/makecindy/cindy/issues/5627) 提供不依赖提报者的
-Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本只安装到独立临时目录。
+Electron 渲染实验。生产 Electron pin 已升级到 42.11.12；候选版本只安装到独立临时目录。
 
 ## 假设与版本选择
 
@@ -18,6 +18,8 @@ Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本�
 ## 手动运行
 
 保留独立脚本供有明确新证据目标时手动运行，不提供 GitHub Actions workflow 或标签触发。
+
+脚本中的 41.10.3 与 43.7.9 组合是 2026-10-09 已完成的历史对照，不是当前生产 pin；当前生产 runtime 为 42.11.12。
 在 Windows PowerShell 中，从仓库根目录运行一组对照（需 Node.js 22 与 npm）：
 
 ```powershell
@@ -67,10 +69,12 @@ node apps/desktop/scripts/render-recovery/run.mjs
 - Windows runner 是虚拟机，不能代表提报者的 Windows 11、显示驱动、多显示器或 UU 环境。
   测试用注入的原生输入，不证明远程软件或真实鼠标输入链路正常。
 
-正式升级前仍需完整 Cindy 的启动、原生 SQLite/PTY、内嵌浏览器、远控检查。
-42/43 的兼容性检查重点还包括 Electron 二进制安装时机、macOS 通知签名要求、
+升级后仍需完整 Cindy 的启动、原生 SQLite/PTY、内嵌浏览器、远控检查。
+42 的兼容性检查重点还包括 Electron 二进制安装时机、macOS 通知签名要求、
 offscreen 默认缩放、`NativeImage.toBitmap()` 色彩空间和文件对话框默认目录变化。
-本轮实验和诊断修正不引入自动重载，也不改变后台任务运行策略。
+本轮实验和诊断修正不引入自动重载，也不改变后台任务运行策略。42.11.12 保留 #52844 的回移修复，
+并包含 42.10.0 起提供的 GHSA-qmv3-fv6v-rmhq 安全修复；不再使用受影响的 42.9.2。
+但本实验的 8 组软件 GPU 结果不能证明 Windows 硬件 GPU 合成路径或提报者的远控环境已修复。
 
 ## 已完成的实验
 

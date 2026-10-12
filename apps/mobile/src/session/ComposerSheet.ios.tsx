@@ -37,7 +37,7 @@ import {
   scrollDismissesKeyboard,
 } from "@expo/ui/swift-ui/modifiers";
 import { useTranslation } from "react-i18next";
-import { View, useWindowDimensions } from "react-native";
+import { ScrollView as RNScrollView, View, useWindowDimensions } from "react-native";
 import { useTheme } from "@/theme";
 import type { ComposerSheetProps } from "./ComposerSheet";
 import { CompanionNativeContent } from "./CompanionNativeContent.ios";
@@ -56,6 +56,7 @@ export function ComposerSheet({
   footer,
   testID,
   nativeContent,
+  contentScrolls,
   nativeList,
   nativeHeader,
   nativeRoot,
@@ -181,9 +182,27 @@ export function ComposerSheet({
               ]}>
                 {children}
               </Form>
+            ) : contentScrolls ? (
+              <RNHostView>
+                <View style={{ flex: 1 }} testID={testID}>
+                  <RNScrollView
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="interactive"
+                    contentContainerStyle={{
+                      paddingHorizontal: 16,
+                      paddingBottom: 16,
+                    }}
+                  >
+                    {children}
+                  </RNScrollView>
+                  {footer ? (
+                    <View style={{ padding: 16 }}>{footer}</View>
+                  ) : null}
+                </View>
+              </RNHostView>
             ) : (
               <>
-                {/* SwiftUI owns the viewport so medium detents do not clip the RN content. */}
+                {/* Native scrolling keeps the viewport aligned with the sheet detent. */}
                 <ScrollView modifiers={[scrollDismissesKeyboard("interactively")]}>
                   <CompanionNativeContent>
                     <View testID={testID} style={{ paddingHorizontal: 16, paddingBottom: 16 }}>

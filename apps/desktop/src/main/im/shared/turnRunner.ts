@@ -154,11 +154,15 @@ import {
 } from './fbotTitle';
 import { materializeLocalMarkdownImages } from './localMarkdownImages';
 import {
+  applyStatusTokenRate,
+  clearRunningIndicators,
   createTurnActivity,
   markActivityWriting,
   pushToolStep,
   renderActivity,
   setActivityNotice,
+  setActivityTokenRate,
+  tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
 import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
@@ -372,6 +376,11 @@ interface SessionState {
    * 接管任务的 scheduler 输出。与正常入站 TurnState 分开，避免重复发送。
    */
   scheduledTranspond: ScheduledTranspond | null;
+  /**
+   * 转播卡开出之前收到的最新 tok/s 读数(先调工具的自动任务, 生成工具参数时就有读数)。
+   * 开卡时写进卡片头部并清空；不因它开卡，一轮结束(isRunning=false)即作废。
+   */
+  pendingTranspondTokenRate: number | null;
   /** Agent execution ended, but its background output is still being delivered. */
   pendingTranspondFinals: number;
   /**
@@ -1976,6 +1985,7 @@ export function createTurnRunner(
       resolveDetachDrain: null,
       attached,
       scheduledTranspond: null,
+      pendingTranspondTokenRate: null,
       pendingTranspondFinals: 0,
       otherTaskTurn: false,
     };
@@ -2499,7 +2509,11 @@ export function createTurnRunner(
           return handleTurnErrorAsync(state, userId, event.data);
         case 'session_id':
           return persistSdkSessionId(localSessionId, event.data);
-        // tool_result (summary) / status / thinking / etc. → not surfaced
+        case 'status':
+          // 只记头部 tok/s; 由 activity ticker 带出, 不为速度读数单独刷卡片。
+          turn.presenter.applyStatus(event);
+          return;
+        // tool_result (summary) / thinking / etc. → not surfaced
         default:
           return;
       }
@@ -2745,8 +2759,20 @@ export function createTurnRunner(
   function transpondScheduledEvent(state: SessionState, event: AgentEvent): void {
     // Lifecycle status is not user-facing scheduler content. In particular,
     // the claim-bearing status(false) paired with an SDK boundary must not
-    // create or close a projection card.
-    if (event.type === 'status') return;
+    // create or close a projection card. It only feeds the header tok/s; the
+    // activity ticker carries it out. Before the card exists the latest reading
+    // is kept on the session so a tool-first turn shows it from the first frame.
+    if (event.type === 'status') {
+      if (state.scheduledTranspond) {
+        applyStatusTokenRate(state.scheduledTranspond.activity, event.data);
+      } else {
+        const running = (event.data as { isRunning?: unknown } | null)?.isRunning !== false;
+        state.pendingTranspondTokenRate = running
+          ? tokenRateFromStatus(event.data, state.pendingTranspondTokenRate)
+          : null;
+      }
+      return;
+    }
     if (event.type === 'done' && isTurnContinuationBoundaryEvent(event)) return;
     if (!['text', 'tool_use', 'tool_result_full', 'done', 'error'].includes(event.type)) return;
     // 首条事件惰性建转播态(避免给空 turn 开卡)。
@@ -2766,6 +2792,8 @@ export function createTurnRunner(
         streamingHandle: null,
         streamingHandlePromise: null,
       };
+      setActivityTokenRate(state.scheduledTranspond.activity, state.pendingTranspondTokenRate);
+      state.pendingTranspondTokenRate = null;
     }
     const t = state.scheduledTranspond;
     switch (event.type) {
@@ -2864,7 +2892,7 @@ export function createTurnRunner(
     // 所以这行不是收口正确性的依赖; 留着是为了让这块转播态在收口后不残留瞬态字段
     // (万一将来 final 视图改成包含过程区)。真正必须显式清的是 handleTurnErrorAsync ——
     // 它不置 turn.done, composeStreamingView 会把 activity 一起写进正文。
-    setActivityNotice(t.activity, null);
+    clearRunningIndicators(t.activity);
     try {
       // 没产出任何内容(无文本无步骤)且无错 → 不留空卡。
       if (!t.streamingHandle && t.buffer.length === 0 && t.mediaAbsPaths.length === 0 && t.activity.totalSteps === 0 && !errMsg) {
@@ -3510,10 +3538,10 @@ export function createTurnRunner(
       turn.terminalErrorCode = 'agent_turn_error';
     }
     if (turn) completeTurnCallback(turn);
-    // 清掉"正在自动重试"这类瞬态说明：重试耗尽后走到这里时它还挂在 activity 上，
-    // 而下面 composeStreamingView 会把它一起写进 finalize 的正文——最终卡片会在
-    // 失败说明的正上方永久显示"仍在重试"（review #844 codex P1）。
-    if (turn) setActivityNotice(turn.presenter.activity, null);
+    // 清掉"正在自动重试"与当前 tok/s 这类只在运行中成立的指示：走到这里时它们还挂在
+    // activity 上，而下面 composeStreamingView 会把它们一起写进 finalize 的正文——
+    // 失败卡片会永久显示"仍在重试"（review #844 codex P1）或一个已不存在的速度。
+    if (turn) clearRunningIndicators(turn.presenter.activity);
     if (turn) await materializeTurnLocalImages(state, turn);
     // 建卡请求可能还在飞: 过载重试提示会惰性建一张进度卡(handleRetryNoticeEvent),
     // 而终态错误可能恰好在 startStreamingText 回来之前到达。此时 streamingHandle
@@ -4166,6 +4194,7 @@ export function createTurnRunner(
         resolveDetachDrain: null,
         attached: route?.attached === true,
         scheduledTranspond: null,
+        pendingTranspondTokenRate: null,
         pendingTranspondFinals: 0,
         otherTaskTurn: source === 'other-task',
       };

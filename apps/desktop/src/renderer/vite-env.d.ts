@@ -1337,6 +1337,7 @@ interface ElectronAPI {
       opts: {
         expectedPackageSha256: string;
         expectedInstalledApproval: string;
+        expectedInstalledInstanceId: string;
       },
     ) => Promise<{ ghost: import('../shared/ghost').InstalledGhost }>;
     /**
@@ -1397,7 +1398,10 @@ interface ElectronAPI {
     /** 系统文件选择框(.cindy 过滤),只选不装;取消返回 { canceled: true }。 */
     pickFile: () => Promise<{ canceled: true } | { filePath: string }>;
     /** 只验不装:读出清单、签名信任等级与 icon data URL,供安装编排使用。 */
-    inspect: (lizFilePath: string) => Promise<{
+    inspect: (
+      lizFilePath: string,
+      opts?: { expectedInstalledInstanceId: string; expectedInstalledApproval: string },
+    ) => Promise<{
       manifest: import('../shared/ghost').GhostManifest;
       trust: import('../shared/ghost').GhostTrustInfo;
       /** 本次检查的整包指纹；安装/更新时回传，防止确认后文件被替换。 */
@@ -1415,7 +1419,7 @@ interface ElectronAPI {
     openRetirement: (id: string) => Promise<{ ok: true }>;
     onRetirementOpen: (callback: (id: string) => void) => () => void;
     acknowledgeRetirement: (id: string) => Promise<{ ok: true }>;
-    setEnabled: (id: string, enabled: boolean) => Promise<{ ok: true }>;
+    setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string) => Promise<{ ok: true }>;
     requestTaskApproval: (id: string) => Promise<{ granted: boolean }>;
     /** 目录级禁用清单(插件页项目范围视图;sendSync 切换同帧渲染)。 */
     workdirPrefsSync: (workdir: string) => { disabled: string[] };
@@ -1459,6 +1463,8 @@ interface ElectronAPI {
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
+      instanceId?: string,
+      sourceToken?: string,
     ) => Promise<
       | { url: string; kind?: 'image' }
       | {
@@ -1478,6 +1484,7 @@ interface ElectronAPI {
       callback: (payload: {
         callId: string;
         ghostId: string;
+        logicalGhostId?: string;
         toolUseId: string | null;
         /** 静态版(settle 后 / 历史回放;与落库一致)。 */
         html: string;
