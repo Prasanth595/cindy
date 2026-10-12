@@ -1542,6 +1542,22 @@ export async function quarantineTargetWithoutClosing(opts: {
         ]),
     },
   ],
+  'extension/src/browser/server-context.selection.ts': [
+    {
+      desc: 'keep the implicit first tab used by agent navigation in the background',
+      transform: (source) =>
+        applyExactReplacements(source, [
+          [
+            `  openTab: (url: string) => Promise<BrowserTab>;`,
+            `  openTab: (url: string, opts?: { background?: boolean }) => Promise<BrowserTab>;`,
+          ],
+          [
+            `        openedTab = await openTab("about:blank");`,
+            `        openedTab = await openTab("about:blank", { background: true });`,
+          ],
+        ]),
+    },
+  ],
   'extension/src/browser/server-context.tab-ops.ts': [
     {
       desc: 'propagate background tab creation to the managed Chrome CDP target',
@@ -1558,6 +1574,10 @@ export async function quarantineTargetWithoutClosing(opts: {
           [
             `      cdpUrl: profile.cdpUrl,\n      url,\n      ssrfPolicy: getCdpControlPolicy(),`,
             `      cdpUrl: profile.cdpUrl,\n      url,\n      background: opts?.background,\n      ssrfPolicy: getCdpControlPolicy(),`,
+          ],
+          [
+            `    const createdViaCdp = await createTargetViaCdp(createTargetOpts)\n      .then((r) => r.targetId)\n      .catch(() => null);`,
+            `    const createdViaCdp = await createTargetViaCdp(createTargetOpts)\n      .then((r) => r.targetId)\n      .catch((err: unknown) => {\n        if (opts?.background === true) {\n          throw err;\n        }\n        return null;\n      });`,
           ],
         ]),
     },

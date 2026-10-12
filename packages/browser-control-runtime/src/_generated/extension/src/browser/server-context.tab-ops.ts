@@ -357,7 +357,12 @@ export function createProfileTabOps({
     }
     const createdViaCdp = await createTargetViaCdp(createTargetOpts)
       .then((r) => r.targetId)
-      .catch(() => null);
+      .catch((err: unknown) => {
+        if (opts?.background === true) {
+          throw err;
+        }
+        return null;
+      });
 
     if (createdViaCdp) {
       const profileState = getProfileState();

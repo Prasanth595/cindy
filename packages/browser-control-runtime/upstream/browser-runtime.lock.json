@@ -87,6 +87,10 @@
       "desc": "carry the background-open intent from the neutral runtime into tab creation"
     },
     {
+      "file": "extension/src/browser/server-context.selection.ts",
+      "desc": "keep the implicit first tab used by agent navigation in the background"
+    },
+    {
       "file": "extension/src/browser/server-context.tab-ops.ts",
       "desc": "propagate background tab creation to the managed Chrome CDP target"
     },
@@ -100,7 +104,7 @@
     }
   ],
   "fileCount": 335,
-  "contentHash": "6459981f863abde9bb9c055268a07a301f435bb2aab77be86fdc0cfcb96e78d6",
+  "contentHash": "ce0943140c6f498eef9d23594bdacf9e64d13c66595219795122e4d85260e947",
   "fsSafe": {
     "package": "@openclaw/fs-safe",
     "version": "0.4.0"

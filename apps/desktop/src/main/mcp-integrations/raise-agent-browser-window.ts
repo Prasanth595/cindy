@@ -29,10 +29,14 @@ export async function raiseAgentBrowserWindow(
         url: 'about:blank',
         background: false,
       });
-      const targetId = tabIdFromData(opened.data);
-      if (targetId) {
-        await runtime.call({ action: 'focus', targetId });
+      if (!opened.ok) {
+        throw new Error(opened.message ?? 'Failed to open the Agent browser login tab');
       }
+      const targetId = tabIdFromData(opened.data);
+      if (!targetId) {
+        throw new Error('Agent browser login tab opened without a target ID');
+      }
+      await runtime.call({ action: 'focus', targetId });
       return;
     }
     if (attempt < FOCUS_ATTEMPTS - 1) {

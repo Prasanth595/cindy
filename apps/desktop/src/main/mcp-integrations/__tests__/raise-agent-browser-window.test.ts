@@ -75,6 +75,39 @@ describe('raiseAgentBrowserWindow', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it('reports a foreground tab open failure to the login caller', async () => {
+    const call = vi.fn(async (request: BrowserControlRequest): Promise<BrowserControlResult> => {
+      if (request.action === 'tabs') return tabsResult([]);
+      if (request.action === 'open') {
+        return {
+          ok: false,
+          action: 'open',
+          errorCode: 'BROWSER_RUNTIME_ACTION_FAILED',
+          message: 'CDP create target failed',
+        };
+      }
+      return { ok: true, action: request.action };
+    });
+
+    await expect(raiseAgentBrowserWindow({ call })).rejects.toThrow('CDP create target failed');
+    expect(call.mock.calls.map(([request]) => request)).toEqual([
+      { action: 'tabs' },
+      { action: 'open', url: 'about:blank', background: false },
+    ]);
+  });
+
+  it('reports a malformed foreground tab response without claiming success', async () => {
+    const call = vi.fn(async (request: BrowserControlRequest): Promise<BrowserControlResult> => {
+      if (request.action === 'tabs') return tabsResult([]);
+      return { ok: true, action: request.action, data: {} };
+    });
+
+    await expect(raiseAgentBrowserWindow({ call })).rejects.toThrow(
+      'Agent browser login tab opened without a target ID',
+    );
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
   it('does not open a tab before CDP reports the browser ready', async () => {
     const call = vi.fn(async (request: BrowserControlRequest): Promise<BrowserControlResult> => {
       if (request.action === 'tabs') return tabsResult([], false);
