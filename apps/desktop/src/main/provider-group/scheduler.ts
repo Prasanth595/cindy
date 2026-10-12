@@ -11,6 +11,8 @@ export interface SchedulableMember {
   running: number;
   limit: number;
   weight: number;
+  /** Higher of the current 5-hour / weekly usage percentages; unknown stays null. */
+  usagePercent?: number | null;
 }
 
 export interface PickOptions {
@@ -36,6 +38,13 @@ export function pickProviderGroupMember(
   const open = eligible.filter((m) => m.running < m.limit);
   if (open.length === 0) return leastBusy(eligible).key;
   switch (strategy) {
+    case 'usage': {
+      const known = open.filter((m) => typeof m.usagePercent === 'number' && Number.isFinite(m.usagePercent));
+      if (known.length === 0) return leastBusy(open).key;
+      const lowest = Math.min(...known.map((m) => m.usagePercent!));
+      // Small quota differences should not send every simultaneous task to the same computer.
+      return leastBusy(known.filter((m) => m.usagePercent! <= lowest + 5)).key;
+    }
     case 'order':
       return open[0].key;
     case 'round': {

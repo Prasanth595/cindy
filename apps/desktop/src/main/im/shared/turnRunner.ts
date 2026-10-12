@@ -124,7 +124,7 @@ import { prependHandoffToUserMessage, prependNoteToWireUserMessage } from '../..
 import { buildPlanReconcileNote, summarizeOpenPlan } from '../../maker-ipc/planReconcile';
 import { peekGoalInactiveNote } from '../../goal-host/inactiveNote';
 import { isSilencedSchedulerTurn } from '../../scheduler-host/silent-output';
-import type { ChannelTurnSource } from '../../maker-ipc/channelTurnSignal';
+import { isRelayedChannelTurnSource, type ChannelTurnSource } from '../../maker-ipc/channelTurnSignal';
 import { listMessagesForAgentHandoff } from '../../localDb/ipc/messages';
 import {
   enqueueDurableWrite,
@@ -384,10 +384,11 @@ interface SessionState {
   /** Agent execution ended, but its background output is still being delivered. */
   pendingTranspondFinals: number;
   /**
-   * 正在开始的非 IM 轮次由其它任务的可见来信发起(channelTurnSignal 盖章)。桌面输入等
-   * 其它来源不回传；在该轮终态清除，避免沿用到下一轮。
+   * 正在开始的非 IM 轮次需要回传(`isRelayedChannelTurnSource`)：其它任务的可见来信
+   * (channelTurnSignal 盖章)，或 Agent 自己唤醒、没有任何发送的轮次(后台任务完成通知)。
+   * 桌面输入等其它来源不回传；在该轮终态清除，避免沿用到下一轮。
    */
-  otherTaskTurn: boolean;
+  relayedTurn: boolean;
 }
 
 /**
@@ -550,6 +551,11 @@ export interface ImTurnRunner {
     route?: { attached: boolean; scopeKey?: string },
     source?: ChannelTurnSource,
   ): void;
+  /**
+   * 同步标记已接好输出的会话正在开始的轮次来源，不查库、不新建监听。Agent 自己唤醒的
+   * 轮次没有发送前的等待窗口，首个事件紧随其后，只有已接线的会话来得及完整回传。
+   */
+  noteChannelTurnSource(session: MakerSession, source: ChannelTurnSource): void;
   runAgentTurn(args: ImRunAgentTurnArgs): Promise<void>;
   /**
    * 把渠道用户消息**提前**写进本地 messages 表 —— 只给「dispatch 之前还有重活」
@@ -1987,7 +1993,7 @@ export function createTurnRunner(
       scheduledTranspond: null,
       pendingTranspondTokenRate: null,
       pendingTranspondFinals: 0,
-      otherTaskTurn: false,
+      relayedTurn: false,
     };
     sessionStates.set(row.id, state);
 
@@ -2448,14 +2454,15 @@ export function createTurnRunner(
       if (!state) return;
       const turn = state.queue[0];
       if (!turn) {
-        // 只回传自动执行：scheduler 轮次，以及渠道自有任务里其它任务来信触发的轮次。
-        // 桌面输入留在桌面。通知回复只临时使用普通任务，不建立持续转播；接管普通任务
-        // 仍仅转播 scheduler。已开始的转播持续到收口(含 silent-stop 自动续跑)。
+        // 只回传自动执行：scheduler 轮次，以及渠道自有任务里其它任务来信或 Agent 自己唤醒
+        // (后台任务完成通知，没有任何发送)触发的轮次。桌面输入留在桌面。通知回复只临时
+        // 使用普通任务，不建立持续转播；接管普通任务仍仅转播 scheduler。已开始的转播持续到
+        // 收口(含 silent-stop 自动续跑)。
         const channelOwned = !state.preserveSessionConfig;
         if (
           state.scheduledTranspond !== null ||
           (event.turnOrigin?.kind === 'scheduler' && (channelOwned || state.attached)) ||
-          (channelOwned && state.otherTaskTurn)
+          (channelOwned && state.relayedTurn)
         ) {
           transpondScheduledEvent(state, event);
         }
@@ -2463,7 +2470,7 @@ export function createTurnRunner(
         // 非终止 error 表示底层仍在自动恢复，不能抢跑下一条消息（放行排队消息会让
         // 下一条撞上 SESSION_RUNNING）。
         if (isProductTurnDoneEvent(event) || isTerminalAgentErrorEvent(event)) {
-          state.otherTaskTurn = false;
+          state.relayedTurn = false;
           maybeDispatchNextQueued(state, userId);
           return;
         }
@@ -4168,7 +4175,7 @@ export function createTurnRunner(
     attachSessionOutput: (session, userId, route, source) => {
       const existing = sessionStates.get(session.id);
       if (existing) {
-        existing.otherTaskTurn = source === 'other-task';
+        existing.relayedTurn = isRelayedChannelTurnSource(source);
         const userChanged = existing.userId !== userId;
         if (route?.attached) {
           existing.attached = true;
@@ -4196,10 +4203,16 @@ export function createTurnRunner(
         scheduledTranspond: null,
         pendingTranspondTokenRate: null,
         pendingTranspondFinals: 0,
-        otherTaskTurn: source === 'other-task',
+        relayedTurn: isRelayedChannelTurnSource(source),
       };
       sessionStates.set(session.id, state);
       state.unsubscribers.push(session.onEvent(handleEventFor(session.id, userId)));
+    },
+    noteChannelTurnSource: (session, source) => {
+      const state = sessionStates.get(session.id);
+      // An IM turn still in the queue owns whatever runs now; it is delivered once, as itself.
+      if (state?.makerSession !== session || state.queue.length > 0) return;
+      state.relayedTurn = isRelayedChannelTurnSource(source);
     },
     runAgentTurn,
     persistInboundUserMessageEarly,

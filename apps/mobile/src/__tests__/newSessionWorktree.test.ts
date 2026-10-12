@@ -285,6 +285,14 @@ describe('isExactRemoteSessionClaimed', () => {
       }),
     )).rejects.toThrow('proxy context: Error: [NOT_FOUND] incidental');
   });
+
+  it.each([
+    new Error("[NOT_FOUND] no local IPC handler for channel 'local-db:sessions:patch-meta'"),
+    new Error('Error invoking remote method: Error: [NOT_FOUND] handler not registered yet'),
+  ])('does not treat a missing IPC handler as an absent session', async (error) => {
+    await expect(isExactRemoteSessionClaimed('s1', async () => { throw error; }))
+      .rejects.toBe(error);
+  });
 });
 
 describe('shouldAcceptWorktreeBranchListResult', () => {

@@ -137,7 +137,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
   const { providerId } = command;
   switch (command.action) {
     case 'get':
-      return deps.router.view(providerId);
+      return deps.router.view(providerId, { includeGuestSupport: true });
     case 'remote-view':
       return markMembersUnreachableHere(
         await deps.remoteView(command.deviceId, providerId),
@@ -150,7 +150,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       await deps.writeGroup(providerId, null);
       await deps.pruneBindings(providerId, null);
       deps.changed(providerId);
-      return deps.router.view(providerId);
+      return deps.router.view(providerId, { includeGuestSupport: true });
     case 'save': {
       const owner = deps.ownerKey();
       const next = normalizeProviderGroupConfig(command.config, providerId);
@@ -179,7 +179,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       const written = await deps.writeGroup(providerId, next);
       await deps.pruneBindings(providerId, written ? new Set(written.members.map((m) => m.key)) : null);
       deps.changed(providerId);
-      return deps.router.view(providerId);
+      return deps.router.view(providerId, { includeGuestSupport: true });
     }
   }
 }
@@ -192,7 +192,7 @@ export function registerProviderGroupIpc(): void {
     writeGroup: writeProviderGroup,
     pruneBindings: pruneProviderGroupBindings,
     ownerKey: activeOwnerScopeKey,
-    remoteView: (deviceId, providerId) => getProviderGroupRemoteClient().view(deviceId, providerId),
+    remoteView: (deviceId, providerId) => getProviderGroupRemoteClient().view(deviceId, providerId, { includeGuestSupport: true }),
     localDeviceId: getSelfDeviceId,
     listGroups: listProviderGroups,
     sessionGroup: readProviderGroupOfSession,

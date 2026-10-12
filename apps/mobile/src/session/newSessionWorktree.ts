@@ -186,6 +186,13 @@ export async function isExactRemoteSessionClaimed(
  * proves absence. Incidental text containing NOT_FOUND remains unknown.
  */
 export function isExplicitRemoteNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  // Missing invoke handlers reuse the transport's NOT_FOUND code while the
+  // host is starting or an older host lacks the channel; that is not proof
+  // that the remote session row was deleted.
+  if (/(?:no local IPC handler|handler not registered|no handler registered)/i.test(message)) {
+    return false;
+  }
   if (error && typeof error === 'object' && !Array.isArray(error)) {
     const code = (error as { code?: unknown }).code;
     if (typeof code === 'string' && code.trim().toUpperCase() === 'NOT_FOUND') {
@@ -193,8 +200,7 @@ export function isExplicitRemoteNotFoundError(error: unknown): boolean {
     }
   }
   if (!(error instanceof Error)) return false;
-  return /^(?:\[NOT_FOUND\]|Error invoking remote method(?: '[^']+')?: Error: \[NOT_FOUND\])(?:\s|$)/
-    .test(error.message);
+  return /^(?:\[NOT_FOUND\]|Error invoking remote method(?: '[^']+')?: Error: \[NOT_FOUND\])(?:\s|$)/.test(message);
 }
 
 /**

@@ -622,6 +622,7 @@ describe('BotGroupChatView', () => {
     await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Unsent thread reply');
+    if (kind === 'image') fireEvent.load(screen.getByAltText('photo.png'));
     await user.click(screen.getByRole('button', { name: kind === 'image' ? 'photo.png' : 'note.md' }));
     const preview = kind === 'image' ? document.activeElement! : document.querySelector('[data-text-lightbox-overlay]')!;
     if (kind !== 'image') {

@@ -98,6 +98,19 @@ function guestAllows(controller: string, providerId: string): boolean {
 export function installRemoteAgentHost(options: { getMaker: () => Maker; userDataDir: string }): void {
   if (host) return;
   const usage = installProviderShareUsageStore(options.userDataDir);
+  // 同一份受邀者分配器同时提供匿名状态，沿用实际分配时记录的版本兼容情况。
+  const groupRelay = createProviderGroupGuestRelay({
+    scope: getProviderGroupOwnerScope,
+    readGroup: readProviderGroup,
+    connect: (agentDeviceId) => {
+      const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
+      return { invoke: poller.invoke, poller };
+    },
+    // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
+    readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
+    now: () => Date.now(),
+    log,
+  });
   host = createRemoteAgentHost({
     isAgentAvailable: (kind) => {
       try {
@@ -159,18 +172,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     },
     recordOwnerUsage: (controller, sample) => recordDeviceUsage(controller, sample, 'device'),
     // 供应商组(本机是组所在电脑)：受邀者的任务按组分给组内电脑，本机中转(provider-groups.md §4)。
-    groupRelay: createProviderGroupGuestRelay({
-      scope: getProviderGroupOwnerScope,
-      readGroup: readProviderGroup,
-      connect: (agentDeviceId) => {
-        const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
-        return { invoke: poller.invoke, poller };
-      },
-      // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
-      readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
-      now: () => Date.now(),
-      log,
-    }),
+    groupRelay,
     captureOwner: captureDataOwnerBroadcastScope,
     isOwnerCurrent: (owner) => isDataOwnerBroadcastScopeCurrent(owner as DataOwnerBroadcastScope),
     runsRoot: path.join(options.userDataDir, 'remote-agent'),
@@ -186,6 +188,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
     turnRunningControllers: () => current.turnRunningControllers(),
+    sharedGroupStatus: (providerId) => groupRelay.sharedStatus(providerId),
   });
 }
 

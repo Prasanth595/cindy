@@ -7,7 +7,7 @@ import type { ProviderView } from '@cindy/model-providers';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import { createProviderGroupDirectory, type ProviderGroupDirectoryDeps } from '../directory';
 
 const view = (id: string, name: string, patch: Partial<ProviderView> = {}): ProviderView => ({
@@ -100,6 +100,35 @@ describe('listCandidates', () => {
 });
 
 describe('resolveMembers', () => {
+  it('uses actual local and advertised device versions, including offline devices; never invents a share version', async () => {
+    const directory = createProviderGroupDirectory(deps({ localAppVersion: () => '0.1.104-beta' }));
+    const members: ProviderGroupConfig['members'] = [
+      { key: 'local', kind: 'local', agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+      { key: 'mini', kind: 'device', agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false },
+      { key: 'off', kind: 'device', agentDeviceId: 'off', providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+      { key: 'share', kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+    ];
+    const resolved = await directory.resolveMembers('anthropic', { strategy: 'least', autoSwitch: true, members });
+    expect(resolved.map((m) => m.appVersion)).toEqual(['0.1.104-beta', '1.0.0', '1.0.0', undefined]);
+    expect(resolved[2].state).toBe('offline');
+  });
+
+  it('reads quota only for available Claude subscriptions on this account’s computers', async () => {
+    const readClaudeUsage = vi.fn(async (_member: ProviderGroupMember) => ({ updatedAt: 1_000, fiveHour: { utilization: 25 } }));
+    const directory = createProviderGroupDirectory(deps({ readClaudeUsage }));
+    const member = (kind: 'local' | 'device' | 'share', agentDeviceId: string | null, providerId: string) => ({
+      key: `${kind}:${agentDeviceId}:${providerId}`, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,
+    });
+    const members = [member('local', null, 'anthropic'), member('device', 'mini', 'anthropic-1a2b3c4d'),
+      member('device', 'mini', 'deepseek'), member('device', 'off', 'anthropic'), member('share', 'share:s1', 'anthropic')];
+    const result = await directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members });
+    expect(readClaudeUsage).toHaveBeenCalledTimes(2);
+    expect(readClaudeUsage).toHaveBeenCalledWith(members[0]);
+    expect(readClaudeUsage).toHaveBeenCalledWith(members[1]);
+    expect(result[0].claudeUsage?.fiveHour?.utilization).toBe(25);
+    expect(result[4]).not.toHaveProperty('claudeUsage');
+  });
+
   it('reports each member with a state and reason', async () => {
     const directory = createProviderGroupDirectory(deps({
       listReceivedShares: () => [share('s1'), share('s2', { status: 'paused' })],
@@ -282,6 +311,7 @@ describe('probe (waiting for a computer to come back, §6.1)', () => {
 
 describe('resolving members quickly when choosing a computer (2026-10-11)', () => {
   const MINI = { key: 'device:mini:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
+  const OTHER = { key: 'device:other:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'other', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
   const SLOW = { key: 'device:slow:anthropic', kind: 'device' as const, agentDeviceId: 'slow', providerId: 'anthropic', label: 'Slow PC', limit: 4, weight: 1, paused: false };
   const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [SLOW, MINI] };
 
@@ -310,6 +340,68 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
         [MINI.key, 'ok', false],
       ]);
       expect(resolved[0].label).toBe('Slow PC');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an available computer when its quota read outlives the quick selection window', async () => {
+    vi.useFakeTimers();
+    try {
+      const usage = new Promise<null>(() => undefined);
+      const directory = createProviderGroupDirectory(deps({
+        listDevices: async () => [device('mini'), device('other')],
+        readDeviceProviders: vi.fn(async () => [view('anthropic-1a2b3c4d', 'Claude')]),
+        readClaudeUsage: vi.fn(async (member: ProviderGroupMember) => member.key === MINI.key ? usage : null),
+      }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members: [MINI, OTHER] }, {
+        quickMs: 3_000,
+        enough: (r) => r.state === 'ok',
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ state: string; pending?: boolean; claudeUsage?: unknown }>;
+      expect(resolved).toMatchObject([
+        { member: { key: MINI.key }, state: 'ok' },
+        { member: { key: OTHER.key }, state: 'ok' },
+      ]);
+      expect(resolved[0].pending).toBeUndefined();
+      expect(resolved[0].claudeUsage).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps waiting when the completed quota makes the known computer unavailable', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(deps({
+        listDevices: async () => [device('mini'), device('slow')],
+        readDeviceProviders: vi.fn((id: string) => id === 'slow'
+          ? new Promise<ProviderView[]>((resolve) => {
+              setTimeout(() => resolve([view('anthropic', 'Claude')]), 4_000);
+            })
+          : Promise.resolve([view('anthropic-1a2b3c4d', 'Claude')])),
+        readClaudeUsage: async (member) => member.key === MINI.key
+          ? { updatedAt: 0, fiveHour: { utilization: 100, resetsAt: 80_000 }, sevenDay: { utilization: 20, resetsAt: 80_000 } }
+          : null,
+      }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, {
+        quickMs: 3_000,
+        enough: (resolved) => resolved.state === 'ok' && resolved.claudeUsage?.fiveHour?.utilization !== 100,
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(done.mock.calls[0][0]).toMatchObject([
+        { member: { key: SLOW.key }, state: 'ok' },
+        { member: { key: MINI.key }, state: 'ok', claudeUsage: { fiveHour: { utilization: 100 } } },
+      ]);
     } finally {
       vi.useRealTimers();
     }

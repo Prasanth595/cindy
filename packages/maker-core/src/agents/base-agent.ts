@@ -664,6 +664,11 @@ export interface AgentDeps {
   resolveSessionEnvironment?: (sessionId: string) => Promise<{ identity: string; assertCurrent?(): void } | undefined>;
   /** Cindy-only local Skill overrides. Freeze at native runtime startup; never apply to SSH. */
   getDisabledSkillPaths?: () => readonly string[];
+  /** Optional host isolation for SkillHub discovery; native runtime discovery is unaffected. */
+  scanLocalCustomizations?: (
+    engine: 'claude-code' | 'codex' | 'pi',
+    options: ListCustomizationsOptions,
+  ) => Promise<ListCustomizationsResult>;
   /** Host-owned local Skills, loaded without writing user/project discovery directories. */
   getManagedSkills?: () => Promise<Array<AgentSkillCommand & {
     claudeCommandName: string;

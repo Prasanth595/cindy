@@ -374,6 +374,30 @@
       "modelsRefused": "对方电脑暂时不让读取这个分享：可能没有允许远程控制、关了这个供应商的「允许被远程调用」，也可能对方的 Cindy 刚启动、还没准备好。请稍后重试，或让对方检查这两项设置。",
       "modelsFailedWithCode": "暂时读不到对方开放的模型，请稍后重试。（错误代码：{{code}}）",
       "retryModels": "重新读取模型",
+      "groupStatus": {
+        "title": "组内电脑状态",
+        "shareActive": "分享已开启",
+        "refresh": "刷新状态",
+        "computer": "电脑 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任务",
+        "loading": "正在读取电脑状态…",
+        "unsupported": "分享者的 Cindy 暂未提供状态，请联系分享者检查或更新",
+        "failed": "电脑状态读取失败，请刷新重试",
+        "unconfirmed": "部分电脑状态尚未确认，请稍后刷新",
+        "noneReady": "目前没有可接任务的电脑，请联系分享者检查",
+        "note": "仅显示匿名状态，不显示电脑名称和用量。能否运行还取决于所选模型。",
+        "updateNote": "需要分享者更新对应电脑上的 Cindy，才能接收分享来的任务",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任务",
+          "cooling": "冷却中，暂不接新任务",
+          "offline": "离线或无法连接",
+          "paused": "已暂停分配",
+          "unavailable": "暂不可用",
+          "needs-update": "需要更新",
+          "unknown": "状态未知"
+        }
+      },
       "modelsEmpty": "对方还没有开放可用的模型。",
       "pausedNote": "对方暂停了这个分享，恢复后才能使用。",
       "offlineNote": "对方电脑不在线，上线后就能继续使用。",
@@ -438,11 +462,13 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
+      "usage": "用量均衡",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例"
+        "weight": "按权重比例",
+        "usage": "按5小时和每周用量分配"
       }
     },
     "autoSwitch": {
@@ -451,6 +477,13 @@
     },
     "member": {
       "local": "本机",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任务",
+        "supportUnknown": "分享任务兼容性未知"
+      },
       "sourceDevice": "我的其他电脑",
       "sourceShare": "来自 {{name}} 的分享",
       "shareComputer": "{{name}} 的电脑",
@@ -468,6 +501,7 @@
       "weightAria": "{{name}} 的权重",
       "weightOption": "权重 {{weight}}",
       "assignAria": "给 {{name}} 分配任务",
+      "assignLocalAria": "允许 {{name}} 接收外部新任务",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出组",
       "status": {
@@ -475,6 +509,7 @@
         "idle": "空闲",
         "full": "已满",
         "paused": "已暂停分配",
+        "pausedLocal": "已暂停接收外部新任务",
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
         "offline": "不在线",
@@ -1059,7 +1094,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 订阅等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "这台电脑",
       "scopeAll": "全部设备",
       "noUsage": "没有用量",
@@ -1070,13 +1104,9 @@
       },
       "dailyAverage": "日均",
       "paid": "实付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高单日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金额",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任务",
       "today": "今天",

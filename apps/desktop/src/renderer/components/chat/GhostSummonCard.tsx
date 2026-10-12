@@ -35,6 +35,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, ChevronDown, Ghost } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { SHARE_SOURCE_ATTR } from '@/lib/shareConversationImage';
 import { Collapse } from '@/components/ui/collapse';
 import {
   commandDirectiveSegments,
@@ -320,7 +321,7 @@ export function GhostSummonCard({
       directive.ghosts.length === 1 ? iconByGhostId(directive.ghosts[0].ghostId) : null;
     const names = directive.ghosts.map((g) => g.name).join(t('chat.ghostSummon.listSeparator'));
     return (
-      <div className="flex max-w-full flex-col items-end gap-1.5">
+      <div {...{ [SHARE_SOURCE_ATTR]: '' }} className="flex max-w-full flex-col items-end gap-1.5">
         <button
           type="button"
           aria-expanded={expanded}
@@ -429,8 +430,9 @@ export function GhostSummonCard({
         ? t('chat.ghostSummon.status.called')
         : t('chat.ghostSummon.status.done');
 
+  // 分享图不带插件标注(同来源标签):整行连同分隔线一起移除,气泡与普通消息一致。
   return (
-    <div className={cn('max-w-full', className)}>
+    <div {...{ [SHARE_SOURCE_ATTR]: '' }} className={cn('max-w-full', className)}>
       <button
         type="button"
         aria-expanded={expanded}

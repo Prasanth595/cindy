@@ -1,7 +1,7 @@
 /**
  * 把供应商组接到设备互联(docs/product-rules/provider-groups.md §4)：同账号其他电脑的
  * `provider-group:remote` 请求(含它们报告来的用量)，以及给它们的 `maker:provider:list` 补组摘要与运行数。
- * 组摘要只服务同账号电脑，dispatch 已拒绝受邀者与共享任务访客；受邀者只拿得到组里有几台(§8)。
+ * 组摘要只服务同账号电脑，dispatch 已拒绝受邀者与共享任务访客；受邀者的台数由本接口提供，匿名状态另由受邀者分配器提供(§8)。
  */
 import { setProviderGroupRemoteHandler } from '../device-link/dispatch.js';
 import { isRemoteProviderInvocationAllowed } from '../maker-host/remote-provider-access-store.js';

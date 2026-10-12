@@ -147,7 +147,7 @@
     "minMembers": "群聊裡至少要有 {{min}} 位夥伴",
     "maxMembers": "最多 {{max}} 位",
     "noMoreBots": "沒有其他可以加入的夥伴了",
-    "nameSaveFailed": "群聊名稱沒能儲存，已恢復原來的名稱",
+    "nameSaveFailed": "群名稱未能儲存，輸入已保留，請重試。",
     "membersSaveFailed": "成員沒能更新，請再試一次",
     "replyMode": "沒有 @ 人的時候",
     "replyModeAll": "大家都可以接話",
@@ -173,7 +173,22 @@
     "projectDirNote": "分工做事時，夥伴們在這裡工作。不選也行，會用這個群聊自己的資料夾；選了 git 專案，每次分工會新開一個 worktree 和分支，不動你手上的程式碼。",
     "add": "新增夥伴",
     "projectDirOnComputer": "在電腦上選擇或更換",
-    "memberActions": "{{name}} 的操作"
+    "memberActions": "{{name}} 的操作",
+    "managementComputer": "管理電腦",
+    "retry": "重試",
+    "reconnect": "重連",
+    "conflict": "群設定已更新，請核對後再儲存。輸入已保留。",
+    "archive": "封存群聊",
+    "archiveConfirmTitle": "封存「{{name}}」？",
+    "archiveNote": "僅群主可封存。封存後無法繼續傳送訊息，歷史訊息會保留。",
+    "managementStatus": {
+      "ready": "已連線",
+      "loading": "連線中…",
+      "noHost": "已中斷",
+      "permission": "無管理權限",
+      "upgrade": "需更新電腦端",
+      "unavailable": "設定讀取失敗"
+    }
   },
   "errors": {
     "memberLimit": "一個群聊需要 2–6 位夥伴",

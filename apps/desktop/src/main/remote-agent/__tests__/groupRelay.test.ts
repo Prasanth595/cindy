@@ -148,6 +148,15 @@ async function waitFor(condition: () => boolean, ms = 3_000): Promise<void> {
   }
 }
 
+function readOwnerGuestIndex(): Record<string, { controller: string; forgetPending?: string[]; nativeIds: string[] }> {
+  return JSON.parse(fs.readFileSync(path.join(root, 'owner', 'guest-sessions.json'), 'utf8'));
+}
+
+async function waitForGuestPurge(controller: string): Promise<void> {
+  // 远端删目录后还会写索引；等组所在电脑确认远端完成并落盘，避免 teardown 与后台写入竞争。
+  await waitFor(() => Object.values(readOwnerGuestIndex()).every((record) => record.controller !== controller));
+}
+
 const MEMBER_MINI: GroupRelayMember = { memberKey: 'device:mini:anthropic-2', agentDeviceId: 'mini', providerId: 'anthropic-2', sameAccount: true };
 const MEMBER_STUDIO: GroupRelayMember = { memberKey: 'device:studio:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: true };
 
@@ -229,8 +238,8 @@ beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-group-relay-')));
 });
 
-afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 let runSeq = 0;
@@ -390,7 +399,8 @@ describe('provider group relay for shared users', () => {
     const homeB = env.memberStarted.mini[1].input.guestHome!;
     expect(fs.existsSync(homeA) && fs.existsSync(homeB)).toBe(true);
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
-    await waitFor(() => !fs.existsSync(homeA));
+    await waitForGuestPurge(GUEST_A);
+    expect(fs.existsSync(homeA)).toBe(false);
     expect(env.relay.forget).toHaveBeenCalledWith('mini', relayKeyFor(GUEST_A));
     expect(fs.existsSync(homeB)).toBe(true);
     // 另一个控制端拿着同一个 relay 键也清不掉别人的。
@@ -468,7 +478,7 @@ describe('provider group relay: starting, load and cleanup', () => {
     expect(env.memberStarted.studio).toHaveLength(1);
     await client.close('close', 'navigation');
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
-    await waitFor(() => env.relay.forget.mock.calls.length >= 2);
+    await waitForGuestPurge(GUEST_A);
     expect(env.relay.forget).toHaveBeenCalledWith('mini', relayKeyFor(GUEST_A));
     expect(env.relay.forget).toHaveBeenCalledWith('studio', relayKeyFor(GUEST_A));
   });
@@ -477,23 +487,17 @@ describe('provider group relay: starting, load and cleanup', () => {
     const env = setup();
     const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
     await client.close('close', 'navigation');
-    const index = (): Record<string, { forgetPending?: string[]; nativeIds: string[] }> => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(root, 'owner', 'guest-sessions.json'), 'utf8'));
-      } catch {
-        return {};
-      }
-    };
     env.relay.forget.mockRejectedValueOnce(new Error('DEVICE_OFFLINE'));
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
     await waitFor(() => env.relay.forget.mock.calls.length === 1);
-    await waitFor(() => Object.values(index()).some((record) => record.forgetPending?.includes('mini')));
+    await waitFor(() => Object.values(readOwnerGuestIndex()).some((record) => record.forgetPending?.includes('mini')));
     // 本机这边已经清掉，只留下还要通知的那台。
-    expect(Object.values(index()).every((record) => record.nativeIds.length === 0)).toBe(true);
+    expect(Object.values(readOwnerGuestIndex()).every((record) => record.nativeIds.length === 0)).toBe(true);
 
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
     await waitFor(() => env.relay.forget.mock.calls.length === 2);
-    await waitFor(() => Object.keys(index()).length === 0);
+    await waitForGuestPurge(GUEST_A);
+    expect(Object.keys(readOwnerGuestIndex())).toHaveLength(0);
   });
 
   it('does not let a shared user get more tasks by filling in its own relay key', async () => {

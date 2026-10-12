@@ -40,6 +40,11 @@ export function botGroupResourceRef(groupId: string): RemoteResourceRef {
   return { collectionId: BOT_GROUP_REMOTE_COLLECTION_ID, kind: BOT_GROUP_REMOTE_RESOURCE_KIND, id: groupId };
 }
 
+export function canManageBotGroup(group: BotGroupRemoteChatData) {
+  return group.serverBacked === true && !group.archived && group.supportsSettingsManagement === true
+    && group.revision !== undefined && group.members.some(member => member.isOwned && (member.role === 'owner' || member.role === 'admin'));
+}
+
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -150,6 +155,7 @@ function parseMember(value: unknown): BotGroupMemberView | null {
     ...(record.actorKind === 'human' || record.actorKind === 'bot' || record.actorKind === 'integration' ? { actorKind: record.actorKind } : {}),
     ...(typeof record.isOwned === 'boolean' ? { isOwned: record.isOwned } : {}),
     ...(typeof record.isSelf === 'boolean' ? { isSelf: record.isSelf } : {}),
+    ...(record.role === 'owner' || record.role === 'admin' || record.role === 'member' || record.role === 'guest' ? { role: record.role } : {}),
     avatar: text(record.avatar, 4_096) ?? '',
     avatarColor: text(record.avatarColor, 64) ?? '',
     status: enumOf(record.status, MEMBER_STATUSES) ?? 'missing',
@@ -334,7 +340,10 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     id: groupId,
     name,
     serverBacked: record.serverBacked === true,
+    archived: record.archived === true,
+    ...(Number.isSafeInteger(record.revision) && Number(record.revision) > 0 ? { revision: Number(record.revision) } : {}),
     supportsMemberRemoval: record.supportsMemberRemoval === true,
+    supportsSettingsManagement: record.supportsSettingsManagement === true,
     replyMode: record.replyMode === 'mentioned' ? 'mentioned' : 'all',
     speakingMode: record.speakingMode === 'sequential' ? 'sequential' : 'auto',
     members,

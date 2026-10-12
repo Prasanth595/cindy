@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "updatedAt": "2026-10-12T03:41:06.000Z",
+  "updatedAt": "2026-10-13T00:00:00.000Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -2244,6 +2244,20 @@
       "modelRef": "meta/muse-spark-1.2"
     },
     {
+      "id": "xd/meta-muse-wonder-1.0",
+      "name": "Muse Wonder",
+      "nativeApi": "openai-responses",
+      "routes": [
+        {
+          "providerId": "xd",
+          "modelId": "meta/muse-wonder-1.0",
+          "agents": ["claude-code", "codex"],
+          "referencePriceGroup": "global"
+        }
+      ],
+      "modelRef": "meta/muse-wonder-1.0"
+    },
+    {
       "id": "xd/moonshotai-kimi-k3",
       "name": "Kimi K3",
       "routes": [
@@ -2572,6 +2586,11 @@
     {
       "providerId": "xd",
       "modelIdPrefix": "meta/muse-spark-",
+      "nativeApi": "openai-responses"
+    },
+    {
+      "providerId": "xd",
+      "modelIdPrefix": "meta/muse-wonder-",
       "nativeApi": "openai-responses"
     },
     {
@@ -6817,6 +6836,43 @@
                 "kind": "provider-official",
                 "url": "https://dev.meta.ai/docs/pricing-rate-limits",
                 "verifiedAt": "2026-09-23"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "meta/muse-wonder-1.0",
+      "aliases": ["muse-wonder-1.0"],
+      "defaults": {
+        "name": "Muse Wonder",
+        "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"],
+        "defaultEffort": "medium",
+        "supportsImageInput": true,
+        "contextWindow": 1048576,
+        "mode": "chat",
+        "modalities": {
+          "input": ["text", "image"],
+          "output": ["text"]
+        },
+        "officialDocs": "https://dev.meta.ai/docs/models"
+      },
+      "referencePriceGroups": [
+        {
+          "id": "global",
+          "prices": [
+            {
+              "currency": "USD",
+              "variant": "standard",
+              "inputPerMtok": 4,
+              "outputPerMtok": 20,
+              "cacheReadPerMtok": 0.2,
+              "effectiveFrom": "2026-10-12",
+              "source": {
+                "kind": "provider-official",
+                "url": "https://dev.meta.ai/docs/pricing-rate-limits",
+                "verifiedAt": "2026-10-13"
               }
             }
           ]

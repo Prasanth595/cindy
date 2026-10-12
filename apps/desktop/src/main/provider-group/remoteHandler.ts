@@ -88,7 +88,7 @@ export function decorateProviderListWithGroups(
 }
 
 /**
- * 分享出去的供应商建了组时，受邀者只看到组里有几台电脑(provider-groups.md §8)：不给名单、不给状态。
+ * 分享出去的供应商建了组时提供台数(provider-groups.md §8)，不返回组员名单；匿名状态由受邀者分配器按需提供。
  * 供应商不再允许被远程调用时分享本身就不可用，不报台数。
  */
 export function sharedProviderGroupSize(
@@ -148,7 +148,14 @@ export async function handleProviderGroupRemote(
       return {};
     case 'view': {
       if (!deps.isRemoteAllowed(request.providerId)) return { providerId: request.providerId, config: null, members: [] };
-      return scope.router.view(request.providerId);
+      const options = request.model !== undefined
+        ? request.includeGuestSupport === true
+          ? { model: request.model, includeGuestSupport: true }
+          : request.model
+        : { includeGuestSupport: request.includeGuestSupport === true };
+      const view = await scope.router.view(request.providerId, options);
+      return scope.isCurrent() && deps.isRemoteAllowed(request.providerId)
+        ? view : { providerId: request.providerId, config: null, members: [] };
     }
     case 'usage':
     case 'usage-part': {

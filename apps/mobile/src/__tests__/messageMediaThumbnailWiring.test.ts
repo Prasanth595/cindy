@@ -36,7 +36,7 @@ describe('mobile message media thumbnail wiring', () => {
     );
     expect(mediaPreview).toContain('shouldAutoResolveMediaThumbnail');
     expect(mediaPreview).toContain('mediaThumbnailPhase');
-    expect(mediaPreview).toContain('message.mediaThumbLoading');
+    expect(mediaPreview).toContain('<MessageImagePlaceholder');
     expect(mediaPreview).toContain('message.mediaThumbFallback');
     // 查看器插队 + 缩略图可取消
     expect(mediaPreview).toContain('signal, forceRefresh');
@@ -79,8 +79,8 @@ describe('mobile message media thumbnail wiring', () => {
       rendererSource.indexOf('function MediaPreview'),
     );
     // iOS ph:// 必须沿用相册托盘的 Expo 解码器，并从加载结果量尺寸。
-    expect(rendererSource).toContain("import { Image as ExpoImage } from 'expo-image'");
-    expect(pendingImage).toContain('<ExpoImage');
+    expect(readTextLf(resolve(process.cwd(), 'src/session/MessageLoadingImage.tsx'), 'utf8')).toContain("Image as ExpoImage");
+    expect(pendingImage).toContain('<MessageLoadingImage');
     expect(pendingImage).toContain('contentFit="contain"');
     expect(pendingImage).toContain('source: { width, height }');
     expect(pendingImage).toContain('attachmentImageDisplaySize');

@@ -269,10 +269,26 @@ hook 侧既有的逐轮 `[渠道说明]`，两者措辞不同但都向模型说�
 
 适用范围：个人飞书/Lark、Telegram、Discord、微信、企业微信、钉钉，以及官方 Telegram、Slack；X 不参与。
 
-只回传自动执行的轮次：自动任务（scheduler `turnOrigin`），以及其它任务经 `send_to_session` 等
-发来的可见消息触发的回复。桌面里直接输入的消息、伙伴委派的内部协调输入都不回传。其它任务来信由
+只回传自动执行的轮次：自动任务（scheduler `turnOrigin`），其它任务经 `send_to_session` 等
+发来的可见消息触发的回复，以及 Agent 自己唤醒的轮次。桌面里直接输入的消息、伙伴委派的内部协调输入都不回传。其它任务来信由
 主进程在派发它的那次 `Session.send` 期间盖章（`maker-ipc/channelTurnSignal.ts`），随该轮的开始信号
 交给两条路径，只作用于这一轮；不改 maker-core 的 `SendOrigin`，以免插件钩子等把它当作非用户轮次。
+两条路径共用 `isRelayedChannelTurnSource` 一个判据。
+
+Agent 自己唤醒的轮次（2026-10-13 补齐）：Claude Code 的后台子代理、后台命令等完成后，CLI 自己注入
+`<task-notification>` 开新一轮，Cindy 这边没有任何 `Session.send`，旧版因此既没有开始信号也没有来源，
+被当作桌面输入留在桌面，只有原 IM 轮次还挂着的那一段（wake 任务的 continuation claim 让 IM 轮次等到第一次
+唤醒结束）随原轮次发出。现在 maker-core `Session` 在本代产品轮次已收口、没有预留中的发送时看到主代理的新
+输出（文本、思考、工具），就在该事件分发给监听者之前同步调用 `onProviderInitiatedTurn`；桌面以
+`provider-wake` 来源发出开始信号，回传与其它任务来信同一条发送、收口与清理路径。判据与引擎无关，
+Codex / Pi 目前没有此类自动唤醒。子代理事件（`agentMeta.parentUuid`）、后台事件、claim 挡住的续跑段都不算；
+产品轮次里接受过插话（steer）时，收口后第一个无发送的轮次一律归插话、不回传：插话赶不上原轮次时
+Claude 会把它当作新一轮执行，而 Cindy 分不出插话是否已被原轮次吸收，宁可漏传这一轮，也不把桌面输入的回复发到渠道。
+仍属原 IM 轮次（官方 hook 仍在观察、个人渠道队列里仍有 IM 轮次）时由该轮次一并发出，不另发后台结果。
+已知边界：唤醒轮次自身没有来源，跟在桌面输入或静默运行的自动任务之后被唤醒时同样回传；个人渠道只对已接好
+输出的渠道自有任务生效（重启后先在桌面发起、尚未经 IM 接线的任务，唤醒轮次留在桌面，不从中途开始转播），
+`/ctr` 接管任务仍只转播 scheduler 输出；唤醒后还没产生任何输出就直接失败的轮次（只有一个终止错误）与上一轮迟到的
+错误分不开，不识别为唤醒、不回传，失败留在桌面（与此前行为相同）。
 
 个人渠道通过 `im/shared/turnRunner.ts` 回传上述轮次的输出，无需先 `/ctr` 接管。自动任务保留任务名，
 其它来源直接显示回复正文，目的地沿用该任务原聊天和话题。正常 IM 入站轮次仍只发送一次；
@@ -296,7 +312,7 @@ bot 身份按入站使用的稳定 ID 校验；Discord 取 gateway application i
 
 官方 Telegram、Slack 复用已有 hook binding、轮次观察和附件收集；双方宣告 `session-result-v1`
 后，后台回传与任务派发共用渠道 key 判定，兼容既有 Slack 前缀、team-slack、旧频道和 DM key；X 不回传。
-轮次终态时按来源决定是否发送（scheduler 来源，或开始时盖了其它任务来信章）。结果用 `turn.end(background: true)` 发送，服务端在原私聊或话题新发消息。普通 IM 轮次和
+轮次终态时按来源决定是否发送（scheduler 来源，或开始时带其它任务来信 / Agent 自己唤醒的来源）。结果用 `turn.end(background: true)` 发送，服务端在原私聊或话题新发消息。普通 IM 轮次和
 已有 retry/reopen 轮次不另发一份。发送前复核账号代次、连接、目录授权与会话绑定；服务端
 再核对设备绑定、聊天归属及 `/new` 代次。Telegram 保存新消息 route，回复结果仍回到原 lane。
 

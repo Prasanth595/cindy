@@ -376,6 +376,30 @@
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
       "modelsFailedWithCode": "Couldn’t read the models they made available. Try again shortly. (Error code: {{code}})",
       "retryModels": "Reload Models",
+      "groupStatus": {
+        "title": "Group Computer Status",
+        "shareActive": "Sharing Active",
+        "refresh": "Refresh Status",
+        "computer": "Computer {{number}}",
+        "summary": "{{ready}} of {{total}} computers can accept tasks",
+        "loading": "Reading computer status…",
+        "unsupported": "The sharer’s Cindy has not provided status. Ask the sharer to check or update Cindy.",
+        "failed": "Could not read computer status. Refresh to try again.",
+        "unconfirmed": "Some computer statuses are unconfirmed. Refresh shortly.",
+        "noneReady": "No computers can accept tasks right now. Ask the sharer to check.",
+        "note": "Only anonymous status is shown, without computer names or usage. Availability also depends on the selected model.",
+        "updateNote": "The sharer needs to update Cindy on the indicated computers to accept shared tasks.",
+        "state": {
+          "available": "Available",
+          "busy": "Busy, Can Accept Tasks",
+          "cooling": "Cooling Down, No New Tasks",
+          "offline": "Offline or Unreachable",
+          "paused": "Assignment Paused",
+          "unavailable": "Temporarily Unavailable",
+          "needs-update": "Update Required",
+          "unknown": "Status Unknown"
+        }
+      },
       "modelsEmpty": "They haven't made any models available yet.",
       "pausedNote": "They've paused this share. You can use it again once they resume it.",
       "offlineNote": "Their computer is offline. You can use it again once it is back online.",
@@ -441,11 +465,13 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
+      "usage": "Usage Balancing",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
         "order": "Earlier in the list first",
-        "weight": "Split by weight"
+        "weight": "Split by weight",
+        "usage": "Balance 5-hour and weekly usage"
       }
     },
     "autoSwitch": {
@@ -454,6 +480,13 @@
     },
     "member": {
       "local": "This Computer",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "Update needed",
+        "unknown": "Version unknown",
+        "needsUpdate": "Update needed to receive shared tasks",
+        "supportUnknown": "Shared-task compatibility unknown"
+      },
       "sourceDevice": "My other computer",
       "sourceShare": "Shared by {{name}}",
       "shareComputer": "{{name}}'s computer",
@@ -473,6 +506,7 @@
       "weightAria": "Weight for {{name}}",
       "weightOption": "Weight {{weight}}",
       "assignAria": "Assign tasks to {{name}}",
+      "assignLocalAria": "Allow {{name}} to accept new tasks from other computers",
       "moreAria": "More actions for {{name}}",
       "remove": "Remove from Group",
       "status": {
@@ -480,6 +514,7 @@
         "idle": "Idle",
         "full": "Full",
         "paused": "Assignments paused",
+        "pausedLocal": "Not accepting new tasks from other computers",
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",
@@ -1081,8 +1116,6 @@
       "usageTitle": "Usage",
       "wideCaptionMoney_one": "Last {{n}} day · Subscription value",
       "wideCaptionMoney_other": "Last {{n}} days · Subscription value",
-      "wideCaptionTokens_one": "Last {{n}} day · Tokens",
-      "wideCaptionTokens_other": "Last {{n}} days · Tokens",
       "scopeLocal": "This computer",
       "scopeAll": "All devices",
       "noUsage": "No usage",
@@ -1093,13 +1126,9 @@
       },
       "dailyAverage": "Daily avg",
       "paid": "Paid",
-      "tokenUnitTitle": "Tokens",
-      "peakDay": "Peak day",
       "range7": "7 days",
       "range30": "30 days",
       "range90": "90 days",
-      "metricMoney": "Amount",
-      "metricTokens": "Tokens",
       "listModels_one": "Models · {{n}} day",
       "listModels_other": "Models · {{n}} days",
       "listTasks": "Today's tasks",

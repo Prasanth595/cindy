@@ -16,7 +16,7 @@ export const PROVIDER_SHARE_NEUTRAL_DEVICE_NAME = 'Cindy';
 
 /**
  * 分享出去的目录里，供应商建了组时带上组里有几台电脑(`groupSize`)：受邀者只知道背后是个组、有几台，
- * 不知道是哪几台。组内电脑的名单(`group`)只给同账号电脑。
+ * 不知道是哪几台；详情可另取匿名状态。组内电脑的名单(`group`)只给同账号电脑。
  */
 export const PROVIDER_SHARE_GROUP_SIZE_FIELD = 'groupSize';
 const MAX_SHARE_GROUP_SIZE = 512;
@@ -28,6 +28,23 @@ export function readProviderShareGroupSize(provider: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_SHARE_GROUP_SIZE
     ? value
     : null;
+}
+
+/** 只在分享详情请求时附带匿名状态；普通目录读取不探测组员，避免组之间递归查询。 */
+export const PROVIDER_SHARE_GROUP_STATUS_REQUEST = 'includeSharedGroupStatus';
+export const PROVIDER_SHARE_GROUP_STATUS_FIELD = 'groupStatus';
+export const PROVIDER_SHARE_GROUP_STATES = [
+  'available', 'busy', 'cooling', 'offline', 'paused', 'unavailable', 'needs-update', 'unknown',
+] as const;
+export type ProviderShareGroupState = typeof PROVIDER_SHARE_GROUP_STATES[number];
+
+/** 顺序对应当前组的顺序，不发送名称、设备标识、来源、运行数或配额。未知状态保留位置。 */
+export function readProviderShareGroupStatus(provider: unknown): ProviderShareGroupState[] | null {
+  const size = readProviderShareGroupSize(provider);
+  if (size === null) return null;
+  const value = (provider as Record<string, unknown>)[PROVIDER_SHARE_GROUP_STATUS_FIELD];
+  if (!Array.isArray(value) || value.length !== size) return null;
+  return Array.from(value, (state) => PROVIDER_SHARE_GROUP_STATES.includes(state) ? state : 'unknown');
 }
 
 /**
@@ -145,21 +162,24 @@ function accountIdentity(value: unknown): string | undefined {
 /**
  * 分享出去的一条供应商：去掉分享者的账号身份字段(`subscriptionAccount` / `openAiAccount`，
  * 含登录邮箱)并清理名称，地址里的用户名密码与查询参数也去掉；其余展示字段沿用同账号投影。
- * 供应商组摘要(`group`，列着组内电脑)只给同账号电脑，这里也去掉；只留组里有几台(`groupSize`)
- * 与受邀者自己的运行数(`guestRunning`)，不合理的值一并去掉；这台电脑上的总运行数(`runningTurns`)含分享者
+ * 供应商组摘要(`group`，列着组内电脑)只给同账号电脑，这里也去掉；只留组里有几台(`groupSize`)、
+ * 匿名状态(`groupStatus`)与受邀者自己的运行数(`guestRunning`)，不合理的值一并去掉；这台电脑上的总运行数(`runningTurns`)含分享者
  * 本人与其他人的任务，只给同账号电脑，这里去掉。
  * 分享者电脑、受邀者电脑与手机都各过一遍。
  */
 export function scrubSharedProvider<T>(provider: T): T {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return provider;
   const groupSize = readProviderShareGroupSize(provider);
+  const groupStatus = readProviderShareGroupStatus(provider);
   const guestRunning = readProviderShareGuestRunning(provider);
   const { subscriptionAccount, openAiAccount, ...fields } = provider as Record<string, unknown>;
   delete fields.group;
   delete fields[PROVIDER_RUNNING_TURNS_FIELD];
   delete fields[PROVIDER_SHARE_GROUP_SIZE_FIELD];
+  delete fields[PROVIDER_SHARE_GROUP_STATUS_FIELD];
   delete fields[PROVIDER_SHARE_GUEST_RUNNING_FIELD];
   if (groupSize !== null) fields[PROVIDER_SHARE_GROUP_SIZE_FIELD] = groupSize;
+  if (groupStatus !== null) fields[PROVIDER_SHARE_GROUP_STATUS_FIELD] = groupStatus;
   if (guestRunning !== null) fields[PROVIDER_SHARE_GUEST_RUNNING_FIELD] = guestRunning;
   const rest = stripNestedUrlSecrets(fields, 0) as Record<string, unknown>;
   if (typeof rest.name === 'string') {

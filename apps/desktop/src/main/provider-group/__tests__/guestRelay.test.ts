@@ -127,6 +127,7 @@ describe('provider group guest relay planner', () => {
   it('reads the latest state when choosing again after a computer did not work', async () => {
     const env = setup([MINI, FRIEND]);
     await env.relay.plan(PLAN);
+    expect(env.router.pick.mock.calls[0][0].localTask).toBeUndefined();
     expect(env.router.pick.mock.calls[0][0].fresh).toBeUndefined();
     await env.relay.plan({ ...PLAN, exclude: new Set([MINI.key]) });
     expect(env.router.pick.mock.calls[1][0]).toMatchObject({ fresh: true });

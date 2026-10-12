@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/i18n';
 import i18n from '@/i18n';
 import { GhostFulfillmentContext, GhostSummonCard } from '@/components/chat/GhostSummonCard';
+import { expandCollapsedMessages, stripMessageSources } from '@/lib/shareConversationImage';
 import type { GhostDirectiveDisplay } from '@/cindy-brain/ghostCommand';
 import type { HostCapabilityDirectiveDisplay } from '@/cindy-brain/hostCapabilityInvocation';
 import type { InstalledGhost } from '../../shared/ghost';
@@ -383,5 +384,24 @@ describe('GhostSummonCard(chip 形态)', () => {
     expect(screen.getByText(/提及插件/)).toBeTruthy();
     // 胶囊形态没有法阵。
     expect(document.querySelector('circle.summon-seal-arc')).toBeNull();
+  });
+
+  it('leaves no empty annotation row or divider in share images', () => {
+    const { container } = render(
+      <div>
+        <GhostSummonCard
+          directive={commandDirective}
+          messageClientId="m1"
+          className="mb-2.5 border-b pb-2.5"
+        />
+        <GhostSummonCard directive={mentionDirective} messageClientId="m1" />
+        <p>正文</p>
+      </div>,
+    );
+    const clone = container.cloneNode(true) as HTMLElement;
+    stripMessageSources(clone);
+    expandCollapsedMessages(clone);
+    expect(clone.textContent).toBe('正文');
+    expect(clone.querySelector('.border-b')).toBeNull();
   });
 });

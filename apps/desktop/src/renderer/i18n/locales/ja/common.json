@@ -374,6 +374,30 @@
       "modelsRefused": "相手のパソコンが今この共有の読み込みを許可していません。リモート操作を許可していないか、このプロバイダーの「リモート利用を許可」がオフになっているか、相手の Cindy が起動したばかりでまだ準備できていない可能性があります。しばらくしてから再試行するか、相手にこの 2 つの設定を確認してもらってください。",
       "modelsFailedWithCode": "相手が公開しているモデルを読み込めませんでした。しばらくしてから再試行してください。（エラーコード：{{code}}）",
       "retryModels": "モデルを再読み込み",
+      "groupStatus": {
+        "title": "グループ内のコンピューターの状態",
+        "shareActive": "共有中",
+        "refresh": "状態を更新",
+        "computer": "コンピューター {{number}}",
+        "summary": "{{total}} 台中 {{ready}} 台がタスクを受け付け可能",
+        "loading": "コンピューターの状態を取得中…",
+        "unsupported": "共有元の Cindy から状態が提供されていません。共有元に確認や更新を依頼してください。",
+        "failed": "コンピューターの状態を取得できませんでした。更新して再試行してください。",
+        "unconfirmed": "一部のコンピューターの状態が未確認です。しばらくしてから更新してください。",
+        "noneReady": "現在タスクを受け付けられるコンピューターはありません。共有元に確認を依頼してください。",
+        "note": "匿名の状態のみを表示し、コンピューター名や使用量は表示しません。利用可否は選択したモデルにも依存します。",
+        "updateNote": "共有されたタスクを受け付けるには、共有元が該当するコンピューターの Cindy を更新する必要があります。",
+        "state": {
+          "available": "利用可能",
+          "busy": "使用中・タスク受付可能",
+          "cooling": "クールダウン中・新規タスク受付停止",
+          "offline": "オフラインまたは接続不可",
+          "paused": "割り当て停止中",
+          "unavailable": "一時的に利用不可",
+          "needs-update": "更新が必要",
+          "unknown": "状態不明"
+        }
+      },
       "modelsEmpty": "相手はまだ利用できるモデルを公開していません。",
       "pausedNote": "相手がこの共有を一時停止しています。再開されると使えるようになります。",
       "offlineNote": "相手のパソコンがオフラインです。オンラインに戻ると使えるようになります。",
@@ -438,11 +462,13 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
+      "usage": "使用量で分散",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
         "order": "上のパソコンを優先",
-        "weight": "重みの比率で"
+        "weight": "重みの比率で",
+        "usage": "5時間・週間の使用量で分散"
       }
     },
     "autoSwitch": {
@@ -451,6 +477,13 @@
     },
     "member": {
       "local": "このパソコン",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "更新が必要",
+        "unknown": "バージョン不明",
+        "needsUpdate": "共有されたタスクを受け取るには更新が必要",
+        "supportUnknown": "共有タスクへの対応状況は不明"
+      },
       "sourceDevice": "自分のほかのパソコン",
       "sourceShare": "{{name}} からの共有",
       "shareComputer": "{{name}} のパソコン",
@@ -468,6 +501,7 @@
       "weightAria": "{{name}} の重み",
       "weightOption": "重み {{weight}}",
       "assignAria": "{{name}} に割り当てる",
+      "assignLocalAria": "{{name}} で他のパソコンからの新しいタスクを受け付ける",
       "moreAria": "{{name}} の他の操作",
       "remove": "グループから外す",
       "status": {
@@ -475,6 +509,7 @@
         "idle": "待機中",
         "full": "上限に到達",
         "paused": "割り当て停止中",
+        "pausedLocal": "他のパソコンからの新しいタスクは受付停止中",
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
         "offline": "オフライン",
@@ -1059,7 +1094,6 @@
       "back": "戻る",
       "usageTitle": "使用量",
       "wideCaptionMoney_other": "直近 {{n}} 日 · サブスク換算",
-      "wideCaptionTokens_other": "直近 {{n}} 日 · Token",
       "scopeLocal": "このコンピュータ",
       "scopeAll": "すべてのデバイス",
       "noUsage": "使用量なし",
@@ -1070,13 +1104,9 @@
       },
       "dailyAverage": "1 日平均",
       "paid": "支払額",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最多の日",
       "range7": "7 日",
       "range30": "30 日",
       "range90": "90 日",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "直近 {{n}} 日のモデル",
       "listTasks": "今日のタスク",
       "today": "今日",

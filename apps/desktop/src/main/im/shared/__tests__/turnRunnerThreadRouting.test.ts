@@ -956,6 +956,53 @@ describe('turnRunner 渠道任务后台结果回传', () => {
     expect(stub.finalize).toHaveBeenCalledWith(turnOrigin ? '🤖 自动任务「检查进度」\n\n处理结果' : '处理结果');
   });
 
+  it('Agent 自己唤醒的轮次(后台任务完成)回到原聊天，子代理与桌面轮次仍不回传', async () => {
+    const h = await channelAndIdle('desktop');
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    // Background subagent output while the task is idle is filtered, before and after the mark.
+    h.emit({ type: 'text', data: { text: '子代理内部' }, agentMeta: { parentUuid: 'toolu_1' } });
+    runner.noteChannelTurnSource(h.session, 'provider-wake');
+    h.emit({ type: 'text', data: { text: '子代理内部' }, agentMeta: { parentUuid: 'toolu_1' } });
+    h.emit({ type: 'tool_use', data: { toolName: 'Read', input: { file_path: '/x/a.ts' } } });
+    h.emit({ type: 'text', data: { text: '最终报告', isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await vi.waitFor(() => expect(stub.finalize).toHaveBeenCalledExactlyOnceWith('最终报告'));
+    expect(mocks.slackIm.startStreamingText).toHaveBeenCalledExactlyOnceWith('U1', undefined, { threadTs: '100.1' });
+
+    // The mark ends with that turn: the next desktop-typed turn stays in the app.
+    h.emit({ type: 'text', data: { text: '桌面里的回复', isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mocks.slackIm.startStreamingText).toHaveBeenCalledTimes(1);
+  });
+
+  it('IM 轮次仍在进行时不另开后台回传，也不把标记留给下一轮', async () => {
+    await runTurn('100.1');
+    const h = harnesses.get(sessionIdFor('T1', 'U1', '100.1'))!;
+    const initial = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(initial);
+    runner.noteChannelTurnSource(h.session, 'provider-wake');
+    h.emit({ type: 'text', data: { text: 'IM 回复', isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await vi.waitFor(() => expect(initial.finalize).toHaveBeenCalledExactlyOnceWith('IM 回复'));
+    mocks.slackIm.startStreamingText.mockClear();
+    h.emit({ type: 'text', data: { text: '桌面里的回复', isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mocks.slackIm.startStreamingText).not.toHaveBeenCalled();
+  });
+
+  it('接管(/ctr)的桌面任务仍只转播自动任务，不回传 Agent 自己唤醒的轮次', async () => {
+    const h = await channelAndIdle('desktop');
+    runner.attachSessionOutput(h.session, 'U1', { attached: true, scopeKey: '100.1' });
+    runner.noteChannelTurnSource(h.session, 'provider-wake');
+    h.emit({ type: 'text', data: { text: '后台结果', isFinal: true } });
+    h.emit({ type: 'done', data: {} });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mocks.slackIm.startStreamingText).not.toHaveBeenCalled();
+  });
+
   it('子代理及旧轮次的后台事件不回传，也不提前结束当前回复', async () => {
     const h = await channelAndIdle();
     const stub = streamingHandleStub();

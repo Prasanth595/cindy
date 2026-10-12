@@ -17,7 +17,7 @@ new benchmark capability or a live-model validation result.
 | COMPATIBLE | Core tool-loop detection, asynchronous questions and event projection | Core behavior is inherited. Headless does not inject an auxiliary loop reviewer or an interactive UI; these are not exposed as new Profile switches. |
 | COMPATIBLE | Memory storage serialization and versioned edits | The existing isolated Memory provider uses the shared implementation; no new storage API or Desktop editing interface is introduced. |
 | HEADLESS_UPDATE | Shared host prompt | Refresh all three frozen production prompts from the already merged Desktop templates and regenerate their digests/locks. The upstream application-update instruction is preserved verbatim for prompt parity; it does not install updater tools in Headless. |
-| HEADLESS_UPDATE | `tools/{claude,codex,pi}/latest.json` | Align example Profile versions with the repository's existing pins (Claude Code 2.1.280, Codex 0.159.2, Pi 1.0.2). No upstream runtime pin is changed. |
+| HEADLESS_UPDATE | `tools/{claude,codex,pi}/latest.json` | Align example Profile versions with the repository's existing pins (Claude Code 2.1.296, Codex 0.159.2, Pi 1.0.2). No upstream runtime pin is changed. |
 | HEADLESS_UPDATE | Bundled ESM dependency initialization | Both CJS build entrypoints preserve `import.meta.url` using the delivered file URL. An actual Node subprocess starts each CLI outside the checkout; source-only tests did not catch the previous `createRequire(undefined)` startup failure. |
 | UNSUPPORTED | Device-hosted/shared providers, Desktop updater, UI and account flows | No remote-device host, updater or UI integration is added. A merged Core implementation does not imply Headless support for these host-owned capabilities. |
 

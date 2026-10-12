@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   botContextId: vi.fn(),
   attach: vi.fn(),
+  note: vi.fn(),
 }));
 vi.mock('../../../logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
 vi.mock('../../../localDb/client/current', () => ({
@@ -28,13 +29,20 @@ vi.mock('../../../maker-ipc/register', () => ({
 vi.mock('../channelDefaultRouteSync', () => ({ createImChannelDefaultRouteSync: () => ({}) }));
 vi.mock('../sessionRepo', () => ({ createImSessionRepo: () => ({}) }));
 vi.mock('../cardBuilders', () => ({ createCardBuilders: () => ({}) }));
-vi.mock('../turnRunner', () => ({ createTurnRunner: () => ({ attachSessionOutput: mocks.attach }) }));
+vi.mock('../turnRunner', () => ({
+  createTurnRunner: () => ({ attachSessionOutput: mocks.attach, noteChannelTurnSource: mocks.note }),
+}));
 vi.mock('../slashCommands', () => ({ createSlashHandlers: () => ({}) }));
 vi.mock('../messageHandler', () => ({ createMessageHandler: () => vi.fn() }));
 vi.mock('../cardActionHandler', () => ({ createCardActionHandler: () => vi.fn() }));
 
 import { createImOrchestrator } from '../orchestrator';
-import { channelTurnSourceFor, publishChannelTurn, withChannelTurnSource } from '../../../maker-ipc/channelTurnSignal';
+import {
+  channelTurnSourceFor,
+  publishChannelTurn,
+  publishProviderInitiatedTurn,
+  withChannelTurnSource,
+} from '../../../maker-ipc/channelTurnSignal';
 
 for (const channel of ['telegram', 'feishu', 'discord', 'wechat', 'wecom', 'dingtalk'] as const) {
   createImOrchestrator({
@@ -86,6 +94,26 @@ describe('background output route recovery', () => {
     expect(channelTurnSourceFor(other, true)).toBeUndefined();
     expect(channelTurnSourceFor({ ...other, senderSessionId: '' }, false)).toBeUndefined();
     expect(channelTurnSourceFor({ kind: 'scheduler', scheduleId: 's' }, false)).toBeUndefined();
+  });
+
+  it('marks a harness wake-up on wired output synchronously, without a cold route lookup', () => {
+    mocks.limit.mockResolvedValue([{ ...nativeRow, source: 'telegram', imBotContextId: 'bot', imUserId: 'native-user' }]);
+    // Not awaited: the wake-up's first event fans out right after this call returns.
+    void publishProviderInitiatedTurn(session);
+    expect(mocks.note).toHaveBeenCalledTimes(6);
+    expect(mocks.note).toHaveBeenCalledWith(session, 'provider-wake');
+    expect(mocks.limit).not.toHaveBeenCalled();
+    expect(mocks.attach).not.toHaveBeenCalled();
+  });
+
+  it('relays no harness wake-up for a logged-out account or a disconnected channel', () => {
+    mocks.capture.mockReturnValue(null);
+    void publishProviderInitiatedTurn(session);
+    expect(mocks.note).not.toHaveBeenCalled();
+    mocks.capture.mockReturnValue(1);
+    mocks.status.mockReturnValue({ kind: 'disconnected' });
+    void publishProviderInitiatedTurn(session);
+    expect(mocks.note).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('uses stable Discord identity for cold route (takeover: %s)', async (attached) => {

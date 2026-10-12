@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
@@ -7,6 +8,7 @@ import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreeDirectoryName } from '../../shared/managedWorktreePaths';
 import { notifyWorktreeRecycleOpportunity } from './recycleEvents';
 import { isReusedDesktopInstancePid, readDesktopProcessIdentity } from '../desktopProcessIdentity';
+import { isGitProcessTreeAlive } from './gitExec';
 
 function runtimeRoot(): string {
   return path.join(app.getPath('userData'), 'worktree-runtime-leases');
@@ -125,6 +127,29 @@ async function releaseRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<
 
 export async function releaseWorktreeRuntimeLease(lease: WorktreeRuntimeLease): Promise<void> {
   await releaseRuntimeLeaseFile(lease);
+}
+
+/** Record the detached git child that is still using a checkout lease. */
+export function recordWorktreeRuntimeLeaseChild(lease: WorktreeRuntimeLease, childPid: number): void {
+  if (!Number.isInteger(childPid) || childPid <= 0) return;
+  try {
+    const value = JSON.parse(fsSync.readFileSync(lease.file, 'utf8')) as {
+      version?: unknown;
+      pid?: unknown;
+      path?: unknown;
+      childPid?: unknown;
+      childPids?: unknown;
+    };
+    if (value.version !== 1 || value.pid !== process.pid || value.path !== lease.physicalPath) return;
+    const childPids = [
+      ...(Array.isArray(value.childPids) ? value.childPids : []),
+      ...(typeof value.childPid === 'number' ? [value.childPid] : []),
+      childPid,
+    ].filter((pid, index, all): pid is number => Number.isInteger(pid) && pid > 0 && all.indexOf(pid) === index);
+    fsSync.writeFileSync(lease.file, JSON.stringify({ ...value, childPid, childPids }), { mode: 0o600 });
+  } catch {
+    // Missing or partially written child evidence must stay protective.
+  }
 }
 
 async function removeRuntimeLeaseFile(lease: WorktreeRuntimeLease): Promise<void> {
@@ -299,4 +324,67 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
     }
   }
   return paths;
+}
+
+/** A detached checkout can outlive git while its POSIX process group remains active. */
+/**
+ * Remove runtime leases left by a dead owner for an explicitly cancelled,
+ * unclaimed pre-created worktree.
+ *
+ * Normal recycle deliberately keeps leases from dead processes because they
+ * may belong to a detached child.  A pre-created worktree has no claimed
+ * session yet, and the caller has already fenced late creation under the
+ * session lock. Reclaim only a recorded checkout child whose owner and child
+ * have both exited. Older leases without child evidence, malformed records,
+ * and unknown process liveness remain protective.
+ */
+export async function reclaimOrphanedWorktreeRuntimeLeases(
+  worktreePath: string,
+): Promise<number> {
+  const target = await physicalWorktreeKey(worktreePath);
+  let reclaimed = 0;
+  for (const directory of [runtimeRoot(), sharedRuntimeRoot()]) {
+    let names: string[];
+    try {
+      names = await fs.readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      continue;
+    }
+    for (const name of names) {
+      if (!leaseNamePattern.test(name)) continue;
+      const file = path.join(directory, name);
+      try {
+        const value = JSON.parse(await fs.readFile(file, 'utf8')) as {
+          version?: unknown;
+          pid?: unknown;
+          path?: unknown;
+          childPid?: unknown;
+          childPids?: unknown;
+        };
+        const childPids = Array.isArray(value.childPids)
+          ? value.childPids.filter((pid): pid is number => typeof pid === 'number' && Number.isInteger(pid) && pid > 0)
+          : typeof value.childPid === 'number' && Number.isInteger(value.childPid) && value.childPid > 0
+            ? [value.childPid]
+            : [];
+        if (value.version !== 1 || typeof value.pid !== 'number'
+          || !Number.isInteger(value.pid) || value.pid <= 0
+          || typeof value.path !== 'string'
+          || await physicalWorktreeKey(value.path) !== target
+          || pidMayBeAlive(value.pid)
+          || childPids.length === 0
+          || (await Promise.all(childPids.map((pid) => isGitProcessTreeAlive(pid))).then((alive) => alive.some(Boolean)))) {
+          continue;
+        }
+        await fs.unlink(file);
+        reclaimed += 1;
+      } catch (error) {
+        // A concurrent release may win the race.  Any other read/parse/write
+        // failure stays protective and is retried by the normal maintenance
+        // path rather than authorizing deletion.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+      }
+    }
+  }
+  return reclaimed;
 }

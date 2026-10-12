@@ -147,7 +147,7 @@
     "minMembers": "A group chat needs at least {{min}} teammates",
     "maxMembers": "Up to {{max}}",
     "noMoreBots": "No other teammates are available to add",
-    "nameSaveFailed": "Couldn’t save the group name. The previous name was kept.",
+    "nameSaveFailed": "The group name could not be saved. Your input was kept. Please retry.",
     "membersSaveFailed": "Couldn’t update members. Try again.",
     "replyMode": "When No One Is @Mentioned",
     "replyModeAll": "Anyone Can Reply",
@@ -173,7 +173,22 @@
     "projectDirNote": "Teammates work here when they split the work. You can leave it empty and they’ll use this group chat’s own folder. If you choose a git project, each work split gets a new worktree and branch, so your own code stays untouched.",
     "add": "Add teammate",
     "projectDirOnComputer": "Choose or change it on your computer",
-    "memberActions": "Actions for {{name}}"
+    "memberActions": "Actions for {{name}}",
+    "managementComputer": "Management computer",
+    "retry": "Retry",
+    "reconnect": "Reconnect",
+    "conflict": "Group settings changed. Review them before saving again. Your input was kept.",
+    "archive": "Archive group chat",
+    "archiveConfirmTitle": "Archive “{{name}}”?",
+    "archiveNote": "Only a group owner can archive it. This stops new messages and keeps the history.",
+    "managementStatus": {
+      "ready": "Connected",
+      "loading": "Connecting…",
+      "noHost": "Disconnected",
+      "permission": "Read-only",
+      "upgrade": "Update needed",
+      "unavailable": "Settings unavailable"
+    }
   },
   "errors": {
     "memberLimit": "A group chat needs 2–6 teammates",

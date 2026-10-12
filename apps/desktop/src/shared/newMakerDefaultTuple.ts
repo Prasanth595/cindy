@@ -37,7 +37,7 @@ const DEFAULT_POLICIES: readonly ProviderDefaultPolicy[] = [
     providerId: 'openai',
     accessKind: 'subscription',
     agents: ['codex'],
-    modelIds: ['gpt-6-sol', 'chatgpt/gpt-6-sol'],
+    modelIds: ['gpt-6.1-sol', 'chatgpt/gpt-6.1-sol'],
   },
   {
     providerId: 'anthropic',
@@ -75,6 +75,7 @@ export function isKnownProductDefaultTupleIdentity(args: {
 }): boolean {
   // Old automatic selections remain recognizable after the factory policy changes.
   const legacyPolicies: readonly ProviderDefaultPolicy[] = [
+    { providerId: 'openai', accessKind: 'subscription', agents: ['codex'], modelIds: ['gpt-6-sol', 'chatgpt/gpt-6-sol'] },
     { providerId: 'openai', accessKind: 'subscription', agents: ['codex'], modelIds: ['gpt-6-astra', 'chatgpt/gpt-6-astra'] },
     { providerId: 'xd', accessKind: 'managed', agents: ['pi'], modelIds: ['z-ai/glm-5.3-flash', 'glm-5.3-flash'] },
     { providerId: 'openai', accessKind: 'subscription', agents: ['codex', 'claude-code', 'pi'], modelIds: ['chatgpt/gpt-5.6-sol', 'gpt-5.6-sol'] },
@@ -97,10 +98,13 @@ function matchingModel(
 ) {
   const models = provider.models[agent] ?? [];
   const preferred = modelIds.map((id) => models.find((model) => model.id === id));
-  // Once the owner has an enabled list, a disabled factory recommendation must
-  // yield to another enabled model from this source, never bypass that list.
+  // Both renderer and unattended callers keep the same-provider fallback.
+  // Without local visibility overrides, use the catalog's default visibility.
   // Cindy Auto is an upstream route identity; do not substitute a fixed model.
-  return (enabled && allowOtherModels ? [...preferred, ...models] : preferred)
+  const fallback = allowOtherModels ? models.slice().sort(
+    (a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER),
+  ) : [];
+  return [...preferred, ...fallback]
     .find(
       (model) =>
         model !== undefined &&
@@ -112,8 +116,8 @@ function matchingModel(
 /**
  * 为“尚未自定义”的本地新任务与伙伴按产品顺序挑选可用默认组合。
  *
- * 返回空数组表示没有足够证据给默认值：供应商仍在加载、没有可用来源，或推荐模型不在
- * 当前账号目录里。调用方此时保留连接引导/既有空态，绝不编造一个看似可发送的组合。
+ * 返回空数组表示没有足够证据给默认值：供应商仍在加载、没有可用来源，或推荐与允许的回退
+ * 都不在当前账号的可用目录里。调用方此时保留连接引导/既有空态，绝不编造一个看似可发送的组合。
  */
 export function resolveNewMakerDefaultTuples(args: {
   providers: readonly ProviderView[];
@@ -138,7 +142,7 @@ export function resolveNewMakerDefaultTuples(args: {
     // Search every account for the recommendation before falling back to other
     // enabled models. An earlier account's fallback must not hide a later Sol.
     policySearch: for (const allowOtherModels of [false, true]) {
-      if (allowOtherModels && (!args.isModelEnabled || policy.allowOtherModels === false)) break;
+      if (allowOtherModels && policy.allowOtherModels === false) break;
       for (const provider of matchingProviders) {
         for (const agent of policy.agents) {
           const vendor = vendorForAgent(agent);

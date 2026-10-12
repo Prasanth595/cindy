@@ -147,7 +147,7 @@
     "minMembers": "グループチャットには仲間が {{min}} 人以上必要です",
     "maxMembers": "最大 {{max}} 人",
     "noMoreBots": "追加できるほかの仲間はいません",
-    "nameSaveFailed": "グループ名を保存できなかったため、元の名前に戻しました",
+    "nameSaveFailed": "グループ名を保存できませんでした。入力内容は保持されています。再試行してください。",
     "membersSaveFailed": "メンバーを更新できませんでした。もう一度お試しください",
     "replyMode": "誰も @ されていないとき",
     "replyModeAll": "誰でも返信できる",
@@ -173,7 +173,22 @@
     "projectDirNote": "役割分担で作業するとき、仲間はここで作業します。選ばなくてもかまいません。その場合はこのグループチャット専用のフォルダを使います。git プロジェクトを選ぶと、役割分担のたびに新しい worktree とブランチを作るので、手元のコードには触れません。",
     "add": "仲間を追加",
     "projectDirOnComputer": "パソコンで選択・変更できます",
-    "memberActions": "{{name}} の操作"
+    "memberActions": "{{name}} の操作",
+    "managementComputer": "管理用コンピュータ",
+    "retry": "再試行",
+    "reconnect": "再接続",
+    "conflict": "グループ設定が更新されました。内容を確認してから再保存してください。入力内容は保持されています。",
+    "archive": "グループチャットをアーカイブ",
+    "archiveConfirmTitle": "「{{name}}」をアーカイブしますか？",
+    "archiveNote": "アーカイブできるのは所有者のみです。新しいメッセージは送信できなくなりますが、履歴は保持されます。",
+    "managementStatus": {
+      "ready": "接続済み",
+      "loading": "接続中…",
+      "noHost": "未接続",
+      "permission": "読み取り専用",
+      "upgrade": "更新が必要",
+      "unavailable": "設定を取得できません"
+    }
   },
   "errors": {
     "memberLimit": "グループチャットには仲間が 2〜6 人必要です",

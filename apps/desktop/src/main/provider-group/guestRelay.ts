@@ -8,11 +8,14 @@
  * 受邀者的任务，但不冷却它，本机自己的任务照常分过去。
  */
 import type { AgentKind } from '@cindy/maker-core';
+import type { ProviderShareGroupState } from '@cindy/device-link';
 
 import type { ProviderGroupConfig } from '../../shared/providerGroup.js';
 import type { RelayRunFailure } from '../remote-agent/host/groupRelay.js';
 import type { GroupRelayLoad, GroupRelayMember, RemoteAgentGroupRelayDeps } from '../remote-agent/host/runHost.js';
 import type { RemoteAgentInvoke, RemoteAgentPoller } from '../remote-agent/controller/runClient.js';
+import { RemoteAgentRunClient } from '../remote-agent/controller/runClient.js';
+import { readSharedGroupStatus } from './sharedStatus.js';
 import { PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS } from './remoteHandler.js';
 import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './router.js';
 import { decideProviderGroupFailure, describeProviderGroupFailure, providerGroupFailureSignals } from './failurePolicy.js';
@@ -36,7 +39,9 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps): RemoteAgentGroupRelayDeps {
+export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps): RemoteAgentGroupRelayDeps & {
+  sharedStatus(providerId: string): Promise<ProviderShareGroupState[] | null>;
+} {
   /** 不支持接受受邀者任务的同账号电脑 → 到何时前不再试。 */
   const incapable = new Map<string, number>();
 
@@ -51,6 +56,13 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
   }
 
   return {
+    sharedStatus: (providerId) => readSharedGroupStatus({
+      scope: deps.scope,
+      readGroup: deps.readGroup,
+      isIncapable,
+      readCaps: (member) => RemoteAgentRunClient.caps(deps.connect(member.agentDeviceId!).invoke),
+    }, providerId),
+
     async plan({ kind, model, providerId, exclude, reserve }) {
       const config = deps.readGroup(providerId);
       if (!config) return null;

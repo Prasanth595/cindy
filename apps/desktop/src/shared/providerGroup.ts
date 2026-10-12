@@ -14,8 +14,8 @@ export const PROVIDER_GROUP_IPC = {
   CHANGED: 'provider-group:changed',
 } as const;
 
-export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight';
-export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight'];
+export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight' | 'usage';
+export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight', 'usage'];
 
 export type ProviderGroupMemberKind = 'local' | 'device' | 'share';
 
@@ -45,7 +45,7 @@ export interface ProviderGroupMember {
   /** 并发上限：只统计经本组分到这台的任务。 */
   limit: number;
   weight: number;
-  /** 暂停分配(本机即「关掉本机」)：不再给它分新任务，正在运行的不受影响。 */
+  /** 暂停组内新任务分配；本机成员只暂停接收外部新任务，不影响本机自用或已有任务。 */
   paused: boolean;
 }
 
@@ -85,6 +85,10 @@ export interface ProviderGroupMemberStatus {
   label: string;
   /** 分享来的电脑：分享者昵称。 */
   ownerName?: string;
+  /** Cindy 应用版本；缺失表示旧端或分享来源未提供，不是 remote-agent 协议版本。 */
+  appVersion?: string;
+  /** 仅描述接收分享任务的能力，不改变主人自己的可用状态。 */
+  guestSupport?: ProviderGroupGuestSupport;
   state: ProviderGroupMemberState;
   reason?: ProviderGroupUnavailableReason;
   /** 经本组分到这台、正在运行的任务数。 */
@@ -106,6 +110,16 @@ export interface ProviderGroupView {
   /** null = 还没有组。 */
   config: ProviderGroupConfig | null;
   members: ProviderGroupMemberStatus[];
+  /** 发送前按指定模型重新计算状态时由组所在电脑回显。 */
+  model?: string;
+}
+
+export type ProviderGroupGuestSupport = 'supported' | 'needs-update' | 'unknown';
+
+/** 设备目录中的应用版本只用于展示，拒绝异常长字符串和非版本文本。 */
+export function readProviderGroupAppVersion(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= 64 && /^[0-9]+[.][0-9]+[.][0-9]+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value)
+    ? value : undefined;
 }
 
 export type ProviderGroupCandidateBlock =
@@ -325,7 +339,7 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string }
+  | { action: 'view'; providerId: string; model?: string; includeGuestSupport?: true }
   /**
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
@@ -454,8 +468,17 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         }),
       };
     }
-    case 'view':
-      return { action: 'view', providerId: remoteProviderId(value.providerId) };
+    case 'view': {
+      if (value.model !== undefined && (typeof value.model !== 'string' || !value.model || value.model.length > 512)) {
+        invalidRemote('invalid model');
+      }
+      return {
+        action: 'view',
+        providerId: remoteProviderId(value.providerId),
+        ...(value.model !== undefined ? { model: value.model } : {}),
+        ...(value.includeGuestSupport === true ? { includeGuestSupport: true } : {}),
+      };
+    }
     case 'usage':
     case 'usage-part': {
       if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
@@ -517,6 +540,9 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
   const empty: ProviderGroupView = { providerId: groupProviderId, config: null, members: [] };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
   const value = raw as Record<string, unknown>;
+  const model = typeof value.model === 'string' && value.model.length > 0 && value.model.length <= 512
+    ? value.model
+    : undefined;
   const config = normalizeProviderGroupConfig(value.config, groupProviderId);
   if (!config) return empty;
   const keys = new Set(config.members.map((m) => m.key));
@@ -533,12 +559,17 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       ? item.reason as ProviderGroupUnavailableReason
       : undefined;
     const ownerName = normalizeLabel(item.ownerName);
+    const appVersion = readProviderGroupAppVersion(item.appVersion);
+    const guestSupport = ['supported', 'needs-update', 'unknown'].includes(item.guestSupport as string)
+      ? item.guestSupport as ProviderGroupGuestSupport : undefined;
     const coolingUntil = typeof item.coolingUntil === 'number' && Number.isFinite(item.coolingUntil) ? item.coolingUntil : undefined;
     return [{
       key: member.key,
       kind: member.kind,
       label: normalizeLabel(item.label) ?? member.label ?? member.key,
       ...(ownerName ? { ownerName } : {}),
+      ...(appVersion ? { appVersion } : {}),
+      ...(guestSupport ? { guestSupport } : {}),
       state,
       ...(reason ? { reason } : {}),
       running: count(item.running, 10_000),
@@ -548,5 +579,5 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       ...(coolingUntil !== undefined ? { coolingUntil } : {}),
     }];
   });
-  return { providerId: groupProviderId, config, members };
+  return { providerId: groupProviderId, config, members, ...(model ? { model } : {}) };
 }

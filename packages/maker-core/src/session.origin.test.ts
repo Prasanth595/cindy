@@ -1748,3 +1748,137 @@ describe('Session per-turn origin 打标', () => {
     expect(JSON.stringify(seen[0])).not.toContain('upstream-secret');
   });
 });
+
+describe('Session provider-initiated turns (harness wake-ups)', () => {
+  function makeSteerableSession(handle: AgentSessionHandle): Session {
+    return new Session({
+      id: 'session-1',
+      agentKind: 'claude-code',
+      workDir: path.join('workspace', 'repo'),
+      handle,
+      capabilities: { sameTurnSteer: { supported: true } } as never,
+      logger: createLogger() as never,
+    });
+  }
+
+  function observe(session: Session) {
+    const order: string[] = [];
+    const wakes: number[] = [];
+    session.setTurnLifecycleObserver({
+      beforeProviderStart: () => undefined,
+      onUndispatched: () => undefined,
+      onTerminal: () => undefined,
+      onProviderInitiatedTurn: (generation) => {
+        wakes.push(generation);
+        order.push('wake');
+      },
+    });
+    session.onEvent((event) => order.push(event.type));
+    return { order, wakes };
+  }
+
+  it('announces a turn started without a send, once, before listeners see its first event', async () => {
+    const h = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(h.handle, 'claude-code');
+    const { order, wakes } = observe(session);
+
+    await session.send('launch background agents', { origin: SCHED_ORIGIN });
+    await h.emit({ type: 'text', data: { text: 'still working', isFinal: true } });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([]);
+
+    const seen: AgentEvent[] = [];
+    session.onEvent((event) => seen.push({ ...event }));
+    h.setTurnRunning(true);
+    await h.emit({ type: 'thinking', data: { text: 'task finished' } }, { keepRunning: true });
+    await h.emit({ type: 'text', data: { text: 'final report', isFinal: true } });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([1]);
+    expect(order.slice(order.indexOf('wake'))).toEqual(['wake', 'thinking', 'text', 'done']);
+    // A wake-up reuses the previous generation and carries no origin of its own.
+    expect(seen.every((event) => event.sessionTurnGeneration === 1 && event.turnOrigin === undefined)).toBe(true);
+
+    // Each later wake-up is announced again.
+    h.setTurnRunning(true);
+    await h.emit({ type: 'tool_use', data: { toolName: 'Read', input: {} } }, { keepRunning: true });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([1, 1]);
+    await session.close();
+  });
+
+  it('settles a provider-initiated turn that ends in an error as a failure, not as the earlier success', async () => {
+    const h = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(h.handle, 'claude-code');
+    const terminals: string[] = [];
+    session.setTurnLifecycleObserver({
+      beforeProviderStart: () => undefined,
+      onUndispatched: () => undefined,
+      onTerminal: ({ event }) => { terminals.push(event.type); },
+      onProviderInitiatedTurn: () => undefined,
+    });
+    const seen: string[] = [];
+    session.onEvent((event) => seen.push(event.type));
+
+    await session.send('launch background agents', { origin: SCHED_ORIGIN });
+    await h.emit({ type: 'done', data: {} });
+    // A late error right after that done is still the previous turn's leftover.
+    await h.emit({ type: 'error', data: { message: 'late' } });
+    expect(terminals).toEqual(['done']);
+
+    h.setTurnRunning(true);
+    await h.emit({ type: 'text', data: { text: 'woke up' } }, { keepRunning: true });
+    await h.emit({ type: 'error', data: { message: 'wake failed' } });
+    await h.emit({ type: 'done', data: {} });
+    expect(terminals.slice(1, 2)).toEqual(['error']);
+    expect(seen.filter((type) => type === 'error').length).toBeGreaterThan(0);
+    await session.close();
+  });
+
+  it('never announces sent turns, subagent output, idle tails or claimed continuations', async () => {
+    const h = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(h.handle, 'claude-code');
+    const { wakes } = observe(session);
+
+    await session.send('typed on desktop');
+    await h.emit({ type: 'text', data: { text: 'reply' } }, { keepRunning: true });
+    h.setContinuationState(1, 'awaiting');
+    await h.emit({ type: 'done', data: {}, turnContinuationId: 1 }, { keepRunning: true });
+    // The automatic continuation still belongs to the sent turn.
+    h.setContinuationState(1, 'active');
+    await h.emit({ type: 'text', data: { text: 'continuation result' } }, { keepRunning: true });
+    await h.emit({ type: 'done', data: {} });
+
+    // Background subagent output while the parent is idle is not a wake-up.
+    await h.emit({ type: 'text', data: { text: 'subagent' }, agentMeta: { parentUuid: 'toolu_1' } });
+    await h.emit({ type: 'status', data: { status: 'idle', isRunning: false } });
+    await h.emit({ type: 'text', data: { text: 'late child' }, turnScope: 'background' });
+    expect(wakes).toEqual([]);
+
+    await session.send('next desktop turn');
+    await h.emit({ type: 'text', data: { text: 'answer' } }, { keepRunning: true });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([]);
+    await session.close();
+  });
+
+  it('attributes the first unsent turn after an accepted steer to that steer', async () => {
+    const h = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSteerableSession(h.handle);
+    const { wakes } = observe(session);
+
+    await session.send('first');
+    await session.steer('one more thing');
+    await h.emit({ type: 'done', data: {} });
+    // Claude runs a steer that missed the ending turn as its own SDK turn.
+    h.setTurnRunning(true);
+    await h.emit({ type: 'text', data: { text: 'steer reply' } }, { keepRunning: true });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([]);
+
+    h.setTurnRunning(true);
+    await h.emit({ type: 'text', data: { text: 'background agent done' } }, { keepRunning: true });
+    await h.emit({ type: 'done', data: {} });
+    expect(wakes).toEqual([1]);
+    await session.close();
+  });
+});

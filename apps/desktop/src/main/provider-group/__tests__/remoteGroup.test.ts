@@ -77,9 +77,10 @@ function harness(options: {
       return { kind: 'member' as const, member: { key, kind, agentDeviceId, providerId }, label: next.label! };
     }),
     cool: vi.fn(async () => undefined),
-    view: vi.fn(async (): Promise<ProviderGroupView> => ({
+    view: vi.fn(async (_ownerDeviceId: string, _providerId: string, model?: string): Promise<ProviderGroupView> => ({
       providerId: 'anthropic',
       config: config ?? null,
+      ...(model ? { model } : {}),
       members: (config?.members ?? []).map((m) => ({
         key: m.key,
         kind: m.kind,
@@ -375,6 +376,20 @@ describe('switching computers within a group on another computer', () => {
     expect(gone.deps.switchAgentLocation).not.toHaveBeenCalled();
   });
 
+  it('keeps the retry entry when the session closes while the task record is read (#5880)', async () => {
+    const h = bound({ config: undefined });
+    h.probe.mockResolvedValueOnce('offline').mockResolvedValueOnce('ok');
+    // 读任务记录期间终态错误的 drain 宽限到点、会话关闭：关闭撤销了限额等待候选，之后再取句柄会落空。
+    h.deps.readSessionRow.mockImplementation(async () => {
+      h.deps.leaseRecovery.mockReturnValue(null);
+      return h.row;
+    });
+    await h.service.onTurnError('s1', { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone' }, 3);
+    expect(h.deps.continueSession).toHaveBeenCalledWith('s1', 7, expect.objectContaining({
+      agentReconnect: { computer: '' },
+    }));
+  });
+
   it('waits before sending for its own computer when the group computer cannot be read and the session must be reopened', async () => {
     const reopen = bound({ config: undefined });
     Object.assign(reopen.deps, { hasLiveSession: () => false });
@@ -474,6 +489,12 @@ describe('switching computers within a group on another computer', () => {
     const healthy = bound();
     await healthy.service.beforeSend('s1');
     expect(healthy.deps.switchAgentLocation).not.toHaveBeenCalled();
+  });
+
+  it('asks the group computer for the bound model when checking before send', async () => {
+    const h = bound();
+    await h.service.beforeSend('s1');
+    expect(h.remote.view).toHaveBeenCalledWith(OWNER, 'anthropic', MODEL);
   });
 });
 

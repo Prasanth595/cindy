@@ -12,8 +12,18 @@ vi.mock('../desktopProcessIdentity', async (importOriginal) => ({
   ...await importOriginal<typeof import('../desktopProcessIdentity')>(),
   readDesktopProcessIdentity: readIdentity,
 }));
+vi.mock('../worktree/gitExec', () => ({
+  isGitProcessTreeAlive: vi.fn(async (pid: number) => pid === process.pid),
+}));
 
-import { acquireWorktreeRuntimeLease, releaseWorktreeRuntimeLease, readWorktreeRuntimePaths, retryPendingWorktreeRuntimeLeaseReleases } from '../worktree/runtimeLeases';
+import {
+  acquireWorktreeRuntimeLease,
+  recordWorktreeRuntimeLeaseChild,
+  reclaimOrphanedWorktreeRuntimeLeases,
+  releaseWorktreeRuntimeLease,
+  readWorktreeRuntimePaths,
+  retryPendingWorktreeRuntimeLeaseReleases,
+} from '../worktree/runtimeLeases';
 import { physicalWorktreeKey, withWorktreeResourceLock } from '../worktree/resourceLock';
 import { createLinkedWorktreeMetadata } from './fixtures/linkedWorktree';
 import { seedLegacySharedRuntimeLease } from './fixtures/legacySharedRuntimeLease';
@@ -410,6 +420,44 @@ describe('worktree runtime evidence and physical locks', () => {
     expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
     await releaseWorktreeRuntimeLease(lease);
     expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+  });
+
+  it('reclaims a dead-owner lease only through explicit orphan cancellation', async () => {
+    const lease = (await acquireWorktreeRuntimeLease('orphan', worktree))!;
+    recordWorktreeRuntimeLeaseChild(lease, 12345);
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
+    });
+    expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
+    await expect(reclaimOrphanedWorktreeRuntimeLeases(worktree)).resolves.toBe(1);
+    await expect(fs.stat(lease.file)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+  });
+
+  it('keeps an orphan lease while its detached checkout child is alive', async () => {
+    const lease = (await acquireWorktreeRuntimeLease('checkout:orphan', worktree))!;
+    recordWorktreeRuntimeLeaseChild(lease, process.pid);
+    const leaseValue = JSON.parse(await fs.readFile(lease.file, 'utf8')) as Record<string, unknown>;
+    const ownerPid = 12345;
+    await fs.writeFile(lease.file, JSON.stringify({ ...leaseValue, pid: ownerPid }));
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === ownerPid) throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
+      return true;
+    });
+
+    await expect(reclaimOrphanedWorktreeRuntimeLeases(worktree)).resolves.toBe(0);
+    await expect(fs.stat(lease.file)).resolves.toBeDefined();
+  });
+
+  it.each([undefined, null, 0, -1, '12345'])('preserves unknown child evidence: %s', async (childPid) => {
+    const lease = (await acquireWorktreeRuntimeLease('orphan', worktree))!;
+    const value = JSON.parse(await fs.readFile(lease.file, 'utf8'));
+    await fs.writeFile(lease.file, JSON.stringify({ ...value, childPid }));
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
+    });
+    await expect(reclaimOrphanedWorktreeRuntimeLeases(worktree)).resolves.toBe(0);
+    await expect(fs.stat(lease.file)).resolves.toBeDefined();
   });
 
   it('does not treat a crashed owner partial lease as evidence of an idle directory', async () => {

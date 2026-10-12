@@ -374,6 +374,30 @@
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
       "modelsFailedWithCode": "暫時讀不到對方開放的模型，請稍後重試。（錯誤代碼：{{code}}）",
       "retryModels": "重新讀取模型",
+      "groupStatus": {
+        "title": "組內電腦狀態",
+        "shareActive": "分享已開啟",
+        "refresh": "重新整理狀態",
+        "computer": "電腦 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任務",
+        "loading": "正在讀取電腦狀態…",
+        "unsupported": "分享者的 Cindy 尚未提供狀態，請聯絡分享者檢查或更新",
+        "failed": "電腦狀態讀取失敗，請重新整理再試",
+        "unconfirmed": "部分電腦狀態尚未確認，請稍後重新整理",
+        "noneReady": "目前沒有可接任務的電腦，請聯絡分享者檢查",
+        "note": "僅顯示匿名狀態，不顯示電腦名稱和用量。能否執行仍取決於所選模型。",
+        "updateNote": "需要分享者更新對應電腦上的 Cindy，才能接收分享來的任務",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任務",
+          "cooling": "冷卻中，暫不接新任務",
+          "offline": "離線或無法連線",
+          "paused": "已暫停分配",
+          "unavailable": "暫不可用",
+          "needs-update": "需要更新",
+          "unknown": "狀態未知"
+        }
+      },
       "modelsEmpty": "對方還沒有開放可用的模型。",
       "pausedNote": "對方暫停了這個分享，恢復後才能使用。",
       "offlineNote": "對方電腦不在線，上線後就能繼續使用。",
@@ -438,11 +462,13 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
+      "usage": "用量均衡",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例"
+        "weight": "依權重比例",
+        "usage": "按5小時和每週用量分配"
       }
     },
     "autoSwitch": {
@@ -451,6 +477,13 @@
     },
     "member": {
       "local": "本機",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任務",
+        "supportUnknown": "分享任務相容性未知"
+      },
       "sourceDevice": "我的其他電腦",
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
@@ -468,6 +501,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -475,6 +509,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
@@ -1059,7 +1094,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "這台電腦",
       "scopeAll": "所有裝置",
       "noUsage": "沒有用量",
@@ -1070,13 +1104,9 @@
       },
       "dailyAverage": "日均",
       "paid": "實付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高單日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任務",
       "today": "今天",

@@ -91,6 +91,37 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
 const PICK = { action: 'pick', sessionId: 's1', providerId: 'anthropic', agentKind: 'claude-code', model: 'opus', exclude: ['local'] };
 
 describe('provider-group:remote', () => {
+  it('carries the optional detail request across the same-account client and host without probing on ordinary reads', async () => {
+    const d = deps();
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => ({
+      ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]),
+    }));
+    const client = createProviderGroupRemoteClient(invoke);
+    await client.view('mini', 'anthropic', { includeGuestSupport: true });
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: true });
+    await client.view('mini', 'anthropic');
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: false });
+  });
+
+  it('only requests compatibility diagnostics when asked and discards a late reply after switching accounts', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic' });
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: false });
+    d.router.view.mockImplementationOnce(async () => {
+      d.switchAccount();
+      return { providerId: 'anthropic', config: CONFIG, members: [] };
+    });
+    expect(await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic', includeGuestSupport: true }))
+      .toEqual({ providerId: 'anthropic', config: null, members: [] });
+    expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: true });
+  });
+
+  it('does not let a remote request claim the local-task preference', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { ...PICK, localTask: true });
+    expect(d.router.pick.mock.calls[0][0].localTask).toBeUndefined();
+  });
+
   it('picks a computer, honouring what the caller already tried, and holds it briefly', async () => {
     const d = deps();
     const result = await handleProviderGroupRemote(d, 'laptop', PICK);
@@ -124,6 +155,12 @@ describe('provider-group:remote', () => {
     const d = deps();
     d.router.pick.mockResolvedValueOnce({ kind: 'unavailable', resolved: [] } as never);
     expect(await handleProviderGroupRemote(d, 'laptop', PICK)).toEqual({ kind: 'unavailable' });
+  });
+
+  it('passes the optional model through the remote state query', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic', model: 'opus' });
+    expect(d.router.view).toHaveBeenCalledWith('anthropic', 'opus');
   });
 
   it('cools computers for usage limits up to a bounded reset time, and briefly for other causes', async () => {

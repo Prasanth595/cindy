@@ -1102,6 +1102,52 @@ describe('provider turn observer on real Session.send', () => {
     } finally { unsubscribe(); dispose(); await h.dispose(); }
   });
 
+  it('announces a harness wake-up as a provider-wake channel turn before its first event', async () => {
+    const pushed: Array<AgentEvent | null> = [];
+    let wake: (() => void) | null = null;
+    let running = false;
+    const handle = {
+      id: 'provider', agentKind: 'claude-code', model: 'test-model',
+      send: vi.fn(async () => { running = true; }),
+      close: vi.fn(async () => { pushed.push(null); wake?.(); }),
+      isTurnRunning: () => running,
+      setInteractionResolver: vi.fn(),
+      async *events() {
+        for (;;) {
+          while (pushed.length === 0) await new Promise<void>((resolve) => { wake = resolve; });
+          const next = pushed.shift()!;
+          if (next === null) return;
+          yield next;
+        }
+      },
+    } as unknown as AgentSessionHandle;
+    const log = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), fatal: vi.fn(),
+      child: () => log };
+    const session = new Session({ id: 'wake-task', agentKind: 'claude-code', workDir: '/unused', handle,
+      capabilities: {} as never, logger: log, turnStallMs: 0 });
+    const emit = async (value: AgentEvent) => {
+      running = value.type !== 'done';
+      pushed.push(value);
+      wake?.();
+      await vi.waitFor(() => expect(pushed).toHaveLength(0));
+      await microtasks();
+    };
+    const order: string[] = [];
+    const dispose = installSessionTurnObserver(observerDeps(), session);
+    const unsubscribe = onChannelTurn((target, phase, source) => {
+      if (target === session) order.push(`${phase}:${source ?? 'none'}`);
+    });
+    const off = session.onEvent((value) => order.push(value.type));
+    try {
+      await session.send('typed on desktop');
+      await emit(event('text', { text: 'launched agents' }));
+      await emit(event('done'));
+      await emit(event('text', { text: 'agent result' }));
+      await emit(event('done'));
+      expect(order).toEqual(['starting:none', 'text', 'done', 'starting:provider-wake', 'text', 'done']);
+    } finally { off(); unsubscribe(); dispose(); await session.close(); }
+  });
+
   it('channel attachment failure does not block task execution', async () => {
     const h = harness();
     const dispose = installSessionTurnObserver(observerDeps(), h.session);

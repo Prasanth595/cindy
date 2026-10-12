@@ -58,6 +58,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { SidebarNavigationCustomize } from './SidebarNavigationCustomize';
+import { useHoverOpenMenu } from './useHoverOpenMenu';
 import {
   SIDEBAR_NAVIGATION_ITEM_ICONS,
   ghostIdOfEntry,
@@ -242,7 +243,10 @@ function NewTag({ className }: { className?: string }) {
   );
 }
 
-/** Unchecked entries and (when there is room) the customize panel; empty menus render nothing. */
+/**
+ * Unchecked entries and (when there is room) the customize panel; empty menus render nothing.
+ * Opens on hover as well as click (useHoverOpenMenu), so it is non-modal.
+ */
 function SidebarNavigationMoreMenu({
   trigger,
   hiddenIds,
@@ -253,7 +257,8 @@ function SidebarNavigationMoreMenu({
   onCustomize,
   onCloseAutoFocus,
 }: {
-  trigger: React.ReactNode;
+  /** Receives the open state so a trigger can quiet its own tooltip. */
+  trigger: (open: boolean) => React.ReactNode;
   hiddenIds: readonly SidebarNavigationEntryId[];
   actions: Record<SidebarNavigationItemId, SidebarNavigationAction>;
   appFor: (id: SidebarNavigationEntryId) => GhostMainViewItem | undefined;
@@ -268,18 +273,22 @@ function SidebarNavigationMoreMenu({
   // A press on a plugin item's manage button reaches the item's own select next;
   // this flag routes that one selection to the plugin details instead of its page.
   const openDetailsRef = useRef(false);
+  const menu = useHoverOpenMenu({
+    // New entries keep their tag while the menu is open, then count as seen.
+    onOpenChange: (open) => { if (!open && unseen.size > 0) onSeen(); },
+    onCloseAutoFocus,
+  });
   if (hiddenIds.length === 0 && !onCustomize) return null;
   return (
-    // New entries keep their tag while the menu is open, then count as seen.
-    <DropdownMenu onOpenChange={(open) => { if (!open && unseen.size > 0) onSeen(); }}>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+    <DropdownMenu open={menu.open} onOpenChange={menu.onOpenChange} modal={false}>
+      <DropdownMenuTrigger asChild {...menu.triggerProps}>{trigger(menu.open)}</DropdownMenuTrigger>
       <DropdownMenuContent
         side="right"
         align="start"
         sideOffset={8}
         collisionPadding={NAV_MENU_COLLISION_PADDING}
         className={NAV_MENU_CLASS}
-        onCloseAutoFocus={onCloseAutoFocus}
+        {...menu.contentProps}
       >
         {hiddenIds.map((id) => {
           const app = appFor(id);
@@ -422,8 +431,9 @@ export function SidebarRailNavigation({
         unseen={entries.unseen}
         onSeen={entries.markSeen}
         onCloseAutoFocus={handleMoreCloseAutoFocus}
-        trigger={
-          <Tip text={t('sidebar.navigation.more')} side="right">
+        trigger={(open) => (
+          // The open menu already names itself; keep the tooltip from covering it.
+          <Tip text={t('sidebar.navigation.more')} side="right" controlledOpen={open ? false : undefined}>
             <button
               type="button"
               className={cn(SIDEBAR_RAIL_ICON_BUTTON_CLASS, 'relative')}
@@ -438,7 +448,7 @@ export function SidebarRailNavigation({
               )}
             </button>
           </Tip>
-        }
+        )}
       />
     </>
   );
@@ -559,10 +569,11 @@ export function SidebarTopNav({
       unseen={entries.unseen}
       onSeen={entries.markSeen}
       onCustomize={() => setCustomizing(true)}
-      trigger={
+      trigger={() => (
         <button
           type="button"
-          className={ROW_CLASS}
+          // Keep the row lit while the pointer is over its menu.
+          className={cn(ROW_CLASS, 'data-[state=open]:bg-sidebar-item-hover')}
           aria-label={entries.unseen.size > 0
             ? `${t('sidebar.navigation.more')} · ${t('sidebar.navigation.new')}`
             : t('sidebar.navigation.more')}
@@ -575,7 +586,7 @@ export function SidebarTopNav({
           <span className="leading-none">{t('sidebar.navigation.more')}</span>
           {entries.unseen.size > 0 && <NewTag className="ml-auto" />}
         </button>
-      }
+      )}
     />
   ) : null;
 

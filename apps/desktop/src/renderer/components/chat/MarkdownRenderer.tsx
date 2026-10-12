@@ -13,6 +13,7 @@
 
 import { Tip } from '@/components/ui/tooltip';
 import { useImageLoadFailure } from './useImageLoadFailure';
+import { ChatLoadingImage } from './ChatLoadingImage';
 import { FileTypeIcon } from '@/components/ui/file-type-icon';
 import { CHAT_CODE_CLASS, CHAT_CODE_SURFACE_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
 import { createElement, memo, useCallback, useEffect, useRef, useState, useMemo, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
@@ -900,7 +901,7 @@ function LightboxImage({
           setMenuPos({ x: e.clientX, y: e.clientY });
         }}
       >
-        <img
+        <ChatLoadingImage
           src={src}
           alt={alt ?? ''}
           style={{ maxWidth: 'min(100%, 50vw, 480px)', maxHeight: 'min(40vh, 420px)', height: 'auto' }}
