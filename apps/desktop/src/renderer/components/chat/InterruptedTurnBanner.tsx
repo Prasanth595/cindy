@@ -117,6 +117,7 @@ export function ErrorTailErrorBanner({
   onDismiss,
   agentKind,
   remoteHostId,
+  agentDeviceId,
   deviceLinkDeviceId,
   modelId,
   providerId,
@@ -129,6 +130,7 @@ export function ErrorTailErrorBanner({
   errorReason,
   toolLoop,
   onSilentStopContinue,
+  sessionSource,
   className,
   style,
 }: {
@@ -138,6 +140,7 @@ export function ErrorTailErrorBanner({
   onContinue: () => Promise<void> | void;
   onDismiss: () => void;
   agentKind?: 'cc' | 'codex' | 'pi';
+  agentDeviceId?: string | null;
   remoteHostId?: string;
   deviceLinkDeviceId?: string | null;
   modelId?: string;
@@ -153,6 +156,7 @@ export function ErrorTailErrorBanner({
   errorReason?: string | null;
   toolLoop?: ToolLoopErrorDetails;
   onSilentStopContinue?: () => void;
+  sessionSource?: string | null;
   className?: string;
   style?: React.CSSProperties;
 }) {
@@ -172,6 +176,7 @@ export function ErrorTailErrorBanner({
       onSilentStopContinue={onSilentStopContinue}
       usageLimitRecovery={usageLimitRecovery}
       agentKind={agentKind}
+      agentDeviceId={agentDeviceId}
       remoteHostId={remoteHostId}
       deviceLinkDeviceId={deviceLinkDeviceId}
       modelId={modelId}
@@ -182,6 +187,7 @@ export function ErrorTailErrorBanner({
       silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
       onForkStripEncrypted={onForkStripEncrypted}
       forkStripEncryptedRunning={forkStripEncryptedRunning}
+      sessionSource={sessionSource}
       className={className}
       style={style}
     />

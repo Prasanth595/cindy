@@ -23,8 +23,10 @@ import {
 import { Text, TextInput } from "@/components/AppText";
 import { SheetModal } from "./SheetModal";
 import {
+  fontWeight,
   iconSize,
   iconStroke,
+  lineHeight,
   radius,
   spacing,
   typeScale,
@@ -102,6 +104,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
           /> : <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${t("files.preview.browserAddress")}: ${p.address}`}
+            disabled={p.pending}
             onPress={() => { setAddress(p.address); setEditing(true); }}
             testID="filePreview.browser.editAddress"
             style={styles.addressTitle}
@@ -186,9 +189,11 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
           t("files.preview.browserMore"),
           () => setMenuOpen(true),
           "filePreview.browser.more",
+          p.pending,
         )}
       </View>
       <SheetModal
+        nativePresentation
         visible={menuOpen}
         onBackdropPress={close}
         onRequestClose={close}
@@ -320,7 +325,8 @@ const makeStyles = (c: ThemeColors) =>
       backgroundColor: c.surfaceElevated,
       padding: spacing.sm,
       borderRadius: radius.container,
-      fontSize: typeScale.caption,
+      fontSize: typeScale.footnote,
+      lineHeight: lineHeight.caption,
     },
     menu: {
       maxHeight: "80%",
@@ -330,10 +336,11 @@ const makeStyles = (c: ThemeColors) =>
       padding: spacing.lg,
     },
     menuHeader: { flexDirection: "row", alignItems: "center" },
-    menuTitle: { flex: 1, color: c.textPrimary, fontSize: typeScale.body },
+    menuTitle: { flex: 1, color: c.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.semibold },
     path: {
       color: c.textSecondary,
       fontSize: typeScale.caption,
+      lineHeight: lineHeight.caption,
       marginVertical: spacing.sm,
     },
     menuItem: {
@@ -344,5 +351,5 @@ const makeStyles = (c: ThemeColors) =>
       padding: spacing.sm,
       borderRadius: radius.control,
     },
-    menuLabel: { color: c.textPrimary, fontSize: typeScale.body },
+    menuLabel: { color: c.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body },
   });

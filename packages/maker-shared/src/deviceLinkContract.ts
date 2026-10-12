@@ -205,6 +205,8 @@ export interface MobileCodexRateLimitAccount {
 
 /** Display-safe metadata for one banked reset credit; its opaque backend id stays on desktop. */
 export interface MobileCodexRateLimitResetCredit {
+  /** Optional per-credit offer; older hosts/clients keep using the account-level offer. */
+  resetOffer?: MobileCodexRateLimitResetOffer | null;
   status: 'available' | 'redeeming' | 'redeemed' | 'unknown';
   resetType: 'codexRateLimits' | 'unknown';
   grantedAt: number;
@@ -215,6 +217,8 @@ export interface MobileCodexRateLimitResetCredit {
 
 /** Desktop-issued, account-bound reset offer used as the idempotency key for one attempt. */
 export interface MobileCodexRateLimitResetOffer {
+  /** Only retry the existing attempt; do not consume another credit. */
+  retryOnly?: boolean;
   idempotencyKey: string;
   /** Unix epoch seconds for the selected banked credit, when details are available. */
   expiresAt: number | null;
@@ -263,6 +267,7 @@ export interface MobileSessionAgentSwitchResult {
 }
 
 export const MOBILE_REMOTE_INVOKE_CHANNELS = [
+  'ghosts:composer-list',
   'maker:create-session',
   'maker:get-capabilities',
   'maker:provider:list',
@@ -320,6 +325,11 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   // reset 使用 desktop 预签发、账号绑定的幂等 offer,手机不能自行指定 creditId。
   'maker:usage:codex-rate-limits',
   'maker:usage:codex-rate-limit-reset',
+  // 订阅账号余量快照(只读;Claude / SuperGrok)与 cc 默认路由会话的生效计费路由。
+  // 老被控端 CHANNEL_NOT_ALLOWED → 任务菜单保留「暂未获取账号配额」。
+  'maker:usage:claude-subscription',
+  'maker:usage:xai-subscription',
+  'maker:claude-session-route:get',
   // 网关 API key presence-only 探测(只回 boolean;拉不到 → unknown,折扣版不置灰)。
   'maker:api-key:present',
   'maker:list-agent-commands',
@@ -345,6 +355,22 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:rewind:commit',
   'maker:message:delete',
   'maker:close-session',
+  // —— Orca 协同(Lead / Worker 团队真身在被控端,手机只做编排入口)——
+  // 均已在被控端 REMOTE_INVOKE_ALLOWLIST 的 Orca 段;worker-changed 推送经
+  // `session:<leadId>` topic 转发。老被控端 CHANNEL_NOT_ALLOWED → 协同入口 fail-closed
+  // 提示设备版本过旧,不放行到 enable-orca 才撞错。
+  'maker:plugins:get-state',
+  'maker:session:enable-orca',
+  'maker:session:disable-orca',
+  'maker:worker:create',
+  // 只读 Lead 所在电脑视角下的运行设备；旧端拒绝时保留本机 Worker 创建。
+  'maker:orca:execution-devices',
+  'maker:worker:switch-focus',
+  'maker:worker:acknowledge-done',
+  'maker:worker:archive',
+  'maker:collaboration-settings:get',
+  'local-db:orca-workflows:list-workers-by-lead',
+  'local-db:orca-workflows:get-by-worker-session',
   'maker:schedule:list',
   'maker:schedule:get',
   'maker:schedule:list-templates',
@@ -375,6 +401,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:input:resume',
   'maker:input:retry-last-error',
   'maker:input:clear-error',
+  'maker:input:cancel-usage-limit-wait',
   'maker:input:remove',
   'maker:input:update-text',
   'maker:input:update-content',
@@ -401,6 +428,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'worktree:suggest-name',
   'worktree:create',
   'worktree:discard-precreated',
+  'worktree:cancel-precreated',
   'text-file:read-preview',
   // 完整文件浏览(网格/预览/缩略图/大文件导出)走桌面同款聚合通道,
   // op 分发与响应形状见 apps/desktop/src/main/file-browser/device-op.ts。
@@ -425,6 +453,7 @@ const TRANSIENT_REMOTE_ERROR_MARKERS = [
   'NOT_CONNECTED',
   'LINK_NOT_OPEN',
   'BACKPRESSURE',
+  'DEVICE_LINK_BUSY',
   'DEVICE_OFFLINE',
   'DEVICE_LINK_TIMEOUT',
   'INVOKE_TIMEOUT',
@@ -569,6 +598,9 @@ export function describeRemoteError(error: string | null): string | null {
     if (error.includes('ACCOUNT_CHANGED')) return 'Codex 账号或工作区已变化，请刷新额度后重新确认。';
     if (error.includes('OFFER_EXPIRED')) return 'Codex 重置凭证已失效，请刷新额度后重新确认。';
     return '操作条件已变化，请刷新后重新确认。';
+  }
+  if (error.includes('BACKPRESSURE') || error.includes('DEVICE_LINK_BUSY')) {
+    return '远端繁忙，请稍后重试。';
   }
   if (TRANSIENT_REMOTE_ERROR_MARKERS.some((marker) => error.includes(marker))) {
     return '网络或被控端暂时不可用，可以稍后重新同步。';

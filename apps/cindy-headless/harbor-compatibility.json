@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "product": "cindy-headless",
-  "cindyHeadlessVersion": "0.4.2",
-  "cindyUpstreamCommit": "e2089e1e0d9f6f5aceed73b1d3550656d5f72359",
+  "cindyHeadlessVersion": "0.4.3",
+  "cindyUpstreamCommit": "fa3fc88d37d205ea993a67d85612fa9a5436fae5",
   "harborRepository": "https://github.com/harbor-framework/harbor.git",
   "harborCommit": "8e18dc8887f0371533c403a45a0aa0841e7fd0c8",
   "adapterImport": "harbor.agents.installed.cindy_headless:CindyHeadlessAgent",

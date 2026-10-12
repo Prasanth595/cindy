@@ -46,6 +46,25 @@ export function isExplicitScheduleModelUnavailable(
 }
 
 /**
+ * First required template parameter the scheduler engine would reject.
+ * Empty string is not "provided" and falls back to a non-empty default, matching
+ * applyTemplateParams. Whitespace is provided: the engine inserts it as-is.
+ */
+export function missingRequiredTemplateParamLabel(
+  template: Pick<ScheduleTemplate, 'parameters'>,
+  values: Record<string, string>,
+): string | null {
+  for (const parameter of template.parameters ?? []) {
+    if (!parameter.required) continue;
+    const raw = values[parameter.key];
+    const provided = Object.prototype.hasOwnProperty.call(values, parameter.key) && raw !== '';
+    const hasDefault = parameter.default !== undefined && parameter.default !== '';
+    if (!provided && !hasDefault) return parameter.label || parameter.key;
+  }
+  return null;
+}
+
+/**
  * Resolve the provider represented by the schedule picker. An empty stored
  * providerId means "use the effective source", not "use the utility fallback
  * chain", so generation must materialize that source before crossing IPC.
@@ -167,8 +186,8 @@ export type RunMode = 'fresh' | 'persistent' | 'bound';
  * Agent-mode bound schedules may only be persisted after the selected session
  * has resolved as available and active. Archived sessions remain openable, so
  * their reference state is still `available`, but the runner cannot use them as
- * ordinary heartbeat targets. Script mode intentionally clears targetSessionId,
- * so a stale binding must not block that mode conversion.
+ * ordinary heartbeat targets. Script bindings are lifecycle owners: editing them remains allowed,
+ * and the runner pauses unavailable owners before executing hooks or scripts.
  */
 export function canSubmitSessionBinding(
   executionMode: ScheduleFormState['executionMode'],
@@ -367,7 +386,11 @@ export function sessionAgentKindToScheduleAgentKind(
 }
 
 interface TemplateAgentDefaults {
-  getDefaultModel: (agentKind: ScheduleFormState['agentKind']) => string;
+  /** 目标 agent 在给定来源内的默认模型及与之成对的来源(null = 跟随原生默认)。 */
+  getDefaultRoute: (
+    agentKind: ScheduleFormState['agentKind'],
+    preferredProviderId?: string | null,
+  ) => { model: string; providerId: string | null };
   getAgentPrefs: (
     agentKind: ScheduleFormState['agentKind'],
   ) => Pick<ScheduleFormState, 'providerId' | 'effort' | 'fastMode'>;
@@ -384,11 +407,22 @@ export function resolveTemplateAgentFields(
   const templateModel = typeof template.model === 'string' ? template.model.trim() : '';
   const templateProviderId = typeof template.providerId === 'string' ? template.providerId.trim() : undefined;
   const templateEffort = template.effort && isEffortValue(template.effort) ? template.effort : undefined;
+  // 模板没给模型、换了 agent 时用默认路由:限定在模板 / 任务记忆的来源内,模型与来源整对应用。
+  const defaultRoute =
+    agentChanged && !templateModel
+      ? defaults.getDefaultRoute(agentKind, templateProviderId ?? (agentPrefs?.providerId || null))
+      : null;
 
   return {
     agentKind,
-    model: templateModel || (agentChanged ? defaults.getDefaultModel(agentKind) : form.model),
-    providerId: templateProviderId ?? (agentChanged ? (agentPrefs?.providerId ?? '') : form.providerId),
+    model: templateModel || (agentChanged ? (defaultRoute?.model ?? '') : form.model),
+    providerId:
+      templateProviderId ??
+      (agentChanged
+        ? defaultRoute
+          ? (defaultRoute.providerId ?? '')
+          : (agentPrefs?.providerId ?? '')
+        : form.providerId),
     effort: templateEffort ?? (agentChanged ? (agentPrefs?.effort ?? '') : form.effort),
     fastMode: template.fastMode ?? (agentChanged ? (agentPrefs?.fastMode ?? false) : form.fastMode),
   };
@@ -536,7 +570,7 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
     useWorktree: !isScript && form.workspaceKind === 'project' && form.useWorktree,
     persistentSession: !isScript && form.persistentSession,
     silentWhenIdle: !isScript && form.silentWhenIdle,
-    targetSessionId: !isScript ? (form.targetSessionId.trim() || undefined) : undefined,
+    targetSessionId: hasRealBinding(form) ? form.targetSessionId.trim() : undefined,
     preRunHook: buildPreRunHook(form),
     notify: {
       desktop: form.notifyDesktop,
@@ -549,9 +583,7 @@ export function buildScheduleInput(form: ScheduleFormState): CreateScheduleInput
     base.workspaceKind = 'project';
     base.workingDir = form.workingDir.trim();
     base.useWorktree = false;
-    // script 模式不叠前置检查(任务本体就是脚本,UI 也不展示该区块);保留 key,
-    // 编辑保存时按 hasKey + undefined = 写 NULL 契约把历史 hook 清列。
-    base.preRunHook = undefined;
+    // Preserve installed script gates when editing; hidden controls must not erase them.
     return base;
   }
 

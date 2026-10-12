@@ -54,7 +54,7 @@ import type { SessionLampAggregate } from '../../lib/sessionLampAggregation';
 import type { FolderPickerOption } from '@/components/new-chat/FolderPickerPopover';
 import type { SessionMoveTarget } from '../sessionMoveTarget';
 import type { FilterStatus } from '../../hooks/useSidebarFilter';
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_SEPARATOR_CLASS } from '../menuStyles';
+import { MENU_ITEM_CLASS } from '../menuStyles';
 import { RemoteProjectIcon } from '../RemoteProjectIcon';
 import { SidebarRightStatusIndicator } from '../SidebarRightStatusIndicator';
 import { isDeviceLinkWriteBlocked } from '../../lib/remoteSessionWriteGuard';
@@ -300,12 +300,12 @@ const ProjectHeader = memo(function ProjectHeader({
   // 常驻在标题左侧;展开/收起指示箭头移到标题右侧、hover 才渐显(见下方 Chevron)。
   const FolderIcon = isCollapsed ? Folder : FolderOpen;
   const Chevron = isCollapsed ? ChevronRight : ChevronDown;
-  // 错误不显示红点，也不能遮住待回复或成功未读提示。
+  // 红绿汇总保留既有判据;收起文件夹还需承接机器展开后下放的待回复提示。
   const collapsedStatusTone =
-    lamp?.dotTone === 'awaiting'
-      ? 'awaiting'
-      : collapsedAttentionTone === 'error'
-        ? null
+    collapsedAttentionTone === 'error'
+      ? 'error'
+      : lamp?.dotTone === 'awaiting'
+        ? 'awaiting'
         : collapsedAttentionTone;
   // 右键菜单：参照 ChatImageView 的 controlled DropdownMenu + 隐形定位 trigger 模式，
   // 鼠标点击位置即菜单出现位置。
@@ -608,7 +608,7 @@ const ProjectHeader = memo(function ProjectHeader({
           align="start"
           sideOffset={2}
           // 统一菜单 surface(menuStyles):与 SessionItem / Dialogue / 自动化 等同款
-          className={cn(MENU_CONTENT_CLASS, 'min-w-[160px] overflow-hidden')}
+          className="min-w-[160px] overflow-hidden"
         >
           <MountedMenuContent>
             {() => (
@@ -673,7 +673,7 @@ const ProjectHeader = memo(function ProjectHeader({
                     >
                       {t('ccAgent.sidebar.projectAction.openInExplorer')}
                     </DropdownMenuItem>
-                    <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onClick={() => {
                         setMenuPos(null);
@@ -695,7 +695,7 @@ const ProjectHeader = memo(function ProjectHeader({
                     </DropdownMenuItem>
                   </>
                 )}
-                <DropdownMenuSeparator className={MENU_SEPARATOR_CLASS} />
+                <DropdownMenuSeparator />
                 {project.scope === 'local' && (
                   <DropdownMenuItem onClick={handleRemoveFromSidebar} className={MENU_ITEM_CLASS}>
                     {t('ccAgent.sidebar.projectAction.removeFromSidebar')}

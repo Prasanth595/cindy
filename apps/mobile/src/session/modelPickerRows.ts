@@ -6,14 +6,13 @@
  * (mobile i18n 化后由 models.json catalog 供文案,在使用点求值 i18n.t)。组件只做渲染,
  * 这里可 node 单测。
  */
+import { isCodexGatewayWireModel } from '@cindy/model-providers/classification';
+import { isCustomRoutedProvider } from '@cindy/model-providers/provider-identity';
 import { getModel, modelSupportsFastMode, type ProviderView } from '@cindy/model-providers/registry';
 import type { SectionModel } from '@cindy/model-providers/sections';
 import type { AgentKind } from '@cindy/model-providers/types';
 
-import {
-  compactEnglishEffortLabel,
-  MOBILE_EFFORT_LABELS,
-} from '@cindy/maker-shared/agent-capabilities';
+import { MOBILE_EFFORT_LABELS } from '@cindy/maker-shared/agent-capabilities';
 
 import { i18n } from '@/i18n';
 
@@ -264,24 +263,6 @@ export function effortLabelFromRuntime(
   );
 }
 
-/**
- * 一级列表使用稳定 effort id 生成英文紧凑标签，避免被控端下发的长文案或混合语言挤占模型名。
- * 非英文界面继续使用完整本地化标签；完整英文名称仍由模型选项页展示。
- */
-export function compactEffortLabelFor(
-  model: Pick<PickerRowModel, 'effortDisplayNames'>,
-  effort: string,
-  capabilities: MobileAgentCapabilities | null,
-): string {
-  const fullLabel = effortLabelFor(model, effort, capabilities);
-  const language = (i18n.resolvedLanguage ?? i18n.language).toLowerCase();
-  if (!language.startsWith('en')) {
-    return fullLabel;
-  }
-
-  return compactEnglishEffortLabel(effort, fullLabel);
-}
-
 /** 父 Pressable 的完整无障碍名称：基础选择动作 + 当前可见元信息的完整语义。 */
 export function modelRowAccessibilityLabel(args: {
   baseLabel: string;
@@ -365,9 +346,15 @@ export function rowFastOn(args: {
 
 /**
  * budget 档置灰判定(桌面 budgetDisabledOf 同口径,key 判定换成被控端 presence 探测):
- * `codex/` 前缀 且 被控端明确无 key 才置灰;'unknown'(旧被控端 / 拉取失败)不置灰,
- * 宁可放行到被控端请求期报错也不误伤。
+ * `openai-codex/` 或 `codex/` 前缀且被控端明确无 key 才置灰。自定义/组织供应商目录里的
+ * 同前缀模型走该供应商自己的路由,不吃 Cindy 网关 key gate。没传 provider 时保持原前缀判定。
+ * 'unknown'(旧被控端 / 拉取失败)不置灰,宁可放行到被控端请求期报错也不误伤。
  */
-export function budgetRowDisabled(modelId: string, keyStatus: DeviceApiKeyStatus): boolean {
-  return modelId.startsWith('codex/') && keyStatus === 'absent';
+export function budgetRowDisabled(
+  modelId: string,
+  keyStatus: DeviceApiKeyStatus,
+  provider?: Pick<ProviderView, 'source'> | null,
+): boolean {
+  if (isCustomRoutedProvider(provider)) return false;
+  return isCodexGatewayWireModel(modelId) && keyStatus === 'absent';
 }

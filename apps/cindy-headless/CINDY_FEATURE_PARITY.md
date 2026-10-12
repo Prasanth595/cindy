@@ -1,9 +1,29 @@
 # Cindy to Headless feature parity
 
-This inventory applies to Cindy Headless `0.4.2`, based on Cindy upstream commit
-`e2089e1e0d9f6f5aceed73b1d3550656d5f72359`. A feature is considered available
+This inventory applies to Cindy Headless `0.4.3`, based on Cindy upstream commit
+`fa3fc88d37d205ea993a67d85612fa9a5436fae5`. A feature is considered available
 only when the Headless CLI or Harbor adapter can exercise it; vendored source
 alone is not sufficient.
+
+## Upstream integration audit: 2026-10-12
+
+PR #4750 is synchronized with `fa3fc88d37d205ea993a67d85612fa9a5436fae5`
+without rewriting its original commits. This is a compatibility update, not a
+new benchmark capability or a live-model validation result.
+
+| Classification | Upstream area | Headless impact and verification |
+|---|---|---|
+| COMPATIBLE | `Maker`, `Session`, continuation and close lifecycle | Existing local session calls remain type-compatible. The real-Session Headless regression covers intermediate continuation events and a subsequent result-only turn. New optional remote-device hooks are not supplied. |
+| COMPATIBLE | Core tool-loop detection, asynchronous questions and event projection | Core behavior is inherited. Headless does not inject an auxiliary loop reviewer or an interactive UI; these are not exposed as new Profile switches. |
+| COMPATIBLE | Memory storage serialization and versioned edits | The existing isolated Memory provider uses the shared implementation; no new storage API or Desktop editing interface is introduced. |
+| HEADLESS_UPDATE | Shared host prompt | Refresh all three frozen production prompts from the already merged Desktop templates and regenerate their digests/locks. The upstream application-update instruction is preserved verbatim for prompt parity; it does not install updater tools in Headless. |
+| HEADLESS_UPDATE | `tools/{claude,codex,pi}/latest.json` | Align example Profile versions with the repository's existing pins (Claude Code 2.1.280, Codex 0.159.2, Pi 1.0.2). No upstream runtime pin is changed. |
+| HEADLESS_UPDATE | Bundled ESM dependency initialization | Both CJS build entrypoints preserve `import.meta.url` using the delivered file URL. An actual Node subprocess starts each CLI outside the checkout; source-only tests did not catch the previous `createRequire(undefined)` startup failure. |
+| UNSUPPORTED | Device-hosted/shared providers, Desktop updater, UI and account flows | No remote-device host, updater or UI integration is added. A merged Core implementation does not imply Headless support for these host-owned capabilities. |
+
+Profile, catalog and artifact schemas and the Harbor adapter contract are unchanged.
+The Headless version and synchronization baseline identify the new source state;
+live-model benchmarks and a formal Linux distribution still require separate validation.
 
 ## Upstream sync audit: 2026-09-20
 

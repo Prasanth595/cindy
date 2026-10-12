@@ -10,7 +10,7 @@
     },
     "title": "Debug 日志",
     "record": "记录 Debug 日志",
-    "hint": "记录手机上的连接、恢复、滚动、键盘与性能细节。默认关闭，最多保留 7 天、8 MB，不会自动上传。",
+    "hint": "记录手机上的连接、恢复、文件预览与播放、滚动、键盘与性能细节。默认关闭，最多保留 7 天、8 MB，不会自动上传。",
     "export": "导出 Debug 日志",
     "clear": "清空日志",
     "busy": "处理中…",
@@ -19,13 +19,47 @@
     "cancel": "取消",
     "exportHint": "分享详细本地日志供排障使用；不包含对话正文或凭证。",
     "options": "日志选项",
-    "uploadCopied": "上传成功，编号 {{code}} 已复制。",
-    "uploadSucceeded": "上传成功，编号 {{code}}。"
+    "uploadCopied": "日志已上传，编号 {{code}} 已复制",
+    "uploadSucceeded": "日志已上传，编号 {{code}}"
   },
   "title": "设置",
+  "appearance": {
+    "title": "外观",
+    "modeLabel": "显示模式",
+    "options": {
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    },
+    "saveFailed": "显示模式没有保存成功，重新打开后会恢复之前的设置",
+    "userBubble": {
+      "title": "我的消息气泡颜色",
+      "presets": "颜色",
+      "default": "默认",
+      "peach": "初稿",
+      "yellow": "晨光",
+      "sage": "灵感",
+      "blue": "梦境",
+      "lavender": "夜猫",
+      "red": "项圈",
+      "custom": "自定义颜色",
+      "hue": "色相",
+      "preview": "消息预览",
+      "sampleUser": "帮我整理一下今天的灵感。",
+      "sampleAssistant": "好的，我们一起把想法梳理清楚。",
+      "hint": "颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "customHint": "左右拖动色带选择颜色。颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "saveFailed": "颜色已在本次使用中生效，但未能保存。",
+      "retry": "重试",
+      "cancel": "取消",
+      "reset": "恢复默认",
+      "apply": "应用",
+      "hex": "颜色值"
+    }
+  },
   "language": {
     "title": "语言",
-    "hint": "仅影响应用界面。Agent 回复语言由 Agent 自身决定。",
+    "hint": "界面和 AI 错误说明使用此语言；普通回复按你的消息或语言要求",
     "options": {
       "system": "跟随系统",
       "zh-CN": "简体中文",
@@ -37,20 +71,22 @@
   },
   "version": {
     "sectionTitle": "版本",
-    "currentLabel": "当前版本",
-    "bundleVersion": "整包版本 {{version}}",
-    "otaVersion": "热更版本 {{version}}",
+    "appVersion": "版本 {{version}}",
+    "updateMethodInApp": "更新方式：在 App 内更新，重启后生效",
+    "updateMethodPackage": "更新方式：下载并安装新版本",
+    "updateMethodUnavailable": "开发版，不支持 App 内更新",
     "pairedDesktopVersion": "配套桌面版本 {{version}}",
-    "devNoOta": "开发版，热更不可用",
     "checkAction": "检查更新",
     "testFlightCheckAction": "检查内容更新",
     "checking": "检查中",
-    "updating": "更新中",
     "checkingAccessibility": "正在检查更新",
     "testFlightCheckingAccessibility": "正在检查内容更新",
     "testFlightUpdateManaged": "测试版安装更新由 TestFlight 管理",
     "testFlightNoContentUpdate": "当前没有可用的内容更新。新测试版本请在 TestFlight 中查看。",
     "testFlightContentUpdateUnavailable": "当前构建无法检查内容更新。新测试版本请在 TestFlight 中查看。",
+    "googlePlayUpdateManaged": "应用版本更新由 Google Play 管理",
+    "googlePlayNoContentUpdate": "当前没有可用的内容更新。新应用版本请在 Google Play 中查看。",
+    "googlePlayContentUpdateUnavailable": "当前构建无法检查内容更新。新应用版本请在 Google Play 中查看。",
     "bundleUpdateFound": "发现整包更新",
     "upToDate": "已是最新版本",
     "bundleUpToDateNoOta": "整包已是最新，当前版本不支持热更新",
@@ -79,7 +115,7 @@
   "about": {
     "sectionTitle": "关于这台手机",
     "deviceName": "设备名称",
-    "deviceNameDetail": "电脑端授权列表会显示这个名称。",
+    "deviceNameDetail": "显示在电脑的授权列表中",
     "platform": "平台",
     "editAccessibility": "修改{{label}}"
   },
@@ -134,7 +170,8 @@
     "runtime": "Runtime",
     "otaMarker": "热更标记",
     "emergencyLaunch": "应急启动",
-    "emergencyLaunchYes": "是（本次运行内热更无法生效）"
+    "emergencyLaunchYes": "是（本次运行内热更无法生效）",
+    "otaVersion": "热更版本"
   },
   "legal": {
     "sectionTitle": "备案信息",
@@ -151,6 +188,8 @@
     "analyticsResetAction": "恢复"
   },
   "account": {
+    "logoutConfirmTitle": "退出登录？",
+    "logoutConfirmRunning": "仍有任务正在运行。退出后任务会继续在电脑上运行，但这台手机将不再接收和控制这些任务；这台手机上保存的账号和本地远程镜像也会被清除。",
     "logoutHint": "退出会清除这台手机上保存的全部账号和本地远程镜像，不会影响电脑端任务。",
     "logout": "退出登录",
     "loggingOut": "退出中",
@@ -173,9 +212,9 @@
     "refresh": "刷新",
     "refreshing": "刷新中…",
     "refreshAccessibility": "刷新词典",
-    "readOnlyHint": "手机只能查看，添加和删除请回电脑操作。",
-    "offlineHint": "电脑当前都不在线，显示的是上次同步到手机的内容。",
-    "noDesktops": "还没有可同步的电脑。在电脑上登录同一账号后，词典会自动出现在这里。"
+    "readOnlyHint": "手机仅供查看，增删词条请到电脑操作",
+    "offlineHint": "电脑不在线，正在显示上次同步的词典",
+    "noDesktops": "在电脑上登录同一账号，即可同步词典"
   },
   "deviceNameEditor": {
     "screenTitle": "设备名称",
@@ -183,9 +222,12 @@
     "resetAccessibility": "恢复默认本机名称",
     "emptyError": "设备名称不能为空。",
     "deviceInitializing": "设备还在初始化，请稍后再试。",
-    "saving": "保存中…",
-    "saved": "已保存。",
-    "restoringDefault": "正在恢复默认名称…",
-    "restoredDefault": "已恢复默认名称。"
+    "restoredDefault": "已恢复默认名称。",
+    "resetAction": "恢复默认名称",
+    "clearAccessibility": "清空名称",
+    "discardTitle": "放弃修改？",
+    "discardBody": "设备名称的修改还没有保存。",
+    "discardConfirm": "放弃修改",
+    "keepEditing": "继续编辑"
   }
 }

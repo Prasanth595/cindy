@@ -37,6 +37,7 @@ function fixture() {
       view, snapshot, liveMessages: raw, streaming: false,
       isLive: (message) => message.isStreaming === true,
       pendingHandoff: state.pending,
+      staleTail: state.tail,
       isLocalUser: (message) => message.role === 'user' && (message.isPendingPersist === true || !!message.blockedByGhost || !!message.localSendPrecedingClientIds),
       build,
       structure: {
@@ -52,6 +53,27 @@ function fixture() {
 }
 
 describe('desktop remote history uses the shared live-to-history handoff', () => {
+  it('shows a list-pushed reply after a restored snapshot until the page read covers it', async () => {
+    const { view, render, setSource } = fixture();
+    const reply = { ...row('reply'), content: 'prefetched reply', createdAt: '2026-09-08T00:00:09Z' };
+    const pendingUser = { ...row('typing'), role: 'user' as const, content: 'local draft send',
+      isPendingPersist: true, createdAt: '2026-09-08T00:00:10Z' };
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([row('user')], false), details: new Map(),
+      expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null }));
+    const restored = render([row('user'), reply, pendingUser]);
+    expect(restored.state.tail).toEqual(new Set(['reply', 'typing']));
+    expect(restored.text).toContain('prefetched reply');
+    expect(restored.text.split('local draft send')).toHaveLength(2);
+    setSource([row('user'), reply]);
+    view.setActive(true);
+    await view.refresh();
+    const fresh = render([row('user'), reply]);
+    expect(fresh.state.tail.size).toBe(0);
+    expect(fresh.text.split('prefetched reply')).toHaveLength(2);
+    view.setActive(false);
+  });
+
   it('keeps the live tail after history when the last send reservation retires', async () => {
     const { view, render, setSource } = fixture();
     await view.refresh();
@@ -114,8 +136,9 @@ describe('desktop remote history uses the shared live-to-history handoff', () =>
     const source = readFileSync(new URL('../components/chat/MessageStream.tsx', import.meta.url), 'utf8');
     expect(source).toContain('selectVisibleMessages(displayMessages)');
     expect(source).toContain('planSessionBelongsToLatestUserTurn(displayMessages,');
-    expect(source).toContain('findFirstUserMessageClientId(displayMessages,');
-    expect(source).toContain('collectAssistantTurnUsageDetails(displayMessages,');
+    expect(source).toContain('const metadataMessages = metadataProjection(displayMessages)');
+    expect(source).toContain('findFirstUserMessageClientId(metadataMessages,');
+    expect(source).toContain('collectAssistantTurnUsageDetails(metadataMessages,');
   });
 
   it.each([{ predecessors: [] as string[] }, { predecessors: ['removed'] }, { predecessors: ['user'] }])('anchors a send after late history with $predecessors', async ({ predecessors }) => {

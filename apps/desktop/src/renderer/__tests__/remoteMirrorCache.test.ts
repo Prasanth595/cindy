@@ -46,6 +46,7 @@ import {
   readCachedMessages,
   readCachedSessionList,
   scheduleSessionListPersist,
+  persistListMessage,
 } from '@/features/device-link/mirrorCacheClient';
 import {
   __testing as dataOwnerGenTesting,
@@ -167,6 +168,8 @@ const putMessages = vi.fn<
     expectedInvalidation?: number,
     expectedOwnerToken?: string,
     expectedAccountCounter?: number,
+    historyView?: string,
+    mergeListMessage?: boolean,
   ) => Promise<{ ok: true }>
 >(async () => ({ ok: true as const }));
 
@@ -269,6 +272,97 @@ afterEach(() => {
 });
 
 describe('冷缓存 hydrate', () => {
+  it('shows a list-pushed reply immediately when opening a task while its history request is still pending', async () => {
+    const s = sid();
+    setDataOwnerGeneration('owner-a', 1);
+    registerRemote(s);
+    let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+    window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+    makerChatStore.initGlobalListeners();
+    const row = dbMessage(s, 'prefetched', '完整长正文'.repeat(2000), '2026-10-10T00:00:00.000Z');
+    push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: row } });
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
+    expect(invoke.mock.calls.filter(([, channel]) => channel.startsWith('local-db:messages:'))).toEqual([]);
+    expectPut(DEVICE_ID, s, [row]);
+    remoteListPromise = new Promise<Message[]>(() => {});
+    makerChatStore.ensureInitialMessages(s);
+    await flush(30);
+    expect(makerChatStore.getSnapshot(s).messages.map(message => message.content)).toEqual([row.content]);
+  });
+
+  it('merges prefetched list text into the protected disk window', async () => {
+    const s = sid();
+    const earlier = dbMessage(s, 'old', 'earlier', '2026-10-10T00:00:00.000Z');
+    const latest = dbMessage(s, 'new', '完整正文'.repeat(2000), '2026-10-10T00:01:00.000Z');
+    cachedMessages.set(`${DEVICE_ID}::${s}`, [earlier as unknown as Record<string, unknown>]);
+    persistListMessage(DEVICE_ID, s, latest);
+    await vi.waitFor(() => expectPut(DEVICE_ID, s, [latest]));
+    expect(putMessages.mock.calls[0].slice(3, 6)).toEqual([7, cachedOwnerToken, 0]);
+    expect(putMessages.mock.calls[0].slice(6)).toEqual([undefined, true]);
+  });
+
+  it('reclaims never-opened list messages through the existing idle budget', async () => {
+    vi.useFakeTimers();
+    const s = sid();
+    try {
+      setDataOwnerGeneration('owner-a', 1);
+      registerRemote(s);
+      let push!: Parameters<typeof window.electronAPI.deviceLink.onRemotePush>[0];
+      window.electronAPI.deviceLink.onRemotePush = vi.fn(callback => { push = callback; return () => {}; });
+      makerChatStore.initGlobalListeners();
+      makerChatStore.__activeViewTest.setSoftEvictionBudget({ messages: 0, characters: 0 });
+      const row = dbMessage(s, 'prefetched', 'full body', '2026-10-10T00:00:00.000Z');
+      push({ deviceId: DEVICE_ID, channel: 'local-db:messages:created', payload: { sessionId: s, listMessage: true, message: row } });
+      expect(makerChatStore.__activeViewTest.getLastViewedAt(s)).toBeDefined();
+      expect(makerChatStore.getSnapshot(s).messages).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(makerChatStore.getSnapshot(s).messages).toHaveLength(0);
+    } finally {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget(null);
+      makerChatStore.purgeSession(s);
+      makerChatStore.__teardownGlobalListeners();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads changed tasks ahead into the mirror after a refresh that may follow missed pushes', async () => {
+    const s = sid();
+    const old = dbMessage(s, 'old', 'cached reply', '2026-10-11T00:00:01.000Z');
+    const reply = dbMessage(s, 'new', 'reply written while away', '2026-10-11T00:00:09.000Z');
+    const historyView = encodeRemoteHistory({ items: projectHistoryView([{ ...old, clientId: old.clientId }], false),
+      details: new Map(), expanded: new Set(), ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: '2026-10-11T00:00:09.000Z' },
+    ] as never);
+    invoke.mockImplementationOnce((async (_deviceId: string, channel: string) => {
+      expect(channel).toBe('local-db:messages:view');
+      return { version: 1, items: projectHistoryView([old, reply], false), hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    try {
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+      const written = putMessages.mock.calls.at(-1)!;
+      expect(written.slice(0, 3)).toEqual([DEVICE_ID, s, []]);
+      expect(written[6]).toContain('reply written while away');
+      // The same version is not read again.
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+      // A cleared mirror entry invalidates that record.
+      clearCachedMessages(DEVICE_ID, s);
+      getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0 } as CachedRead);
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+    } finally {
+      getMessages.mockReset();
+      getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({
+        messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      }));
+    }
+  });
+
   it('restores the structured view through the actual offline session entry', async () => {
     const s = sid();
     const rows = [{ id: 'cached', clientId: 'cached', role: 'user', content: 'offline history', createdAt: '2026-09-17T00:00:00Z' }];

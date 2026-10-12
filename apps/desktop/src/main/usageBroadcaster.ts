@@ -28,6 +28,7 @@ import { incrementDailySpend, getTodaySpend, localDayKey } from './localDb/daily
 import { getGatewayModelPricing } from './usage/modelPricing';
 import type { XaiRateLimitSnapshot } from '../shared/xaiRateLimit';
 import { incrementDailyModelUsage, type DailyModelUsageDelta } from './localDb/dailyModelUsage';
+import { incrementDailySessionUsage } from './localDb/dailySessionUsage';
 import { getCurrentDbClientUserId, getDbClient } from './localDb/client/current';
 import {
   mergeClaudeSubscriptionUsageSnapshot,
@@ -178,14 +179,38 @@ export async function rebroadcastTodaySpend(): Promise<void> {
  * (renderer 复用 USAGE_TODAY_SPEND_CHANGED / USAGE_TODAY_TOKENS_CHANGED 作刷新触发)。
  */
 export async function recordModelTurnUsage(
-  delta: DailyModelUsageDelta,
+  delta: DailyModelUsageDelta & {
+    /** 产生本轮用量的任务;给出时同时计入 daily_session_usage(「最耗 token 的任务」)。 */
+    sessionId?: string;
+  },
   ts: number = Date.now(),
 ): Promise<void> {
+  const { sessionId, ...modelDelta } = delta;
   try {
-    await incrementDailyModelUsage(delta, ts);
+    await incrementDailyModelUsage(modelDelta, ts);
   } catch (err) {
     log.warn(
       'recordModelTurnUsage failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+    // 任务用量是模型用量的细分:模型行没记上时不单独计入任务,排行不会超出总量。
+    return;
+  }
+  if (!sessionId) return;
+  try {
+    await incrementDailySessionUsage(
+      sessionId,
+      [
+        modelDelta.inputTokensDelta,
+        modelDelta.outputTokensDelta,
+        modelDelta.cacheReadTokensDelta,
+        modelDelta.cacheCreateTokensDelta,
+      ].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0),
+      ts,
+    );
+  } catch (err) {
+    log.warn(
+      'record session turn usage failed:',
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -1144,7 +1169,29 @@ export async function readXaiSubscriptionUsageSnapshot(): Promise<XaiSubscriptio
 
 // ── 内部广播 ─────────────────────────────────────────────────────────────────
 
+/** What changed, for in-process observers such as the macOS menu bar. */
+export type UsageChangeKind = 'spend' | 'tokens' | 'codex' | 'claude' | 'xai' | 'subscription';
+
+const usageChangeObservers = new Set<(kind: UsageChangeKind) => void>();
+
+/** Observes every usage broadcast in main; returns an unsubscribe function. */
+export function observeUsageChanges(listener: (kind: UsageChangeKind) => void): () => void {
+  usageChangeObservers.add(listener);
+  return () => usageChangeObservers.delete(listener);
+}
+
+function notifyUsageObservers(kind: UsageChangeKind): void {
+  for (const listener of usageChangeObservers) {
+    try {
+      listener(kind);
+    } catch (err) {
+      log.warn('usage change observer failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 function broadcastTodaySpend(payload: TodaySpendPayload): void {
+  notifyUsageObservers('spend');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_TODAY_SPEND_CHANGED, payload);
@@ -1153,6 +1200,7 @@ function broadcastTodaySpend(payload: TodaySpendPayload): void {
 }
 
 function broadcastCodexTokens(payload: CodexTokenSnapshot): void {
+  notifyUsageObservers('tokens');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_TODAY_TOKENS_CHANGED, payload);
@@ -1161,6 +1209,7 @@ function broadcastCodexTokens(payload: CodexTokenSnapshot): void {
 }
 
 function broadcastCodexAccountUsage(payload: RateLimitSnapshot | null, providerId = 'openai'): void {
+  notifyUsageObservers('codex');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       if (providerId === 'openai') win.webContents.send(USAGE_CODEX_ACCOUNT_CHANGED, payload);
@@ -1174,6 +1223,7 @@ function broadcastCodexAccountUsage(payload: RateLimitSnapshot | null, providerI
 }
 
 function broadcastClaudeSubscriptionUsage(payload: ClaudeSubscriptionUsageSnapshot | null): void {
+  notifyUsageObservers('claude');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_CLAUDE_SUBSCRIPTION_CHANGED, payload);
@@ -1185,6 +1235,7 @@ function broadcastClaudeSubscriptionUsage(payload: ClaudeSubscriptionUsageSnapsh
 }
 
 export function broadcastSubscriptionAccountUsage(providerId: string, snapshot: ClaudeSubscriptionUsageSnapshot | XaiSubscriptionUsageSnapshot | null): void {
+  notifyUsageObservers('subscription');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!isTrustedAppRendererWindow(win)) continue;
     win.webContents.send('usage:subscription-provider-account-changed', { providerId, snapshot });
@@ -1193,6 +1244,7 @@ export function broadcastSubscriptionAccountUsage(providerId: string, snapshot: 
 }
 
 function broadcastXaiSubscriptionUsage(payload: XaiSubscriptionUsageSnapshot | null): void {
+  notifyUsageObservers('xai');
   for (const win of BrowserWindow.getAllWindows()) {
     if (!isTrustedAppRendererWindow(win)) continue;
     win.webContents.send(USAGE_XAI_SUBSCRIPTION_CHANGED, payload);

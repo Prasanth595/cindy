@@ -2,8 +2,8 @@ import type { HeadlessProfile } from './profile.js';
 import registry from '../capability-registry.json';
 
 export const HEADLESS_CONTRACT_VERSION = 1;
-export const CINDY_HEADLESS_VERSION = '0.4.2';
-export const CINDY_UPSTREAM_COMMIT = 'e2089e1e0d9f6f5aceed73b1d3550656d5f72359';
+export const CINDY_HEADLESS_VERSION = '0.4.3';
+export const CINDY_UPSTREAM_COMMIT = 'fa3fc88d37d205ea993a67d85612fa9a5436fae5';
 
 export interface HeadlessFeatureCapability {
   type: 'boolean' | 'object' | 'array';

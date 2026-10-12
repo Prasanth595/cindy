@@ -3,12 +3,28 @@ import type { IMMessageEvent } from '@cindy/im';
 
 import { buildTelegramAdapter } from '../adapter';
 import { ui } from '../uiText';
+vi.mock('../groupWindow', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../groupWindow')>()),
+  buildTelegramGroupContextPrefix: vi.fn(async () => ({
+    prefix: '<group_chat_context>\n[Tom] (附件: IMG_80.MP4)\n</group_chat_context>\n',
+    messageCount: 1,
+    messageIds: ['80'],
+    commit: vi.fn(),
+  })),
+}));
+vi.mock('../contactsAutoRegister', () => ({ autoRegisterTelegramSpeaker: vi.fn() }));
 vi.mock('../behaviorStore', () => ({
   readTelegramPersona: () => ({ botName: 'Private persona', soul: 'Private instructions' }),
 }));
 
 describe('Telegram group history access scope', () => {
   const adapter = buildTelegramAdapter({} as never, {} as never);
+
+  it('clears successful and cancelled status reactions but retains an error signal', () => {
+    expect(adapter.terminalReactionEmoji?.('done')).toBeNull();
+    expect(adapter.terminalReactionEmoji?.('aborted')).toBeNull();
+    expect(adapter.terminalReactionEmoji?.('error')).toBe('👎');
+  });
 
   it('saves the actual quoted text but excludes persona and technical instructions', async () => {
     const result = await adapter.prepareAgentTurnText?.({
@@ -18,6 +34,8 @@ describe('Telegram group history access scope', () => {
     } as IMMessageEvent);
     expect(result?.agentText).toContain('Private instructions');
     expect(result?.contextSnapshot).toEqual({ replyContext: '[Alice] quoted text', replyMessageCount: 1 });
+    // The same reply the model sees is the one Auto-review may use.
+    expect(result?.replyContext).toEqual({ author: 'Alice', text: 'quoted text' });
   });
 
   it('only lets owner-triggered group turns omit the policy in Full access', () => {
@@ -109,5 +127,89 @@ describe('Telegram group history access scope', () => {
       provider: 'telegram-personal:bot-1',
       lane: null,
     });
+  });
+
+  it('names the group in the channel note but leaves the speaker to the existing [发言人] line', async () => {
+    expect(
+      await adapter.channelNoteSourceFor?.({
+        contextId: 'bot-1',
+        senderId: 'g/-1001',
+        messageId: 'm-3',
+        chatId: '-1001',
+        text: 'hi',
+        speaker: { id: '7', name: 'Ann', isOwner: false },
+        interactionSource: { chatName: 'Dev Group', senderName: 'Ann' },
+        attachments: [],
+        unsupported: [],
+      } as never),
+    ).toEqual({ chatKind: 'group', chatId: '-1001', chatName: 'Dev Group' });
+  });
+});
+
+/** codec 的 `${chatId}|${messageId}` 形态(decodeTelegramMessageId 的逆)。 */
+const TRIGGER_MESSAGE_ID = '-100200|81';
+
+describe('Telegram group history media', () => {
+  it('supplies media from the included group messages to the model only', async () => {
+    const collectGroupHistoryMedia = vi.fn(async () => ({
+      attachments: [
+        { kind: 'file' as const, absPath: '/tmp/IMG_80.MP4', originalName: 'IMG_80.MP4', mimeType: 'video/mp4', author: 'Tom' },
+      ],
+      unavailable: [],
+    }));
+    const adapter = buildTelegramAdapter({ collectGroupHistoryMedia } as never, {} as never);
+    const result = await adapter.prepareAgentTurnText?.({
+      contextId: 'bot-1',
+      senderId: 'g/-100200',
+      messageId: TRIGGER_MESSAGE_ID,
+      chatId: '-100200',
+      text: '能鉴定吗',
+      attachments: [],
+      unsupported: [],
+      speaker: { id: '222', name: 'Tom', isOwner: false },
+    } as never);
+    expect(collectGroupHistoryMedia).toHaveBeenCalledWith('-100200', ['80'], undefined);
+    expect(result?.contextAttachments).toEqual([
+      { kind: 'file', absPath: '/tmp/IMG_80.MP4', originalName: 'IMG_80.MP4', mimeType: 'video/mp4' },
+    ]);
+    expect(result?.agentText).toContain('IMG_80.MP4（Tom）');
+    expect(result?.agentText.indexOf('<group_chat_attachments>')).toBeGreaterThan(
+      result!.agentText.indexOf('</group_chat_context>'),
+    );
+  });
+
+  it('skips history media for ambient (always-respond) turns', async () => {
+    const collectGroupHistoryMedia = vi.fn();
+    const adapter = buildTelegramAdapter({ collectGroupHistoryMedia } as never, {} as never);
+    const result = await adapter.prepareAgentTurnText?.({
+      contextId: 'bot-1',
+      senderId: 'g/-100200',
+      messageId: TRIGGER_MESSAGE_ID,
+      chatId: '-100200',
+      text: 'chat',
+      attachments: [],
+      unsupported: [],
+      ambient: true,
+    } as never);
+    expect(collectGroupHistoryMedia).not.toHaveBeenCalled();
+    expect(result?.contextAttachments).toBeUndefined();
+  });
+
+  it('keeps the turn going when history media download throws', async () => {
+    const adapter = buildTelegramAdapter(
+      { collectGroupHistoryMedia: vi.fn(async () => Promise.reject(new Error('net'))) } as never,
+      {} as never,
+    );
+    const result = await adapter.prepareAgentTurnText?.({
+      contextId: 'bot-1',
+      senderId: 'g/-100200',
+      messageId: TRIGGER_MESSAGE_ID,
+      chatId: '-100200',
+      text: 'hi',
+      attachments: [],
+      unsupported: [],
+    } as never);
+    expect(result?.contextAttachments).toBeUndefined();
+    expect(result?.agentText).toContain('hi');
   });
 });

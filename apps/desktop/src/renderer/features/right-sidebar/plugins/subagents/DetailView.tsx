@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 /**
  * DetailView — a single Subagent run, read as a conversation.
  *
@@ -338,7 +339,10 @@ function PiDurableDetailView({
   const selectedChildActive = !selectedChild
     || selectedChild.status === 'running'
     || selectedChild.status === 'queued';
-  const selectedChildHasCompletedOutput = Boolean(selectedChild?.output?.trim());
+  // Commentary can populate output while tools are still running. Only older
+  // hosts/runners without explicit readiness need the output-based fallback.
+  const selectedChildResultReady = selectedChild?.resultReady
+    ?? Boolean(selectedChild?.output?.trim());
   // The composer works like the session's: one box, one send, and the same
   // keystrokes. While running, plain send queues a follow-up and the modifier
   // send interjects (steer) — exactly the main composer's Enter / ⌘+Enter
@@ -351,7 +355,7 @@ function PiDurableDetailView({
       return detail.capabilities.resume ? 'resume' : undefined;
     }
     if (!detail.capabilities.steer || !selectedChildActive) return undefined;
-    if (intent === 'steer' && !selectedChildHasCompletedOutput) return 'steer';
+    if (intent === 'steer' && !selectedChildResultReady) return 'steer';
     return 'follow_up';
   };
   const defaultComposerAction = composerActionForIntent('queue');
@@ -642,14 +646,18 @@ function PiDurableDetailView({
                         </p>
                       )}
                       {transcriptCursor ? (
-                        <button
+                        <Button
+                          variant="secondary"
+                          size="md"
+                          compact
+                          loading={transcriptLoading}
                           type="button"
                           disabled={transcriptLoading}
                           onClick={onLoadMoreTranscript}
-                          className="mt-3 inline-flex h-8 items-center rounded-full border border-[var(--border-default)] px-3 text-12 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-wait disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                          className="mt-3"
                         >
                           {t('rightSidebar.subagents.loadMoreTranscript')}
-                        </button>
+                        </Button>
                       ) : null}
                     </section>
                   ) : null}

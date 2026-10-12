@@ -400,7 +400,7 @@ describe('validateCustomProviderConfig (per-runtime)', () => {
     ).toBe(false);
   });
 
-  it('accepts only explicit, non-empty, valid Pi reasoning effort capabilities', () => {
+  it('accepts inherited reasoning capabilities while validating explicit effort lists', () => {
     const config = (model: Record<string, unknown>, agent: 'pi' | 'codex' = 'pi') => ({
       id: 'reasoning-provider',
       name: 'Reasoning provider',
@@ -422,7 +422,8 @@ describe('validateCustomProviderConfig (per-runtime)', () => {
         }),
       ),
     ).toEqual({ ok: true });
-    expect(validateCustomProviderConfig(config({ reasoning: true })).ok).toBe(false);
+    expect(validateCustomProviderConfig(config({ reasoning: true })).ok).toBe(true);
+    expect(validateCustomProviderConfig(config({ reasoning: true, reasoningEfforts: [] })).ok).toBe(true);
     expect(
       validateCustomProviderConfig(
         config({
@@ -492,6 +493,51 @@ describe('validateCustomProviderConfig (per-runtime)', () => {
 });
 
 describe('custom-provider-store CRUD (per-runtime)', () => {
+  it('round-trips an explicit standalone Images API independently of chat wire and hosted tools', async () => {
+    mountDb();
+    const config = {
+      id: 'standalone-images', name: 'Standalone images',
+      runtimes: { pi: {
+        baseUrl: 'http://127.0.0.1:8080/v1', wireProtocol: 'openai-chat' as const,
+        imageApi: 'openai-images' as const,
+        models: [{ id: 'gpt-image-2', name: 'Image', mode: 'image_generation' }],
+      } },
+    };
+    expect(validateCustomProviderConfig(config)).toEqual({ ok: true });
+    expect(validateCustomProviderConfig({
+      ...config, runtimes: { pi: { ...config.runtimes.pi, imageApi: 'private-cli' } },
+    }).ok).toBe(false);
+    await createCustomProvider(config);
+    const stored = await getCustomProvider(config.id);
+    expect(stored?.runtimes.pi?.imageApi).toBe('openai-images');
+    expect(stored?.runtimes.pi?.supportsImageGeneration).toBeUndefined();
+    const { imageApi: _removed, ...runtime } = config.runtimes.pi;
+    await updateCustomProvider(config.id, { ...config, runtimes: { pi: runtime } });
+    expect((await getCustomProvider(config.id))?.runtimes.pi?.imageApi).toBeUndefined();
+  });
+  it('round-trips an explicit standalone Videos API independently of chat wire and hosted tools', async () => {
+    mountDb();
+    const config = {
+      id: 'standalone-videos', name: 'Standalone videos',
+      runtimes: { pi: {
+        baseUrl: 'http://127.0.0.1:8080/v1', wireProtocol: 'openai-chat' as const,
+        videoApi: 'xai-videos' as const,
+        models: [{ id: 'private-video', name: 'Video', mode: 'video_generation' }],
+      } },
+    };
+    expect(validateCustomProviderConfig(config)).toEqual({ ok: true });
+    expect(validateCustomProviderConfig({
+      ...config, runtimes: { pi: { ...config.runtimes.pi, videoApi: 'private-cli' } },
+    }).ok).toBe(false);
+    await createCustomProvider(config);
+    const stored = await getCustomProvider(config.id);
+    expect(stored?.runtimes.pi?.videoApi).toBe('xai-videos');
+    expect(stored?.runtimes.pi?.supportsImageGeneration).toBeUndefined();
+    const { videoApi: _removed, ...runtime } = config.runtimes.pi;
+    await updateCustomProvider(config.id, { ...config, runtimes: { pi: runtime } });
+    expect((await getCustomProvider(config.id))?.runtimes.pi?.videoApi).toBeUndefined();
+  });
+
   it('accepts image generation only for a Codex runtime with an OpenAI Responses route', () => {
     const model = { id: 'image-chat', name: 'Image Chat' };
     expect(
@@ -1645,4 +1691,25 @@ it('persists and reloads Google runtime/model routes without converting them to 
   } };
   await createCustomProvider(config);
   expect((await getCustomProvider(config.id))?.runtimes).toEqual(config.runtimes);
+});
+
+
+describe('imported capability persistence', () => {
+  it('round-trips every shared field and explicit false through storage for all engines', async () => {
+    mountDb();
+    const model = { id: 'gpt-7-sol', name: 'Seven', nativeApi: 'openai-responses' as const,
+      contextWindow: 128000, contextWindowMax: 1000000, maxOutputTokens: 32000,
+      supportsFastMode: false, supportsImageInput: false, supportsToolCalls: false,
+      reasoning: false, efforts: [], defaultEffort: null, reasoningRequired: false,
+      defaultEnabled: false, modalities: { input: ['text'], output: ['text'] },
+      discoveredMetadata: { supportsFastMode: true, efforts: ['high'] as ['high'] },
+    };
+    const runtime = { baseUrl: 'https://relay.example/v1', wireProtocol: 'openai-responses' as const, models: [model] };
+    await createCustomProvider({ id: 'all-fields', name: 'All fields', runtimes: {
+      'claude-code': runtime, codex: runtime, pi: runtime,
+    } });
+    const stored = await getCustomProvider('all-fields');
+    for (const agent of ['claude-code', 'codex', 'pi'] as const)
+      expect(stored?.runtimes[agent]?.models[0]).toEqual(model);
+  });
 });

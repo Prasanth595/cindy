@@ -1,3 +1,4 @@
+import { readTaskResultsForReply } from './botTaskReplyResults.js';
 /**
  * messagePersistBroadcaster — 把 agent 消息的持久化从 renderer 收口到 main 单点。
  * ---------------------------------------------------------------------------
@@ -205,6 +206,28 @@ interface AssistantBlock {
 }
 
 const assistantBlocks = new Map<string, AssistantBlock>();
+
+/**
+ * 本轮 prompt 之前到达的非 final text（运行时就绪 / 重连期间的提示文本）会先建一个 block，
+ * 它的 createdAt 早于本轮的 user 行。这样的 block 一旦被本轮写入（delta 或本轮全文快照），
+ * 就把起点夹到本轮起点之后；否则落库的回复会排在触发它的 user 消息之前
+ * （renderer 按 (createdAt, rowid) 排序）。本轮自己建的 block 起点就在本轮起点之后，不进这里。
+ * 后台 turn 的文本不属于当前前台 turn，不抬（turnScope === 'background'）。
+ */
+function stampBlockAfterTurnStart(
+  sessionId: string,
+  block: AssistantBlock,
+  turnScope: 'turn' | 'background' | undefined,
+): void {
+  if (turnScope === 'background') return;
+  const turnStartedAt = _turnStartedAtBySession.get(sessionId);
+  if (turnStartedAt === undefined || turnStartedAt <= block.createdAt) return;
+  // /clear 之前的 block 不抬升：抬上去会让 pre-clear 文本跟着漏进清空后的历史
+  // （messages 按 createdAt > clearedAt 过滤、广播也用同一个边界）。
+  const clearBoundary = clearBoundaryBySession.get(sessionId);
+  if (clearBoundary !== undefined && block.createdAt <= clearBoundary) return;
+  block.createdAt = turnStartedAt;
+}
 // In-flight thinking is not in SQLite until final. Keep one recoverable snapshot
 // so expanding midway does not depend on deltas a collapsed controller never received.
 const historyThinkingBlocks = new Map<string, Map<string, Message>>();
@@ -537,11 +560,18 @@ function markAssistantTurnBoundary(
   clientId: string | undefined,
   completed: boolean,
   metaPatch?: Pick<AgentMeta, 'nativeForkAnchor'>,
+  taskResultInputIds?: readonly string[],
 ): Promise<boolean> {
   if (!sessionId || !clientId) return Promise.resolve(false);
   return enqueueDurableWrite(`turn-boundary:${sessionId}:${clientId}:${completed}`, async (ownerScope) => {
+    const botTaskResults = completed && taskResultInputIds?.length
+      ? await readTaskResultsForReply(sessionId, clientId, taskResultInputIds).catch(() => {
+        log.warn('Could not attach teammate results; standalone receipts remain available');
+        return [];
+      }) : [];
     const patched = await patchMessageAgentMetaWithResult(sessionId, clientId, {
       ...metaPatch,
+      ...(botTaskResults.length ? { botTaskResults } : {}),
       turnCompleted: completed,
     });
     if (!patched) return false;
@@ -558,8 +588,9 @@ export function markAssistantTurnCompleted(
   sessionId: string,
   clientId: string | undefined,
   metaPatch?: Pick<AgentMeta, 'nativeForkAnchor'>,
+  taskResultInputIds?: readonly string[],
 ): Promise<boolean> {
-  return markAssistantTurnBoundary(sessionId, clientId, true, metaPatch);
+  return markAssistantTurnBoundary(sessionId, clientId, true, metaPatch, taskResultInputIds);
 }
 
 /**
@@ -1898,15 +1929,18 @@ export function onInteractionResolved(
   if (kind === 'ask_user_question') {
     const answers = (decision.answers as Record<string, string> | undefined) ?? {};
     const cancelled = decision.dismissed === true;
+    // Match the harness clarification projection, including an empty answer.
+    const lines = Object.entries(answers)
+      .filter(([, answer]) => typeof answer === 'string' && answer.trim())
+      .map(([question, answer]) => question.trim()
+        ? `- ${question.trim()} → ${answer.trim()}` : `- ${answer.trim()}`);
     enqueueWrite(`ask_user_resolved:${sessionId}:${persistId}`, async (ownerScope) => {
       const updated = await updateDbMessageContent(sessionId, persistId, {
         requestId,
         questions: request.questions ?? [],
         status: cancelled ? 'cancelled' : 'answered',
         answers,
-      }, { acceptedAt, text: cancelled ? '' : 'Clarifications:\n' + Object.entries(answers)
-        .filter(([, answer]) => typeof answer === 'string' && answer.trim())
-        .map(([question, answer]) => `- ${question} → ${answer}`).join('\n') });
+      }, { acceptedAt, text: cancelled || !lines.length ? '' : `Clarifications:\n${lines.join('\n')}` });
       if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
     });
     return;
@@ -1934,7 +1968,7 @@ export function onInteractionResolved(
       planFilePath,
       status,
       feedback,
-    }, { acceptedAt, text: behavior === 'allow' ? `Approved plan:\n${plan}`
+    }, { acceptedAt, text: behavior === 'allow' ? (plan.trim() ? `Approved plan:\n${plan.trim()}` : '')
       : dismissed ? '' : feedback ?? '' });
     if (updated) broadcastMessageRow(sessionId, updated, ownerScope);
   });
@@ -2034,6 +2068,29 @@ export function resetTurnPersistState(sessionId: string): void {
 }
 
 /**
+ * Extension notices are already complete. Keep them out of assistantBlocks,
+ * reply dedup/fork anchors and per-turn usage targets, including when a notice
+ * arrives between model deltas. The normal durable-row broadcast works for
+ * both local windows and older device-link clients without a new stream flag.
+ */
+export function onStandaloneTextEvent(
+  sessionId: string,
+  text: string,
+  agentMeta: Pick<AgentMeta, 'botPrivateReply'> | null = null,
+): string | undefined {
+  if (!text.trim()) return undefined;
+  const persistId = createId();
+  enqueueVisibleDbMessage(`standalone_text:${sessionId}:${persistId}`, sessionId, {
+    clientId: persistId,
+    role: 'assistant',
+    content: text,
+    agentMeta,
+    createdAt: Date.now(),
+  });
+  return persistId;
+}
+
+/**
  * 处理 assistant 'text' 事件,返回该消息的 persistId 供 onEvent 盖进广播 payload。
  *
  *  - delta(isFinal=false):首 delta 分配 persistId、建 block;后续累积全文。**不落库**。
@@ -2047,9 +2104,13 @@ export function resetTurnPersistState(sessionId: string): void {
  */
 export function onAssistantTextEvent(
   sessionId: string,
-  data: { text?: unknown; isFinal?: unknown; isFullText?: unknown; agentMessageId?: unknown },
+  data: { text?: unknown; isFinal?: unknown; isFullText?: unknown; agentMessageId?: unknown; phase?: string; runtimeRecovery?: boolean },
   agentMeta: AgentMeta | null,
+  turnScope?: 'turn' | 'background',
 ): string | undefined {
+  if (typeof data.phase === 'string' || data.runtimeRecovery === true) {
+    agentMeta = { ...agentMeta, assistantPhase: data.runtimeRecovery === true ? 'commentary' : data.phase as string };
+  }
   const rawText = typeof data.text === 'string' ? data.text : '';
   const isFinal = data.isFinal === true;
   const isFullText = data.isFullText === true;
@@ -2110,11 +2171,17 @@ export function onAssistantTextEvent(
       // Claude Code 的 local text block 没有该标记，但在 text_delta 丢失时仍可能携带
       // 已完整的、更长前缀文本。只接受以当前增量为前缀的更长文本，避免同一 assistant
       // 消息中相邻 text block 互相覆盖。
-      if (
-        isFullText ||
-        (rawText.length > block.text.length && rawText.startsWith(block.text))
-      ) {
+      const acceptedLongerPrefix =
+        rawText.length > block.text.length && rawText.startsWith(block.text);
+      // 校时必须能确认这条 final 属于当前 block：权威全文、等长同文，或上面已接受的
+      // 更长前缀。内容不同的非 isFullText final 可能属于相邻 text block（写入条件会
+      // 拒绝覆盖），不能因此把 turn 前提示的 createdAt 抬到本轮起点。
+      const finalBelongsToBlock = isFullText || rawText === block.text || acceptedLongerPrefix;
+      if (isFullText || acceptedLongerPrefix) {
         block.text = rawText;
+      }
+      if (finalBelongsToBlock) {
+        stampBlockAfterTurnStart(sessionId, block, turnScope);
       }
       if (agentMeta) block.agentMeta = agentMeta;
       return block.persistId;
@@ -2231,6 +2298,7 @@ export function onAssistantTextEvent(
     assistantBlocks.set(sessionId, block);
   } else {
     block.text += rawText;
+    stampBlockAfterTurnStart(sessionId, block, turnScope);
     if (agentMeta) block.agentMeta = agentMeta;
   }
   return block.persistId;
@@ -2599,6 +2667,24 @@ export function onTurnErrorEvent(
   //   避免 Date.now() 落在 /clear 之后导致 error 行在清空后的历史中浮现。
   const blockCreatedAt = assistantBlocks.get(sessionId)?.createdAt;
   flushAssistantBlock(sessionId, agentMeta);
+  enqueueTurnErrorRow(sessionId, persistId, {
+    content: buildTurnErrorContent(sessionId, data, message),
+    agentMeta: agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null,
+    agentKind: getSessionDbAgentKind(sessionId) ?? undefined,
+    orderedAt: capturedAt,
+    turnStartedAt: turnStartedAtSnapshot,
+    blockCreatedAt,
+  });
+  notePersistedMessage(sessionId, 'error', persistId);
+  return persistId;
+}
+
+/** error 行 content：{ message, reason?, sdkError?, toolLoop?, providerId? }，在入队前同步取值。 */
+function buildTurnErrorContent(
+  sessionId: string,
+  data: { reason?: unknown; sdkError?: unknown; toolLoop?: unknown } | null | undefined,
+  message: string,
+): Record<string, unknown> {
   const content: Record<string, unknown> = { message };
   if (typeof data?.reason === 'string' && data.reason) content.reason = data.reason;
   if (typeof data?.sdkError === 'string' && data.sdkError) {
@@ -2614,8 +2700,24 @@ export function onTurnErrorEvent(
   // 余额分类(fail-closed),与 live 路径「显式 providerId 才分类」同一判据。
   const providerIdAtError = getSessionProvider(sessionId);
   if (providerIdAtError) content.providerId = providerIdAtError;
-  const meta = agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null;
-  const dbAgentKindSnapshot = getSessionDbAgentKind(sessionId) ?? undefined;
+  return content;
+}
+
+/** 入队写一条 error 行。除 blockCreatedAt 外的字段都是调用方在入队前同步取好的快照。 */
+function enqueueTurnErrorRow(
+  sessionId: string,
+  persistId: string,
+  row: {
+    content: Record<string, unknown>;
+    agentMeta: AgentMeta | null;
+    agentKind: 'cc' | 'codex' | 'pi' | undefined;
+    /** 行的排序时间上界(通常是错误到达的时刻)。 */
+    orderedAt: number;
+    turnStartedAt: number;
+    blockCreatedAt?: number;
+  },
+): void {
+  const { content, agentMeta: meta, agentKind: dbAgentKindSnapshot, orderedAt, turnStartedAt, blockCreatedAt } = row;
   enqueueTurnErrorWrite(sessionId, persistId, async (ownerScope) => {
     // 两个分支统一 +1：保证 error.createdAt 严格晚于本轮所有已入库行。
     // 注意：register.ts 在 flushAssistantBlock 之后调本函数，blockCreatedAt
@@ -2623,25 +2725,24 @@ export function onTurnErrorEvent(
     // 返回本轮最后入库行的 createdAt，与 error 行同值会让 mobile 排序不可控
     // （mobile 无 rowid tie-breaker，同 createdAt 依赖 server 响应原始顺序）。
     // 统一 +1 确保 error 行始终排在本轮所有正文/工具行之后。
-    // Math.min(..., capturedAt)：把异步查询结果的上界锁定在 onTurnErrorEvent 调用时刻，
-    // 防止写队列延迟消费时（用户已 /clear 并发了新消息）取到 post-clear 时间戳，
-    // 使 error.createdAt > clearedAt 从而出现在清空后的新会话历史里。
+    // Math.min(..., orderedAt)：把异步查询结果的上界锁定在 onTurnErrorEvent 调用时刻(延后补落时是错误
+    // 实际发生的时刻)，防止写队列延迟消费时（用户已 /clear 或发了新消息）取到之后的时间戳，
+    // 使 error.createdAt > clearedAt 从而出现在清空后的新会话历史里，或排到用户新消息之后。
     const rawLatestTs =
       blockCreatedAt != null
         ? blockCreatedAt
         : await latestMessageCreatedAt(sessionId);
-    const latestTs = rawLatestTs != null ? Math.min(rawLatestTs, capturedAt) : capturedAt;
+    const latestTs = rawLatestTs != null ? Math.min(rawLatestTs, orderedAt) : orderedAt;
     // /clear 边界 cap:防止 pre-clear 旧 turn 的 error 行在清空后的新会话中浮现。
-    // 用 turnStartedAtSnapshot（入队前同步捕获，不受 resetTurnPersistState 影响）
+    // 用 turnStartedAt（入队前同步捕获，不受 resetTurnPersistState 影响）
     // 判定 "stale pre-clear turn"，而非 rawLatestTs（异步查询，write queue 延迟消费时可能返回
     // post-clear 新消息时间戳，导致误判竞态：旧 turn error 在 /clear 后且用户已发新消息后才入队，
     // rawLatestTs > clearBoundary → 跳过 cap → error.createdAt > clearedAt → 串入新会话）。
-    // turnStartedAtSnapshot <= clearBoundary：turn 在 /clear 之前启动 → stale → cap。
-    // turnStartedAtSnapshot > clearBoundary：turn 在 /clear 之后启动 → 新 turn → 不 cap。
+    // turnStartedAt <= clearBoundary：turn 在 /clear 之前启动 → stale → cap。
+    // turnStartedAt > clearBoundary：turn 在 /clear 之后启动 → 新 turn → 不 cap。
     // 无 noteTurnStarted：回退到 capturedAt 作保守锚，行为等价于
     //   "error 事件到达时刻" 作 stale 判定（边缘 case，如 status:isRunning=true 未发的 agent）。
     const clearBoundary = clearBoundaryBySession.get(sessionId);
-    const turnStartedAt = turnStartedAtSnapshot;
     const createdAt =
       clearBoundary != null && turnStartedAt <= clearBoundary
         ? Math.min(latestTs + 1, clearBoundary)
@@ -2680,7 +2781,61 @@ export function onTurnErrorEvent(
       broadcastTap.tapWindowBroadcast('local-db:session:error-persisted', payload, ownerStamp);
     }
   });
-  notePersistedMessage(sessionId, 'error', persistId);
+}
+
+/**
+ * 延后补落的 error 行(供应商组换电脑期间先暂存，provider-group/heldTurnErrors.ts)：错误发生那一刻取好写库要用的
+ * 一切——内容(含错误来源 provider)、agentMeta、agentKind、turn 开始时刻与出错时刻。
+ *
+ * 补落发生在之后任意时刻：那时任务可能已开始新的一轮(用户中途接手)，旧会话也可能已在交接时关闭、按会话的
+ * 持久化状态已清空，所以补落不能再读任何按会话的「当前一轮」状态。
+ */
+export interface DeferredTurnErrorRow {
+  content: Record<string, unknown>;
+  agentMeta: AgentMeta | null;
+  agentKind: 'cc' | 'codex' | 'pi' | undefined;
+  turnStartedAt: number;
+  occurredAt: number;
+}
+
+/** 在失败那一轮里(错误到达时)同步调用，取好补落要用的 error 行；没有错误文案时返回 null。 */
+export function captureDeferredTurnError(
+  sessionId: string,
+  data:
+    | { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown }
+    | null
+    | undefined,
+  agentMeta: AgentMeta | null = null,
+): DeferredTurnErrorRow | null {
+  const message = typeof data?.message === 'string' ? redactSensitiveText(data.message) : '';
+  if (!message) return null;
+  const occurredAt = Date.now();
+  return {
+    content: buildTurnErrorContent(sessionId, data, message),
+    agentMeta: agentMeta ?? lastAgentMetaBySession.get(sessionId) ?? null,
+    agentKind: getSessionDbAgentKind(sessionId) ?? undefined,
+    turnStartedAt:
+      _turnStartedAtBySession.get(sessionId) ??
+      _savedTurnStartedAtForDeferred.get(sessionId) ??
+      occurredAt,
+    occurredAt,
+  };
+}
+
+/**
+ * 补落 `captureDeferredTurnError` 取好的 error 行：只写这一行，不碰补落时正在进行的那一轮——不 flush 在飞正文
+ * (失败那一轮的正文在终态边界已经落库)、不占用去重键(当前一轮同样的错误照常落库)、不改相邻行记录。
+ * 行按出错的时刻排序：用户在这期间发的新消息仍排在它后面。返回行 id。
+ */
+export function persistDeferredTurnError(sessionId: string, row: DeferredTurnErrorRow): string {
+  const persistId = createId();
+  enqueueTurnErrorRow(sessionId, persistId, {
+    content: row.content,
+    agentMeta: row.agentMeta,
+    agentKind: row.agentKind,
+    orderedAt: Math.min(row.occurredAt, Date.now()),
+    turnStartedAt: row.turnStartedAt,
+  });
   return persistId;
 }
 

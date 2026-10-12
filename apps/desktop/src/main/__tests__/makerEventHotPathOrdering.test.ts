@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ScriptTarget, transpileModule } from 'typescript';
 import type { AgentEvent } from '@cindy/maker-core';
 
@@ -25,6 +25,42 @@ const goalStorageSourcePath = resolve(__dirname, '..', 'goal-host', 'storage.ts'
 const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 
 describe('maker:event hot path ordering', () => {
+  it('finishes mandatory runtime cleanup when optional remote refresh throws at an owner boundary', () => {
+    const start = source.indexOf('function cleanupClosedSessionRuntime(');
+    const code = source.slice(start, source.indexOf('\n// Keep holder reads', start));
+    const js = transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+    const cleared = vi.fn();
+    const deps = {
+      pendingCredentialSwitchHolder: null, deferredCodexRestartHolder: null,
+      agentInputCoordinatorHolder: null,
+      refreshRemoteCodexMcpOnTurnSettledHolder: () => { throw new Error('App session is switching'); },
+      gitSnapshotCoordinator: { onSessionClosed: vi.fn() },
+      clearOrcaMcpHydrated: vi.fn(), knownNonOrcaSessionIds: new Set(),
+      lastReportedCostUsdBySession: new Map(), lastReportedModelUsageBySession: new Map(),
+      turnModelPromiseBySession: new Map(), turnUsageContextBySession: new Map(),
+      productTurnWallClockTracker: { clear: cleared }, productTurnUsageTargetTracker: { clear: vi.fn() },
+      claudeOutputLagTimingGuard: { clear: vi.fn() }, clearClaudeSessionBackgroundActivity: vi.fn(),
+      clearSessionPersistState: vi.fn(), clearSubagentObservationRewindState: () => true,
+      handleAgentIslandSessionClosedAfterCleanup: vi.fn(), log: { warn: vi.fn() },
+    };
+    const cleanup = new Function(...Object.keys(deps), `${js}; return cleanupClosedSessionRuntime;`)(...Object.values(deps));
+    expect(() => cleanup({ id: 'departing-task' })).not.toThrow();
+    expect(cleared).toHaveBeenCalledWith('departing-task');
+    expect(deps.clearSessionPersistState).toHaveBeenCalledWith('departing-task');
+    expect(deps.handleAgentIslandSessionClosedAfterCleanup).toHaveBeenCalledWith('departing-task', 'process-closed');
+  });
+
+  it('does not read the guarded Maker during account-boundary remote refresh', () => {
+    const start = source.indexOf('refreshRemoteCodexMcpOnTurnSettledHolder = (sessionId: string): void => {');
+    const prefix = source.slice(start, source.indexOf('    const remoteHostId', start));
+    const js = transpileModule(`let refreshRemoteCodexMcpOnTurnSettledHolder; ${prefix}\n};`, {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    const getSession = vi.fn(() => { throw new Error('App session is switching'); });
+    const refresh = new Function('isAppSessionBoundaryPending', 'maker', `${js}; return refreshRemoteCodexMcpOnTurnSettledHolder;`)(() => true, { getSession });
+    expect(() => refresh('departing-task')).not.toThrow();
+    expect(getSession).not.toHaveBeenCalled();
+  });
   it.each([undefined, null, { text: 'Restart Cindy before using Pi again.', isFinal: true }])(
     'strips Host recovery metadata from the boundary copy with data %j',
     (data) => {
@@ -321,7 +357,7 @@ describe('maker:event hot path ordering', () => {
     expect(source).toContain(
       'deferredOrcaWorkerTerminal = autoResumeBookkeeping.stashOrcaSuppressedTerminal(',
     );
-    expect(source).toContain('finalizeOrcaSuppressedTerminal: (sessionId, payload) => {');
+    expect(source).toContain('finalizeOrcaSuppressedTerminal: settleDeferredOrcaWorkerTerminal,');
     expect(source).toContain('shouldSkipOrcaWorkerTerminal({');
     expect(source).toContain('stashedThisErrorEvent: deferredOrcaWorkerTerminal');
     expect(source).toContain('isPairedFailedTurnDone,');
@@ -333,6 +369,43 @@ describe('maker:event hot path ordering', () => {
     );
   });
   // only status/done/error paths request idle restore: covered by the executable sessionEventPipeline tests.
+
+  it('keeps the bound deferred Orca terminal behind worker start and forwards its original capture', async () => {
+    const binding = source.match(/finalizeOrcaSuppressedTerminal:\s*(\w+),/);
+    expect(binding).not.toBeNull();
+    const name = binding![1];
+    const start = source.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf('\n/**', start);
+    expect(end).toBeGreaterThan(start);
+    const js = transpileModule(source.slice(start, end), {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const waitForStart = vi.fn(() => started);
+    const handleWorkerTerminalTurn = vi.fn(async (_terminal: { capture: unknown }) => undefined);
+    const finalize = new Function(
+      'workerTurnStartSequencer',
+      'orcaTeamServiceForEvents',
+      `${js}\nreturn ${name};`,
+    )({ waitForStart }, { handleWorkerTerminalTurn }) as (
+      sessionId: string,
+      payload: unknown,
+    ) => void;
+    const capture = { turnId: 'original-turn' };
+    const payload = {
+      status: 'error', finalText: 'original result', diagnostic: 'original failure', capture,
+    };
+
+    finalize('worker-session', payload);
+    expect(waitForStart).toHaveBeenCalledWith('worker-session');
+    expect(handleWorkerTerminalTurn).not.toHaveBeenCalled();
+    releaseStart();
+    await vi.waitFor(() => expect(handleWorkerTerminalTurn).toHaveBeenCalledTimes(1));
+    expect(handleWorkerTerminalTurn).toHaveBeenCalledWith({ sessionId: 'worker-session', ...payload });
+    expect(handleWorkerTerminalTurn.mock.calls[0]?.[0].capture).toBe(capture);
+  });
 
   // does not persist remote Codex account snapshots into local account usage: covered by the executable sessionEventPipeline tests.
 
@@ -642,7 +715,7 @@ describe('maker:event hot path ordering', () => {
       'const goalPause = pauseGoalBeforeExplicitStop(sid);',
       'inputCoordinator.stop(',
     );
-    expectOrder(inputStopSource, 'inputCoordinator.stop(', 'await goalPause;');
+    expectOrder(inputStopSource, 'inputCoordinator.stop(', 'await Promise.all([goalPause, makeInterrupted]);');
     expect(goalPauseStart).toBeGreaterThanOrEqual(0);
     expect(goalPauseSource).toContain('catch (err)');
     expect(goalPauseSource).toContain('await Promise.resolve(observer(sessionId));');
@@ -854,7 +927,7 @@ describe('maker:event hot path ordering', () => {
     );
     expect(codexDoneSource).toContain('const isCustomProviderRoute =');
     expect(codexDoneSource).toContain('turnContext.isUserProviderRoute');
-    expect(codexDoneSource).toMatch(/&&\s*pricingModel\.startsWith\('codex\/'\);/);
+    expect(codexDoneSource).toMatch(/&&\s*isCodexGatewayWireModel\(pricingModel\);/);
     expect(codexDoneSource).toMatch(/&&\s*isExclusiveXaiModelId\(pricingModel\);/);
     expect(codexDoneSource).toContain('const hasGatewayKey = Boolean(readClaudeApiKey());');
     expect(codexDoneSource).toContain('const hasEffectiveGatewayRoute =');
@@ -903,10 +976,10 @@ describe('maker:event hot path ordering', () => {
     expect(codexDoneSource).toContain('void recordTurnSpend(money);');
     expect(codexDoneSource).toContain('void recordSessionTurnSpend(session.id, money);');
     expect(codexDoneSource).toMatch(
-      /await recordModelTurnUsage\(\{\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money: isSubscriptionValue \? unpricedSubscriptionValueMarker\(\) : undefined,\s*inputTokensDelta: promptTokens,\s*outputTokensDelta: completionTokens,\s*cacheReadTokensDelta: cachedTokens,\s*cacheCreateTokensDelta: cacheCreationTokens,\s*\}\)\.finally\(\(\) => rebroadcastCodexTodayUsage\(\)\);[\s\S]*?const pricing = isSubscriptionValue/,
+      /await recordModelTurnUsage\(\{\s*sessionId: session\.id,\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money: isSubscriptionValue \? unpricedSubscriptionValueMarker\(\) : undefined,\s*inputTokensDelta: promptTokens,\s*outputTokensDelta: completionTokens,\s*cacheReadTokensDelta: cachedTokens,\s*cacheCreateTokensDelta: cacheCreationTokens,\s*\}\)\.finally\(\(\) => rebroadcastCodexTodayUsage\(\)\);[\s\S]*?const pricing = isSubscriptionValue/,
     );
     expect(codexDoneSource).toMatch(
-      /await recordModelTurnUsage\(\{\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money,\s*inputTokensDelta: 0,\s*outputTokensDelta: 0,\s*cacheReadTokensDelta: 0,\s*cacheCreateTokensDelta: 0,\s*\}\);/,
+      /await recordModelTurnUsage\(\{\s*sessionId: session\.id,\s*agentKind: 'codex',\s*model: modelUsageKey,\s*money,\s*inputTokensDelta: 0,\s*outputTokensDelta: 0,\s*cacheReadTokensDelta: 0,\s*cacheCreateTokensDelta: 0,\s*\}\);/,
     );
     const costRecordIndex = codexDoneSource.indexOf('void recordTurnSpend(money);');
     const modelCostRecordIndex = codexDoneSource.indexOf(
@@ -956,16 +1029,13 @@ describe('maker:event hot path ordering', () => {
     expect(claudeDoneSource).toContain('recordSessionTurnSpend(session.id, turnMoney);');
     expect(claudeDoneSource).toContain('subscriptionEstimate ?? unpricedSubscriptionValueMarker()');
     expect(claudeDoneSource).toContain('money: modelRowMoney,');
-    // 订阅轮 (Claude Anthropic 订阅或 bridge 订阅直连) 打 #billing=subscription 标记,
+    // 订阅轮复用计费解析结果打 #billing=subscription 标记,
     // 仪表盘按订阅估算价折算; 其余轮仍写归一化裸 id。
     expect(claudeDoneSource).toMatch(
-      /model:\s*isClaudeSubscriptionValueRow \|\| isBridgeSubscriptionRow\s*\?\s*claudeSubscriptionUsageModelKey\(m\.model\)\s*:\s*m\.model,/,
+      /model:\s*isSubscriptionValueRow\s*\?\s*claudeSubscriptionUsageModelKey\(m\.model\)\s*:\s*m\.model,/,
     );
     expect(claudeDoneSource).toContain(
-      'isClaudeSubscriptionSession && !m.money && isAnthropicModel(m.model)',
-    );
-    expect(claudeDoneSource).toContain(
-      "m.source === 'subscription' && isSubscriptionDirectRoute(m.model)",
+      "const isSubscriptionValueRow = m.source === 'subscription'",
     );
     expect(claudeDoneSource).toContain('const subscriptionTurnEstimates: RegionalMoney[] = [];');
     expect(claudeDoneSource).toMatch(
@@ -993,7 +1063,9 @@ describe('maker:event hot path ordering', () => {
     expect(claudeCostFallback).toMatch(
       /buildClaudeTurnUsageDetails\(\s*undefined,\s*undefined,\s*resolvedModel,/,
     );
-    expect(claudeCostFallback).toContain("if (route !== 'provider-api')");
+    expect(claudeCostFallback).toContain(
+      "if (route !== 'provider-api' || turnContext.accessKind === 'managed')",
+    );
   });
 
   it('pi subscription turns estimate value from the shared reference-price helper', () => {
@@ -1023,24 +1095,28 @@ describe('maker:event hot path ordering', () => {
     expect(piDoneSource).toContain('money: modelRowMoney,');
     expect(piDoneSource).toContain('if (actualMoney)');
     expect(piDoneSource).toContain('await recordSchedulerTurnCost({');
+    // 消息 / 调度落库失败同样落进 catch:兜底只补写正常分支尚未发起的模型组,
+    // 不重放已写过的用量(否则任务与模型用量翻倍)。
+    expectOrder(piDoneSource, 'recordedModels.add(model);', 'modelWrites.push(');
+    expect(piDoneSource).toMatch(
+      /\[\.\.\.groupedSegments\]\s*\.filter\(\(\[model\]\) => !recordedModels\.has\(model\)\)\s*\.map\(/,
+    );
   });
 
-  it('refreshes Claude credential cache before dropping mismatched header snapshots', () => {
+  it('records Claude subscription quota events only while the native login is connected', () => {
     const listenerSource = usageSource.match(
-      /setClaudeRateLimitHeadersListener\(\(snapshot, requestBearerToken\) => \{[\s\S]*?\n {2}\}\);/,
+      /setClaudeRateLimitInfoListener\(\(info\) => \{[\s\S]*?\n {2}\}\);/,
     )?.[0];
     expect(listenerSource).toBeTruthy();
     if (!listenerSource) return;
 
-    expect(listenerSource).toContain('let currentToken = _currentClaudeToken;');
-    expect(listenerSource).toContain(
-      'currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;',
-    );
+    // 登出 / 断开后晚到的事件必须丢弃,不能复活刚清掉的快照。
     expectOrder(
       listenerSource,
-      'currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;',
-      'if (requestBearerToken !== currentToken) return false;',
+      'if (!hasClaudeNativeLogin()) return;',
+      'void recordClaudeSubscriptionUsageSnapshot(',
     );
+    expect(usageSource).not.toContain('setClaudeRateLimitHeadersListener');
   });
 });
 

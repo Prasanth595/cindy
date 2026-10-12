@@ -20,7 +20,7 @@ import {
   brandExecutableName,
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
-import { stageMacIOSSimulatorHelper } from './forge-ios-simulator-helper';
+import { preparePackagedNodePty } from './forge-node-pty';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 import {
   swiftTargetTriple,
@@ -190,8 +190,8 @@ const NATIVE_RUNTIME_DEPS = [
   // 无需带运行时闭包。注意: 该 runtime 用 CDP 接管用户已装 Chrome, 不需要
   // playwright 自带的浏览器二进制, 故只带 JS 模块即可。
   'playwright-core',
-  // node-pty (RSB 终端 tab 的 PTY 后端): .node 原生模块, 跟 better-sqlite3 同款 ——
-  // 必须 electron-rebuild (Node ABI ≠ Electron ABI), 必须随 packaged app 带,
+  // node-pty (RSB 终端 tab 的 PTY 后端): macOS/Windows 使用包内 N-API 预编译件，
+  // Linux 通过 electron-rebuild 编译；各平台都必须随 packaged app 带,
   // AutoUnpackNativesPlugin 会把 .node 提取到 app.asar.unpacked/。main 进程通过
   // createRequire 在运行时 require, 不让 vite bundle (见 vite.main.config.ts external)。
   'node-pty',
@@ -405,24 +405,26 @@ function bundleNativeDeps(buildPath: string, targetPlatform: string, targetArch:
   copyRuntimeDependencyTrees(READ_SHEET_RUNTIME_PACKAGES, destModules);
 }
 
-// 针对 packaged buildPath 的 node_modules 强制重建 better-sqlite3 —— force:true 确保
-// 即使根 node_modules 里的 .node 是 Node ABI（pnpm install 默认），也会被 Electron ABI
-// 覆盖重编。编完的 .node 落在 build/Release/better_sqlite3.node,下游
-// AutoUnpackNativesPlugin 会在 asar 打包时把它提取到 app.asar.unpacked/。
+// better-sqlite3 仍按 Electron ABI 重编。node-pty 在 macOS/Windows 使用 npm 包内
+// 的 N-API 预编译件；缺件意味着依赖不完整，不能悄悄转入源码编译。Linux 继续重编。
 async function rebuildNativeDepsInPackage(
   buildPath: string,
   electronVersion: string,
+  platform: string,
   arch: string,
 ): Promise<void> {
+  const nodePty = preparePackagedNodePty(buildPath, platform, arch);
+  const modules = ['better-sqlite3'];
+  if (nodePty.rebuild) modules.push('node-pty');
   console.log(
-    `[forge:afterCopy] rebuilding native modules (better-sqlite3, node-pty) for Electron ${electronVersion} (${arch})...`,
+    `[forge:afterCopy] rebuilding native modules (${modules.join(', ')}) for Electron ${electronVersion} (${arch})...`,
   );
   await electronRebuild({
     buildPath,
     electronVersion,
     arch,
     force: true,
-    onlyModules: ['better-sqlite3', 'node-pty'],
+    onlyModules: modules,
   });
   const sqliteNative = path.join(
     buildPath,
@@ -435,18 +437,9 @@ async function rebuildNativeDepsInPackage(
   if (!fs.existsSync(sqliteNative)) {
     throw new Error(`[forge:afterCopy] rebuild reported success but ${sqliteNative} is missing`);
   }
-  // node-pty 的 .node 在 build/Release/pty.node;Windows 上同名,Linux/macOS 同名。
-  // 跟 better-sqlite3 一样,缺了直接抛出,避免发出无法启动 PTY 的包。
-  const ptyNative = path.join(
-    buildPath,
-    'node_modules',
-    'node-pty',
-    'build',
-    'Release',
-    'pty.node',
-  );
+  const ptyNative = nodePty.nativePath;
   if (!fs.existsSync(ptyNative)) {
-    throw new Error(`[forge:afterCopy] rebuild reported success but ${ptyNative} is missing`);
+    throw new Error(`[forge:afterCopy] node-pty native module missing: ${ptyNative}`);
   }
 
   // node-pty 被整目录纳入 asar.unpack（为放出 spawn-helper / winpty 等运行时二进制），
@@ -841,13 +834,6 @@ function extraResourcesForTarget(targetPlatform: string): string[] {
     );
   }
 
-  if (targetPlatform === 'darwin' || targetPlatform === 'mas') {
-    // WDA archive/manifest are runtime resources. The Host-owned Helper is
-    // temporarily copied here and moved to Contents/Helpers by postPackage so
-    // the signing pipeline can treat it as nested code.
-    base.push('resources/ios-simulator');
-  }
-
   // macOS 「帮助 → 安装到命令行」symlink 的目标脚本(<App>/Contents/Resources/cli/cindy)。
   // 仅 darwin 有此功能,其它平台不打进包。exec 位由 git 跟踪,extraResource 拷贝时保留。
   if (targetPlatform === 'darwin') {
@@ -946,35 +932,12 @@ function isMacForgePlatform(platform: ForgePlatform): boolean {
   return platform === 'darwin' || platform === 'mas';
 }
 
-function ensureMacIOSSimulatorWdaArchive(platform: ForgePlatform): void {
-  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
-  const script = path.join(__dirname, 'scripts', 'ensure-wda-source-archive.mjs');
-  console.log(`[forge:prePackage] preparing pinned iOS Simulator WDA archive via ${script}...`);
-  const result = spawnSync(process.execPath, [script], {
-    cwd: __dirname,
-    stdio: 'inherit',
-  });
-  if (result.error) {
-    throw new Error(
-      `[forge] iOS Simulator WDA archive preparation failed: ${result.error.message}`,
-    );
-  }
-  if (result.signal) {
-    throw new Error(
-      `[forge] iOS Simulator WDA archive preparation terminated by signal ${result.signal}`,
-    );
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `[forge] iOS Simulator WDA archive preparation failed with exit code ${result.status}`,
-    );
-  }
-}
-
 const MACOS_VOICE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
 const MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET = 'macos13.0';
 const MACOS_SESSION_DRAG_RELEASE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
+// Swift Charts and the macOS 14 SwiftUI animation APIs.
+const MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_XBOX_GAMEPAD_HELPER_DEPLOYMENT_TARGET = 'macos11.0';
 const MACOS_REMOTE_DESKTOP_INPUT_DEPLOYMENT_TARGET = 'macos10.15';
 
@@ -982,52 +945,6 @@ function swiftArchLabel(arch: ForgeArch, deploymentTarget: string): string {
   return swiftTargetTriplesForForgeArch(arch, deploymentTarget)
     .map((target) => target.split('-')[0])
     .join('+');
-}
-
-function iosSimulatorSidecarArch(arch: ForgeArch): 'arm64' | 'x86_64' | 'universal' {
-  switch (arch) {
-    case 'arm64':
-      return 'arm64';
-    case 'x64':
-      return 'x86_64';
-    case 'universal':
-      return 'universal';
-    default:
-      throw new Error(`[forge] unsupported iOS Simulator helper arch: ${arch}`);
-  }
-}
-
-function buildMacIOSSimulatorHelper(platform: ForgePlatform, arch: ForgeArch): void {
-  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
-  const script = path.join(
-    __dirname,
-    '..',
-    '..',
-    'packages',
-    'ios-simulator-runtime',
-    'scripts',
-    'build-native-sidecar.mjs',
-  );
-  const helperArch = iosSimulatorSidecarArch(arch);
-  const result = spawnSync(process.execPath, [script], {
-    cwd: path.join(__dirname, '..', '..'),
-    env: {
-      ...process.env,
-      CINDY_IOS_SIDECAR_ARCH: helperArch,
-      CINDY_IOS_SIDECAR_OUTPUT_MODE: 'helper',
-      CINDY_IOS_SIDECAR_BUNDLE_ID: `${CINDY_APP_ID}.ios-simulator-helper`,
-      CINDY_IOS_SIDECAR_VERSION: process.env.APP_VERSION ?? DESKTOP_PACKAGE_VERSION,
-    },
-    stdio: 'inherit',
-  });
-  if (result.error) {
-    throw new Error(`[forge] iOS Simulator helper build failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `[forge] iOS Simulator helper build failed for ${helperArch} with exit code ${result.status}`,
-    );
-  }
 }
 
 function compileCObjectForTarget(
@@ -1712,6 +1629,39 @@ function buildMacSessionDragReleaseHelper(platform: ForgePlatform, arch: ForgeAr
   );
 }
 
+function buildMacMenubarHelper(platform: ForgePlatform, arch: ForgeArch): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const srcDir = path.join(__dirname, 'native', 'menubar');
+  const src = path.join(srcDir, 'macos-menubar-helper.swift');
+  const destDir = path.join(__dirname, 'resources', 'tools', 'menubar');
+  const dest = path.join(destDir, 'xdt-macos-menubar-helper');
+  const assets = ['wordmark-light.png', 'wordmark-dark.png'];
+  if (!fs.existsSync(src)) {
+    throw new Error(`[forge] macOS menu bar helper source missing at ${src}`);
+  }
+  for (const asset of assets) {
+    if (!fs.existsSync(path.join(srcDir, asset))) {
+      throw new Error(`[forge] macOS menu bar helper asset missing: ${asset}`);
+    }
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  buildSwiftHelperForForgeArch(
+    src,
+    dest,
+    arch,
+    MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET,
+    // The helper uses @main, which requires library parsing mode.
+    ['-O', '-parse-as-library'],
+    'menu bar helper',
+  );
+  for (const asset of assets) fs.copyFileSync(path.join(srcDir, asset), path.join(destDir, asset));
+  fs.chmodSync(dest, 0o755);
+  const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
+  console.log(
+    `[forge:prePackage] macOS menu bar helper (${swiftArchLabel(arch, MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
+}
+
 // MakerNSIS is Windows-only (native dependency), conditionally require to
 // avoid import errors on macOS / Linux.
 const makers: ForgeConfig['makers'] = [
@@ -1739,6 +1689,9 @@ if (isWin) {
   makers.unshift(
     new MakerNSIS({
       getAppBuilderConfig: async () => ({
+        directories: {
+          buildResources: path.join(__dirname, 'resources'),
+        },
         // NSIS installer(Setup.exe)与 uninstaller(Uninstall <App>.exe)的签名。
         // 这是签卸载器的唯一入口(Issue #998):uninstaller 由 NSIS 编译期两遍生成后
         // 嵌入 installer,postPackage 阶段还不存在、也没有独立成品文件可事后补签,
@@ -1976,7 +1929,7 @@ const config: ForgeConfig = {
         (async () => {
           try {
             bundleNativeDeps(buildPath, platform, arch);
-            await rebuildNativeDepsInPackage(buildPath, electronVersion, arch);
+            await rebuildNativeDepsInPackage(buildPath, electronVersion, platform, arch);
             copySqliteVecBinary(buildPath, platform, arch);
             callback();
           } catch (err) {
@@ -1994,7 +1947,6 @@ const config: ForgeConfig = {
       const targetPlatform = requestedTargetPlatform();
       const targetArch = requestedTargetArch();
       stageCindySourceMetadata();
-      ensureMacIOSSimulatorWdaArchive(platform);
       if (targetPlatform === 'win32') {
         if (targetArch !== 'x64') {
           throw new Error(
@@ -2012,7 +1964,6 @@ const config: ForgeConfig = {
       stageRipgrep(targetPlatform, targetArch);
       stageAndroidPlatformTools(targetPlatform, targetArch);
       buildWindowsVoiceInputFunctionKeyListener(targetPlatform);
-      buildMacIOSSimulatorHelper(platform, arch);
       buildMacVoiceInputTextInsertionHelper(platform, arch);
       buildMacXboxGamepadHelper(platform, arch);
       buildWindowsGamepadHelper(platform, arch);
@@ -2022,6 +1973,7 @@ const config: ForgeConfig = {
       buildMacAgentIslandHelper(platform, arch);
       buildMacComputerPermissionGuideHelper(platform, arch);
       buildMacSessionDragReleaseHelper(platform, arch);
+      buildMacMenubarHelper(platform, arch);
       buildRemoteDesktopInput(platform, arch);
     },
     // packaged dir 产出后、makers 跑之前签内部 .exe。这样 NSIS 包出来的
@@ -2040,7 +1992,6 @@ const config: ForgeConfig = {
           const noticeName = stagePackagedThirdPartyNotices(buildPath, opts.platform);
           console.log(`[forge:postPackage] staged ${noticeName} + restricted component disclosure`);
           signPackagedExes(buildPath);
-          stageMacIOSSimulatorHelper(buildPath, opts.platform, opts.arch);
           applyMacPackagedDisplayName(buildPath, opts.platform);
         }
       } finally {
@@ -2095,6 +2046,11 @@ const config: ForgeConfig = {
           entry: 'src/main/contacts-sync/contactsSyncCodecWorker.ts',
           config: 'vite.contacts-sync-codec-worker.config.ts',
           // 大通讯录 JSON/gzip/crypto 隔离在线程中，避免阻塞 Electron main。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/bot-import/openclawCronWorker.ts',
+          config: 'vite.contacts-sync-codec-worker.config.ts',
           target: 'preload',
         },
         {

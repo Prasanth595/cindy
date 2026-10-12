@@ -411,6 +411,35 @@ describe('automation-generated sessions', () => {
     expect(entries[2]).toEqual({ kind: 'session', session: sessions[3] });
   });
 
+  it('keeps remote schedule state and the owning device on remote automation groups', () => {
+    // 侧栏把远程设备镜像的索引并入分组索引:远程组拿到暂停态 / 下次运行,
+    // 并记住所属设备,让分组操作发到那台电脑而不是本机。
+    const remoteIndex = new Map([
+      ['remote-1', makeScheduleSessionInfo({ scheduleId: 'sched-remote', scheduleName: 'Remote', scheduleStatus: 'paused', nextFireAt: 1_767_225_600_000 })],
+      ['remote-2', makeScheduleSessionInfo({ scheduleId: 'sched-remote', scheduleName: 'Remote', scheduleStatus: 'paused', nextFireAt: 1_767_225_600_000 })],
+    ]);
+    const sessions = ['remote-2', 'remote-1'].map((id) =>
+      makeSession({ id, source: 'scheduler', deviceLinkDeviceId: 'device-b' }),
+    );
+
+    const [entry] = groupAutomationSidebarEntries(sessions, {
+      notifications: new Set(),
+      scheduleSessionIndex: remoteIndex,
+    });
+
+    expect(entry).toMatchObject({
+      kind: 'automation-group',
+      group: {
+        id: 'schedule:sched-remote:device:device-b',
+        scheduleId: 'sched-remote',
+        scheduleStatus: 'paused',
+        nextFireAt: 1_767_225_600_000,
+        deviceLinkDeviceId: 'device-b',
+        title: 'Remote',
+      },
+    });
+  });
+
   it('shows every recent run as its own row when expanded (primary not hidden into header)', () => {
     const group = {
       id: 'schedule:sched-jira',
@@ -962,8 +991,8 @@ describe('automation-generated sessions', () => {
     expect(source).toContain('ccAgent.sidebar.automationGroup.menu.resume');
     expect(source).toContain('ccAgent.sidebar.automationGroup.menu.delete');
     expect(source).toContain('scheduleFocusPath(group.scheduleId)');
-    // 组头始终打开最新运行，错误运行通过独立子行打开。
-    expect(source).toContain('const targetId = latestSessionId;');
+    // 组头点击:展开打开最新一条;收起且整组是红时打开贡献红点的那条。
+    expect(source).toContain('resolveCollapsedGroupHeaderSessionId({');
     expect(source).toContain('onSessionClick(targetId)');
     expect(source).toContain('getAutomationGroupLatestSession(group)');
     expect(source).toContain('visibleSessionIds: visibleSessions.map((session) => session.id)');

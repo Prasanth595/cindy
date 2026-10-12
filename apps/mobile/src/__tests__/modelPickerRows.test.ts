@@ -12,7 +12,6 @@ import type { MobileModelMemoryAccessors } from '@/session/draftModelMemory';
 import {
   budgetRowDisabled,
   buildRowMetaLine,
-  compactEffortLabelFor,
   effortLabelFor,
   effortLabelFromRuntime,
   formatContextWindow,
@@ -256,47 +255,6 @@ describe('effortLabelFromRuntime —— 会话摘要按 app 语言覆盖 snapsho
   });
 });
 
-describe('compactEffortLabelFor —— 英文列表紧凑标签', () => {
-  it('英文只压缩长档位，非英文仍用本地化全称', async () => {
-    const previousLanguage = i18n.language;
-    try {
-      await i18n.changeLanguage('en');
-      expect(effortLabelFor({}, 'xhigh', capabilities)).toBe('Extra High');
-      expect(
-        compactEffortLabelFor({ effortDisplayNames: { xhigh: '特高' } }, 'xhigh', capabilities),
-      ).toBe('Extra');
-      expect(compactEffortLabelFor({}, 'minimal', capabilities)).toBe('Minimal');
-      expect(compactEffortLabelFor({}, 'low', capabilities)).toBe('Low');
-      expect(compactEffortLabelFor({}, 'medium', capabilities)).toBe('Medium');
-      expect(compactEffortLabelFor({}, 'high', capabilities)).toBe('High');
-      expect(compactEffortLabelFor({}, 'ultra', capabilities)).toBe('Ultra');
-      expect(compactEffortLabelFor({}, 'max', capabilities)).toBe('Max');
-      expect(
-        compactEffortLabelFor(
-          { effortDisplayNames: { 'adaptive-fast': 'Adaptive Fast' } },
-          'adaptive-fast',
-          capabilities,
-        ),
-      ).toBe('Adaptive Fast');
-      expect(
-        compactEffortLabelFor({}, 'adaptive-safe', {
-          ...capabilities,
-          effortLevels: [{ id: 'adaptive-safe', label: 'Adaptive Safe' }],
-        }),
-      ).toBe('Adaptive Safe');
-
-      await i18n.changeLanguage('zh-CN');
-      expect(compactEffortLabelFor({}, 'high', null)).toBe('高');
-      await i18n.changeLanguage('ja');
-      expect(compactEffortLabelFor({}, 'ultra', null)).toBe('究極');
-      await i18n.changeLanguage('ko');
-      expect(compactEffortLabelFor({}, 'medium', null)).toBe('보통');
-    } finally {
-      await i18n.changeLanguage(previousLanguage);
-    }
-  });
-});
-
 describe('modelRowAccessibilityLabel —— 父行保留完整元信息', () => {
   it('无元信息时只读基础选择动作', () => {
     expect(modelRowAccessibilityLabel({ baseLabel: 'Select Luna' })).toBe('Select Luna');
@@ -425,10 +383,15 @@ describe('rowFastEditable / rowFastOn(严格 per-(供应商, 模型))', () => {
 });
 
 describe('budgetRowDisabled(折扣版置灰三态)', () => {
-  it("只有 codex/ 前缀且被控端明确 absent 才置灰;unknown 不误伤", () => {
+  it("只有折扣前缀且被控端明确 absent 才置灰;unknown 不误伤", () => {
     expect(budgetRowDisabled('codex/gpt-5.5', 'absent')).toBe(true);
+    expect(budgetRowDisabled('openai-codex/gpt-6.1-sol', 'absent')).toBe(true);
+    expect(budgetRowDisabled('openai-codex/gpt-6.1-sol', 'present')).toBe(false);
     expect(budgetRowDisabled('codex/gpt-5.5', 'present')).toBe(false);
     expect(budgetRowDisabled('codex/gpt-5.5', 'unknown')).toBe(false);
     expect(budgetRowDisabled('gpt-5.5', 'absent')).toBe(false);
+    expect(budgetRowDisabled('openai-codex/gpt-6.1-sol', 'absent', { source: 'builtin' })).toBe(true);
+    expect(budgetRowDisabled('openai-codex/gpt-6.1-sol', 'absent', { source: 'user' })).toBe(false);
+    expect(budgetRowDisabled('codex/gpt-5.5', 'absent', { source: 'organization' })).toBe(false);
   });
 });

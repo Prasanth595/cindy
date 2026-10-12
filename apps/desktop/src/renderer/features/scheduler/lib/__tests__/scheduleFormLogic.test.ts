@@ -16,7 +16,7 @@
  * @vitest-environment node
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Schedule, ScheduleTemplate } from '@cindy/maker-scheduler';
 import type { ProviderView } from '@cindy/model-providers';
 
@@ -31,6 +31,7 @@ import {
   deriveRunMode,
   hasRealBinding,
   isExplicitScheduleModelUnavailable,
+  missingRequiredTemplateParamLabel,
   isFollowingSessionSelection,
   needsBoundSessionGenerationRouteResolution,
   resolveScheduleGenerationProviderId,
@@ -46,7 +47,9 @@ import {
   cronExprToIntervalMs,
   intervalMsToCronExpr,
   resolveScheduleTimingPresentation,
+  resolveIntervalMinutesPresetValue,
   switchScheduleTimingMode,
+  SUPPORTED_INTERVAL_MINUTES,
 } from '../cronCodexPreset';
 
 const tapsvcProvider: ProviderView = {
@@ -295,7 +298,7 @@ describe('canSubmitSessionBinding', () => {
     })).toBe(false);
   });
 
-  it('allows script mode to clear an unavailable stale binding', () => {
+  it('allows script edits while the host handles unavailable lifecycle owners', () => {
     expect(canSubmitSessionBinding('script', 'bound', undefined)).toBe(true);
     expect(
       canSubmitSessionBinding('script', 'bound', { sessionId: 'session-1', state: 'deleted' }),
@@ -363,9 +366,14 @@ describe('schedule timing mode conversion', () => {
   });
 
   it('converts only the minute/hour presets supported by the timing-mode switch', () => {
+    expect(SUPPORTED_INTERVAL_MINUTES).toEqual([1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]);
     expect(cronExprToIntervalMs('*/10 * * * *')).toBe(10 * 60_000);
     expect(intervalMsToCronExpr(10 * 60_000)).toBe('*/10 * * * *');
     expect(intervalMsToCronExpr(2 * 60 * 60_000)).toBe('0 */2 * * *');
+    expect(cronExprToIntervalMs('*/28 * * * *')).toBeUndefined();
+    expect(cronExprToIntervalMs('*/59 * * * *')).toBeUndefined();
+    expect(intervalMsToCronExpr(28 * 60_000)).toBeUndefined();
+    expect(intervalMsToCronExpr(59 * 60_000)).toBeUndefined();
     expect(intervalMsToCronExpr(90_000)).toBeUndefined();
   });
 
@@ -387,6 +395,36 @@ describe('schedule timing mode conversion', () => {
     expect(switchScheduleTimingMode('*/2 * * * *', undefined, 'interval')).toEqual({
       cronExpr: '*/2 * * * *',
       intervalMs: 2 * 60_000,
+    });
+  });
+
+  it('preserves legacy unsupported minute Crons when switching to interval mode', () => {
+    expect(switchScheduleTimingMode('*/28 * * * *', undefined, 'interval')).toEqual({
+      cronExpr: '*/28 * * * *',
+      intervalMs: 28 * 60_000,
+    });
+    expect(switchScheduleTimingMode('*/59 * * * *', undefined, 'interval')).toEqual({
+      cronExpr: '*/59 * * * *',
+      intervalMs: 59 * 60_000,
+    });
+  });
+
+  it('falls back to a supported minute preset after an exact legacy interval', () => {
+    expect(resolveIntervalMinutesPresetValue({ mode: 'intervalMinutes', intervalMinutes: 28 })).toBe(5);
+    expect(resolveIntervalMinutesPresetValue({ mode: 'intervalMinutes', intervalMinutes: 20 })).toBe(20);
+    expect(resolveIntervalMinutesPresetValue({ mode: 'interval', intervalMinutes: 20 })).toBe(5);
+  });
+
+  it.each([7, 28, 59])('switches legacy %i-minute intervals using the authoritative value', (minutes) => {
+    const result = switchScheduleTimingMode('*/5 * * * *', minutes * 60_000, 'cron');
+    expect(result).toEqual({ cronExpr: `*/${minutes} * * * *`, intervalMs: undefined });
+    expect(switchScheduleTimingMode(result.cronExpr, undefined, 'interval')).toEqual({
+      cronExpr: result.cronExpr, intervalMs: minutes * 60_000,
+    });
+    // Conversion compatibility must not reintroduce these values into new presets.
+    expect(intervalMsToCronExpr(minutes * 60_000)).toBeUndefined();
+    expect(resolveScheduleTimingPresentation('*/5 * * * *', minutes * 60_000)).toEqual({
+      kind: 'intervalExact',
     });
   });
 });
@@ -613,8 +651,11 @@ describe('hasRealBinding / agentKind 映射', () => {
 
 describe('resolveTemplateAgentFields', () => {
   const defaults = {
-    getDefaultModel: (agentKind: ScheduleFormState['agentKind']) =>
-      agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+    // 与真实实现同口径:默认路由限定在给定来源内并整对返回。
+    getDefaultRoute: (agentKind: ScheduleFormState['agentKind'], preferred?: string | null) => ({
+      model: agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+      providerId: preferred ?? null,
+    }),
     getAgentPrefs: (agentKind: ScheduleFormState['agentKind']) =>
       agentKind === 'codex'
         ? { providerId: 'openai', effort: 'high' as const, fastMode: true }
@@ -641,6 +682,26 @@ describe('resolveTemplateAgentFields', () => {
       effort: 'medium',
       fastMode: false,
     });
+  });
+
+  it('跨 agent 用默认路由时整对应用,并限定在任务记忆 / 模板的来源内', () => {
+    const getDefaultRoute = vi.fn((_agent: string, preferred?: string | null) =>
+      preferred === 'xd'
+        ? { model: 'claude-sonnet-5', providerId: 'xd' }
+        : { model: 'claude-opus-5-5', providerId: 'anthropic' });
+    const withRoute = {
+      getDefaultRoute,
+      getAgentPrefs: () => ({ providerId: '', effort: '' as const, fastMode: false }),
+    };
+    const form = makeForm({ agentKind: 'codex', model: 'gpt-5.5', providerId: 'openai' });
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), withRoute))
+      .toMatchObject({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+    // 任务只记了来源(没记模型):默认模型必须由这个来源提供。
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), {
+      ...withRoute,
+      getAgentPrefs: () => ({ providerId: 'xd', effort: '' as const, fastMode: false }),
+    })).toMatchObject({ model: 'claude-sonnet-5', providerId: 'xd' });
+    expect(getDefaultRoute).toHaveBeenLastCalledWith('claude-code', 'xd');
   });
 
   it('模板显式给 model/provider/effort/fast 时优先使用模板值', () => {
@@ -882,5 +943,51 @@ describe('scheduleToUserCreateInput', () => {
     expect(input).not.toHaveProperty('targetSessionId');
     expect(input).not.toHaveProperty('projectConfigId');
     expect(original.agentKind).toBe('codex');
+  });
+});
+
+
+describe('script lifecycle serialization', () => {
+  it('preserves owner and installed gate while keeping script cwd', () => {
+    const input = buildScheduleInput(makeForm({ executionMode: 'script',
+      targetSessionId: 'owner', workingDir: '/watcher', scriptCommand: 'node run.mjs',
+      preRunHookEnabled: true, preRunHookCommand: 'node /watcher/gate.mjs',
+    }));
+    expect(input.targetSessionId).toBe('owner');
+    expect(input.workingDir).toBe('/watcher');
+    expect(input.preRunHook?.command).toBe('node /watcher/gate.mjs');
+    expect(buildScheduleInput(makeForm({ executionMode: 'script', targetSessionId: '__pending__' })).targetSessionId).toBeUndefined();
+  });
+});
+
+describe('missingRequiredTemplateParamLabel', () => {
+  const radar = {
+    parameters: [
+      { key: 'topic', label: '关注主题', type: 'string', required: true },
+    ],
+  } as ScheduleTemplate;
+  const competitors = {
+    parameters: [
+      { key: 'competitors', label: '竞品名单', type: 'string', required: true },
+    ],
+  } as ScheduleTemplate;
+
+  it('returns the visible label when a required parameter is empty', () => {
+    expect(missingRequiredTemplateParamLabel(radar, {})).toBe('关注主题');
+    expect(missingRequiredTemplateParamLabel(competitors, { competitors: '   ' })).toBeNull();
+  });
+
+  it('accepts a filled value or a non-empty default', () => {
+    expect(missingRequiredTemplateParamLabel(radar, { topic: 'AI Agent' })).toBeNull();
+    expect(missingRequiredTemplateParamLabel({
+      parameters: [
+        { key: 'topic', label: '关注主题', type: 'string', required: true, default: 'AI' },
+      ],
+    } as ScheduleTemplate, {})).toBeNull();
+    expect(missingRequiredTemplateParamLabel({
+      parameters: [
+        { key: 'suite', label: 'Suite', type: 'string', required: true, default: 'full' },
+      ],
+    } as ScheduleTemplate, { suite: '' })).toBeNull();
   });
 });

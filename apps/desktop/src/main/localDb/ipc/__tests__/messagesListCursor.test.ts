@@ -3,6 +3,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messages, sessions } from '../../schema';
+import * as taskImages from '../../../cindy-media/taskImageDelivery';
+import * as currentDb from '../../client/current';
 import { runDeviceLinkInvokeContext } from '../../../device-link/invoke-context';
 import { MAX_HISTORY_SCAN_ROWS } from '../historyViewReader';
 import { historyViewLeaves, type HistoryViewPage, type HistoryDetailPage, type HistoryMessageSource } from '@cindy/maker-shared/message-window';
@@ -79,6 +81,7 @@ vi.mock('../../../cindy-media/chatAttachments', () => ({
 }));
 vi.mock('../../client/current', () => ({
   getDbClient: () => ({ drizzle: h.db, query: h.query, tx: h.tx }),
+  getCurrentDbClientSnapshot: () => ({ client: { drizzle: h.db, query: h.query, tx: h.tx }, clientEpoch: 1 }),
 }));
 
 import {
@@ -174,6 +177,56 @@ function insertCostMessage(
 }
 
 describe('local-db:messages:list cursor', () => {
+  it('serves a lightweight SQLite view, hydrates visible text, then reads only the expanded subagent', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, NULL)').run('s1');
+    const insert = sqlite.prepare('INSERT INTO messages (id, client_id, session_id, role, content, tool_use_id, agent_meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    const add = (id: string, role: string, content: unknown, parent?: string) => insert.run(id, id, 's1', role,
+      JSON.stringify(content), role === 'tool_use' ? 'agent' : null,
+      parent ? JSON.stringify({ parentUuid: parent, model: 'actual-child-model' }) : null, Number(id));
+    add('0', 'user', 'Visible question');
+    add('1', 'tool_use', { toolName: 'Agent', toolUseId: 'agent', input: { description: 'Inspect' } });
+    for (let n = 2; n < 103; n++) add(String(n), 'thinking', { text: 'hidden '.repeat(1000), durationMs: 10 }, 'agent');
+    add('103', 'assistant', 'Visible answer');
+    registerMessageIpc();
+    const invoke = (channel: string, ...args: unknown[]) => runDeviceLinkInvokeContext({ controllerDeviceId: 'd', channel }, () => h.handlers.get(channel)!({}, 's1', ...args));
+    const page = await invoke('local-db:messages:view', { lazyDetails: true }) as HistoryViewPage<HistoryMessageSource>;
+    expect(page.hasMore).toBe(false);
+    expect(JSON.stringify(page)).not.toContain('hidden ');
+    expect(JSON.stringify(page)).toContain('Visible answer');
+    const card = page.items.find((item) => item.type === 'messages' && item.deferred);
+    if (card?.type !== 'messages' || !card.deferred) throw new Error('Missing subagent');
+    expect(card.deferred).toMatchObject({ messageCount: 101, model: 'actual-child-model' });
+    const detail = await invoke('local-db:messages:work-details', card.deferred, {}) as HistoryDetailPage<HistoryMessageSource>;
+    expect(detail.messages.length).toBeGreaterThan(0);
+    expect(detail.messages.every((row) => (row.agentMeta as { parentUuid?: string })?.parentUuid === 'agent')).toBe(true);
+    expect(JSON.stringify(detail)).toContain('hidden ');
+    expect(await invoke('local-db:messages:view', { lazyDetails: true })).toEqual(page);
+    sqlite.prepare('UPDATE messages SET content = ? WHERE id = ?').run(JSON.stringify({ text: 'edited '.repeat(1000), durationMs: 10 }), '2');
+    expect(await invoke('local-db:messages:view', { lazyDetails: true })).not.toEqual(page);
+  });
+  it('keeps a command larger than the scan budget folded without losing its trailing artifact or full details', async () => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, NULL)').run('s1');
+    const command = `echo '${'x'.repeat(9 * 1024 * 1024)}' > /work/trailing-report.txt`;
+    const insert = sqlite.prepare('INSERT INTO messages (id, client_id, session_id, role, content, tool_use_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const [id, role, content] of [
+      ['0', 'user', 'Question'],
+      ['1', 'tool_use', { toolName: 'Bash', input: { command } }],
+      ['2', 'tool_result', 'done'],
+      ['3', 'assistant', 'Answer'],
+    ] as const) insert.run(id, id, 's1', role, JSON.stringify(content), ['1', '2'].includes(id) ? 'bash' : null, Number(id));
+    registerMessageIpc();
+    const invoke = (channel: string, ...args: unknown[]) => runDeviceLinkInvokeContext({ controllerDeviceId: 'd', channel }, () => h.handlers.get(channel)!({}, 's1', ...args));
+    const page = await invoke('local-db:messages:view', { lazyDetails: true }) as HistoryViewPage<HistoryMessageSource>;
+    expect(page.hasMore).toBe(false);
+    expect(JSON.stringify(page).length).toBeLessThan(5000);
+    const work = historyViewLeaves(page.items).find((item) => item.type === 'work');
+    if (work?.type !== 'work') throw new Error('Missing folded command');
+    expect(work.summary.artifacts).toMatchObject([{ path: '/work/trailing-report.txt' }]);
+    const detail = await invoke('local-db:messages:work-details', work.summary, {}) as HistoryDetailPage<HistoryMessageSource>;
+    expect((detail.messages[0].content as { input: { command: string } }).input.command).toBe(command);
+  });
   it.each([101, MAX_HISTORY_SCAN_ROWS])('reads all %i live rows from a generated work reference', async (count) => {
     const sqlite = createDb();
     sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, NULL)').run('s1');
@@ -247,6 +300,20 @@ describe('local-db:messages:list cursor', () => {
     } finally { sqlite.close(); }
   });
 
+  it('replays complete authorization history while retaining clear and rewind boundaries', async () => {
+    const sqlite = createDb();
+    try {
+      for(let i=0;i<130;i++) insertCostMessage(sqlite,{id:`human-${i}`,role:'user',createdAt:i+1,
+        agentMeta:{autoReviewUserText:`no-${i}`,delivery:'steer'}});
+      expect(await listMessagesForAgentHandoff('s1',null,undefined,'authorization')).toHaveLength(130);
+      sqlite.prepare('INSERT OR REPLACE INTO sessions (id, cleared_at) VALUES (?, ?)').run('s1',20);
+      sqlite.prepare('UPDATE messages SET rewind_at = 1000 WHERE id = ?').run('human-129');
+      const rows=await listMessagesForAgentHandoff('s1',null,undefined,'authorization');
+      expect(rows).toHaveLength(109);expect(rows[0]?.clientId).toBe('human-20');expect(rows.at(-1)?.clientId).toBe('human-128');
+      expect(await listMessagesForAgentHandoff('s1',100,undefined,'authorization')).toHaveLength(100);
+    } finally { sqlite.close(); }
+  });
+
   it('selects a recently answered old card before limiting authorization history', async () => {
     const sqlite = createDb();
     try {
@@ -271,6 +338,24 @@ describe('local-db:messages:list cursor', () => {
         .toEqual(['owner', 'stop']);
       expect((await listMessagesForAgentHandoff('s1', 1, undefined, 'user')).map(row => row.clientId))
         .toEqual(['run-119']);
+    } finally { sqlite.close(); }
+  });
+
+  it('filters typed continuations but retains empty human resource boundaries and ambiguous rows', async () => {
+    const sqlite = createDb();
+    try {
+      insertCostMessage(sqlite, { id: 'restriction', role: 'user', createdAt: 1,
+        agentMeta: { autoReviewUserText: 'Do not delete files.', delivery: 'turn' } });
+      insertCostMessage(sqlite, { id: 'legacy', role: 'user', createdAt: 2,
+        agentMeta: { autoReviewUserText: '' } });
+      insertCostMessage(sqlite, { id: 'human-resource', role: 'user', createdAt: 2.5,
+        agentMeta: { autoReviewUserText: '', delivery: 'turn', origin: { kind: 'orca' } } });
+      for (let i = 0; i < 120; i++) insertCostMessage(sqlite, { id: `delegated-${i}`, role: 'user', createdAt: i + 3,
+        agentMeta: { autoReviewUserText: { kind: 'delegated-continuation' }, delivery: i % 2 ? 'turn' : 'steer' } });
+      expect((await listMessagesForAgentHandoff('s1', 3, undefined, 'authorization')).map(row => row.clientId))
+        .toEqual(['restriction', 'legacy', 'human-resource']);
+      expect((await listMessagesForAgentHandoff('s1', 1, undefined, 'user')).map(row => row.clientId))
+        .toEqual(['delegated-119']);
     } finally { sqlite.close(); }
   });
 
@@ -363,6 +448,55 @@ describe('local-db:messages:list cursor', () => {
     const rows = await listHandler?.({}, 's1', { limit: 1, after: 'missing' });
 
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['row-new']);
+  });
+
+  it.each([
+    ['list', false],
+    ['around', false],
+    ['around-client-id', false],
+    ['around-client-id', true],
+  ] as const)('restores visible images before returning %s (capped=%s)', async (kind, capped) => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, ?)').run('s1', 500);
+    const original = 'Full original Markdown must reach restoration before truncation';
+    for (const [id, createdAt] of [
+      ['cleared', 100], ['before', 1000], ['anchor', 1000], ['after', 1000], ['rewound', 1100],
+    ] as const) insertMessage(sqlite, { id, createdAt, content: original });
+    sqlite.prepare('UPDATE messages SET rewind_at = 1200 WHERE id = ?').run('rewound');
+    const captured = currentDb.getDbClient();
+    const capture = vi.spyOn(currentDb, 'getDbClient').mockReturnValue(captured);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const restore = vi.spyOn(taskImages, 'restoreTaskImageRows').mockImplementation(async (db, rows) => {
+      expect(db).toBe(captured);
+      expect(rows.map((row) => row.id)).toEqual(
+        kind === 'list' ? ['after', 'anchor', 'before'] : ['before', 'anchor', 'after'],
+      );
+      expect(rows.every((row) => row.content === JSON.stringify(original))).toBe(true);
+      await pending;
+      return rows.map((row) => ({ ...row, content: JSON.stringify('restored-image') }));
+    });
+    try {
+      registerMessageIpc();
+      const handler = h.handlers.get(`local-db:messages:${kind}`)!;
+      let finished = false;
+      const response = Promise.resolve(kind === 'list'
+        ? handler({}, 's1', { limit: 10 })
+        : handler({}, 's1', 'anchor', { radius: 10, ...(capped ? { contentCharLimit: 5 } : {}) }))
+        .then((rows) => { finished = true; return rows as Array<{ content: string; rowid: number }>; });
+      await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+      expect(finished).toBe(false);
+      release();
+      const rows = await response;
+      expect(rows).toHaveLength(3);
+      expect(rows.every((row) => row.content === (capped ? '…mage' : 'restored-image'))).toBe(true);
+      expect(rows.map((row) => row.rowid)).toEqual(kind === 'list' ? [4, 3, 2] : [2, 3, 4]);
+    } finally {
+      release();
+      restore.mockRestore();
+      capture.mockRestore();
+      sqlite.close();
+    }
   });
 
   it('keeps around windows stable for same timestamp rows', async () => {

@@ -159,6 +159,8 @@ function baseSchedule(overrides: Partial<Schedule> = {}): Schedule {
     recurring: true,
     manual: false,
     agentKind: 'claude-code',
+    // 留空模型要靠默认解析(本 harness 未接),这里显式给模型。
+    model: 'claude-opus-5-5',
     workspaceKind: 'project',
     workingDir: '/repo/project',
     useWorktree: false,
@@ -402,7 +404,14 @@ describe('MakerScheduleRunner background subagent task tracking', () => {
       });
       if (path === 'rollback-failed') await expect(fire).rejects.toThrow('rollback unavailable');
       else if (path === 'stop-during-history' || path === 'uncertain') await expect(fire).rejects.toThrow();
-      else expect(await fire).toMatchObject({ deferred: true });
+      else if (source === 'user') {
+        expect(controller.signal.aborted).toBe(false);
+        expect(await fire).toEqual({
+          sessionId: h.session.id,
+          skipped: true,
+          resultText: 'Scheduled turn stopped before vendor dispatch',
+        });
+      } else expect(await fire).toMatchObject({ deferred: true });
       expect(mocks.createMessage).toHaveBeenCalledOnce();
       if (path === 'uncertain') {
         expect(mocks.rewindPersistedUserMessageAfterClear).not.toHaveBeenCalled();

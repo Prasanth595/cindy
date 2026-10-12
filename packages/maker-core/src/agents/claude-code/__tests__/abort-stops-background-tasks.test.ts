@@ -22,6 +22,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentDeps, AgentSessionHandle } from '../../base-agent.js';
+import { ASYNC_QUESTION_ANSWER } from '../../base-agent.js';
 import type { AuthAdapter } from '../../../interfaces/auth-adapter.js';
 import type { AgentEvent } from '../../../types/events.js';
 import type { Logger } from '../../../interfaces/logger.js';
@@ -523,6 +524,44 @@ describe('ClaudeCodeAgent abort stops background wake tasks', () => {
       'graceful stop terminal',
     );
     await handle.close();
+  });
+
+  it.each([1, 2])('retains the product for a batch of %i submitted async answers without adding a wake task', async (count) => {
+    const { handle, stream, events } = await startSessionWithStream();
+    try {
+      await handle.send({ type: 'user', content: 'independent work' });
+      for (let i = 0; i < count; i++) {
+        await handle.steer({ type: 'user', content: `answer ${i}` }, { [ASYNC_QUESTION_ANSWER]: true });
+      }
+      stream.emit(turnResult('original work complete'));
+      await waitFor(() => events.some((e) => e.type === 'done'), 'original SDK boundary');
+      const boundary = events.find((e) => e.type === 'done')!;
+      expect(boundary.turnContinuationId).toBeTypeOf('number');
+      expect(handle.isTurnRunning?.()).toBe(true);
+      expect(handle.listBackgroundTasks?.()).toEqual([]);
+      expect(events.filter(isProductTerminal)).toHaveLength(0);
+      stream.emit(assistantText('using the answers'));
+      stream.emit(turnResult('answer work complete'));
+      await waitFor(() => events.filter(isProductTerminal).length === 1, 'one product terminal');
+      expect(handle.isTurnRunning?.()).toBe(false);
+    } finally { await handle.close(); }
+  });
+
+  it.each(['abort', 'requestGracefulStop'] as const)('cancels accepted-answer continuation on %s without reviving it', async (action) => {
+    const { handle, stream, streams, events } = await startSessionWithStream();
+    try {
+      await handle.send({ type: 'user', content: 'work' });
+      await handle.steer({ type: 'user', content: 'answer' }, { [ASYNC_QUESTION_ANSWER]: true });
+      stream.emit(turnResult());
+      await waitFor(() => events.some((e) => e.type === 'done'), 'claimed SDK boundary');
+      await handle[action]?.();
+      await waitFor(() => events.filter(isProductTerminal).length === 1, 'cancelled product');
+      streams[0].emit(assistantText('late answer processing'));
+      streams[0].emit(turnResult());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(events.filter(isProductTerminal)).toHaveLength(1);
+      expect(handle.isTurnRunning?.()).toBe(false);
+    } finally { await handle.close(); }
   });
 
   it('graceful stop cancels an awaiting wake continuation and rebuilds before the next send', async () => {
@@ -2145,6 +2184,33 @@ describe('ClaudeCodeAgent abort stops background wake tasks', () => {
     expect(fakeQuery.close).toHaveBeenCalledTimes(1);
     expect(events.filter(isProductTerminal)).toHaveLength(1);
     expect(handle.isTurnRunning?.()).toBe(false);
+
+    stream.end();
+    await handle.close().catch(() => undefined);
+  });
+
+  it('exposes the SDK output file of running background tasks and drops it on terminal', async () => {
+    const { handle, stream, events } = await startSessionWithStream();
+
+    await handle.send({ type: 'user', content: 'run a background command' });
+    stream.emit({
+      ...taskStarted('bash-1', 'local_bash'),
+      output_file: '/tmp/claude-501/project/session/tasks/bash-1.output',
+    });
+    await waitFor(() => taskEvents(events).length >= 1, 'task_started observed');
+    // task_updated 补丁不带 output_file,不得冲掉已登记的路径。
+    stream.emit(taskUpdatedRunning('bash-1'));
+    await waitFor(() => taskEvents(events).length >= 2, 'task_updated observed');
+    expect(handle.listBackgroundTasks?.()).toEqual([
+      expect.objectContaining({
+        taskId: 'bash-1',
+        taskType: 'local_bash',
+        outputFile: '/tmp/claude-501/project/session/tasks/bash-1.output',
+      }),
+    ]);
+
+    stream.emit(taskNotification('bash-1', 'completed'));
+    await waitFor(() => (handle.listBackgroundTasks?.() ?? []).length === 0, 'terminal task removed');
 
     stream.end();
     await handle.close().catch(() => undefined);

@@ -5,15 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SlowSendNotice } from '@/session/SlowSendNotice';
 import { i18n } from '@/i18n';
 
-vi.mock('@/components/AppText', async () => {
+vi.mock('react-native', async () => {
   const { createElement } = await import('react');
-  return { Text: ({ children, accessibilityLiveRegion }: { children?: ReactNode; accessibilityLiveRegion?: string }) =>
-    createElement('span', { 'aria-live': accessibilityLiveRegion }, children) };
+  return { View: ({ children }: { children?: ReactNode }) => createElement('div', null, children) };
 });
-vi.mock('@/theme', async () => {
-  const tokens = await import('@/theme/tokens');
-  return { ...tokens, useTheme: () => ({ colors: tokens.lightColors }) };
+// The pill itself is the task page's "思考中" pill; here only its label matters.
+vi.mock('@/session/ComposerActivityPill', async () => {
+  const { createElement } = await import('react');
+  return {
+    ComposerActivityPill: ({ label, live }: { label: string; live?: boolean }) =>
+      createElement('span', { 'data-pill': 'activity', 'aria-live': live ? 'polite' : undefined }, label),
+    makeComposerActivityPillStyles: () => ({}),
+  };
 });
+vi.mock('@/theme', () => ({ useThemedStyles: () => ({}) }));
 
 let root: Root;
 let host: HTMLDivElement;
@@ -49,7 +54,8 @@ describe('SlowSendNotice', () => {
     act(() => root.render(<SlowSendNotice startedAt={0} phase="connecting" />));
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(host.textContent).toBe('正在连接电脑…');
-    expect(host.querySelector('span')?.getAttribute('aria-live')).toBe('polite');
+    expect(host.querySelector('[data-pill="activity"]')?.getAttribute('aria-live')).toBe('polite');
+    expect(host.querySelector('[data-pill="activity"]')?.textContent).toBe('正在连接电脑…');
     act(() => root.render(<SlowSendNotice startedAt={0} phase="sending" />));
     expect(host.textContent).toBe('正在发送消息…');
     act(() => root.render(<SlowSendNotice startedAt={8_000} phase="uploading" />));

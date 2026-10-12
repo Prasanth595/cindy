@@ -54,6 +54,11 @@ export function parseFsWatchTopic(topic: string): string | null {
 export type SessionActivityPhase = 'running' | 'needs-interaction' | 'completed' | 'error';
 
 export interface SessionActivityPayload {
+  /** Completion push ownership only; activity/attention remains unchanged.
+   * Absent on older hosts. Unknown values use ordinary completion semantics. */
+  completionNotification?: 'pending' | 'teammate';
+  /** Optional public generation category; unknown values must use a generic caption. */
+  workingPhase?: string;
   sessionId: string;
   phase: SessionActivityPhase;
   compactDetail: string;
@@ -146,6 +151,7 @@ export function expandMakerEventBatchPayload(payload: unknown): unknown[] {
  */
 const SESSION_LIST_CHANNELS: ReadonlySet<string> = new Set([
   'local-db:sessions:created',
+  'local-db:task-tags:changed',
   'local-db:sessions:patched',
   'local-db:session:error-persisted',
   SESSION_ACTIVITY_CHANNEL,

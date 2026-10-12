@@ -1,11 +1,24 @@
+import type { HistoryWorkLine } from './historyWorkLines.js';
+
 /** Reading projections never replace persisted messages or the agent transcript. */
 export const HISTORY_VIEW_VERSION = 1 as const;
 export const HISTORY_VIEW_PAGE_ITEMS = 20;
-export const HISTORY_VIEW_PAGE_BYTES = 256 * 1024;
+export const HISTORY_VIEW_PAGE_BYTES = 1024 * 1024;
 export const HISTORY_DETAIL_PAGE_BYTES = 256 * 1024;
 
 export function isHistoryViewUnavailable(error: unknown): boolean {
   return /CHANNEL_NOT_ALLOWED|UNSUPPORTED_CAPABILITY|not registered|No handler/i.test(String(error));
+}
+
+/** Visible file candidates, independent of the folded tool body that produced them. */
+export interface HistoryFileArtifact {
+  path: string;
+  source: 'tool' | 'command';
+  createdAt: string;
+  toolUseId?: string;
+  ready?: boolean;
+  /** Preserve file-card suppression when the editing tool body is deferred. */
+  exclude?: 'command' | 'all';
 }
 
 export interface HistoryMessageSource {
@@ -17,6 +30,10 @@ export interface HistoryMessageSource {
   rowid?: number;
   toolUseId?: string | null;
   agentMeta?: object | null;
+  /** Host outline only; transferred in work summaries, never as a replacement body. */
+  historyArtifacts?: HistoryFileArtifact[];
+  /** Host outline only: changes when the hidden body is rewritten; hashed into revisions. */
+  historyContentStamp?: string;
 }
 
 /** Both endpoints are real host message IDs, inclusive, in host database order. */
@@ -28,13 +45,23 @@ export interface HistoryWorkReference {
   firstStoredMessageId?: string;
   lastStoredMessageId?: string;
   liveMessageIds?: string[];
+  /** Restricts a subagent detail range to this tool and its descendants. */
+  parentToolUseId?: string;
 }
 
 export interface HistoryWorkSummary extends HistoryWorkReference {
   /** Original activity anchor; stable when its body has not been read yet. */
   anchorClientId?: string;
+  artifacts?: HistoryFileArtifact[];
+  /** Actual child model from persisted metadata; not the requested model. */
+  model?: string;
   /** Existing detail endpoint can read just the visible desktop tail. */
   preview?: HistoryWorkSummary;
+  /**
+   * Latest single-line activities of a running range, already projected by the Host.
+   * Present only when the controller asked for `workLines`; old Hosts omit it.
+   */
+  lines?: HistoryWorkLine[];
   startedAtMs: number;
   endedAtMs: number;
   isStreaming: boolean;
@@ -48,8 +75,13 @@ export interface HistoryWorkSummary extends HistoryWorkReference {
 export interface DeferredHistoryWork {
   owner?: object;
   key?: string;
+  revision?: string;
   setVisible?(expanded: boolean, preview: boolean): void;
   previewComplete?: boolean;
+  /** Host-projected running lines; when present a folded preview needs no detail read. */
+  lines?: readonly HistoryWorkLine[];
+  /** No detail rows are in hand yet; an expanded group keeps showing `lines` until they arrive. */
+  awaitingDetails?: boolean;
   expanded: boolean;
   loading: boolean;
   failed: boolean;
@@ -58,7 +90,7 @@ export interface DeferredHistoryWork {
 }
 
 export type HistoryViewItem<TMessage extends HistoryMessageSource> =
-  | { type: 'messages'; key: string; messages: TMessage[] }
+  | { type: 'messages'; key: string; messages: TMessage[]; deferred?: HistoryWorkSummary }
   | { type: 'work'; key: string; summary: HistoryWorkSummary; children?: HistoryViewItem<TMessage>[] };
 
 /** Outer summaries retain only prose and action references, never hidden bodies. */
@@ -68,7 +100,7 @@ export function historyViewLeaves<T extends HistoryMessageSource>(items: readonl
 
 export function historyWorkSummaries<T extends HistoryMessageSource>(items: readonly HistoryViewItem<T>[]): HistoryWorkSummary[] {
   return historyViewLeaves(items).flatMap((item) => item.type === 'work'
-    ? [item.summary, ...(item.summary.preview ? [item.summary.preview] : [])] : []);
+    ? [item.summary, ...(item.summary.preview ? [item.summary.preview] : [])] : item.deferred ? [item.deferred] : []);
 }
 
 export function mapHistoryViewMessages<T extends HistoryMessageSource, U extends HistoryMessageSource>(
@@ -85,6 +117,20 @@ export interface HistoryViewPage<TMessage extends HistoryMessageSource> {
   nextCursor: string | null;
   hasMore: boolean;
 }
+
+/**
+ * Host → controller replacement of one running top-level work item. The Host sends it
+ * only when everything else on the latest page is unchanged since its last delivery to
+ * that controller; `baseRevision` is the item revision that delivery carried.
+ */
+export interface HistoryWorkPatch {
+  version: typeof HISTORY_VIEW_VERSION;
+  sessionId: string;
+  baseRevision: string;
+  item: { type: 'work'; key: string; summary: HistoryWorkSummary };
+}
+
+export const HISTORY_WORK_PATCH_CHANNEL = 'maker:history-work-patch';
 
 export interface HistoryDetailPage<TMessage extends HistoryMessageSource> {
   version: typeof HISTORY_VIEW_VERSION;

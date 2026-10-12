@@ -2,6 +2,12 @@ import { redactSensitiveText } from "@cindy/maker-shared/error-redaction";
 
 import { i18n } from "@/i18n";
 import {
+  conservativeArialGlyphWidthEm,
+  layoutConversationShareRichBody,
+  type ShareSvgRect,
+} from "@/session/conversationShareRichSvg";
+import {
+  mobileMarkdownInlineHasMark,
   parseMobileMarkdown,
   type MobileMarkdownBlock,
   type MobileMarkdownInline,
@@ -22,6 +28,10 @@ const MAX_OUTPUT_PIXELS = 12_000_000;
 const DEFAULT_EXPORT_SCALE = 2;
 
 export interface ConversationShareSvgTextBlock {
+  bold?: boolean;
+  italic?: boolean;
+  monospace?: boolean;
+  decoration?: "underline" | "line-through";
   color: string;
   fontSize: number;
   lineHeight: number;
@@ -31,6 +41,7 @@ export interface ConversationShareSvgTextBlock {
 }
 
 export interface ConversationShareSvgBubble {
+  rectangles?: ShareSvgRect[];
   fill?: string;
   height: number;
   stroke?: string;
@@ -57,6 +68,7 @@ export interface ConversationShareSvgLayout {
 
 export function conversationShareSvgRenderSize(
   layout: Pick<ConversationShareSvgLayout, "height" | "width">,
+  pixelRatio = 1,
 ): { height: number; scale: number; sourceTooLarge: boolean; width: number } {
   const sourceTooLarge = layout.width * layout.height > MAX_OUTPUT_PIXELS;
   if (sourceTooLarge) {
@@ -64,13 +76,17 @@ export function conversationShareSvgRenderSize(
   }
   const scale = Math.min(
     DEFAULT_EXPORT_SCALE,
-    Math.sqrt(MAX_OUTPUT_PIXELS / Math.max(1, layout.width * layout.height)),
+    // SvgView allocates its bitmap in physical pixels, not React Native points.
+    Math.sqrt(
+      MAX_OUTPUT_PIXELS /
+        Math.max(1, layout.width * layout.height * Math.max(1, pixelRatio) ** 2),
+    ),
   );
   return {
-    height: Math.max(1, Math.ceil(layout.height * scale)),
+    height: Math.max(1, Math.floor(layout.height * scale)),
     scale,
     sourceTooLarge,
-    width: Math.max(1, Math.ceil(layout.width * scale)),
+    width: Math.max(1, Math.floor(layout.width * scale)),
   };
 }
 
@@ -134,11 +150,9 @@ export function buildConversationShareSvgLayout({
       });
       cursorY += height + gap;
     };
-    // One ordered traversal owns attribution, attachments, then body. Failed
-    // images replace their own occurrence rather than moving into the bubble.
-    if (message.automationOriginLabel) {
-      appendMetadata(message.automationOriginLabel, colors.textTertiary, 4);
-    }
+    // One ordered traversal owns attachments, then body. Failed images replace
+    // their own occurrence rather than moving into the bubble. Share images
+    // carry no message-source labels (automation / device / plugin / author).
     const appendImage = (image: ConversationShareImage) => {
       const scale = Math.min(1, bubbleWidth / image.width, 320 / image.height);
       const imageWidth = image.width * scale;
@@ -167,6 +181,37 @@ export function buildConversationShareSvgLayout({
         );
       }
     }
+    let needsRedaction = false;
+    const bodyParts = conversationShareBodyParts(message, () => {
+      needsRedaction = true;
+    });
+    // Preserve the existing whole-message redaction path for secrets spanning
+    // formatting, paragraphs or images. Never redact isolated styled runs.
+    if (!needsRedaction && bodyParts.length > 0) {
+      const paddingY = user ? 12 : 4;
+      const body = layoutConversationShareRichBody(
+        message,
+        colors,
+        bubbleX + horizontalPadding,
+        cursorY + paddingY,
+        textWidth,
+      );
+      const height = Math.max(user ? 44 : 30, body.height + paddingY * 2);
+      bubbles.push({
+        x: bubbleX,
+        y: cursorY,
+        width: bubbleWidth,
+        height,
+        fill: user ? colors.surfaceElevated : undefined,
+        stroke: user ? colors.textSecondary : undefined,
+        textBlocks: body.textBlocks,
+        rectangles: body.rectangles,
+      });
+      images.push(...body.images);
+      cursorY += height + MESSAGE_GAP;
+      previousIndex = currentIndex;
+      continue;
+    }
     const blocks: Array<
       | { image: ConversationShareImage }
       | {
@@ -177,7 +222,7 @@ export function buildConversationShareSvgLayout({
         }
     > = [];
 
-    for (const part of conversationShareBodyParts(message)) {
+    for (const part of bodyParts) {
       if ("image" in part) blocks.push(part);
       else
         blocks.push({
@@ -251,6 +296,7 @@ type ShareBodyPart = { text: string } | { image: ConversationShareImage };
 /** Traverse occurrences, using the source map only to look up decoded bytes. */
 function conversationShareBodyParts(
   message: ConversationShareMessage,
+  onRedaction?: () => void,
 ): ShareBodyPart[] {
   const parts: ShareBodyPart[] = [];
   const append = (part: ShareBodyPart) => {
@@ -278,6 +324,7 @@ function conversationShareBodyParts(
   const redacted = redactSensitiveText(fullText);
   let safeParts = parts;
   if (redacted !== fullText) {
+    onRedaction?.();
     safeParts = [];
     let sourceOffset = 0;
     let safeOffset = 0;
@@ -366,27 +413,32 @@ function markdownInlineParts(
   images: ConversationShareMessage["images"],
 ): ShareBodyPart[] {
   const parts: ShareBodyPart[] = [];
+  const appendText = (text: string) => {
+    const last = parts[parts.length - 1];
+    if (last && "text" in last) last.text += text;
+    else parts.push({ text });
+  };
+  // 删除线里的链接等会把一段删除线拆成多个 inline:`~~` 只加在连续删除线范围的两端,
+  // 不给每个片段各包一层(否则边界处出现 `~~~~`)。
+  let struck = false;
   for (const inline of inlines) {
     const image = inline.type === "image" ? images?.get(inline.url) : undefined;
+    const nextStruck = !image && mobileMarkdownInlineHasMark(inline, "strikethrough");
+    if (struck !== nextStruck) {
+      appendText("~~");
+      struck = nextStruck;
+    }
     if (image) {
       parts.push({ image });
       continue;
     }
-    const text = (() => {
-      if (inline.type === "image") {
-        return (
-          inline.alt.trim() || i18n.t("message.renderer.imageFallbackTitle")
-        );
-      }
-      if (inline.type === "strikethrough") {
-        return `~~${inline.text}~~`;
-      }
-      return inline.text;
-    })();
-    const last = parts[parts.length - 1];
-    if (last && "text" in last) last.text += text;
-    else parts.push({ text });
+    appendText(
+      inline.type === "image"
+        ? inline.alt.trim() || i18n.t("message.renderer.imageFallbackTitle")
+        : inline.text,
+    );
   }
+  if (struck) appendText("~~");
   return parts;
 }
 
@@ -417,23 +469,4 @@ export function wrapSvgText(
     lines.push(line.trimEnd());
   }
   return lines.length > 0 ? lines : [""];
-}
-
-function conservativeArialGlyphWidthEm(character: string): number {
-  // react-native-svg does not expose synchronous glyph measurement while this
-  // pure layout is built. These Arial-like buckets intentionally round wide
-  // glyphs up so an exported line wraps early instead of being clipped.
-  if (character === " ") return 0.33;
-  if (character.codePointAt(0)! > 0x7f) return 1;
-  if (character === "@") return 1.05;
-  if ("W%".includes(character)) return 1;
-  if ("Mm".includes(character)) return 0.9;
-  if ("CGOQw".includes(character)) return 0.82;
-  if ("ABDGHKNRUVXY&".includes(character)) return 0.75;
-  if ("EFLPSTZ".includes(character)) return 0.68;
-  if ("0123456789#?$+=<>^_~abdeghnopqu".includes(character)) return 0.62;
-  if ("Jckrsvxyz".includes(character)) return 0.55;
-  if ("(){}[]ft*".includes(character)) return 0.4;
-  if (`!"',.:;\`il|/\\-`.includes(character)) return 0.36;
-  return 0.68;
 }

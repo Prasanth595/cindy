@@ -45,7 +45,7 @@ describe('native declarations for verified catalog identities', () => {
   });
   it('does not let a retired sibling suppress the active catalog identity', () => {
     const r = registry();
-    r.baseModels = [{ id: 'gemini-99', name: 'Gemini 99', aliases: [] }];
+    r.baseModels = [{ id: 'gemini-99', defaults: { name: 'Gemini 99' }, aliases: [] }];
     r.models = [
       { id: 'google/gemini-99', name: 'Gemini', modelRef: 'gemini-99', nativeApi: 'google-generative-ai', routes: [] },
       { id: 'google/gemini-99-preview', name: 'Gemini preview', modelRef: 'gemini-99', status: 'retired', nativeApi: 'google-generative-ai', routes: [] },
@@ -119,6 +119,8 @@ describe("canonical model APIs in registry v3", () => {
     ["meta/muse-spark-99", "openai-responses"],
     ["x-ai/grok-99", "openai-responses"],
     ["minimax/MiniMax-M99", "anthropic-messages"],
+    ["openai-codex/gpt-99", "openai-responses"],
+    ["codex/gpt-99", "openai-responses"],
   ])(
     "declares the native API of future family member %s locally",
     (id, api) => {

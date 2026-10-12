@@ -6,6 +6,7 @@ import {
   isMobileMarkdownImageDirectUrl,
   mobileMarkdownImageTitle,
   mobileMarkdownImageUrlForWorkdir,
+  mobileMarkdownManagedImagePreviewUrl,
   mobileMarkdownImageAltChipText,
   MOBILE_MARKDOWN_IMAGE_ALT_CHIP_MAX_UTF16_LENGTH,
   mobileMarkdownInlineImageSize,
@@ -122,7 +123,7 @@ describe('messageMarkdown', () => {
     const blocks = parseMobileMarkdown(PR_WATCH_EXPANDED_BLANK_FIXTURE);
 
     expect(blocks.length).toBeGreaterThan(1);
-    // badge Markdown 位于 strong 标记内,当前解析为文本而非图片;空白不是图片尺寸撑高导致。
+    // badge Markdown 位于 strong 标记内,强调里的图片按原文显示(不成图片);空白不是图片尺寸撑高导致。
     expect(collectMobileMarkdownImages(PR_WATCH_EXPANDED_BLANK_FIXTURE)).toEqual([]);
     expect(blocks.some((block) => block.type === 'code')).toBe(true);
   });
@@ -536,6 +537,45 @@ describe('messageMarkdown', () => {
       { type: 'text', text: ', ' },
       { type: 'link', text: 'docs', url: 'https://example.com/docs' },
       { type: 'text', text: '.' },
+    ]);
+  });
+
+  it('keeps links and other inline tokens inside emphasis, flattened with marks', () => {
+    expect(parseMobileMarkdownInlines('打开 **https://example.com/abc/** 安装')).toEqual([
+      { type: 'text', text: '打开 ' },
+      { type: 'link', text: 'https://example.com/abc/', url: 'https://example.com/abc/', marks: ['strong'] },
+      { type: 'text', text: ' 安装' },
+    ]);
+    expect(parseMobileMarkdownInlines('**看 [文档](https://example.com/docs) 和 `a.ts`**')).toEqual([
+      { type: 'strong', text: '看 ' },
+      { type: 'link', text: '文档', url: 'https://example.com/docs', marks: ['strong'] },
+      { type: 'strong', text: ' 和 ' },
+      { type: 'code', text: 'a.ts', marks: ['strong'] },
+    ]);
+    expect(parseMobileMarkdownInlines('*见 https://example.com/x*')).toEqual([
+      { type: 'emphasis', text: '见 ' },
+      { type: 'link', text: 'https://example.com/x', url: 'https://example.com/x', marks: ['emphasis'] },
+    ]);
+    expect(parseMobileMarkdownInlines('**~~https://example.com/old~~**')).toEqual([
+      { type: 'link', text: 'https://example.com/old', url: 'https://example.com/old', marks: ['strong', 'strikethrough'] },
+    ]);
+  });
+
+  it('keeps images inside emphasis as literal text and does not linkify their [alt](url)', () => {
+    expect(parseMobileMarkdownInlines(
+      '**<sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)</sub> 标题 https://example.com/y**',
+    )).toEqual([
+      { type: 'strong', text: '<sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)</sub> 标题 ' },
+      { type: 'link', text: 'https://example.com/y', url: 'https://example.com/y', marks: ['strong'] },
+    ]);
+  });
+
+  it('keeps bare paths inside emphasis within an HTML comment as plain text', () => {
+    expect(parseMobileMarkdownInlines('<!-- **src/a.ts** --> **src/b.ts**')).toEqual([
+      { type: 'text', text: '<!-- ' },
+      { type: 'strong', text: 'src/a.ts' },
+      { type: 'text', text: ' --> ' },
+      { type: 'link', text: 'src/b.ts', url: 'src/b.ts', bare: true, marks: ['strong'] },
     ]);
   });
 
@@ -1005,6 +1045,17 @@ describe('messageMarkdown', () => {
       { type: 'image', alt: '', url: 'cindy-media://blobs/a.png' },
     ]);
     expect(isMobileMarkdownImageDirectUrl('cindy-media://blobs/a.png')).toBe(false);
+  });
+
+  it('parses remote images with standard optional titles without exposing Markdown source', () => {
+    for (const url of ['cindy-media://blobs/a.png', 'xdt-image://cache/a.png', 'https://example.com/shot(1).png']) {
+      for (const destination of [`${url} "真实截图"`, `${url} '截图'`, `${url} (截图)`, `<${url}> "截图"`]) {
+        expect(parseMobileMarkdownInlines(`![验收](${destination})`)).toEqual([
+          { type: 'image', alt: '验收', url },
+        ]);
+      }
+    }
+    expect(parseMobileMarkdownInlines('![x](javascript:alert(1) "title")').some((inline) => inline.type === 'image')).toBe(false);
   });
 
   it('rejects img-prefixed non-img tags exactly (img must be followed by whitespace, / or >)', () => {
@@ -1541,11 +1592,9 @@ describe('bare file paths(正文纯文本形态)', () => {
     ]);
   });
 
-  it('已知取舍:被强调包裹的路径不成 chip(手机 inline 模型扁平,不支持嵌套)', () => {
-    // 桌面 remark 能在 strong 的子 text 里继续 linkify;手机端 inline 无嵌套,
-    // 强调整段吃掉。属既有架构限制,本次不扩,先把现状钉住。
+  it('被强调包裹的路径同样识别,带外层强调标记(与桌面 remark 在 strong 子节点里 linkify 同口径)', () => {
     expect(parseMobileMarkdownInlines('**src/App.tsx**')).toEqual([
-      { type: 'strong', text: 'src/App.tsx' },
+      { type: 'link', text: 'src/App.tsx', url: 'src/App.tsx', bare: true, marks: ['strong'] },
     ]);
   });
 
@@ -1580,7 +1629,72 @@ describe('bare file paths(正文纯文本形态)', () => {
   });
 });
 
+describe('automatic Markdown image fetch scope', () => {
+  const pathUrl = (file: string, extra = '') => `xdt-file://open?path=${encodeURIComponent(file)}${extra}`;
+
+  it.each(['/private/photo.png', '/repo-other/photo.png', '/repo/../private/photo.png'])(
+    'does not automatically fetch outside or escaping path %s', (file) => {
+      expect(mobileMarkdownManagedImagePreviewUrl(file, '/repo')).toBeNull();
+      expect(mobileMarkdownManagedImagePreviewUrl(pathUrl(file), '/repo')).toBeNull();
+      // Explicitly opening the chip still uses the established viewer path.
+      expect(mobileMarkdownImageUrlForWorkdir(file, '/repo')).not.toBeNull();
+    },
+  );
+
+  it('requires workdir for file previews but not for already managed media', () => {
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('/repo/a.png'))).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl('shot.png')).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl('cindy-media://blobs/a.png')).toBe('cindy-media://blobs/a.png');
+    expect(mobileMarkdownManagedImagePreviewUrl('xdt-image://session/a.png')).toBe('xdt-image://session/a.png');
+  });
+
+  it('overwrites supplied baseDir with the task root for Host realpath checks', () => {
+    const result = mobileMarkdownManagedImagePreviewUrl(pathUrl('/repo/link/a.png', '&baseDir=%2F&baseDir=%2Fprivate'), '/repo', 'message:2');
+    const parsed = new URL(result!);
+    expect(parsed.searchParams.getAll('baseDir')).toEqual(['/repo']);
+    expect(parsed.searchParams.get('path')).toBe('/repo/link/a.png');
+    expect(parsed.searchParams.get('v')).toBe('message:2');
+    expect(new URL(mobileMarkdownManagedImagePreviewUrl('out/a.png', '/repo')!).searchParams.get('baseDir')).toBe('/repo');
+  });
+
+  it('handles Windows separators and roots without treating neighboring directories as children', () => {
+    const root = 'C:\\Repo';
+    const preview = mobileMarkdownManagedImagePreviewUrl(pathUrl('c:\\repo\\out\\a.png'), root);
+    expect(new URL(preview!).searchParams.get('baseDir')).toBe(root);
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('C:\\Repo-other\\a.png'), root)).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('D:\\Repo\\a.png'), root)).toBeNull();
+    expect(mobileMarkdownManagedImagePreviewUrl(pathUrl('C:\\Repo\\..\\private\\a.png'), root)).toBeNull();
+  });
+
+  it('keeps SSH task provenance and supplies the same remote root constraint', () => {
+    const result = mobileMarkdownManagedImagePreviewUrl(pathUrl('/srv/work/out/a.png', '&remoteHostId=other&baseDir=%2F'), '/srv/work', 'm', 'host', 'task');
+    const parsed = new URL(result!);
+    expect(parsed.searchParams.get('remoteHostId')).toBe('host');
+    expect(parsed.searchParams.get('sessionId')).toBe('task');
+    expect(parsed.searchParams.get('baseDir')).toBe('/srv/work');
+    expect(mobileMarkdownManagedImagePreviewUrl('a.png', '/srv/work', 'm', 'host')).toBeNull();
+  });
+});
+
 describe('groupMobileMarkdownSelectableBlocks', () => {
+  it('keeps fallback image chips and surrounding paragraphs in the selectable text run', () => {
+    const blocks = parseMobileMarkdown('前段\n\n正文 ![图](shot.png) 结尾\n\n后段');
+    // No resolver or no workdir: the renderer can only show the existing text chip.
+    for (const imageRendersPreview of [() => false, (image: { url: string }) => mobileMarkdownManagedImagePreviewUrl(image.url) !== null]) {
+      const groups = groupMobileMarkdownSelectableBlocks(blocks, { imageRendersPreview });
+      expect(groups).toHaveLength(1);
+      expect(groups[0].type).toBe('text_run');
+    }
+  });
+
+  it('separates actual managed previews while keeping outside-workdir chips selectable', () => {
+    const imageRendersPreview = (image: { url: string }) => mobileMarkdownManagedImagePreviewUrl(image.url, '/repo') !== null;
+    const groups = groupMobileMarkdownSelectableBlocks(
+      parseMobileMarkdown('前段\n\n![图](shot.png)\n\n说明 ![外部图](/private/photo.png) 结尾'),
+      { imageRendersPreview },
+    );
+    expect(groups.map((group) => group.type)).toEqual(['text_run', 'single', 'text_run']);
+  });
   it('merges consecutive text blocks into one run so native selection can cross paragraphs', () => {
     const blocks = parseMobileMarkdown([
       '# 标题',
@@ -1726,14 +1840,16 @@ describe('groupMobileMarkdownSelectableBlocks', () => {
     expect(chunkText.join('')).toBe(text);
   });
 
-  it('keeps oversized non-direct image alt text in one image inline while bounding rendered chip text', () => {
+  it('keeps managed image previews out of selectable text runs without splitting oversized alt text', () => {
     const alt = 'a'.repeat(MOBILE_MARKDOWN_IMAGE_ALT_CHIP_MAX_UTF16_LENGTH + 21);
     const blocks = parseMobileMarkdown(`![${alt}](docs/local-image.png)`);
-    const groups = groupMobileMarkdownSelectableBlocks(blocks, { maxTextRunUtf16Length: 1800 });
-    const chunks = groups.flatMap((group) => (group.type === 'text_run' ? group.blocks : []));
-    const imageInlines = chunks.flatMap((block) => block.inlines.filter((inline) => inline.type === 'image'));
+    const groups = groupMobileMarkdownSelectableBlocks(blocks, {
+      maxTextRunUtf16Length: 1800,
+      imageRendersPreview: (image) => mobileMarkdownManagedImagePreviewUrl(image.url, '/repo') !== null,
+    });
+    const imageInlines = blocks.flatMap((block) => 'inlines' in block ? block.inlines.filter((inline) => inline.type === 'image') : []);
 
-    expect(groups.map((group) => group.type)).toEqual(['text_run']);
+    expect(groups.map((group) => group.type)).toEqual(['single']);
     expect(imageInlines).toHaveLength(1);
     expect(imageInlines[0]).toMatchObject({ alt, url: 'docs/local-image.png' });
     expect(mobileMarkdownImageAltChipText(imageInlines[0].alt)).toHaveLength(

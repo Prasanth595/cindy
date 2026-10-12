@@ -91,7 +91,10 @@ describe('messageRenderModel', () => {
       isSessionStreaming: true,
       autoResumePending: { error: 'socket hang up', attempt: 2, maxAttempts: 5, sessionTotal: 3 },
     });
-    expect(expectType(items[0], 'message').message.isTurnFinalAssistant).toBe(true);
+    const interrupted = expectType(items[0], 'work_group');
+    expect(interrupted.isStreaming).toBe(false);
+    expect(interrupted.children).toHaveLength(1);
+    expect(interrupted.children[0]).toMatchObject({ type: 'message', message: { body: 'partial' } });
     expect(expectType(items[1], 'message').message).toMatchObject({
       systemCardType: 'auto-resume',
       systemCardData: { error: 'socket hang up', attempt: 2, maxAttempts: 5, sessionTotal: 3, live: true },
@@ -534,14 +537,14 @@ describe('messageRenderModel', () => {
       expect(turnFinalKeys(items)).toEqual(['a1-final', 'a2-final']);
     });
 
-    it('marks every sealed SDK turn when a background task auto-continues the user request', () => {
-      const items = buildMobileMessageRenderItems([
+    function backgroundContinuation(mainSummary: string) {
+      return buildMobileMessageRenderItems([
         message({ id: 'u1', role: 'user', content: { text: 'q' }, createdAt: at(1) }),
         toolUse('main-work', 'Read', { file_path: '/repo/a.ts' }, 2),
         message({
           id: 'main-summary',
           role: 'assistant',
-          content: '正式总结',
+          content: mainSummary,
           agentMeta: { turnCompleted: true },
           createdAt: at(3),
         }),
@@ -554,6 +557,30 @@ describe('messageRenderModel', () => {
           createdAt: at(5),
         }),
       ]);
+    }
+
+    it('folds an earlier short sealed reply when a background task auto-continues the user request', () => {
+      const items = backgroundContinuation('还有一个后台任务在跑。');
+
+      // 折进「已工作」后仍是一次 SDK turn 的收尾正文,展开可见其操作行。
+      expect(turnFinalKeys(items)).toEqual(['main-summary', 'gate-followup']);
+      expect(items.map((item) => item.type)).toEqual(['message', 'work_group', 'message']);
+    });
+
+    it('keeps an earlier sealed reply with a markdown image visible across a background auto-continuation', () => {
+      const items = backgroundContinuation('图表如下 ![chart](https://example.com/chart.png)');
+
+      expect(items.map((item) => item.type)).toEqual([
+        'message',
+        'work_group',
+        'message',
+        'work_group',
+        'message',
+      ]);
+    });
+
+    it('keeps an earlier sealed delivery-prose summary visible across a background auto-continuation', () => {
+      const items = backgroundContinuation('## 正式总结\n\n- 第一条\n- 第二条\n- 第三条');
 
       expect(turnFinalKeys(items)).toEqual(['main-summary', 'gate-followup']);
       expect(items.map((item) => item.type)).toEqual([

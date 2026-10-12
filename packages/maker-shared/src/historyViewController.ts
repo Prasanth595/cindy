@@ -1,6 +1,6 @@
 import {
   readHistoryWorkDetails, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
-  type HistoryViewItem, type HistoryViewPage, type HistoryWorkSummary,
+  type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
 
 export interface HistoryWorkDetailState<T extends HistoryMessageSource> {
@@ -21,6 +21,11 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
   loading: boolean;
   ready: boolean;
   error: unknown | null;
+  /**
+   * The latest page may be behind rows the raw store already received: it came from
+   * disk, or was read before the view went inactive/offline. Cleared by a latest-page read.
+   */
+  stale?: boolean;
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
@@ -66,8 +71,9 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.detailRuns.clear();
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
-    this.publish({ loading: false, details: new Map([...this.state.details].map(([key, detail]) =>
-      [key, detail.loading ? { ...detail, loading: false } : detail])) });
+    this.publish({ loading: false, ...(available ? {} : { stale: this.state.ready }),
+      details: new Map([...this.state.details].map(([key, detail]) =>
+        [key, detail.loading ? { ...detail, loading: false } : detail])) });
     if (available && this.active) void this.refresh();
   }
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
@@ -88,7 +94,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     const generation = this.cacheGeneration;
     const cached = await read().catch(() => null);
     if (!cached || this.state.ready || isHistoryViewUnavailable(this.state.error) || generation !== this.cacheGeneration) return;
-    this.publish({ ...cached, loading: this.state.loading, error: this.state.error });
+    this.publish({ ...cached, loading: this.state.loading, error: this.state.error, stale: true });
   }
 
   refresh(older = false, fresh = false): Promise<void> {
@@ -123,6 +129,29 @@ export class HistoryViewController<T extends HistoryMessageSource> {
         void this.pagePromise.then(() => this.invalidate());
       } else void this.refresh();
     }, 500);
+  }
+
+  /**
+   * Replace one running top-level work item in place. Anything this controller cannot
+   * prove to be the Host's base (a read in flight, a missing or reshaped item, another
+   * revision) falls back to the ordinary page refresh the notice used to trigger.
+   */
+  applyWorkPatch(patch: HistoryWorkPatch): void {
+    if (!this.isActive()) return;
+    const index = this.state.items.findIndex((item) => item.key === patch.item.key);
+    const current = this.state.items[index];
+    if (this.pagePromise || this.refreshTimer || !this.state.ready || !current || current.type !== 'work' || current.children
+      || current.summary.revision !== patch.baseRevision
+      || current.summary.firstMessageId !== patch.item.summary.firstMessageId) {
+      this.invalidate();
+      return;
+    }
+    const items = [...this.state.items];
+    items[index] = patch.item;
+    this.publish({ items });
+    for (const summary of historyWorkSummaries([patch.item])) {
+      if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
+    }
   }
 
   private async readPage(older: boolean): Promise<void> {
@@ -161,6 +190,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const stableItems = items.length === this.state.items.length
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
+        ...(older ? {} : { stale: false }),
         hasMore: retainedPrefix ? this.state.hasMore : page.hasMore,
         nextCursor: retainedPrefix ? this.state.nextCursor : page.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
@@ -230,7 +260,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const completed = this.state.details.get(summary.key);
       if (completed?.complete && completed.revision === summary.revision && !patch.complete) return;
       const details = new Map(this.state.details);
-      details.set(summary.key, { messages: collected.length ? collected : (existing?.messages ?? []), revision: summary.revision,
+      // A reread keeps the previous window until it settles. Publishing each
+      // incoming page would replace the old window with a partial slice of the
+      // new range: the rendered list collapses to the first page and shifts a
+      // bottom-pinned stream before the tail lands.
+      const settled = patch.complete === true;
+      const messages = !settled && existing?.messages?.length ? existing.messages
+        : collected.length ? collected : (existing?.messages ?? []);
+      details.set(summary.key, { messages, revision: summary.revision,
         lastMessageId: summary.lastMessageId, loading: true, complete: false, error: null, ...patch });
       this.publish({ details });
     };
@@ -271,13 +308,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
         if (item.type === 'messages') {
           const found = item.messages.find((row) => row.clientId === clientId);
           if (found) return found;
-        } else if (!tried.has(item.key) && targetMs >= item.summary.startedAtMs && targetMs <= item.summary.endedAtMs) {
-          tried.add(item.key);
-          const summary = item.summary;
+        }
+        const summary = item.type === 'work' ? item.summary : item.deferred;
+        if (summary && !tried.has(summary.key) && targetMs >= summary.startedAtMs && targetMs <= summary.endedAtMs) {
+          tried.add(summary.key);
           const current = () => this.active && generation === this.generation
             && historyWorkSummaries(this.state.items).some((value) => value.key === summary.key && value.revision === summary.revision
               && value.firstMessageId === summary.firstMessageId && value.lastMessageId === summary.lastMessageId);
-          const cached = this.state.details.get(item.key);
+          const cached = this.state.details.get(summary.key);
           let messages = cached?.complete && cached.revision === summary.revision ? [...cached.messages] : [];
           if (!messages.length && this.networkAvailable) {
             // Search reads the bounded range without changing user expansion memory
@@ -294,7 +332,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
             }
             if (!current()) return null;
             const details = new Map(this.state.details);
-            details.set(item.key, { messages, revision: summary.revision, lastMessageId: summary.lastMessageId,
+            details.set(summary.key, { messages, revision: summary.revision, lastMessageId: summary.lastMessageId,
               loading: false, complete: true, error: null });
             this.publish({ details });
           }
@@ -317,9 +355,10 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.refreshTimer = null;
     this.active = active;
     this.generation++;
-    this.cacheGeneration++;
+    // Leaving drops a late disk read; gaining focus keeps it (pages mount hidden, then focus).
+    if (!active) this.cacheGeneration++;
     this.detailRuns.clear();
-    this.publish({ loading: false });
+    this.publish({ loading: false, ...(active ? {} : { stale: this.state.ready }) });
     this.sendIntent();
     if (active) void this.refresh();
   }
@@ -328,7 +367,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.cacheGeneration++;
     this.detailRuns.clear();
     this.publish({ items: [], details: new Map(), expanded: new Set(), ready: false,
-      nextCursor: null, hasMore: false, loading: false, error: null });
+      nextCursor: null, hasMore: false, loading: false, error: null, stale: false });
     this.sendIntent();
     if (this.active) void this.refresh();
   }

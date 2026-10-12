@@ -2,7 +2,7 @@
 
 Cindy Headless is Cindy's container-friendly runtime. It reuses Cindy's `maker-core` and MCP contracts, then exposes the Claude Code, Codex, and Pi harnesses through a CLI and a Harbor `BaseAgent` adapter. It does not recreate Cindy Desktop, Electron UI, or the Agent binaries.
 
-Version `0.4.2` is based on Cindy upstream commit `e2089e1e0d9f6f5aceed73b1d3550656d5f72359`. The CLI compatibility report and bundle manifest expose this revision so source, prompt, and benchmark evidence can be frozen together.
+Version `0.4.3` is based on Cindy upstream commit `fa3fc88d37d205ea993a67d85612fa9a5436fae5`. The CLI compatibility report and bundle manifest expose this revision so source, prompt, and benchmark evidence can be frozen together.
 
 The current feature-by-feature parity inventory is maintained in
 [`CINDY_FEATURE_PARITY.md`](CINDY_FEATURE_PARITY.md).

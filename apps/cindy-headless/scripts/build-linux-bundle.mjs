@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
+import { headlessBuildOptions } from './build-options.mjs';
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(appDir, '..', '..');
@@ -73,7 +74,7 @@ if (!observedPiVersion.includes(piLatest.version)) throw new Error(`Pi binary ve
 await rm(outputDir, { recursive: true, force: true });
 await mkdir(path.join(outputDir, 'dist'), { recursive: true });
 await mkdir(path.join(outputDir, 'bin'), { recursive: true });
-await build({ entryPoints: { cli: path.join(appDir, 'src', 'cli.ts'), 'eval-cli': path.join(appDir, 'src', 'eval-cli.ts') }, outdir: path.join(outputDir, 'dist'), outExtension: { '.js': '.cjs' }, bundle: true, platform: 'node', format: 'cjs', target: 'node22', sourcemap: true, loader: { '.md': 'text' } });
+await build({ ...headlessBuildOptions, entryPoints: { cli: path.join(appDir, 'src', 'cli.ts'), 'eval-cli': path.join(appDir, 'src', 'eval-cli.ts') }, outdir: path.join(outputDir, 'dist') });
 await copyFile(binary, path.join(outputDir, 'bin', 'claude'));
 await copyFile(codexBinary, path.join(outputDir, 'bin', 'codex'));
 await cp(piRuntimeDir, path.join(outputDir, 'bin', 'pi'), { recursive: true });

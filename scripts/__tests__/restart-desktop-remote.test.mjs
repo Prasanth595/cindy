@@ -15,6 +15,7 @@ import {
 	defaultIsolatedUserDataDir,
 	desktopDevCacheDirs,
 	devEnvPrefix,
+	darwinStaleDevEnvUnset,
 	hasIsolationIntent,
 	isTrustedIsolatedAuthUserDataDir,
 	ISOLATED_AUTH_LAUNCH_PROOF_FILE,
@@ -27,10 +28,17 @@ import {
 	formatDesktopStartupFailure,
 	inspectSharedUserDataRegion,
 	partitionDesktopDevProcesses,
+	commandBelongsToCheckout,
+	darwinTerminalLoggedCommand,
+	desktopDevTerminalLogPath,
+	readDesktopDevLogTail,
 	productionUserDataDir,
 	readDesktopStartupStatus,
 	parseWorktreePaths,
 	osascriptLaunchDarwinTerminalArgs,
+	writeDarwinTerminalLaunchScript,
+	darwinTerminalSourceCommand,
+	prepareDarwinTerminalLaunch,
 	waitForDesktopStartup,
 	shouldRefuseHostedRestart,
 	commandContainsPath,
@@ -92,6 +100,42 @@ test("macOS Terminal launch runs command before activating Terminal", () => {
 		doScriptIndex < activateIndex,
 		"do script must run before activate to avoid Terminal creating an empty default window",
 	);
+});
+
+test("macOS Terminal launch sends a short source command for long dev commands", {
+	skip: process.platform === "win32",
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-terminal-launch-"));
+	const marker = path.join(dir, "ran.txt");
+	// 超过 tty canonical 行上限 1024 字节,模拟长 worktree 路径 + 大量 unset 的真实命令。
+	const command = `PADDING='${"x".repeat(1600)}'; echo "ok $PADDING" > '${marker}'`;
+	const scriptPath = writeDarwinTerminalLaunchScript(command, dir);
+	const sourceCommand = darwinTerminalSourceCommand(scriptPath);
+
+	assert.ok(sourceCommand.length < 1024, "Terminal input must stay under MAX_CANON");
+	assert.equal(fs.statSync(scriptPath).mode & 0o777, 0o600);
+
+	const result = spawnSync("/bin/sh", ["-c", sourceCommand], { encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(fs.readFileSync(marker, "utf8").trim(), `ok ${"x".repeat(1600)}`);
+	assert.equal(fs.existsSync(scriptPath), false, "launch script removes itself once sourced");
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("macOS Terminal launch passes only the short source command to do script", {
+	skip: process.platform === "win32",
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-terminal-args-"));
+	const command = `echo '${"y".repeat(1600)}'`;
+	const { scriptPath, args } = prepareDarwinTerminalLaunch(command, dir);
+	const devCommand = args.at(-1);
+
+	assert.ok(appleScriptLines(args).includes("set targetTab to do script devCommand"));
+	assert.equal(devCommand, darwinTerminalSourceCommand(scriptPath));
+	assert.ok(devCommand.length < 1024, "Terminal input must stay under MAX_CANON");
+	assert.ok(!args.some((arg) => arg.includes("y".repeat(1600))), "long command must not reach do script");
+	assert.ok(fs.readFileSync(scriptPath, "utf8").includes(command));
+	fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("desktop restart no longer depends on the retired Feishu build app id", () => {
@@ -192,6 +236,31 @@ test("restart kill scope only targets the checkout that runs the script", () => 
 	const { targets, preserved } = partitionDesktopDevProcesses(processes, ownRoot);
 	assert.deepEqual(targets.map((proc) => proc.pid), [1, 3]);
 	assert.deepEqual(preserved.map((proc) => proc.pid), [2]);
+});
+
+test("restart from the main checkout keeps dev instances of nested managed worktrees", () => {
+	const mainRoot = path.resolve("/repo/cindy-src");
+	const nestedRoot = path.join(mainRoot, ".cindy-worktrees", "fierce-newton");
+	const checkoutPaths = [mainRoot, nestedRoot];
+	const processes = [
+		{ pid: 1, command: `${path.join(mainRoot, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")} .` },
+		{ pid: 2, command: `${path.join(nestedRoot, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")} .` },
+	];
+
+	const fromMain = partitionDesktopDevProcesses(processes, mainRoot, checkoutPaths);
+	assert.deepEqual(fromMain.targets.map((proc) => proc.pid), [1]);
+	assert.deepEqual(fromMain.preserved.map((proc) => proc.pid), [2]);
+	const fromNested = partitionDesktopDevProcesses(processes, nestedRoot, checkoutPaths);
+	assert.deepEqual(fromNested.targets.map((proc) => proc.pid), [2]);
+	assert.equal(commandBelongsToCheckout(processes[1].command, mainRoot, checkoutPaths), false);
+	assert.equal(
+		shouldRefuseHostedRestart(processes[1], { ownRootDir: mainRoot, isolated: true, checkoutPaths }),
+		false,
+	);
+	assert.equal(
+		shouldRefuseHostedRestart(processes[0], { ownRootDir: mainRoot, isolated: true, checkoutPaths }),
+		true,
+	);
 });
 
 test("userData conflict detection matches exact sandbox dirs only", () => {
@@ -952,6 +1021,17 @@ test("devEnvPrefix passes harness envs through on Windows cmd with quote strippi
 	);
 });
 
+test("devEnvPrefix carries the Cindy Make test-window marker through restart", () => {
+	assert.equal(
+		devEnvPrefix({ XDT_CINDY_MAKE_TEST: "1" }, "darwin"),
+		"XDT_CINDY_MAKE_TEST='1' CINDY_CUA_SMOKE='0' ",
+	);
+	assert.equal(
+		devEnvPrefix({ XDT_CINDY_MAKE_TEST: "1" }, "win32"),
+		'set "XDT_CINDY_MAKE_TEST=1" && set "CINDY_CUA_SMOKE=0" && ',
+	);
+});
+
 test("devEnvPrefix overrides a stale Computer Use smoke flag in the target shell", () => {
 	for (const value of [undefined, "", "0", "1", "cursor-goal", "invalid"]) {
 		const env = value === undefined ? {} : { CINDY_CUA_SMOKE: value };
@@ -1002,19 +1082,6 @@ test("devEnvPrefix passes explicit model catalog test controls to Desktop", () =
 		prefix,
 		"CINDY_CUA_SMOKE='0' XDT_MODELS_URL='http://127.0.0.1:43181/api/model-catalog/catalog' " +
 			"XDT_MODELS_PATH='/tmp/model catalog.json' XDT_DISABLE_MODELS_FETCH='1' ",
-	);
-});
-
-test("devEnvPrefix passes native iOS dev switches to Electron", () => {
-	assert.equal(
-		devEnvPrefix(
-			{
-				CINDY_IOS_SIMULATOR_NATIVE_H264: "1",
-				CINDY_IOS_SIMULATOR_NATIVE_HID: "1",
-			},
-			"darwin",
-		),
-		"CINDY_CUA_SMOKE='0' CINDY_IOS_SIMULATOR_NATIVE_H264='1' CINDY_IOS_SIMULATOR_NATIVE_HID='1' ",
 	);
 });
 
@@ -1177,6 +1244,26 @@ test("isolated failures do not suggest another isolated start", () => {
 	assert.equal(verdict.code, "MIGRATE_FAILED");
 	assert.equal(verdict.next, undefined);
 	assert.equal(verdict.mode, "isolated");
+});
+
+test("userData conflicts in the shared dev sandbox suggest a per-worktree sandbox", () => {
+	const verdict = buildDesktopDevVerdictFromFailure(
+		new Error("Target userData is already in use by another checkout's dev instance: /x"),
+		{ isolated: true, sandbox: "dev", code: "USERDATA_IN_USE" },
+	);
+	assert.equal(verdict.code, "USERDATA_IN_USE");
+	assert.equal(verdict.next, ISOLATED_RESTART_NEXT);
+});
+
+test("failure verdict carries the dev terminal log path", () => {
+	const verdict = buildDesktopDevVerdictFromFailure(new Error("boom"), {
+		isolated: true,
+		log: "/repo/cindy-feature/apps/desktop/logs/dev-terminal.log",
+	});
+	assert.match(
+		formatDesktopDevVerdict(verdict),
+		/^log=\/repo\/cindy-feature\/apps\/desktop\/logs\/dev-terminal\.log$/m,
+	);
 });
 
 test("inferDesktopDevFailureCode reads tagged startup failures", () => {
@@ -1372,4 +1459,95 @@ test('Linux readiness binds the reported renderer to a live descendant in the sa
   }
   assert.equal(applyLinuxRendererEvidence(scanned, records, processes, 'darwin')[0].ready, false);
   assert.equal(applyLinuxRendererEvidence(scanned, records, processes, 'win32')[0].ready, false);
+});
+
+function unsetKeys(prefix) {
+	const match = /^unset ([^;]+); $/.exec(prefix);
+	return match ? match[1].split(" ") : [];
+}
+
+test("darwinStaleDevEnvUnset clears every forwarded variable this launch did not set", () => {
+	const keys = unsetKeys(darwinStaleDevEnvUnset({}));
+	// 身份与数据目录类:Terminal 残留会让预览落进别的沙箱或认领错误钥匙串身份。
+	for (const key of [
+		"XDT_ISOLATED",
+		"XDT_ISOLATED_NAME",
+		"XDT_USER_DATA_DIR",
+		"XDT_USER_DATA_DIR_EPOCH",
+		"XDT_DEVICE_ID_OVERRIDE",
+		"XDT_SCHEDULER_PASSIVE",
+		"XDT_ISOLATED_AUTH",
+		"XDT_ISOLATED_AUTH_PROOF",
+	]) {
+		assert.ok(keys.includes(key), `${key} should be unset`);
+	}
+	// CINDY_CUA_SMOKE 总由 devEnvPrefix 显式赋值,不需要也不应被清。
+	assert.ok(!keys.includes("CINDY_CUA_SMOKE"));
+});
+
+test("darwinStaleDevEnvUnset keeps variables this launch forwards (isolated without isolated-auth)", () => {
+	const env = {
+		XDT_ISOLATED: "1",
+		XDT_ISOLATED_NAME: "src-feature-1a2b3c",
+		XDT_USER_DATA_DIR: "/tmp/CindyGlobal-dev2-src-feature-1a2b3c",
+	};
+	const keys = unsetKeys(darwinStaleDevEnvUnset(env));
+	for (const key of Object.keys(env)) assert.ok(!keys.includes(key), `${key} must not be unset`);
+	for (const key of ["XDT_USER_DATA_DIR_EPOCH", "XDT_ISOLATED_AUTH", "XDT_ISOLATED_AUTH_PROOF"]) {
+		assert.ok(keys.includes(key), `${key} should be unset`);
+	}
+	// 被转发的值与被清除的键互不重叠:同一次命令里不会先赋值再 unset。
+	const forwarded = devEnvPrefix(env, "darwin");
+	for (const key of keys) assert.ok(!forwarded.includes(`${key}=`), `${key} both forwarded and unset`);
+});
+
+test("darwin dev terminal output is recorded through script(1) under the checkout logs", () => {
+	const logPath = desktopDevTerminalLogPath("/repo/cindy feature");
+	assert.equal(logPath, path.join("/repo/cindy feature", "apps", "desktop", "logs", "dev-terminal.log"));
+	const command = darwinTerminalLoggedCommand("'node' 'runner.mjs' 'remote'", logPath, {
+		envPrefix: "XDT_ISOLATED='1' ",
+		maxBytes: 1024,
+	});
+	assert.match(command, /^\{ /);
+	assert.ok(command.includes(`head -c 1024 > '${logPath}'`), command);
+	// 环境变量前缀必须紧贴 script，才能传给 dev 进程。
+	assert.match(command, /; XDT_ISOLATED='1' \/usr\/bin\/script -q -F '[^']+dev-terminal\.log\.fifo' 'node' 'runner\.mjs' 'remote'; /);
+	assert.match(command, /\(exit \$cindyDevExit\); \}$/);
+});
+
+test("logged terminal command keeps the child exit code and caps the log size", {
+	skip: process.platform !== "darwin" ? "script(1) flags differ outside macOS" : false,
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-dev-term-"));
+	try {
+		const logPath = path.join(dir, "dev-terminal.log");
+		const child = "sh -c 'i=0; while [ $i -lt 2000 ]; do echo line-$i-$CINDY_PROBE; i=$((i+1)); done; exit 4'";
+		const logged = darwinTerminalLoggedCommand(child, logPath, { envPrefix: "CINDY_PROBE='ok' ", maxBytes: 64 });
+		const result = spawnSync("/bin/sh", ["-c", `cd / && ${logged}; echo exit=$?`], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		assert.match(result.stdout, /exit=4\s*$/);
+		assert.equal(fs.statSync(logPath).size, 64);
+		assert.match(fs.readFileSync(logPath, "utf8"), /line-0-ok/);
+		assert.equal(fs.existsSync(`${logPath}.fifo`), false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("readDesktopDevLogTail strips terminal control sequences and keeps the last lines", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-dev-log-"));
+	try {
+		const logPath = path.join(dir, "dev-terminal.log");
+		fs.writeFileSync(
+			logPath,
+			"\x04\b\bstart\r\n\x1b[32mvite ready\x1b[0m\r\nprogress 1\rprogress 2\r\n\r\nError: boom\r\n",
+		);
+		assert.deepEqual(readDesktopDevLogTail(logPath), ["start", "vite ready", "progress 2", "Error: boom"]);
+		assert.deepEqual(readDesktopDevLogTail(logPath, 2), ["progress 2", "Error: boom"]);
+		assert.deepEqual(readDesktopDevLogTail(path.join(dir, "missing.log")), []);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

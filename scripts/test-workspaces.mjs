@@ -4,6 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	electronBinaryCheckSkipReason,
+	findElectronBinaryIssue,
+} from "./ensure-deps.mjs";
 import { resolvePnpmInvocation } from "./shared/pnpm-invocation.mjs";
 import {
 	acquireTestGateLock,
@@ -55,6 +59,7 @@ export function parseCliOptions(args) {
 		workspaces: [],
 		excludeWorkspaces: [],
 		workspaceConcurrency: undefined,
+		lock: false,
 		noLock: false,
 		related: false,
 	};
@@ -63,6 +68,10 @@ export function parseCliOptions(args) {
 		if (arg === "--") continue;
 		if (arg === "--all") {
 			options.all = true;
+			continue;
+		}
+		if (arg === "--lock") {
+			options.lock = true;
 			continue;
 		}
 		if (arg === "--no-lock") {
@@ -107,6 +116,9 @@ export function parseCliOptions(args) {
 			continue;
 		}
 		throw new Error(`Unknown option: ${arg}`);
+	}
+	if (options.lock && options.noLock) {
+		throw new Error("--lock cannot be combined with --no-lock");
 	}
 	if (options.related && options.all) {
 		throw new Error("--related cannot be combined with --all");
@@ -1018,6 +1030,44 @@ function intersectRelatedRuns(runs, requested, manifestWorkspaces) {
 	});
 }
 
+// 只有选中 Desktop 时才需要 Electron；只跑其他 workspace 不应被桌面依赖拦住。
+export function selectionNeedsElectron(
+	manifestWorkspaces,
+	{ workspaces = [], excludeWorkspaces = [] } = {},
+) {
+	const desktop = manifestWorkspaces.filter(
+		(workspace) => normalizeRelPath(workspace.cwd) === "apps/desktop",
+	);
+	return (
+		filterRunsByWorkspace(
+			desktop.map((workspace) => ({ workspace })),
+			{ workspaces, excludeWorkspaces },
+		).length > 0
+	);
+}
+
+// 新 worktree 没装依赖、或 Electron 没解出 dist 时，vitest 会让几十个文件各自报错，
+// 极易被当成被测代码或「环境问题」放过。开跑前只读检查一次，直接给出处置命令。
+export function findDependencyInstallIssues(
+	root = ROOT,
+	env = process.env,
+	{ needsElectron = true } = {},
+) {
+	if (!fs.existsSync(path.join(root, "node_modules", ".modules.yaml"))) {
+		return ["依赖尚未安装：请先在当前 checkout 运行 pnpm install"];
+	}
+	if (!needsElectron || electronBinaryCheckSkipReason(env)) return [];
+	if (!fs.existsSync(path.join(root, "node_modules", "electron", "package.json"))) {
+		return ["依赖安装不完整（缺少 node_modules/electron）：请在当前 checkout 运行 pnpm install"];
+	}
+	const electronIssue = findElectronBinaryIssue(root);
+	if (!electronIssue) return [];
+	return [
+		`Electron 安装不完整（${electronIssue.reason}: ${path.relative(root, electronIssue.missingPath)}）：` +
+			"请运行 pnpm install，或 node scripts/ensure-deps.mjs --electron-binary 单独补装",
+	];
+}
+
 async function main() {
 	const options = parseCliOptions(process.argv.slice(2));
 	const {
@@ -1025,6 +1075,7 @@ async function main() {
 		tier,
 		excludeWorkspaces,
 		workspaceConcurrency,
+		lock: useLock,
 		noLock,
 		related,
 	} = options;
@@ -1062,8 +1113,22 @@ async function main() {
 		related &&
 		(relatedPlan?.mode === "full" || relatedPlan?.runTestRunner);
 	if (related && !willRunWorkspaces && !willRunTestRunner) return;
+	if (willRunWorkspaces) {
+		const manifest = (await import("./test-workspaces.config.mjs")).default;
+		const installIssues = findDependencyInstallIssues(ROOT, process.env, {
+			needsElectron: selectionNeedsElectron(manifest.workspaces, {
+				workspaces,
+				excludeWorkspaces,
+			}),
+		});
+		if (installIssues.length > 0) {
+			for (const issue of installIssues) console.error(`DEPENDENCY_SETUP_INCOMPLETE ${issue}`);
+			process.exitCode = 1;
+			return;
+		}
+	}
 
-	const lock = shouldUseTestGateLock({ all, tier, noLock })
+	const lock = shouldUseTestGateLock({ all, tier, lock: useLock, noLock })
 		? await acquireTestGateLock({
 				repoRoot: ROOT,
 				owner: {

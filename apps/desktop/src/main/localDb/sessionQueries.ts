@@ -1,5 +1,6 @@
+import { normalizeTaskTags } from '@cindy/maker-shared';
 /** Shared database reads for local IPC, remote IPC and internal callers. */
-import { desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { DbClient } from './client/DbClient';
 import { sessions } from './schema';
 import { LIST_PREVIEW_EXTRACT_SQL, LATEST_VISIBLE_PREVIEW_FILTER_SQL } from './sessionListProjection';
@@ -77,11 +78,16 @@ export interface SessionListRow {
   messageCount: number;
   latestMessageExtract: string | null;
   latestMessageRole: string | null;
+  tagsJson?: string;
 }
 
 function sessionReadSelection() {
   return {
     session: sessions,
+    tagsJson:
+      sql<string>`(SELECT coalesce(json_group_array(json_object('id',t.id,'name',t.name,'nameCustomized',json(CASE WHEN t.name_customized THEN 'true' ELSE 'false' END),'color',t.color,'favoriteOrder',t.favorite_order,'sortOrder',t.sort_order,'revision',t.revision)), '[]') FROM task_tags t JOIN session_task_tags st ON st.tag_id=t.id WHERE st.session_id=${OUTER_SESSION_ID_SQL})`.as(
+        'tags_json',
+      ),
     messageCount: SESSION_MESSAGE_COUNT_SQL,
     latestMessageExtract: LATEST_MSG_EXTRACT_SQL,
     latestMessageRole: LATEST_MSG_ROLE_SQL,
@@ -89,7 +95,8 @@ function sessionReadSelection() {
 }
 
 export function flattenSessionReadRow(row: SessionListRow): SessionRowWithCount {
-  return { ...row.session, messageCount: row.messageCount,
+  return { ...row.session,
+    tags: normalizeTaskTags(JSON.parse(row.tagsJson ?? '[]')), messageCount: row.messageCount,
     latestMessageExtract: row.latestMessageExtract, latestMessageRole: row.latestMessageRole };
 }
 
@@ -140,14 +147,17 @@ export function selectSessionListRows(
   db: DbClient['drizzle'],
   where: SQL | undefined,
   cap: number | null,
+  before?: { updatedAt: number; id: string },
 ): Promise<SessionListRow[]> {
+  if (before) where = and(where, sql`(${sessions.updatedAt} < ${before.updatedAt}
+    OR (${sessions.updatedAt} = ${before.updatedAt} AND ${sessions.id} < ${before.id}))`);
   const pickedBase = db.select({ id: sessions.id }).from(sessions).where(where);
   const picked = db
     .$with('picked')
     .as(
       cap === null
-        ? pickedBase.orderBy(desc(sessions.updatedAt))
-        : pickedBase.orderBy(desc(sessions.updatedAt)).limit(cap),
+        ? pickedBase.orderBy(desc(sessions.updatedAt), desc(sessions.id))
+        : pickedBase.orderBy(desc(sessions.updatedAt), desc(sessions.id)).limit(cap),
     );
   return db
     .with(picked)
@@ -155,5 +165,5 @@ export function selectSessionListRows(
     .from(sessions)
     .innerJoin(picked, eq(picked.id, sessions.id))
     .where(where)
-    .orderBy(desc(sessions.updatedAt));
+    .orderBy(desc(sessions.updatedAt), desc(sessions.id));
 }

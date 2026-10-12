@@ -60,17 +60,61 @@ async function readSelection() {
   const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
   assertOwner();
   const current = getSelectedNewMakerRoute(owner) ?? null;
-  const available = availableAppDefaultModels({ providers, currentRoute: current,
+  const inputs = { providers, currentRoute: current,
     tuning: (agent, providerId, model) => getNewMakerModelTuning(owner, agent, providerId, model),
     availableAgents: new Set((getMakerIfReady()?.listAvailableAgents() ?? []).map(agent => agent === 'claude-code' ? 'cc' : agent)),
     enabled: (agent, providerId, model) => isModelVisible(getModelVisibilityOverride(agent, providerId, model.id), model.defaultEnabled),
-  });
-  return { owner, assertOwner, current, available };
+  } satisfies Parameters<typeof availableAppDefaultModels>[0];
+  const available = availableAppDefaultModels(inputs);
+  return { owner, assertOwner, current, available, inputs };
 }
 
 export async function inspectAppDefaultModel() {
   const { current, available } = await readSelection();
   return { current, available };
+}
+
+export interface TaskModelSelection {
+  id: string;
+  effort?: string;
+  fastMode?: boolean;
+}
+
+/** Resolve one per-task selection from the live catalog; never mutate picker/default preferences. */
+export async function resolveTaskModelSelection(selection: TaskModelSelection): Promise<BotModelRoute> {
+  const { available } = await inspectAppDefaultModel();
+  const option = available.find(entry => entry.id === selection.id);
+  if (!option) throw new Error('任务模型已不可用，请重新查询可用模型');
+  if (selection.effort !== undefined && !option.efforts.some(effort => effort === selection.effort)) {
+    throw new Error('任务模型不支持所选思考深度，请重新选择');
+  }
+  if (selection.fastMode === true && !option.supportsFastMode) {
+    throw new Error('任务模型不支持 Fast，请重新选择');
+  }
+  return { ...option.route,
+    ...(selection.effort !== undefined ? { effort: selection.effort } : {}),
+    ...(selection.fastMode !== undefined ? { fastMode: selection.fastMode } : {}),
+  };
+}
+
+/** Resolve legacy implicit sources using the ordinary default policy, without persisting changes. */
+export async function resolveAvailableTaskModels(routes: readonly BotModelRoute[]): Promise<Array<BotModelRoute | null>> {
+  const { available, inputs } = await readSelection();
+  return routes.map(route => {
+    const resolved = defaultBotModelChain({ providers: inputs.providers, providersLoading: false,
+      availableAgents: inputs.availableAgents, availableAgentsLoaded: true,
+      preferredRoute: route, isModelEnabled: inputs.enabled })[0];
+    if (!resolved) return null;
+    const entry = available.find(item => item.route.harness === resolved.harness
+      && item.route.model === resolved.model && item.route.providerId === resolved.providerId);
+    return entry && (!resolved.effort || entry.efforts.some(effort => effort === resolved.effort))
+      && (!resolved.fastMode || entry.supportsFastMode) ? resolved : null;
+  });
+}
+
+/** Check a saved full route without changing the application or teammate's primary model. */
+export async function validateTaskModel(route: BotModelRoute): Promise<boolean> {
+  return !!(await resolveAvailableTaskModels([route]))[0];
 }
 
 /** Wait for a fresh owner-fenced mirror after the real setter persisted the selected route. */

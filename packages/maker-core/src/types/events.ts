@@ -10,6 +10,7 @@
  */
 
 import type { WorkflowProgressEntry } from '@cindy/maker-shared/agent-task';
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import type { SubagentObservation } from '@cindy/maker-shared/subagent-observation';
 import {
   parseToolLoopErrorDetails,
@@ -69,6 +70,8 @@ export interface AgentErrorEventData {
   willRetry?: boolean;
   sdkError?: string;
   reason?: string;
+  /** 账号用量受限时上游给出的重置时刻(unix ms)；未知时省略。 */
+  usageResetAt?: number;
   /** Structured details for reason='tool_use_loop_detected'. */
   toolLoop?: ToolLoopErrorDetails;
   [key: string]: unknown;
@@ -138,6 +141,8 @@ export interface AgentTaskUpdateEventData {
  */
 export interface SendOrigin {
   kind: 'user' | 'scheduler' | 'goal';
+  /** IM user turns deliver their successful replies on that surface, without App completion alerts. */
+  surface?: 'im';
   /** scheduler 来源时的任务标识(供 IM 转播时显示"哪个自动任务")。 */
   scheduleId?: string;
   scheduleName?: string;
@@ -192,6 +197,12 @@ export interface AgentEvent {
    * Session delivers it on `onRuntimeRecovery`, never on product `onEvent`.
    */
   runtimeRecovery?: true;
+  /**
+   * A complete extension notice, independent of model text assembly and turn
+   * settlement. Hosts deliver it as its own durable message, never as a delta
+   * or a full-text replacement for the currently streaming assistant reply.
+   */
+  standaloneText?: true;
   /**
    * Provider-owned claim attached synchronously to a `done` boundary when that
    * boundary has an automatic continuation. Consumers pass it back to the
@@ -307,6 +318,8 @@ export type InteractionRequest =
   | (InteractionRequestBase & {
       kind: 'ask_user_question';
       questions: AskUserQuestionItem[];
+      /** Optional question: the provider keeps running; absence means a blocking question. */
+      delivery?: 'async';
     })
   | (InteractionRequestBase & {
       kind: 'plan_review';
@@ -406,6 +419,8 @@ export interface UsageSnapshot {
   generationActive?: boolean;
   /** False when live TPS must be hidden. Omitted on placeholder status frames. */
   generationReliable?: boolean;
+  /** Host-measured live tok/s (Pi extension algorithm). Display only. */
+  tokenSpeed?: TokenSpeedSnapshot;
   /**
    * Host/bridge 自动 compact 已确定性失败，下次 send 应换干净原生窗口。
    * 只由 Claude Code / Pi 的 AutoCompactController 锁存。
@@ -445,6 +460,10 @@ export interface ImageEventData {
 
 export interface RewindFilesResult {
   canRewind: boolean;
+  /** True when conversation rewind can proceed but no file restore plan exists. */
+  conversationOnly?: boolean;
+  /** Git savepoints are disabled, so file restoration was not available. */
+  gitSafetyDisabled?: boolean;
   error?: string;
   filesChanged?: string[];
   insertions?: number;
@@ -458,9 +477,9 @@ export interface RewindCommitOptions {
    */
   tailTurnsToDrop?: number;
   /**
-   * Codex 分页线程拒绝 thread/rollback(-32600 "paginated threads do not support
-   * thread/rollback")时的原生边界:回退目标之前最后一个已完成 turn 的原生
-   * turn id(持久化的 nativeForkAnchor)。有它就直接 thread/fork(lastTurnId)。
+   * Codex thread/rollback 不可用(分页线程拒绝,或 0.156.0 起运行时已移除该方法)
+   * 时的原生边界:回退目标之前最后一个已完成 turn 的原生 turn id(持久化的
+   * nativeForkAnchor)。有它就直接 thread/fork(lastTurnId)。
    */
   lastTurnId?: string;
   /**
@@ -469,6 +488,13 @@ export interface RewindCommitOptions {
    * 的 forkAtTimestampMs 语义一致。
    */
   forkAtTimestampMs?: number;
+  /**
+   * 宿主确认回退目标是当前原生线程的第一轮:目标之前没有属于该线程的 user 行
+   * (首条消息,或 /clear、上下文重建、切换引擎新开线程后的第一轮)。此时没有可作
+   * fork 边界的 turn,rollback 不可用时 Codex 改为按当前配置新开一条空线程替换。
+   * 只在没有 lastTurnId / forkAtTimestampMs 时生效。
+   */
+  rewindsToNativeThreadStart?: boolean;
 }
 
 export interface RewindCommitResult {

@@ -23,6 +23,7 @@ import { machineIdSync } from 'node-machine-id';
 import {
   AuthApiError,
   CindyAuthClient,
+  retryAfterDeadline,
   discoverEmailLogin,
   discoverPersonalLoginOrganization,
   discoverSsoOrgRealm,
@@ -50,6 +51,7 @@ import { isEnableBetaUserCustomized, readUpdateChannelSettings } from './updateC
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
 import * as canaryFlagStore from './canaryFlagStore';
 import { decodeAccessTokenOrgSlug } from './authTokenClaims';
+import { AuthRefreshBackoff } from './authRefreshBackoff';
 import { getProviderSecretStore } from './secrets/providerSecretStore.js';
 import {
   runRefreshWithReplacementRetry,
@@ -115,12 +117,14 @@ import {
 } from './clientEndpointsService.js';
 import {
   parseDesktopLoginAction,
+  loginPreparingErrorState,
   parseDesktopAccountKey,
   type DesktopAccountDeletionChallenge,
   type DesktopAccountSwitcherSnapshot,
   type DesktopSavedAccount,
   type DesktopLoginAction,
   type DesktopLoginActionResult,
+  type DesktopLoginState,
 } from '../shared/authIpc';
 import { LOGIN_CAPTCHA_PAGE_PATH } from '../shared/webviewPartition';
 import {
@@ -288,6 +292,8 @@ export interface AuthState {
   dataOwnerId: string | null;
   /** Main-owned owner boundary generation used to fence late renderer pushes. */
   ownerGeneration: number;
+  /** True only for the transient signed-out projection published before an owner boundary commits. */
+  ownerBoundaryPending?: boolean;
   /** Local and cloud sessions may enter the main application. */
   canEnterApp: boolean;
   isAuthenticated: boolean;
@@ -375,6 +381,7 @@ let activeAuthRealm: AuthRegion = AUTH_REGION;
 let pendingAuthRealm: AuthRegion | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
+const refreshBackoff = new AuthRefreshBackoff();
 let sessionInvalidationPromise: Promise<void> | null = null;
 // Real owner change / logout: keep the renderer fail-closed even if a late
 // notifyRenderer() races the teardown. Same-owner Ghost repair must not set
@@ -401,7 +408,7 @@ function isOwnerChangeShellPending(): boolean {
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
-let loginFlowState: AuthFlowState | null = null;
+let loginFlowState: DesktopLoginState | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
 // These live only within the current fresh-login flow; no credentials reach Renderer.
@@ -550,7 +557,6 @@ function isCredentialEncryptionAvailable(): boolean {
 export function needsCredentialProcessRecovery(): boolean {
   return (
     credentialEncryptionUnavailable &&
-    credentialStoreHealth.unavailable &&
     accessToken === null &&
     getActiveAppSession().mode === 'signed-out' &&
     !isPassiveSharedUserDataInstance()
@@ -2268,7 +2274,7 @@ async function apiFetch<T>(
     timeoutMs?: number;
     baseUrl?: string;
   },
-): Promise<{ ok: boolean; status: number; data: T }> {
+): Promise<{ ok: boolean; status: number; data: T; retryAt?: number }> {
   const url = (options?.baseUrl ?? authServerUrl()) + apiPath;
   const method = options?.method ?? 'GET';
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -2286,14 +2292,18 @@ async function apiFetch<T>(
       body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
       signal: effectiveTimeout > 0 ? controller.signal : undefined,
     });
-    const data = (await response.json()) as T;
+    const retryAt = response.status === 429 ? retryAfterDeadline(response) : undefined;
+    let data: T;
+    try { data = (await response.json()) as T; }
+    catch { return { ok: false, status: response.status, data: null as T, retryAt }; }
     const errorCode = (data as AuthErrorResponse | null)?.error?.code;
     if (response.status === 401 && errorCode === 'ACCOUNT_UNAVAILABLE' && currentUser) {
       // Internal auth-server calls (profile/feature flags/refresh) do not pass
       // through serverApiClient, but share the same terminal auth contract.
       void invalidateSession('account-unavailable');
     }
-    return { ok: response.ok, status: response.status, data };
+    return { ok: response.ok, status: response.status, data,
+      ...(retryAt !== undefined ? { retryAt } : {}) };
   } catch {
     return { ok: false, status: 0, data: null as T };
   } finally {
@@ -3082,6 +3092,7 @@ async function openLoopbackBrowserAuthorization(
 // ── Refresh scheduling ──────────────────────────────────────────────────────
 
 function scheduleRefresh(token: string): void {
+  refreshBackoff.clear();
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -3315,12 +3326,22 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-function scheduleRefreshRetryAfterTransientFailure(): void {
+function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number): void {
+  if (epoch !== authStateEpoch) return;
+  const delay = refreshBackoff.defer(epoch, retryAt);
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
-  refreshTimer = setTimeout(() => void refresh(), RUNTIME_REFRESH_RETRY_MS);
+  // A long server deadline must not overflow Node's timer into an immediate
+  // retry; re-arm it in bounded chunks without extending the original wait.
+  const retry = () => {
+    if (authStateEpoch !== epoch) return;
+    const remaining = refreshBackoff.remaining(epoch);
+    if (remaining > 0) refreshTimer = setTimeout(retry, Math.min(remaining, 2_147_483_647));
+    else { refreshTimer = null; void refresh(); }
+  };
+  refreshTimer = setTimeout(retry, Math.min(delay, 2_147_483_647));
 }
 
 function clearReplacementIntegrationReloadTimers(): void {
@@ -3460,13 +3481,14 @@ function snapshotAuthState(): AuthState {
 }
 
 /** Logged-out projection used by stale/timeout paths that must not expose newer auth state. */
-function snapshotLoggedOutAuthState(): AuthState {
+function snapshotLoggedOutAuthState(ownerBoundaryPending = false): AuthState {
   const appSession = getActiveAppSession();
   return {
     user: null,
     mode: 'signed-out',
     dataOwnerId: null,
     ownerGeneration: appSession.generation,
+    ownerBoundaryPending,
     canEnterApp: false,
     isAuthenticated: false,
     isCanary: false,
@@ -3484,7 +3506,7 @@ function notifyRenderer(): void {
 }
 
 function notifyRendererAuthBoundaryPending(): void {
-  broadcastToRenderers('auth:state-change', snapshotLoggedOutAuthState());
+  broadcastToRenderers('auth:state-change', snapshotLoggedOutAuthState(true));
 }
 
 /**
@@ -3647,6 +3669,7 @@ function clearAuth(
 ): void {
   const notify = opts.notify ?? true;
   authStateEpoch += 1; // 迟到的冷启动流程从此作废(见 authStateEpoch 注释)
+  refreshBackoff.clear();
   loginFlowEpoch += 1;
   // Explicit logout clears health. Failed startup keeps its recovery reason
   // in the same synchronous commit, so owner cleanup cannot erase the error.
@@ -4469,6 +4492,12 @@ export async function updateServerProfile(
 }
 
 export async function initialize(options: AuthInitializeOptions = {}): Promise<AuthState> {
+  // A renderer can mount after the boundary-pending broadcast. Keep startup
+  // fail-closed until the serialized owner transition settles instead of
+  // restoring the outgoing owner's credentials and turns from disk.
+  if (isOwnerChangeShellPending()) {
+    return snapshotLoggedOutAuthState(true);
+  }
   // Local mode is a committed account-free session. It must win before any
   // persisted cloud refresh token is inspected or any auth network call runs.
   if (getActiveAppSession().mode === 'local') {
@@ -5622,12 +5651,23 @@ async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginA
       pendingSsoVerificationTicket = null;
       pendingAuthRealm = null;
     }
-    // Keep the last usable screen so validation/network failures can be retried
-    // without discarding the entered identifier or requesting another code.
-    loginFlowState = flowCannotRetry
-      ? { step: 'error', code, recoverTo: 'identifier' }
-      : (stateBeforeAction ?? { step: 'error', code, recoverTo: 'identifier' });
-    return { success: false, code, state: loginFlowState };
+    // Storage failures need recovery guidance, not another verification-code
+    // submission. Preserve private tickets and saved credentials; only change
+    // the presentation. Ordinary validation/network failures keep their form.
+    const errorState = loginPreparingErrorState(
+      code,
+      error instanceof AuthApiError ? error.retryAt : undefined,
+    );
+    loginFlowState =
+      flowCannotRetry || code === 'CREDENTIAL_STORE_UNAVAILABLE'
+        ? errorState
+        : (stateBeforeAction ?? errorState);
+    return {
+      success: false,
+      code,
+      state: loginFlowState,
+      ...(errorState.retryAt !== undefined ? { retryAt: errorState.retryAt } : {}),
+    };
   }
 }
 
@@ -5677,6 +5717,9 @@ export async function refresh(): Promise<boolean> {
     return false;
   }
   if (refreshPromise !== null) return refreshPromise;
+  // Explicit callers (including chat polling and resume) share the same wait
+  // as the retry timer; skipped calls must not move the deadline forward.
+  if (refreshBackoff.remaining(authStateEpoch) > 0) return false;
 
   refreshPromise = (async () => {
     const refreshEpoch = authStateEpoch;
@@ -5700,7 +5743,7 @@ export async function refresh(): Promise<boolean> {
         await loadClientEndpointsForRealm(persistedSession.realm);
       } catch (error) {
         log.warn('runtime auth realm manifest unavailable; retrying later', error);
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
     }
@@ -5731,7 +5774,7 @@ export async function refresh(): Promise<boolean> {
           }
           // 正常 refresh timer 已经触发过,这里不重排的话,一次密钥链/IO 抖动
           // 会让有效会话在 access token 到期前没有任何后续 refresh(半死)。
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
           return false;
         }
         const previousUserId = currentUser.id;
@@ -5772,7 +5815,7 @@ export async function refresh(): Promise<boolean> {
         // this request was in flight. Its failure cannot expire or delete the
         // newer owner, even when both accounts live in the same realm.
         log.warn('runtime auth session changed on disk; discarding stale refresh failure');
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
       if (!result.ok) {
@@ -5797,14 +5840,14 @@ export async function refresh(): Promise<boolean> {
           });
         } else if (action.kind === 'replacement-retry') {
           log.warn(
-            `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying in ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
+            `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
         } else {
           log.warn(
-            `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying in ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
+            `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
         }
         return false;
       }
@@ -5820,7 +5863,7 @@ export async function refresh(): Promise<boolean> {
         log.warn(
           `runtime refresh lost active credential ownership (${credentialCommit}); preserved only the still-saved account token and will reconcile from disk`,
         );
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
       lastAcceptedRefreshToken = data.refreshToken;
@@ -5962,7 +6005,7 @@ export async function refresh(): Promise<boolean> {
       // apiFetch 消化了网络错误(status 0 走上面 !ok 分支),这里是本地状态同步异常;
       // 与瞬时失败同等对待:记录并重排,避免刷新链就此断掉。
       log.error('runtime refresh threw — retrying later', err);
-      scheduleRefreshRetryAfterTransientFailure();
+      scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
       return false;
     }
   })();

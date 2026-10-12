@@ -136,7 +136,7 @@ export interface UseSidebarFilterReturn {
   groupBy: FilterGroupBy;
   /** 「对话归为一组」开关(D 期):true = 无项目任务收进「对话」组;默认 false 散排。 */
   groupDialogue: boolean;
-  /** 「按设备分组」开关(E 期):默认 true;仅有远程设备连接时可见/生效。 */
+  /** 「按设备分组」开关(E 期):默认 true;有可选远程设备（含断线缓存）时可见/生效。 */
   groupDevice: boolean;
   /** Sidebar 主列表任务排序。默认 'recency'。 */
   sortBy: FilterSortBy;
@@ -256,6 +256,7 @@ export function useSidebarFilter(
   );
   const pinnedWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingPinnedWritesRef = useRef(0);
+  const deferredPinnedSnapshotStampRef = useRef<DataOwnerPushStamp | null>(null);
   const legacyMigrationStartedRef = useRef(false);
   const legacyMigrationPendingRef = useRef(loadedPinned.needsLegacyMigration);
 
@@ -276,7 +277,11 @@ export function useSidebarFilter(
       } else {
         durablePinnedOrderRef.current = snapshot;
       }
-      if (pendingPinnedWritesRef.current > 0) return;
+      if (pendingPinnedWritesRef.current > 0) {
+        deferredPinnedSnapshotStampRef.current = nextOwnerStamp;
+        return;
+      }
+      deferredPinnedSnapshotStampRef.current = null;
       latestPinnedOrderRef.current = snapshot;
       setManualPinnedOrderState((prev) => (sameStringArray(prev, snapshot) ? prev : snapshot));
     },
@@ -327,10 +332,19 @@ export function useSidebarFilter(
           throw err;
         } finally {
           pendingPinnedWritesRef.current = Math.max(0, pendingPinnedWritesRef.current - 1);
+          const deferredStamp = deferredPinnedSnapshotStampRef.current;
+          if (pendingPinnedWritesRef.current === 0) {
+            deferredPinnedSnapshotStampRef.current = null;
+          }
+          // A refresh may have updated the durable baseline while the old
+          // generation's write was pending. Once the queue drains, show that
+          // baseline even if the old write failed; never overwrite newer
+          // optimistic writes or publish a snapshot from a different account.
           if (
-            succeeded &&
             pendingPinnedWritesRef.current === 0 &&
-            isExactOwnerStampCurrent(mutationOwnerStamp, ownerStamp)
+            ((succeeded && isExactOwnerStampCurrent(mutationOwnerStamp, ownerStamp)) ||
+              (deferredStamp?.dataOwnerId === ownerId &&
+                isDataOwnerPushStampCurrent(deferredStamp)))
           ) {
             const persisted = Array.from(durablePinnedOrderRef.current);
             latestPinnedOrderRef.current = persisted;

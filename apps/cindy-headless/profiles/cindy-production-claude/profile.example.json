@@ -3,7 +3,7 @@
   "version": 1,
   "agentBackend": "claude-code",
   "agentBinaryPath": "/opt/cindy-headless/bin/claude",
-  "agentBinaryVersion": "2.1.259",
+  "agentBinaryVersion": "2.1.280",
   "supportedModelIds": ["claude-sonnet-4-6"],
   "model": {
     "provider": "anthropic",
@@ -13,7 +13,7 @@
   },
   "permissionMode": "bypassPermissions",
   "systemPromptFile": "prompt.md",
-  "expectedSystemPromptDigest": "003c2a8c1ab15422c50156880ca2301ff049ebecd1f666ac19057b1d12ae0c07",
+  "expectedSystemPromptDigest": "b5a12214b75db6628f1e619f170af54fb14b0702934620b4dbfc66b12380f879",
   "makerMemory": true,
   "nativeMemory": false,
   "projectContext": true,

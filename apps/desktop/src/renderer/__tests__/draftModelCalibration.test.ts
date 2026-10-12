@@ -14,6 +14,7 @@ import {
   pickConnectedModelForAgent,
   pickFirstConnectedModelForAgent,
   resolveDraftSessionProviderId,
+  resolveNewTaskDefaultRoute,
   type DraftModelCalibrationInput,
 } from '../lib/draftModelCalibration';
 
@@ -795,5 +796,88 @@ describe('resolveDraftSessionProviderId', () => {
       providers: [other], agent: 'claude-code', model: 'same-model',
       explicitProviderId: 'account-a', effectiveProviderId,
     })).toBe('account-a');
+  });
+});
+
+describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', () => {
+  const subscription = provider(
+    'anthropic',
+    true,
+    { 'claude-code': [model('claude-opus-5-5')] },
+    'subscription',
+  );
+  const providers = [gatewayWithoutOpus, subscription];
+
+  it('用户没选过模型:与新建任务同口径,订阅优先', () => {
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'claude-code' })).toEqual({
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+    });
+  });
+
+  it('用户显式选过且仍可用的模型优先,来源跟着草稿记的来源', () => {
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers,
+        agent: 'claude-code',
+        draft: { model: 'claude-haiku-4-5', providerId: 'xd', chosenByUser: true },
+      }),
+    ).toEqual({ model: 'claude-haiku-4-5', providerId: 'xd' });
+  });
+
+  it('显式选过的模型已没有可用来源时,退回新建任务默认而不是落空', () => {
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers,
+        agent: 'claude-code',
+        draft: { model: 'claude-opus-4-8', providerId: null, chosenByUser: true },
+      }),
+    ).toEqual({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+  });
+
+  it('指定来源时只在该来源内挑', () => {
+    expect(
+      resolveNewTaskDefaultRoute({ providers, agent: 'claude-code', requiredProviderId: 'xd' }),
+    ).toEqual({ model: 'claude-sonnet-5', providerId: 'xd' });
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers,
+        agent: 'claude-code',
+        requiredProviderId: 'not-connected',
+      }),
+    ).toBeNull();
+  });
+
+  it('草稿记的来源挑不出模型时换别的来源', () => {
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers: [gatewayWithoutOpus, connectedButEmpty],
+        agent: 'claude-code',
+        draft: { model: '', providerId: 'anthropic', chosenByUser: false },
+      }),
+    ).toEqual({ model: 'claude-sonnet-5', providerId: 'xd' });
+  });
+
+  it('清单发现失败的来源:没有偏好时跳过,草稿记着该来源时保留', () => {
+    const failing = {
+      ...provider('anthropic', true, { 'claude-code': [model('claude-opus-5-5')] }, 'subscription'),
+      modelDiscoveryFailure: { kind: 'unauthorized' },
+    } as unknown as ProviderView;
+    expect(
+      resolveNewTaskDefaultRoute({ providers: [gatewayWithoutOpus, failing], agent: 'claude-code' }),
+    ).toEqual({ model: 'claude-sonnet-5', providerId: 'xd' });
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers: [gatewayWithoutOpus, failing],
+        agent: 'claude-code',
+        draft: { providerId: 'anthropic', chosenByUser: false },
+      }),
+    ).toEqual({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+  });
+
+  it('一个可用来源都没有 → null,不编造型号', () => {
+    expect(
+      resolveNewTaskDefaultRoute({ providers: [disconnectedAnthropic], agent: 'claude-code' }),
+    ).toBeNull();
   });
 });

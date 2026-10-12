@@ -13,6 +13,7 @@ import {
   createEmptyAgentIslandPillSnapshot,
   type AgentIslandDisplayState,
 } from '../../../shared/agentIsland.js';
+import { CLAUDE_CODE_MARK_PATH, CODEX_FLOWER_OUTLINE, CODEX_PROMPT_GLYPHS } from '../../../shared/brandMarkPaths.js';
 import type { AgentIslandNativeFrame } from '../MacAgentIslandNativeHost.js';
 
 const h = vi.hoisted(() => ({
@@ -126,9 +127,13 @@ describe('MacAgentIslandNativeHost', () => {
       new URL('../../../renderer/components/icons/CodexMark.tsx', import.meta.url),
       'utf8',
     );
-    const claudePath = claudeSource.match(/<path[\s\S]*?\bd="([^"]+)"/)?.[1];
-    const codexOutline = codexSource.match(/const FLOWER_OUTLINE =\s*'([^']+)'/)?.[1];
-    const codexPrompt = codexSource.match(/const PROMPT_GLYPHS =\s*'([^']+)'/)?.[1];
+    // The renderer icons draw these shared paths; the native helper must carry the same ones.
+    expect(claudeSource).toContain('d={CLAUDE_CODE_MARK_PATH}');
+    expect(codexSource).toContain('d={`${CODEX_FLOWER_OUTLINE}z`}');
+    expect(codexSource).toContain('d={CODEX_PROMPT_GLYPHS}');
+    const claudePath = CLAUDE_CODE_MARK_PATH;
+    const codexOutline = CODEX_FLOWER_OUTLINE;
+    const codexPrompt = CODEX_PROMPT_GLYPHS;
     const codexSmallStrokeWidth = codexSource.match(
       /const monoStrokeWidth = size <= 14 \? ([\d.]+) : [\d.]+;/,
     )?.[1];
@@ -149,6 +154,29 @@ describe('MacAgentIslandNativeHost', () => {
     expect(nativeSource).toContain(`d="${codexPrompt}"`);
     expect(nativeCodexOutlineStrokeWidth).toBe(codexSmallStrokeWidth);
     expect(nativeSource).not.toContain('agentIslandXDIncMarkSVG');
+  });
+
+  it('renders Pi sessions with the Pi mark instead of the Claude mark', () => {
+    const source = fs.readFileSync(
+      new URL('../../../../native/agent-island/macos-agent-island-helper.swift', import.meta.url),
+      'utf8',
+    );
+    const vendorResolver = source.match(
+      /func agentIslandSessionVendor\(for session: AgentIslandSession\) -> AgentIslandSessionVendor \{([\s\S]*?)\n\}/,
+    )?.[1];
+    const markImageResolver = source.match(
+      /func image\(for vendor: AgentIslandSessionVendor\) -> NSImage\? \{([\s\S]*?)\n  \}/,
+    )?.[1];
+
+    expect(source).toContain('case pi');
+    expect(vendorResolver).toContain('if kind == "pi" { return .pi }');
+    expect(markImageResolver).toContain('case .pi:');
+    expect(markImageResolver).toContain('svg = agentIslandPiMarkSVG');
+    expect(source).toContain('private let agentIslandPiMarkSVG = """');
+    expect(source).toContain('<path d="M3.6 6.6h16.8"/>');
+    expect(source).toContain('<path d="M8.4 6.6v11.8"/>');
+    expect(source).toContain('<path d="M15.6 6.6v9.6c0 1.5.9 2.2 2.4 2.2"/>');
+    expect(source).toContain('if lower == "pi" { return "Pi" }');
   });
 
   it('uses semantic icons for expanded terminal and interaction rows', () => {

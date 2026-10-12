@@ -8,11 +8,19 @@ import {
   classifyChatPathLinkTarget,
   findBareFilePathMatch,
   resolveChatAbsPath,
+  toWorkdirRel,
 } from '@/session/chatPathCandidate';
 import { DEEP_LINK_SCHEME_GROUP } from '@/session/sessionLinks';
 import { i18n } from '@/i18n';
 
-export type MobileMarkdownInline =
+// 加粗 / 斜体 / 删除线里的内容会继续按行内语法解析(`**https://…**` 的链接照样可点,
+// 与桌面 remark 同口径),结果拍平进同一层 inline 列表:里面的纯文本就是该强调类型本身,
+// 其余 token(链接、路径、代码、公式;图片除外,见 parseMarkedInlines)带 marks 标出外层
+// 强调,由渲染层叠加样式。拍平而不是做成树,分段、图集收集、长度估算等按单层列表遍历的
+// 逻辑都不用改。
+export type MobileMarkdownInlineMark = 'strong' | 'emphasis' | 'strikethrough';
+
+export type MobileMarkdownInline = (
   | { type: 'text'; text: string }
   // bare:这条 link 是从正文纯文本里切出来的裸路径(matchBareFilePathLink),不是作者
   // 手写的 `[label](url)`。渲染层据此决定点亮后是否套等宽 chip —— 裸路径的未点亮态是
@@ -28,7 +36,8 @@ export type MobileMarkdownInline =
   // 原生 Text 流渲染时经 latexToUnicodeApproximation 近似;WebView 面(文件
   // 阅读器)可用 KaTeX 精确渲染。
   | { type: 'math'; text: string }
-  | MobileMarkdownImageInline;
+  | MobileMarkdownImageInline
+) & { marks?: MobileMarkdownInlineMark[] };
 
 // 正文图片:来自 ![alt](url) 或模型常用的 raw HTML <img src="..." width="150">(见桌面端 remarkHtmlImages)。
 // Markdown 图片还可保留桌面本地/相对路径;会话渲染时再结合被控端 workdir
@@ -628,6 +637,24 @@ export function mobileMarkdownImageUrlForWorkdir(
   return `${base}${sshContext}${version}`;
 }
 
+/** Automatic previews must not upload arbitrary model-named files. Explicit
+ * clicks keep the existing viewer path; the Host enforces baseDir after realpath. */
+export function mobileMarkdownManagedImagePreviewUrl(
+  url: string, workdir?: string, cacheKey?: string, remoteHostId?: string, sessionId?: string,
+): string | null {
+  const resolved = mobileMarkdownImageUrlForWorkdir(url, workdir, cacheKey, remoteHostId, sessionId);
+  if (!resolved || isMobileMarkdownImageDirectUrl(resolved)) return null;
+  if (!resolved.startsWith('xdt-file://')) return resolved;
+  if (!workdir) return null;
+  const parsed = new URL(resolved);
+  const file = parsed.searchParams.get('path');
+  if (!file || toWorkdirRel(workdir, file) === null) return null;
+  // Do not trust baseDir supplied in Markdown (including duplicate parameters).
+  parsed.searchParams.delete('baseDir');
+  parsed.searchParams.set('baseDir', workdir);
+  return parsed.toString();
+}
+
 // 流式(native)路径下正文图片的缩略图尺寸:默认宽 150,宽高都封顶 220。有声明宽高时按比例
 // 换算,但换算结果同样封顶——width/height 只过了「1-4 位纯数字」白名单,height="9999" 这类
 // 极端比例若不封顶会在流式阶段渲染出近万像素高的图,撑爆气泡(review P2)。
@@ -646,6 +673,8 @@ export type MobileMarkdownBlockGroup =
   | { type: 'single'; key: string; block: MobileMarkdownBlock };
 
 export interface MobileMarkdownTextRunGroupingOptions {
+  /** Only actual native image previews break text selection; text chips do not. */
+  imageRendersPreview?: (image: MobileMarkdownImageInline) => boolean;
   /**
    * Upper bound for one selectable native text view. Undefined keeps the
    * historical "merge until a non-text block" behavior.
@@ -684,7 +713,7 @@ export function groupMobileMarkdownSelectableBlocks(
     runInlineFragmentCount = 0;
   };
   for (const block of blocks) {
-    if (isTextRunBlock(block)) {
+    if (isTextRunBlock(block, options?.imageRendersPreview)) {
       for (const chunk of splitOversizedTextRunBlock(
         block,
         maxTextRunUtf16Length,
@@ -721,13 +750,16 @@ export function groupMobileMarkdownSelectableBlocks(
   return groups;
 }
 
-function isTextRunBlock(block: MobileMarkdownBlock): block is MobileMarkdownTextRunBlock {
+function isTextRunBlock(
+  block: MobileMarkdownBlock,
+  imageRendersPreview: (image: MobileMarkdownImageInline) => boolean = (image) => isMobileMarkdownImageDirectUrl(image.url),
+): block is MobileMarkdownTextRunBlock {
   if (block.type !== 'paragraph' && block.type !== 'heading' && block.type !== 'list_item') {
     return false;
   }
-  // 直连内联图渲染为 Text 内嵌 View,不能进合并文本树(Android selectable+内嵌 View 行为未定义)。
+  // Only image previews embed Views; fallback text chips remain selectable.
   return !block.inlines.some(
-    (inline) => inline.type === 'image' && isMobileMarkdownImageDirectUrl(inline.url),
+    (inline) => inline.type === 'image' && imageRendersPreview(inline),
   );
 }
 
@@ -1047,6 +1079,14 @@ export function parseMobileMarkdownInlines(
   input: string,
   startsInsideHtmlComment = false,
 ): MobileMarkdownInline[] {
+  return parseInlines(input, startsInsideHtmlComment, false);
+}
+
+function parseInlines(
+  input: string,
+  startsInsideHtmlComment: boolean,
+  imagesAsText: boolean,
+): MobileMarkdownInline[] {
   const out: MobileMarkdownInline[] = [];
   let cursor = 0;
   while (cursor < input.length) {
@@ -1056,10 +1096,47 @@ export function parseMobileMarkdownInlines(
       break;
     }
     if (token.index > cursor) pushText(out, input.slice(cursor, token.index));
-    out.push(token.inline);
+    if (isMarkedInline(token.inline)) {
+      out.push(...parseMarkedInlines(token.inline.type, token.inline.text, input, token.index, startsInsideHtmlComment));
+    } else if (imagesAsText && token.inline.type === 'image') {
+      pushText(out, input.slice(token.index, token.end));
+    } else {
+      out.push(token.inline);
+    }
     cursor = token.end;
   }
   return out.length > 0 ? out : [{ type: 'text', text: input }];
+}
+
+/** 该 inline 是否呈现为某种强调:自身就是该类型,或被外层同类强调包裹(marks)。样式消费方统一用它判断。 */
+export function mobileMarkdownInlineHasMark(inline: MobileMarkdownInline, mark: MobileMarkdownInlineMark): boolean {
+  return inline.type === mark || inline.marks?.includes(mark) === true;
+}
+
+function isMarkedInline(
+  inline: MobileMarkdownInline,
+): inline is Extract<MobileMarkdownInline, { type: MobileMarkdownInlineMark }> {
+  return inline.type === 'strong' || inline.type === 'emphasis' || inline.type === 'strikethrough';
+}
+
+// 强调内容再解析一遍并拍平(见 MobileMarkdownInlineMark 的说明)。内层文本严格短于外层,
+// 递归必然收敛;强调起点在 HTML 注释里时内层也按注释内处理,注释里的裸路径不会被点亮。
+// 强调里的图片保持原文:GitHub review 常见 `**<sub>![P2 Badge](…)</sub> 标题**`,渲染成
+// 图片预览会把小徽章撑成大图并打断可选中的正文;原文仍整段占位,`[alt](url)` 不会被当成链接。
+function parseMarkedInlines(
+  mark: MobileMarkdownInlineMark,
+  text: string,
+  input: string,
+  index: number,
+  startsInsideHtmlComment: boolean,
+): MobileMarkdownInline[] {
+  const innerStartsInsideHtmlComment = (startsInsideHtmlComment || input.includes('<!--'))
+    && isInsideHtmlComment(blankEscapedAngles(blankCodeSpans(input)), index, startsInsideHtmlComment);
+  return parseInlines(text, innerStartsInsideHtmlComment, true).map((inline) => (
+    inline.type === 'text'
+      ? { type: mark, text: inline.text }
+      : { ...inline, marks: [mark, ...(inline.marks ?? [])] }
+  ));
 }
 
 /** Mobile 只把 `~~` 当删除线，单个 `~` 是普通字符，不能当 URL 包裹标记。 */
@@ -1572,7 +1649,10 @@ function matchMarkdownImage(
     let candidate: RegExpExecArray | null;
     while ((candidate = matcher.re.exec(input)) !== null) {
       const rawUrl = matcher.local ? parseLocalMarkdownDestination(candidate[2]) : candidate[2];
-      if (matcher.local && !classifyChatPathLinkTarget(rawUrl)) continue;
+      // The destination parser also handles standard titles and angle brackets
+      // for remote images, just as it does for local image paths.
+      if (matcher.local && !classifyChatPathLinkTarget(rawUrl)
+        && !(SAFE_IMAGE_SRC_RE.test(rawUrl) && !/\s/.test(rawUrl))) continue;
       // 当前 matcher 的第一个正则命中可能只是注释/转义里的示例;必须继续 exec,
       // 否则同段后面的合法图片会被丢掉(review P2)。
       if (isInsideHtmlComment(guarded, candidate.index, startsInsideHtmlComment)) continue;

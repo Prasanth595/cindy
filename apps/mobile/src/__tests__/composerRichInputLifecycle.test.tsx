@@ -73,14 +73,36 @@ function mount(hidden = false) {
   };
   bridge.inject.mockImplementation((script: string) => runInNewContext(script, { window: { cindyComposer: page } }));
   root = createRoot(document.createElement('div'));
-  act(() => root!.render(createElement(ComposerRichInput, {
-    ref, document: page.document, hidden, onChangeDocument, onPasteImagesLoadFailed,
+  const renderDocument = (document: ComposerDocument) => act(() => root!.render(createElement(ComposerRichInput, {
+    ref, document, hidden, onChangeDocument, onPasteImagesLoadFailed,
     accessibilityLabel: 'input', placeholder: '', height: 40, maxHeight: 264,
     theme: { background: '#fff', border: '#aaa', chip: '#ddd', focus: '#555', placeholder: '#777', text: '#111', textSecondary: '#333' },
   })));
+  renderDocument(page.document);
   const send = (message: unknown) => act(() => bridge.onMessage({ nativeEvent: { data: JSON.stringify(message) } }));
-  return { ref, page, send, onChangeDocument, onPasteImagesLoadFailed };
+  return { ref, page, send, onChangeDocument, onPasteImagesLoadFailed, renderDocument };
 }
+
+it('never writes an older native edit back over later typing, but applies external replacements', () => {
+  const { page, send, onChangeDocument, renderDocument } = mount();
+  send({ type: 'ready' });
+  const id = page.id;
+  send({ type: 'change', documentId: id, document: textComposerDocument('a') });
+  const first = onChangeDocument.mock.lastCall![0];
+  send({ type: 'change', documentId: id, document: textComposerDocument('abc') });
+  const latest = onChangeDocument.mock.lastCall![0];
+  page.applyDocument.mockClear();
+  renderDocument(first);
+  renderDocument(latest);
+  expect(page.applyDocument).not.toHaveBeenCalled();
+  expect(page.id).toBe(id);
+  const empty = textComposerDocument('');
+  renderDocument(empty);
+  expect(page.document).toEqual(empty);
+  // Explicitly restoring a previously acknowledged draft is still a command.
+  renderDocument(first);
+  expect(page.document).toEqual(first);
+});
 
 it('restores the latest accepted draft on every ready and accepts only the new document id', () => {
   const { ref, page, send, onChangeDocument } = mount();
@@ -257,6 +279,17 @@ it('keeps pending caret intent on first ready but does not replay it on reload',
   expect(page.applyDocument.mock.lastCall?.slice(1, 3)).toEqual([true, { nodeIndex: 0, offset: 8 }]);
   send({ type: 'ready' });
   expect(page.applyDocument.mock.lastCall?.slice(1, 3)).toEqual([false, null]);
+});
+
+it('applies the final dictation document without focusing and keeps the remembered caret', () => {
+  const { ref, page, send } = mount();
+  send({ type: 'ready' });
+  act(() => ref.current?.rememberSelection('voice suffix', { start: 5, end: 5 }));
+  act(() => ref.current?.applyDocumentAndSetSelection(textComposerDocument('voice suffix'), 5));
+  expect(page.document).toEqual(textComposerDocument('voice suffix'));
+  expect(page.applyDocument.mock.lastCall?.slice(1, 3)).toEqual([false, { nodeIndex: 0, offset: 5 }]);
+  expect(page.focus).not.toHaveBeenCalled();
+  expect(ref.current?.getSelection('voice suffix')).toEqual({ start: 5, end: 5 });
 });
 
 it('restores a hidden dictation draft without focusing or losing its saved insertion end', () => {

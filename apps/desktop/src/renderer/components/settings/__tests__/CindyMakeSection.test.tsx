@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { isValidElement } from 'react';
 import { CindyMakeSection } from '../CindyMakeSection';
 import type { CindyMakeMergeState, CindyMakeMergeRequest } from '../../../../shared/cindyMakeMerge';
+import type { CindyMakePersonalBuildState } from '../../../../shared/cindyMakeSession';
 import { startMakeDoctor } from '@/lib/cindyMakeDoctor';
 import { setCindyMakeForceManagedTools } from '@/lib/cindyMakeSettings';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
@@ -32,7 +33,9 @@ vi.mock('@/state/newMakerDraft', () => ({
   }),
   getFastModeForModel: () => false,
 }));
-const confirmMerge = vi.hoisted(() => vi.fn(async () => true));
+const confirmMerge = vi.hoisted(() =>
+  vi.fn(async (_options?: unknown, _signal?: AbortSignal) => true),
+);
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
   useConfirmDialog: () => ({
     confirm: confirmMerge,
@@ -43,13 +46,21 @@ type Api = Parameters<typeof startMakeDoctor>[1];
 type Listener = Parameters<NonNullable<Api>['onDesktopCommandTriggered']>[0];
 type Result = Awaited<ReturnType<NonNullable<Api>['executeDesktopCommand']>>;
 
-function harness() {
+function harness(
+  history: { busy: boolean; activeWork?: boolean; build?: CindyMakePersonalBuildState } = {
+    busy: false,
+  },
+) {
   const listeners = new Set<Listener>();
   const sourceListeners = new Set<(status: MakeSourceStatus) => void>();
   const stateListeners = new Set<(state: CindyMakeGlobalState) => void>();
   let globalState: CindyMakeGlobalState = {};
   const runs = new Map<string, (result: Result) => void>();
   const api = {
+    getCindyMakeSettings: vi.fn(async () => ({ syncLatestBeforeBuild: false })),
+    setCindyMakeSyncLatestBeforeBuild: vi.fn(async (enabled: boolean) => ({
+      syncLatestBeforeBuild: enabled,
+    })),
     cindyMakeMerge: vi.fn(
       async (_request: CindyMakeMergeRequest): Promise<CindyMakeMergeState | undefined> =>
         undefined,
@@ -89,7 +100,7 @@ function harness() {
   };
   vi.stubGlobal('electronAPI', {
     getCindyMakeHistory: async () => ({
-      busy: false,
+      ...history,
       canBuild: false,
       items: Object.values(globalState.tasks ?? {})
         .filter((report) => report.task)
@@ -109,6 +120,8 @@ function harness() {
           actions: ['open'],
         })),
     }),
+    getCindyMakeSettings: api.getCindyMakeSettings,
+    setCindyMakeSyncLatestBeforeBuild: api.setCindyMakeSyncLatestBeforeBuild,
     cindyMakeMerge: api.cindyMakeMerge,
     maker: api,
     getCindyMakeState: api.getCindyMakeState,
@@ -175,6 +188,7 @@ function renderEnvironment(ui: Parameters<typeof render>[0]) {
 }
 
 beforeEach(() => {
+  confirmMerge.mockReset().mockResolvedValue(true);
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
   setDataOwnerGeneration('settings-make-test-owner');
@@ -220,13 +234,18 @@ describe('Settings > Cindy Make', () => {
         { name: 'settings.cindyMake.source.title' },
       ),
     ).toBeTruthy();
-    expect(screen.queryByRole('switch')).toBeNull();
+    const syncBeforeBuild = await screen.findByRole('switch', {
+      name: 'settings.cindyMake.syncBeforeBuild.ariaLabel',
+    });
+    expect(syncBeforeBuild.getAttribute('aria-checked')).toBe('false');
     expect(await screen.findByText('0.1.99')).toBeTruthy();
-    expect(
-      within(
-        screen.getByRole('tabpanel', { name: 'settings.cindyMake.tabs.versions' }),
-      ).queryByRole('button', { name: 'settings.cindyMake.create.title' }),
-    ).toBeNull();
+    const create =
+      within(screen.getByRole('tabpanel', { name: 'settings.cindyMake.tabs.versions' })).getByRole(
+        'button',
+        { name: 'settings.cindyMake.create.title' },
+      );
+    expect(create).toBeTruthy();
+    expect(create.querySelector('svg')).toBeNull();
     const source = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
     expect(
       source.parentElement?.contains(
@@ -258,6 +277,20 @@ describe('Settings > Cindy Make', () => {
     expect(document.activeElement).toBe(versions);
     await waitFor(() => expect(getVersions).toHaveBeenCalledTimes(3));
     expect(h.starts()).toHaveLength(1);
+  });
+  it('persists the opt-in build-time source sync and updates the switch immediately', async () => {
+    const h = harness();
+    renderVersions(<CindyMakeSection />);
+    const toggle = await screen.findByRole('switch', {
+      name: 'settings.cindyMake.syncBeforeBuild.ariaLabel',
+    });
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    await waitFor(() =>
+      expect(h.api.setCindyMakeSyncLatestBeforeBuild).toHaveBeenCalledWith(true),
+    );
   });
   it('keeps background preparation, expansion and task search intact while switching tabs', async () => {
     const h = harness();
@@ -362,7 +395,21 @@ describe('Settings > Cindy Make', () => {
     'shows live progress, then a quiet success or actionable %s result on reentry',
     async (result) => {
       const h = harness();
-      const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
+      const source: MakeSourceStatus = {
+        status: 'ready',
+        path: '/managed/source',
+        ref: 'main',
+        commit: 'b'.repeat(40),
+        mainCommit: 'c'.repeat(40),
+        latestVersion: {
+          status: 'ready',
+          channel: 'dev',
+          ref: 'main',
+          commit: 'a'.repeat(40),
+          ahead: 0,
+          behind: 6,
+        },
+      };
       const previous: CindyMakeMergeState = {
         id: 'previous-update',
         status: 'merged',
@@ -380,13 +427,24 @@ describe('Settings > Cindy Make', () => {
           }),
       );
       const card = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
+      const expectVersionsVisible = (region: HTMLElement) => {
+        for (const commit of ['a', 'c']) {
+          expect(within(region).getByText(commit.repeat(12)).title).toBe(commit.repeat(40));
+        }
+        expect(within(region).queryByText('b'.repeat(12))).toBeNull();
+        expect(within(region).getByText('cindyMake.source.details.latest.dev')).toBeTruthy();
+        expect(within(region).getByText(/cindyMake.source.details.latest.behind/)).toBeTruthy();
+      };
+      expectVersionsVisible(card);
       fireEvent.click(within(card).getByRole('button', { name: 'cindyMake.merge.getLatest' }));
       await waitFor(() => expect(h.api.cindyMakeMerge).toHaveBeenCalledOnce());
+      expectVersionsVisible(card);
       expect(within(card).getByRole('status').textContent).toBe('cindyMake.merge.status.fetching');
       expect(within(card).queryByText('cindyMake.merge.status.merged')).toBeNull();
       const current = { ...previous, id: 'current-update' };
       for (const status of ['fetching', 'merging', 'checking'] as const) {
         await h.pushState({ source, upstreamMerge: { ...current, status } });
+        expectVersionsVisible(card);
         expect(within(card).getAllByRole('status')).toHaveLength(1);
         expect(within(card).getByRole('status').textContent).toBe(
           'cindyMake.merge.status.' + status,
@@ -422,11 +480,12 @@ describe('Settings > Cindy Make', () => {
         expect(
           within(reopened).getByText(
             result === 'merged'
-              ? 'cindyMake.overview.comparison.unknown'
+              ? 'cindyMake.overview.comparison.different'
               : 'cindyMake.merge.status.failed',
           ),
         ).toBeTruthy(),
       );
+      expectVersionsVisible(reopened);
       expect(within(reopened).getAllByRole('status')).toHaveLength(1);
       expect(within(reopened).queryByText('settings.cindyMake.source.status.ready')).toBeNull();
       if (result === 'failed')
@@ -470,7 +529,258 @@ describe('Settings > Cindy Make', () => {
     expect(within(card).getByText('a'.repeat(12))).toBeTruthy();
     expect(within(card).getByText(/cindyMake.overview.lookupUnavailable/)).toBeTruthy();
   });
-  it('offers conflict resolution only after a conflict and creates a task only on click', async () => {
+  it('keeps version details when opening Settings during an update and refreshes them on completion', async () => {
+    const h = harness();
+    const source: MakeSourceStatus = {
+      status: 'ready',
+      path: '/managed/source',
+      ref: 'main',
+      commit: 'b'.repeat(40),
+      mainCommit: 'c'.repeat(40),
+      personalAhead: 0,
+      personalBehind: 4,
+    };
+    const merge: CindyMakeMergeState = {
+      id: 'merge',
+      status: 'fetching',
+      ref: 'main',
+      upstreamCommit: 'a'.repeat(40),
+    };
+    await h.pushState({ source, upstreamMerge: merge });
+    renderVersions(<CindyMakeSection />);
+    const card = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
+    await waitFor(() =>
+      expect(within(card).getByRole('status').textContent).toBe('cindyMake.merge.status.fetching'),
+    );
+      expect(within(card).queryByText('cindyMake.merge.status.merged')).toBeNull();
+      expect(within(card).queryByText('settings.cindyMake.source.status.ready')).toBeNull();
+
+    for (const status of ['fetching', 'merging', 'checking', 'conflict', 'resolving'] as const) {
+      await h.pushState({
+        source,
+        upstreamMerge: { ...merge, status, hasWorkspace: true },
+      });
+      expect(within(card).getByText('c'.repeat(12))).toBeTruthy();
+      expect(within(card).queryByText('b'.repeat(12))).toBeNull();
+      expect(within(card).getByRole('status').textContent).toBe(`cindyMake.merge.status.${status}`);
+      expect(within(card).queryByText('cindyMake.overview.comparison.mainAhead')).toBeNull();
+    }
+    await h.pushState({
+      source: { ...source, commit: 'd'.repeat(40), mainCommit: 'd'.repeat(40), personalBehind: 0 },
+      upstreamMerge: { ...merge, status: 'merged' },
+    });
+    expect(within(card).getAllByText('d'.repeat(12))).toHaveLength(1);
+    expect(within(card).queryByText('b'.repeat(12))).toBeNull();
+    expect(within(card).queryByText('c'.repeat(12))).toBeNull();
+    expect(within(card).getByRole('status').getAttribute('aria-label')).toBe(
+      'cindyMake.overview.personal · cindyMake.overview.personalStatus.unverified',
+    );
+    expect(within(card).getByText('cindyMake.overview.comparison.same')).toBeTruthy();
+    expect(within(card).queryByText('cindyMake.merge.status.merged')).toBeNull();
+  });
+  it.each([
+    ['missing', undefined],
+    ['failed', 'installFailed'],
+    ['cancelled', 'cancelled'],
+  ] as const)(
+    'keeps recovery for %s source available after an update failed without a workspace',
+    async (status, error) => {
+      const h = harness();
+      const source: MakeSourceStatus = { status, error, path: '/managed/source', ref: 'main' };
+      renderVersions(<CindyMakeSection />);
+      await h.pushState({
+        source: { ...source, status: 'ready', error: undefined },
+        upstreamMerge: {
+          id: 'previous-update',
+          status: 'failed',
+          ref: 'main',
+          upstreamCommit: 'a'.repeat(40),
+          error: 'gitFailed',
+          hasWorkspace: false,
+        },
+      });
+      const card = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
+      expect(within(card).getByRole('status').textContent).toContain(
+        'cindyMake.merge.errors.gitFailed',
+      );
+      expect(within(card).queryByText('settings.cindyMake.source.status.ready')).toBeNull();
+
+      await h.pushSource(source);
+      expect(within(card).getByRole('status').textContent).toContain(
+        `settings.cindyMake.source.status.${status}`,
+      );
+      expect(within(card).queryByText('cindyMake.merge.errors.gitFailed')).toBeNull();
+      if (error) expect(within(card).getByText(`cindyMake.source.errors.${error}`)).toBeTruthy();
+      fireEvent.click(
+        within(card).getByRole('button', {
+          name:
+            status === 'missing'
+              ? 'settings.cindyMake.source.prepare'
+              : 'settings.cindyMake.source.retry',
+        }),
+      );
+      expect(within(card).getByRole('status').textContent).toBe(
+        'settings.cindyMake.source.status.preparing',
+      );
+      expect(h.starts().at(-1)?.[1].makeAction).toBe('prepare-source');
+      await h.pushSource({
+        status: 'preparing',
+        path: source.path,
+        phase: 'cloning',
+        progress: { stage: 'receiving', percent: 43 },
+      });
+      expect(within(card).getByRole('status').textContent).toContain('(43%)');
+      fireEvent.click(within(card).getByRole('button', { name: 'settings.cindyMake.source.stop' }));
+      expect(h.api.cancelCindyMakeSource).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([true, false])(
+    'waits for the second confirmation after an update conflicts (confirm=%s)',
+    async (confirmed) => {
+      const h = harness();
+      const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
+      const conflict: CindyMakeMergeState = {
+        id: 'update-conflict',
+        status: 'conflict',
+        ref: 'main',
+        upstreamCommit: 'a'.repeat(40),
+        hasWorkspace: true,
+      };
+      const result: CindyMakeMergeState = confirmed
+        ? { ...conflict, status: 'resolving', sessionId: 'merge-task' }
+        : { ...conflict, status: 'cancelled', hasWorkspace: false };
+      let decide!: (confirmed: boolean) => void;
+      confirmMerge.mockResolvedValueOnce(true).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            decide = resolve;
+          }),
+      );
+      h.api.cindyMakeMerge.mockResolvedValueOnce(conflict).mockResolvedValueOnce(result);
+      function Location() {
+        return <output data-testid="location">{useLocation().pathname}</output>;
+      }
+      renderVersions(
+        <>
+          <CindyMakeSection />
+          <Location />
+        </>,
+      );
+      await h.pushSource(source);
+      const update = screen.getByRole('button', { name: 'cindyMake.merge.getLatest' });
+      fireEvent.click(update);
+      await waitFor(() => expect(confirmMerge).toHaveBeenCalledTimes(2));
+      expect(confirmMerge.mock.calls[1][0]).toMatchObject({
+        title: 'cindyMake.merge.conflictConfirm.title',
+        description: 'cindyMake.merge.conflictConfirm.description',
+        confirmText: 'cindyMake.merge.conflictConfirm.confirm',
+        cancelText: 'cindyMake.merge.conflictConfirm.cancel',
+      });
+      await h.pushState({ source, upstreamMerge: conflict });
+      expect(h.api.cindyMakeMerge).toHaveBeenCalledTimes(1);
+      fireEvent.click(update);
+      fireEvent.click(screen.getByRole('button', { name: 'cindyMake.merge.resolve' }));
+      expect(confirmMerge).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('location').textContent).toBe('/');
+      await act(async () => decide(confirmed));
+      await waitFor(() => expect(h.api.cindyMakeMerge).toHaveBeenCalledTimes(2));
+      expect(h.api.cindyMakeMerge.mock.calls[1][0]).toEqual(
+        confirmed
+          ? {
+              action: 'resolve',
+              operationId: conflict.id,
+              createOptions: expect.objectContaining({ agentKind: 'codex', model: 'test-model' }),
+            }
+          : { action: 'cancel', operationId: conflict.id },
+      );
+      await h.pushState({ source, upstreamMerge: result });
+      expect(screen.getByTestId('location').textContent).toBe(
+        confirmed ? '/cc-agent/merge-task' : '/',
+      );
+      if (!confirmed) {
+        expect(
+          screen
+            .getByRole('button', { name: 'cindyMake.merge.getLatest' })
+            .hasAttribute('disabled'),
+        ).toBe(false);
+        expect(screen.queryByText('cindyMake.merge.status.conflict')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'cindyMake.merge.resolve' })).toBeNull();
+      }
+    },
+  );
+  it.each(['unmount', 'account'] as const)(
+    'does not apply a conflict decision after %s',
+    async (change) => {
+      const h = harness();
+      const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
+      h.api.cindyMakeMerge.mockResolvedValue({
+        id: 'conflict',
+        status: 'conflict',
+        ref: 'main',
+        upstreamCommit: 'a'.repeat(40),
+        hasWorkspace: true,
+      });
+      let decide!: (confirmed: boolean) => void;
+      confirmMerge.mockResolvedValueOnce(true).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            decide = resolve;
+          }),
+      );
+      const view = renderVersions(<CindyMakeSection />);
+      await h.pushSource(source);
+      fireEvent.click(screen.getByRole('button', { name: 'cindyMake.merge.getLatest' }));
+      await waitFor(() => expect(confirmMerge).toHaveBeenCalledTimes(2));
+      if (change === 'unmount') view.unmount();
+      else await act(async () => setDataOwnerGeneration('another-owner'));
+      await act(async () => decide(false));
+      expect(h.api.cindyMakeMerge).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('allows version switching with retained conflicts and during active work', async () => {
+    const history = { busy: true, activeWork: false };
+    const h = harness(history);
+    const versions = {
+      currentId: 'personal',
+      selectedId: 'personal',
+      switching: false,
+      versions: [
+        { id: 'original', kind: 'original', available: true, compatible: true },
+        { id: 'personal', kind: 'personal', available: true, compatible: true },
+      ],
+    };
+    const switchVersion = vi.fn(async () => versions);
+    vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
+      getCindyVersions: async () => versions,
+      actCindyVersion: switchVersion,
+    });
+    renderVersions(<CindyMakeSection />);
+    const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
+    const conflict: CindyMakeMergeState = {
+      id: 'update',
+      status: 'conflict',
+      ref: 'main',
+      upstreamCommit: 'a'.repeat(40),
+      hasWorkspace: true,
+    };
+    await h.pushState({ source, upstreamMerge: conflict });
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'cindyMake.overview.switchVersion' }),
+    );
+    const button = screen.getByRole('button', { name: 'cindyMake.versions.switch' });
+    expect(button.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(switchVersion).toHaveBeenCalledWith('switch', 'original'));
+    history.activeWork = true;
+    await h.pushState({ source, upstreamMerge: { ...conflict } });
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    history.activeWork = false;
+    await h.pushState({ source, upstreamMerge: { ...conflict } });
+    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    expect(screen.getByRole('button', { name: 'cindyMake.merge.resolve' })).toBeTruthy();
+  });
+  it('offers conflict resolution only after a conflict and creates a task only on confirmation', async () => {
     const h = harness();
     const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
     const merge: CindyMakeMergeState = {
@@ -486,11 +796,25 @@ describe('Settings > Cindy Make', () => {
       </MemoryRouter>,
     );
     await h.pushState({ source, upstreamMerge: merge });
-    expect(screen.getByText('cindyMake.merge.status.conflict')).toBeTruthy();
+    const card = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
+    expect(within(card).getByRole('status').textContent).toBe('cindyMake.merge.status.conflict');
+    expect(within(card).queryByText('settings.cindyMake.source.status.ready')).toBeNull();
     expect(h.api.cindyMakeMerge).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'cindyMake.merge.getLatest' })).toBeNull();
+    const resolve = screen.getByRole('button', { name: 'cindyMake.merge.resolve' });
+    expect(resolve.hasAttribute('disabled')).toBe(false);
+    expect(within(card).getAllByRole('button', { name: 'cindyMake.merge.resolve' })).toHaveLength(
+      1,
+    );
     expect(
-      screen.getByRole('button', { name: 'cindyMake.merge.getLatest' }).hasAttribute('disabled'),
-    ).toBe(true);
+      resolve.compareDocumentPosition(within(card).getByText('settings.cindyMake.source.path')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await h.pushSource({ ...source, status: 'failed', error: 'dirty' });
+    expect(within(card).getByRole('status').textContent).toBe('cindyMake.merge.status.conflict');
+    expect(
+      within(card).queryByRole('button', { name: 'settings.cindyMake.source.retry' }),
+    ).toBeNull();
     h.api.cindyMakeMerge.mockResolvedValue({
       ...merge,
       status: 'resolving',
@@ -502,6 +826,44 @@ describe('Settings > Cindy Make', () => {
         expect.objectContaining({ action: 'resolve' }),
       ),
     );
+  });
+  it('retries cancellation without asking to resolve, even after the temporary directory is gone', async () => {
+    const h = harness();
+    const source: MakeSourceStatus = { status: 'ready', path: '/managed/source', ref: 'main' };
+    const merge: CindyMakeMergeState = {
+      id: 'merge',
+      status: 'failed',
+      error: 'cancelFailed',
+      cancellationRequested: true,
+      ref: 'main',
+      upstreamCommit: 'a'.repeat(40),
+      hasWorkspace: false,
+    };
+    renderVersions(<CindyMakeSection />);
+    await h.pushState({ source, upstreamMerge: merge });
+    expect(screen.queryByRole('button', { name: 'cindyMake.merge.getLatest' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'cindyMake.merge.resolve' })).toBeNull();
+    await h.pushSource({ ...source, status: 'failed', error: 'dirty' });
+    const cancelled: CindyMakeMergeState = {
+      ...merge,
+      status: 'cancelled',
+      error: undefined,
+      cancellationRequested: undefined,
+    };
+    h.api.cindyMakeMerge.mockResolvedValue(cancelled);
+    fireEvent.click(screen.getByRole('button', { name: 'cindyMake.merge.retryCancel' }));
+    await waitFor(() =>
+      expect(h.api.cindyMakeMerge).toHaveBeenCalledExactlyOnceWith({
+        action: 'cancel',
+        operationId: merge.id,
+      }),
+    );
+    expect(confirmMerge).not.toHaveBeenCalled();
+    await h.pushState({ source, upstreamMerge: cancelled });
+    expect(
+      screen.getByRole('button', { name: 'cindyMake.merge.getLatest' }).hasAttribute('disabled'),
+    ).toBe(false);
+    expect(screen.queryByText('cindyMake.merge.errors.cancelFailed')).toBeNull();
   });
   it.each(['resolving', 'failed'] as const)(
     'keeps a %s upstream task outside the unfinished production list',
@@ -523,7 +885,11 @@ describe('Settings > Cindy Make', () => {
       );
       expect(await screen.findByRole('button', { name: 'cindyMake.merge.openTask' })).toBeTruthy();
       fireEvent.click(screen.getByRole('tab', { name: 'settings.cindyMake.tabs.versions' }));
-      expect(screen.getByRole('heading', { name: 'cindyMake.history.title · 0' })).toBeTruthy();
+      expect(
+        screen.getByRole('heading', {
+          name: 'cindyMake.history.title · cindyMake.history.taskCount',
+        }),
+      ).toBeTruthy();
       const report: MakeDoctorReport = {
         runId: 'make-run',
         platform: 'win32',
@@ -540,7 +906,9 @@ describe('Settings > Cindy Make', () => {
       await h.pushState({ upstreamMerge: merge, tasks: { 'make-run': report } });
       const panel = screen.getByRole('region', { name: 'cindyMake.history.title' });
       expect(
-        await within(panel).findByRole('heading', { name: 'cindyMake.history.title · 1' }),
+        await within(panel).findByRole('heading', {
+          name: 'cindyMake.history.title · cindyMake.history.taskCount',
+        }),
       ).toBeTruthy();
       expect(within(panel).getByRole('button', { name: /Personal feature/ })).toBeTruthy();
       expect(within(panel).queryByText('cindyMake.merge.taskTitle')).toBeNull();
@@ -761,7 +1129,7 @@ describe('Settings > Cindy Make', () => {
     expect(screen.queryByText('cindyMake.prepare.retry')).toBeNull();
   });
 
-  it('keeps the versions tab focused on existing versions without a creation entry', async () => {
+  it('offers creation from the version overview without starting preparation on open or cancel', async () => {
     const environment = harness();
     renderEnvironment(
       <MemoryRouter>
@@ -771,8 +1139,14 @@ describe('Settings > Cindy Make', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('tab', { name: 'settings.cindyMake.tabs.versions' }));
     });
-    expect(screen.queryByRole('button', { name: 'settings.cindyMake.create.title' })).toBeNull();
+    const entry = screen.getByRole('button', { name: 'settings.cindyMake.create.title' });
+    entry.focus();
+    fireEvent.click(entry);
+    expect(screen.getByRole('dialog', { name: 'settings.cindyMake.create.title' })).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByRole('textbox')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.cindyMake.create.cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(entry));
     expect(environment.starts()).toHaveLength(1);
     expect(environment.starts()[0][0]).toBe('cindy-make-doctor');
   });
@@ -837,6 +1211,7 @@ describe('Settings > Cindy Make', () => {
     h.api.getCindyMakeSourceStatus = vi.fn(async () => source);
     h.api.openCindyMakeSourceDir = vi.fn(async () => ({ success: true }));
     vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
       cindyMakeMerge: h.api.cindyMakeMerge,
       maker: h.api,
       getCindyMakeState: h.api.getCindyMakeState,
@@ -850,7 +1225,7 @@ describe('Settings > Cindy Make', () => {
     renderVersions(<CindyMakeSection />);
     await waitFor(() => expect(screen.getByText('c'.repeat(12))).toBeTruthy());
     const sourceCard = screen.getByRole('region', { name: 'settings.cindyMake.source.title' });
-    expect(within(sourceCard).getByText('0123456789ab')).toBeTruthy();
+    expect(within(sourceCard).queryByText('0123456789ab')).toBeNull();
     expect(within(sourceCard).getByText(source.path)).toBeTruthy();
     expect(within(sourceCard).queryByText(source.baseCommit!.slice(0, 12))).toBeNull();
     const openButton = within(sourceCard).getByRole('button', {
@@ -944,9 +1319,10 @@ describe('Settings > Cindy Make', () => {
       const sourceReads = h.api.getCindyMakeSourceStatus.mock.calls.length;
       await h.pushSource({ status: 'ready', path: source.path });
       expect(h.api.getCindyMakeSourceStatus).toHaveBeenCalledTimes(sourceReads + 1);
-      expect(within(sourceCard).getByRole('status').textContent).toBe(
-        'cindyMake.overview.comparison.unknown',
+      expect(within(sourceCard).getByRole('status').getAttribute('aria-label')).toBe(
+        'cindyMake.overview.personal · cindyMake.overview.personalStatus.unverified',
       );
+      expect(within(sourceCard).getByText('cindyMake.overview.comparison.unknown')).toBeTruthy();
       expect(
         within(sourceCard).queryByRole('button', { name: 'cindyMake.merge.getLatest' }),
       ).toBeTruthy();
@@ -969,6 +1345,7 @@ describe('Settings > Cindy Make', () => {
     };
     h.api.getCindyMakeSourceStatus = vi.fn(async () => source);
     vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
       cindyMakeMerge: h.api.cindyMakeMerge,
       maker: h.api,
       getCindyMakeState: h.api.getCindyMakeState,
@@ -995,6 +1372,7 @@ describe('Settings > Cindy Make', () => {
     };
     h.api.getCindyMakeSourceStatus = vi.fn(async () => source);
     vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
       cindyMakeMerge: h.api.cindyMakeMerge,
       maker: h.api,
       getCindyMakeState: h.api.getCindyMakeState,
@@ -1017,6 +1395,7 @@ describe('Settings > Cindy Make', () => {
     const ready: MakeSourceStatus = { ...source, status: 'ready', commit: '0123456789abcdef' };
     h.api.getCindyMakeSourceStatus = vi.fn(async () => ready);
     vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
       cindyMakeMerge: h.api.cindyMakeMerge,
       maker: h.api,
       getCindyMakeState: h.api.getCindyMakeState,
@@ -1040,6 +1419,20 @@ describe('Settings > Cindy Make', () => {
     expect(h.starts()).toHaveLength(3);
   });
 
+  it('disables manual source sync while a personal version is being built', async () => {
+    const h = harness({ busy: true, activeWork: true, build: { status: 'checking' } });
+    h.api.getCindyMakeSourceStatus.mockResolvedValue({
+      status: 'ready',
+      path: 'managed-source',
+      ref: 'main',
+    });
+    renderVersions(<CindyMakeSection />);
+    const button = await screen.findByRole('button', { name: 'cindyMake.merge.getLatest' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.click(button);
+    expect(h.api.cindyMakeMerge).not.toHaveBeenCalled();
+  });
+
   it('confirms and starts clearing the source without re-pulling it', async () => {
     const h = harness();
     const source: MakeSourceStatus = {
@@ -1051,6 +1444,7 @@ describe('Settings > Cindy Make', () => {
     };
     h.api.getCindyMakeSourceStatus = vi.fn(async () => source);
     vi.stubGlobal('electronAPI', {
+      ...window.electronAPI,
       cindyMakeMerge: h.api.cindyMakeMerge,
       maker: h.api,
       getCindyMakeState: h.api.getCindyMakeState,

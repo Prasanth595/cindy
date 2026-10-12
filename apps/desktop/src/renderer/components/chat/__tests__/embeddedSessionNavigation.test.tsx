@@ -36,8 +36,21 @@ vi.mock('react-i18next', () => ({
 }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   useRemoteProjectSessions: () => [],
+  useRemoteSessionTitle: () => null,
+  getSessionDeviceId: () => undefined,
+  remoteProjectsStore: {
+    getSessionDeviceId: () => undefined,
+    pinSessionOrigin: () => undefined,
+  },
 }));
 vi.mock('@/lib/sessionService', () => ({ get: mocks.getSession }));
+vi.mock('@/contexts/AuthContext', () => ({ useOptionalAuthDeviceId: () => 'this-mac' }));
+vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
+  useDeviceLinkDeviceList: () => [
+    { deviceId: 'this-mac', name: 'Studio Mac', isSelf: true },
+    { deviceId: 'phone-1', name: 'Dash iPhone', isSelf: false },
+  ],
+}));
 vi.mock('@/lib/sessionMessageText', () => ({
   resolveSessionMessageText: mocks.resolveSessionMessageText,
 }));
@@ -53,6 +66,7 @@ import {
 } from '@/features/cc-agent/embeddedSessionNavigation';
 import { tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import { AutomationOriginBadge } from '../AutomationOriginBadge';
+import { MessageSourceLabels } from '../MessageSourceLabels';
 import { SessionHandoffCard } from '../SessionHandoffCard';
 import { SessionLinkChip } from '../SessionLinkChip';
 
@@ -176,64 +190,21 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('shows the persisted reference range summary without changing the link label', async () => {
-    render(
-      embedded(
-        <SessionLinkChip
-          href="cindy://session/session-a?message=message-1"
-          label="Session A"
-          referenceMetadata={{
-            sessionId: 'session-a',
-            messageClientId: 'message-1',
-            range: 'around-anchor',
-            messageCount: 7,
-            truncated: true,
-          }}
-        />,
-      ),
+  it('keeps the anchored pill on a single line without a context range summary', async () => {
+    const { container } = render(
+      <SessionLinkChip href="cindy://session/session-a?message=message-1" label="Session A" />,
     );
     await act(async () => {
       await Promise.resolve();
     });
 
     expect(screen.getByText('Session A')).toBeTruthy();
-    expect(
-      screen.getByText(
-        'chat.userMessage.sessionReference.aroundAnchor · chat.userMessage.sessionReference.messageCount · chat.userMessage.sessionReference.truncated',
-      ),
-    ).toBeTruthy();
-  });
-
-  it('keeps the anchored pill and its range summary on a single line', async () => {
-    const { container } = render(
-      <SessionLinkChip
-        href="cindy://session/session-a?message=message-1"
-        label="Session A"
-        referenceMetadata={{
-          sessionId: 'session-a',
-          messageClientId: 'message-1',
-          range: 'around-anchor',
-          messageCount: 11,
-          truncated: true,
-        }}
-      />,
-    );
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    // 宽度上限必须留在 pill 一侧:加回外层会让 pill 与 summary 抢同一份 240px,
-    // summary 被压成逐字竖排、pill 被 stretch 拉成大椭圆。
     const link = container.querySelector('button[data-session-message-link]');
     expect(link?.className).toContain('items-center');
-    expect(link?.className).not.toContain('max-w-[min(240px,55vw)]');
+    expect(link?.textContent).toBe('Session A');
     expect(
       container.querySelector('[data-inline-reference-chip]')?.parentElement?.className,
     ).toContain('max-w-[min(240px,55vw)]');
-    // summary 单行截断,不参与换行。
-    expect(container.querySelector('[data-session-reference-summary]')?.className).toContain(
-      'truncate',
-    );
   });
 
   it('renders handoff cards as static content without resolving or navigating', () => {
@@ -323,6 +294,32 @@ describe('sidebar-embedded session navigation boundary', () => {
 
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByText('Nightly')).toBeTruthy();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('renders device, plugin and hook source labels as static content', () => {
+    render(
+      embedded(
+        <>
+          <MessageSourceLabels
+            sourcePlugin={{ pluginId: 'ghost.notes', name: 'Notes' }}
+            sourceDevice={{ deviceId: 'phone-1', platform: 'mobile' }}
+          />
+          <MessageSourceLabels
+            automationOrigin={{
+              kind: 'scheduler',
+              scheduleId: 'hook:slack-1',
+              scheduleName: 'Hook · Team Slack',
+            }}
+          />
+        </>,
+      ),
+    );
+
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('Notes')).toBeTruthy();
+    expect(screen.getByText('Dash iPhone')).toBeTruthy();
+    expect(screen.queryByText('Hook · Team Slack')).toBeNull();
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 

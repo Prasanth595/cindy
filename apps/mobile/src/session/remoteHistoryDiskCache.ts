@@ -32,6 +32,7 @@ function validSummary(value: unknown, depth = 0): boolean {
   const s = value as Record<string, unknown>;
   return ['key', 'firstMessageId', 'lastMessageId', 'revision'].every(key => typeof s[key] === 'string')
     && ['startedAtMs', 'endedAtMs', 'messageCount', 'toolCount'].every(key => typeof s[key] === 'number' && Number.isFinite(s[key]))
+    && (s.parentToolUseId === undefined || typeof s.parentToolUseId === 'string')
     && typeof s.isStreaming === 'boolean' && (!s.preview || validSummary(s.preview, depth + 1));
 }
 function validItems(value: unknown, depth = 0): boolean {
@@ -39,7 +40,7 @@ function validItems(value: unknown, depth = 0): boolean {
   return value.every(item => item && typeof item.key === 'string' && (
     item.type === 'messages' ? Array.isArray(item.messages) && item.messages.every((m: RemoteMessage) =>
       m && typeof m.id === 'string' && typeof m.clientId === 'string' && typeof m.role === 'string'
-      && typeof m.createdAt === 'string')
+      && typeof m.createdAt === 'string') && (!item.deferred || validSummary(item.deferred))
       : item.type === 'work' && validSummary(item.summary)
         && (!item.children || validItems(item.children, depth + 1))
   ));
@@ -64,9 +65,9 @@ export async function readHistoryDisk(authority: Authority): Promise<HistoryView
       ready: true, loading: false, error: null };
   } catch { return null; }
 }
-export async function writeHistoryDisk(authority: Authority, snapshot: HistoryViewSnapshot<RemoteMessage>): Promise<void> {
-  if (!authority.current() || !snapshot.ready || snapshot.loading || snapshot.error) return;
-  if (historyValueBytes([snapshot.items, snapshot.details, snapshot.expanded, snapshot.nextCursor], HISTORY_DISK_ITEM_BYTES - 1024) > HISTORY_DISK_ITEM_BYTES - 1024) return;
+export async function writeHistoryDisk(authority: Authority, snapshot: HistoryViewSnapshot<RemoteMessage>): Promise<boolean> {
+  if (!authority.current() || !snapshot.ready || snapshot.loading || snapshot.error) return false;
+  if (historyValueBytes([snapshot.items, snapshot.details, snapshot.expanded, snapshot.nextCursor], HISTORY_DISK_ITEM_BYTES - 1024) > HISTORY_DISK_ITEM_BYTES - 1024) return false;
   try {
     const messages = (rows: readonly RemoteMessage[]) => rows.map(row =>
       row.agentMeta?.isStreaming === true || row.agentMeta?.streaming === true
@@ -78,15 +79,15 @@ export async function writeHistoryDisk(authority: Authority, snapshot: HistoryVi
       ...(value.preview ? { preview: summary(value.preview) } : {}),
     });
     const items = (values: readonly HistoryViewItem<RemoteMessage>[]): HistoryViewItem<RemoteMessage>[] => values.map(item =>
-      item.type === 'messages' ? { ...item, messages: messages(item.messages) }
+      item.type === 'messages' ? { ...item, messages: messages(item.messages), ...(item.deferred ? { deferred: summary(item.deferred) } : {}) }
         : { ...item, summary: summary(item.summary), ...(item.children ? { children: items(item.children) } : {}) });
     const text = JSON.stringify({ version: 1, items: items(snapshot.items),
       details: [...snapshot.details].filter(([, detail]) => detail.complete && !detail.loading && !detail.error)
         .map(([key, detail]) => [key, { ...detail, messages: messages(detail.messages) }]),
       expanded: [...snapshot.expanded], nextCursor: snapshot.nextCursor, hasMore: snapshot.hasMore,
     });
-    await (await disk()).write(authority.key, text, authority.current);
-  } catch { /* Cache failure must not affect reading or synchronizing. */ }
+    return await (await disk()).write(authority.key, text, authority.current);
+  } catch { return false; /* Retain outbox ownership when caching fails. */ }
 }
 
 export function clearHistoryDisk(deviceId?: string, sessionId?: string): Promise<void> {

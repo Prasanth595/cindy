@@ -3,6 +3,8 @@ import { HistoryViewController, projectHistoryView, type HistoryWorkSummary } fr
 import { buildMobileHistoryRenderItems } from '../session/mobileHistoryRender';
 import { buildMobileMessageRenderItems, type MobileMessageRenderItem } from '../session/messageRenderModel';
 import type { RemoteMessage } from '../session/types';
+import { reconcileMobileMessageRenderItems } from '../session/messageRenderReconcile';
+import { CONTINUE_AFTER_ERROR_PROMPT } from '@cindy/maker-shared/synthetic-trigger';
 
 function row(index: number, role: RemoteMessage['role'], content: unknown, toolUseId: string | null = null): RemoteMessage {
   return { id: `id-${index}`, clientId: `client-${index}`, sessionId: 'session', role, content, toolUseId,
@@ -14,7 +16,7 @@ const outline = (items: MobileMessageRenderItem[]): unknown[] => items.map((item
   ? { key: item.key, type: item.type, children: outline(item.children.filter((child) => child.type === 'work_group' || child.type === 'message')) }
   : { key: item.key, type: item.type });
 
-function harness(rows: RemoteMessage[], streaming = false) {
+function harness(rows: RemoteMessage[], streaming = false, lazyDetails = false) {
   const details = vi.fn(async (summary: HistoryWorkSummary, after?: string) => {
     const start = rows.findIndex((item) => item.id === (after ?? summary.firstMessageId)) + (after ? 1 : 0);
     const end = rows.findIndex((item) => item.id === summary.lastMessageId) + 1;
@@ -23,7 +25,7 @@ function harness(rows: RemoteMessage[], streaming = false) {
   });
   const expanded = vi.fn(async (_refs: readonly HistoryWorkSummary[]) => undefined);
   const view = new HistoryViewController<RemoteMessage>({
-    page: async () => ({ version: 1, items: projectHistoryView(rows, streaming), hasMore: false, nextCursor: null }),
+    page: async () => ({ version: 1, items: projectHistoryView(rows, streaming, lazyDetails), hasMore: false, nextCursor: null }),
     details, expanded,
   });
   const render = () => buildMobileHistoryRenderItems({ view, snapshot: view.getSnapshot(), messages: [], streaming, sessionId: 'session' });
@@ -31,6 +33,61 @@ function harness(rows: RemoteMessage[], streaming = false) {
 }
 
 describe('remote history preserves original folding', () => {
+  it.each([false, true])('keeps the earlier answer when recovery follows an unloaded gap (streaming=%s)', async (streaming) => {
+    const rows = [row(0, 'user', 'Work'), thought(1), row(2, 'assistant', 'Earlier answer'),
+      row(4000, 'user', JSON.stringify({ text: CONTINUE_AFTER_ERROR_PROMPT })),
+      row(4001, 'assistant', 'Continuing')];
+    const { view, render } = harness(rows, streaming);
+    await view.refresh();
+    expect(render().map(item => item.key)).toEqual([
+      'message-client-0', 'work-client-1', 'message-client-2', 'message-client-4001',
+    ]);
+    expect(outline(render())).toEqual(outline(buildMobileMessageRenderItems(rows, { isSessionStreaming: streaming })));
+    view.setActive(false);
+  });
+
+  it.each([false, true])('keeps steering visible while recovering work on both sides (streaming=%s)', async (streaming) => {
+    const rows = [row(0, 'user', 'Work'), row(1, 'assistant', 'Before steer'), thought(2),
+      { ...row(3, 'user', 'Check this too'), agentMeta: { delivery: 'steer' } },
+      row(4, 'assistant', 'After steer'), thought(5),
+      row(6, 'user', JSON.stringify({ text: CONTINUE_AFTER_ERROR_PROMPT })),
+      row(7, 'assistant', 'Continuing')];
+    const { view, render } = harness(rows, streaming);
+    await view.refresh();
+    expect(render().map(item => item.key)).toEqual([
+      'message-client-0', 'work-summary-client-2', 'message-client-3',
+      'work-summary-client-5', 'message-client-7',
+    ]);
+    expect(outline(render())).toEqual(outline(buildMobileMessageRenderItems(rows, { isSessionStreaming: streaming })));
+    view.setActive(false);
+  });
+
+  it.each([CONTINUE_AFTER_ERROR_PROMPT, { text: CONTINUE_AFTER_ERROR_PROMPT },
+    JSON.stringify({ text: CONTINUE_AFTER_ERROR_PROMPT, images: [], files: [] }),
+  ])('keeps recovered work folded after reopening and restores details on expansion: %j', async (content) => {
+    const rows = [row(0, 'user', 'Work'), row(1, 'assistant', 'Checking'), thought(2),
+      row(3, 'error', { message: 'Usage limit reached' }),
+      row(4, 'user', content),
+      row(5, 'assistant', 'Resuming'), thought(6),
+      { ...row(7, 'assistant', 'Done'), agentMeta: { turnCompleted: true } }];
+    const { view, render } = harness(rows);
+    await view.refresh();
+    const output = render();
+    expect(output.map((item) => item.key)).toEqual([
+      'message-client-0', 'work-summary-client-2', 'message-client-3',
+      'work-summary-client-6', 'message-client-7',
+    ]);
+    const work = output[1];
+    if (work.type !== 'work_group') throw new Error('Missing recovered work');
+    expect(work.children[0]).toMatchObject({ type: 'message', message: { body: 'Checking' } });
+    const actions = work.children.find((item) => item.type === 'work_group');
+    if (actions?.type !== 'work_group') throw new Error('Missing action details');
+    actions.deferred!.setVisible!(true, false);
+    await vi.waitFor(() => expect([...view.getSnapshot().details.values()].some((state) => state.complete)).toBe(true));
+    expect(outline(render())).toEqual(outline(buildMobileMessageRenderItems(rows)));
+    view.setActive(false);
+  });
+
   it.each([0, 2_000_000_000_000])('keeps a local send before an early reply with phone time %s', async (phoneTime) => {
     const rows = [row(0, 'user', 'Earlier'), row(1, 'assistant', 'Done')];
     const { view } = harness(rows);
@@ -118,11 +175,13 @@ describe('remote history preserves original folding', () => {
     ['explicit user boundary', [row(0, 'user', 'First'), thought(1), row(2, 'assistant', 'Done'), row(3, 'user', 'Second'), thought(4), row(5, 'assistant', 'Done')]],
   ] as const)('keeps the same group identities and nesting: %s', async (_name, fixture) => {
     const rows = [...fixture];
-    const { view, render, details } = harness(rows);
+    for (const lazyDetails of [false, true]) {
+    const { view, render, details } = harness(rows, false, lazyDetails);
     await view.refresh();
     expect(outline(render())).toEqual(outline(buildMobileMessageRenderItems(rows, { isSessionStreaming: false })));
     expect(details).not.toHaveBeenCalled();
     view.setActive(false);
+    }
   });
 
   it('opens only the chosen inner group, reads all pages, and retains the outer hierarchy', async () => {
@@ -169,4 +228,33 @@ describe('remote history preserves original folding', () => {
     group.deferred!.setVisible!(false, false);
     view.setActive(false);
   });
+});
+
+
+it.each([true, false])('loads a folded subagent only on expansion while retaining the visible turn (running=%s)', async (streaming) => {
+  const agent = { ...call(1, 'Agent', 'a'), content: { toolName: 'Agent', toolUseId: 'a', input: { description: 'Inspect' } } };
+  const children = Array.from({ length: 40 }, (_, i) => ({ ...thought(i + 2), agentMeta: { parentUuid: 'a' } }));
+  const rows = [row(0, 'user', 'Investigate'), agent, ...children, row(42, 'assistant', 'Visible response')];
+  const { view, details, render } = harness(rows, streaming, true);
+  await view.refresh();
+  expect(details).not.toHaveBeenCalled();
+  const first = render();
+  expect(first.some((item) => item.type === 'message' && item.message.body === 'Visible response')).toBe(true);
+  const card = first.find((item) => item.type === 'subagent_group');
+  if (card?.type !== 'subagent_group') throw new Error('missing card');
+  expect(card.childItems).toEqual([]);
+  expect(card.status).toBe(streaming ? 'running' : 'completed');
+  expect(card.deferred).toBeDefined();
+  card.deferred!.toggle();
+  await vi.waitFor(() => expect(view.getSnapshot().details.get(card.deferred!.key!)?.complete).toBe(true));
+  expect(details).toHaveBeenCalledTimes(20);
+  const expanded = render().find((item) => item.type === 'subagent_group');
+  expect(expanded?.type === 'subagent_group' && expanded.childItems.length).toBeGreaterThan(0);
+  expect(expanded?.type === 'subagent_group' && expanded.deferred?.loading).toBe(false);
+  if (expanded?.type === 'subagent_group' && expanded.deferred) {
+    const pending = { ...expanded, deferred: { ...expanded.deferred, loading: true } };
+    const reconciled = reconcileMobileMessageRenderItems([pending], [expanded]);
+    expect(reconciled[0]).toBe(expanded);
+  }
+  view.setActive(false);
 });

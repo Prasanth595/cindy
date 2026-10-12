@@ -17,7 +17,8 @@
  * The pool itself is in-memory; on app restart, hydrate() rebuilds it from disk.
  */
 
-import { app, ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog } from 'electron';
+import { t } from '../i18n.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -31,7 +32,7 @@ import {
   readSshConfigDetailed,
   removeManagedHost,
   updateManagedHostFields,
-  installRemoteAgent,
+  installRemoteAgent as installRemoteAgentPackage,
   PINNED_PI_VERSION,
   probeRemoteAgent,
   uninstallRemoteAgent,
@@ -75,6 +76,7 @@ import { ensurePiManagerDaemon } from '@cindy/maker-remote-ssh';
 import { PROTOCOL_VERSION as PI_MANAGER_PROTOCOL_VERSION } from '@cindy/maker-pi-manager';
 import { invalidateRemotePiPathCaches, redactCredentialText } from '../maker-host/pi-remote-transport.js';
 import { serializeEnvBlock } from './env-block.js';
+import { confirmHostKeyChange } from './host-key-recovery.js';
 import { classifyConnectFailure } from './connect-failure.js';
 import {
   addKeyToAgent,
@@ -123,13 +125,28 @@ import {
   removeRemoteMcpForwardPref,
 } from './codex-remote-mcp.js';
 import { ensureDaemonRunning } from '../maker-host/cc-manager-client.js';
-import { getMakerIfReady, softCloseCcSessionsForHost } from '../maker-host/index.js';
+import { getMakerIfReady, softCloseCcSessionsForHost, listSshCodexProviders } from '../maker-host/index.js';
+import { readSshCodexModelList } from './codex-model-list.js';
+import { prepareRemoteAgentInstall } from './codex-install-lifecycle.js';
+import { getRemoteCodexLiveTurnChecker } from '../maker-host/remote-session-start-ensure.js';
 import { withRehydrateCloseSuppressed } from '../maker-host/rehydrateCloseSuppression.js';
 import { RemoteHostHydrationQueue } from './hydration-queue.js';
 
 export { redactSshSensitiveText };
 
 const log = createLogger('remote-ssh/ipc');
+
+// Shared by manual and silent installation inside their existing per-host install lock.
+async function installRemoteAgent(
+  host: RemoteHost, agentKind: RemoteAgentKind, onProgress: (event: InstallProgressEvent) => void,
+): Promise<InstallResult> {
+  await prepareRemoteAgentInstall(agentKind, {
+    isInstalled: async () => (await probeRemoteAgent(host, 'codex')).installed,
+    hasLiveTurn: () => getRemoteCodexLiveTurnChecker()?.(host.id) ?? true,
+    stopDaemon: () => killRemoteCodexDaemon(host),
+  });
+  return installRemoteAgentPackage(host, agentKind, onProgress);
+}
 /**
  * pi-manager daemon 的空闲回收阈值(与 packages/maker-pi-manager 的
  * PiSessionRegistry 默认 idleTimeoutMs 对齐, 1_800_000 = 30min)。
@@ -153,6 +170,7 @@ export const REMOTE_SSH_INVOKE = {
   RUN_AGENT_ONE_SHOT: 'maker:remote-ssh:run-agent-one-shot',
   // Phase B+ — Codex credential sync
   CHECK_CODEX_AUTH: 'maker:remote-ssh:check-codex-auth',
+  LIST_CODEX_MODELS: 'maker:remote-ssh:list-codex-models',
   SYNC_CODEX_AUTH: 'maker:remote-ssh:sync-codex-auth',
   // Phase B++ — SSH key setup wizard
   LIST_LOCAL_KEYS: 'maker:remote-ssh:list-local-keys',
@@ -394,8 +412,8 @@ function isAgentCacheHit(
  * 能正确 toast 的 SSH_AGENT_NOT_INSTALLED IPC error, 引导用户去 Settings 安装。
  *
  * Claude Code 首次检查走完整 probeRemoteAgent,确保 Cindy 管理的远端 runtime
- * 与当前 pin 一致；否则客户端升级后旧 binary 会永久命中 `test -x`。Codex 仍
- * 只做存在性检查。两者命中内存 cache 后续都是 ~0ms。
+ * 与当前 pin 一致；Codex 同样探测版本及完整包布局，旧 standalone 触发升级。
+ * 各引擎命中内存 cache 后续都是 ~0ms。
  */
 export async function ensureRemoteAgentInstalled(
   hostId: string,
@@ -410,20 +428,9 @@ export async function ensureRemoteAgentInstalled(
     throwIpcError('SSH_NOT_CONNECTED', `ssh host ${hostId} not connected`);
   }
 
-  let ok: boolean;
-  let installedVersion: string | null = null;
-  if (agentKind === 'claude-code' || agentKind === 'pi') {
-    const probe = await probeRemoteAgent(host, agentKind);
-    ok = probe.installed;
-    installedVersion = probe.installedVersion;
-  } else {
-    const binPath = '$HOME/.xdt-server/v1/codex-home/packages/standalone/current/codex';
-    const result = await host.exec(`test -x ${binPath} && echo OK || echo MISSING`, {
-      timeoutMs: 5_000,
-      label: 'check-agent-installed',
-    });
-    ok = result.stdout.trim() === 'OK';
-  }
+  const probe = await probeRemoteAgent(host, agentKind);
+  const ok = probe.installed;
+  const installedVersion = probe.installedVersion;
   if (!ok) {
     const friendlyKind = agentKind === 'codex' ? 'Codex' : agentKind === 'pi' ? 'Pi' : 'Claude Code';
     throwIpcError(
@@ -545,6 +552,7 @@ export async function ensureRemoteAgentInstalledOrInstall(
     // 只保留最后 6 条避免 message 太长 (toast 现已支持 whitespace-pre-wrap 多行)。
     const TAIL_LIMIT = 6;
     const logTail: string[] = [];
+    let failureNotified = false;
     try {
       const result = await installRemoteAgent(host, agentKind, (progress) => {
         // 维护尾部 log 串 — 只收 install-log 行做诊断补充。error event 不收:
@@ -584,6 +592,7 @@ export async function ensureRemoteAgentInstalledOrInstall(
           : baseMsg;
         log.warn('silent-install: failed (not ready)', { hostId, agentKind, error: composedMsg });
         broadcastSilentInstallStatus({ hostId, agentKind, phase: 'failed', message: composedMsg });
+        failureNotified = true;
         throwIpcError('SSH_INSTALL_FAILED', composedMsg);
       }
       // 装好后标 cache, 后续 ensureRemoteAgentInstalled 短路返回。
@@ -605,12 +614,15 @@ export async function ensureRemoteAgentInstalledOrInstall(
       // 不是安装失败;改写成 SSH_INSTALL_FAILED 会误导调用方走安装重试分支。
       const msg = err instanceof Error ? err.message : String(err);
       const code = (err as { code?: string }).code;
+      // Every started attempt needs a terminal event, including preflight IPC errors.
+      if (!failureNotified) {
+        broadcastSilentInstallStatus({ hostId, agentKind, phase: 'failed', message: msg });
+      }
       if (!code || !isIpcErrorCode(code)) {
         log.error('silent-install: unexpected error', { hostId, agentKind, error: msg });
-        broadcastSilentInstallStatus({ hostId, agentKind, phase: 'failed', message: msg });
         throwIpcError('INTERNAL', msg);
       }
-      // 已有白名单 code (比如上面手动 throwIpcError 走到这) — broadcast 已发, 直接 rethrow
+      // Preserve recognized IPC codes after closing the installation status.
       throw err;
     }
   })();
@@ -1404,6 +1416,43 @@ export function registerRemoteSshIpc(): void {
     });
   });
 
+  // Local UI only: trust changes require a native confirmation with main-owned details.
+  ipcMain.handle('maker:remote-ssh:review-host-key', async (event, args: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = requireString(requireObject(args).id, 'id');
+    const host = getPool().get(id);
+    if (!host) throwIpcError('SSH_HOST_NOT_FOUND', `unknown host: ${id}`);
+    const store = getSharedHostKeyStore();
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    if (!parent) throwIpcError('SSH_CONNECT_FAILED', 'The requesting window is no longer available.');
+    try {
+      const updated = await confirmHostKeyChange({
+        getHost: () => getPool().get(id),
+        store,
+        isWindowAlive: () => !parent.isDestroyed(),
+        confirm: async (mismatch) => {
+          const result = await dialog.showMessageBox(parent, {
+            type: 'warning',
+            title: t('settings.remote.hostKey.title'),
+            message: t('settings.remote.hostKey.explanation').replace('{{host}}', () => mismatch.host),
+            detail: t('settings.remote.hostKey.details')
+              .replace('{{trusted}}', () => mismatch.trusted)
+              .replace('{{presented}}', () => mismatch.presented)
+              .replace('{{file}}', () => store.filePath),
+            buttons: [t('settings.remote.hostKey.cancel'), t('settings.remote.hostKey.trust')],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+          return result.response === 1;
+        },
+      });
+      return { updated };
+    } catch {
+      throwIpcError('SSH_CONNECT_FAILED', t('settings.remote.hostKey.updateFailed'));
+    }
+  });
+
   ipcMain.handle(REMOTE_SSH_INVOKE.CONNECT, async (_event, args: unknown) => {
     const obj = requireObject(args);
     const id = requireString(obj.id, 'id');
@@ -1703,6 +1752,10 @@ export function registerRemoteSshIpc(): void {
   });
 
   // ── Codex auth sync (Phase B+) ───────────────────────────────────────────
+  ipcMain.handle(REMOTE_SSH_INVOKE.LIST_CODEX_MODELS, async (event, args: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return readSshCodexModelList(args, listSshCodexProviders);
+  });
 
   ipcMain.handle(REMOTE_SSH_INVOKE.CHECK_CODEX_AUTH, async (_event, args: unknown) => {
     const obj = requireObject(args);
