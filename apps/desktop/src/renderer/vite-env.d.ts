@@ -3136,6 +3136,11 @@ interface ElectronAPI {
     params: import('../shared/pngClipboard').CopyPngToClipboardParams,
   ) => Promise<void>;
 
+  /** Copy text to the local clipboard; rejects unless it reads back intact. */
+  copyTextToClipboard: (
+    params: import('../shared/textClipboard').CopyTextToClipboardParams,
+  ) => Promise<void>;
+
   /**
    * Copy an image or video (resolved from `xdt-image://` / `xdt-video://`
    * URL, or absolute path) into the system clipboard as a FILE REFERENCE.
