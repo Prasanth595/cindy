@@ -113,6 +113,18 @@ describe('Chat Server cloud companions', () => {
     expect(calls('/executions/claim').length).toBeGreaterThan(1);
   });
 
+  it('claims nothing while the home could not be registered yet', async () => {
+    claimed = true;
+    patch = () => ({ status: 503, body: { error: { code: 'UNAVAILABLE' } } });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls(`/actors/${botActor}`, 'PATCH').length).toBeGreaterThan(0);
+    expect(calls('/executions/claim')).toHaveLength(0);
+    // Registration succeeds on a later cycle: this computer is the home and starts claiming.
+    patch = () => { home = 'desk-1'; return { body: { id: botActor, homeDeviceId: 'desk-1' } }; };
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls('/executions/claim').length).toBeGreaterThan(0);
+  });
+
   it('adopts another computer as home and stops claiming its work', async () => {
     patch = () => { home = 'laptop'; return { status: 409, body: { error: { code: 'HOME_DEVICE_CONFLICT', details: { homeDeviceId: 'laptop' } } } }; };
     await vi.advanceTimersByTimeAsync(2000);

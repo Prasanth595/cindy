@@ -1011,13 +1011,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (!socket) connect();
       for (const actor of actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active')) {
         if (running.has(actor.id)) continue;
-        // The server only hands a companion's work to its home; skip the request.
-        if (companionHome && actor.homeDeviceId && actor.homeDeviceId !== selfDeviceId) continue;
-        // Shadowed here (demoted, or run by another installation on this device): never claim.
-        if (companionHome && companion?.isShadowed(actor.externalId)) continue;
-        // Homed here: claim only once this installation is confirmed to run it (the server
-        // tells installations on one device apart only by this check).
-        if (companionHome && actor.homeDeviceId === selfDeviceId && !companion?.installConfirmed(actor.externalId)) continue;
+        // Only the registered home runs a companion: skip while the home is elsewhere or not yet
+        // registered (an unset home would let any copy of the owner claim it).
+        if (companionHome && actor.homeDeviceId !== selfDeviceId) continue;
+        // Shadowed here (demoted, or run by another installation on this device), or this
+        // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
+        if (companionHome && (companion?.isShadowed(actor.externalId) || !companion?.installConfirmed(actor.externalId))) continue;
         let claim: { execution: Execution | null };
         const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
         try {

@@ -27,12 +27,16 @@ export interface CompanionWriteFence {
 /** Local profile, Bot Home and Session operations, all through the existing services. */
 export interface CompanionMaterializeHost {
   readProfile: (botId: string) => Promise<CompanionLocalProfile | null>;
+  /** The cloud avatar must be restored (an image that cannot be downloaded fails the call). */
   createProfile: (input: {
     id: string; name: string; description: string; identitySource: string; userContextSource: string; avatar: string | null;
   }, fence: CompanionWriteFence) => Promise<void>;
-  /** Also makes the profile active again. Undefined fields stay unchanged. */
+  /**
+   * Also makes the profile active again. Undefined fields stay unchanged; a cloud avatar replaces
+   * the local one (failing like createProfile), since the home publishes its avatar back.
+   */
   updateProfile: (input: {
-    id: string; name: string; description?: string; identitySource?: string; userContextSource?: string;
+    id: string; name: string; description?: string; identitySource?: string; userContextSource?: string; avatar: string | null;
   }, fence: CompanionWriteFence) => Promise<void>;
   writeSystemPrompt: (botId: string, text: string, fence: CompanionWriteFence) => Promise<void>;
   /** Copy the companion's Home (identity, prompt, user file, memories, skills) aside; returns where. */
@@ -112,7 +116,7 @@ export async function materializeCompanion(input: {
       identitySource: text(profile?.soul) ?? '', userContextSource: text(profile?.user) ?? '', avatar: actor.avatar }, fence));
   } else {
     await step(() => host.updateProfile({ id: botId, name, description: text(profile?.description),
-      identitySource: text(profile?.soul), userContextSource: text(profile?.user) }, fence));
+      identitySource: text(profile?.soul), userContextSource: text(profile?.user), avatar: actor.avatar }, fence));
   }
   const systemPrompt = text(profile?.systemPrompt);
   if (systemPrompt !== undefined) await step(() => host.writeSystemPrompt(botId, systemPrompt, fence));

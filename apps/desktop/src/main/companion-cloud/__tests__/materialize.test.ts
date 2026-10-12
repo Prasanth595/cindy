@@ -60,7 +60,7 @@ describe('materializeCompanion', () => {
     });
     const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
     expect(local.host.createProfile).not.toHaveBeenCalled();
-    expect(local.host.updateProfile).toHaveBeenCalledWith({ id: 'bot_mia', name: 'Mia', description: 'helper', identitySource: 'I am Mia', userContextSource: 'Owner likes tea' }, expect.anything());
+    expect(local.host.updateProfile).toHaveBeenCalledWith({ id: 'bot_mia', name: 'Mia', description: 'helper', identitySource: 'I am Mia', userContextSource: 'Owner likes tea', avatar: '🦊' }, expect.anything());
     expect(vi.mocked(local.host.removeMemory).mock.calls.map(call => call[1])).toEqual(['user_old.md']);
     expect([...local.memories.keys()].sort()).toEqual(['user_edited.md', 'user_never.md', 'user_same.md']);
     expect(local.host.restoreMemory).not.toHaveBeenCalled();
@@ -183,6 +183,16 @@ describe('materializeCompanion', () => {
     expect(state.bot('bot_mia')?.demoted).toBeUndefined();
     // The never-synced copy was backed up once, not again on the retry.
     expect(backupHome).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays demoted when the cloud avatar cannot be restored, so a stale one is never published', async () => {
+    const { api } = cloud([profilePref]);
+    const local = fakeLocal({ updateProfile: vi.fn(async () => { throw new Error('AVATAR_UNAVAILABLE'); }) });
+    local.setProfile({ status: 'active', displayName: 'Old', description: '' });
+    const { state } = memoryState();
+    await expect(materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM }))
+      .rejects.toThrow('AVATAR_UNAVAILABLE');
+    expect(state.bot('bot_mia')?.demoted).toBe(true);
   });
 
   it('refuses a profile that is being deleted', async () => {
