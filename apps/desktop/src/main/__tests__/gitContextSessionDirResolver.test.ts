@@ -318,7 +318,7 @@ describe('collectTouchedDirs', () => {
       row(50, 'file_change', { changes: [{ path: path.join(client, 'src', 'panel.tsx') }, { path: 'relative.ts' }] }),
       row(40, 'edit', { path: path.join(piRepo, 'price.ts'), edits: [] }),
       row(35, 'write', { path: 'relative-to-task.ts', content: '' }),
-      row(30, 'bash', { command: `cd ${server} && git status` }),
+      row(30, 'bash', { command: 'cd /work/server && git status' }),
       row(20, 'Edit', { file_path: path.join(server, 'limits.ts') }),
       row(10, 'Read', { file_path: path.join(piRepo, 'ignored.ts') }),
     ]);
@@ -330,11 +330,13 @@ describe('collectTouchedDirs', () => {
   });
 
   it('records Pi bash and Codex exec directories as command-only', () => {
+    // Shell commands carry POSIX paths on every platform (Git Bash on Windows).
+    const piShellDir = '/work/pi-repo';
     expect(collectTouchedDirs([
-      row(2, 'bash', { command: `cd '${piRepo}' && ls`, timeout: 30 }),
+      row(2, 'bash', { command: `cd '${piShellDir}' && ls`, timeout: 30 }),
       row(1, 'exec', { cwd: server }),
     ])).toEqual([
-      { dir: piRepo, edited: false, firstSeenAt: 2 },
+      { dir: path.resolve(piShellDir), edited: false, firstSeenAt: 2 },
       { dir: server, edited: false, firstSeenAt: 1 },
     ]);
   });
