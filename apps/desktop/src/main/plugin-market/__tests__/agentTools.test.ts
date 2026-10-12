@@ -103,6 +103,16 @@ describe('Agent plugin discovery and installation', () => {
     expect(h.release).toHaveBeenCalledOnce();
   });
 
+  it('keeps the guidance when the service reports a catalog-level organization outage', async () => {
+    const h = harness();
+    h.market.install.mockImplementation(async () =>
+      throwIpcError('PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE', 'Organization plugin catalog is unavailable'));
+    const result = await h.tools.install({ pluginId: 'catalog-id', releaseId: 'release-1' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE' });
+    expect(String(result.message)).toContain('Retry later');
+    expect(h.release).toHaveBeenCalledOnce();
+  });
+
   it('keeps an ordinary install failure unavailable', async () => {
     const h = harness();
     h.market.install.mockRejectedValue(new Error('disk failed'));

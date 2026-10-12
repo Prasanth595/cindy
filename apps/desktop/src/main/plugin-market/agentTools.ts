@@ -122,11 +122,15 @@ export function createPluginMarketAgentTools(deps: PluginMarketAgentDeps) {
             message: 'The user declined this plugin installation. Do not retry unless the user asks for it again.',
           };
         }
-        if (error instanceof ServerApiError && isPluginMarketPassthroughErrorCode(error.code)) {
+        // The service raises catalog-level outages as IPC errors; detail/download
+        // failures arrive as server errors. Both carry the same fixed codes.
+        const accessCode =
+          isIpcError(error) || error instanceof ServerApiError ? error.code : null;
+        if (accessCode && isPluginMarketPassthroughErrorCode(accessCode)) {
           return {
             ok: false,
-            errorCode: error.code,
-            message: agentMarketAccessMessage(error.code),
+            errorCode: accessCode,
+            message: agentMarketAccessMessage(accessCode),
           };
         }
         return {

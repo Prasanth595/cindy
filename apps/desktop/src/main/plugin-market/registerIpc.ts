@@ -68,9 +68,15 @@ export function defaultMarketPluginSyncOutcome(
   snapshot: PluginMarketSnapshot,
   reconciliationOutcome: 'completed' | 'failed' = 'completed',
 ): DefaultMarketPluginSyncOutcome {
+  // The organization catalog was not reconciled. Only an upgrade can fix a
+  // client-version rejection; every other reason may clear on retry.
+  const organizationRetryable =
+    Boolean(snapshot.organizationAccessError)
+    && snapshot.organizationAccessError !== 'PLUGIN_NAMESPACE_CLIENT_REQUIRED';
   if (
     (snapshot.unavailableReason === null || snapshot.unavailableReason === 'not-configured')
     && reconciliationOutcome === 'completed'
+    && !organizationRetryable
   ) {
     return 'completed';
   }
@@ -98,6 +104,7 @@ export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyn
     if (outcome === 'failed') {
       log.warn('default plugin startup sync incomplete', {
         unavailableReason: snapshot.unavailableReason,
+        organizationAccessError: snapshot.organizationAccessError ?? null,
       });
     }
     return outcome;
