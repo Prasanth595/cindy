@@ -1,3 +1,5 @@
+import { buildSkillList } from './skillListProjection';
+import { prepareSkillScanGrants } from './skillScanGrants';
 import {
   scanClaudeCustomizations, scanCodexCustomizations, scanPiCustomizations,
 } from '@cindy/maker-core/customization-scanner';
@@ -12,7 +14,19 @@ interface ParentPort {
 // managed-plugin resolver or write commands; discovery semantics stay in core.
 const parentPort = (process as unknown as { parentPort?: ParentPort }).parentPort;
 parentPort?.once('message', async ({ data: request }) => {
-  if (request?.kind !== 'scan' || typeof request.id !== 'string') return;
+  if (!request || typeof request.id !== 'string') return;
+  if (request.kind === 'project' || request.kind === 'grants') {
+    try {
+      const result = request.kind === 'project' ? buildSkillList(request.input) : prepareSkillScanGrants(request.input);
+      parentPort.postMessage({ kind: 'result', id: request.id, result });
+    } catch {
+      parentPort.postMessage({ kind: 'result', id: request.id, result: request.kind === 'project'
+        ? { skills: [], sources: [{ kind: 'skill', scope: 'global', path: '', status: { state: 'error', message: 'Skill list projection failed' } }] }
+        : { entries: [], records: [], error: 'Skill grant inspection failed' } });
+    }
+    return;
+  }
+  if (request.kind !== 'scan') return;
   const scanners = {
     'claude-code': scanClaudeCustomizations,
     codex: scanCodexCustomizations,

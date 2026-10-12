@@ -1,11 +1,16 @@
 import { EventEmitter } from 'node:events';
+import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CustomizationScanClient, type CustomizationScanChild } from '../customizationScanClient';
 import type { CustomizationScanRequest } from '../customizationScanProtocol';
 
 class FakeScanner extends EventEmitter implements CustomizationScanChild {
   postMessage = vi.fn<(message: CustomizationScanRequest) => void>();
-  kill = vi.fn(() => true);
+  autoExit = true;
+  kill = vi.fn(() => {
+    if (this.autoExit) queueMicrotask(() => this.emit('exit', 0));
+    return true;
+  });
 
   reply(result = { items: [], errors: [] }): void {
     const request = this.postMessage.mock.calls.at(-1)![0];
@@ -16,6 +21,26 @@ class FakeScanner extends EventEmitter implements CustomizationScanChild {
 afterEach(() => vi.useRealTimers());
 
 describe('bounded customization discovery', () => {
+  it('accepts cyclic YAML metadata in list projection requests', async () => {
+    const child = new FakeScanner();
+    const client = new CustomizationScanClient({ fork: () => child });
+    const expected = { skills: [], sources: [] };
+    child.postMessage.mockImplementation((request) => {
+      const packet = structuredClone(request);
+      queueMicrotask(() => child.emit('message', { kind: 'result', id: packet.id, result: expected }));
+    });
+    const frontmatter = matter('---\na: &a { b: *a }\n---\nskill').data;
+    const input = { projects: [], listed: { items: [{ engine: 'pi' as const, kind: 'skill', scope: 'user',
+      name: 'cyclic', absolutePath: '/tmp/.agents/skills/cyclic', frontmatter }], errors: [] },
+      registryEntries: [], managedSkillRoots: [], builtInSkills: [], disabledPaths: [],
+      userDataDir: '/tmp/profile', appDataDir: '/tmp/appdata' };
+    await expect(client.request({ kind: 'project', input },
+      (value): value is typeof expected => value !== null && typeof value === 'object',
+      () => expected)).resolves.toEqual(expected);
+    expect(child.postMessage).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+
   it('returns an error and kills an unresponsive scanner while Main timers still run', async () => {
     vi.useFakeTimers();
     const child = new FakeScanner();
@@ -96,11 +121,37 @@ describe('bounded customization discovery', () => {
         child.emit('message', { kind: 'result', id: child.postMessage.mock.calls[0][0].id, result: null });
       }
       expect((await scan).errors).toHaveLength(1);
-      expect(child.kill).toHaveBeenCalledTimes(failure === 'fork' ? 0 : 1);
+      expect(child.kill).toHaveBeenCalledTimes(failure === 'fork' || failure === 'exit' ? 0 : 1);
       client.dispose();
-      expect(child.kill).toHaveBeenCalledTimes(failure === 'fork' ? 0 : 1);
+      expect(child.kill).toHaveBeenCalledTimes(failure === 'fork' || failure === 'exit' ? 0 : 1);
     },
   );
+
+  it('retains terminating children in the limit until exit, even when kill fails', async () => {
+    vi.useFakeTimers();
+    const children: FakeScanner[] = [];
+    const client = new CustomizationScanClient({
+      maxConcurrent: 2, timeoutMs: 100,
+      fork: () => { const child = new FakeScanner(); child.autoExit = false; children.push(child); return child; },
+    });
+    const first = client.scan('pi', {});
+    const second = client.scan('codex', {});
+    children[1].kill.mockImplementation(() => false);
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await first).errors[0].message).toContain('timed out');
+    expect((await second).errors[0].message).toContain('timed out');
+    for (let i = 0; i < 10; i++) expect((await client.scan('pi', {})).errors[0].message).toContain('busy');
+    expect(children).toHaveLength(2);
+    children[0].emit('exit', 0);
+    const refreshed = client.scan('pi', {});
+    expect(children).toHaveLength(3);
+    children[2].reply();
+    expect((await refreshed).errors).toEqual([]);
+    expect((await client.scan('pi', {})).errors[0].message).toContain('busy');
+    children[2].emit('exit', 0);
+    client.dispose();
+    expect(children.every((child) => child.kill.mock.calls.length === 1)).toBe(true);
+  });
 
   it('bounds concurrent children and cancels pending work on shutdown', async () => {
     const child = new FakeScanner();

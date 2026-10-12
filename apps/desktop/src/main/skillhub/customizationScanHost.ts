@@ -1,6 +1,10 @@
+import { onQuit } from '../lifecycle';
+import type { ScanResult } from './scanner';
+import type { SkillListProjectionInput } from './skillListProjection';
+import type { SkillScanGrantInput, SkillScanGrants } from './skillScanGrants';
 import os from 'node:os';
 import path from 'node:path';
-import { app, utilityProcess } from 'electron';
+import { utilityProcess } from 'electron';
 import type { AgentCustomization, ListCustomizationsOptions, ListCustomizationsResult } from '@cindy/maker-core';
 import { createLogger } from '../logger';
 import { CustomizationScanClient } from './customizationScanClient';
@@ -29,11 +33,36 @@ let shutdownRegistered = false;
 export async function scanLocalCustomizations(
   engine: AgentCustomization['engine'], options: ListCustomizationsOptions,
 ): Promise<ListCustomizationsResult> {
-  if (!shutdownRegistered) {
-    app.once('will-quit', () => client.dispose());
-    shutdownRegistered = true;
-  }
+  registerShutdown();
   const result = await client.scan(engine, options);
   if (result.errors.length > 0) log.warn('Customization discovery returned errors', { engine, count: result.errors.length });
+  return result;
+}
+
+function registerShutdown(): void {
+  if (!shutdownRegistered) {
+    onQuit('skillhub-discovery', () => client.dispose());
+    shutdownRegistered = true;
+  }
+}
+
+/** Projection reads user paths only in the same bounded, killable process. */
+export async function projectSkillList(input: SkillListProjectionInput): Promise<ScanResult> {
+  registerShutdown();
+  return client.request({ kind: 'project', input }, (value): value is ScanResult => {
+    const result = value as ScanResult | null;
+    return !!result && Array.isArray(result.skills) && Array.isArray(result.sources);
+  }, (message) => ({ skills: [], sources: [{ kind: 'skill', scope: 'global', path: '',
+    status: { state: 'error', message } }] }));
+}
+
+/** Private snapshots remain on Main; renderer/account checks stay in the IPC handler. */
+export async function inspectSkillListGrants(input: SkillScanGrantInput): Promise<SkillScanGrants> {
+  registerShutdown();
+  const result = await client.request({ kind: 'grants', input }, (value): value is SkillScanGrants => {
+    const result = value as SkillScanGrants | null;
+    return !!result && Array.isArray(result.entries) && Array.isArray(result.records);
+  }, (error) => ({ entries: [], records: [], error }));
+  if (result.error) throw new Error(result.error);
   return result;
 }
