@@ -227,6 +227,20 @@ describe('materializeCompanion', () => {
     expect(state.bot('bot_mia')?.mirror).toMatchObject({ id: 'own-last', createdAt: 1_600_000_000_000 });
   });
 
+  it('stays demoted when the context rebuild fails, until a retry rebuilds it', async () => {
+    const { api } = cloud([profilePref], [roomMessage('m1', 1, 'human', 'hello', 1_700_000_000_000)]);
+    const local = fakeLocal({ rebuildContext: vi.fn(async (): Promise<'rebuilt' | 'busy'> => { throw new Error('RECOVERY_FAILED'); }) });
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    const { state } = memoryState();
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('RECOVERY_FAILED');
+    expect(state.bot('bot_mia')).toMatchObject({ demoted: true, pendingRebuild: true });
+    vi.mocked(local.host.rebuildContext).mockResolvedValue('rebuilt');
+    const retried = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(retried.rebuild).toBe('rebuilt');
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
+    expect(state.bot('bot_mia')?.pendingRebuild).toBeUndefined();
+  });
+
   it('refuses a profile that is being deleted', async () => {
     const { api } = cloud([profilePref]);
     const local = fakeLocal();

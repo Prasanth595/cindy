@@ -192,16 +192,21 @@ export async function materializeCompanion(input: {
   const needsRebuild = inserted > 0 || known?.pendingRebuild === true;
   fence.assertCurrent();
   state.update(botId, actor.id, entry => {
-    delete entry.demoted;
-    // The next take-over (after this copy hands the companion away again) backs it up anew.
-    delete entry.backedUp;
     // Revisions may have moved on while another computer was the home.
     entry.prefsSeeded = false;
     for (const [key, value] of applied) entry.prefs[key] = { ...value, local: true };
     if (!keepCursor) entry.mirror = { sessionId, ...cursor };
     if (needsRebuild) entry.pendingRebuild = true;
   });
+  // Rebuild while still demoted: a failure leaves the copy demoted and the take-over retries.
+  // `busy` (a turn already running) defers the rebuild to the next idle point, as documented.
   const rebuild = needsRebuild ? await rebuildPending({ state, host, botId, actorId: actor.id, sessionId, fence }) : 'skipped';
+  fence.assertCurrent();
+  state.update(botId, actor.id, entry => {
+    delete entry.demoted;
+    // The next take-over (after this copy hands the companion away again) backs it up anew.
+    delete entry.backedUp;
+  });
   return { created: !local, inserted, rebuild, ...(backup !== undefined ? { backup } : {}) };
 }
 
