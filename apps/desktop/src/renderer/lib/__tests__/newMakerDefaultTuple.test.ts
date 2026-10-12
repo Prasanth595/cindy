@@ -331,6 +331,7 @@ describe('resolveNewMakerDefaultTuple', () => {
     const args = { providers: [gateway], providersLoading: false, availableAgents: allAgents,
       availableAgentsLoaded: true, isModelEnabled: (_agent: AgentKind, _id: string, m: { id: string }) => m.id !== 'auto' };
     expect(resolveNewMakerDefaultTuple(args)).toBeNull();
+    expect(resolve([gateway])).toBeNull();
     gateway.models.pi!.push(model('auto'));
     expect(resolveNewMakerDefaultTuple(args)).toBeNull();
     expect(resolveNewMakerDefaultTuple({ ...args, isModelEnabled: () => true }))

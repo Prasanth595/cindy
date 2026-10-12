@@ -885,6 +885,25 @@ describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', 
 });
 
 describe('factory defaults survive send-time calibration', () => {
+  it('keeps unattended Codex defaults on visible OpenAI fallback before xAI', () => {
+    const oldSol = model('gpt-6-sol');
+    const openai = provider('openai', true, { codex: [oldSol] }, 'subscription');
+    const xai = provider('xai', true, { codex: [model('xai/grok-4.6')] }, 'subscription');
+    const providers = [xai, openai];
+    const startup = resolveNewMakerDefaultTuple({ providers, providersLoading: false,
+      availableAgents: new Set(['codex']), availableAgentsLoaded: true,
+      isModelEnabled: (_agent, _id, m) => m.defaultEnabled !== false });
+    expect(startup).toMatchObject({ model: 'gpt-6-sol', providerId: 'openai' });
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'codex' }))
+      .toEqual({ model: 'gpt-6-sol', providerId: 'openai' });
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'codex',
+      draft: { model: 'xai/grok-4.6', providerId: 'xai', chosenByUser: true } }))
+      .toEqual({ model: 'xai/grok-4.6', providerId: 'xai' });
+    oldSol.defaultEnabled = false;
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'codex' }))
+      .toEqual({ model: 'xai/grok-4.6', providerId: 'xai' });
+  });
+
   it.each([null, 'openai'])('keeps startup visibility switches during calibration (source %s)', preferredProviderId => {
     const openai = provider('openai', true, { codex: [model('gpt-6.1-sol'), model('gpt-6-astra')] }, 'subscription');
     const isModelEnabled = (agent: AgentKind, providerId: string, candidate: { id: string }) =>
