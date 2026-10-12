@@ -6,6 +6,7 @@ import { extractIpcError } from '@/utils/ipcError';
 import { Button } from '@/components/ui/button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { useWallpaperSettings } from '@/hooks/useWallpaperSettings';
 import { getBuiltinWallpaperBackground, isSceneWallpaper } from '@/lib/wallpaper';
@@ -32,29 +33,37 @@ export function WallpaperSection() {
     wallpaperOverlay,
     wallpaperVisibility,
     wallpaperBlur,
+    wallpaperReadingStrength,
+    wallpaperExcludeSidebars,
     visibility,
     wallpaperMotion,
     customWallpaperUrl,
     playbackFailed,
     setWallpaper,
     setVisibility,
+    previewVisibility,
     setBlur,
     previewBlur,
+    setExcludeSidebars,
     setMotion,
     resetWallpaper,
   } = useWallpaperSettings();
   // The shared slider restores its starting value during cancellation. Clear
   // that temporary preview after its handler, returning to the latest saved value.
-  const cancelBlurPreview = useCallback(() => {
-    queueMicrotask(() => previewBlur(null));
-  }, [previewBlur]);
-  useEffect(() => {
-    window.addEventListener('blur', cancelBlurPreview);
-    return () => {
-      window.removeEventListener('blur', cancelBlurPreview);
+  const cancelPreviews = useCallback(() => {
+    queueMicrotask(() => {
       previewBlur(null);
+      previewVisibility(null);
+    });
+  }, [previewBlur, previewVisibility]);
+  useEffect(() => {
+    window.addEventListener('blur', cancelPreviews);
+    return () => {
+      window.removeEventListener('blur', cancelPreviews);
+      previewBlur(null);
+      previewVisibility(null);
     };
-  }, [cancelBlurPreview, previewBlur]);
+  }, [cancelPreviews, previewBlur, previewVisibility]);
   const customVideo = isCustomWallpaperVideo(customWallpaperUrl);
   const chooseWallpaper = async () => {
     setBusy(true);
@@ -116,6 +125,8 @@ export function WallpaperSection() {
               wallpaperOverlay === DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay &&
               wallpaperVisibility == null &&
               wallpaperBlur == null &&
+              wallpaperReadingStrength == null &&
+              wallpaperExcludeSidebars == null &&
               wallpaperMotion === DEFAULT_APPEARANCE_SETTINGS.wallpaperMotion)
           }
         >
@@ -263,9 +274,15 @@ export function WallpaperSection() {
             max={APPEARANCE_LIMITS.wallpaperVisibility.max}
             step={APPEARANCE_LIMITS.wallpaperVisibility.step}
             value={[visibility]}
+            disabled={wallpaperId === 'none'}
             onValueChange={([value]) => {
+              if (typeof value === 'number') previewVisibility(value);
+            }}
+            onValueCommit={([value]) => {
               if (typeof value === 'number') setVisibility(value);
             }}
+            onPointerCancel={cancelPreviews}
+            onLostPointerCapture={cancelPreviews}
             aria-label={t('settings.appearance.wallpaper.visibilityLabel')}
             aria-describedby="wallpaper-visibility-hint"
           />
@@ -279,6 +296,31 @@ export function WallpaperSection() {
         >
           {t('settings.appearance.wallpaper.visibilityHint')}
         </p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <label
+              id="wallpaper-exclude-sidebars-label"
+              htmlFor="wallpaper-exclude-sidebars"
+              className="block text-13 font-medium text-[var(--settings-section-sublabel)]"
+            >
+              {t('settings.appearance.wallpaper.excludeSidebarsLabel')}
+            </label>
+            <p
+              id="wallpaper-exclude-sidebars-hint"
+              className="mt-1 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70"
+            >
+              {t('settings.appearance.wallpaper.excludeSidebarsHint')}
+            </p>
+          </div>
+          <Switch
+            id="wallpaper-exclude-sidebars"
+            checked={wallpaperExcludeSidebars ?? false}
+            onCheckedChange={setExcludeSidebars}
+            disabled={wallpaperId === 'none'}
+            aria-labelledby="wallpaper-exclude-sidebars-label"
+            aria-describedby="wallpaper-exclude-sidebars-hint"
+          />
+        </div>
         <div className="flex items-center gap-3">
           <span className="shrink-0 text-12 text-[var(--settings-section-sublabel)]">
             {t('settings.appearance.wallpaper.blurLabel')}
@@ -295,8 +337,8 @@ export function WallpaperSection() {
             onValueCommit={([value]) => {
               if (typeof value === 'number') setBlur(value);
             }}
-            onPointerCancel={cancelBlurPreview}
-            onLostPointerCapture={cancelBlurPreview}
+            onPointerCancel={cancelPreviews}
+            onLostPointerCapture={cancelPreviews}
             aria-label={t('settings.appearance.wallpaper.blurLabel')}
             aria-describedby="wallpaper-blur-hint"
           />

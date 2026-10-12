@@ -1547,6 +1547,8 @@
       },
       "wallpaper": {
         "title": "壁纸",
+        "visibilityLabel": "壁纸可见度",
+        "visibilityHint": "向左文字更清楚，向右壁纸更明显。",
         "description": "为整个应用选择 Cindy 场景、自己的图片或视频，主题保持独立。",
         "reset": "恢复默认",
         "aria": "壁纸选择",
@@ -1558,8 +1560,8 @@
           "cindy-dream": "Cindy · 梦境漫游",
           "custom": "自定义壁纸"
         },
-        "visibilityLabel": "壁纸可见度",
-        "visibilityHint": "0% 隐藏壁纸，100% 完全显示壁纸。",
+        "excludeSidebarsLabel": "左侧边栏不显示壁纸",
+        "excludeSidebarsHint": "左侧任务栏使用主题底色；显示时，壁纸和视频在其余区域等比完整显示，包含正文和右侧工具、协同区，空余部分使用主题底色。左侧栏调整宽度时画面随之适配。设置页或左侧栏完全收起时，壁纸铺满窗口，可能裁剪画面边缘。",
         "blurLabel": "壁纸模糊",
         "blurHint": "仅模糊壁纸，0 为关闭。动态壁纸开启模糊后会增加显卡负载。",
         "motionLabel": "展示方式",

@@ -2417,11 +2417,24 @@ html[data-wallpaper-active='true'] .wallpaper-composer-fade {
 }
 /* Fade the message layer itself, so the moving scene remains continuous behind
    the composer. Repainting a static copy there would create a visible seam. */
-html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true']) .wallpaper-message-viewport [data-scroll-container] {
+html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true'], [data-wallpaper-fit-content='true']) .wallpaper-message-viewport [data-scroll-container],
+html[data-wallpaper-exclude-sidebars='true'] .wallpaper-navigation-surface .wallpaper-message-viewport [data-scroll-container] {
   mask-image: linear-gradient(to bottom, black calc(100% - var(--wallpaper-composer-height)), transparent calc(100% - var(--wallpaper-composer-height) + 32px));
 }
-html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true']) :is(.wallpaper-composer-zone, .wallpaper-composer-fade) {
+html:is([data-wallpaper-motion='dynamic'], [data-wallpaper-blur='true'], [data-wallpaper-fit-content='true']) :is(.wallpaper-composer-zone, .wallpaper-composer-fade),
+html[data-wallpaper-exclude-sidebars='true'] .wallpaper-navigation-surface :is(.wallpaper-composer-zone, .wallpaper-composer-fade) {
   background: transparent;
+}
+
+/* Keep wallpaper visible through the Windows native sidebar backing. Peek drawers
+   cover application content and retain their existing theme backing and blur. */
+html[data-wallpaper-active='true'][data-platform='win32'][data-window-backdrop-material='acrylic'] aside.bg-sidebar:not([data-sidebar-peek-drawer]) {
+  background: transparent;
+}
+
+/* Navigation opt-out wins over the Windows rule above, including peek drawers. */
+html:root[data-wallpaper-active='true'][data-wallpaper-exclude-sidebars='true'] aside.wallpaper-navigation-surface.wallpaper-navigation-surface {
+  background: var(--surface);
 }
 
 /* Opt-in media-only blur. Overscan by three radii before clipping to avoid
@@ -2441,4 +2454,24 @@ html[data-wallpaper-blur='true'] .app-wallpaper-video video {
   height: calc(100% + 6 * var(--app-wallpaper-blur));
   max-width: none;
   filter: blur(var(--app-wallpaper-blur));
+}
+
+/* Excluding task navigation fits the scene across chat and tool panes.
+   Equal geometry for static/video, including global blur; no cover overscan here. */
+html[data-wallpaper-active='true'][data-wallpaper-fit-content='true'] body::before,
+html[data-wallpaper-active='true'][data-wallpaper-fit-content='true'] .app-wallpaper-video {
+  inset: auto;
+  left: var(--app-wallpaper-content-left);
+  top: var(--app-wallpaper-content-top);
+  width: var(--app-wallpaper-content-width);
+  height: var(--app-wallpaper-content-height);
+}
+html[data-wallpaper-active='true'][data-wallpaper-fit-content='true'] body::before {
+  background-size: auto, contain;
+}
+html[data-wallpaper-active='true'][data-wallpaper-fit-content='true'] .app-wallpaper-video video {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }

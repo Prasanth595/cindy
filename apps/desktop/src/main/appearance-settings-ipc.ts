@@ -7,6 +7,7 @@ import {
   clampAppearanceWallpaperOverlay,
   clampAppearanceWallpaperVisibility,
   clampAppearanceWallpaperBlur,
+  clampAppearanceWallpaperReadingStrength,
   clampAppearanceCodeSize,
   clampAppearanceUiSize,
   clampAppearanceWindowZoom,
@@ -178,6 +179,8 @@ function parsePatch(rawPatch: unknown): AppearanceOverrides {
     'wallpaperOverlay',
     'wallpaperVisibility',
     'wallpaperBlur',
+    'wallpaperReadingStrength',
+    'wallpaperExcludeSidebars',
     'wallpaperMotion',
   ]);
   for (const key of Object.keys(raw)) {
@@ -252,6 +255,26 @@ function parsePatch(rawPatch: unknown): AppearanceOverrides {
             clampAppearanceWallpaperBlur,
             APPEARANCE_LIMITS.wallpaperBlur,
           );
+  }
+  if ('wallpaperReadingStrength' in raw) {
+    patch.wallpaperReadingStrength =
+      raw.wallpaperReadingStrength === null
+        ? null
+        : parseNumber(
+            raw.wallpaperReadingStrength,
+            'wallpaperReadingStrength',
+            clampAppearanceWallpaperReadingStrength,
+            APPEARANCE_LIMITS.wallpaperReadingStrength,
+          );
+  }
+  if ('wallpaperExcludeSidebars' in raw) {
+    if (
+      raw.wallpaperExcludeSidebars !== null &&
+      typeof raw.wallpaperExcludeSidebars !== 'boolean'
+    ) {
+      throwIpcError('INVALID_PARAMS', 'wallpaperExcludeSidebars must be a boolean or null');
+    }
+    patch.wallpaperExcludeSidebars = raw.wallpaperExcludeSidebars;
   }
   return patch;
 }

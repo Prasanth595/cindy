@@ -98,33 +98,73 @@ Static / Dynamic choice: Static and reduced motion show a paused frame; Dynamic 
 and pauses when hidden/minimized. Playback failure releases the decoder, leaves the theme surface
 visible and shows an actionable error in wallpaper settings. The custom video tile uses a film icon
 instead of opening a second decoder for a thumbnail.
-Wallpaper Visibility ranges from 0% (hidden) to 100% (fully visible), in 1% steps
-(user decision, 2026-10-05). Static images use the theme-surface veil with opacity equal to
-100% minus visibility. Video uses visibility directly as the video element's opacity over
-an opaque theme-surface backing, without a separate translucent veil; this avoids the
-observed Windows HDR brightness shift when P3 content changes the output composition.
-The video wrapper's opacity is reserved for loading/exit crossfades. Never reduce text
-or control opacity. Release video playback at 0%. Blend-mode controls remain out of scope.
-Optional Wallpaper Blur (user addition, 2026-10-06) ranges from 0 (off, default) to 20
-in whole steps, applying a CSS-pixel radius only to the wallpaper image/video. No UI,
-theme backing, or text is blurred; video opacity remains on the video itself. At zero,
-retain the existing filter-free rendering path. Overscan the artwork by three radii
-and clip the video at the viewport to avoid transparent edges; static and video crops
-must match. For blurred static scenes, reuse the moving-scene message fade instead
-of repainting a sharp wallpaper behind the composer. Persist only explicit overrides;
-Reset removes the blur override. Reuse the settings Slider with a localized accessible
-label and hint, disable it for None, and explain the additional GPU cost for video.
-Dragging previews blur locally; only a committed pointer/keyboard value is saved and
-broadcast. Cancelled gestures or leaving settings discard the preview.
-Existing preferences without an explicit visibility override keep the previous Light/Dark veil
-mapping and display its equivalent visibility. The unchanged soft default is 37% visible in
-Light and 27% in Dark. Adjusting the slider saves literal visibility, shared across themes;
-Reset removes that override and restores the theme-dependent default. Do not rewrite old
-preferences just because they were read or a theme changed.
+Wallpaper Visibility remains the primary 0-100%, 1%-step control (final user decision,
+2026-10-12), with one helper sentence explaining the effect of moving left or right;
+do not repeat that guidance in a separate endpoint-label row. Reuse the existing
+`wallpaperVisibility` field and `getWallpaperVisibility` calculation; do not introduce a
+separate strength field, personal baseline, format marker or upgrade migration. Explicit
+visibility, including zero, takes precedence over the original theme-derived veil. With
+no visibility override, retain the old overlay/default behavior (37% Light / 27% Dark
+for the default overlay). Reading Background Strength and Default adjustment controls
+stay removed. Archived reading preferences do not add backing or local blur. Remove the obsolete
+reading-surface markers and rules; retain only canvas transparency and navigation geometry markers.
+
+Apply visibility once: static images use a theme-surface veil of 1 minus visibility;
+video uses visibility directly over an opaque theme-surface backing. At 0% only the theme
+surface remains; at 100% artwork is fully visible. Text and control opacity never change.
+This preserves the Windows HDR composition path. Release video playback at zero;
+nonzero visibility changes do not remount the video. Embedded web/editor content and
+elevated inputs, cards, menus and dialogs retain their own surfaces. Reuse the same
+continuous canvas across all host areas.
+
+Wallpaper Blur remains independent and directly visible alongside Wallpaper Visibility.
+It ranges from 0 (off) to 20 CSS pixels in whole steps and changes only artwork sharpness,
+never text/control sharpness or opacity. At zero, keep the filter-free path. Cover-fit
+images/videos overscan by three radii to avoid transparent edges; contain fit uses its
+existing bounded canvas. Explain the additional GPU cost for video.
+
+Preview visibility and blur locally while dragging, commit once on release or keyboard
+input, and discard previews on cancellation, window blur or leaving settings. Failed saves
+restore the last confirmed preferences. Disable both sliders for None. Reset removes
+visibility, blur, archived reading and sidebar overrides, restores the old overlay default
+and selects None without removing imported media. Reads never migrate or rewrite settings;
+explicitly committing the default number still records the user's choice.
+Static composer masking must preserve the existing moving/blurred canvas fade behavior.
+Actual Light/Dark screenshot verification remains separate from calculation/interaction tests.
+
+Hide Wallpaper in Left Sidebar (user clarification, 2026-10-12) is an independent
+wallpaper Switch, off by default. Only the task-navigation sidebar (including rail/peek)
+uses the full theme surface. Right-side tools, collaboration and detached tool/plugin
+host windows retain wallpaper and follow Wallpaper Visibility, as do main
+content, split-task panes and management pages. Identify navigation by its host role,
+not the current docking position of tool panels. Keep embedded plugin/web surfaces unchanged.
+Peek navigation drawers overlay application content: wallpaper transparency rules must
+exclude them, even inside another transparent canvas. Preserve the existing themed backing
+and CINDY blur; sidebar exclusion may still replace their backing with the opaque surface.
+When enabled, fit the entire image/video proportionally inside the viewport minus task navigation
+rectangle, with theme-surface letterboxing (user correction and explicit contain-fit choice,
+2026-10-12). Follow navigation opening, closing and resizing, including peek overlays.
+Track the visible edge throughout transform-only peek animations, not just their end
+events; stop frame tracking when host motion ends, is cancelled, or exclusion is disabled.
+Chat and right-side panes share one continuous canvas; right-pane changes never shrink it.
+Only enable contain fitting while task navigation actually removes viewport space.
+Settings, detached tool windows without task navigation, and fully collapsed navigation
+use the normal full-window cover fit, even with the preference enabled. Avoid adding
+letterboxing to pages where there is no sidebar to exclude (user correction, 2026-10-12).
+Static and video share the same rectangle and contain fit, even with global blur; do not
+overscan in this mode. Never remount or restart video for geometry changes. Disabling
+restores the full-window cover canvas. Sidebar composers and the fitted main canvas must
+use the message-layer fade so a duplicate static wallpaper cannot erase their opaque backing.
+Persist only an explicit `wallpaperExcludeSidebars` boolean override; Reset removes
+it with null. Disable the Switch for None. Reuse existing appearance IPC validation,
+optimistic-save rollback and broadcast to independent windows; no new permission path.
+
 Remove the previous arrow, standalone portrait, gradient and paper
 options and assets. Retired saved selections normalize to None; unrelated theme
-and font preferences remain unchanged. All three scenes use the same cover fit,
-so do not expose a fit selector that cannot affect them.
+and font preferences remain unchanged. All three scenes use the same fit policy:
+full-window cover by default, remaining-content contain while excluded task navigation
+actually occupies viewport space. Without task navigation, cover can crop scene edges.
+Do not expose a separate fit selector.
 
 The scene-led Cindy wallpaper alternatives (2026-10-01) place the recognizable
 character and black cat in three distinct illustrated environments: a sunny
@@ -132,10 +172,11 @@ window, a futuristic atelier and a floating garden above clouds. Preserve each
 landscape as one viewport-sized, cover-fitted canvas behind navigation, chat and
 tools. Do not confine the scene to chat, fade its edges into a separate backdrop,
 or reposition/scale it when sidebars open: that splits the app into disconnected
-pieces (user correction, 2026-10-01). Only window resizing changes the crop.
-These curated scenes use a lighter theme-derived
-veil than arbitrary photos, with a stronger Dark veil to preserve reading
-contrast. Validate real long messages, not only empty chat views.
+pieces (user correction, 2026-10-01). Only window resizing changes the crop in the
+default mode. The opt-in sidebar exclusion above is the explicit exception added
+on 2026-10-12: preserve the complete scene inside the remaining content rectangle.
+Curated scenes and custom media use the same visibility and theme-surface blend
+in both modes. Validate real long messages, not only empty chat views.
 
 The three approved scenes also offer an explicit Static / Dynamic choice (2026-10-01).
 Static remains the default. Dynamic uses a silent, subtly moving loop with a fixed

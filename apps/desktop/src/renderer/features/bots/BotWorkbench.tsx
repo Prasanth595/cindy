@@ -484,7 +484,7 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
 
   if (workbench === null) {
     return (
-      <div className="flex h-full items-center justify-center bg-[var(--surface)]">
+      <div className="flex h-full items-center justify-center bg-[var(--surface)] app-wallpaper-surface">
         <Spinner size={16} className="text-[var(--text-tertiary)]" role="status" aria-label={t('ccAgent.common.loading')} />
       </div>
     );
@@ -512,7 +512,7 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
   const understandingProject = understanding ? (directories[0]?.name ?? '') : '';
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-[var(--surface)]">
+    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-[var(--surface)] app-wallpaper-surface">
       <BotTodoList botId={botId} />
       {picking ? (
         <ProjectPicker
@@ -1430,7 +1430,7 @@ function TaskDetail({
   }, [navigate, tile]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--surface)]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--surface)] app-wallpaper-surface">
       <div className="flex h-[52px] shrink-0 items-center gap-1 pl-2 pr-2.5">
         <Tip text={t('bots.workbench.detail.back')}>
           <button

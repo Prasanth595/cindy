@@ -1571,6 +1571,8 @@
       },
       "wallpaper": {
         "title": "Wallpaper",
+        "visibilityLabel": "Wallpaper Visibility",
+        "visibilityHint": "Move left for clearer text, right for more visible wallpaper.",
         "description": "Choose a Cindy scene, image or video for the whole app, independently of the theme.",
         "reset": "Reset",
         "aria": "Wallpaper selection",
@@ -1582,8 +1584,8 @@
           "cindy-dream": "Cindy · Dream Voyage",
           "custom": "Custom wallpaper"
         },
-        "visibilityLabel": "Wallpaper Visibility",
-        "visibilityHint": "0% hides the wallpaper; 100% shows it without an overlay.",
+        "excludeSidebarsLabel": "Hide Wallpaper in Left Sidebar",
+        "excludeSidebarsHint": "Use the theme background in the left task sidebar. While it is visible, fit the complete image or video across the remaining area, including content and right-side tools and collaboration. Adapt to sidebar resizing and fill unused space with the theme background. In settings or with the left sidebar fully hidden, fill the window; picture edges may be cropped.",
         "blurLabel": "Wallpaper Blur",
         "blurHint": "Blur only the wallpaper. Set to 0 to turn off. Blurring animated wallpaper increases GPU usage.",
         "motionLabel": "Display",

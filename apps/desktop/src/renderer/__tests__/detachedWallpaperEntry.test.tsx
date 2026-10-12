@@ -21,7 +21,13 @@ vi.mock('react-dom/client', async (original) => {
 vi.mock('@/i18n', () => ({}));
 vi.mock('../themes/colors', () => ({}));
 vi.mock('../themes/local-themes', () => ({ bootstrapLocalThemesSync: vi.fn() }));
-vi.mock('../themes/theme-service', () => ({ themeService: { applyTheme: vi.fn() } }));
+vi.mock('../themes/theme-service', () => ({
+  themeService: {
+    applyTheme: vi.fn(),
+    getCurrentTheme: () => null,
+    onDidChangeTheme: () => () => {},
+  },
+}));
 vi.mock('../hooks/useTheme', () => ({ getInitialThemeVariant: () => ({ theme: 'test' }) }));
 vi.mock('../hooks/useFontSettings', () => ({
   applyFontSettings: vi.fn(),
@@ -89,6 +95,9 @@ it.each(['sidebar', 'plugin'] as const)(
           ...DEFAULT_APPEARANCE_SETTINGS,
           wallpaperId: 'cindy-window',
           wallpaperMotion: 'dynamic',
+          wallpaperVisibility: 0.4,
+          wallpaperReadingStrength: 0.4,
+          wallpaperExcludeSidebars: true,
         }),
         onChanged: (fn: typeof changed) => {
           changed = fn;
@@ -105,6 +114,26 @@ it.each(['sidebar', 'plugin'] as const)(
     );
     expect(document.documentElement.dataset.wallpaperActive).toBe('true');
     expect(document.querySelectorAll('video')).toHaveLength(1);
+    expect(document.documentElement.dataset.wallpaperExcludeSidebars).toBe('true');
+    expect(
+      document.documentElement.style.getPropertyValue('--app-wallpaper-reading-strength'),
+    ).toBe('');
+    expect(document.documentElement.style.getPropertyValue('--app-wallpaper-veil')).toBe('60%');
+    const initialVideo = document.querySelector('video');
+    await act(async () =>
+      changed({
+        ...DEFAULT_APPEARANCE_SETTINGS,
+        wallpaperId: 'cindy-window',
+        wallpaperMotion: 'dynamic',
+        wallpaperVisibility: 0.7,
+        wallpaperReadingStrength: 0.7,
+      }),
+    );
+    expect(
+      document.documentElement.style.getPropertyValue('--app-wallpaper-reading-strength'),
+    ).toBe('');
+    expect(document.documentElement.style.getPropertyValue('--app-wallpaper-veil')).toBe('30%');
+    expect(document.querySelector('video')).toBe(initialVideo);
     if (kind === 'sidebar') {
       expect(play).not.toHaveBeenCalled();
       expect(pause).toHaveBeenCalled();
@@ -122,12 +151,11 @@ it.each(['sidebar', 'plugin'] as const)(
       expect(video.currentTime).toBe(3);
     }
     const lightVeil = document.documentElement.style.getPropertyValue('--app-wallpaper-veil');
+    expect(document.documentElement.dataset.wallpaperExcludeSidebars).toBeUndefined();
     await act(async () => {
       document.documentElement.classList.add('dark');
     });
-    expect(document.documentElement.style.getPropertyValue('--app-wallpaper-veil')).not.toBe(
-      lightVeil,
-    );
+    expect(document.documentElement.style.getPropertyValue('--app-wallpaper-veil')).toBe(lightVeil);
     const url = 'cindy-media://client-wallpaper/' + 'a'.repeat(64) + '.webp';
     await act(async () =>
       changed({ ...DEFAULT_APPEARANCE_SETTINGS, wallpaperId: 'custom', customWallpaperUrl: url }),

@@ -153,7 +153,7 @@ export function Sidebar({
       aria-label={t('sidebar.ariaLabel')}
       aria-hidden={isCollapsed && !isPeek}
       className={cn(
-        'flex flex-col bg-sidebar overflow-hidden',
+        'wallpaper-navigation-surface flex flex-col bg-sidebar overflow-hidden',
         isPeek
           ? cn(
               // 抽屉:fixed overlay 通顶,不挤压主区;z 低于 ChromeActions(z-20),

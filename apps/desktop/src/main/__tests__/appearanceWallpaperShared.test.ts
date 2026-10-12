@@ -70,9 +70,42 @@ describe('profile-wide wallpaper preference', () => {
     expect(saved).not.toHaveProperty('wallpaperOverlay');
     expect(saved.uiSize).toBe(18);
   });
+  it('persists reading strength only as an override and clears it without disturbing other preferences', async () => {
+    const file = path.join(h.dir, 'appearance-settings.json');
+    const original = JSON.stringify({ wallpaperId: 'cindy-window', uiSize: 18 });
+    fs.writeFileSync(file, original);
+    expect(readAppearanceSettings()).not.toHaveProperty('wallpaperReadingStrength');
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    await writeAppearanceSettingsPatch({ wallpaperReadingStrength: 0 });
+    expect(readAppearanceSettings().wallpaperReadingStrength).toBe(0);
+    await writeAppearanceSettingsPatch({ wallpaperReadingStrength: 0.8 });
+    expect(readAppearanceSettings().wallpaperReadingStrength).toBe(0.8);
+    await writeAppearanceSettingsPatch({ wallpaperReadingStrength: null });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(JSON.parse(original));
+  });
+  it('shares sidebar exclusion, preserves explicit false and deletes it on reset', async () => {
+    const file = path.join(h.dir, 'appearance-settings.json');
+    const original = JSON.stringify({ wallpaperReadingStrength: 0, uiSize: 18 });
+    fs.writeFileSync(file, original);
+    expect(readAppearanceSettings().wallpaperExcludeSidebars ?? false).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    await writeAppearanceSettingsPatch({ wallpaperExcludeSidebars: true });
+    h.owner = 'b';
+    expect(readAppearanceSettings().wallpaperExcludeSidebars).toBe(true);
+    await writeAppearanceSettingsPatch({ wallpaperExcludeSidebars: false });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).wallpaperExcludeSidebars).toBe(false);
+    await writeAppearanceSettingsPatch({ wallpaperExcludeSidebars: null });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(JSON.parse(original));
+  });
   it('shares selection, replacement and reset across accounts, including sign-out', async () => {
     await customWallpaperStore.writePatchAtomic({ url: urlA });
     await writeAppearanceSettingsPatch({ wallpaperId: 'custom' });
+    const file = path.join(h.dir, 'appearance-settings.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({
+      wallpaperId: 'custom',
+    });
+    // The next atomic write reloads disk, rather than relying on the in-memory snapshot.
+    await writeAppearanceSettingsPatch({ uiSize: 18 });
     for (const owner of ['b', '']) {
       h.owner = owner;
       h.pending = true;
@@ -90,6 +123,7 @@ describe('profile-wide wallpaper preference', () => {
       customWallpaperUrl: urlB,
     });
     await resetAppearanceSettings();
+    expect(fs.existsSync(file)).toBe(false);
     h.owner = 'b';
     expect(readAppearanceSettings()).toMatchObject({
       wallpaperId: 'none',
