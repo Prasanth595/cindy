@@ -306,7 +306,8 @@ export function startCompanionCloud(input: {
       if (await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true }) === 0) break;
       if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
     }
-    await mirror.syncBot(bot.botId, bot.actorId, bot.name);
+    // The whole conversation backlog too: the old copy stops mirroring once demoted.
+    await mirror.syncBot(bot.botId, bot.actorId, bot.name, { drain: true });
   }
 
   const runtime: CompanionCloudRuntime = {

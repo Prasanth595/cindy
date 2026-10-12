@@ -49,9 +49,9 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
     [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && !roster.isOnline(row.host) ? cloudActorForRow(cloud.actors, row) : null;
-  // A companion moved by another device shows up as a changed set of listed rows: re-read the
-  // main computers then, not only on focus, so the roster follows the move while it stays open.
-  const listedCompanions = roster.items.map(row => row.key).sort().join('\n');
+  // A companion moved by another device shows up as changed roster rows (a new row, or a cached
+  // row whose computer re-listed it): re-read the main computers then, not only on focus.
+  const listedCompanions = roster.items.map(row => `${row.key}\t${row.item.revision}`).sort().join('\n');
   const refreshCloud = cloud.refresh;
   useEffect(() => { if (cloud.supported) void refreshCloud(); }, [cloud.supported, listedCompanions, refreshCloud]);
   const counts = useHomeUnreadCounts();

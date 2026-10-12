@@ -132,6 +132,17 @@ describe('companion conversation mirror', () => {
     expect(t.state.bot('bot')?.mirror?.id).toBe(rows[119]!.id);
   });
 
+  it('caps an ordinary pass at ten pages, but drains the whole backlog before a hand-over', async () => {
+    const t = setup([]);
+    t.state.update('bot', 'actor', entry => { entry.mirror = { sessionId: 'session-1', createdAt: 0, id: '' }; });
+    t.rows.push(...Array.from({ length: 2_300 }, (_, i) => user(`u${i}`)));
+    const last = t.rows.at(-1)!.id;
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.state.bot('bot')?.mirror?.id).not.toBe(last);
+    await t.mirror.syncBot('bot', 'actor', 'Mia', { drain: true });
+    expect(t.state.bot('bot')?.mirror?.id).toBe(last);
+  });
+
   it('splits a long reply into parts with stable source ids', async () => {
     const long = reply('y'.repeat(31_000));
     const t = setup([long]);

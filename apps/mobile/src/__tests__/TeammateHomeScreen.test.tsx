@@ -225,8 +225,12 @@ describe('cloud companions (main computer offline)', () => {
     h.roster.items = [teammate, copy('pc')];
     await render();
     expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 1);
-    await act(async () => h.list.onRefresh());
+    // Both computers were already cached: the new main computer re-lists the same row.
+    h.roster.items = [teammate, { ...copy('pc'), item: { ...copy('pc').item, revision: 'taken-over' } }];
+    await render();
     expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 2);
+    await act(async () => h.list.onRefresh());
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 3);
   });
   it('keeps the per-computer behavior on an older server or an online computer', async () => {
     h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];

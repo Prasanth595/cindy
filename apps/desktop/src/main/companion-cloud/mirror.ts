@@ -189,7 +189,8 @@ export function createCompanionMirror(deps: {
     if (rows.length) moveTo(rows.length - 1);
   }
 
-  async function syncBot(botId: string, actorId: string, name: string): Promise<void> {
+  /** One bounded pass; `drain` (before a hand-over) keeps paging until the backlog is empty. */
+  async function syncBot(botId: string, actorId: string, name: string, options: { drain?: boolean } = {}): Promise<void> {
     const sessionId = await deps.canonicalSession(botId);
     if (!sessionId) return;
     const roomId = await ensureRoom(botId, actorId, name);
@@ -213,7 +214,7 @@ export function createCompanionMirror(deps: {
       .filter(row => behind(row) && !recent.has(row.id) && mirrorMessageText(row));
     if (missed.length) await importRows(botId, actorId, roomId, sessionId, missed, false);
     let after: CompanionMirrorCursor = { createdAt: cursor.createdAt, id: cursor.id };
-    for (let page = 0; page < MAX_PAGES; page += 1) {
+    for (let page = 0; options.drain || page < MAX_PAGES; page += 1) {
       const rows = await deps.rowsAfter(sessionId, after, PAGE);
       if (!rows.length) return;
       await importRows(botId, actorId, roomId, sessionId, rows);
