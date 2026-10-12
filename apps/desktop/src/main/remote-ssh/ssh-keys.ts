@@ -298,7 +298,7 @@ export async function addKeyToAgent(opts: {
     const result = await execFileP('ssh-add', args, execOptions);
     return { success: true, failureReason: null, errorHint: null, stderr: result.stderr };
   } catch (err) {
-    return buildFailure(err);
+    return buildFailure(err, passphrase.length === 0);
   } finally {
     // Best-effort: overwrite then delete so passphrase doesn't linger in
     // filesystem free-blocks. fs.unlink alone leaves the contents readable
@@ -330,10 +330,17 @@ function sshAddArgs(privateKeyPath: string): string[] {
  * conservative — anything we can't pattern-match falls into `'other'` and the
  * user sees the generic "use ssh-config fallback" panel.
  */
-function classifyAgentFailure(err: unknown): { reason: AgentFailureReason; hint: string } {
-  const e = err as NodeJS.ErrnoException & { stderr?: string; message: string };
+function classifyAgentFailure(
+  err: unknown,
+  emptyPassphraseProbe: boolean,
+): { reason: AgentFailureReason; hint: string } {
+  const e = err as NodeJS.ErrnoException & { stderr?: string; message: string; killed?: boolean };
   const stderr = String(e.stderr ?? '');
   const msg = stderr || e.message;
+  const exitCode = (err as { code?: unknown }).code;
+  const nonZeroExit =
+    (typeof exitCode === 'number' && exitCode !== 0) ||
+    (typeof exitCode === 'string' && /^\d+$/.test(exitCode) && Number(exitCode) !== 0);
 
   // ENOENT from execFile = binary missing from PATH entirely (ssh-add not
   // installed). Group with agent-down because both have the same fix path
@@ -353,11 +360,23 @@ function classifyAgentFailure(err: unknown): { reason: AgentFailureReason; hint:
   if (/no such file|enoent/i.test(msg)) {
     return { reason: 'no_such_file', hint: 'private key file not found at expected path' };
   }
+  // Some OpenSSH builds reject an empty askpass response for an encrypted key
+  // with a non-zero exit and no stderr. Keep that case in the retry-in-place
+  // path; agent failures, path failures, and timeouts retain their own result.
+  if (
+    emptyPassphraseProbe &&
+    e.code !== 'ETIMEDOUT' &&
+    !e.killed &&
+    nonZeroExit &&
+    stderr.trim() === ''
+  ) {
+    return { reason: 'bad_passphrase', hint: 'passphrase rejected by ssh-add' };
+  }
   return { reason: 'other', hint: `ssh-add failed: ${msg.slice(0, 200)}` };
 }
 
-function buildFailure(err: unknown): AddKeyToAgentResult {
-  const { reason, hint } = classifyAgentFailure(err);
+function buildFailure(err: unknown, emptyPassphraseProbe: boolean): AddKeyToAgentResult {
+  const { reason, hint } = classifyAgentFailure(err, emptyPassphraseProbe);
   return {
     success: false,
     failureReason: reason,

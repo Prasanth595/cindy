@@ -69,15 +69,15 @@ describe('SshKeySetupDialog unlock', () => {
     );
   });
 
-  it('lets the user press Enter with an empty passphrase', async () => {
-    const passphrase = await openUnlockDialog();
-    fireEvent.keyDown(passphrase, { key: 'Enter' });
+  it.each(['', 'secret'])(
+    'does not submit from Enter with passphrase %j',
+    async (value) => {
+      const passphrase = await openUnlockDialog();
+      if (value) fireEvent.change(passphrase, { target: { value } });
 
-    await waitFor(() =>
-      expect(api.addKeyToAgent).toHaveBeenCalledWith({
-        privateKeyPath: key.privateKeyPath,
-        passphrase: '',
-      }),
-    );
-  });
+      fireEvent.keyDown(passphrase, { key: 'Enter' });
+
+      expect(api.addKeyToAgent).not.toHaveBeenCalled();
+    },
+  );
 });

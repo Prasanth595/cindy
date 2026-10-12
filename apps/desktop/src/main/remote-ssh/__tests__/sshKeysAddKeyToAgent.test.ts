@@ -104,6 +104,40 @@ describe('addKeyToAgent — empty passphrase', () => {
     expect(askpassScript).toContain(process.platform === 'win32' ? 'echo(' : "''");
   });
 
+  it('keeps a silent nonzero blank-probe exit in the bad-passphrase retry path', async () => {
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+      const error = Object.assign(new Error('Command failed: ssh-add'), { code: 1, stderr: '' });
+      callback(error, '', '');
+      return {};
+    });
+
+    const result = await addKeyToAgent({ privateKeyPath, passphrase: '' });
+
+    expect(result).toMatchObject({
+      success: false,
+      failureReason: 'bad_passphrase',
+      errorHint: 'passphrase rejected by ssh-add',
+    });
+    expect(execFileMock.mock.calls[0]?.[2]).toMatchObject({ timeout: 10_000 });
+  });
+
+  it('keeps a blank-probe agent failure classified as agent unavailable', async () => {
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+      const error = Object.assign(new Error('Command failed: ssh-add'), {
+        code: 1,
+        stderr: 'Could not open a connection to your authentication agent.',
+      });
+      callback(error, '', '');
+      return {};
+    });
+
+    const result = await addKeyToAgent({ privateKeyPath, passphrase: '' });
+
+    expect(result.failureReason).toBe('agent_unavailable');
+  });
+
   it('returns a failure when ssh-add exceeds the empty-passphrase timeout', async () => {
     execFileMock.mockImplementation((...args: unknown[]) => {
       const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
