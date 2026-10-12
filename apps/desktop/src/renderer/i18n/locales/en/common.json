@@ -10154,7 +10154,7 @@
       "saveEdit": "Save Text"
     },
     "sharedProviderCredential": {
-      "description": "This task uses a provider shared with you, so what the Agent reads passes through the sharer's computer. This step involves a credential file (such as a key or .env), so it continues only after you confirm."
+      "description": "This task uses a shared provider, so what the Agent reads passes through the sharer’s computer or another computer they arrange. This step may involve credentials (such as keys or .env) and needs your confirmation. “Always allow for this session” skips further shared-provider credential confirmations in this task. Reopening the task or changing its permission mode requires confirmation again."
     },
     "mediaDownload": {
       "title": "Download the generated media?",

@@ -6307,6 +6307,9 @@ export default function SessionScreen() {
       selectionAtSend.agentKind, selectionAtSend.model, selectionAtSend.providerId,
     )) {
       setError(t('session.common.modelHiddenReselect', { model: selectionAtSend.model }));
+      // 与手动打开入口一致：面板按「待切换目标 / 当前任务引擎」浏览，才能把已关闭的
+      // 原选模型认作当前选择并显示重选提示（#5580）。
+      setModelSheetAgentKind(selectionAtSend.agentKind);
       setModelSheetOpen(true);
       sendInFlightRef.current = false;
       setSending(false);
