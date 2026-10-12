@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { CatalogModel, ProviderView } from '@cindy/model-providers';
+import type { AgentKind, CatalogModel, ProviderView } from '@cindy/model-providers';
+
+import { resolveNewMakerDefaultTuple } from '../lib/newMakerDefaultTuple';
 
 import {
   calibrateDraftModel,
@@ -883,6 +885,28 @@ describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', 
 });
 
 describe('factory defaults survive send-time calibration', () => {
+  it.each([null, 'openai'])('keeps startup visibility switches during calibration (source %s)', preferredProviderId => {
+    const openai = provider('openai', true, { codex: [model('gpt-6-sol'), model('gpt-6-astra')] }, 'subscription');
+    const isModelEnabled = (agent: AgentKind, providerId: string, candidate: { id: string }) =>
+      !(agent === 'codex' && providerId === 'openai' && candidate.id === 'gpt-6-sol');
+    const startup = resolveNewMakerDefaultTuple({ providers: [openai], providersLoading: false,
+      availableAgents: new Set(['codex']), availableAgentsLoaded: true, isModelEnabled });
+    expect(startup).toMatchObject({ model: 'gpt-6-astra', providerId: 'openai' });
+    const input = { providers: [openai], agent: 'codex' as const, model: startup!.model,
+      chosenByUser: false, preferredProviderId, providersLoading: false };
+    expect(calibrateDraftModel({ ...input, isModelEnabled }))
+      .toEqual({ model: 'gpt-6-astra', providerId: 'openai' });
+    // Reopening the switch makes the factory recommendation eligible again.
+    expect(calibrateDraftModel({ ...input, isModelEnabled: () => true }))
+      .toEqual({ model: 'gpt-6-sol', providerId: 'openai' });
+    // A hidden model explicitly selected by the user still wins.
+    expect(calibrateDraftModel({ ...input, model: 'gpt-6-sol', chosenByUser: true, isModelEnabled }))
+      .toEqual({ model: 'gpt-6-sol', providerId: null });
+    // Hiding every model must not disable the existing usable-route fallback.
+    expect(calibrateDraftModel({ ...input, isModelEnabled: () => false }))
+      .toEqual({ model: 'gpt-6-astra', providerId: 'openai' });
+  });
+
   const gateway = provider('xd', true, { pi: [
     model('z-ai/glm-5.3-flash', { newSessionDefault: ['pi'] }), model('auto'),
   ] });

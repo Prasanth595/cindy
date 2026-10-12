@@ -308,11 +308,18 @@ describe('resolveNewMakerDefaultTuple', () => {
     expect(resolve([openai])).toMatchObject({ effort: 'medium' });
   });
 
-  it('uses independent subscription accounts and skips accounts without the requested model', () => {
+  it.each([false, true])('searches independent accounts before model fallback (visibility callback: %s)', withVisibility => {
     const stale = provider({ id: 'openai', access: 'subscription', models: { codex: [model('gpt-old')] } });
     const account = provider({ id: 'openai-account', access: 'subscription', models: { codex: [model('gpt-6-sol')] } });
     account.auth = { method: 'oauth', native: 'codex' };
-    expect(resolve([stale, account])).toMatchObject({ providerId: account.id, model: 'gpt-6-sol' });
+    const args = { providers: [stale, account], providersLoading: false, availableAgents: allAgents,
+      availableAgentsLoaded: true, ...(withVisibility ? { isModelEnabled: () => true } : {}) };
+    expect(resolveNewMakerDefaultTuple(args)).toMatchObject({ providerId: account.id, model: 'gpt-6-sol' });
+    if (withVisibility) {
+      // Once no account has a visible Sol, retain the enabled model fallback.
+      expect(resolveNewMakerDefaultTuple({ ...args, isModelEnabled: (_agent, _providerId, m) => m.id !== 'gpt-6-sol' }))
+        .toMatchObject({ providerId: stale.id, model: 'gpt-old' });
+    }
     const claude = provider({ id: 'claude-account', access: 'subscription', models: { 'claude-code': [model('claude-opus-5-5')] } });
     claude.auth = { method: 'oauth', native: 'claude' };
     expect(resolve([claude])).toMatchObject({ providerId: claude.id, vendor: 'cc' });

@@ -1385,6 +1385,7 @@ export function NewMakerDraftRoute() {
     if (usesDeviceCatalog) return { model: chatPrefs.model, providerId: null };
     return calibrateDraftModel({
       providers: autoCalibrationProviders,
+      isModelEnabled,
       agent: capabilityAgentKind,
       model: chatPrefs.model,
       chosenByUser: draftModelChosenByUser,
@@ -1399,6 +1400,7 @@ export function NewMakerDraftRoute() {
     chatPrefs.providerId,
     draftModelChosenByUser,
     localProvidersLoading,
+    defaultVisibilityVersion,
   ]);
   const calibratedDraftModel = draftCalibration.model;
 

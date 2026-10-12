@@ -23,10 +23,16 @@ import {
 } from '@cindy/model-providers';
 import { resolveNewMakerDefaultTuple } from './newMakerDefaultTuple.js';
 
+type ModelEnabledPredicate = Parameters<typeof resolveNewMakerDefaultTuple>[0]['isModelEnabled'];
+
 /** Keep startup, send-time calibration and headless defaults on one factory policy. */
-function factoryModelForAgent(providers: readonly ProviderView[], agent: AgentKind): PickedConnectedModel | null {
+function factoryModelForAgent(
+  providers: readonly ProviderView[],
+  agent: AgentKind,
+  isModelEnabled?: ModelEnabledPredicate,
+): PickedConnectedModel | null {
   const tuple = resolveNewMakerDefaultTuple({
-    providers, providersLoading: false, availableAgentsLoaded: true,
+    providers, providersLoading: false, availableAgentsLoaded: true, isModelEnabled,
     availableAgents: new Set([agent === 'claude-code' ? 'cc' : agent]),
   });
   return tuple ? { model: tuple.model, providerId: tuple.providerId } : null;
@@ -164,10 +170,11 @@ export function pickConnectedModelForAgent(
   providers: readonly ProviderView[],
   agent: AgentKind,
   preferredModelId: string,
+  isModelEnabled?: ModelEnabledPredicate,
 ): PickedConnectedModel | null {
   const ranked = providersByPreference(providers, agent);
   if (ranked.length === 0) return null;
-  const factory = factoryModelForAgent(ranked, agent);
+  const factory = factoryModelForAgent(ranked, agent, isModelEnabled);
   if (factory) return factory;
   // 无可用出厂组合时，保留目录/服务端显式标记的回退；每个 Agent 只认自己的标记。
   const flaggedModelId = markedDefaultModelIdForAgent(ranked, agent);
@@ -215,6 +222,8 @@ export interface DraftModelCalibrationInput {
   preferredProviderId?: string | null;
   /** 供应商清单是否仍在加载：加载期不校准，避免首帧把默认模型闪成别的。 */
   providersLoading: boolean;
+  /** Use the startup model switches for factory recommendations; hidden fallback remains available. */
+  isModelEnabled?: ModelEnabledPredicate;
 }
 
 /** 校准结果：草稿应当展示 / 发送的模型，以及（若校准出了结论）它该走哪家来源。 */
@@ -236,6 +245,7 @@ export function calibrateDraftModel({
   chosenByUser,
   preferredProviderId,
   providersLoading,
+  isModelEnabled,
 }: DraftModelCalibrationInput): DraftModelCalibrationResult {
   if (chosenByUser || providersLoading) return { model, providerId: null };
   const connectedPreferred = preferredProviderId
@@ -244,7 +254,7 @@ export function calibrateDraftModel({
       )
     : undefined;
   if (connectedPreferred) {
-    const factory = factoryModelForAgent([connectedPreferred], agent);
+    const factory = factoryModelForAgent([connectedPreferred], agent, isModelEnabled);
     if (factory) return factory;
     // marker 只需由策略来源声明一次（当前为 XD），用户选定的来源若也提供同一 ID，仍应由
     // 该来源承接；不能因它自己的目录副本没重复 marker 就退回旧模型或偷偷改走 XD。
@@ -264,7 +274,7 @@ export function calibrateDraftModel({
     }
   }
   const candidates = connectedPreferred ? [connectedPreferred] : providers;
-  const picked = pickConnectedModelForAgent(candidates, agent, model);
+  const picked = pickConnectedModelForAgent(candidates, agent, model, isModelEnabled);
   return picked ?? { model, providerId: null };
 }
 

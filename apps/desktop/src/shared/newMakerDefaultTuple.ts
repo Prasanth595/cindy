@@ -135,29 +135,34 @@ export function resolveNewMakerDefaultTuples(args: {
         !candidate.modelDiscoveryFailure &&
         candidate.access?.kind === policy.accessKind,
     );
-    policyProvider: for (const provider of matchingProviders) {
-      for (const agent of policy.agents) {
-        const vendor = vendorForAgent(agent);
-        if (!availableAgents.has(vendor)) continue;
-        const model = matchingModel(
-          provider,
-          agent,
-          policy.modelIds,
-          policy.allowOtherModels,
-          args.isModelEnabled,
-        );
-        if (!model) continue;
-        tuples.push({
-          vendor,
-          providerId: provider.id,
-          model: model.id,
-          // Missing or stale optional metadata does not disqualify a usable route.
-          effort: model.efforts.length === 0 ? null
-            : model.defaultEffort === null ? null
-              : (clampEffortToSupported(model.defaultEffort, model.efforts)
-                ?? defaultEffortForCapabilities(model.efforts)) as Effort | null,
-        });
-        break policyProvider;
+    // Search every account for the recommendation before falling back to other
+    // enabled models. An earlier account's fallback must not hide a later Sol.
+    policySearch: for (const allowOtherModels of [false, true]) {
+      if (allowOtherModels && (!args.isModelEnabled || policy.allowOtherModels === false)) break;
+      for (const provider of matchingProviders) {
+        for (const agent of policy.agents) {
+          const vendor = vendorForAgent(agent);
+          if (!availableAgents.has(vendor)) continue;
+          const model = matchingModel(
+            provider,
+            agent,
+            policy.modelIds,
+            allowOtherModels,
+            args.isModelEnabled,
+          );
+          if (!model) continue;
+          tuples.push({
+            vendor,
+            providerId: provider.id,
+            model: model.id,
+            // Missing or stale optional metadata does not disqualify a usable route.
+            effort: model.efforts.length === 0 ? null
+              : model.defaultEffort === null ? null
+                : (clampEffortToSupported(model.defaultEffort, model.efforts)
+                  ?? defaultEffortForCapabilities(model.efforts)) as Effort | null,
+          });
+          break policySearch;
+        }
       }
     }
   }
