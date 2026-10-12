@@ -277,6 +277,17 @@ export async function readBotSkillForBot(
     : null;
 }
 
+/** Restore one own skill by bot id (cloud companions); same store, lock and runtime refresh as tool saves. */
+export async function saveBotSkillForBot(
+  botId: string,
+  input: { slug: string; name: string; description: string; body: string },
+  deps: BotSkillServiceDeps = {},
+): Promise<void> {
+  const boundary = captureOwnerBoundary(deps);
+  await saveBotSkill(await skillHomeOf(deps, botId, boundary), botId, input);
+  assertOwnerBoundary(deps, boundary);
+}
+
 /** 设置页删除一条技能。 */
 export async function deleteBotSkillForBot(
   botId: string,

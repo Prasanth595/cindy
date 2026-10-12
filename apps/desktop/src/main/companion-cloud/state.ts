@@ -18,6 +18,8 @@ const bot = z.object({
   prefsSeeded: z.boolean().optional(),
   /** This computer gave the companion away; never re-register it as home here. */
   demoted: z.boolean().optional(),
+  /** Cloud history was added while the canonical Session was busy; rebuild at the next idle point. */
+  pendingRebuild: z.boolean().optional(),
 });
 const file = z.object({ version: z.literal(1), bots: z.record(z.string(), bot) });
 
@@ -53,6 +55,7 @@ export function createCompanionCloudState(options: {
   return {
     bot: (botId: string): CompanionBotState | null => load().bots[botId] ?? null,
     isDemoted: (botId: string) => load().bots[botId]?.demoted === true,
+    demotedBotIds: (): string[] => Object.entries(load().bots).flatMap(([botId, entry]) => entry.demoted ? [botId] : []),
     botForRoom: (roomId: string): string | null =>
       Object.entries(load().bots).find(([, entry]) => entry.roomId === roomId)?.[0] ?? null,
     /** Mutate one companion's entry and persist atomically. */

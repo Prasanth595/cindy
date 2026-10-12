@@ -5420,6 +5420,10 @@ interface ElectronAPI {
       ) => void,
     ) => () => void;
     getCompanionCloudState: () => Promise<import('../shared/companionCloud').CompanionCloudSnapshot>;
+    takeOverCompanion: (botId: string) => Promise<import('../shared/companionCloud').CompanionCloudActionResult>;
+    transferCompanion: (botId: string, targetDeviceId: string) => Promise<import('../shared/companionCloud').CompanionCloudActionResult>;
+    getCompanionTranscript: (botId: string, before?: string) => Promise<import('../shared/companionCloud').CompanionTranscriptPage>;
+    listCompanionTransferTargets: () => Promise<import('../shared/companionCloud').CompanionTransferTarget[]>;
     onCompanionCloudChanged: (
       cb: (
         payload: import('../shared/companionCloud').CompanionCloudSnapshot,

@@ -116,6 +116,9 @@ describe('Chat Server cloud companions', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(host.homes.homeOf('local-bot')).toBe('laptop');
     expect(host.homes.isHomeHere('local-bot')).toBe(false);
+    // The local copy is demoted: hidden from the roster, no routines, no uploads.
+    expect(host.homes.snapshot().demotedBotIds).toEqual(['local-bot']);
+    expect(host.homes.isShadowed('local-bot')).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls('/executions/claim')).toHaveLength(0);
   });

@@ -153,6 +153,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let selfDeviceId: string | null = null;
   let companionHome = false;
   let companion: CompanionCloudRuntime | undefined;
+  let companionSelf: string | null = null;
   let actorsStale = false;
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
@@ -428,13 +429,24 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return;
     }
     const self = selfDeviceId;
-    companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, current, log: deps.log,
+    if (companion && companionSelf !== self) { companion.dispose(); companion = undefined; }
+    companionSelf = self;
+    companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
       bots: () => actors.filter(a => a.kind === 'bot' && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
-        && !companion?.state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })) });
+        && !companion?.state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
+      actors: () => actors, refresh: refreshHomes, publish: publishHomes });
     const runtime = companion;
     await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
       botIds: profiles.filter(p => p.status === 'active').map(p => p.id), isDemoted: botId => runtime.state.isDemoted(botId) });
-    if (current()) host.homes.update(companionSnapshot({ enabled: true, selfDeviceId: self, humanActorId: selfId, actors }));
+    if (!current()) return;
+    runtime.reconcile(profiles.map(p => ({ id: p.id, status: p.status })));
+    publishHomes();
+  }
+  function publishHomes() {
+    const host = deps.companionCloud;
+    if (!host || !current() || !companionHome || !companion) return;
+    host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors,
+      demotedBotIds: companion.state.demotedBotIds() }));
   }
   /** Another device moved a companion: re-read actors now instead of after the throttle. */
   async function refreshHomes() {

@@ -1,0 +1,114 @@
+import { describe, expect, it, vi } from 'vitest';
+import { materializeCompanion } from '../materialize.js';
+import { fakeApi, fakeLocal, memoryState } from './fakes.js';
+
+const ROOM = '10000000-0000-4000-8000-000000000001';
+const actor = { id: 'actor-1', externalId: 'bot_mia', name: 'Mia', avatar: '🦊' };
+const iso = (ms: number) => new Date(ms).toISOString();
+
+const roomMessage = (id: string, seq: number, authorId: string, text: string, createdAt: number) =>
+  ({ id, seq: String(seq), authorId, origin: 'chat', deleted: false, threadRootId: null, createdAt: iso(createdAt), content: [{ type: 'text', text }] });
+
+function cloud(prefs: Array<{ key: string; value: unknown }>, room: unknown[] = []) {
+  return fakeApi((route, method) => {
+    if (route === '/preferences' && method === 'GET') return prefs.map((p, i) => ({ ...p, revision: i + 1 }));
+    if (route.startsWith(`/conversations/${ROOM}/messages?`)) return room;
+    throw new Error(`unexpected ${method} ${route}`);
+  });
+}
+
+const profilePref = { key: 'companion.profile.v1', value: { name: 'Mia', description: 'helper', soul: 'I am Mia', systemPrompt: 'custom', user: 'Owner likes tea' } };
+
+describe('materializeCompanion', () => {
+  it('creates a missing companion from its cloud profile, memories and skills', async () => {
+    const { api, calls } = cloud([profilePref,
+      { key: 'companion.memory.v1:user_tea.md', value: { filename: 'user_tea.md', content: '---\ntitle: Tea\n---\nlikes tea' } },
+      { key: 'companion.skill.v1:brew', value: { slug: 'brew', content: '---\nname: brew\n---\n\nsteps' } }]);
+    const local = fakeLocal();
+    const { state } = memoryState();
+    state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
+    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(calls[0]).toMatchObject({ route: '/preferences', method: 'GET', actorId: 'actor-1' });
+    expect(local.host.createProfile).toHaveBeenCalledWith({ id: 'bot_mia', name: 'Mia', description: 'helper',
+      identitySource: 'I am Mia', userContextSource: 'Owner likes tea', avatar: '🦊' });
+    expect(local.host.updateProfile).not.toHaveBeenCalled();
+    expect(local.host.writeSystemPrompt).toHaveBeenCalledWith('bot_mia', 'custom');
+    expect(local.memories.get('user_tea.md')).toContain('likes tea');
+    expect(local.skills.get('brew')).toContain('steps');
+    expect(result).toEqual({ created: true, inserted: 0, rebuild: 'skipped', failures: 0 });
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
+    expect(local.host.rebuildContext).not.toHaveBeenCalled();
+  });
+
+  it('updates an existing companion and applies tombstones only to what exists', async () => {
+    const { api } = cloud([profilePref,
+      { key: 'companion.memory.v1:user_old.md', value: null },
+      { key: 'companion.memory.v1:user_never.md', value: null },
+      { key: 'companion.memory.v1:user_same.md', value: { filename: 'user_same.md', content: 'same' } },
+      { key: 'companion.skill.v1:gone', value: null }]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'paused', displayName: 'Old', description: '' });
+    local.memories.set('user_old.md', 'old'); local.memories.set('user_same.md', 'same');
+    local.skills.set('gone', 'x');
+    await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM });
+    expect(local.host.createProfile).not.toHaveBeenCalled();
+    expect(local.host.updateProfile).toHaveBeenCalledWith({ id: 'bot_mia', name: 'Mia', description: 'helper', identitySource: 'I am Mia', userContextSource: 'Owner likes tea' });
+    expect(local.host.removeMemory).toHaveBeenCalledTimes(1);
+    expect(local.host.removeMemory).toHaveBeenCalledWith('bot_mia', 'user_old.md');
+    expect(local.host.restoreMemory).not.toHaveBeenCalled();
+    expect(local.host.removeSkill).toHaveBeenCalledWith('bot_mia', 'gone');
+  });
+
+  it('inserts the room history that is not local yet, then rebuilds the context once', async () => {
+    const mirroredAt = 1_700_000_000_000;
+    const room = [
+      roomMessage('m3', 3, 'actor-1', 'reply from laptop', mirroredAt + 2000),
+      roomMessage('m2', 2, 'human', 'question on laptop', mirroredAt + 1000),
+      roomMessage('m1', 1, 'human', 'mirrored from here', mirroredAt),
+    ];
+    const { api } = cloud([profilePref], room);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    local.rows.push({ id: 'own', clientId: 'c-own', role: 'user', content: 'mirrored from here', agentMeta: null, createdAt: mirroredAt });
+    const { state } = memoryState();
+    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(vi.mocked(local.host.insertHistory).mock.calls.map(call => call[1])).toEqual([
+      { clientId: 'cloud-history:m2', role: 'user', text: 'question on laptop', createdAt: mirroredAt + 1000 },
+      { clientId: 'cloud-history:m3', role: 'assistant', text: 'reply from laptop', createdAt: mirroredAt + 2000 },
+    ]);
+    expect(result).toMatchObject({ inserted: 2, rebuild: 'rebuilt' });
+    expect(local.host.rebuildContext).toHaveBeenCalledOnce();
+    expect(state.bot('bot_mia')).toMatchObject({ mirror: { sessionId: 'session-1', createdAt: mirroredAt + 2000 } });
+    expect(state.bot('bot_mia')?.pendingRebuild).toBeUndefined();
+    // A second run finds everything local and does not rebuild again.
+    const again = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(again).toMatchObject({ inserted: 0, rebuild: 'skipped' });
+    expect(local.host.rebuildContext).toHaveBeenCalledOnce();
+  });
+
+  it('defers the rebuild while the Session is busy', async () => {
+    const { api } = cloud([profilePref], [roomMessage('m1', 1, 'human', 'hello', 1_700_000_000_000)]);
+    const local = fakeLocal({ rebuildContext: vi.fn(async () => 'busy' as const) });
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    const { state } = memoryState();
+    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(result.rebuild).toBe('busy');
+    expect(state.bot('bot_mia')?.pendingRebuild).toBe(true);
+  });
+
+  it('keeps going when one memory cannot be restored', async () => {
+    const { api } = cloud([profilePref, { key: 'companion.memory.v1:user_bad.md', value: { filename: 'user_bad.md', content: 'x' } }]);
+    const local = fakeLocal({ restoreMemory: vi.fn(async () => { throw new Error('INVALID'); }) });
+    const log = { warn: vi.fn() };
+    const result = await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM, log });
+    expect(result.failures).toBe(1);
+    expect(log.warn).toHaveBeenCalledWith('Companion content could not be restored', { actorId: 'actor-1', kind: 'memory', code: 'INVALID' });
+  });
+
+  it('refuses a profile that is being deleted', async () => {
+    const { api } = cloud([profilePref]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'deleting', displayName: 'Mia', description: '' });
+    await expect(materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('PROFILE_DELETING');
+  });
+});

@@ -6075,6 +6075,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getCompanionCloudState: (): Promise<import('../shared/companionCloud').CompanionCloudSnapshot> =>
       ipcRenderer.invoke('maker:companion-cloud:state'),
     onCompanionCloudChanged: fanOutCompanionCloudChanged,
+    takeOverCompanion: (botId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:take-over', botId),
+    transferCompanion: (botId: string, targetDeviceId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:transfer', botId, targetDeviceId),
+    getCompanionTranscript: (botId: string, before?: string): Promise<import('../shared/companionCloud').CompanionTranscriptPage> =>
+      ipcRenderer.invoke('maker:companion-cloud:transcript', botId, before),
+    listCompanionTransferTargets: (): Promise<import('../shared/companionCloud').CompanionTransferTarget[]> =>
+      ipcRenderer.invoke('maker:companion-cloud:devices'),
     onBotProfileChanged: fanOutBotProfileChanged,
     onBotWorkbenchChanged: fanOutBotWorkbenchChanged,
     runBotLifecycleAction: (

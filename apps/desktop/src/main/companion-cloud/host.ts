@@ -2,15 +2,21 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { and, asc, desc, eq, gt, inArray, isNull, or } from 'drizzle-orm';
+import { net } from 'electron';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { isManagedBotAvatarUrl, isSupportedBotAvatarValue, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
+import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
 import { getDbClient } from '../localDb/client/current.js';
+import { createBotProfile, getBotMemoryService, updateBotProfile } from '../localDb/ipc/bots.js';
+import { createMessage } from '../localDb/ipc/messages.js';
 import { botProfiles, messages } from '../localDb/schema.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
-import { botProfileMemoryDir, readBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
+import { botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
-import { listBotSkillsForBot, readBotSkillForBot } from '../maker-ipc/botSkillService.js';
-import { renderBotSkillFile } from '../maker-ipc/botSkillStore.js';
+import { deleteBotSkillForBot, listBotSkillsForBot, readBotSkillForBot, saveBotSkillForBot } from '../maker-ipc/botSkillService.js';
+import { parseBotSkillFile, renderBotSkillFile } from '../maker-ipc/botSkillStore.js';
+import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
 import type { CompanionCloudHost } from './runtime.js';
@@ -45,15 +51,84 @@ export async function readCompanionValues(botId: string): Promise<CompanionPrefe
     if (content !== null) values.push({ key: `${COMPANION_MEMORY_PREFIX}${entry.name}`, value: { filename: entry.name, content } });
   }
   for (const skill of await listBotSkillsForBot(botId)) {
-    const detail = await readBotSkillForBot(botId, skill.slug);
-    if (!detail) continue;
+    const content = await readSkillContent(botId, skill.slug);
+    if (content === null) continue;
     values.push({ key: `${COMPANION_SKILL_PREFIX}${skill.slug}`, value: {
-      slug: skill.slug,
-      content: renderBotSkillFile({ slug: skill.slug, name: detail.name, description: detail.description, updatedAt: detail.updatedAt, body: detail.body }),
-      ...(skill.enabled === false ? { enabled: false } : {}),
+      slug: skill.slug, content, ...(skill.enabled === false ? { enabled: false } : {}),
     } });
   }
   return values;
+}
+
+async function readSkillContent(botId: string, slug: string): Promise<string | null> {
+  const detail = await readBotSkillForBot(botId, slug);
+  return detail
+    ? renderBotSkillFile({ slug, name: detail.name, description: detail.description, updatedAt: detail.updatedAt, body: detail.body })
+    : null;
+}
+
+/** The actor's public avatar (https) as bounded image bytes for the normal creation path. */
+async function fetchAvatarBase64(url: string): Promise<string | null> {
+  try {
+    const response = await net.fetch(url, { redirect: 'error' });
+    if (!response.ok) return null;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.length > 0 && buffer.length <= BOT_AVATAR_MAX_BYTES ? buffer.toString('base64') : null;
+  } catch {
+    return null;
+  }
+}
+
+type MaterializeLocal = Omit<CompanionMaterializeHost, 'latestRows'>;
+
+function createMaterializer(input: {
+  ensureCanonicalSession: (botId: string) => Promise<string>;
+  rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
+}): MaterializeLocal {
+  return {
+    readProfile: async botId => {
+      const [row] = await getDbClient().drizzle
+        .select({ status: botProfiles.status, displayName: botProfiles.displayName, description: botProfiles.description })
+        .from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
+      return row ?? null;
+    },
+    // Normal creation path: no invitation, no generated persona, the new home's default model.
+    createProfile: async ({ id, name, description, identitySource, userContextSource, avatar }) => {
+      const portable = avatar && isSupportedBotAvatarValue(avatar) && !isManagedBotAvatarUrl(avatar) ? avatar : undefined;
+      const image = !portable && avatar?.startsWith('https://') ? await fetchAvatarBase64(avatar) : null;
+      await createBotProfile({ id, name: name.slice(0, 200), description, identitySource, userContextSource,
+        ...(portable ? { avatar: portable } : {}), ...(image ? { avatarImageBase64: image } : {}) });
+    },
+    updateProfile: async ({ id, name, description, identitySource, userContextSource }) => {
+      await updateBotProfile({ id, name: name.slice(0, 200), enabled: true,
+        ...(description !== undefined ? { description } : {}),
+        ...(identitySource !== undefined ? { identitySource } : {}),
+        ...(userContextSource !== undefined ? { userContextSource } : {}) });
+    },
+    writeSystemPrompt: (botId, text) => writeBotProfileFolder(ownerScopedUserDataPath(), botId, { systemPromptOverride: text }),
+    readMemory: async (botId, filename) => {
+      if (path.basename(filename) !== filename) return null;
+      return fs.readFile(path.join(botProfileMemoryDir(ownerScopedUserDataPath(), botId), filename), 'utf8').catch(() => null);
+    },
+    restoreMemory: (botId, filename, raw) => getBotMemoryService().restoreRaw(botId, filename, raw),
+    removeMemory: (botId, filename) => getBotMemoryService().removeRaw(botId, filename),
+    readSkill: readSkillContent,
+    saveSkill: async (botId, slug, content) => {
+      const parsed = parseBotSkillFile(content);
+      await saveBotSkillForBot(botId, { slug, name: parsed.name || slug, description: parsed.description, body: parsed.body });
+    },
+    removeSkill: async (botId, slug) => { await deleteBotSkillForBot(botId, slug); },
+    ensureCanonicalSession: input.ensureCanonicalSession,
+    localMessageTimes: (sessionId, fromMs, toMs) => getDbClient().drizzle
+      .select({ role: messages.role, createdAt: messages.createdAt }).from(messages)
+      .where(and(visibleRows(sessionId), gte(messages.createdAt, fromMs), lte(messages.createdAt, toMs))),
+    // Same row shape as ordinary messages; the client id keeps it out of the mirror.
+    insertHistory: async (sessionId, row) => {
+      await createMessage(sessionId, { clientId: row.clientId, role: row.role, createdAt: row.createdAt,
+        content: row.role === 'user' ? { text: row.text, images: [], files: [] } : [{ type: 'text', text: row.text }] });
+    },
+    rebuildContext: input.rebuildContext,
+  };
 }
 
 const mirrorColumns = {
@@ -77,6 +152,9 @@ export async function readLatestMirrorRows(sessionId: string, limit: number): Pr
 
 export function createCompanionCloudHost(input: {
   deliverToCanonical: CompanionCloudHost['deliverToCanonical'];
+  ensureCanonicalSession: (botId: string) => Promise<string>;
+  rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
+  listDevices: () => Promise<DeviceLinkDeviceView[]>;
   log?: CompanionLog;
 }): CompanionCloudHost {
   return {
@@ -95,5 +173,7 @@ export function createCompanionCloudHost(input: {
     latestRows: readLatestMirrorRows,
     deliverToCanonical: input.deliverToCanonical,
     onLocalChange: onBotRemoteResourceChanged,
+    materializer: createMaterializer(input),
+    listDevices: input.listDevices,
   };
 }

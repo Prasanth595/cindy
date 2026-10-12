@@ -16,7 +16,7 @@ export function createCompanionHomeRegistry() {
     snapshot: () => snapshot,
     update(next: CompanionCloudSnapshot) {
       if (JSON.stringify(next) === JSON.stringify(snapshot)) return;
-      snapshot = { ...next, actors: next.actors.map(actor => ({ ...actor })) };
+      snapshot = { ...next, actors: next.actors.map(actor => ({ ...actor })), demotedBotIds: [...next.demotedBotIds] };
       for (const listener of listeners) {
         try { listener(snapshot); } catch { /* one listener never blocks the others */ }
       }
@@ -32,6 +32,8 @@ export function createCompanionHomeRegistry() {
       return !home || home === snapshot.selfDeviceId;
     },
     actorIdFor: (botId: string): string | null => actorOf(botId)?.id ?? null,
+    /** The local copy of a companion that now runs on another computer: hidden, no routines. */
+    isShadowed: (botId: string): boolean => snapshot.demotedBotIds.includes(botId),
     onChange(listener: CompanionHomeListener): () => void {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
@@ -44,6 +46,11 @@ export type CompanionHomeRegistry = ReturnType<typeof createCompanionHomeRegistr
 
 /** Process-wide registry; chatServer resets it when its account/endpoint instance ends. */
 export const companionHomes = createCompanionHomeRegistry();
+
+/** True while this computer's copy of the companion is demoted (its home is elsewhere). */
+export function isCompanionShadowed(botId: string): boolean {
+  return companionHomes.isShadowed(botId);
+}
 
 interface HomeActor { id: string; kind: string; externalId: string; homeDeviceId?: string | null }
 
@@ -80,9 +87,11 @@ export function companionSnapshot(input: {
   selfDeviceId: string | null;
   humanActorId: string | null;
   actors: Array<HomeActor & { name: string; avatar?: string | null }>;
+  demotedBotIds?: string[];
 }): CompanionCloudSnapshot {
   const actors: CompanionCloudActor[] = input.actors.filter(a => a.kind === 'bot').map(a => ({
     id: a.id, externalId: a.externalId, name: a.name, avatar: a.avatar ?? null, homeDeviceId: a.homeDeviceId ?? null,
   }));
-  return { enabled: input.enabled, selfDeviceId: input.selfDeviceId, humanActorId: input.humanActorId, actors };
+  return { enabled: input.enabled, selfDeviceId: input.selfDeviceId, humanActorId: input.humanActorId, actors,
+    demotedBotIds: [...(input.demotedBotIds ?? [])].sort() };
 }

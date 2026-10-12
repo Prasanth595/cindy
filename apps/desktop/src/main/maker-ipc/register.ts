@@ -561,6 +561,9 @@ import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { companionHomes } from '../companion-cloud/homes.js';
 import { createCompanionCloudHost } from '../companion-cloud/host.js';
+import { activeCompanionCloud } from '../companion-cloud/runtime.js';
+import { companionCloudView } from '../companion-cloud/view.js';
+import type { CompanionCloudActionResult } from '../../shared/companionCloud.js';
 import { createBotGroupPlanDecider } from './botGroupPlanDecider.js';
 import { botGroupMembersVisibleRemotely, registerBotGroupRemoteResourceProvider } from './botGroupRemoteResourceProvider.js';
 import { broadcastBotGroupRemoteResourceChanged } from './botGroupRemoteResourceInvalidation.js';
@@ -2618,6 +2621,7 @@ let botDelegationServiceHolder: BotDelegationService | null = null;
 let botDirectMessageServiceHolder: BotDirectMessageService | null = null;
 let botGroupChatServiceHolder: BotGroupChatService | null = null;
 let unsubscribeCompanionCloudBroadcast: (() => void) | null = null;
+const listCompanionDevices = async () => (await handleListDevices(deviceDirectoryDeps())).devices;
 
 const botRuntimeRestoreCoordinator = createBotRuntimeRestoreCoordinator({
   readDbIdentity: () => {
@@ -11484,6 +11488,31 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     git: async (args, cwd) => (await gitExec(args, cwd, { timeoutMs: 10_000 })).stdout,
     trashItem: (fullPath) => shell.trashItem(fullPath),
   });
+  // The companion "restart": durable handoff from DB history, no replay of any input.
+  async function restartBotCanonicalRuntime(sessionId: string, assertOwnerCurrent: () => void): Promise<void> {
+    const recovery = contextOverflowRolloverHolder;
+    if (!recovery) throwIpcError('PRECONDITION_FAILED', 'Bot recovery is not ready');
+    await restartBotRuntime(sessionId, assertOwnerCurrent, {
+      stopInput: (id) => {
+        // Save the visible partial reply before abort/close clears the stream buffers.
+        flushAssistantBlock(id);
+        flushOrphanToolResults(id, null);
+        resetAutomaticRecoveryForExplicitStop(id);
+        recovery.cancelRecovery(id);
+        // Cancel sends/retries before waiting for their serialization lock.
+        // Preserve queued user input, paused until the user explicitly resumes it.
+        agentInputCoordinatorHolder?.stop(id, { keepQueue: true, pauseQueue: true, resumeOnUserInput: true });
+      },
+      withSessionLock: withSessionRestartLock,
+      rebuild: async (id, assertCurrent, signal) => {
+        await pauseGoalBeforeExplicitStop(id);
+        assertCurrent();
+        cleanupPendingInteractionsForSession(id, 'session_closed');
+        await recovery.prepareNativeSessionRecovery(id, null, assertCurrent, signal);
+      },
+      onClosed: (id) => agentInputCoordinatorHolder?.onSessionClosed(id),
+    });
+  }
   const botGroupChatDeps: BotGroupChatServiceDeps = {
     ensureLane: async (input) => {
       try {
@@ -11569,6 +11598,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     companionCloud: createCompanionCloudHost({
       log,
+      ensureCanonicalSession: async (botId) => {
+        if (!botDelegationServiceHolder) throw new Error('DELEGATION_UNAVAILABLE');
+        const ensured = await botDelegationServiceHolder.ensureCanonicalSession(botId);
+        if (!ensured.ok) throw new Error(ensured.errorCode);
+        return ensured.sessionId;
+      },
+      // Cloud history was added: rebuild like a restart, but never interrupt a turn.
+      rebuildContext: async (sessionId) => {
+        if (maker.getSession(sessionId)?.isTurnRunning?.()
+          || inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0) return 'busy';
+        const scope = captureDataOwnerBroadcastScope();
+        await restartBotCanonicalRuntime(sessionId, () => {
+          if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('OWNER_CHANGED');
+        });
+        return 'rebuilt';
+      },
+      listDevices: listCompanionDevices,
       // A message the owner wrote in the companion's room reaches its main task like any user input.
       deliverToCanonical: async (botId, text, clientId) => {
         if (!botDelegationServiceHolder) return { ok: false as const, errorCode: 'DELEGATION_UNAVAILABLE' };
@@ -11601,7 +11647,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   botGroupChatServiceHolder = withChatServer(createBotGroupChatService(botGroupChatDeps), botGroupChatDeps);
   unsubscribeCompanionCloudBroadcast?.();
   unsubscribeCompanionCloudBroadcast = companionHomes.onChange((snapshot) => {
-    broadcastToAllWindows(MAKER_PUSH.COMPANION_CLOUD_CHANGED, snapshot);
+    const scope = captureDataOwnerBroadcastScope();
+    void companionCloudView(snapshot, listCompanionDevices).then((view) => {
+      broadcastToAllWindows(MAKER_PUSH.COMPANION_CLOUD_CHANGED, view, scope);
+    });
   });
   // Phones reach groups through the Remote Resource protocol (bot-group-chat.md §8).
   registerBotGroupRemoteResourceProvider(() => botGroupChatServiceHolder);
@@ -11745,30 +11794,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   registerBotLifecycleHandlers({
     maker,
-    restartRuntime: async (sessionId, assertOwnerCurrent) => {
-      const recovery = contextOverflowRolloverHolder;
-      if (!recovery) throwIpcError('PRECONDITION_FAILED', 'Bot recovery is not ready');
-      await restartBotRuntime(sessionId, assertOwnerCurrent, {
-        stopInput: (id) => {
-          // Save the visible partial reply before abort/close clears the stream buffers.
-          flushAssistantBlock(id);
-          flushOrphanToolResults(id, null);
-          resetAutomaticRecoveryForExplicitStop(id);
-          recovery.cancelRecovery(id);
-          // Cancel sends/retries before waiting for their serialization lock.
-          // Preserve queued user input, paused until the user explicitly resumes it.
-          agentInputCoordinatorHolder?.stop(id, { keepQueue: true, pauseQueue: true, resumeOnUserInput: true });
-        },
-        withSessionLock: withSessionRestartLock,
-        rebuild: async (id, assertCurrent, signal) => {
-          await pauseGoalBeforeExplicitStop(id);
-          assertCurrent();
-          cleanupPendingInteractionsForSession(id, 'session_closed');
-          await recovery.prepareNativeSessionRecovery(id, null, assertCurrent, signal);
-        },
-        onClosed: (id) => agentInputCoordinatorHolder?.onSessionClosed(id),
-      });
-    },
+    restartRuntime: restartBotCanonicalRuntime,
     getDelegationService: () => botDelegationServiceHolder,
     onPaused: (botId) => updateBotRoutineLifecycle(botId, 'pause'),
     onResumed: async (botId) => {
@@ -11918,7 +11944,41 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_STATE, async (event) => {
     assertTrustedAppRendererEvent(event);
-    return companionHomes.snapshot();
+    return companionCloudView(companionHomes.snapshot(), listCompanionDevices);
+  });
+  const companionBotId = (value: unknown) => {
+    if (typeof value !== 'string' || !value.trim() || value.length > 200) throwIpcError('INVALID_PARAMS', 'botId required');
+    return value;
+  };
+  const companionNotEnabled: CompanionCloudActionResult = { ok: false, code: 'NOT_ENABLED' };
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TAKE_OVER, async (event, botId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    return activeCompanionCloud()?.takeOver(id) ?? companionNotEnabled;
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSFER, async (event, botId: unknown, targetDeviceId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    if (typeof targetDeviceId !== 'string' || !targetDeviceId || targetDeviceId.length > 200) throwIpcError('INVALID_PARAMS', 'targetDeviceId required');
+    return activeCompanionCloud()?.transfer(id, targetDeviceId) ?? companionNotEnabled;
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSCRIPT, async (event, botId: unknown, before: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    if (before !== undefined && before !== null && (typeof before !== 'string' || !/^[1-9][0-9]{0,18}$/.test(before)))
+      throwIpcError('INVALID_PARAMS', 'Invalid cursor');
+    const runtime = activeCompanionCloud();
+    if (!runtime) throwIpcError('PRECONDITION_FAILED', 'Cloud companions are not available');
+    try {
+      return await runtime.transcript(id, typeof before === 'string' ? before : undefined);
+    } catch (error) {
+      log.warn('companion transcript read failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
+      throwIpcError('PRECONDITION_FAILED', 'Companion conversation is not available');
+    }
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_DEVICES, async (event) => {
+    assertTrustedAppRendererEvent(event);
+    return (await activeCompanionCloud()?.transferTargets()) ?? [];
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_DISMISS, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);

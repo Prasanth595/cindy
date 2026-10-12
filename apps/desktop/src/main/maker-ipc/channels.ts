@@ -808,6 +808,14 @@ export const MAKER_INVOKE = {
   BOT_LIFECYCLE_ACTION: 'maker:bot-lifecycle:action',
   /** Where each companion runs (cloud-companions.md §3); read-only snapshot. */
   COMPANION_CLOUD_STATE: 'maker:companion-cloud:state',
+  /** Make this computer the companion's home (cloud-companions.md §3.1). */
+  COMPANION_CLOUD_TAKE_OVER: 'maker:companion-cloud:take-over',
+  /** Hand the companion to another of the owner's computers. */
+  COMPANION_CLOUD_TRANSFER: 'maker:companion-cloud:transfer',
+  /** Read the companion's 1:1 room (works while its home is offline). */
+  COMPANION_CLOUD_TRANSCRIPT: 'maker:companion-cloud:transcript',
+  /** Computers a companion can be handed to. */
+  COMPANION_CLOUD_DEVICES: 'maker:companion-cloud:devices',
 } as const;
 
 /**

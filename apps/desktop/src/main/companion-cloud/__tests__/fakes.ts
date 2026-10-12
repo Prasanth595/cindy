@@ -1,4 +1,6 @@
 import { vi } from 'vitest';
+import type { CompanionMaterializeHost } from '../materialize.js';
+import type { CompanionMirrorRow } from '../mirror.js';
 import { createCompanionCloudState } from '../state.js';
 import type { CompanionApi } from '../types.js';
 
@@ -26,3 +28,34 @@ export function fakeApi(handler: ApiHandler) {
   }) as unknown as CompanionApi;
   return { api, calls };
 }
+
+export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
+  const memories = new Map<string, string>();
+  const skills = new Map<string, string>();
+  const rows: CompanionMirrorRow[] = [];
+  let profile: { status: string; displayName: string; description: string } | null = null;
+  const host = {
+    readProfile: vi.fn(async () => profile),
+    createProfile: vi.fn(async (input: { name: string; description: string }) => { profile = { status: 'active', displayName: input.name, description: input.description }; }),
+    updateProfile: vi.fn(async (input: { name: string }) => { profile = { ...profile!, status: 'active', displayName: input.name }; }),
+    writeSystemPrompt: vi.fn(async () => undefined),
+    readMemory: vi.fn(async (_bot: string, file: string) => memories.get(file) ?? null),
+    restoreMemory: vi.fn(async (_bot: string, file: string, raw: string) => { memories.set(file, raw); }),
+    removeMemory: vi.fn(async (_bot: string, file: string) => { memories.delete(file); }),
+    readSkill: vi.fn(async (_bot: string, slug: string) => skills.get(slug) ?? null),
+    saveSkill: vi.fn(async (_bot: string, slug: string, content: string) => { skills.set(slug, content); }),
+    removeSkill: vi.fn(async (_bot: string, slug: string) => { skills.delete(slug); }),
+    ensureCanonicalSession: vi.fn(async () => 'session-1'),
+    localMessageTimes: vi.fn(async (_sid: string, from: number, to: number) =>
+      rows.filter(row => row.createdAt >= from && row.createdAt <= to).map(row => ({ role: row.role, createdAt: row.createdAt }))),
+    insertHistory: vi.fn(async (_sid: string, row: { clientId: string; role: string; text: string; createdAt: number }) => {
+      rows.push({ id: `local-${rows.length}`, clientId: row.clientId, role: row.role, content: row.text, agentMeta: null, createdAt: row.createdAt });
+    }),
+    rebuildContext: vi.fn(async (): Promise<'rebuilt' | 'busy'> => 'rebuilt'),
+    latestRows: vi.fn(async () => [...rows].sort((a, b) => b.createdAt - a.createdAt)),
+    ...overrides,
+  };
+  return { host: host as unknown as CompanionMaterializeHost & typeof host, memories, skills, rows,
+    setProfile: (value: typeof profile) => { profile = value; } };
+}
+
