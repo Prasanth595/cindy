@@ -12,6 +12,7 @@ vi.mock('electron-store', () => ({ default: class {} }));
 
 import type { GitHeadInfo } from '../git-context/headReader';
 import {
+  collectTouchedDirs,
   extractDirCandidate,
   findLiveLinkedWorktree,
   posixDriveToWin32,
@@ -298,5 +299,21 @@ describe('findLiveLinkedWorktree', () => {
       probeGitDir: async () => null,
     });
     expect(res).toBeNull();
+  });
+});
+
+describe('collectTouchedDirs', () => {
+  it('keeps every directory newest first, including Codex file_change targets', () => {
+    const repoA = path.resolve('/work/client/.cindy-worktrees/fix');
+    const repoB = path.resolve('/work/server');
+    expect(collectTouchedDirs([
+      JSON.stringify({ toolName: 'exec', input: { cwd: repoB } }),
+      JSON.stringify({
+        toolName: 'file_change',
+        input: { changes: [{ path: path.join(repoA, 'src', 'panel.tsx') }, { path: 'relative.ts' }] },
+      }),
+      JSON.stringify({ toolName: 'exec', input: { cwd: repoB } }),
+      JSON.stringify({ toolName: 'Read', input: { file_path: path.join(repoA, 'ignored.ts') } }),
+    ])).toEqual([repoB, path.join(repoA, 'src')]);
   });
 });

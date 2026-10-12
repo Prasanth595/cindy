@@ -10948,6 +10948,7 @@
         },
         "directory": "目錄：",
         "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
@@ -14099,6 +14100,20 @@
       "current": "審查目前目錄",
       "choose": "選擇其他目錄",
       "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
+    },
+    "followUp": {
+      "withCount": "審查發現 {{count}} 個問題，請逐條核實並修正",
+      "unknownCount": "審查結論已返回，請逐條核實並修正"
     }
   },
   "learn": {

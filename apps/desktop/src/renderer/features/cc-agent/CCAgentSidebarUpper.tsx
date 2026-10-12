@@ -98,8 +98,10 @@ import {
   BOT_GROUP_LANE_SESSION,
   botOwnedSessionNotificationTitle,
   findSessionNotificationSession,
+  isReviewSessionNotificationTarget,
   sendSessionEventNotification,
 } from '@/lib/sessionEventNotification';
+import { isReviewSessionSource } from '../../../shared/sessionSource';
 import type { Session } from '@/lib/ccAgent.types';
 import {
   clearSessionAttentionMany,
@@ -1144,6 +1146,8 @@ function ExpandedView({
       // 再以 lead 名义统一推一条，避免同一事件双重打扰。语义上用户应回到 lead 主对话
       // 查看，而非跳到 worker 实现细节；与 effectiveRunningSessionIds 的角色聚合口径一致。
       if (session && isOrcaWorkerSession(session)) return;
+      // /review 审查任务不单独通知:结果回到来源任务,由来源任务的轮次收尾通知。
+      if (session && isReviewSessionSource(session.source)) return;
       if (session) {
         const title = projectDraftSessionTitle(session.title, unnamedLabelRef.current);
         sendSessionEventNotification(sessionId, title, kind, {
@@ -1152,11 +1156,13 @@ function ExpandedView({
         });
         return;
       }
-      void botOwnedSessionNotificationTitle(sessionId).then((botTitle) => {
+      void (async () => {
+        if (await isReviewSessionNotificationTarget(sessionId)) return;
+        const botTitle = await botOwnedSessionNotificationTitle(sessionId);
         // 伙伴群专线不发系统通知,确认请求在群聊里提示(docs/product-rules/bot-group-chat.md §3)。
         if (botTitle === BOT_GROUP_LANE_SESSION) return;
         sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);
-      });
+      })();
     },
     [],
   );

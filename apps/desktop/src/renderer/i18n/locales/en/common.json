@@ -10991,6 +10991,7 @@
         },
         "directory": "Directory: ",
         "baseline": "Base branch: ",
+        "additionalDirectories": "Also: ",
         "unverifiedResult": "The reviewer produced these findings, but their validity could not be verified."
       }
     },
@@ -14152,6 +14153,20 @@
       "current": "Review this directory",
       "choose": "Choose another directory",
       "open": "Review"
+    },
+    "inputSummary": {
+      "title": "Independent review (read-only, no development memory)",
+      "directory": "Directory: {{dir}}",
+      "baseline": "compared with {{base}}",
+      "uncommitted": "includes uncommitted changes",
+      "additionalDirectories": "Also: {{dirs}}",
+      "artifacts": "Artifacts: {{count}}",
+      "focus": "Focus: {{focus}}",
+      "task": "Reviewing the current result against the task goal"
+    },
+    "followUp": {
+      "withCount": "Review found {{count}} issue(s). Verify each one and fix it.",
+      "unknownCount": "Review results are back. Verify each finding and fix it."
     }
   },
   "learn": {

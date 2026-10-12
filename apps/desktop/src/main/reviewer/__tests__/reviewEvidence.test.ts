@@ -902,6 +902,50 @@ describe('loadReviewEvidence attachment boundaries', () => {
     expect(await readReviewContextFingerprint('source')).toBe(changedFingerprint);
   });
 
+  it('keeps the user request and final answer but drops development commentary', async () => {
+    const workingDir = await tempDir();
+    // The fake query returns rows as stored: newest first, like the SQL order.
+    reviewRows.push(...[
+      {
+        role: 'user' as const,
+        content: JSON.stringify({ text: 'fix the device list' }),
+        agentMeta: null,
+        createdAt: 1,
+        id: 'message-1',
+      },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        role: 'assistant' as const,
+        content: JSON.stringify({ text: `progress ${index}` }),
+        agentMeta: JSON.stringify({ assistantPhase: 'commentary' }),
+        createdAt: 2 + index,
+        id: `commentary-${String(index).padStart(2, '0')}`,
+      })),
+      {
+        role: 'assistant' as const,
+        content: JSON.stringify({ text: 'done: tests pass' }),
+        agentMeta: JSON.stringify({ assistantPhase: 'final_answer' }),
+        createdAt: 40,
+        id: 'message-final',
+      },
+    ].reverse());
+
+    const evidence = await loadReviewEvidence({
+      sourceSessionId: 'source',
+      workingDir,
+      attachments: [],
+      explicitArtifactGrant: {
+        paths: [],
+        pathIdentities: new Map(),
+        inlineAttachmentKeys: [],
+      },
+    });
+
+    expect(evidence.context).toEqual([
+      { role: 'user', text: 'fix the device list' },
+      { role: 'assistant', text: 'done: tests pass' },
+    ]);
+  });
+
   it('does not let a hidden lifecycle row evict the twentieth visible context message', async () => {
     reviewRows.push(
       ...Array.from({ length: 20 }, (_, index) => ({

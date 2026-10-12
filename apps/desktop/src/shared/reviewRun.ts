@@ -152,6 +152,8 @@ export interface ReviewRunMeta {
     workingDir: string;
     baseRef?: string;
     hasUncommittedChanges: boolean;
+    /** Other repositories/worktrees the task changed, reviewed with the primary one. */
+    additionalWorkingDirs?: string[];
   };
   startedAt: number;
   /**

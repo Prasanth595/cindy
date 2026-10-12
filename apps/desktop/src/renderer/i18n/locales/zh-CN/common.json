@@ -10949,6 +10949,7 @@
         },
         "directory": "目录：",
         "baseline": "基线分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下结论已生成，但未能验证是否仍然有效。"
       }
     },
@@ -14099,6 +14100,20 @@
       "current": "审查当前目录",
       "choose": "选择其他目录",
       "open": "审查"
+    },
+    "inputSummary": {
+      "title": "独立审查（只读，无开发记忆）",
+      "directory": "目录：{{dir}}",
+      "baseline": "对比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "artifacts": "成果：{{count}} 项",
+      "focus": "关注：{{focus}}",
+      "task": "按任务目标审查当前成果"
+    },
+    "followUp": {
+      "withCount": "审查发现 {{count}} 个问题，请逐条核实并修复",
+      "unknownCount": "审查结论已返回，请逐条核实并修复"
     }
   },
   "learn": {

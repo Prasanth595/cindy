@@ -13,7 +13,7 @@ import type {
   ConversationSearchStatusFilter,
 } from '../../shared/conversationSearch.js';
 import { conversationSearchTitle } from '../../shared/conversationSearch.js';
-import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../shared/sessionSource.js';
+import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../shared/sessionSource.js';
 import type { SessionSource } from '../../shared/sessionSource.js';
 import { normalizeWorkingDirForGrouping } from '../../shared/workingDir.js';
 import { getDbClient } from './client/current.js';
@@ -77,7 +77,7 @@ export async function searchConversations(
   const limit = clampLimit(request.limit);
   const filters = normalizeFilters(request);
   const sessionSources = hostScope.sessionSources === undefined
-    ? DESKTOP_VISIBLE_SESSION_SOURCES
+    ? DESKTOP_TASK_LIST_SESSION_SOURCES
     : hostScope.sessionSources;
   const sortBy = normalizeSortBy(request.sortBy);
   const skipVector = request.semanticMode === 'keyword';

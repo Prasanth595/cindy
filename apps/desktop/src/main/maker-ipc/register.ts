@@ -377,6 +377,12 @@ import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
 import { resolveReviewScope, withSessionReviewWorkspace } from '../git-review/scopeResolver.js';
 import { selectReviewWorkspace, shouldSelectReviewWorkspace } from '../reviewer/reviewWorkspaceSelection.js';
 import {
+  additionalReviewRepositoriesAreCurrent,
+  loadAdditionalReviewRepositories,
+  resolveReviewRepoRoot,
+  type LoadedReviewRepository,
+} from '../reviewer/reviewAdditionalRepositories.js';
+import {
   listReviewHistoricalAttachments,
   loadReviewEvidence,
   readReviewContextFingerprint,
@@ -406,6 +412,12 @@ import { reviewChangeSetContentPaths, usableReviewChangeSet } from '../reviewer/
 import { enforceReviewCreateOptions } from '../reviewer/reviewSessionPolicy.js';
 import { reviewSourceIdentityMatches } from '../reviewer/reviewSourceIdentity.js';
 import { buildReviewSessionTitle } from '../reviewer/reviewSessionTitle.js';
+import {
+  buildReviewFollowUpMessage,
+  buildReviewInputSummary,
+  reviewFollowUpDisplayText,
+} from '../reviewer/reviewFollowUp.js';
+import { listSessionTouchedDirsLive } from '../git-context/sessionDirResolver.js';
 import {
   readReviewRunFromAgentMeta,
   type ReviewRunMeta,
@@ -9056,6 +9068,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
 
       let evidence!: Awaited<ReturnType<typeof loadReviewEvidence>>;
+      let primaryRepoRoot: string | null = null;
+      let additionalRepositories: LoadedReviewRepository[] = [];
       let workspaceSelected = false;
       let historyCaptureIncomplete = false;
       let sourceArtifactFingerprint = '';
@@ -9107,10 +9121,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           sourceArtifactFingerprint = prepared.fingerprint;
         };
         await prepareEvidence();
+        // A task can change several repositories or worktrees (a client worktree
+        // plus a server checkout). Review them as one deliverable instead of only
+        // the directory the latest tool call happened to use.
+        primaryRepoRoot = await resolveReviewRepoRoot(sourceWorkingDir);
+        additionalRepositories = await loadAdditionalReviewRepositories({
+          sourceSessionId: source.id,
+          primaryRoot: primaryRepoRoot ?? sourceWorkingDir,
+          touchedDirs: await listSessionTouchedDirsLive(source.id),
+          warn: (message, fields) => log.warn(message, { sourceSessionId: source.id, ...fields }),
+        });
         // An empty checkout or non-Git source commonly means the work happened
         // elsewhere. Historical turn metadata cannot tell us which current code
         // the user wants; ask about the directory instead of refusing the run.
-        if (shouldSelectReviewWorkspace(evidence, isDeviceLinkInvoke())) {
+        if (
+          additionalRepositories.length === 0 &&
+          shouldSelectReviewWorkspace(evidence, isDeviceLinkInvoke())
+        ) {
           const selectedDir = await selectReviewWorkspace(event as IpcMainInvokeEvent, sourceWorkingDir);
           if (!selectedDir) throwIpcError('MUTATION_CANCELLED', 'Review workspace selection cancelled');
           workspaceSelected = true;
@@ -9151,6 +9178,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         !evidence.branch &&
         !evidence.changeSet &&
         evidence.artifacts.length === 0 &&
+        additionalRepositories.length === 0 &&
         !request.focus &&
         !workspaceSelected
       ) {
@@ -9177,6 +9205,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ? { branchUnavailableReason: evidence.branchUnavailableReason }
             : {}),
           changeSet: evidence.changeSet,
+          ...(additionalRepositories.length > 0
+            ? {
+                primaryRoot: primaryRepoRoot ?? sourceWorkingDir,
+                additionalRepositories,
+              }
+            : {}),
           artifacts: evidence.artifacts,
           artifactsOmitted: evidence.artifactsOmitted,
           artifactExcerpts: evidence.artifactExcerpts,
@@ -9187,15 +9221,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         throw error;
       }
 
+      const additionalWorkingDirs = additionalRepositories.map((repo) => repo.root);
+      const reviewWorkspaceMeta = {
+        workingDir: sourceWorkingDir,
+        ...(evidence.branch ? { baseRef: evidence.branch.baseRef } : {}),
+        hasUncommittedChanges: !!evidence.workspace?.dirty,
+        ...(additionalWorkingDirs.length > 0 ? { additionalWorkingDirs } : {}),
+      };
       return {
         sourceAgentKind: source.agentKind as 'cc' | 'codex' | 'pi',
         prompt: builtPrompt.prompt,
+        inputSummary: buildReviewInputSummary({
+          ...reviewWorkspaceMeta,
+          artifactCount: evidence.artifacts.length,
+          focus: evidence.focusPath ?? request.focus,
+        }),
         targetKind: builtPrompt.targetKind,
-        workspace: {
-          workingDir: sourceWorkingDir,
-          ...(evidence.branch ? { baseRef: evidence.branch.baseRef } : {}),
-          hasUncommittedChanges: !!evidence.workspace?.dirty,
-        },
+        workspace: reviewWorkspaceMeta,
         onAccepted: () => acceptRemoteAttachments?.(),
         cleanup: async () => {
           await cleanupPreparedArtifacts?.();
@@ -9336,7 +9378,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               permissionMode: 'ask',
               planMode: false,
               reviewMode: true,
-              reviewReadPaths: [...reviewReadPaths],
+              // Additional repositories are read grants only. Their freshness is
+              // bound through their Git fingerprints, not the bounded artifact
+              // hash, which cannot cover a whole checkout.
+              reviewReadPaths: [...reviewReadPaths, ...additionalWorkingDirs],
               makerMemoryEnabled: false,
               ...(readRoots.size > 0 ? { extraDirs: [...readRoots] } : {}),
             }),
@@ -9377,6 +9422,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   code: 'source-files-changed',
                   message:
                     'The branch comparison base changed before Review started. Run /review again for the current result.',
+                };
+              }
+              if (!(await additionalReviewRepositoriesAreCurrent(source.id, additionalRepositories))) {
+                return {
+                  code: 'source-files-changed',
+                  message:
+                    'Files in another reviewed repository changed before Review started. Run /review again for the current result.',
                 };
               }
               if (
@@ -9435,6 +9487,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   code: 'source-files-changed',
                   message:
                     'The branch comparison base changed while Review was running. Run /review again for the current result.',
+                };
+              }
+              if (!(await additionalReviewRepositoriesAreCurrent(source.id, additionalRepositories))) {
+                return {
+                  code: 'source-files-changed',
+                  message:
+                    'Files in another reviewed repository changed while Review was running. Run /review again for the current result.',
                 };
               }
               if (
@@ -9501,6 +9560,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     drainPersistQueue,
     readReviewerResult: readLatestReviewerResult,
+    // Close the loop like an inline review: the source agent receives the
+    // conclusion as a host-queued turn labeled as sent by the Reviewer task, and
+    // verifies/fixes it. Busy sources queue it behind their current turn.
+    forwardResultToSource: async ({ sourceSessionId, reviewerSessionId, runId, result, findingsCount }) => {
+      const sent = await sendToSessionInternal({
+        targetSessionId: sourceSessionId,
+        clientId: `review-follow-up:${runId}`,
+        message: buildReviewFollowUpMessage(result),
+        persistedContent: reviewFollowUpDisplayText(findingsCount),
+        dispatcherSessionId: reviewerSessionId,
+        forceQueue: true,
+        autoReviewUserText: { kind: 'delegated-continuation' },
+        resumeWithStoredPermissionMode: true,
+      });
+      if (!sent.ok) {
+        throw new Error(`${sent.errorCode}: ${sent.message}`);
+      }
+      if (sent.wakeKind === 'queued') await awaitAgentInputQueueSnapshotPersistence(sourceSessionId);
+    },
     closeReviewer: async (reviewerSessionId) => {
       try {
         await maker.closeSession(reviewerSessionId);

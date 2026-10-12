@@ -112,7 +112,7 @@ function mapReviewWorkspace(
  * The branch's own commits. Read independently of current uncommitted edits;
  * a last-turn record is not a faithful substitute for the whole deliverable.
  */
-async function loadReviewBranchEvidence(
+export async function loadReviewBranchEvidence(
   sessionId: string,
   readBranchDiff: typeof readReviewBranchDiff,
 ): Promise<{ branch: ReviewBranchEvidence | null; unavailableReason?: string }> {
@@ -462,6 +462,17 @@ function hasReviewRunMeta(raw: unknown): boolean {
   return readReviewRunFromAgentMeta(raw) !== null;
 }
 
+/**
+ * Progress narration between tool calls is the development agent talking to
+ * itself; it is neither the user's requirement nor the delivered result. The
+ * final answer of each turn stays (as an unverified claim); commentary is dropped
+ * so it cannot crowd the bounded context or read as evidence.
+ */
+function isAssistantCommentary(row: Pick<ReviewVisibleRow, 'role' | 'agentMeta'>): boolean {
+  if (row.role !== 'assistant') return false;
+  return parseJsonRecord(row.agentMeta)?.assistantPhase === 'commentary';
+}
+
 type ReviewVisibleRow = {
   role: 'user' | 'assistant';
   content: string;
@@ -511,6 +522,7 @@ async function readReviewVisibleRows(sourceSessionId: string): Promise<ReviewVis
     for (const row of page) {
       const visibleRow = row;
       if (hasReviewRunMeta(visibleRow.agentMeta)) continue;
+      if (isAssistantCommentary(visibleRow)) continue;
       const hasVisibleText =
         visibleMessageTextForConversationSearch(visibleRow.role, visibleRow.content).length > 0;
       const hasHistoricalArtifact = historicalAttachmentsFromRows([visibleRow]).length > 0;

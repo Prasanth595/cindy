@@ -1449,9 +1449,10 @@ export function selectVisibleMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 /**
- * A Cindy Make card is appended as a local assistant system message, but it
- * represents a new command turn for the visible timeline. Treating it as a
- * boundary keeps artifacts from the preceding user turn before the card.
+ * Cindy Make and /review cards are appended as local assistant system messages,
+ * but each represents a new command turn for the visible timeline. Treating them
+ * as boundaries keeps the preceding turn's artifacts and change summary before
+ * the card instead of below it.
  */
 function isRenderTurnBoundary(message: ChatMessage): boolean {
   if (message.role === 'user') {
@@ -1459,7 +1460,9 @@ function isRenderTurnBoundary(message: ChatMessage): boolean {
   }
   return (
     message.role === 'assistant' &&
-    (message.systemCardType === 'cindy-make' || message.systemCardType === 'cindy-make-doctor')
+    (message.systemCardType === 'cindy-make' ||
+      message.systemCardType === 'cindy-make-doctor' ||
+      message.systemCardType === 'review')
   );
 }
 

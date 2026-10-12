@@ -10949,6 +10949,7 @@
         },
         "directory": "フォルダー：",
         "baseline": "基準ブランチ：",
+        "additionalDirectories": "ほかに：",
         "unverifiedResult": "以下の指摘は生成されましたが、現在も有効か確認できませんでした。"
       }
     },
@@ -14099,6 +14100,20 @@
       "current": "このフォルダーを確認",
       "choose": "別のフォルダーを選択",
       "open": "レビュー"
+    },
+    "inputSummary": {
+      "title": "独立レビュー（読み取り専用・開発メモリなし）",
+      "directory": "ディレクトリ：{{dir}}",
+      "baseline": "{{base}} と比較",
+      "uncommitted": "未コミットの変更を含む",
+      "additionalDirectories": "ほかに：{{dirs}}",
+      "artifacts": "成果物：{{count}} 件",
+      "focus": "重点：{{focus}}",
+      "task": "タスクの目標に照らして現在の成果をレビュー"
+    },
+    "followUp": {
+      "withCount": "レビューで {{count}} 件の問題が見つかりました。1 件ずつ確認して修正してください",
+      "unknownCount": "レビュー結果が届きました。1 件ずつ確認して修正してください"
     }
   },
   "learn": {

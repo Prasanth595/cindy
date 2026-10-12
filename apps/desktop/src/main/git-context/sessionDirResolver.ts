@@ -168,6 +168,70 @@ export function collectUniqueTelemetryDirs(
 }
 
 /**
+ * Every directory a task worked in, newest first: command cwd / leading `cd`,
+ * Claude edit targets, and Codex `file_change` paths. Review uses this to find
+ * all repositories a deliverable spans; unlike the sidebar resolver it keeps
+ * older directories instead of stopping at the latest one.
+ */
+export function collectTouchedDirs(
+  contents: string[],
+  pathPlatform: NodeJS.Platform = process.platform,
+): string[] {
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  const add = (candidate: string | null) => {
+    if (!candidate) return;
+    let resolved: string;
+    try {
+      resolved = path.resolve(candidate);
+    } catch {
+      return;
+    }
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    dirs.push(resolved);
+  };
+  for (const content of contents) {
+    add(extractDirCandidate(content, pathPlatform));
+    for (const filePath of extractFileChangePaths(content)) {
+      add(path.dirname(posixDriveToWin32(filePath, pathPlatform)));
+    }
+  }
+  return dirs;
+}
+
+function extractFileChangePaths(content: string): string[] {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  if (!obj || typeof obj !== 'object' || (obj as { toolName?: unknown }).toolName !== 'file_change') {
+    return [];
+  }
+  const changes = ((obj as { input?: { changes?: unknown } }).input)?.changes;
+  if (!Array.isArray(changes)) return [];
+  return changes.flatMap((change) => {
+    const changePath = (change as { path?: unknown } | null)?.path;
+    return typeof changePath === 'string' && path.isAbsolute(changePath) ? [changePath] : [];
+  });
+}
+
+/** Live wrapper for {@link collectTouchedDirs}. Never throws: no telemetry is an empty list. */
+export async function listSessionTouchedDirsLive(sessionId: string): Promise<string[]> {
+  try {
+    return collectTouchedDirs(await queryLinkedWorktreeTelemetryContents(sessionId));
+  } catch (err) {
+    log.warn('query touched dirs failed (no telemetry)', {
+      sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
+/**
  * 侧栏 worktree 徽标专用:在遥测目录里找**仍然活着的 linked worktree**。
  * 与 resolveSessionGitDir 不同——后者只看最近一次 git 目录、删了不往回翻(防主仓冒充)。
  * 这里要的是「任务里用过、现在还在」:跳过主 checkout,继续看更早的候选,直到目录没了。

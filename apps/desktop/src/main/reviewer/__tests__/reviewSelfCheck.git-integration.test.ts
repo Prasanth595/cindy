@@ -36,11 +36,15 @@ vi.mock('../../git-review/ipc.js', async (importOriginal) => {
 });
 
 import { readGitHead } from '../../git-context/headReader.js';
-import { resolveSessionGitDir } from '../../git-context/sessionDirResolver.js';
+import { collectTouchedDirs, resolveSessionGitDir } from '../../git-context/sessionDirResolver.js';
 import { runGit } from '../../git-review/gitRunner.js';
 import { resolveReviewScope, withSessionReviewWorkspace } from '../../git-review/scopeResolver.js';
 import { loadReviewEvidence, reviewWorkspaceFingerprintIsCurrent } from '../reviewEvidence.js';
 import { usableReviewChangeSet } from '../reviewEvidenceSafety.js';
+import {
+  additionalReviewRepositoriesAreCurrent,
+  loadAdditionalReviewRepositories,
+} from '../reviewAdditionalRepositories.js';
 import { buildReviewPrompt } from '../reviewPrompt.js';
 import type { TurnChangeSetDetail } from '../../../shared/turnChangeSet.js';
 
@@ -114,4 +118,71 @@ it('reviews real committed and dirty code in the Bash worktree despite an empty 
     expect(await reviewWorkspaceFingerprintIsCurrent('source', evidence.workspaceFingerprint)).toBe(false);
   });
   expect((await runtime.resolveScope('source')).repoRoot).toBe(main);
+}, 30_000);
+
+it('reviews every repository a task changed, skipping checkouts it only read', async () => {
+  fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-multi-repo-review-')));
+  const initRepo = async (dir: string) => {
+    await fs.mkdir(dir);
+    const git = (args: string[]) => runGit(args, { cwd: dir });
+    await git(['init', '-b', 'main']);
+    await git(['config', 'user.name', 'Review Test']);
+    await git(['config', 'user.email', 'review@example.test']);
+    await fs.writeFile(path.join(dir, 'app.ts'), 'export const value = 1;\n');
+    await git(['add', 'app.ts']);
+    await git(['commit', '--no-gpg-sign', '-s', '-m', 'baseline']);
+    return git;
+  };
+  const client = path.join(fixtureRoot, 'client');
+  const server = path.join(fixtureRoot, 'server');
+  const readOnly = path.join(fixtureRoot, 'read-only');
+  await initRepo(client);
+  const serverGit = await initRepo(server);
+  await initRepo(readOnly);
+  await fs.writeFile(path.join(client, 'app.ts'), 'export const value = 2;\n');
+  await serverGit(['checkout', '-b', 'feature']);
+  await fs.writeFile(path.join(server, 'committed.ts'), 'export const removed = true;\n');
+  await serverGit(['add', 'committed.ts']);
+  await serverGit(['commit', '--no-gpg-sign', '-s', '-m', 'server change']);
+  await fs.writeFile(path.join(server, 'app.ts'), 'export const value = 3;\n');
+
+  runtime.resolveScope.mockImplementation((sessionId: string) => resolveReviewScope(sessionId, {
+    getSessionRow: async () => ({ id: 'source', workingDir: client, worktreePath: null, remoteHostId: null }),
+    getManagedWorktreePath: () => null,
+    resolveSessionDir: (input) => resolveSessionGitDir(input, {
+      recentToolUseContents: async () => [], probeGitDir: readGitHead,
+    }),
+    git: runGit,
+  }));
+  const touchedDirs = collectTouchedDirs([
+    JSON.stringify({ toolName: 'exec', input: { cwd: readOnly } }),
+    JSON.stringify({ toolName: 'exec', input: { cwd: path.join(server) } }),
+    JSON.stringify({ toolName: 'file_change', input: { changes: [{ path: path.join(client, 'app.ts') }] } }),
+  ]);
+
+  const repos = await loadAdditionalReviewRepositories({
+    sourceSessionId: 'source',
+    primaryRoot: client,
+    touchedDirs,
+  });
+  expect(repos.map((repo) => repo.root)).toEqual([server]);
+  const [serverRepo] = repos;
+  expect(serverRepo?.workspace?.diffs.unstaged.map((diff) => diff.path)).toContain('app.ts');
+  expect(serverRepo?.branch?.diffs.map((diff) => diff.path)).toContain('committed.ts');
+
+  const prompt = await withSessionReviewWorkspace('source', client, async () => {
+    const evidence = await loadReviewEvidence({
+      sourceSessionId: 'source', workingDir: client, attachments: [],
+      explicitArtifactGrant: { paths: [], pathIdentities: new Map(), inlineAttachmentKeys: [] },
+    });
+    return buildReviewPrompt({ ...evidence, primaryRoot: client, additionalRepositories: repos }).prompt;
+  });
+  expect(prompt).toContain(`## 其它仓库：${server}`);
+  expect(prompt).toContain('committed.ts');
+  expect(prompt).toContain('export const value = 3;');
+  expect(prompt).not.toContain(readOnly);
+
+  expect(await additionalReviewRepositoriesAreCurrent('source', repos)).toBe(true);
+  await fs.writeFile(path.join(server, 'app.ts'), 'export const value = 4;\n');
+  expect(await additionalReviewRepositoriesAreCurrent('source', repos)).toBe(false);
 }, 30_000);

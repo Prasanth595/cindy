@@ -9,6 +9,7 @@ import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { isTurnContinuationBoundaryEvent } from '@cindy/maker-shared/turn-continuation';
 
 import type { ReviewAttachmentInput } from '../reviewer/reviewEvidence.js';
+import { splitReviewFindingsMarker } from '../reviewer/reviewFindingsMarker.js';
 import {
   type ReviewFailureCode,
   type ReviewRunMeta,
@@ -150,6 +151,8 @@ export interface ReviewFailureReason {
 export interface PreparedReviewRun {
   sourceAgentKind: 'cc' | 'codex' | 'pi';
   prompt: string;
+  /** What the Reviewer task shows as its input. The full prompt is model input only. */
+  inputSummary?: string;
   targetKind: ReviewTargetKind;
   workspace?: ReviewRunMeta['workspace'];
   prepareLaunch(): Promise<PreparedReviewLaunch>;
@@ -207,11 +210,23 @@ export interface ReviewStartHandlerDeps {
   persistReviewerPrompt(input: {
     reviewerSessionId: string;
     runId: string;
+    /** Display text for the Reviewer task's first message. */
     prompt: string;
     sourceAgentKind: PreparedReviewRun['sourceAgentKind'];
   }): Promise<void>;
   drainPersistQueue(): Promise<void>;
   readReviewerResult(reviewerSessionId: string): Promise<string>;
+  /**
+   * Queue a verified, current conclusion with findings into the source task so its
+   * agent verifies and fixes them. Best effort: the published card stays the record.
+   */
+  forwardResultToSource?(input: {
+    sourceSessionId: string;
+    reviewerSessionId: string;
+    runId: string;
+    result: string;
+    findingsCount: number | null;
+  }): Promise<void>;
   closeReviewer(reviewerSessionId: string): Promise<void>;
   warn(message: string, fields: Record<string, unknown>): void;
 }
@@ -538,7 +553,10 @@ export function registerReviewStartHandler(
             return;
           }
           await deps.drainPersistQueue();
-          const result = await deps.readReviewerResult(reviewerSessionId);
+          const parsed = splitReviewFindingsMarker(
+            await deps.readReviewerResult(reviewerSessionId),
+          );
+          const result = parsed.text;
           if (!result) {
             await updateSourceCard('failed', '', undefined, 'no-visible-result');
             await closeReviewer();
@@ -554,6 +572,25 @@ export function registerReviewStartHandler(
             return;
           }
           await updateSourceCard('completed', result);
+          // Only a current conclusion goes back; a known zero needs no follow-up turn.
+          // An unknown count is forwarded so the source agent can judge it.
+          if (parsed.findingsCount !== 0 && terminalCardPersisted && deps.forwardResultToSource) {
+            await deps
+              .forwardResultToSource({
+                sourceSessionId: request.sourceSessionId,
+                reviewerSessionId,
+                runId,
+                result,
+                findingsCount: parsed.findingsCount,
+              })
+              .catch((error) => {
+                deps.warn('review result forward to source failed', {
+                  sourceSessionId: request.sourceSessionId,
+                  runId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              });
+          }
           await closeReviewer();
         })().catch(async (error) => {
           deps.warn('review result finalization failed', {
@@ -631,7 +668,7 @@ export function registerReviewStartHandler(
           await deps.persistReviewerPrompt({
             reviewerSessionId,
             runId,
-            prompt: prepared.prompt,
+            prompt: prepared.inputSummary || prepared.prompt,
             sourceAgentKind: preparedSourceAgentKind,
           });
           prepared.onAccepted?.();
