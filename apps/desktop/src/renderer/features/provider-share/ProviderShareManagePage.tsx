@@ -220,6 +220,7 @@ export function ProviderShareManagePage({
       <ProviderGroupSection providerId={providerId} providerName={providerName} />
 
       <ProviderUsageSection
+        providerId={providerId}
         providerName={providerName}
         own={own}
         ownFailed={ownFailed}

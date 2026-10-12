@@ -387,17 +387,31 @@ export interface MobileSessionModelPref {
 
 /**
  * 草稿「模型 effort/fast」写穿入参(隧道 maker:apply-new-maker-draft-pref,形状对齐被控端
- * APPLY_NEW_MAKER_DRAFT_PREF 校验)。手机只做非选中行双写(active 恒 false),被控端草稿
- * 默认随之更新,使「下次在被控端 / 桌面控制端选中该模型」拿到同一份 effort/fast。
+ * APPLY_NEW_MAKER_DRAFT_PREF 校验)。
+ *  - active=false:会话里非选中行双写,被控端草稿默认随之更新,使「下次在被控端 / 桌面控制端
+ *    选中该模型」拿到同一份 effort/fast(providerId 必填)。
+ *  - active=true:新建任务页的当前选择写回被控端新建任务默认(与桌面远程新建同一写法);
+ *    markModelChoice=true 表示用户明确选了这个模型,false 只同步档位 / Fast、不打选模标记。
  */
-export interface MobileNewMakerDraftPref {
-  agent: MobileAgentKind;
-  providerId: string;
-  modelId: string;
-  active: false;
-  effort?: string;
-  fast?: boolean;
-}
+export type MobileNewMakerDraftPref =
+  | {
+      agent: MobileAgentKind;
+      providerId: string;
+      modelId: string;
+      active: false;
+      effort?: string;
+      fast?: boolean;
+    }
+  | {
+      agent: MobileAgentKind;
+      /** '' = 跟随被控端默认来源。 */
+      providerId: string;
+      modelId: string;
+      active: true;
+      markModelChoice: boolean;
+      effort?: string;
+      fast?: boolean;
+    };
 
 /**
  * 工作端 maker:get-new-maker-defaults 回包的手机端消费子集。完整形状是被控端

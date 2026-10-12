@@ -402,9 +402,28 @@
     },
     "usage": {
       "title": "用量",
-      "description": "依使用方統計 {{provider}} 的用量。本機與我的其他電腦從這次更新後開始記錄。",
+      "description": "依人統計 {{provider}} 的用量。你自己的用量從這次更新後開始記錄。",
       "shareSource": "分享的人",
-      "unknownDevice": "另一台電腦"
+      "unknownDevice": "另一台電腦",
+      "descriptionGroup": "依人統計 {{provider}} 的用量，展開後依組內每台電腦分開。你自己的用量從這次更新後開始記錄。",
+      "summary": {
+        "total": "總用量",
+        "amount": "估算金額",
+        "people": "使用方",
+        "models": "模型"
+      },
+      "selfTag": "你",
+      "relayName": "經 {{device}} 轉來",
+      "computerCount_other": "{{count}} 台電腦",
+      "lastUsedOn": "{{lastUsed}} · 用了 {{computers}}",
+      "unattributed": "更早的記錄",
+      "unattributedSource": "當時沒有區分電腦",
+      "removedMember": "已移出組",
+      "expandAria": "展開 {{name}} 的用量明細",
+      "collapseAria": "收起 {{name}} 的用量明細",
+      "table": {
+        "member": "組內電腦 / 模型"
+      }
     },
     "section": {
       "title": "供應商組",
@@ -461,6 +480,7 @@
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
+        "unreachableHere": "從這台電腦連不上",
         "unavailable": {
           "provider-off": "那臺電腦沒有對這個供應商開啟「允許遠端呼叫」",
           "disconnected": "供應商未連線或已停用",
@@ -810,6 +830,283 @@
       "allowOnce": "允許一次",
       "alwaysAllowForSession": "本任務總是允許",
       "deny": "拒絕"
+    }
+  },
+  "menubar": {
+    "balance": {
+      "name": "Cindy 餘額",
+      "quotaName": "Cindy 本期配額",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "今天 {{time}}",
+      "tomorrow": "明天 {{time}}",
+      "weekday": "{{day}} {{time}}",
+      "date": "{{date}} {{time}}",
+      "minutesAgo_other": "{{n}} 分鐘前",
+      "hoursAgo_other": "{{n}} 小時前",
+      "daysAgo_other": "{{n}} 天前"
+    },
+    "duration": {
+      "daysHours": "{{d}} 天 {{h}} 小時",
+      "days_other": "{{d}} 天",
+      "hoursMinutes": "{{h}} 小時 {{m}} 分",
+      "hours_other": "{{h}} 小時",
+      "minutes_other": "{{m}} 分鐘"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}天{{h}}時",
+      "days": "{{d}}天",
+      "hoursMinutes": "{{h}}時{{m}}分",
+      "hours": "{{h}}時",
+      "minutes": "{{m}}分"
+    },
+    "window": {
+      "session": "{{hours}} 小時",
+      "week": "本週",
+      "scoped": "{{model}} 本週"
+    },
+    "headline": {
+      "recommend": "{{name}} 餘量最足。",
+      "balance": "Cindy 餘額還能用。",
+      "quota": "Cindy 本期配額還能用。",
+      "none": "餘量都用完了。",
+      "unread": "還沒讀到餘量。",
+      "empty": "還沒有帶餘量的帳號。",
+      "emptyHint": "在 Cindy 裡連上訂閱，這裡就會顯示餘量。",
+      "restore": "{{name}} {{duration}}後重置",
+      "soon": "{{name}} 快見底",
+      "subscriptionsUsed": "訂閱都用完了",
+      "waitReset": "等訂閱重置",
+      "sentence": "{{text}}。",
+      "joiner": "，"
+    },
+    "cell": {
+      "payg": "按量",
+      "plan": "訂閱",
+      "noBalance": "無餘額",
+      "unknown": "查不到",
+      "noData": "還沒讀到餘量",
+      "lastsDays": "約{{n}}天",
+      "lastsDaysShort": "{{n}}天",
+      "resetsIn": "{{duration}}後重置",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}，按量計費，查不到餘額",
+      "plan": "{{name}}，訂閱，查不到餘量",
+      "balance": "Cindy 餘額 {{amount}}",
+      "balanceDays": "Cindy 餘額 {{amount}}，約夠 {{n}} 天",
+      "quota": "Cindy 本期配額剩餘 {{amount}}",
+      "noData": "{{name}}，暫無資料",
+      "reserve": "{{name}}，已用完，還有 credits 可用",
+      "remaining": "{{name}} 剩餘 {{n}}%"
+    },
+    "detail": {
+      "balanceCaption": "餘額",
+      "quotaCaption": "本期剩餘配額",
+      "apiKey": "API Key",
+      "subscription": "訂閱",
+      "noBalance": "查不到餘額",
+      "unknownRemaining": "查不到餘量",
+      "noData": "暫無資料",
+      "windowLeft": "{{window}}剩餘"
+    },
+    "say": {
+      "balance": "餘額不會自動回滿。",
+      "quota": "配額按週期發放，不在這裡儲值。",
+      "quotaResets": "配額將於 {{at}} 重置為滿額。",
+      "balanceLasts_other": "按近 7 天的消耗，約夠 {{n}} 天。",
+      "balanceEstimating": "消耗記錄還在積累，過幾天就能估算還能用多久。",
+      "payg": "{{name}} 按用量付費。",
+      "paygSub": "它的接口不提供餘額，所以這裡沒有餘量；用掉的部分照常計入 Cindy 用量。",
+      "plan": "{{name}} 是訂閱連接。",
+      "planSub": "Cindy 還讀不到它的餘量；用掉的部分照常計入 Cindy 用量。",
+      "noData": "還沒讀到餘量。",
+      "noDataSub": "稍後重新整理，或用它跑一次任務後就會顯示。",
+      "usedUp": "{{window}}的用量已用完。",
+      "usedUpWithCredits": "{{at}}回滿；在那之前 Codex 會扣 {{credits}} credits 繼續工作。",
+      "creditsOnly": "Codex 會扣 {{credits}} credits 繼續工作。",
+      "resetsAt": "{{at}}回滿。",
+      "emptyIn": "按现在的速度，約 {{duration}}後見底。",
+      "beforeReset": "比重置早 {{duration}}。",
+      "full": "滿格。",
+      "relaxed": "節奏寬鬆。",
+      "onPace": "節奏正常。",
+      "windowRefresh": "{{window}}週期{{at}}更新",
+      "usedUpWithResets_other": "還有 {{n}} 次額度重置可用，用一次立即回滿。"
+    },
+    "fact": {
+      "balance": "餘額",
+      "quotaLeft": "本期剩餘配額",
+      "quotaTotal": "本期配額",
+      "updatedAgo": "{{ago}}更新",
+      "dailyUse": "日均消耗",
+      "about": "約 {{value}}",
+      "estimating": "估算中",
+      "estimatingSub": "資料還不夠",
+      "last7Days": "近 7 天",
+      "runsOut": "預計用完",
+      "aroundDate": "{{date}}前後",
+      "atThisPace": "按當前速度",
+      "usedFor": "用于",
+      "cindyModels": "Cindy 提供的模型",
+      "chargedPerUse": "按實際用量扣費",
+      "billing": "計費",
+      "perUse": "按量",
+      "subscription": "訂閱",
+      "connected": "已連接",
+      "notProvided": "接口不提供",
+      "notReadable": "暫時讀不到",
+      "inMenu": "在選單裡",
+      "hidden": "已隱藏",
+      "shown": "顯示",
+      "editHint": "可在「編輯」裡調整",
+      "usage": "用量",
+      "counted": "照常統計",
+      "countedSub": "計入 Cindy 用量",
+      "resetsFull": "回滿",
+      "windowResets": "{{window}}重置",
+      "timeLeft": "還有 {{duration}}",
+      "remainingPercent": "剩 {{n}}%",
+      "perModel": "按模型單獨計算",
+      "pace": "節奏",
+      "paceNormal": "正常",
+      "paceAhead": "超前 {{n}}%",
+      "paceReserve": "儲備 {{n}}%",
+      "paceSub": "均匀用應剩 {{n}}%",
+      "paceUsedUp": "已用完",
+      "paceWaiting": "等待回滿",
+      "extraCredits": "額外 credits",
+      "unlimited": "不限",
+      "creditsUsedAfter": "配額用完後由 Codex 扣除",
+      "noCredits": "沒有備用 credits",
+      "prepaid": "預付餘額",
+      "xaiAccount": "xAI 帳戶",
+      "account": "帳號",
+      "todaySpent": "今日已用",
+      "dailySuggested": "每日建議 {{value}} 以內",
+      "poolPlan": "方案餘額",
+      "poolPlanSub": "隨方案發放",
+      "poolPurchased": "儲值餘額",
+      "poolPurchasedSub": "自行儲值",
+      "poolPromo": "贈送餘額",
+      "poolPromoSub": "活動贈送",
+      "promoExpires": "{{value}} {{date}}到期",
+      "promoExpiresAll": "{{date}}到期",
+      "resetCredits": "額度重置",
+      "resetCount_other": "{{n}} 次",
+      "resetExpires": "{{date}}前有效",
+      "resetAtLimit": "達到用量上限時可用",
+      "device": "所在電腦",
+      "deviceSub": "我的其他電腦"
+    },
+    "action": {
+      "newTask": "用 {{name}} 開新任務",
+      "topUp": "在 Cindy 裡儲值",
+      "manage": "在 Cindy 設定中管理",
+      "openApp": "打開 Cindy",
+      "useReset": "在 Cindy 設定中使用重置"
+    },
+    "tasks": {
+      "today_other": "今天 {{n}} 個",
+      "withRunning_other": "{{base}} · {{n}} 個執行中",
+      "context": "上下文 {{n}}%",
+      "private": "{{harness}} 任務"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "訂閱等值 = 按 API 參考價折算訂閱裡用掉的量，不是帳單。",
+      "deviceSelf": "這台 {{name}}（實時）",
+      "deviceSynced": "{{name}}（同步到 {{date}}）",
+      "deviceNotSynced": "{{name}}（還沒同步）",
+      "deviceJoiner": " + ",
+      "allDevices": "所有裝置 = {{list}}。"
+    },
+    "manage": {
+      "balance": "餘額 · 不會自動回滿",
+      "quota": "配額 · 按週期重置",
+      "payg": "API Key · 按量，查不到餘額",
+      "plan": "訂閱 · 查不到餘量",
+      "subscription": "訂閱 · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
+    },
+    "notify": {
+      "lowTitle": "餘量快用完了",
+      "lowBody": "所有還有餘量的來源都快見底了。點選單列的 Cindy 圖示，看看哪些什麼時候回滿。"
+    },
+    "ui": {
+      "updatedJustNow": "剛剛更新",
+      "updatedMinutes_other": "{{n}} 分鐘前更新",
+      "updatedHours_other": "{{n}} 小時前更新",
+      "updatedDays_other": "{{n}} 天前更新",
+      "tasks": "任務",
+      "tokenUnit": "token",
+      "noTasksToday": "今天還沒有任務",
+      "moreTasks_other": "另外 {{n}} 個任務",
+      "running": "執行中",
+      "openApp": "打開 Cindy",
+      "gateTitle": "登入後查看餘量",
+      "gateBody": "在 Cindy 裡登入，或選擇跳過登入，這裡就會顯示訂閱餘量和今天的用量。",
+      "settings": "管理",
+      "refresh": "重新整理",
+      "monthScopeLocal": "近 30 天 · 這台電腦",
+      "monthScopeAll": "近 30 天 · 所有裝置",
+      "expand": "展開",
+      "expandUsage": "展開用量",
+      "back": "返回",
+      "usageTitle": "用量",
+      "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
+      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
+      "scopeLocal": "這台電腦",
+      "scopeAll": "所有裝置",
+      "noUsage": "沒有用量",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "日均",
+      "paid": "實付",
+      "tokenUnitTitle": "Token",
+      "peakDay": "最高單日",
+      "range7": "7 天",
+      "range30": "30 天",
+      "range90": "90 天",
+      "metricMoney": "金額",
+      "metricTokens": "Token",
+      "listModels_other": "近 {{n}} 天模型",
+      "listTasks": "今天的任務",
+      "today": "今天",
+      "manageTitle": "管理",
+      "done": "完成",
+      "manageHero": "選單裡顯示什麼，\n按什麼順序。",
+      "manageHeroSub": "拖動調整順序；關掉的來源不在選單裡出現，也不參與上面的餘量判斷。",
+      "sources": "餘量來源",
+      "sourcesShown": "{{a}} / {{b}} 顯示",
+      "statusIcon": "選單列圖示",
+      "statusIconSub": "單色，隨選單列深淺變化",
+      "statusIconMode": {
+        "icon": "只圖標",
+        "lowest": "最低餘量",
+        "today": "今日用量",
+        "task": "當前任務"
+      },
+      "other": "其他",
+      "lowAlert": "快用完時通知",
+      "lowAlertSub": "所有還有餘量的來源都快見底時，發一則系統通知",
+      "privacy": "隱藏個人資訊",
+      "privacySub": "帳號只顯示首尾字母，任務標題也會隱藏，適合錄影和截圖",
+      "usageScope": "用量統計範圍",
+      "manageFoot": "帳號登入和連線在 Cindy 設定 › 模型供應商 裡管理。",
+      "showSource": "在選單裡顯示 {{name}}",
+      "reorderHint": "拖動，或用操作選單調整順序",
+      "moveUp": "上移",
+      "moveDown": "下移"
     }
   },
   "settings": {
@@ -1332,6 +1629,10 @@
       "wecomGroupClearFailed": "Webhook 移除失敗"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "在選單列顯示餘量",
+        "hint": "在 macOS 選單列放一個 Cindy 圖示，點開查看訂閱餘量、Cindy 餘額和今天的用量。"
+      },
       "loginItem": {
         "label": "自動啟動",
         "hint": "登入電腦後開啟 Cindy，預設關閉",
@@ -10102,25 +10403,8 @@
       "observedPeak": "峰值",
       "tokenRate": "{{rate}} tok/s",
       "tokenRateUnit": "tok/s",
-      "tokenRateDescription": "即時速度和峰值為估算。回應結束後以實際用量校準；不計工具執行和請求等待。",
-      "tokenCount": "{{tokens}} tok",
-      "estimatedValue": "約{{value}}",
-      "estimatedTokenRate": "約{{rate}} tok/s",
-      "responseWaiting": "等待 {{seconds}}秒",
-      "waitSeconds": "{{seconds}}秒",
-      "firstResponse": "首回應",
-      "streamWait": "流內等待",
-      "turnWaitDescription": "從本機收到引擎開始到首個文字、思考或工具內容，不等同於網路延遲。",
-      "streamWaitDescription": "從 SDK 串流開始到首個內容區塊，之前的請求等待無法測量。",
-      "lastGeneration": "上次生成",
-      "finalAverage": "最終平均",
-      "generationPaused": "生成暫停",
-      "responsePending": "等待回應",
-      "responseFailed": "請求失敗",
-      "responseCancelled": "已停止",
-      "responseRetrying": "正在重試",
-      "responseGenerating": "正在生成",
-      "toolRunning": "執行工具中"
+      "tokenRateDescription": "最近一段生成速度，不含工具執行與等待。",
+      "tokenCount": "{{tokens}} tok"
     },
     "shareImage": {
       "entry": "分享為圖片",
@@ -10589,7 +10873,8 @@
           "usage-limit": "{{from}} 達到用量上限，已換到 {{to}} 繼續",
           "auth": "{{from}} 登入已失效，已換到 {{to}} 繼續",
           "unavailable": "{{from}} 連不上，已換到 {{to}} 繼續",
-          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續"
+          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續",
+          "failed": "{{from}} 出了問題，已換到 {{to}} 繼續"
         },
         "agentReconnect": {
           "named": "已重新連上 {{computer}}，繼續執行",
@@ -10641,8 +10926,11 @@
           "sourceFilesChanged": "來源任務的檔案已變更，請針對當前成果重新執行 /review。",
           "artifactChanged": "審查成果已變更，請針對當前成果重新執行 /review。",
           "providerFailed": "審查任務執行失敗",
-          "artifactUnavailable": "Cindy 無法安全讀取審查成品，請檢查工作區或附件後重新執行 /review"
-        }
+          "artifactUnavailable": "Cindy 無法準備審查檔案，請檢查所選目錄或附件後重新執行 /review。"
+        },
+        "directory": "目錄：",
+        "baseline": "基準分支：",
+        "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
     "markdownRenderer": {
@@ -10741,13 +11029,8 @@
       },
       "expandLongMessage": "展開全文",
       "collapseLongMessage": "收起",
-      "sessionReference": {
-        "recent": "最近訊息",
-        "aroundAnchor": "連結訊息附近",
-        "messageCount_one": "{{count}} 條訊息",
-        "messageCount_other": "{{count}} 條訊息",
-        "truncated": "已截斷"
-      },
+      "sessionLinkFallback": "某個任務",
+      "messageLinkFallback": "引用的訊息",
       "forkBusy": "當前任務正在執行，等結束後再從這裡開啟新任務",
       "editStopTimeout": "等待任務停止超時，請稍後重試",
       "editQueueNotEmpty": "任務有排隊中的訊息，先傳送或移除佇列內容後再編輯",
@@ -13790,6 +14073,14 @@
       "inline": "記憶體附件",
       "allow": "僅本次允許",
       "cancel": "取消"
+    },
+    "workspaceSelection": {
+      "cancel": "取消",
+      "title": "選擇要審查的程式碼",
+      "message": "這個目錄沒有可用的程式碼差異。可以審查目前程式碼，或選擇實際開發的目錄。",
+      "current": "審查目前目錄",
+      "choose": "選擇其他目錄",
+      "open": "審查"
     }
   },
   "learn": {

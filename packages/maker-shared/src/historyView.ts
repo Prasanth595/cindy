@@ -80,6 +80,8 @@ export interface DeferredHistoryWork {
   previewComplete?: boolean;
   /** Host-projected running lines; when present a folded preview needs no detail read. */
   lines?: readonly HistoryWorkLine[];
+  /** No detail rows are in hand yet; an expanded group keeps showing `lines` until they arrive. */
+  awaitingDetails?: boolean;
   expanded: boolean;
   loading: boolean;
   failed: boolean;

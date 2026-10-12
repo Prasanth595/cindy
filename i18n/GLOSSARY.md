@@ -79,6 +79,10 @@
 | **Credits** | zh-TW | 點數 | 默认 |
 | Credits | zh-TW | credits | 指第三方服務自身的 credits（如 Codex / ChatGPT 訂閱餘量），保留其原生叫法 |
 | Credits | zh-TW | 重置次數 | reset credits——指可用的配額重置次數，與計費點數無關 |
+| **Credits** | ja | クレジット | 默认 |
+| Credits | ja | credits | サードパーティ自身の credits（Codex / ChatGPT のサブスクリプション残量など）は原語のまま表記する |
+| **Credits** | ko | 크레딧 | 默认 |
+| Credits | ko | credits | 서드파티 자체의 credits(Codex / ChatGPT 구독 잔량 등)는 원래 이름 그대로 표기 |
 | **Provider** | zh-CN | 供应商 | 默认 |
 | Provider | zh-CN | 模型供应商 | 首次出现或需要消歧时用全称，如设置页标题 |
 | **Provider** | zh-TW | 供應商 | 默认 |

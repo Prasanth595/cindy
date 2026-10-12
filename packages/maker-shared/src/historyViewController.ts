@@ -21,6 +21,11 @@ export interface HistoryViewSnapshot<T extends HistoryMessageSource> {
   loading: boolean;
   ready: boolean;
   error: unknown | null;
+  /**
+   * The latest page may be behind rows the raw store already received: it came from
+   * disk, or was read before the view went inactive/offline. Cleared by a latest-page read.
+   */
+  stale?: boolean;
 }
 
 export interface HistoryViewTransport<T extends HistoryMessageSource> {
@@ -66,8 +71,9 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.detailRuns.clear();
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
-    this.publish({ loading: false, details: new Map([...this.state.details].map(([key, detail]) =>
-      [key, detail.loading ? { ...detail, loading: false } : detail])) });
+    this.publish({ loading: false, ...(available ? {} : { stale: this.state.ready }),
+      details: new Map([...this.state.details].map(([key, detail]) =>
+        [key, detail.loading ? { ...detail, loading: false } : detail])) });
     if (available && this.active) void this.refresh();
   }
   getSnapshot = (): HistoryViewSnapshot<T> => this.state;
@@ -88,7 +94,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     const generation = this.cacheGeneration;
     const cached = await read().catch(() => null);
     if (!cached || this.state.ready || isHistoryViewUnavailable(this.state.error) || generation !== this.cacheGeneration) return;
-    this.publish({ ...cached, loading: this.state.loading, error: this.state.error });
+    this.publish({ ...cached, loading: this.state.loading, error: this.state.error, stale: true });
   }
 
   refresh(older = false, fresh = false): Promise<void> {
@@ -184,6 +190,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const stableItems = items.length === this.state.items.length
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
+        ...(older ? {} : { stale: false }),
         hasMore: retainedPrefix ? this.state.hasMore : page.hasMore,
         nextCursor: retainedPrefix ? this.state.nextCursor : page.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
@@ -348,9 +355,10 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.refreshTimer = null;
     this.active = active;
     this.generation++;
-    this.cacheGeneration++;
+    // Leaving drops a late disk read; gaining focus keeps it (pages mount hidden, then focus).
+    if (!active) this.cacheGeneration++;
     this.detailRuns.clear();
-    this.publish({ loading: false });
+    this.publish({ loading: false, ...(active ? {} : { stale: this.state.ready }) });
     this.sendIntent();
     if (active) void this.refresh();
   }
@@ -359,7 +367,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
     this.cacheGeneration++;
     this.detailRuns.clear();
     this.publish({ items: [], details: new Map(), expanded: new Set(), ready: false,
-      nextCursor: null, hasMore: false, loading: false, error: null });
+      nextCursor: null, hasMore: false, loading: false, error: null, stale: false });
     this.sendIntent();
     if (this.active) void this.refresh();
   }

@@ -131,7 +131,6 @@ import {
 } from '../shared/auto-review-decision.js';
 import type { ReviewableAction } from '../shared/auto-review.js';
 import { UsageTracker } from '../shared/usage-tracker.js';
-import { calibratedResponseDuration } from '@cindy/maker-shared/usage-format';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
 import { getDefaultImageResizer } from '../shared/image-resizer.js';
 import { formatManagedImageReferences } from '../shared/managed-image-reference.js';
@@ -172,8 +171,8 @@ import {
   classifyCodexError,
   translateErrorNotification,
   translateItemNotification,
-  observeCodexItemTiming,
   beginCodexGenerationTurn,
+  codexGenerationDurationMs,
   finalizeCodexGenerationTurn,
   pauseCodexGeneration,
   resetCodexGenerationTiming,
@@ -3709,7 +3708,7 @@ assertRouteCurrent();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      responseSpeed: translatorRt.responseSpeed.snapshot(),
+      tokenSpeed: translatorRt.tokenSpeed.snapshot(),
       outputTokens: usageTracker.getTurnUsage().output,
       durationMs: translatorRt.generationOutputDurationMs,
       openStartedAt: translatorRt.generationStartedAt,
@@ -10825,7 +10824,6 @@ assertRouteCurrent();
         text?: unknown;
       } | null | undefined;
       if (!candidate || candidate.type !== 'plan') return false;
-      translatorRt.responseSpeedHasUnobservedOutput = true;
       if (typeof candidate.text === 'string') proposedPlanText = candidate.text;
       return true;
     }
@@ -10997,16 +10995,8 @@ assertRouteCurrent();
       const realTurnUsage = usageTracker.getTurnUsage();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
-      const unmeasuredOutputOnly = translatorRt.responseSpeedHasUnobservedOutput
-        && translatorRt.responseSpeed.snapshot().outputTokens === 0;
-      // With no sampled units, retain the real total but expose no rate. Mixed
-      // turns retain only their observed estimates, never a whole-turn scale.
-      translatorRt.responseSpeed.finish(realTurnUsageSegments.length > 0
-        && (!translatorRt.responseSpeedHasUnobservedOutput || unmeasuredOutputOnly)
-        ? realTurnUsage.output : undefined);
-      if (!translatorRt.generationTimingReliable || unmeasuredOutputOnly) translatorRt.responseSpeed.invalidate();
-      const speedSnapshot = translatorRt.responseSpeed.snapshot();
-      const generationDurationMs = calibratedResponseDuration(speedSnapshot, realTurnUsage.output);
+      translatorRt.tokenSpeed.stop(realTurnUsage.output);
+      const generationDurationMs = codexGenerationDurationMs(translatorRt);
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
         completionTokens: realTurnUsage.output,
@@ -11017,9 +11007,12 @@ assertRouteCurrent();
         cachedTokens: realTurnUsage.cacheRead,
         cacheCreationTokens: realTurnUsage.cacheCreate,
         segments: realTurnUsageSegments,
-        // Persist TPS timing only when observed stream time pairs with real turn output.
+        // With usage, exclude post-output finalization. Without usage, retain
+        // the measured duration metadata (zero output cannot produce a rate).
         ...(generationDurationMs !== undefined ? {
-          durationMs: generationDurationMs,
+          durationMs: realTurnUsage.output > 0
+            ? translatorRt.generationOutputDurationMs || undefined
+            : generationDurationMs,
         } : {}),
         ...(typeof turn.durationMs === 'number' && Number.isFinite(turn.durationMs)
           ? { turnDurationMs: turn.durationMs }
@@ -11223,7 +11216,7 @@ assertRouteCurrent();
           data: {
             status: 'Done',
             ...attachLiveGeneration(endSnap, {
-              responseSpeed: translatorRt.responseSpeed.snapshot(),
+              tokenSpeed: translatorRt.tokenSpeed.snapshot(),
               outputTokens: realTurnUsage.output,
               durationMs: translatorRt.generationOutputDurationMs,
               openStartedAt: null,
@@ -12418,12 +12411,10 @@ assertRouteCurrent();
           params.turnId,
           'started',
         );
-        observeCodexItemTiming(translatorRt, 'started', translatedParams);
         pushItemStatus(translatedItem);
         translateItemNotification('started', translatedParams, eventQueue, {
           rt: translatorRt,
           log,
-          timingObserved: true,
           onCompactBoundary: handleCompactBoundary,
         });
         // 重放帧后发:translator 刚推的 running 帧不得把已重放出的终态盖回去。
@@ -12558,12 +12549,6 @@ assertRouteCurrent();
           log,
           onCompactBoundary: handleCompactBoundary,
         });
-        // Close the observed response after translating any final text that
-        // was absent from deltas. A later usage/turn terminal calibrates the
-        // counts without charging its delivery lag as model generation.
-        if (!isLateCollabTerminal && translatedItem.type === 'agentMessage') {
-          translatorRt.responseSpeed.pause();
-        }
         // A late V1 spawn completion is the spawn tool closing, not necessarily
         // the child closing. Reassert a running compact state, or an explicit
         // failed/stopped tracker state; a completed replay would only duplicate

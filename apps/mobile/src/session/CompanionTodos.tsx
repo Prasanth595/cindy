@@ -391,6 +391,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
       }
       preventDismiss={busy}
       testID="companion.todos"
+      contentScrolls
     >
       <ScrollView
         keyboardShouldPersistTaps="handled"

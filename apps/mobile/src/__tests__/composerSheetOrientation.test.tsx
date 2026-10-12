@@ -3,10 +3,14 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { ComposerSheet } from '../session/ComposerSheet.ios';
+import { CompanionSheet } from '../session/CompanionSheet.ios';
+import { ScrollView as RNScrollView } from 'react-native';
 import { presentationDetents } from '@expo/ui/swift-ui/modifiers';
 const state = vi.hoisted(() => ({ width: 402, height: 874, sheet: null as any }));
+vi.mock('../session/ComposerSheet', async () => import('../session/ComposerSheet.ios'));
 vi.mock('react-native', () => ({
   View: ({ children }: any) => <div>{children}</div>,
+  ScrollView: ({ children, maintainVisibleContentPosition }: any) => <section data-rn-scroll data-preserve-position={maintainVisibleContentPosition?.minIndexForVisible}>{children}</section>,
   useWindowDimensions: () => ({ width: state.width, height: state.height }),
 }));
 vi.mock('../session/CompanionNativeContent.ios', () => ({
@@ -18,7 +22,8 @@ vi.mock('@expo/ui/swift-ui', () => {
   return { ScrollView: ({ children }: any) => <section data-native-scroll>{children}</section>,
     Form: ({ children }: any) => <div data-native="Form">{children}</div>,
     List: ({ children }: any) => <div data-native="List">{children}</div>, Button: Container, Group: Container, HStack: Container, Image: Container,
-    RNHostView: Container, Spacer: Container, Text: Container, VStack: Container, ZStack: Container,
+    RNHostView: ({ children, matchContents }: any) => <div data-rn-size={matchContents ? 'content' : 'viewport'}>{children}</div>,
+    Spacer: Container, Text: Container, VStack: Container, ZStack: Container,
     BottomSheet: (props: any) => { state.sheet = props; return <div>{props.children}</div>; },
   };
 });
@@ -76,5 +81,24 @@ it('composes a content-sized RN bridge inside the native scroll component and a 
     expect(viewport?.querySelector('[data-rn-size=content]')).not.toBeNull();
     expect(viewport?.textContent).not.toContain('Save');
     expect(container.textContent).toContain('Save');
+  } finally { act(() => root.unmount()); }
+});
+
+it('keeps self-scrolling companion pages on the existing RN viewport path', () => {
+  state.width = 402; state.height = 874;
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(
+      <CompanionSheet visible title="" contentScrolls onClose={() => {}} footer={<span>Save</span>}>
+        <RNScrollView maintainVisibleContentPosition={{ minIndexForVisible: 0 }}><span>Todo</span></RNScrollView>
+      </CompanionSheet>,
+    ));
+    expect(container.querySelector('[data-native-scroll]')).toBeNull();
+    expect(container.querySelector('[data-rn-size=content]')).toBeNull();
+    const viewport = container.querySelector('[data-rn-size=viewport]');
+    expect(viewport?.querySelector('[data-preserve-position="0"]')?.textContent).toBe('Todo');
+    expect(viewport?.textContent).toContain('Save');
+    expect(viewport?.querySelector('[data-rn-scroll]')?.textContent).not.toContain('Save');
   } finally { act(() => root.unmount()); }
 });

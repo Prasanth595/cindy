@@ -94,6 +94,11 @@ export interface ProviderGroupMemberStatus {
   paused: boolean;
   /** 冷却到何时(unix ms)。 */
   coolingUntil?: number;
+  /**
+   * 另一台电脑上的组：组所在电脑那边看它能用，这台电脑却连不上(provider-groups.md §10)。只由这台电脑的主进程
+   * 按自己的连接情况补上，不来自组所在电脑的回包。
+   */
+  unreachableHere?: boolean;
 }
 
 export interface ProviderGroupView {
@@ -281,6 +286,37 @@ export interface ProviderGroupRemoteLease {
   memberKey: string;
 }
 
+/**
+ * 同账号电脑报告的一行用量：它经组所在电脑的组、在组里别的电脑上运行的部分(provider-groups.md §7)，
+ * 供应商与组内电脑都是组所在电脑的坐标，按天、Agent、模型聚合。
+ */
+export interface ProviderGroupRemoteUsageRow {
+  day: string;
+  providerId: string;
+  memberKey: string;
+  kind: string;
+  model: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  sdkCostUsd: number;
+  /** 这一行最近一次记账的时间(unix ms)。 */
+  lastAt: number;
+}
+
+/** 单次请求的行数上限；完整报告超过此值时用 usage-part 分批收齐后再替换。 */
+export const PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS = 3_000;
+/** 完整报告的上限，与按使用方账本的保留行数一致；不提高单帧上限。 */
+export const PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS = 20_000;
+
+export interface ProviderGroupUsagePartAck {
+  seq: number;
+  received: number;
+  committed: boolean;
+}
+
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
   | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
@@ -289,7 +325,24 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string };
+  | { action: 'view'; providerId: string }
+  /**
+   * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
+   * 报过的行。seq 只增，乱序到达的旧份丢弃。
+   */
+  | { action: 'usage'; seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] }
+  /** 新动作防止旧端忽略分批字段后把半份报告当整份替换。offset 从 0 开始，收齐 total 才提交。 */
+  | { action: 'usage-part'; seq: number; sinceDay: string | null; offset: number; total: number; rows: ProviderGroupRemoteUsageRow[] }
+  /**
+   * 只读：这台电脑上的某个任务此刻归哪个组(手机与远程控制的模型列表用，provider-groups.md §10)。
+   * 发给任务所在的电脑，不是组所在电脑。
+   */
+  | { action: 'session-group'; sessionId: string };
+
+/** `session-group` 的回包：坐标是任务所在电脑视角(`groupDeviceId` 为 null = 那台自己建的组)。 */
+export interface ProviderGroupRemoteSessionGroup {
+  group: ProviderGroupSessionGroup;
+}
 
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
@@ -325,6 +378,31 @@ function remoteMemberKey(value: unknown): string {
 function remoteSessionId(value: unknown): string {
   if (typeof value !== 'string' || !REMOTE_SESSION_ID.test(value)) invalidRemote('invalid session id');
   return value;
+}
+
+const REMOTE_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const USAGE_NUMBER_FIELDS = ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'sdkCostUsd', 'lastAt'] as const;
+
+/** 用量行按数组发送(省掉每行重复的字段名)：[day, providerId, memberKey, kind, model, ...USAGE_NUMBER_FIELDS]。 */
+export function providerGroupUsageRowsForWire(rows: readonly ProviderGroupRemoteUsageRow[]): unknown[][] {
+  return rows.map((row) => [
+    row.day, row.providerId, row.memberKey, row.kind, row.model, ...USAGE_NUMBER_FIELDS.map((field) => row[field]),
+  ]);
+}
+
+function remoteUsageRow(raw: unknown): ProviderGroupRemoteUsageRow {
+  if (!Array.isArray(raw) || raw.length !== 5 + USAGE_NUMBER_FIELDS.length) invalidRemote('invalid usage row');
+  const [day, providerId, memberKey, kind, model] = raw;
+  if (typeof day !== 'string' || !REMOTE_DAY.test(day)) invalidRemote('invalid usage day');
+  if (typeof kind !== 'string' || !REMOTE_AGENT_KINDS.has(kind)) invalidRemote('invalid agent');
+  if (typeof model !== 'string' || model.length > 512) invalidRemote('invalid model');
+  const row = { day, providerId: remoteProviderId(providerId), memberKey: remoteMemberKey(memberKey), kind, model } as ProviderGroupRemoteUsageRow;
+  USAGE_NUMBER_FIELDS.forEach((field, index) => {
+    const value = raw[5 + index];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) invalidRemote('invalid usage number');
+    row[field] = value;
+  });
+  return row;
 }
 
 /** 组所在电脑解析同账号电脑发来的请求；不合法抛 `[INVALID_PARAMS]`。 */
@@ -378,6 +456,22 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
     }
     case 'view':
       return { action: 'view', providerId: remoteProviderId(value.providerId) };
+    case 'usage':
+    case 'usage-part': {
+      if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
+      const sinceDay = value.sinceDay ?? null;
+      if (sinceDay !== null && (typeof sinceDay !== 'string' || !REMOTE_DAY.test(sinceDay))) invalidRemote('invalid since day');
+      if (!Array.isArray(value.rows) || value.rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) invalidRemote('invalid usage rows');
+      const report = { seq: value.seq as number, sinceDay: sinceDay as string | null, rows: value.rows.map(remoteUsageRow) };
+      if (value.action === 'usage') return { action: 'usage', ...report };
+      if (!Number.isSafeInteger(value.total) || (value.total as number) < 1
+        || (value.total as number) > PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS) invalidRemote('invalid usage total');
+      if (!Number.isSafeInteger(value.offset) || (value.offset as number) < 0
+        || report.rows.length === 0 || (value.offset as number) + report.rows.length > (value.total as number)) invalidRemote('invalid usage offset');
+      return { action: 'usage-part', ...report, offset: value.offset as number, total: value.total as number };
+    }
+    case 'session-group':
+      return { action: 'session-group', sessionId: remoteSessionId(value.sessionId) };
     default:
       invalidRemote('unknown provider group action');
   }
@@ -397,6 +491,22 @@ export function parseProviderGroupRemotePick(raw: unknown, groupProviderId: stri
     member: { key: member.key, kind: member.kind, agentDeviceId: member.agentDeviceId, providerId: member.providerId },
     label,
   };
+}
+
+/** 读任务所在电脑 `session-group` 的回包；格式不对按没归组处理。坐标仍是那台电脑视角。 */
+export function parseProviderGroupRemoteSessionGroup(raw: unknown): ProviderGroupSessionGroup {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const group = (raw as Record<string, unknown>).group;
+  if (!group || typeof group !== 'object' || Array.isArray(group)) return null;
+  const value = group as Record<string, unknown>;
+  const groupDeviceId = value.groupDeviceId ?? null;
+  if (groupDeviceId !== null && (
+    typeof groupDeviceId !== 'string'
+    || !DEVICE_ID_PATTERN.test(groupDeviceId)
+    || isProviderShareAgentDeviceId(groupDeviceId)
+  )) return null;
+  if (!isProviderGroupProviderId(value.providerId)) return null;
+  return { groupDeviceId, providerId: value.providerId };
 }
 
 const MEMBER_STATES: readonly ProviderGroupMemberState[] = ['available', 'full', 'paused', 'cooling', 'offline', 'unavailable'];

@@ -66,7 +66,11 @@ describe('composer edge backdrop placement', () => {
   });
 
   it('frosts the activity pills with the shared chrome glass', () => {
-    expect(source).toContain("const pillOverlayColor = Platform.OS === 'ios' ? 'transparent' : colors.surfaceTranslucent;");
-    expect(source.match(/<BlurBackdrop intensity=\{FLOATING_CHROME_BLUR_INTENSITY\} overlayColor=\{pillOverlayColor\}/g)).toHaveLength(2);
+    const pill = readTextLf('src/session/ComposerActivityPill.tsx');
+    expect(pill).toContain("return Platform.OS === 'ios' ? 'transparent' : colors.surfaceTranslucent;");
+    const glass = /<BlurBackdrop intensity=\{FLOATING_CHROME_BLUR_INTENSITY\} overlayColor=\{composerActivityPillOverlayColor\(colors\)\}/g;
+    // Status pill (shared with the slow-send notice) and the elapsed/rate pill.
+    expect(pill.match(glass)).toHaveLength(1);
+    expect(source.match(glass)).toHaveLength(1);
   });
 });

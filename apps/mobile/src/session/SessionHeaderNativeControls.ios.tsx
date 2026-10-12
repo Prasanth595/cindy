@@ -11,10 +11,11 @@ import {
   VStack,
 } from "@expo/ui/swift-ui";
 import { Folder, Monitor, Pin, type LucideIcon } from "lucide-react-native";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 import { Text } from "@/components/AppText";
 import { QuietSyncIndicator } from "@/components/QuietSyncIndicator";
 import { TaskTagDots } from './TaskTags';
+import { useDoubleTap } from './useDoubleTap';
 import {
   accessibilityHint,
   accessibilityElement,
@@ -94,8 +95,10 @@ export function SessionHeaderNativeBlur({ height: chromeHeight, edge = 'top', in
 export function SessionHeaderNativeTitle({ title,
   tags,
   onTagsPress,
+  onTitleDoubleTap,
   pinned, syncing, syncingImmediately, notice }: SessionHeaderNativeTitleProps) {
   const { colors } = useTheme();
+  const handleTitlePress = useDoubleTap(onTitleDoubleTap);
   const style = {
     alignSelf: 'center' as const,
     maxWidth: '100%' as const,
@@ -123,7 +126,9 @@ export function SessionHeaderNativeTitle({ title,
   );
   return (
     <View style={{ flex: 1, minWidth: 0, justifyContent: 'center' }}>
-      <View style={style}>
+      {/* 双击标题改名;不参与读屏焦点,读屏用户从「任务详情」进入重命名。 */}
+      <Pressable accessible={false} disabled={!onTitleDoubleTap} onPress={handleTitlePress}
+        style={style} testID="session.titleArea">
         {/* The title sits directly on the bar: no capsule material behind it. */}
         <View style={{ flexDirection: "row", minWidth: 0, alignItems: "center", justifyContent: "center", gap: spacing.xs }}>
           {pinned ? <Pin color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} /> : null}
@@ -142,7 +147,7 @@ export function SessionHeaderNativeTitle({ title,
             {notice}
           </Text>
         ) : null}
-      </View>
+      </Pressable>
     </View>
   );
 }

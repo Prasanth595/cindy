@@ -473,6 +473,22 @@ describe('SchedulerScriptCapabilityBroker', () => {
     }));
   });
 
+  it('does not resolve or require a default route when dispatching to an existing task', async () => {
+    sendToSessionMock.mockResolvedValue({ ok: true, targetSessionId: 'owner', agentKind: 'codex', wakeKind: 'queued' });
+    const resolveDefaultModelRoute = vi.fn(async () => null);
+    const broker = new SchedulerScriptCapabilityBroker({ resolveDefaultModelRoute });
+
+    await broker.call(
+      { method: 'sessions.dispatch', params: { message: 'update' } },
+      new Set(['sessions.dispatch']),
+      { schedule: schedule({ agentKind: 'claude-code', model: undefined, targetSessionId: 'owner' }) },
+    );
+
+    expect(resolveDefaultModelRoute).not.toHaveBeenCalled();
+    expect(sendToSessionMock).toHaveBeenCalledWith(expect.objectContaining({ targetSessionId: 'owner' }));
+    expect(sendToSessionMock.mock.calls[0]?.[0]).not.toHaveProperty('createDefaults');
+  });
+
   it('rejects blank Pi script-dispatch defaults before opening a session when no source is connected', async () => {
     const broker = new SchedulerScriptCapabilityBroker({
       resolveDefaultModelRoute: vi.fn(async () => null),

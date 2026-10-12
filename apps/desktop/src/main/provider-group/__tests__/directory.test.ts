@@ -279,3 +279,128 @@ describe('probe (waiting for a computer to come back, §6.1)', () => {
     expect(d.readDeviceProviders).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('resolving members quickly when choosing a computer (2026-10-11)', () => {
+  const MINI = { key: 'device:mini:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
+  const SLOW = { key: 'device:slow:anthropic', kind: 'device' as const, agentDeviceId: 'slow', providerId: 'anthropic', label: 'Slow PC', limit: 4, weight: 1, paused: false };
+  const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [SLOW, MINI] };
+
+  function slowDeps(): ProviderGroupDirectoryDeps {
+    return deps({
+      listDevices: async () => [device('mini'), device('slow')],
+      readDeviceProviders: vi.fn((id: string) => id === 'slow'
+        ? new Promise<ProviderView[]>(() => undefined)
+        : Promise.resolve([view('anthropic-1a2b3c4d', 'Claude')])),
+    });
+  }
+
+  it('stops waiting for a slow computer once one that can take the task is known', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(slowDeps());
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, { quickMs: 3_000, enough: (r) => r.state === 'ok' }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ member: { key: string }; state: string; pending?: boolean; label: string }>;
+      expect(resolved.map((r) => [r.member.key, r.state, r.pending ?? false])).toEqual([
+        [SLOW.key, 'offline', true],
+        [MINI.key, 'ok', false],
+      ]);
+      expect(resolved[0].label).toBe('Slow PC');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps waiting when none of the computers read so far can take the task', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(slowDeps());
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, { quickMs: 3_000, enough: () => false }).then(done);
+      await vi.advanceTimersByTimeAsync(10_000);
+      // 不会因为慢就当作都不能用。
+      expect(done).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('设备列表本身很慢时，也受三秒快速选择窗口管——本机成员先给出结论就不等它(chatgpt-codex-connector P2, PR #5792 review)', async () => {
+    vi.useFakeTimers();
+    try {
+      const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
+      const cfg: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [LOCAL, MINI] };
+      // listDevices 永远不完成：如果设备列表读取在 settleQuickly 计时器启动前就 await，这里会永远不返回。
+      const directory = createProviderGroupDirectory(deps({ listDevices: () => new Promise<DeviceLinkDeviceView[]>(() => undefined) }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', cfg, { quickMs: 3_000, enough: (r) => r.state === 'ok' }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ member: { key: string }; state: string; pending?: boolean }>;
+      expect(resolved.map((r) => [r.member.key, r.state, r.pending ?? false])).toEqual([
+        [LOCAL.key, 'ok', false],
+        [MINI.key, 'offline', true],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the latest state instead of the short-lived cache when asked', async () => {
+    const readDeviceProviders = vi.fn(async () => [view('anthropic-1a2b3c4d', 'Claude')]);
+    const directory = createProviderGroupDirectory(deps({ listDevices: async () => [device('mini')], readDeviceProviders }));
+    const cfg: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [MINI] };
+    await directory.resolveMembers('anthropic', cfg);
+    await directory.resolveMembers('anthropic', cfg);
+    expect(readDeviceProviders).toHaveBeenCalledTimes(1);
+    await directory.resolveMembers('anthropic', cfg, { fresh: true });
+    expect(readDeviceProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it('tells how long a same-account computer has been offline', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listDevices: async () => [
+        device('mini'),
+        device('off', { online: false, lastSeenAt: new Date(10_000).toISOString() }),
+        device('never', { online: false, lastSeenAt: null }),
+      ],
+      now: () => 250_000,
+    }));
+    expect(await directory.offlineForMs?.('off')).toBe(240_000);
+    expect(await directory.offlineForMs?.('mini')).toBeNull();
+    expect(await directory.offlineForMs?.('never')).toBeNull();
+    expect(await directory.offlineForMs?.('share:s1')).toBeNull();
+  });
+});
+
+describe('shared computers that refuse or stay offline', () => {
+  it('treats a sharer refusing this account as unavailable, not offline (no waiting for it to come back)', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listReceivedShares: () => [share('s5')],
+      readDeviceProviders: vi.fn(async () => {
+        throw new Error('[REMOTE_AGENT_SHARE_UNAVAILABLE] the shared provider is not available right now');
+      }),
+    }));
+    expect(await directory.probe('share:s5', 'anthropic')).toBe('unavailable');
+  });
+
+  it('tells how long a shared computer has been seen offline, so a long-gone one is not waited for', async () => {
+    let now = 1_000;
+    let online = false;
+    const directory = createProviderGroupDirectory(deps({
+      now: () => now,
+      listReceivedShares: () => [share('s6', { hostOnline: online })],
+    }));
+    expect(await directory.offlineForMs!('share:s6')).toBe(0);
+    now += 150_000;
+    expect(await directory.offlineForMs!('share:s6')).toBe(150_000);
+    online = true;
+    expect(await directory.offlineForMs!('share:s6')).toBeNull();
+  });
+});

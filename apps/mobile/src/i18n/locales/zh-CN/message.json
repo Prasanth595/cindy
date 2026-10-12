@@ -104,7 +104,8 @@
     "handoffContentDesc": "交接内容——切换时发送给新引擎的上下文摘要（不计入对话记录，仅在此展示）",
     "handoffContentDescEnglishSource": "交接内容——切换时发送给新引擎的上下文摘要，原文为英文（不计入对话记录，仅在此展示）",
     "openDiagramDetail": "打开图表详情",
-    "sessionChipFallback": "任务 {{id}}",
+    "sessionChipFallback": "某个任务",
+    "messageChipFallback": "引用的消息",
     "imageFallbackTitle": "图片",
     "mermaidExportFailedTitle": "导出失败",
     "mermaidRenderIncompleteBody": "图表尚未渲染完成或导出出错，请稍后重试。",
@@ -271,7 +272,8 @@
         "usage-limit": "{{from}} 撞到用量上限，已换到 {{to}} 继续",
         "auth": "{{from}} 登录已失效，已换到 {{to}} 继续",
         "unavailable": "{{from}} 连不上，已换到 {{to}} 继续",
-        "overload": "{{from}} 的服务繁忙，已换到 {{to}} 继续"
+        "overload": "{{from}} 的服务繁忙，已换到 {{to}} 继续",
+        "failed": "{{from}} 出了问题，已换到 {{to}} 继续"
       },
       "agentReconnect": {
         "named": "已重新连上 {{computer}}，继续运行",

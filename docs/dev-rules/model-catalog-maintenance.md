@@ -103,6 +103,9 @@ Codex 订阅 Astra（Codex）、Cindy 推荐模型（Pi），最后保留 xAI �
 策略在 `apps/desktop/src/shared/newMakerDefaultTuple.ts`；连接、型号和对应引擎必须实际可用，
 不能为了满足推荐而把 Opus / Astra 放入另一个引擎。用户手动选择及型号开关始终优先，
 不修改已有任务的运行配置；伙伴默认复用应用选择，不另造一套来源优先级。
+定时任务、`/learn`、IM 新建任务与分享导入等不由用户当场选模型的入口，
+没指定模型时同样按新建任务口径解析（`apps/desktop/src/shared/draftModelCalibration.ts`
+的 `resolveNewTaskDefaultRoute`），不在代码里写死型号；一个可用来源都没有时明确失败或留空让用户选。
 
 设置页管理列表组内与选择器同序：组内每项都带 `sortOrder` 时按它排；只要有一项缺失，退回
 按系列名 A–Z、同系列版本号降序，避免局部权重把新型号压到旧策展位置之后。

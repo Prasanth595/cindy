@@ -806,7 +806,6 @@ interface CCAgentPermissionDismissedPayload {
 }
 
 interface CCAgentStatusUpdate {
-  responseSpeed?: import("@cindy/maker-shared/usage-format").ResponseSpeedSnapshot;
   sessionId: string;
   status: string;
   tokenUsage: number;
@@ -817,6 +816,8 @@ interface CCAgentStatusUpdate {
   generationDurationMs?: number;
   generationActive?: boolean;
   generationReliable?: boolean;
+  /** Host-measured live tok/s (Pi extension algorithm); old hosts omit it. */
+  tokenSpeed?: import('@cindy/maker-shared/usage-format').TokenSpeedSnapshot;
   isRunning: boolean;
   /** Host-owned SDK boundary claim; a claimed `status(false)` is not product idle. */
   turnContinuationId?: number;
@@ -1914,6 +1915,8 @@ interface ElectronAPI {
   windowBehavior: {
     getLoginItem: () => Promise<import('../shared/loginItem').LoginItemState>;
     setLoginItem: (enabled: boolean) => Promise<import('../shared/loginItem').LoginItemState>;
+    getMenubarState: () => Promise<import('../shared/menubarQuota').MenubarState>;
+    setMenubarEnabled: (enabled: boolean) => Promise<import('../shared/menubarQuota').MenubarState>;
     setSwallowActivationClick: (enabled: boolean) => Promise<{ ok: true }>;
     getWindowsCloseBehavior: () => Promise<'quit' | 'tray' | null>;
     setWindowsCloseBehavior: (behavior: 'quit' | 'tray') => Promise<'quit' | 'tray'>;
@@ -2958,7 +2961,7 @@ interface ElectronAPI {
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'provider-share-join'; link: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => void,
   ) => () => void;
 
@@ -2977,7 +2980,7 @@ interface ElectronAPI {
     | { type: 'shared-task-join'; invitation: string; server: string }
     | { type: 'chat-invite'; token: string }
     | { type: 'provider-share-join'; link: string }
-    | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
+    | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
     | null
   >;
 

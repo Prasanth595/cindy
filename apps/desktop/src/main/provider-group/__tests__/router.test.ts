@@ -3,12 +3,13 @@
  * 设置页与分配用同一个数，取它与经组计数中较大的。
  */
 import type { ProviderView } from '@cindy/model-providers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import type { ProviderGroupBinding } from '../bindings';
-import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from '../directory';
-import { createProviderGroupRouter } from '../router';
+import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc';
+import { createProviderGroupDirectory, type ProviderGroupDirectory, type ResolvedProviderGroupMember } from '../directory';
+import { createProviderGroupRouter, PROVIDER_GROUP_PICK_QUICK_MS } from '../router';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -92,4 +93,95 @@ describe('provider group running count', () => {
     const pick = await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL });
     expect(pick).toMatchObject({ kind: 'member', member: { key: SHARE_B.key } });
   });
+});
+
+describe('provider group picks for this computer’s own tasks', () => {
+  it('reserves the chosen computer until the task starts, so tasks opened together spread out', async () => {
+    const bindings: Record<string, ProviderGroupBinding> = {};
+    const running: string[] = [];
+    const router = harness({}, bindings, running);
+    const first = await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, reserveFor: 's1' });
+    const second = await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, reserveFor: 's2' });
+    expect(first.kind === 'member' && second.kind === 'member' && first.member.key !== second.member.key).toBe(true);
+
+    // 开始运行一轮之后按绑定计，不再重复计那份临时占用。
+    if (first.kind !== 'member') throw new Error('expected a member');
+    bindings.s1 = { providerId: 'anthropic', memberKey: first.member.key, at: 1 };
+    running.push('s1');
+    expect(router.running('anthropic', first.member.key)).toBe(1);
+  });
+});
+
+describe('provider group quick picks with busy usable computers', () => {
+  const FAST = member('device:fast:anthropic', 'device', 'fast');
+  const SLOW = member('device:slow:anthropic', 'device', 'slow');
+
+  function quickRouter(localLoad: number, fastLoad: number | null) {
+    const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [LOCAL, FAST, SLOW] };
+    const devices = ['fast', 'slow'].map((deviceId): DeviceLinkDeviceView => ({
+      deviceId, name: deviceId, platform: 'win32', appVersion: '1.0.0', lastSeenAt: null,
+      online: true, busy: false, remoteControlEnabled: true, controlEnabled: true, isSelf: false,
+    }));
+    const directory = createProviderGroupDirectory({
+      listLocalProviders: async () => [view('anthropic')],
+      localDeviceName: () => 'local',
+      localRunning: async () => localLoad,
+      listDevices: async () => devices,
+      readDeviceProviders: (deviceId) => deviceId === 'fast' && fastLoad !== null
+        ? Promise.resolve([view('anthropic')])
+        : new Promise<ProviderView[]>(() => undefined),
+      listReceivedShares: () => [],
+      isMobilePlatform: () => false,
+      now: () => 1_000,
+    });
+    const router = createProviderGroupRouter({
+      directory, readGroup: () => config, listBindings: () => ({}), isTurnRunning: () => false,
+      externalRunning: (_providerId, key) => key === FAST.key ? fastLoad ?? 0 : 0,
+      now: () => 1_000, random: () => 0,
+    });
+    return { router, config };
+  }
+
+  it.each([
+    { label: 'a full local computer while both remote catalogs stall', localLoad: 4, fastLoad: null, expected: LOCAL.key },
+    { label: 'a free computer before a full one, despite order strategy', localLoad: 4, fastLoad: 1, expected: FAST.key },
+    { label: 'the least busy computer when every resolved computer is full', localLoad: 6, fastLoad: 4, expected: FAST.key },
+  ])('finishes within the quick window with $label', async ({ localLoad, fastLoad, expected }) => {
+    vi.useFakeTimers();
+    try {
+      const { router } = quickRouter(localLoad, fastLoad);
+      const done = vi.fn();
+      void router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL }).then(done);
+      await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_PICK_QUICK_MS - 1);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        kind: 'member', member: expect.objectContaining({ key: expected }),
+      }));
+      expect(done.mock.calls[0][0].resolved.find((resolved: ResolvedProviderGroupMember) => resolved.member.key === SLOW.key))
+        .toMatchObject({ state: 'offline', pending: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['paused', 'excluded', 'cooling', 'wrong-model'] as const)(
+    'keeps waiting when the full resolved computer is %s', async (reason) => {
+      vi.useFakeTimers();
+      try {
+        const { router, config } = quickRouter(4, null);
+        if (reason === 'paused') config.members[0] = { ...LOCAL, paused: true };
+        if (reason === 'cooling') router.markCooling('anthropic', LOCAL.key, 100_000);
+        const done = vi.fn();
+        void router.pick({
+          providerId: 'anthropic', agentKind: 'claude-code', model: reason === 'wrong-model' ? 'missing-model' : MODEL,
+          ...(reason === 'excluded' ? { exclude: new Set([LOCAL.key]) } : {}),
+        }).then(done);
+        await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_PICK_QUICK_MS * 2);
+        expect(done).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });

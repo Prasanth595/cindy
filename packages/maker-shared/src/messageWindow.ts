@@ -4,7 +4,8 @@ export * from './historyWorkLines.js';
 export { projectHistoryView, historySubagentScopes, isHistoryDetailTool, hasVisibleHistoryResult, completesHistoryTurn } from './historyViewProjection.js';
 export * from './historyViewController.js';
 export { renderHistoryView } from './historyViewRender.js';
-export { HistoryViewHandoff } from './historyViewHandoff.js';
+export { HistoryViewHandoff, historyViewEndMs } from './historyViewHandoff.js';
+export * from './historyViewPrefetch.js';
 
 export interface MessageScrollMetrics {
   contentHeight: number;

@@ -1,5 +1,3 @@
-import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
-import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
@@ -14,12 +12,14 @@ import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome
 import { keyboardControlRegion, type LayoutRect } from '@/platform/windowGeometry';
 import { useAdaptiveWindow, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
 import { useSessionHeaderHeight } from '@/session/useSessionHeaderHeight';
+import { useDoubleTap } from '@/session/useDoubleTap';
 import { sessionPaneLayout } from '@/session/sessionPaneLayout';
 import { ComposerExpandButton } from '@/session/ComposerExpandButton';
 import { nativeComposerAvailable } from '@/session/ComposerNativeInput';
 import { getActiveMobileSessionRealm } from '@/config/env';
 import { FailedScheduleNotice } from '@/session/FailedScheduleNotice';
 import { shouldShowFailedScheduleNotice, type FailedScheduleRunSnapshot } from '@cindy/maker-shared/schedule-model';
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { CompanionHeader } from '@/session/CompanionHeader';
 import { useHiddenHistoryChase } from '@/session/hiddenHistoryChase';
 import { collectCompanionPluginInvocations } from '@/session/pluginInvocations';
@@ -59,7 +59,6 @@ import {
   Search,
   Settings,
   Square,
-  Sparkles,
   Target,
   UsersRound,
   Zap,
@@ -131,6 +130,7 @@ import {
   humanizeRemoteError,
   isAutoRecoveringRemoteError,
   isPreconditionFailedRemoteError,
+  isSessionRunningRemoteError,
 } from '@/device-link/remoteStatus';
 import { agentAuthGateHint, agentAuthGateVerdict } from '@/session/agentAuthGate';
 import { isTransientRemoteError, withTransientRemoteRetry } from '@/device-link/remoteRetry';
@@ -210,7 +210,7 @@ import {
   SessionMenuSheet,
   type SessionExtraDirBrowserState,
 } from '@/session/SessionMenuSheet';
-import type { SessionMenuView } from '@/session/sessionMenu';
+import { sessionMenuAllowsRename, type SessionMenuView } from '@/session/sessionMenu';
 import { SessionSearchNative } from '@/session/SessionSearchNative';
 import { useHostManagedSession } from '@/session/hostManagedSession';
 import {
@@ -274,7 +274,8 @@ import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
-import { SlowSendNotice } from '@/session/SlowSendNotice';
+import { useSlowSendVisible, type SlowSendPhase } from '@/session/SlowSendNotice';
+import { ComposerActivityPill, composerActivityPillOverlayColor, makeComposerActivityPillStyles } from '@/session/ComposerActivityPill';
 import { PlanModeChip } from '@/session/PlanModeChip';
 import { ImageLightbox } from '@/session/ImageLightbox';
 import { pickWriteFields, retryPatchWhileLatest, writeGuardFields } from '@/session/swipeRowRegistry';
@@ -374,6 +375,7 @@ import {
 } from '@/session/sessionAgentSwitch';
 import { formatProviderAccountLabel, resolveSessionUsageAccount } from '@/session/sessionUsageAccount';
 import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
   drainComposerAnnotationSubmissions,
   drainComposerAttachments,
@@ -539,6 +541,7 @@ import {
   type MobileVoiceDictionaryLearningTracker,
 } from '@/session/mobileVoiceDictionaryLearning';
 import {
+  bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
   hasOlderMessagesByServerCount,
   listMessagesWithPayloadRetry,
@@ -2636,6 +2639,22 @@ export default function SessionScreen() {
     keepDeviceIds: remoteAgentKeepDeviceIds,
     keepOnly: !(agentLocationMovable && modelSheetOpen),
   });
+  // 供应商组(provider-groups.md §10):这个任务此刻归哪个组,选择器每次打开问一次被控电脑。归组的任务在组那一项里
+  // 选模型 = 留在此刻运行的那台只换模型(不弹换电脑确认);挂着换电脑的意图时下一条消息就不在原处,不按组显示。
+  const currentProviderId = currentSession?.providerId ?? null;
+  const sessionProviderGroup = useSessionProviderGroup({
+    enabled: agentLocationMovable && modelSheetOpen && !intentChangesAgentLocation(agentSwitchIntent),
+    hostDeviceId: deviceId,
+    sessionId,
+    routeKey: JSON.stringify([currentAgentDeviceId, currentProviderId]),
+  });
+  const remoteProviderGroup = useMemo(
+    () => ({
+      bound: sessionProviderGroup,
+      running: { deviceId: currentAgentDeviceId, providerId: currentProviderId },
+    }),
+    [sessionProviderGroup, currentAgentDeviceId, currentProviderId],
+  );
   // 协同 Worker 的模型选择器:与任务模型列表同一份远程供应商(其他电脑与分享)，Worker 的 Agent
   // 现在选的位置即使掉线也保留。只在 Worker 选择器打开时读。
   const workerAgentKeepDeviceIds = useMemo(
@@ -3784,7 +3803,7 @@ export default function SessionScreen() {
             return { messages: [], limit: 20, reducedByPayloadTooLarge: false };
           }
           if (!isHistoryViewUnavailable(viewState.error)) throw viewState.error;
-          return retryRead(() => listMessagesWithPayloadRetry(
+          const latest = await retryRead(() => listMessagesWithPayloadRetry(
           (limit) => runSessionMessagesSnapshotSingleFlight(
             snapshotScope,
             limit,
@@ -3793,6 +3812,17 @@ export default function SessionScreen() {
           ),
           isReopen ? REOPEN_MESSAGE_WINDOW_LIMITS : undefined,
         ));
+          // 整窗替换不保留旧段，无需补读。
+          if (options.replaceMessages) return latest;
+          return bridgeLatestMessagePage(latest, {
+            needsBridge: (rows, more) =>
+              remoteSessionStore.latestMessageWindowNeedsBridge(sessionId, rows, more),
+            // 与最新页同一套瞬态重试；仍失败时整轮同步失败，不提交接不上的窗口。
+            readBefore: (before) => retryRead(() => listMessagesWithPayloadRetry(
+              (limit) => maker.listMessages(sessionId, { limit, before }),
+            )),
+            isCurrent,
+          });
         },
         isCurrent,
         commitMessages: (history) => {
@@ -4426,7 +4456,11 @@ export default function SessionScreen() {
     outboxConnectionState,
     handoffSettledClientIds,
   );
-  const composerActivitySignal = isSessionStreaming || messageHandoffActive;
+  // 新建任务的创建管线也走这一行:慢的时候同一行显示阶段,完成后原地接上「思考中」。
+  const creationRunning = creationTask?.status === 'running';
+  const creationStartedAt = creationRunning ? creationTask.startedAt : null;
+  const creationSlowPhase = useSlowSendVisible(creationStartedAt) ? creationTask?.phase ?? null : null;
+  const composerActivitySignal = isSessionStreaming || messageHandoffActive || creationRunning;
   // 活动条信号去抖:composerActivitySignal 由多个来源(sending / 消息交接 / canStopQueue /
   // remoteSessionRunning / currentTurnStreaming)拼成,它们交接时会漏出一两帧空隙
   // ——实测日志里 streaming 1→0→1,活动条跟着闪一下、计时还被重置回 0s。
@@ -4445,11 +4479,32 @@ export default function SessionScreen() {
     return () => clearTimeout(timer);
   }, [composerActivitySignal, sessionId]);
   const showComposerActivity = composerActivitySignal || streamingSticky === sessionId;
+  // 自愈 / 供应商组换电脑进行中(错误先不呈现)：输入框上方与消息流里同一个说法，不显示「请求失败」(与桌面一致，
+  // docs/product-rules/provider-groups.md §6.1「换电脑期间不报错」)。
+  const pendingRecoveryStatus = useMemo(() => {
+    const pending = inputProjection.autoResumePending;
+    if (!pending) return null;
+    if (readRecord(pending.groupSwitchPending)) return { label: t('message.systemCard.autoResume.groupSwitchPending') };
+    const attempt = typeof pending.attempt === 'number' ? pending.attempt : 0;
+    const maxAttempts = typeof pending.maxAttempts === 'number' ? pending.maxAttempts : 0;
+    return attempt > 0 && maxAttempts > 0
+      ? { label: t('message.systemCard.autoResume.pendingWithProgress', { attempt, total: maxAttempts }) }
+      : { label: t('message.systemCard.autoResume.pending') };
+  }, [inputProjection.autoResumePending, t]);
   useEffect(() => {
     // 计时起点跟着去抖后的信号走:否则空隙一过 startedAt 被重置,活动条从 0s 重新数。
     setComposerActivityStartedAt(showComposerActivity ? Date.now() : null);
   }, [showComposerActivity, sessionId]);
-  const composerActivityStartedAtMs = remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;
+  // 新建任务这一轮从新建页点发送时起算:进任务页、电脑开始运行(远端 startedAt 晚于点击)
+  // 都不归零,直到活动行熄灭(本轮结束)才放开。按会话绑定:侧栏原地切到别的任务即丢弃,
+  // 切回来不会拿旧创建起点续算(同一 SessionScreen 实例复用,review P2)。
+  const [creationTurnStart, setCreationTurnStart] = useState<{ sessionId: string; startedAt: number } | null>(null);
+  useEffect(() => {
+    if (creationStartedAt !== null && sessionId) setCreationTurnStart({ sessionId, startedAt: creationStartedAt });
+    else setCreationTurnStart((prev) => (prev?.sessionId === sessionId && showComposerActivity ? prev : null));
+  }, [creationStartedAt, sessionId, showComposerActivity]);
+  const creationTurnStartedAt = creationTurnStart?.sessionId === sessionId ? creationTurnStart.startedAt : null;
+  const composerActivityStartedAtMs = creationTurnStartedAt ?? remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;
   const composerActivityTokenUsage = remoteSessionRunStatus.tokenUsage;
   const forkOrigin = useMemo(
     () => (
@@ -4696,7 +4751,7 @@ export default function SessionScreen() {
       const historyItems = historyView.snapshot.ready ? buildMobileHistoryRenderItems({
         view: historyView.view, snapshot: historyView.snapshot, messages: projectedMessages,
         streaming: isMessageListStreaming, sessionId, sessionSource: currentSession?.source, taskUpdates,
-        pendingHandoff: handoff.pending, localUserClientIds,
+        pendingHandoff: handoff.pending, staleTail: handoff.tail, localUserClientIds,
       }) : builtWindow.items;
       let items = insertMobileForkOriginItem(
         // 孤儿 agent_task 兜底用 maker status 驱动的权威 turn 边界 gate,与 store 的
@@ -4738,7 +4793,7 @@ export default function SessionScreen() {
         stablePrefixItemCount,
       };
     },
-    [optimisticUsers, currentSession?.source, localUserClientIds, renderMessageStructureToken, historyView.snapshot, historyView.view, handoff.pending, errorTailClientId, forkOrigin, i18nInstance.language, inputProjection.autoResumePending, isMessageListStreaming, makerTurnRunning, messageStructureToken, projectedMessages, projectedMessageStructureChangedIndexes, sessionId, taskUpdates],
+    [optimisticUsers, currentSession?.source, localUserClientIds, renderMessageStructureToken, historyView.snapshot, historyView.view, handoff.pending, handoff.tail, errorTailClientId, forkOrigin, i18nInstance.language, inputProjection.autoResumePending, isMessageListStreaming, makerTurnRunning, messageStructureToken, projectedMessages, projectedMessageStructureChangedIndexes, sessionId, taskUpdates],
   );
   // Search, media and sharing only see durable user rows. Local user boundaries
   // still participate in grouping and in the message list below.
@@ -9203,6 +9258,8 @@ export default function SessionScreen() {
 
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
+    // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
+    // 不能拿它挡住已经停下的任务。被控端拒绝(SESSION_RUNNING)时再提示等回复结束。
     Alert.alert(t('session.screen.deleteMessageTitle'), t('session.screen.deleteMessageBody'), [
       { text: t('session.common.cancel'), style: 'cancel' },
       {
@@ -9225,7 +9282,11 @@ export default function SessionScreen() {
                 deviceId,
               );
             } catch (err) {
-              setError(formatRemoteError(err));
+              if (isSessionRunningRemoteError(err)) {
+                Alert.alert(t('session.screen.deleteMessageBusy'));
+              } else {
+                setError(formatRemoteError(err));
+              }
             } finally {
               setMessageActionBusy(null);
             }
@@ -9324,6 +9385,10 @@ export default function SessionScreen() {
               }}
               onOpenSettings={() => openSessionMenu('menu')}
               onOpenUsage={() => openSessionMenu('info')}
+              onTitleDoubleTap={currentSession && !isDeviceAccessRevoked
+                && sessionMenuAllowsRename(currentSession, sessionManagedByHost)
+                ? () => openSessionMenu('rename')
+                : undefined}
               onOpenRemoteDesktop={() => {
                 if (!deviceId) return;
                 guardedPush({
@@ -9682,7 +9747,15 @@ export default function SessionScreen() {
               onSelect: selectUnifiedComposerModel,
               // 远程 Agent:其他电脑上开放了远程调用的供应商接在后面,每个供应商一段、标题带电脑名。
               ...(agentLocationMovable
-                ? { remote: { catalogs: remoteAgentCatalogs, selectedDeviceId: nextAgentDeviceId } }
+                ? {
+                  remote: {
+                    catalogs: remoteAgentCatalogs,
+                    selectedDeviceId: nextAgentDeviceId,
+                    // 供应商组:组里其他电脑收进组那一项;归组的任务在组那一项里选模型留在此刻运行的那台。
+                    hostDeviceId: deviceId,
+                    providerGroup: remoteProviderGroup,
+                  },
+                }
                 : {}),
             }}
             activeModelId={modelSheetSelection.model}
@@ -10227,9 +10300,10 @@ export default function SessionScreen() {
               {/* 消息区还在「正在同步」占位(新建会话第一帧 / 冷开首屏)时不谈运行状态:
                   「正在同步 + 思考中 + 0s · 0 tokens」三件事同时铺开,反倒像出错,而且
                   紧接着消息落屏时这条又要重排一次。等有内容了再显示活动条。
+                  例外:新建任务慢发送时这一行要说明卡在哪一步,不能被同步占位藏掉。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || remoteSessionRunStatus.responseSpeed?.phase === 'complete') && !(syncingWhileEmpty && !hasRenderedMessages) ? (
+              {!companionChat && (showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
                 <View
                   style={[
                     styles.composerActivityFrame,
@@ -10241,17 +10315,19 @@ export default function SessionScreen() {
                     key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
+                    pendingRecovery={pendingRecoveryStatus}
                     sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
                     startedAt={composerActivityStartedAtMs}
                     rateStartedAt={remoteSessionRunStatus.startedAt}
                     streaming={isSessionStreaming}
                     tokenUsage={composerActivityTokenUsage}
                     outputTokens={remoteSessionRunStatus.outputTokens}
-                    responseSpeed={remoteSessionRunStatus.responseSpeed}
                     generationDurationMs={remoteSessionRunStatus.generationDurationMs}
                     generationReliable={remoteSessionRunStatus.generationReliable}
+                    tokenSpeed={remoteSessionRunStatus.tokenSpeed}
                     generationActive={remoteSessionRunStatus.generationActive}
                     visible={showComposerActivity}
+                    slowSendPhase={creationSlowPhase}
                   />
                 </View>
               ) : null}
@@ -10508,6 +10584,7 @@ function SessionHeaderBar({
   onOpenSettings,
   onOpenUsage,
   onOpenRemoteDesktop,
+  onTitleDoubleTap,
   onToggleSearch,
   pendingCount,
   queueCount,
@@ -10539,6 +10616,8 @@ function SessionHeaderBar({
   onOpenSettings(): void;
   onOpenUsage(): void;
   onOpenRemoteDesktop(): void;
+  /** 双击标题直接打开重命名;不可重命名时不传。 */
+  onTitleDoubleTap?: () => void;
   onToggleSearch(): void;
   pendingCount: number;
   queueCount: number;
@@ -10584,6 +10663,8 @@ function SessionHeaderBar({
     session: currentSession,
   });
   const nativeHeader = Platform.OS === 'ios';
+  const titleDoubleTap = sharedTaskEnded ? undefined : onTitleDoubleTap;
+  const handleTitlePress = useDoubleTap(titleDoubleTap);
   const systemBack = useSystemNavigationBack();
   const headerWindow = useWindowDimensions();
   const headerInsets = useSafeAreaInsets();
@@ -10617,6 +10698,7 @@ function SessionHeaderBar({
             minWidth: 0, flexShrink: 1, overflow: 'hidden', justifyContent: 'center' }}>
             <SessionHeaderNativeTitle title={title} pinned={!messageOnly && !!currentSession?.pinnedAt}
               tags={isDeviceAccessRevoked ? undefined : currentSession?.tags} onTagsPress={onOpenSettings}
+              onTitleDoubleTap={titleDoubleTap}
               syncing={syncing} syncingImmediately={syncingImmediately} notice={notice} />
           </View>
         ),
@@ -10687,12 +10769,15 @@ function SessionHeaderBar({
         title={sharedTaskEnded ? t('sharedTask.ended') : title}
           tags={isDeviceAccessRevoked ? undefined : currentSession?.tags}
           onTagsPress={onOpenSettings}
+          onTitleDoubleTap={titleDoubleTap}
         pinned={!messageOnly && !!currentSession?.pinnedAt}
         syncing={syncing}
         syncingImmediately={syncingImmediately}
         notice={notice}
       /> : (
-      <View style={styles.sessionHeaderTextBlock}>
+      // 双击标题改名;不参与读屏焦点,读屏用户从「任务详情」进入重命名。
+      <Pressable accessible={false} disabled={!titleDoubleTap} onPress={handleTitlePress}
+        style={styles.sessionHeaderTextBlock} testID="session.titleArea">
         <View style={styles.sessionHeaderTitleRow}>
           {!messageOnly && currentSession?.pinnedAt ? (
             <Pin
@@ -10716,7 +10801,7 @@ function SessionHeaderBar({
             {notice}
           </Text>
         ) : null}
-      </View>
+      </Pressable>
       )}
 
       {sharedTaskEnded || systemBack ? null : nativeHeader ? (
@@ -11245,7 +11330,6 @@ function SessionComposerInput({
   composerSendUnavailableReason, attachmentCount, pendingUploadCount,
   onPasteImages, onDragActiveChange, onInputTopLayout, renderControls,
 }: SessionComposerInputProps) {
-  const creationTask = useNewSessionCreationTask(sessionId);
   const { document: composerDocument, draft } = useSyncExternalStore(source.subscribe, source.getSnapshot);
   const { t, i18n: i18nInstance } = useTranslation();
   const { colors } = useTheme();
@@ -11608,10 +11692,6 @@ function SessionComposerInput({
                     ) : null}
                   </View>
                 ) : null}
-                <SlowSendNotice
-                  startedAt={creationTask?.status === 'running' ? creationTask.startedAt : null}
-                  phase={creationTask?.phase ?? 'preparing'}
-                />
                 {attachmentError ? (
                   <Text style={styles.attachmentErrorText} testID="session.attachmentStatus">
                     {attachmentError}
@@ -12138,34 +12218,46 @@ function ComposerActivityStatus({
   availableRegion,
   sessionKey,
   reconnectAttempt,
+  pendingRecovery = null,
   sideTaskRunning,
   startedAt,
   rateStartedAt = startedAt,
   streaming = false,
   tokenUsage,
-  responseSpeed,
-  outputTokens,
-  generationDurationMs,
-  generationReliable,
+  outputTokens: reportedOutputTokens,
+  generationDurationMs: reportedGenerationDurationMs,
+  generationReliable: reportedGenerationReliable,
+  tokenSpeed,
   generationActive,
   visible,
+  slowSendPhase = null,
 }: {
   availableRegion?: LayoutRect;
   sessionKey: string;
   reconnectAttempt: RemoteSessionRunStatus['reconnectAttempt'];
+  /** 自愈 / 供应商组换电脑进行中：只显示这一行状态(与消息流里的进行中行同一个说法)。 */
+  pendingRecovery?: { label: string; attempt?: number; maxAttempts?: number } | null;
   sideTaskRunning: boolean;
   startedAt: number | null;
   rateStartedAt?: number | null;
   streaming?: boolean;
   tokenUsage: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   outputTokens: number;
   generationDurationMs: number;
   generationReliable: boolean;
+  /** Host-measured live tok/s; replaces the usage-counter estimate when present. */
+  tokenSpeed?: TokenSpeedSnapshot;
   generationActive: boolean;
   visible: boolean;
+  /** Set once a new task's creation has waited past the slow-send delay. */
+  slowSendPhase?: SlowSendPhase | null;
 }) {
+  // Host speed counts and times generation itself; usage counters stay the fallback.
+  const outputTokens = tokenSpeed?.tokens ?? reportedOutputTokens;
+  const generationDurationMs = tokenSpeed?.elapsedMs ?? reportedGenerationDurationMs;
+  const generationReliable = tokenSpeed ? true : reportedGenerationReliable;
   const styles = useThemedStyles(makeStyles);
+  const pillStyles = useThemedStyles(makeComposerActivityPillStyles);
   const { colors } = useTheme();
   const { t } = useTranslation();
   const [elapsed, setElapsed] = useState(0);
@@ -12186,51 +12278,55 @@ function ComposerActivityStatus({
   // Elapsed uses the local fallback. Sampling keeps the raw remote start so a
   // terminal null is not a new turn, and a local send is not the previous rate.
   const samplerStartedAt = rateStartedAt === undefined ? startedAt : rateStartedAt;
-  const legacyRateHistory = useRunningTokenRateHistory({
+  const rateHistory = useRunningTokenRateHistory({
     sessionKey,
-    generationActive,
     startedAt: samplerStartedAt,
     outputTokens,
     generationDurationMs,
     generationReliable: generationReliable && visible && !reconnectAttempt && !sideTaskRunning,
+    tokenSpeed,
     streaming,
   });
 
-  const rateHistory = responseSpeed ? responseSpeedHistory(responseSpeed)
-    : generationActive === false ? { ...legacyRateHistory, latestRate: null } : legacyRateHistory;
-  const completedSpeed = !visible && responseSpeed?.phase === 'complete';
-  const speedActivity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
-  if (!visible && !completedSpeed) return null;
+  if (pendingRecovery && !reconnectAttempt) {
+    // 自愈 / 换电脑进行中：只显示这一行状态，不带耗时与速率(这一轮还没有结局)。
+    return (
+      <View
+        pointerEvents="box-none"
+        style={pillStyles.composerActivityStatus}
+        testID="session.composerActivityStatus"
+      >
+        <ComposerActivityPill label={pendingRecovery.label}>
+          {pendingRecovery.attempt !== undefined && pendingRecovery.maxAttempts !== undefined ? (
+            <Text style={[pillStyles.composerActivityStatusText, pillStyles.composerActivityProgressText]}>
+              {pendingRecovery.attempt}/{pendingRecovery.maxAttempts}
+            </Text>
+          ) : null}
+        </ComposerActivityPill>
+      </View>
+    );
+  }
+  if (!visible) return null;
 
-  const elapsedText = completedSpeed
-    ? t(responseSpeed?.outcome === 'failed' ? 'session.screen.responseFailed'
-      : responseSpeed?.outcome === 'cancelled' ? 'session.screen.responseCancelled' : 'session.screen.lastGeneration')
-    : speedActivity === 'retrying' ? t('session.screen.responseRetrying')
-    : responseSpeed?.phase === 'waiting'
-    ? t('session.screen.responseWaiting', { seconds: ((responseSpeed.waitingMs + Math.max(0, Date.now() - responseSpeed.sampledAt)) / 1000).toFixed(1) })
-    : speedActivity === 'quiet' ? t('session.screen.responsePending') : formatComposerActivityElapsed(elapsed);
+  const elapsedText = formatComposerActivityElapsed(elapsed);
   const tokenCount = formatComposerActivityTokenCount(tokenUsage);
   const tokenText = t('session.screen.tokenCount', { tokens: tokenCount });
   const tokenA11yText = t('session.screen.tokenCountFull', { tokens: tokenCount });
   const showElapsedOnly = sideTaskRunning || Boolean(reconnectAttempt);
   const rateValue = formatComposerActivityRateValue(showElapsedOnly ? null : rateHistory.latestRate);
-  const canShowRateDetails = !showElapsedOnly && (Boolean(responseSpeed) || (generationReliable
+  const canShowRateDetails = !showElapsedOnly
+    && generationReliable
     && outputTokens > 0
     && Number.isFinite(outputTokens)
     && Number.isFinite(generationDurationMs)
-    && generationDurationMs > 0));
+    && generationDurationMs > 0;
   const rateText = rateValue
-    ? responseSpeed && (responseSpeed.phase !== 'complete' || responseSpeed.estimated)
-      ? t('session.screen.estimatedTokenRate', { rate: rateValue })
-      : t('session.screen.tokenRate', { rate: rateValue })
+    ? t('session.screen.tokenRate', { rate: rateValue })
     : null;
   const showUsageMeta = !showElapsedOnly && (Boolean(rateText) || tokenUsage > 0);
-  // iOS pills share the header/composer edge glass; Android's blur is too weak
-  // to carry text alone, so it keeps the translucent surface underneath.
-  const pillOverlayColor = Platform.OS === 'ios' ? 'transparent' : colors.surfaceTranslucent;
   const usageMeta = (
-    <View style={[styles.composerActivityPill, styles.composerActivityMeta]}>
-      <BlurBackdrop intensity={FLOATING_CHROME_BLUR_INTENSITY} overlayColor={pillOverlayColor} style={styles.composerActivityPillBackdrop} />
+    <View style={[pillStyles.composerActivityPill, styles.composerActivityMeta]}>
+      <BlurBackdrop intensity={FLOATING_CHROME_BLUR_INTENSITY} overlayColor={composerActivityPillOverlayColor(colors)} style={pillStyles.composerActivityPillBackdrop} />
       <Text style={styles.composerActivityMetaText}>{elapsedText}</Text>
       {showUsageMeta ? (
         <>
@@ -12267,32 +12363,24 @@ function ComposerActivityStatus({
             ? 'session.screen.rateLimitRetrying'
             : 'session.screen.networkReconnecting',
       )
-    : t(speedActivity === 'failed' ? 'session.screen.responseFailed'
-      : speedActivity === 'cancelled' ? 'session.screen.responseCancelled'
-        : speedActivity === 'retrying' ? 'session.screen.responseRetrying'
-          : speedActivity === 'waiting' || speedActivity === 'quiet' ? 'session.screen.responsePending'
-        : speedActivity === 'tool' ? 'session.screen.toolRunning'
-          : speedActivity === 'paused' ? 'session.screen.generationPaused'
-            : speedActivity === 'generating' ? 'session.screen.responseGenerating' : 'session.screen.thinking');
+    // 发送等待超过阈值时,同一行先说明卡在哪一步;创建完成后回到「思考中」。
+    : slowSendPhase ? t(`session.new.slowSend.${slowSendPhase}`)
+    : t('session.screen.thinking');
 
   return (
     <View
       pointerEvents="box-none"
-      style={styles.composerActivityStatus}
+      style={pillStyles.composerActivityStatus}
       testID="session.composerActivityStatus"
     >
-      {visible && <View pointerEvents="none" style={[styles.composerActivityPill, styles.composerActivityPrimary]}>
-        <BlurBackdrop intensity={FLOATING_CHROME_BLUR_INTENSITY} overlayColor={pillOverlayColor} style={styles.composerActivityPillBackdrop} />
-        <Sparkles color={colors.statusAccent} size={iconSize.sm} strokeWidth={iconStroke.regular} />
-        <Text numberOfLines={1} style={styles.composerActivityStatusText}>{activityText}</Text>
+      <ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>
         {reconnectAttempt ? (
-          <Text style={[styles.composerActivityStatusText, styles.composerActivityProgressText]}>
+          <Text style={[pillStyles.composerActivityStatusText, pillStyles.composerActivityProgressText]}>
             {reconnectAttempt.attempt}/{reconnectAttempt.maxAttempts}
           </Text>
         ) : null}
-      </View>}
+      </ComposerActivityPill>
       <RunningTokenRatePopover
-        responseSpeed={responseSpeed}
         key={sessionKey}
         enabled={canShowRateDetails}
         availableRegion={availableRegion}
@@ -12730,40 +12818,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   composerActivityFrame: {
     alignSelf: 'stretch',
     marginTop: spacing.lg,
-  },
-  composerActivityStatus: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    minHeight: 44,
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.xs,
-  },
-  composerActivityPrimary: {
-    alignItems: 'center',
-    flexShrink: 1,
-    flexDirection: 'row',
-    gap: 6,
-    marginRight: spacing.sm,
-    minWidth: 0,
-  },
-  composerActivityPill: {
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  composerActivityPillBackdrop: {
-    borderRadius: radius.pill,
-    overflow: 'hidden',
-  },
-  composerActivityStatusText: {
-    color: colors.statusAccent,
-    flexShrink: 1,
-    fontSize: typeScale.footnote,
-    fontWeight: fontWeight.medium,
-    lineHeight: lineHeight.caption,
-  },
-  composerActivityProgressText: {
-    flexShrink: 0,
   },
   composerActivityMeta: {
     alignItems: 'center',

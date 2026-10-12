@@ -19,6 +19,11 @@ const sample = (model: string, input: number, output: number, turns = 1) => ({
   model, turns, inputTokens: input, outputTokens: output, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0,
 });
 
+const reportRow = (day: string, memberKey: string, input: number) => ({
+  day, providerId: 'anthropic', memberKey, kind: 'claude-code', model: 'opus',
+  turns: 1, inputTokens: input, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 5,
+});
+
 describe('provider party usage store', () => {
   let dir: string;
   beforeEach(() => {
@@ -28,27 +33,34 @@ describe('provider party usage store', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('splits one provider into this computer and each other computer, by range', async () => {
+  it('splits one provider into this computer and each other computer, by range and by computer in the group', async () => {
     let now = new Date(2026, 9, 7, 12).getTime();
     const file = path.join(dir, 'usage.json');
     const store = createProviderPartyUsageStore(file, { now: () => now });
-    store.record({ kind: 'local' }, { kind: 'claude-code', providerId: 'anthropic', samples: [sample('opus', 10, 5)] });
-    store.record({ kind: 'device', deviceId: 'studio' }, { kind: 'claude-code', providerId: 'anthropic', samples: [sample('opus', 7, 3)] });
+    expect(store.record({ kind: 'local' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 10, 5)] }))
+      .toBe('2026-10-07');
+    // 同一个模型在组里另一台运行：分开记。
+    store.record({ kind: 'local' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'device:studio:anthropic-2', samples: [sample('opus', 3, 1)] });
+    store.record({ kind: 'device', deviceId: 'studio' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 7, 3)] });
+    store.record({ kind: 'relay', deviceId: 'mini' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 2, 2)] });
     // 别的供应商不混进来。
-    store.record({ kind: 'local' }, { kind: 'codex', providerId: 'openai', samples: [sample('gpt', 1, 1)] });
+    store.record({ kind: 'local' }, { kind: 'codex', providerId: 'openai', memberKey: 'local', samples: [sample('gpt', 1, 1)] });
     now = new Date(2026, 8, 20, 12).getTime();
-    store.record({ kind: 'local' }, { kind: 'claude-code', providerId: 'anthropic', samples: [sample('opus', 100, 50)] });
+    store.record({ kind: 'local' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 100, 50)] });
     now = new Date(2026, 9, 7, 13).getTime();
 
     const month = store.query('anthropic', 'month');
     expect(month.local).toMatchObject({ deviceId: null, lastUsedAt: new Date(2026, 9, 7, 12).getTime() });
     expect(month.local?.models).toEqual([
-      { kind: 'claude-code', model: 'opus', turns: 1, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0 },
+      { kind: 'claude-code', model: 'opus', memberKey: 'local', turns: 1, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0 },
+      { kind: 'claude-code', model: 'opus', memberKey: 'device:studio:anthropic-2', turns: 1, inputTokens: 3, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0 },
     ]);
     expect(month.devices).toHaveLength(1);
     expect(month.devices[0]).toMatchObject({ deviceId: 'studio' });
-    expect(store.query('anthropic', 'all').local?.models[0]).toMatchObject({ turns: 2, inputTokens: 110, outputTokens: 55 });
-    expect(store.query('xai', 'all')).toEqual({ local: null, devices: [] });
+    // 替受邀者转来的单独一项，不算进我的其他电脑。
+    expect(month.relays).toEqual([expect.objectContaining({ deviceId: 'mini' })]);
+    expect(store.query('anthropic', 'all').local?.models[0]).toMatchObject({ memberKey: 'local', turns: 2, inputTokens: 110, outputTokens: 55 });
+    expect(store.query('xai', 'all')).toEqual({ local: null, devices: [], relays: [] });
 
     await store.flush();
     const reloaded = createProviderPartyUsageStore(file, { now: () => now });
@@ -56,18 +68,67 @@ describe('provider party usage store', () => {
     expect(reloaded.query('openai', 'all').local?.models[0]).toMatchObject({ model: 'gpt' });
   });
 
+  it('reads rows written before parties and group computers were recorded', () => {
+    const file = path.join(dir, 'usage.json');
+    const old = (deviceId: string | null) => ({
+      day: '2026-10-11', providerId: 'p', deviceId, kind: 'pi', model: 'x', turns: 1,
+      inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 1,
+    });
+    fs.writeFileSync(file, JSON.stringify({ version: 1, rows: [old(null), old('studio')] }));
+    const result = createProviderPartyUsageStore(file).query('p', 'all');
+    expect(result.local?.models[0]).toMatchObject({ memberKey: null, turns: 1 });
+    expect(result.devices[0]).toMatchObject({ deviceId: 'studio' });
+  });
+
   it('ignores rounds without a provider and malformed rows', () => {
     const file = path.join(dir, 'usage.json');
     const store = createProviderPartyUsageStore(file);
-    store.record({ kind: 'local' }, { kind: 'pi', providerId: '', samples: [sample('x', 1, 1)] });
-    expect(store.query('', 'all')).toEqual({ local: null, devices: [] });
-    fs.writeFileSync(file, JSON.stringify({ version: 1, rows: [{ day: '2026-10-01', providerId: 'p', deviceId: '', kind: 'pi', model: 'x', turns: 1 }] }));
-    expect(createProviderPartyUsageStore(file).query('p', 'all')).toEqual({ local: null, devices: [] });
+    expect(store.record({ kind: 'local' }, { kind: 'pi', providerId: '', memberKey: 'local', samples: [sample('x', 1, 1)] })).toBeNull();
+    expect(store.query('', 'all')).toEqual({ local: null, devices: [], relays: [] });
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      rows: [
+        { day: '2026-10-01', providerId: 'p', deviceId: '', kind: 'pi', model: 'x', turns: 1 },
+        // 本机的行不能带设备，其他电脑的行必须带设备。
+        { day: '2026-10-01', providerId: 'p', party: 'local', deviceId: 'x', memberKey: 'local', kind: 'pi', model: 'x', turns: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 1 },
+        { day: '2026-10-01', providerId: 'p', party: 'nobody', deviceId: 'x', memberKey: 'local', kind: 'pi', model: 'x', turns: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 1 },
+      ],
+    }));
+    expect(createProviderPartyUsageStore(file).query('p', 'all')).toEqual({ local: null, devices: [], relays: [] });
+  });
+
+  it('keeps usage to report to another group separately and shows reported usage under that computer', () => {
+    const file = path.join(dir, 'usage.json');
+    const now = new Date(2026, 9, 11, 9).getTime();
+    const store = createProviderPartyUsageStore(file, { now: () => now });
+    // 这台电脑经 mini 的组、在组里的 studio 上运行：只用来报告给 mini，不算进本机的 anthropic。
+    store.record({ kind: 'group', deviceId: 'mini' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'device:studio:a2', samples: [sample('opus', 40, 2)] });
+    expect(store.query('anthropic', 'all')).toEqual({ local: null, devices: [], relays: [] });
+    expect(store.groupOwners()).toEqual(['mini']);
+    expect(store.groupReport('mini', null)).toEqual([
+      expect.objectContaining({ day: '2026-10-11', providerId: 'anthropic', memberKey: 'device:studio:a2', inputTokens: 40 }),
+    ]);
+    expect(store.groupReport('mini', '2026-10-12')).toEqual([]);
+    expect(store.groupReport('other', null)).toEqual([]);
+
+    // 组所在电脑这边：laptop 报来的整体替换它从那天起的行，并进 laptop 那台。
+    store.record({ kind: 'device', deviceId: 'laptop' }, { kind: 'claude-code', providerId: 'anthropic', memberKey: 'local', samples: [sample('opus', 1, 1)] });
+    store.replaceReported('laptop', null, [reportRow('2026-10-09', 'device:studio:a2', 5), reportRow('2026-10-10', 'device:studio:a2', 6)]);
+    store.replaceReported('laptop', '2026-10-10', [reportRow('2026-10-10', 'device:studio:a2', 8)]);
+    const laptop = store.query('anthropic', 'all').devices;
+    expect(laptop).toHaveLength(1);
+    expect(laptop[0]?.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ memberKey: 'local', inputTokens: 1 }),
+      expect.objectContaining({ memberKey: 'device:studio:a2', inputTokens: 13 }),
+    ]));
+    // 再报一次同样的一份不会多算。
+    store.replaceReported('laptop', '2026-10-10', [reportRow('2026-10-10', 'device:studio:a2', 8)]);
+    expect(store.query('anthropic', 'all').devices[0]?.models.find((model) => model.memberKey !== 'local')).toMatchObject({ inputTokens: 13 });
   });
 
   it('keeps one ledger per account', async () => {
     owner.dir = path.join(dir, 'owner-a');
-    currentProviderPartyUsageStore().record({ kind: 'local' }, { kind: 'pi', providerId: 'anthropic', samples: [sample('m', 1, 1)] });
+    currentProviderPartyUsageStore().record({ kind: 'local' }, { kind: 'pi', providerId: 'anthropic', memberKey: 'local', samples: [sample('m', 1, 1)] });
     owner.dir = path.join(dir, 'owner-b');
     expect(currentProviderPartyUsageStore().query('anthropic', 'all').local).toBeNull();
     await flushProviderPartyUsage();

@@ -424,7 +424,10 @@ describe('Provider network recovery priority', () => {
     await act(async () => {
       networkEvents.state = 'active'; networkEvents.app('active');
     });
-    expect(client.connectNow).toHaveBeenCalledWith('appstate-active', { overrideCongestionCooldown: true });
+    expect(client.connectNow).toHaveBeenCalledWith('appstate-active', {
+      overrideCongestionCooldown: true,
+      keepInFlightAttempt: true,
+    });
     if (status === 'online') expect(client.notifyNetworkChanged).toHaveBeenCalledWith({ urgent: true });
     else expect(client.notifyNetworkChanged).not.toHaveBeenCalled();
     expect(client.stop).not.toHaveBeenCalled();

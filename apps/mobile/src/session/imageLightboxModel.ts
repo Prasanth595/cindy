@@ -16,8 +16,8 @@ export const LIGHTBOX_ZOOM_EPS = 0.01;
 export const LIGHTBOX_DISMISS_DISTANCE = 120;
 export const LIGHTBOX_DISMISS_VELOCITY = 800;
 /**
- * 单击关闭允许的最大位移(pt)。RNGH Tap 默认 maxDist 为无限(NAN 跳过校验),
- * 与平移 Simultaneous 时,500ms 内的短拖松手会被当成单击,lightbox 直接关掉。
+ * 单击(切换 chrome)允许的最大位移(pt)。RNGH Tap 默认 maxDist 为无限(NAN 跳过校验),
+ * 与平移 Simultaneous 时,500ms 内的短拖松手会被当成单击,工具栏被意外切掉。
  */
 export const LIGHTBOX_TAP_MAX_DISTANCE = 12;
 /** 橡皮筋系数(对齐 UIScrollView 的 0.55):越界量 x 显示为 (1 - 1/(x·c/d + 1))·d。 */
@@ -458,12 +458,6 @@ export function shouldDismissLightbox(
   if (isLightboxZoomed(scale)) return false;
   return Math.abs(translationY) > LIGHTBOX_DISMISS_DISTANCE
     || Math.abs(velocityY) > LIGHTBOX_DISMISS_VELOCITY;
-}
-
-/** 单击是否关闭:仅 1x。放大时单击留给看图,避免和拖图/双击抢手势。 */
-export function shouldCloseLightboxOnTap(scale: number): boolean {
-  'worklet';
-  return !isLightboxZoomed(scale);
 }
 
 /** 下滑拖动中的背景不透明度:拖过半屏降到 0.3,跟手渐隐。 */

@@ -38,7 +38,9 @@ import {
 import type { UsageTracker } from '../shared/usage-tracker.js';
 import { isModelAccessDenied } from './model-access-error.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
+import { isFileWritingTool } from '../shared/token-speed.js';
 import {
+  beginClaudeGeneration,
   beginClaudeGenerationAtRequestStart,
   finalizeClaudeGeneration,
   markClaudeGenerationUnreliable,
@@ -342,7 +344,7 @@ function ccLiveStatus(
   return {
     status,
     ...attachLiveGeneration(ctx.tracker.snapshot(), {
-      responseSpeed: ctx.rt.generation.responseSpeed.snapshot(),
+      tokenSpeed: ctx.rt.generation.tokenSpeed.snapshot(),
       outputTokens: mainTurnOutputTokens(ctx.tracker),
       durationMs: ctx.rt.generation.outputDurationMs,
       openStartedAt: ctx.rt.generation.startedAt,
@@ -1068,8 +1070,8 @@ function handleSystem(
     return;
   }
   if (msg.subtype === 'api_retry') {
-    if (ctx.turn.interruptRequested || !ctx.rt.generation.responseSpeed.beginRetry()) return;
-    queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Working...', true), source: 'claude-code' });
+    // The backoff wait is not generation time; the retried request's first block resumes.
+    ctx.rt.generation.tokenSpeed.pause();
     // SDKAPIRetryMessage 明确表示本次 API 失败仍在自动重试，不是 turn 终态。
     // 除日志外也暂存最后一次 retry 的错误详情，覆盖 SDK 没有额外发送
     // assistant.error envelope、最终 ResultMessage 又没有 result 文本的路径。
@@ -1668,6 +1670,44 @@ function observeClaudeSubagentStream(
 
 // ── stream_event 子分支(content_block_delta / message_delta / message_start) ──
 
+/** Main-thread live tok/s, mirroring pi-token-speed's message_update handlers. */
+function observeClaudeTokenSpeed(
+  event: {
+    type?: string;
+    index?: number;
+    delta?: Record<string, unknown>;
+    content_block?: { type?: string; name?: string };
+  },
+  queue: EventQueue,
+  ctx: TranslateContext,
+): void {
+  const speed = ctx.rt.generation.tokenSpeed;
+  const tools = ctx.rt.generation.tokenSpeedToolByIndex;
+  const index = typeof event.index === 'number' ? event.index : 0;
+  switch (event.type) {
+    case 'message_start':
+      tools.clear();
+      return;
+    case 'content_block_start':
+      if (event.content_block?.type === 'tool_use') tools.set(index, event.content_block.name ?? '');
+      speed.start();
+      return;
+    case 'content_block_delta': {
+      const delta = event.delta;
+      const text = delta?.type === 'input_json_delta'
+        ? (isFileWritingTool(tools.get(index)) ? delta.partial_json : undefined)
+        : delta?.text ?? delta?.thinking;
+      if (typeof text === 'string' && speed.recordDelta(text)) {
+        queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
+      }
+      return;
+    }
+    case 'content_block_stop':
+      if (tools.has(index) && !isFileWritingTool(tools.get(index))) speed.pause();
+      return;
+  }
+}
+
 function handleStreamEvent(
   msg: {
     event?: Record<string, unknown>;
@@ -1690,19 +1730,9 @@ function handleStreamEvent(
     ? msg.parent_tool_use_id
     : undefined;
 
+  if (!parentToolUseId) observeClaudeTokenSpeed(event, queue, ctx);
+
   // 冗余 add: 防 SDK 顺序契约变化 (stream_event 先于 assistant message yield), Set 幂等。
-  if (!parentToolUseId && event.type === 'content_block_start') ctx.rt.generation.responseSpeed.content();
-  if (!parentToolUseId && event.type === 'content_block_delta') {
-    const delta = event.delta;
-    const text = delta?.text ?? delta?.thinking ?? delta?.partial_json;
-    if (typeof text === 'string' && ctx.rt.generation.responseSpeed.delta(text)) {
-      queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
-    }
-  }
-  if (!parentToolUseId && event.type === 'message_delta') {
-    ctx.rt.generation.responseSpeed.reportOutput(event.usage?.output_tokens);
-    ctx.rt.generation.responseSpeed.pause();
-  }
   if (event.type === 'content_block_start') {
     const cb = event.content_block;
     if (cb && cb.type === 'text') {
@@ -2210,7 +2240,9 @@ function handleResult(
     resultUsage != null && segmentTotals.outputTokens === resultUsage.outputTokens,
   );
   const liveGeneration = ctx.rt.generation;
-  liveGeneration.responseSpeed.finish();
+  // Snap to this turn's streamed main-thread usage: the result aggregate can be
+  // a session total turned into a wrong delta, and a bad snap is worse than the estimate.
+  liveGeneration.tokenSpeed.stop(mainTurnOutputTokens(ctx.tracker));
   const endSnapshot = ctx.tracker.endTurn(
     resultUsage
       ? {
@@ -2492,7 +2524,7 @@ function handleResult(
     data: {
       status: 'Done',
       ...attachLiveGeneration(endSnapshot, {
-        responseSpeed: liveGeneration.responseSpeed.snapshot(),
+        tokenSpeed: liveGeneration.tokenSpeed.snapshot(),
         outputTokens: liveTurnOutput,
         durationMs: liveGeneration.outputDurationMs,
         openStartedAt: null,
@@ -2516,15 +2548,6 @@ function handleResult(
       : msg;
   const resultWithUsageSegments = {
     ...safeResult,
-    responseSpeed: liveGeneration.responseSpeed.snapshot(),
-    // Keep SDK usage intact; the normalized provider delta can pair
-    // with the current turn's response-speed denominator.
-    turnUsage: resultUsage ? {
-      input_tokens: resultUsage.inputTokens,
-      output_tokens: resultUsage.outputTokens,
-      cache_read_input_tokens: resultUsage.cacheReadTokens,
-      cache_creation_input_tokens: resultUsage.cacheCreateTokens,
-    } : undefined,
     usageSegments: turnUsageSegments,
     usageSegmentsComplete,
     modelUsageCumulativeStartsAtZero: ctx.modelUsageCumulativeStartsAtZero?.() === true,

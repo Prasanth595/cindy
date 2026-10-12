@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   getMaker: vi.fn(),
   getDesktopCcPrefs: vi.fn<() => DesktopCcPrefs | null>(() => null),
   resolveLenientSessionRoute: vi.fn(),
+  // 桌面偏好缺省时 control:new 按新建任务口径解析默认模型;本 harness 不搭目录,固定返回。
+  resolveNewTaskDefaultModelRoute: vi.fn(async () => ({ model: 'claude-sonnet-4-6', providerId: null })),
   // 禁止回落 cwd:TEMP 是 Windows 独有变量,macOS 上回落 cwd 会让传递 import 的
   // 写盘副作用落进仓库工作区(见 authAdaptersImportPurity.test.ts 记录的事故)。
   userDataDir: process.env.TMPDIR ?? process.env.TEMP ?? '/tmp',
@@ -34,6 +36,7 @@ vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
 vi.mock('../../../maker-host', () => ({ getMaker: mocks.getMaker }));
 vi.mock('../../../maker-host/model-route-guard-live', () => ({
   resolveLenientSessionRoute: mocks.resolveLenientSessionRoute,
+  resolveNewTaskDefaultModelRoute: mocks.resolveNewTaskDefaultModelRoute,
 }));
 vi.mock('../../index', () => ({ getDesktopCcPrefs: mocks.getDesktopCcPrefs }));
 vi.mock('../controlProjects', () => ({

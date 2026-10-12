@@ -7,6 +7,8 @@ export interface SessionHeaderNativeBackProps {
 
 export interface SessionHeaderNativeTitleProps {
   onTagsPress?: () => void;
+  /** 双击标题:直接打开重命名;不可重命名时不传。 */
+  onTitleDoubleTap?: () => void;
   tags?: import('@cindy/maker-shared').TaskTag[];
   title: string;
   pinned: boolean;

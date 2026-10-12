@@ -261,7 +261,6 @@ import {
   useRemoteArchivedLoadedDeviceIds,
   useRemoteArchivedLoadingDeviceIds,
   useRemoteDevices,
-  isRemoteDeviceMarkedDisconnected,
   useRemoteProjectSessions,
 } from '@/features/device-link/remoteProjectsStore';
 import {
@@ -284,6 +283,7 @@ import {
   useSelectedMachineConnecting,
   useSwitcherDevices,
 } from '@/features/device-link/useMachineSwitcher';
+import { buildSidebarDeviceIndex } from './lib/sidebarDeviceGrouping';
 import {
   useDeviceLinkDeviceListSettled,
   useDeviceLinkDeviceListRequestState,
@@ -1309,22 +1309,10 @@ function ExpandedView({
   const switcherDevices = useSwitcherDevices();
   // E 期「按设备分组」:远程设备顺序 + 名称/在线状态(设备切换栏同序同源)。
   // 空 map = 没有远程设备 → ProjectsSection 隐藏该分组选项、不切段。
-  const remoteDeviceIndex = useMemo(() => {
-    const index = new Map<string, { name: string; online: boolean }>();
-    for (const device of switcherDevices) {
-      if (device.status === 'rejected') continue;
-      // connecting 含两种:真在连,以及断线缓存。后者不能撑开设备分组,
-      // 否则最后一台远程掉线后仍会留下「本机」段头;重连后偏好自动恢复。
-      if (device.status === 'connecting' && isRemoteDeviceMarkedDisconnected(device.deviceId)) {
-        continue;
-      }
-      index.set(device.deviceId, {
-        name: device.name,
-        online: device.status === 'connected',
-      });
-    }
-    return index;
-  }, [switcherDevices]);
+  const remoteDeviceIndex = useMemo(
+    () => buildSidebarDeviceIndex(switcherDevices),
+    [switcherDevices],
+  );
   const deviceListSettled = useDeviceLinkDeviceListSettled();
   const selectedDialogueDeviceResolution = useMemo(
     () => resolveDialogueDeviceTarget(selectedMachineId, switcherDevices, deviceListSettled),

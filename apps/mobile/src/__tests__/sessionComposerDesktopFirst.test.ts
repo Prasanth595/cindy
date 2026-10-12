@@ -212,7 +212,7 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).not.toContain('testID="session.attachmentPathPanel"');
     expect(source).not.toContain('被控电脑上的文件路径');
     expect(source).toContain('testID="session.composerActivityStatus"');
-    expect(source).toContain("'session.screen.thinking'");
+    expect(source).toContain("t('session.screen.thinking')");
     // 活动状态行的三种说法都要在这里出现。过载退避与传输层重连共用同一个 attempt
     // 字段, 但文案分开: 说「正在重新连接」会把用户引向排查自己的网络
     // (review #844 codex P1)。字符串按 i18n key 断言, 不断言三元表达式的写法。
@@ -247,13 +247,26 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('function formatComposerActivityElapsed');
     expect(source).toContain('function formatComposerActivityTokenCount');
     expect(source).toContain('function formatComposerActivityRateValue');
-    expect(source).toContain('composerActivityPrimary');
+    // The primary pill is shared with the new-task slow-send notice so both read as one status line.
+    const activityPillSource = readTextLf(resolve(process.cwd(), 'src/session/ComposerActivityPill.tsx'), 'utf8');
+    expect(source).toContain('<ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>');
+    // A slow new-task send speaks through the same row, then continues in place as "思考中".
+    expect(source).toContain('const composerActivitySignal = isSessionStreaming || messageHandoffActive || creationRunning;');
+    expect(source).toContain('slowSendPhase={creationSlowPhase}');
+    // The creation turn keeps counting from the tap on the new-task page; a later remote start must not rewind it.
+    expect(source).toContain('const composerActivityStartedAtMs = creationTurnStartedAt ?? remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;');
+    expect(activityPillSource).toContain("accessibilityLiveRegion={live ? 'polite' : 'none'}");
+    // An in-place drawer switch reuses the screen: another task must drop the retained creation start.
+    expect(source).toContain('setCreationTurnStart((prev) => (prev?.sessionId === sessionId && showComposerActivity ? prev : null));');
+    expect(source).not.toContain('<SlowSendNotice');
+    expect(activityPillSource).toContain('composerActivityPrimary');
+    expect(activityPillSource).toContain('color: colors.statusAccent');
     expect(source).toContain('composerActivityMeta');
     expect(source).toContain('composerActivityMetaText');
     expect(source).toContain('composerActivityFrame');
     expect(source).toContain('marginTop: spacing.lg');
     // The formerly passive rate is now a touch target, with a full 44pt status row.
-    expect(source).toMatch(/composerActivityStatus: \{[^}]*minHeight: 44/s);
+    expect(activityPillSource).toMatch(/composerActivityStatus: \{[^}]*minHeight: 44/s);
     expect(source).toContain('composerActivityStatusText');
     expect(source).toContain('composerActivityProgressText');
     expect(composerStatusCallIndex).toBeGreaterThan(-1);

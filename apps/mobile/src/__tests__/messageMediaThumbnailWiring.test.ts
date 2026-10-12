@@ -130,11 +130,10 @@ describe('mobile message media thumbnail wiring', () => {
     expect(releaseBlock).not.toContain("method: 'DELETE'");
   });
 
-  it('routes image payloads to the fullscreen ImageLightbox instead of the generic modal', () => {
-    expect(rendererSource).toContain("payload?.kind === 'media' && payload.media.kind === 'image'");
+  it('routes image and video payloads to the fullscreen ImageLightbox instead of the generic modal', () => {
     expect(rendererSource).toContain('<ImageLightbox');
-    expect(rendererSource).toContain('lightboxImagesForPayload(galleryImages, payload)');
-    expect(rendererSource).toContain("const imageLightboxOpen = historyActive && payload?.kind === 'media' && payload.media.kind === 'image';");
+    expect(rendererSource).toContain('lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey)');
+    expect(rendererSource).toContain("const imageLightboxOpen = historyActive && payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind);");
     expect(rendererSource).toContain('payload={historyActive ? payload : null}');
     expect(rendererSource).toContain('() => (imageLightboxOpen');
     expect(rendererSource).toContain(': null),');
@@ -145,9 +144,9 @@ describe('mobile message media thumbnail wiring', () => {
     const lightboxSource = readTextLf(resolve(process.cwd(), 'src/session/ImageLightbox.tsx'), 'utf8');
     expect(lightboxSource).toContain('message.imageLightbox');
     expect(lightboxSource).toContain('shouldDismissLightbox');
-    expect(lightboxSource).toContain('shouldCloseLightboxOnTap');
+    expect(lightboxSource).toContain('runOnJS(onToggleChrome)()');
     expect(lightboxSource).toContain('Gesture.Pinch()');
-    // 单击关闭必须限制位移:RNGH Tap 默认 maxDist 无限,短拖松手会关 lightbox
+    // 单击切换 chrome 必须限制位移:RNGH Tap 默认 maxDist 无限,短拖松手会被当成单击
     expect(lightboxSource).toContain('maxDistance(LIGHTBOX_TAP_MAX_DISTANCE)');
     // 自然尺寸到达后按新 contain 边界立刻重钳位移,不把 letterbox 估算的旧平移留到下次拖动
     expect(lightboxSource).toContain('reclampLightboxPan(');
@@ -196,8 +195,8 @@ describe('mobile message media thumbnail wiring', () => {
     expect(screenSource).toContain('onOrphanResolved');
     // 取件成功但 mime 非图片 → 视为失败给重试按钮,不停留在永久 spinner
     expect(lightboxSource).toContain('resolvedUnsupported');
-    // 取件中 / 失败分支必须可单击关闭(无关闭按钮,不能困在全屏 Modal)
-    expect(lightboxSource).toContain('onPress={onRequestClose}');
+    // 取件中 / 失败分支单击同样切换 chrome(关闭按钮在 chrome 里,不能困在全屏 Modal)
+    expect(lightboxSource).toContain('onPress={onToggleChrome}');
     // lightbox images 引用稳定,父层流式重渲染不空转取件 effect / FlatList
     expect(rendererSource).toContain('const lightboxImages = useMemo');
     // 语义未变时复用上一份数组;关闭回调稳定化,流式期间不重建手势图

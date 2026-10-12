@@ -641,7 +641,7 @@ export function MainLayout() {
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'provider-share-join'; link: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
       if (payload.type === 'chat-invite') {
         requestChatInvite(payload.token);
@@ -689,7 +689,8 @@ export function MainLayout() {
           payload.tab === 'providers' && payload.connect
             ? `&connect=${encodeURIComponent(payload.connect)}`
             : '';
-        navigate(`/settings?tab=${payload.tab}${connect}`);
+        const intent = payload.tab === 'billing' && payload.intent === 'topup' ? '&intent=topup' : '';
+        navigate(`/settings?tab=${payload.tab}${connect}${intent}`);
       }
     },
     [navigate, navigateToSession, openShareImport],

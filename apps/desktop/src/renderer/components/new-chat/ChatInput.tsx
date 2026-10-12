@@ -7199,10 +7199,10 @@ export function ChatInput({
       selfDeviceId: selfDeviceId ?? null,
       ...(taskComputerModelMemory ? { localModelMemory: taskComputerModelMemory } : {}),
       deviceModelMemory: agentDeviceModelMemoryAccessors,
-      // 归组的任务在组那一项下显示与选择(provider-groups.md §10)。组的绑定记在任务所在电脑上，被控电脑上的
-      // 任务不读(那台的绑定不对控制端开放)，按没归组的处理；挂着换位置的意图时下一条消息就不在原处了，也不按组显示。
-      ...(!deviceLinkDeviceId && intentAgentDeviceId === undefined
-        ? { readProviderGroup: () => readSessionProviderGroup(sessionId) }
+      // 归组的任务在组那一项下显示与选择(provider-groups.md §10)。组的绑定记在任务所在电脑上：被控电脑上的
+      // 任务经设备互联问那台(旧版本问不到按没归组处理)；挂着换位置的意图时下一条消息就不在原处了，也不按组显示。
+      ...(intentAgentDeviceId === undefined
+        ? { readProviderGroup: () => readSessionProviderGroup(sessionId, deviceLinkDeviceId || undefined) }
         : {}),
       onRelocate: async (selection) => {
         if (!(await confirmAgentRelocation(selection.agentDevice))) return false;

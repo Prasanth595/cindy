@@ -402,9 +402,28 @@
     },
     "usage": {
       "title": "使用量",
-      "description": "{{provider}} の使用量を利用者ごとに表示します。このパソコンとほかのパソコンの分は、今回のアップデートから記録します。",
+      "description": "{{provider}} の使用量を人ごとに表示します。あなた自身の分は、今回のアップデートから記録します。",
       "shareSource": "共有相手",
-      "unknownDevice": "別のパソコン"
+      "unknownDevice": "別のパソコン",
+      "descriptionGroup": "{{provider}} の使用量を人ごとに表示します。展開すると、グループ内のパソコンごとに分けて表示します。あなた自身の分は、今回のアップデートから記録します。",
+      "summary": {
+        "total": "合計使用量",
+        "amount": "推定金額",
+        "people": "利用者",
+        "models": "モデル"
+      },
+      "selfTag": "あなた",
+      "relayName": "{{device}} 経由",
+      "computerCount_other": "{{count}} 台のパソコン",
+      "lastUsedOn": "{{lastUsed}} · {{computers}}で利用",
+      "unattributed": "以前の記録",
+      "unattributedSource": "パソコンを区別せずに記録",
+      "removedMember": "グループから外したパソコン",
+      "expandAria": "{{name}} の使用量の内訳を表示",
+      "collapseAria": "{{name}} の使用量の内訳を閉じる",
+      "table": {
+        "member": "パソコン / モデル"
+      }
     },
     "section": {
       "title": "プロバイダーグループ",
@@ -461,6 +480,7 @@
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
         "offline": "オフライン",
+        "unreachableHere": "このパソコンから接続できません",
         "unavailable": {
           "provider-off": "そのパソコンでこのプロバイダーの「リモート利用を許可」がオフです",
           "disconnected": "プロバイダーが未接続か無効です",
@@ -810,6 +830,283 @@
       "allowOnce": "一度だけ許可",
       "alwaysAllowForSession": "このセッションで常に許可",
       "deny": "拒否"
+    }
+  },
+  "menubar": {
+    "balance": {
+      "name": "Cindy 残高",
+      "quotaName": "Cindy の今期クォータ",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "今日 {{time}}",
+      "tomorrow": "明日 {{time}}",
+      "weekday": "{{day}} {{time}}",
+      "date": "{{date}} {{time}}",
+      "minutesAgo_other": "{{n}} 分前",
+      "hoursAgo_other": "{{n}} 時間前",
+      "daysAgo_other": "{{n}} 日前"
+    },
+    "duration": {
+      "daysHours": "{{d}} 日 {{h}} 時間",
+      "days_other": "{{d}} 日",
+      "hoursMinutes": "{{h}} 時間 {{m}} 分",
+      "hours_other": "{{h}} 時間",
+      "minutes_other": "{{m}} 分"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}日{{h}}時間",
+      "days": "{{d}}日",
+      "hoursMinutes": "{{h}}時間{{m}}分",
+      "hours": "{{h}}時間",
+      "minutes": "{{m}}分"
+    },
+    "window": {
+      "session": "{{hours}} 時間",
+      "week": "今週",
+      "scoped": "{{model}} 今週"
+    },
+    "headline": {
+      "recommend": "{{name}} がいちばん余裕があります。",
+      "balance": "Cindy 残高はまだ使えます。",
+      "quota": "Cindy の今期クォータはまだ使えます。",
+      "none": "すべて使い切りました。",
+      "unread": "残りをまだ取得できていません。",
+      "empty": "残りを表示できるアカウントがまだありません。",
+      "emptyHint": "Cindy でサブスクリプションを接続すると、ここに残りが表示されます。",
+      "restore": "{{name}} は{{duration}}後にリセット",
+      "soon": "{{name}} はまもなく上限",
+      "subscriptionsUsed": "サブスクリプションはすべて使い切り",
+      "waitReset": "サブスクリプションのリセット待ち",
+      "sentence": "{{text}}。",
+      "joiner": "、"
+    },
+    "cell": {
+      "payg": "従量",
+      "plan": "プラン",
+      "noBalance": "残高なし",
+      "unknown": "不明",
+      "noData": "残りをまだ取得できていません",
+      "lastsDays": "約{{n}}日",
+      "lastsDaysShort": "{{n}}日",
+      "resetsIn": "{{duration}}後にリセット",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}、従量課金、残高は取得できません",
+      "plan": "{{name}}、サブスクリプション、残りは取得できません",
+      "balance": "Cindy 残高 {{amount}}",
+      "balanceDays": "Cindy 残高 {{amount}}、約 {{n}} 日分",
+      "quota": "Cindy クォータ残り {{amount}}",
+      "noData": "{{name}}、データなし",
+      "reserve": "{{name}}、使い切り、credits は使用可能",
+      "remaining": "{{name}} 残り {{n}}%"
+    },
+    "detail": {
+      "balanceCaption": "残高",
+      "quotaCaption": "今期のクォータ残り",
+      "apiKey": "API Key",
+      "subscription": "サブスクリプション",
+      "noBalance": "残高を取得できません",
+      "unknownRemaining": "残りを取得できません",
+      "noData": "データなし",
+      "windowLeft": "{{window}}の残り"
+    },
+    "say": {
+      "balance": "残高は自動では回復しません。",
+      "quota": "クォータは期間ごとに付与され、ここではチャージしません。",
+      "quotaResets": "クォータは{{at}}に満額へリセットされます。",
+      "balanceLasts_other": "直近 7 日のペースで約 {{n}} 日分です。",
+      "balanceEstimating": "利用記録を集めています。数日で残り日数を見積もれます。",
+      "payg": "{{name}} は従量課金です。",
+      "paygSub": "API が残高を返さないため、ここには表示できません。使った分は Cindy の使用量に通常どおり含まれます。",
+      "plan": "{{name}} はサブスクリプション接続です。",
+      "planSub": "Cindy はまだ残りを読み取れません。使った分は Cindy の使用量に通常どおり含まれます。",
+      "noData": "まだ読み取れていません。",
+      "noDataSub": "更新するか、これでタスクを一度実行すると表示されます。",
+      "usedUp": "{{window}}の上限に達しました。",
+      "usedUpWithCredits": "{{at}}に回復します。それまでは Codex が {{credits}} credits を使って作業を続けます。",
+      "creditsOnly": "Codex が {{credits}} credits を使って作業を続けます。",
+      "resetsAt": "{{at}}に回復します。",
+      "emptyIn": "今のペースだと約 {{duration}}で上限に達します。",
+      "beforeReset": "リセットより {{duration}}早いです。",
+      "full": "満タンです。",
+      "relaxed": "ペースに余裕があります。",
+      "onPace": "ペースは標準です。",
+      "windowRefresh": "{{window}}の枠は{{at}}に更新",
+      "usedUpWithResets_other": "リセットがあと {{n}} 回使えます。使うとすぐ満タンに戻ります。"
+    },
+    "fact": {
+      "balance": "残高",
+      "quotaLeft": "今期のクォータ残り",
+      "quotaTotal": "今期のクォータ",
+      "updatedAgo": "{{ago}}に更新",
+      "dailyUse": "1 日の平均消費",
+      "about": "約 {{value}}",
+      "estimating": "見積もり中",
+      "estimatingSub": "データが不足",
+      "last7Days": "直近 7 日",
+      "runsOut": "使い切る目安",
+      "aroundDate": "{{date}}ごろ",
+      "atThisPace": "今のペースで",
+      "usedFor": "用途",
+      "cindyModels": "Cindy が提供するモデル",
+      "chargedPerUse": "使用量に応じて請求",
+      "billing": "課金",
+      "perUse": "従量",
+      "subscription": "サブスクリプション",
+      "connected": "接続済み",
+      "notProvided": "API が返さない",
+      "notReadable": "まだ読み取れない",
+      "inMenu": "メニュー",
+      "hidden": "非表示",
+      "shown": "表示",
+      "editHint": "「編集」で変更できます",
+      "usage": "使用量",
+      "counted": "通常どおり集計",
+      "countedSub": "Cindy の使用量に含む",
+      "resetsFull": "回復",
+      "windowResets": "{{window}}のリセット",
+      "timeLeft": "あと {{duration}}",
+      "remainingPercent": "残り {{n}}%",
+      "perModel": "モデルごとに計算",
+      "pace": "ペース",
+      "paceNormal": "標準",
+      "paceAhead": "{{n}}% 先行",
+      "paceReserve": "{{n}}% 余裕",
+      "paceSub": "均等に使えば残り {{n}}%",
+      "paceUsedUp": "使い切り",
+      "paceWaiting": "回復待ち",
+      "extraCredits": "追加 credits",
+      "unlimited": "無制限",
+      "creditsUsedAfter": "上限後に Codex が使用",
+      "noCredits": "予備の credits なし",
+      "prepaid": "前払い残高",
+      "xaiAccount": "xAI アカウント",
+      "account": "アカウント",
+      "todaySpent": "今日の使用額",
+      "dailySuggested": "1 日 {{value}} 以内が目安",
+      "poolPlan": "プラン残高",
+      "poolPlanSub": "プランで付与",
+      "poolPurchased": "チャージ残高",
+      "poolPurchasedSub": "自分でチャージ",
+      "poolPromo": "特典残高",
+      "poolPromoSub": "キャンペーン特典",
+      "promoExpires": "{{value}} は{{date}}に期限切れ",
+      "promoExpiresAll": "{{date}}に期限切れ",
+      "resetCredits": "利用上限のリセット",
+      "resetCount_other": "{{n}} 回",
+      "resetExpires": "{{date}}まで有効",
+      "resetAtLimit": "上限に達すると使用可能",
+      "device": "コンピュータ",
+      "deviceSub": "自分の別のコンピュータ"
+    },
+    "action": {
+      "newTask": "{{name}} で新しいタスクを開始",
+      "topUp": "Cindy でチャージ",
+      "manage": "Cindy の設定で管理",
+      "openApp": "Cindy を開く",
+      "useReset": "Cindy の設定でリセットを使う"
+    },
+    "tasks": {
+      "today_other": "今日 {{n}} 件",
+      "withRunning_other": "{{base}} · {{n}} 件実行中",
+      "context": "コンテキスト {{n}}%",
+      "private": "{{harness}} のタスク"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "サブスク換算 = サブスクで使った分を API の参考価格で換算した額で、請求額ではありません。",
+      "deviceSelf": "この {{name}}（リアルタイム）",
+      "deviceSynced": "{{name}}（{{date}} まで同期）",
+      "deviceNotSynced": "{{name}}（未同期）",
+      "deviceJoiner": " + ",
+      "allDevices": "すべてのデバイス = {{list}}。"
+    },
+    "manage": {
+      "balance": "残高 · 自動では回復しない",
+      "quota": "クォータ · 期間ごとにリセット",
+      "payg": "API Key · 従量、残高なし",
+      "plan": "サブスクリプション · 残りを取得できない",
+      "subscription": "サブスクリプション · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
+    },
+    "notify": {
+      "lowTitle": "残りわずかです",
+      "lowBody": "余裕のあるソースがどれも上限に近づいています。メニューバーの Cindy アイコンで回復時刻を確認できます。"
+    },
+    "ui": {
+      "updatedJustNow": "たった今更新",
+      "updatedMinutes_other": "{{n}} 分前に更新",
+      "updatedHours_other": "{{n}} 時間前に更新",
+      "updatedDays_other": "{{n}} 日前に更新",
+      "tasks": "タスク",
+      "tokenUnit": "token",
+      "noTasksToday": "今日のタスクはまだありません",
+      "moreTasks_other": "ほか {{n}} 件のタスク",
+      "running": "実行中",
+      "openApp": "Cindy を開く",
+      "gateTitle": "ログインすると残りを確認できます",
+      "gateBody": "Cindy にログインするか、ログインをスキップすると、ここにサブスクリプションの残りと今日の使用量が表示されます。",
+      "settings": "管理",
+      "refresh": "更新",
+      "monthScopeLocal": "直近 30 日 · このコンピュータ",
+      "monthScopeAll": "直近 30 日 · すべてのデバイス",
+      "expand": "展開",
+      "expandUsage": "使用量を展開",
+      "back": "戻る",
+      "usageTitle": "使用量",
+      "wideCaptionMoney_other": "直近 {{n}} 日 · サブスク換算",
+      "wideCaptionTokens_other": "直近 {{n}} 日 · Token",
+      "scopeLocal": "このコンピュータ",
+      "scopeAll": "すべてのデバイス",
+      "noUsage": "使用量なし",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "1 日平均",
+      "paid": "支払額",
+      "tokenUnitTitle": "Token",
+      "peakDay": "最多の日",
+      "range7": "7 日",
+      "range30": "30 日",
+      "range90": "90 日",
+      "metricMoney": "金額",
+      "metricTokens": "Token",
+      "listModels_other": "直近 {{n}} 日のモデル",
+      "listTasks": "今日のタスク",
+      "today": "今日",
+      "manageTitle": "管理",
+      "done": "完了",
+      "manageHero": "メニューに何を、\nどの順で表示するか。",
+      "manageHeroSub": "ドラッグで並べ替えます。オフにしたソースはメニューに表示されず、上の判断にも含まれません。",
+      "sources": "ソース",
+      "sourcesShown": "{{b}} 件中 {{a}} 件を表示",
+      "statusIcon": "メニューバーのアイコン",
+      "statusIconSub": "モノクロで、メニューバーの明暗に合わせて変わります",
+      "statusIconMode": {
+        "icon": "アイコンのみ",
+        "lowest": "最小の残り",
+        "today": "今日の使用量",
+        "task": "実行中のタスク"
+      },
+      "other": "その他",
+      "lowAlert": "残りわずかで通知",
+      "lowAlertSub": "余裕のあるソースがどれも上限に近づいたら、システム通知を送ります",
+      "privacy": "個人情報を隠す",
+      "privacySub": "アカウントは最初と最後の文字だけ表示し、タスク名も隠します。録画やスクリーンショットに便利です",
+      "usageScope": "使用量の集計範囲",
+      "manageFoot": "アカウントのログインと接続は Cindy の設定 › モデルプロバイダー で管理します。",
+      "showSource": "{{name}} をメニューに表示",
+      "reorderHint": "ドラッグするか、アクションメニューで並べ替えます",
+      "moveUp": "上へ移動",
+      "moveDown": "下へ移動"
     }
   },
   "settings": {
@@ -1332,6 +1629,10 @@
       "wecomGroupClearFailed": "Webhook を削除できませんでした"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "メニューバーに残りを表示",
+        "hint": "macOS のメニューバーに Cindy アイコンを置きます。クリックすると、サブスクリプションの残り、Cindy 残高、今日の使用量を確認できます。"
+      },
       "loginItem": {
         "label": "ログイン時に起動",
         "hint": "パソコンにログインすると Cindy を開きます。初期設定はオフです。",
@@ -10103,25 +10404,8 @@
       "observedPeak": "ピーク",
       "tokenRate": "{{rate}} tok/s",
       "tokenRateUnit": "tok/s",
-      "tokenRateDescription": "リアルタイム速度とピークは推定値です。応答後に実使用量で補正し、ツール実行とリクエスト待機は除外します。",
-      "tokenCount": "{{tokens}} tok",
-      "estimatedValue": "約{{value}}",
-      "estimatedTokenRate": "約{{rate}} tok/s",
-      "responseWaiting": "待機 {{seconds}}秒",
-      "waitSeconds": "{{seconds}}秒",
-      "firstResponse": "初回応答",
-      "streamWait": "ストリーム内待機",
-      "turnWaitDescription": "ローカルでの実行開始から最初のテキスト、思考、ツール内容まで。ネットワーク遅延とは異なります。",
-      "streamWaitDescription": "SDK ストリーム開始から最初のコンテンツまで。それ以前のリクエスト待機は測定できません。",
-      "lastGeneration": "前回の生成",
-      "finalAverage": "最終平均",
-      "generationPaused": "生成を一時停止",
-      "responsePending": "応答待ち",
-      "responseFailed": "リクエスト失敗",
-      "responseCancelled": "停止済み",
-      "responseRetrying": "再試行中",
-      "responseGenerating": "生成中",
-      "toolRunning": "ツール実行中"
+      "tokenRateDescription": "直近の生成区間の速度。ツール実行と待機は除きます。",
+      "tokenCount": "{{tokens}} tok"
     },
     "shareImage": {
       "entry": "画像として共有",
@@ -10590,7 +10874,8 @@
           "usage-limit": "{{from}} が使用量の上限に達したため、{{to}} で続行しました",
           "auth": "{{from}} のログインが切れたため、{{to}} で続行しました",
           "unavailable": "{{from}} に接続できないため、{{to}} で続行しました",
-          "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました"
+          "overload": "{{from}} のサービスが混雑しているため、{{to}} で続行しました",
+          "failed": "{{from}} で問題が起きたため、{{to}} で続行しました"
         },
         "agentReconnect": {
           "named": "{{computer}} に再接続し、続行しました",
@@ -10641,9 +10926,12 @@
           "sourceConversationChanged": "元のタスクが変更されました。現在のタスクに対して /review をもう一度実行してください。",
           "sourceFilesChanged": "元のタスクのファイルが変更されました。現在の成果に対して /review をもう一度実行してください。",
           "artifactChanged": "レビュー対象の成果が変更されました。現在の成果に対して /review をもう一度実行してください。",
-          "artifactUnavailable": "Cindy はレビュー対象の成果を安全に読み取れませんでした。ワークスペースまたは添付ファイルを確認して、/review をもう一度実行してください。",
+          "artifactUnavailable": "レビュー用のファイルを準備できませんでした。選択したフォルダーまたは添付ファイルを確認し、/review を再実行してください。",
           "providerFailed": "レビュータスクの実行に失敗しました"
-        }
+        },
+        "directory": "フォルダー：",
+        "baseline": "基準ブランチ：",
+        "unverifiedResult": "以下の指摘は生成されましたが、現在も有効か確認できませんでした。"
       }
     },
     "markdownRenderer": {
@@ -10742,13 +11030,8 @@
       },
       "expandLongMessage": "全文を表示",
       "collapseLongMessage": "折りたたむ",
-      "sessionReference": {
-        "recent": "最近のメッセージ",
-        "aroundAnchor": "リンクしたメッセージの前後",
-        "messageCount_one": "{{count}} 件のメッセージ",
-        "messageCount_other": "{{count}} 件のメッセージ",
-        "truncated": "一部省略"
-      },
+      "sessionLinkFallback": "セッション",
+      "messageLinkFallback": "引用したメッセージ",
       "forkBusy": "現在の応答が終了してから、ここから新しいセッションを始めてください",
       "editStopTimeout": "タスクの停止待ちがタイムアウトしました。もう一度お試しください",
       "editQueueNotEmpty": "このセッションには送信待ちのメッセージがあります。先に送信または削除してから編集してください",
@@ -13790,6 +14073,14 @@
       "inline": "メモリ内の添付ファイル",
       "allow": "今回のみ許可",
       "cancel": "キャンセル"
+    },
+    "workspaceSelection": {
+      "cancel": "キャンセル",
+      "title": "レビューするコードを選択",
+      "message": "このディレクトリには利用できるコード差分がありません。現在のコードをレビューするか、実際に開発したディレクトリを選択できます。",
+      "current": "このフォルダーを確認",
+      "choose": "別のフォルダーを選択",
+      "open": "レビュー"
     }
   },
   "learn": {

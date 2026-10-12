@@ -37,6 +37,11 @@ export interface ProviderShareMoney {
 export interface ProviderShareModelUsageView {
   kind: string;
   providerId: string | null;
+  /**
+   * 这一部分在哪台组内电脑运行(供应商组的组内电脑稳定键，本机为 `local`)；「用量」块据此按组内电脑展开。
+   * 这一字段加上之前记的用量没有区分，为 null。
+   */
+  memberKey: string | null;
   model: string;
   turns: number;
   inputTokens: number;
@@ -62,7 +67,7 @@ export interface ProviderShareOwnedView {
   requests: ProviderShareRequestItem[];
 }
 
-/** 「远程与分享」页按使用方的用量里一个使用方(本机，或同账号的另一台电脑)。 */
+/** 「远程与分享」页按使用方的用量里一个使用方(本机、同账号的另一台电脑，或经那台转来的受邀者任务)。 */
 export interface ProviderPartyUsageView {
   /** null = 本机。 */
   deviceId: string | null;
@@ -74,14 +79,17 @@ export interface ProviderPartyUsageView {
 
 /**
  * 某个供应商按使用方的用量里，这台电脑自己能记到的部分(provider-groups.md §7)：本机自己的任务(含归本机
- * 供应商组、在组里其他电脑上运行的)，与同账号其他电脑在本机运行的任务。分享的人在 owned 的成员里。
+ * 供应商组、在组里其他电脑上运行的)，与同账号其他电脑经这台电脑的任务。分享的人在 owned 的成员里。
+ * 界面把本机与我的其他电脑合成「自己」一行(当前登录的账号)。
  */
 export interface ProviderOwnUsageView {
   providerId: string;
   /** 本机自己的任务；没用过时为 null。 */
   local: ProviderPartyUsageView | null;
-  /** 同账号的其他电脑，每台一项，最近用过的在前。 */
+  /** 同账号的其他电脑自己的任务，每台一项，最近用过的在前。 */
   devices: ProviderPartyUsageView[];
+  /** 同账号的组所在电脑替它的受邀者转到本机运行的任务，每台组所在电脑一项(本机看不到最终使用者)。 */
+  relays: ProviderPartyUsageView[];
 }
 
 export interface ProviderShareOwnerState {

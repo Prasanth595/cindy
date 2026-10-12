@@ -4238,7 +4238,7 @@ describe('AgentInputCoordinator send transaction', () => {
       origin: { kind: 'session', senderSessionId: 'caller', displayText: 'follow-up from another task' },
     });
     await flush();
-    expect(h.onAutomaticEnqueue).toHaveBeenCalledWith(sid);
+    expect(h.onAutomaticEnqueue).toHaveBeenCalledWith(sid, expect.objectContaining({ clientId: expect.any(String) }));
     expect(h.onUserEnqueue).not.toHaveBeenCalled();
   });
 

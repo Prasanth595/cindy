@@ -104,7 +104,8 @@
     "handoffContentDesc": "Handoff — context summary sent to the new engine when switching (not part of the chat transcript; shown only here)",
     "handoffContentDescEnglishSource": "Handoff — context summary sent to the new engine when switching (not part of the chat transcript; shown only here)",
     "openDiagramDetail": "Open diagram detail",
-    "sessionChipFallback": "Session {{id}}",
+    "sessionChipFallback": "A session",
+    "messageChipFallback": "Quoted message",
     "imageFallbackTitle": "Image",
     "mermaidExportFailedTitle": "Export failed",
     "mermaidRenderIncompleteBody": "The diagram isn't fully rendered yet or the export failed. Try again later.",
@@ -271,7 +272,8 @@
         "usage-limit": "{{from}} hit its usage limit; continued on {{to}}",
         "auth": "{{from}} is signed out; continued on {{to}}",
         "unavailable": "Couldn’t reach {{from}}; continued on {{to}}",
-        "overload": "{{from}} was overloaded; continued on {{to}}"
+        "overload": "{{from}} was overloaded; continued on {{to}}",
+        "failed": "{{from}} ran into a problem; continued on {{to}}"
       },
       "agentReconnect": {
         "named": "Reconnected to {{computer}}; continued there",

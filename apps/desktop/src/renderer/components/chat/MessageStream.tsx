@@ -3038,6 +3038,7 @@ export function MessageStream({
         streaming: isSessionStreaming,
         isLive: (row) => row.isStreaming === true,
         pendingHandoff: handoff?.pending,
+        staleTail: handoff?.tail,
         isLocalMessage: (row) => row.isLocalSystemCard === true,
         isLocalUser: (row) =>
           row.role === 'user' &&
@@ -6751,7 +6752,6 @@ const MessageItem = memo(function MessageItem({
           sharedAuthorMemberId={message.sharedAuthorMemberId}
           workingDir={workingDir}
           content={message.content}
-          sessionReferences={message.sessionReferences}
           quotesEncoded={message.quotesEncoded}
           agentReferences={message.agentReferences}
           pastedTextRanges={message.pastedTextRanges}

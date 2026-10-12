@@ -611,8 +611,11 @@ export interface AgentInputCoordinatorDeps {
    * 就进入 running 并播开始音效,避免「任务开始」跟着 isRunning 一起晚响。
    */
   previewQueuedUserTurn?: (sessionId: string, item: AgentInputQueuedMessage) => void;
-  /** 自动输入推进了会话，但不构成真人介入，也不能重置自动恢复预算。 */
-  onAutomaticEnqueue?: (sessionId: string) => void;
+  /**
+   * 自动输入推进了会话，但不构成真人介入，也不能重置自动恢复预算。`item` 是这条自动输入(协同消息等)，
+   * host 据此判断要不要按「有人接手」处理(供应商组：Lead 给 Worker 发来消息即开始新的一轮)。
+   */
+  onAutomaticEnqueue?: (sessionId: string, item?: AgentInputQueuedMessage) => void;
   /**
    * 派发失败后队列可能已空(项目已从队列移除但未被放回时)回调。
    * host 用它触发 notifyQueueEmptied, 让 AgentIsland 中因队列非空而延迟的完成事件得到补发。
@@ -1843,7 +1846,7 @@ export class AgentInputCoordinator {
         this.deps.onUiRetry?.(sessionId, item.clientId, 'manual');
       }
     } else if (automaticOrigin && !schedulerOrigin) {
-      this.deps.onAutomaticEnqueue?.(sessionId);
+      this.deps.onAutomaticEnqueue?.(sessionId, item);
     } else if (!automaticOrigin) {
       this.deps.onUserEnqueue?.(sessionId);
     }
@@ -1996,7 +1999,7 @@ export class AgentInputCoordinator {
     item = stampHostAcceptedAt(item, state.clearBoundaryMs);
     this.rememberEnqueuedClientId(state, item.clientId);
     this.cancelPreparedAutoResume(sessionId, state);
-    this.deps.onAutomaticEnqueue?.(sessionId);
+    this.deps.onAutomaticEnqueue?.(sessionId, item);
     state.autoResumePending = null;
     state.autoResumeAttemptToken = null;
     markPendingTerminalSupersededByUser(state.activeTurn);
@@ -6007,7 +6010,7 @@ export class AgentInputCoordinator {
     // fallback turn 的 text/done 被旧 run 消费。scheduler 自己与 UI Continue 仍保留
     // 各自的续跑归属，不按无关用户输入处理。
     if (isAutomaticOriginItem(item)) {
-      if (!isSchedulerOriginItem(item)) this.deps.onAutomaticEnqueue?.(sessionId);
+      if (!isSchedulerOriginItem(item)) this.deps.onAutomaticEnqueue?.(sessionId, item);
     } else if (!isUiContinuationItem(item)) {
       this.deps.onUserEnqueue?.(sessionId);
       this.deps.previewQueuedUserTurn?.(sessionId, item);

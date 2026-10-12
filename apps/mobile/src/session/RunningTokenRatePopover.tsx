@@ -1,5 +1,3 @@
-import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
-import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
@@ -48,7 +46,6 @@ export function formatTokenRate(rate: number | null): string {
 
 /** Key this component by account/device/session so gestures and counters never cross tasks. */
 export function RunningTokenRatePopover({
-  responseSpeed,
   sessionKey,
   startedAt,
   outputTokens,
@@ -60,7 +57,6 @@ export function RunningTokenRatePopover({
   enabled = true,
   history: managedHistory,
 }: {
-  responseSpeed?: ResponseSpeedSnapshot;
   sessionKey: string;
   startedAt: number | null;
   outputTokens: number;
@@ -201,7 +197,7 @@ export function RunningTokenRatePopover({
       : emptyRateHistory(null);
   });
   useEffect(() => {
-    if (managedHistory || responseSpeed) return;
+    if (managedHistory) return;
     setInternalHistory((previous) =>
       recordRunningTokenRate(previous, {
         startedAt,
@@ -212,7 +208,6 @@ export function RunningTokenRatePopover({
     );
   }, [
     managedHistory,
-    responseSpeed,
     startedAt,
     outputTokens,
     generationDurationMs,
@@ -225,30 +220,29 @@ export function RunningTokenRatePopover({
   }, [managedHistory, sessionKey, internalHistory]);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const sampledAt = responseSpeed?.sampledAt ?? history.latestSampleAt;
-    if (sampledAt === undefined || responseSpeed?.phase === 'complete') return;
+    if (history.latestSampleAt === undefined) return;
     setNow(Date.now());
     const timer = setTimeout(
       () => setNow(Date.now()),
-      Math.max(0, sampledAt + RATE_SAMPLE_FRESH_MS - Date.now()),
+      Math.max(0, history.latestSampleAt + RATE_SAMPLE_FRESH_MS - Date.now()),
     );
     return () => clearTimeout(timer);
-  }, [history.latestSampleAt, responseSpeed]);
+  }, [history.latestSampleAt]);
   // Keep observing counters before the first rate is available. Only the
   // interaction surface is conditional; it must not own sampling lifetime.
   if (!enabled) return <View pointerEvents="none">{children}</View>;
-  const recent = responseSpeed ? responseSpeedHistory(responseSpeed, Math.max(now, Date.now())).latestRate :
+  const recent =
     generationReliable &&
     (startedAt === null || startedAt === history.startedAt) &&
     history.latestSampleAt !== undefined &&
     Math.max(now, Date.now()) - history.latestSampleAt < RATE_SAMPLE_FRESH_MS
       ? history.latestRate
       : null;
-  const average = responseSpeed ? responseSpeed.averageRate :
+  const average =
     generationReliable && generationDurationMs > 0 && outputTokens > 0
       ? (outputTokens * 1000) / generationDurationMs
       : null;
-  const samples = responseSpeed?.samples ?? history.samples;
+  const samples = history.samples;
   const firstTime = samples[0]?.durationMs ?? 0;
   const span = (samples.at(-1)?.durationMs ?? 0) - firstTime;
   const ceiling = Math.max(1, ...samples.map((sample) => sample.rate));
@@ -264,10 +258,6 @@ export function RunningTokenRatePopover({
     rate === null
       ? "—"
       : t("session.screen.tokenRate", { rate: formatTokenRate(rate) });
-  const approximate = (value: string | number, estimated = true) => estimated && value !== '—'
-    ? t('session.screen.estimatedValue', { value }) : value;
-  const displayedOutput = responseSpeed?.outputTokens ?? outputTokens;
-  const activity = responseSpeed ? responseSpeedActivity(responseSpeed, Math.max(now, Date.now())) : null;
   const card = (
     <View
       pointerEvents={mode === "held" ? "none" : "auto"}
@@ -307,17 +297,10 @@ export function RunningTokenRatePopover({
         <View style={styles.top}>
           <View style={styles.metric}>
             <Text ref={cardFocusTarget} style={styles.label}>
-              {t(activity === 'failed' ? 'session.screen.responseFailed'
-              : activity === 'cancelled' ? 'session.screen.responseCancelled'
-                : activity === 'retrying' ? 'session.screen.responseRetrying'
-                  : activity === 'complete' ? 'session.screen.finalAverage'
-                : activity === 'waiting' ? 'session.screen.responsePending'
-                  : activity === 'tool' ? 'session.screen.toolRunning'
-                    : activity === 'paused' ? 'session.screen.generationPaused'
-                      : activity === 'quiet' ? 'session.screen.responsePending' : 'session.screen.currentRate')}
+              {t("session.screen.currentRate")}
             </Text>
             <Text style={styles.value}>
-              {recent === null ? '—' : approximate(formatTokenRate(recent), Boolean(responseSpeed) && (responseSpeed?.phase !== 'complete' || responseSpeed.estimated))}{" "}
+              {formatTokenRate(recent)}{" "}
               <Text style={styles.label}>
                 {t("session.screen.tokenRateUnit")}
               </Text>
@@ -358,15 +341,17 @@ export function RunningTokenRatePopover({
         </View>
         <View style={styles.top}>
           {[
-            ["averageRate", approximate(rateText(average), responseSpeed?.estimated ?? false)],
+            ["averageRate", rateText(average)],
             [
               "outputTotal",
               t("session.screen.tokenCount", {
                 tokens:
-                  approximate(displayedOutput >= 1000 ? `${(displayedOutput / 1000).toFixed(1)}k` : displayedOutput, responseSpeed?.estimated ?? false),
+                  outputTokens >= 1000
+                    ? `${(outputTokens / 1000).toFixed(1)}k`
+                    : outputTokens,
               }),
             ],
-            ["observedPeak", approximate(rateText(samples.length ? Math.max(...samples.map(sample => sample.rate)) : null), Boolean(responseSpeed))],
+            ["observedPeak", rateText(samples.length ? history.peak : null)],
           ].map(([key, value]) => (
             <View style={styles.metric} key={key}>
               <Text style={styles.label}>{t(`session.screen.${key}`)}</Text>
@@ -374,12 +359,6 @@ export function RunningTokenRatePopover({
             </View>
           ))}
         </View>
-        {responseSpeed && (
-          <View style={styles.top}>
-            <Text style={styles.label}>{t(`session.screen.${responseSpeed.waitOrigin === 'stream' ? 'streamWait' : 'firstResponse'}`)}</Text>
-            <Text style={styles.detail}>{responseSpeed.firstResponseMs === null ? '—' : t('session.screen.waitSeconds', { seconds: (responseSpeed.firstResponseMs / 1000).toFixed(1) })}</Text>
-          </View>
-        )}
       </ScrollView>
     </View>
   );

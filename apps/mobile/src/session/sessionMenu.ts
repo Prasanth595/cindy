@@ -5,6 +5,7 @@
  * 置顶 / 归档 / 删除)+「会话信息」二级入口;二级 = 用量 / 工作目录 / 附加引用目录 / 标识。
  * 全部为纯函数,不碰 IO;交互副作用(clipboard / Alert / 远端写)由组件层承担。
  */
+import { isSharedTaskPeer } from '@cindy/device-link';
 import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { i18n } from '@/i18n';
@@ -15,8 +16,19 @@ import { sessionWorktreeInfo } from '@/session/sessionWorktree';
 import type { RemoteSession } from '@/session/types';
 import { formatRemoteMoney, resolveSessionTotalMoney } from '@/session/remoteMoney';
 
-/** 菜单 sheet 的两级视图:一级操作菜单 / 二级会话信息。 */
-export type SessionMenuView = 'menu' | 'info';
+/**
+ * 菜单 sheet 的打开位置:一级操作菜单 / 二级会话信息 / 直接进入重命名编辑态
+ * (双击任务标题的入口;确定或取消后直接收起菜单)。
+ */
+export type SessionMenuView = 'menu' | 'info' | 'rename';
+
+/** 菜单里是否提供重命名:Host 托管、协同 Worker、共享任务访客都不提供。 */
+export function sessionMenuAllowsRename(
+  session: Pick<RemoteSession, 'deviceLinkDeviceId' | 'orcaRole'>,
+  messageOnly: boolean,
+): boolean {
+  return !messageOnly && session.orcaRole !== 'worker' && !isSharedTaskPeer(session.deviceLinkDeviceId ?? '');
+}
 
 export interface SessionMenuChip {
   id: 'pinned' | 'archived' | 'collab';

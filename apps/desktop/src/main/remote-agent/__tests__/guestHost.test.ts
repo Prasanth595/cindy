@@ -540,6 +540,8 @@ describe('guest provider access and usage', () => {
     const usage = {
       kind: 'claude-code',
       providerId: 'shared-provider',
+      // 没有经组转给别的电脑：在本机运行。
+      memberKey: 'local',
       samples: [{ model: 'claude-opus', turns: 1, inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0.02 }],
     };
     expect(recordGuestUsage).toHaveBeenCalledTimes(1);

@@ -40,6 +40,7 @@ interface RuntimeKeepSentinel {
   /** Older release receipts omit this and refer to the in-tree keep marker. */
   file?: string;
   content: string;
+  /** Legacy numeric dev:ino:birthtimeMs, or lossless bigint:dev:ino:birthtimeNs. */
   identity: string;
 }
 
@@ -85,10 +86,21 @@ async function releaseRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<
   if (!marker) return;
   const file = marker.file ?? path.join(lease.physicalPath, '.worktree-keep');
   try {
-    const identity = await fs.lstat(file);
-    if (!identity.isFile() || identity.isSymbolicLink()
-      || `${identity.dev}:${identity.ino}:${identity.birthtimeMs}` !== marker.identity
-      || await fs.readFile(file, 'utf8') !== marker.content) return;
+    if (marker.identity.startsWith('bigint:')) {
+      const identity = await fs.lstat(file, { bigint: true });
+      if (!identity.isFile() || identity.isSymbolicLink() || identity.ino === 0n
+        || `bigint:${identity.dev}:${identity.ino}:${identity.birthtimeNs}` !== marker.identity) return;
+    } else {
+      const identity = await fs.lstat(file);
+      // NTFS file IDs can exceed Number's exact integer range, and replacement
+      // files can inherit the old creation time. A rounded legacy ID cannot
+      // prove ownership: preserve that marker rather than delete a user's lock.
+      if (!identity.isFile() || identity.isSymbolicLink()
+        || !Number.isSafeInteger(identity.ino) || identity.ino <= 0
+        || !Number.isSafeInteger(identity.dev)
+        || `${identity.dev}:${identity.ino}:${identity.birthtimeMs}` !== marker.identity) return;
+    }
+    if (await fs.readFile(file, 'utf8') !== marker.content) return;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;

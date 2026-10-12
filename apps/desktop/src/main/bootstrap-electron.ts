@@ -5,6 +5,8 @@ import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/re
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerTaskMigrationIpc } from './task-migration/service';
 import { registerLoginItemIpc } from './login-item-ipc.js';
+import { registerMenubarIpc } from './menubar/ipc.js';
+import { initMenubarService, refreshMenubarLocalization, stopMenubarService } from './menubar/service.js';
 import {
   createLatestSourceVersionReader,
   sourceChannel,
@@ -941,6 +943,7 @@ import { registerFileBrowserDeviceOp } from './file-browser/device-op.js';
 import { registerSearchIpc } from './file-browser/search/index.js';
 import { registerVoiceInputIpc } from './voice-input/index.js';
 import { installWindowHiddenBroadcast } from './windowHiddenBroadcast.js';
+import { getRenderWatchdogContext } from './renderWatchdogContext.js';
 import {
   isSecondaryAppWindow,
   openSessionInNewWindow,
@@ -2409,6 +2412,7 @@ registerAppShortcutIpc();
 registerAppearanceSettingsIpc();
 registerAccessibilitySupportIpc();
 registerLoginItemIpc();
+registerMenubarIpc();
 
 // ── 资源用量面板 IPC ─────────────────────────────────────────────────
 // 订阅驱动采样(面板不开不采样),interval 已 unref 不拖退出;terminate 只认
@@ -2976,6 +2980,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   }
   invalidateWindowsTrayMenu();
   getAgentIslandService()?.refreshLocalization();
+  refreshMenubarLocalization();
   return { ok: true };
 });
 
@@ -4351,6 +4356,15 @@ const registerIpcHandlers = () => {
     });
   });
 
+  // macOS 菜单栏余量:原生 helper 在 Agent Island 之后启动,复用它的任务活动订阅。
+  initMenubarService({
+    openNewTask: () => {
+      const win = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+      if (win) dispatchApplicationMenuCommand(win, resolveNewMakerMenuCommand(false));
+    },
+  });
+  app.once('will-quit', stopMenubarService);
+
   // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session, 初始 bounds 取主窗。
   ipcMain.handle(
     MAKER_IPC_INVOKE.OPEN_SESSION_IN_NEW_WINDOW,
@@ -4503,14 +4517,21 @@ const registerIpcHandlers = () => {
   ipcMain.on(
     'renderer:log',
     (
-      _e,
+      event,
       level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal',
       scope: string,
       msg: string,
     ) => {
       // renderer 能发日志 = JS 已跑起来 → 解除 dev 启动看门狗(见 renderer-boot-guard.ts)。
       rendererBootGuard?.markAlive();
-      writeFromRenderer(level, scope, msg);
+      // 原生状态在收到告警时从真正的 sender 读取,无需增加 renderer 查询 IPC。
+      if (scope === 'render-watchdog') {
+        const win = event.sender.isDestroyed() ? null : BrowserWindow.fromWebContents(event.sender);
+        const context = getRenderWatchdogContext(event.sender, win);
+        writeFromRenderer(level, scope, `${msg} ${JSON.stringify(context)}`);
+      } else {
+        writeFromRenderer(level, scope, msg);
+      }
     },
   );
 

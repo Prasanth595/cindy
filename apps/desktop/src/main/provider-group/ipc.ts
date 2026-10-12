@@ -15,7 +15,7 @@ import {
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
-import { broadcast } from '../device-link/index.js';
+import { broadcast, getSelfDeviceId } from '../device-link/index.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { createLogger } from '../logger.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
@@ -45,6 +45,8 @@ export interface ProviderGroupCommandDeps {
   ownerKey(): string;
   /** 另一台电脑上某个供应商的组与组内电脑状态(设置页只读展示)。 */
   remoteView(deviceId: string, providerId: string): Promise<ProviderGroupView>;
+  /** 本机设备 id(另一台电脑的组里可能也有本机这台)。 */
+  localDeviceId(): string | null;
   /** 本机全部组的设置(不读远端，模型列表据此收起本机组里的远程供应商)。 */
   listGroups(): Record<string, ProviderGroupConfig>;
   /** 这个任务此刻归哪个组(只读本机记录)。 */
@@ -87,6 +89,47 @@ export function parseProviderGroupCommand(raw: unknown): ProviderGroupCommand {
   }
 }
 
+/** 核对这台电脑连不连得上组里某台的上限：设置页每 15 秒重读，不能让一台慢的电脑拖住整个组的状态。 */
+export const PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS = 3_000;
+
+/** 读那台的目录：读到了 true，读失败 false，到点还没结果 null(说不准，不下结论)。 */
+function readsCatalog(
+  directory: Pick<ProviderGroupDirectory, 'readDeviceCatalog'>,
+  agentDeviceId: string,
+): Promise<boolean | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    directory.readDeviceCatalog(agentDeviceId).then(() => true, () => false),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * 另一台电脑上的组：状态是组所在电脑看到的。组里的「我的其他电脑」由这台电脑直接连过去(§4 同账号直连)，
+ * 组所在电脑那边看它能用、这台却读不到它的目录时标出来(`unreachableHere`)：否则这里显示能用，换电脑时却总换不过去。
+ * 目录有短时缓存；每台最多等 3 秒，到点还没结果的不标，照组所在电脑的状态显示。
+ */
+export async function markMembersUnreachableHere(
+  view: ProviderGroupView,
+  directory: Pick<ProviderGroupDirectory, 'readDeviceCatalog'>,
+  selfDeviceId: string | null,
+): Promise<ProviderGroupView> {
+  if (!view.config || !selfDeviceId) return view;
+  const usable = new Set(view.members.filter((m) => m.state === 'available' || m.state === 'full').map((m) => m.key));
+  const direct = view.config.members.filter((m) =>
+    m.kind === 'device' && usable.has(m.key) && m.agentDeviceId !== null && m.agentDeviceId !== selfDeviceId);
+  if (direct.length === 0) return view;
+  const reads = await Promise.all(direct.map(async (m) => ({ key: m.key, ok: await readsCatalog(directory, m.agentDeviceId!) })));
+  const unreachable = new Set(reads.filter((r) => r.ok === false).map((r) => r.key));
+  if (unreachable.size === 0) return view;
+  return {
+    ...view,
+    members: view.members.map((m) => (unreachable.has(m.key) ? { ...m, unreachableHere: true } : m)),
+  };
+}
+
 /** 业务体(依赖注入，单测直接调)。 */
 export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps, command: ProviderGroupCommand) {
   if (command.action === 'list') return deps.listGroups();
@@ -96,7 +139,11 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
     case 'get':
       return deps.router.view(providerId);
     case 'remote-view':
-      return deps.remoteView(command.deviceId, providerId);
+      return markMembersUnreachableHere(
+        await deps.remoteView(command.deviceId, providerId),
+        deps.directory,
+        deps.localDeviceId(),
+      );
     case 'candidates':
       return deps.directory.listCandidates(providerId, deps.readGroup(providerId));
     case 'delete':
@@ -146,6 +193,7 @@ export function registerProviderGroupIpc(): void {
     pruneBindings: pruneProviderGroupBindings,
     ownerKey: activeOwnerScopeKey,
     remoteView: (deviceId, providerId) => getProviderGroupRemoteClient().view(deviceId, providerId),
+    localDeviceId: getSelfDeviceId,
     listGroups: listProviderGroups,
     sessionGroup: readProviderGroupOfSession,
     changed: (providerId) => {

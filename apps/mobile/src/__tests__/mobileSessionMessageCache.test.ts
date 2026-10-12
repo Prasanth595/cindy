@@ -474,7 +474,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({ id: 'cached-s0', sessionId: 's0', createdAt: isoAt(1) });
     await cacheSessionMessages('host-a', 's0', [cached]);
@@ -482,7 +482,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),
@@ -630,7 +630,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({
       id: 'deleted-row',
@@ -642,7 +642,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),

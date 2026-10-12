@@ -11,6 +11,8 @@ import type { ProviderView } from '@cindy/model-providers/registry';
 import { toDeviceListItems } from '@/device-link/devices';
 import type { ProviderShareCatalogEntry } from '@/device-link/providerShareCatalogCache';
 
+import { isProviderShareAgentDeviceId } from './providerShareAgentDevice';
+
 /** 一台可选电脑的目录状态(providers 只含开了远程调用的供应商)。 */
 export interface RemoteAgentCatalog {
   deviceId: string;
@@ -51,14 +53,7 @@ export function selectRemoteAgentDevices(input: {
     }));
 }
 
-/** 任务记录里「Agent 在某个分享者的电脑上」的设备 id 前缀(与桌面同构:`share:<shareId>`)。 */
-export const PROVIDER_SHARE_AGENT_DEVICE_PREFIX = 'share:';
-
-export function isProviderShareAgentDeviceId(deviceId: string | null | undefined): deviceId is string {
-  return typeof deviceId === 'string'
-    && deviceId.length > PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length
-    && deviceId.startsWith(PROVIDER_SHARE_AGENT_DEVICE_PREFIX);
-}
+export { isProviderShareAgentDeviceId, PROVIDER_SHARE_AGENT_DEVICE_PREFIX } from './providerShareAgentDevice';
 
 /**
  * 供应商分享:被控电脑收到的分享,每个分享当作一台「电脑」接在同账号其他电脑之后

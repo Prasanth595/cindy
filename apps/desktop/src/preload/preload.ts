@@ -85,6 +85,11 @@ import {
   type WindowsCloseBehavior,
 } from '../shared/windowBehavior';
 import {
+  MENUBAR_GET_STATE_CHANNEL,
+  MENUBAR_SET_ENABLED_CHANNEL,
+  type MenubarState,
+} from '../shared/menubarQuota';
+import {
   CODEX_MICRO_GUARD_GET_STATE_CHANNEL,
   CODEX_MICRO_GUARD_RECOVER_CHANNEL,
   CODEX_MICRO_GUARD_SET_ENABLED_CHANNEL,
@@ -1777,6 +1782,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getLoginItem: (): Promise<LoginItemState> => ipcRenderer.invoke(LOGIN_ITEM_GET_CHANNEL),
     setLoginItem: (enabled: boolean): Promise<LoginItemState> =>
       ipcRenderer.invoke(LOGIN_ITEM_SET_CHANNEL, enabled),
+    // macOS menu bar quota item; `available` is false on other platforms and before macOS 14.
+    getMenubarState: (): Promise<MenubarState> => ipcRenderer.invoke(MENUBAR_GET_STATE_CHANNEL),
+    setMenubarEnabled: (enabled: boolean): Promise<MenubarState> =>
+      ipcRenderer.invoke(MENUBAR_SET_ENABLED_CHANNEL, enabled),
     // 通知 main 落盘"首次点击是否吞掉"。仅落盘,不改变已创建窗口的行为——macOS
     // acceptFirstMouse 是 BrowserWindow 构造参数,需要下次启动才读到新值。Windows
     // 上此调用只是保持 userData 落盘和 renderer localStorage 一致,Windows JS

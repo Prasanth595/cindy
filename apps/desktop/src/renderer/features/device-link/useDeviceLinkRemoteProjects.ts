@@ -38,6 +38,7 @@ import { projectScheduleEvent } from '@cindy/maker-shared/schedule-events';
 import { useAuth } from '@/contexts/AuthContext';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { createLogger } from '@/lib/logger';
+import { makerChatStore } from '@/lib/makerChatStore';
 import {
   requestRemoteSessionStatus,
   remoteProjectsStore,
@@ -510,6 +511,9 @@ export function useDeviceLinkRemoteProjects(
         if (!canBootstrap(deviceId, lifecycleEpoch)) return;
         await prefetchDeviceGitSafetySettings(deviceId);
         if (!canBootstrap(deviceId, lifecycleEpoch)) return;
+        // Bootstrap follows a gap in live pushes (start, reconnect). Read changed tasks ahead
+        // so opening them shows what the list already shows; one window does it for all.
+        if (windowRole === 'main') void makerChatStore.prefetchRemoteHistories(deviceId);
       }
       // 未被撤销(ok 或普通失败):清掉可能残留的「已撤销」标记(被控端恢复 → 自动接回的收尾)。
       revokedDevicesStore.clearRevoked(deviceId);
