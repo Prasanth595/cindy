@@ -514,12 +514,18 @@ import {
   pruneDynamicImageChannels,
   registerByokImageChannels,
 } from './byokImageChannel.js';
+import { createCustomImageChannel, registerCustomImageChannels } from './customImageChannel.js';
 import { readByokCredential, readByokInferenceBase } from '../model-access/byokCredentials.js';
+import type { AgentKind } from '@cindy/model-providers';
+import { resolveCustomMediaConnection, isCustomVideoProvider } from './customMediaConnection.js';
+import { videoConnectionRevision } from '../cindy-media/customVideoProtocol.js';
 import { createXaiVideoProvider } from '../cindy-proxy-media/video/providers/xai.js';
 import * as blobStore from '../cindy-media/blobStore.js';
 import {
   configureProviderMediaRuntime,
   listProviderMediaModels,
+  type ProviderMediaRuntimeModel,
+  type ProviderVideoConnection,
 } from '../cindy-media/providerMediaRuntime.js';
 import { loadPluginMediaAvailability } from './pluginMediaCatalogFallback.js';
 import * as ledger from '../cindy-media/ledger.js';
@@ -3566,6 +3572,7 @@ function getCatalogMediaConfig(
   selectedProviderId?: string,
 ): CindyMediaCatalogConfig {
   try {
+    const imageRegistry = kind === 'image' ? getImageChannelRegistry() : null;
     // 停用过滤:用户在 设置 → 模型供应商 停用的媒体模型 / 供应商不进候选清单
     // (与对话模型的准入口径同源,见 model-disable-store)。
     const access = readModelDisableOverrides();
@@ -3605,22 +3612,26 @@ function getCatalogMediaConfig(
         // 目录默认指向它时回落清单首项;整份清单都不认识才是空清单 → NO_CANDIDATE。
         // 执行侧那道防御保留 —— 它管的是这里与执行层之间的窗口。
         (kind === 'embed' && !isKnownEmbeddingModel(modelId)) ||
+        // A ready provider may contain image models owned by an unready runtime.
+        (kind === 'image' && !imageRegistry?.isProviderReady(providerId, modelId)) ||
         // 视频目录可能比当前客户端通道先热更。执行 registry 不认识的型号
         // 必须先过滤，不能把“目录有”冒充成“这版客户端能下单”。
         (kind === 'video' && !(videoRegistry?.hasAlias(modelId, providerId) ?? false)),
       // 执行通道凭证就绪过滤(未就绪的来源整段不进白名单,见 imageChannelRegistry
       // 头注)。视频按目录 provider 归属分别检查：xd 要求账号网关能力与 endpoint
       // 同时在场，xai 要求 SuperGrok OAuth 已连接；未知来源 fail closed。
-      // 向量仍只有 xd 一家执行通道。
+      // 向量仍只有 xd 一家执行通道。Standalone custom Images use Core media's
+      // managed URL/base64 handling; keep new sources out of the frozen legacy API.
       kind === 'image'
-        ? (providerId) => getImageChannelRegistry().isProviderReady(providerId)
+        ? (providerId) =>
+            imageRegistry?.isProviderLegacyReady(providerId) ?? false
         : kind === 'video'
           ? isVideoCatalogProviderReady
           : isXdGatewayProviderReady,
       // 编辑就绪过滤:仅支持生成的来源(supportsEdit: false)的模型不进编辑清单,
       // 防用户把该型号钉到 image.edit 偏好后在 editImage 路径拿到确定性 400。
       kind === 'image'
-        ? (providerId) => getImageChannelRegistry().isProviderEditReady(providerId)
+        ? (providerId) => imageRegistry?.isProviderEditReady(providerId) ?? false
         : undefined,
       kind === 'image' || kind === 'video' ? isCatalogMediaModelVisible : undefined,
     );
@@ -3699,7 +3710,7 @@ function getMediaPreferenceConfig(capability: GhostMediaCapability): CindyMediaP
       providerName,
       group: providerName,
       ...(provider?.routing ? { routing: provider.routing } : {}),
-      supportsEdit: supportsMediaCapability(model.modalities, 'image.edit'),
+      supportsEdit: supportsMediaCapability(model.modalities, kind === 'image' ? 'image.edit' : 'video.image_to_video'),
     };
   });
   const gatewayModels: CindyMediaPreferenceModel[] = selectExecutableCoreMediaModels(
@@ -4167,6 +4178,7 @@ function getGhostImageCapabilities(
  */
 const registeredCodexImageAccounts = new Set<string>();
 const registeredByokImageAccounts = new Set<string>();
+const registeredCustomImageAccounts = new Set<string>();
 let imageChannelRegistrySingleton: ImageChannelRegistry | null = null;
 function getImageChannelRegistry(): ImageChannelRegistry {
   if (!imageChannelRegistrySingleton) {
@@ -4311,6 +4323,7 @@ function getImageChannelRegistry(): ImageChannelRegistry {
     imageProviders,
     registeredCodexImageAccounts,
     registeredByokImageAccounts,
+    registeredCustomImageAccounts,
   );
   for (const provider of imageProviders) {
     if (
@@ -4363,6 +4376,20 @@ function getImageChannelRegistry(): ImageChannelRegistry {
       });
     },
   );
+  registerCustomImageChannels(
+    imageChannelRegistrySingleton,
+    imageProviders,
+    registeredCustomImageAccounts,
+    (providerId) => createCustomImageChannel({
+      getProvider: () => getActiveCatalog().providers.find(provider => provider.id === providerId),
+      readApiKey: agent => readCustomProviderKey(providerId, agent),
+      getOwnerScopeKey: activeOwnerScopeKey,
+      isOwnerBoundaryPending: isGhostBoundaryPending,
+      fetchImplementation: ((url, init) => outboundFetch(url as string, init)) as typeof fetch,
+      beforeDispatch: model => assertMediaModelStillEnabled('image', model, providerId),
+      logger: log,
+    }),
+  );
   return imageChannelRegistrySingleton;
 }
 
@@ -4385,7 +4412,7 @@ function resolveImageChannelForModel(
     if (operation === 'edit' && !exact.supportsEdit) {
       throw new Error(`图像来源 ${providerId} 不支持图像编辑,请在设置中选择支持编辑的来源`);
     }
-    return getImageChannelRegistry().resolve(providerId);
+    return getImageChannelRegistry().resolve(providerId, model);
   }
   const entry = getCatalogMediaConfig('image').models.find((m) => m.id === model);
   if (!entry) {
@@ -4396,7 +4423,7 @@ function resolveImageChannelForModel(
   if (operation === 'edit' && !entry.supportsEdit) {
     throw new Error(`图像来源 ${entry.providerId} 不支持图像编辑,请在设置中选择支持编辑的来源`);
   }
-  return getImageChannelRegistry().resolve(entry.providerId);
+  return getImageChannelRegistry().resolve(entry.providerId, model);
 }
 
 function listLocalProviderMediaModels(respectDisplaySwitch = false) {
@@ -4409,15 +4436,16 @@ function listLocalProviderMediaModels(respectDisplaySwitch = false) {
     ) {
       return [];
     }
-    const supportsEdit = getImageChannelRegistry().isProviderEditReady(provider.id);
     return (provider.imageModels ?? []).flatMap((model) => {
       if (
+        !getImageChannelRegistry().isProviderReady(provider.id, model.id) ||
         isModelDisabled(access, provider.id, model.id) ||
         (respectDisplaySwitch &&
           !isCatalogMediaModelVisible(provider.id, model.id, model.defaultEnabled))
       ) {
         return [];
       }
+      const supportsEdit = getImageChannelRegistry().isProviderEditReady(provider.id, model.id);
       // Legacy/provider catalogs may only carry id/name. The channel registry is
       // the executable capability source in that case: every registered image
       // channel accepts text generation, and editable channels additionally
@@ -4451,22 +4479,23 @@ function listLocalProviderMediaModels(respectDisplaySwitch = false) {
  * provider runtime. Keep their catalog projection beside the image projection
  * so Art can read the same provider-owned models that Settings displays.
  */
-function listLocalProviderVideoModels(respectDisplaySwitch = false) {
+function listLocalProviderVideoModels(respectDisplaySwitch = false): ProviderMediaRuntimeModel[] {
   const access = readModelDisableOverrides();
   const registry = getVideoProviderRegistry();
-  if (!registry) return [];
   return getActiveCatalog().providers.flatMap((provider) => {
     if (
       provider.id === 'xd' ||
       isProviderDisabled(access, provider.id) ||
-      !isVideoCatalogProviderReady(provider.id)
+      (!isVideoCatalogProviderReady(provider.id) && !isCustomVideoProvider(provider))
     ) {
       return [];
     }
     return (provider.videoModels ?? []).flatMap((model) => {
       if (
         isModelDisabled(access, provider.id, model.id) ||
-        !registry.hasAlias(model.id, provider.id) ||
+        (isCustomVideoProvider(provider)
+          ? !resolveCustomVideoConnection(provider.id, model.id)
+          : !registry?.hasAlias(model.id, provider.id)) ||
         (respectDisplaySwitch &&
           !isCatalogMediaModelVisible(provider.id, model.id, model.defaultEnabled))
       ) {
@@ -4483,6 +4512,7 @@ function listLocalProviderVideoModels(respectDisplaySwitch = false) {
           name: model.name,
           providerId: provider.id,
           mode: 'video_generation' as const,
+          ...(isCustomVideoProvider(provider) ? { videoProtocol: 'xai-videos' as const } : {}),
           modalities: { input: [...modalities.input], output: [...modalities.output] },
           ...(model.officialDocs ? { officialDocs: model.officialDocs } : {}),
         },
@@ -4491,7 +4521,32 @@ function listLocalProviderVideoModels(respectDisplaySwitch = false) {
   });
 }
 
+function resolveCustomVideoConnection(providerId: string, modelId: string): ProviderVideoConnection | null {
+  const options = {
+    getProvider: () => getActiveCatalog().providers.find(provider => provider.id === providerId),
+    readApiKey: (agent: AgentKind) => readCustomProviderKey(providerId, agent),
+    isOwnerBoundaryPending: () => isGhostBoundaryPending(),
+  };
+  const binding = resolveCustomMediaConnection(options, modelId, 'video');
+  if (!binding) return null;
+  const owner = activeOwnerScopeKey();
+  const revision = videoConnectionRevision(providerId, modelId, binding);
+  return {
+    baseUrl: binding.baseUrl,
+    headers: binding.headers,
+    revision,
+    assertCurrent: () => {
+      const current = resolveCustomMediaConnection(options, modelId, 'video');
+      if (isGhostBoundaryPending() || owner !== activeOwnerScopeKey() || !current ||
+          revision !== videoConnectionRevision(providerId, modelId, current)) {
+        throw new Error('视频连接或账号已改变，本次操作已停止；请恢复原连接后查询原任务');
+      }
+    },
+  };
+}
+
 configureProviderMediaRuntime({
+  resolveVideoConnection: resolveCustomVideoConnection,
   listModels: () => listLocalProviderMediaModels(true),
   listVideoModels: () => listLocalProviderVideoModels(true),
   listExecutableModels: () => listLocalProviderMediaModels(false),
@@ -4524,6 +4579,8 @@ configureProviderMediaRuntime({
             ...normalizeImageParameters(channel.imageProtocol, request.modelId, request),
             signal: request.signal,
           });
+    const first = response.data[0];
+    if (!first?.b64_json && first?.url) return { url: first.url };
     return decodeImageResponse(response);
   },
 });
@@ -4617,12 +4674,12 @@ export function getGhostCindySlot(): GhostCindySlot {
         const videoRegistry = capability.startsWith('video.') ? getVideoProviderRegistry() : null;
         // Core 专用选型不能交给旧执行器。复用存量配置迁移，确保回退后
         // 用户保存的 provider + modelId 与实际执行一致，不影响 Core 清单。
-        const executableConfig = capability.startsWith('video.')
-          ? filterLegacyCindyMediaConfig(
-              config,
-              (model) => videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false,
-            )
-          : config;
+        const executableConfig = filterLegacyCindyMediaConfig(
+          config,
+          (model) => capability.startsWith('video.')
+            ? videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false
+            : getImageChannelRegistry().isProviderLegacyReady(model.providerId, model.modelId),
+        );
         const selected = resolveAndMigrateGhostMediaPreference(
           ghostId,
           mediaCapability,

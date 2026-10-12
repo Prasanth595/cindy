@@ -837,7 +837,10 @@ export default function SettingsScreen() {
                       testID: 'settings.checkUpdateButton',
                       tone: 'secondary',
                     }}
+                    density="compact"
+                    numberOfLines={0}
                     style={styles.versionButton}
+                    textStyle={styles.versionButtonText}
                   />
                 ) : null}
               </View>,
@@ -1286,14 +1289,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   localLogOptions: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   // —— 版本行 ——
   versionRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
+    alignItems: 'stretch',
+    flexDirection: 'column',
     gap: spacing.md,
     minHeight: 60,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  versionTexts: { flex: 1, gap: spacing.xs, minWidth: 0 },
+  versionTexts: { gap: spacing.xs, minWidth: 0 },
   versionValueRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   versionLabel: { color: colors.textPrimary, flexShrink: 1, fontSize: typeScale.body, fontWeight: fontWeight.medium, lineHeight: lineHeight.body },
   versionDetail: { color: colors.textSecondary, fontSize: typeScale.footnote, fontWeight: fontWeight.regular, lineHeight: lineHeight.caption },
@@ -1309,7 +1312,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     lineHeight: lineHeight.micro,
     fontWeight: fontWeight.semibold,
   },
-  versionButton: { flexShrink: 0 },
+  versionButton: { alignSelf: 'flex-start', flexShrink: 0, maxWidth: '100%', paddingVertical: spacing.xs },
+  versionButtonText: { textAlign: 'center' },
   // —— 可复制行 ——
   copyRow: {
     alignItems: 'center',

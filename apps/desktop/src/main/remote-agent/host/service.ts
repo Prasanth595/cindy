@@ -194,6 +194,10 @@ export function remoteAgentHostRunningProviders(): string[] {
   return host?.turnRunningProviders() ?? [];
 }
 
+export function resolveRemoteAgentHostClaudeSessionId(sdkSessionId: string): string | null {
+  return host?.resolveClaudeSessionId(sdkSessionId) ?? null;
+}
+
 /** 退出时结束全部远程 Agent 任务。 */
 export function disposeRemoteAgentHost(): void {
   setRemoteAgentHandler(null);

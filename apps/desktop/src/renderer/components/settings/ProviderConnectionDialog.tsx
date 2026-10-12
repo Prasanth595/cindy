@@ -1,6 +1,6 @@
 import { useDialogExit } from '@/hooks/useDialogExit';
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
-import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, classifyModel, isChatEligible, isAgentSelectableModel, mergeModelMetadata } from '@cindy/model-providers';
+import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, mergeModelMetadata } from '@cindy/model-providers';
 /**
  * Connection credentials and advanced routing only. Model capabilities are imported into the
  * shared catalog and edited through standard model settings. Stored per-runtime credentials,
@@ -195,6 +195,9 @@ interface RuntimeFields extends RuntimeFillDraft {
   catalogPresetId?: string;
   /** Codex Responses runtime 级原生图片生成能力。 */
   supportsImageGeneration: boolean;
+  /** Standalone Images API, independent of the Codex Responses hosted tool. */
+  imageApi?: 'openai-images';
+  videoApi?: 'xai-videos';
 }
 
 function runtimeProbeFields(agent: DialogAgentKind, runtime: RuntimeFields): RuntimeFields {
@@ -278,6 +281,8 @@ function initRuntimes(initial?: CustomProviderConfig): Record<DialogAgentKind, R
         piCatalogProviderId: rc.piCatalogProviderId,
         catalogPresetId: rc.catalogPresetId,
         supportsImageGeneration: a === 'codex' && rc.supportsImageGeneration === true,
+        imageApi: rc.imageApi,
+        videoApi: rc.videoApi,
         headersState: rc.headersState,
       });
     }
@@ -1685,6 +1690,8 @@ export function ProviderConnectionDialog({
         ...(a === 'codex' && rf.supportsImageGeneration && canRuntimeUseNativeImageGeneration(rf)
           ? { supportsImageGeneration: true }
           : {}),
+        ...(rf.imageApi ? { imageApi: rf.imageApi } : {}),
+        ...(rf.videoApi ? { videoApi: rf.videoApi } : {}),
         models,
         ...(Object.keys(savedHeaders).length > 0 ? { headers: savedHeaders } : {}),
         ...(rf.modelsUrl.trim() ? { modelsUrl: rf.modelsUrl.trim() } : {}),
@@ -2531,6 +2538,72 @@ export function ProviderConnectionDialog({
                     {t('settings.providers.custom.fields.addHeader')}
                   </button>
                 </div>
+
+                {authMode !== 'oauth' && (
+                  <div className="flex flex-col gap-1.5 border-t border-[var(--border-default)] pt-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-13 text-[var(--settings-section-title)]">
+                      <input
+                        type="checkbox"
+                        id={fieldId(`${activeTab}:image-api`)}
+                        aria-describedby={fieldId(`${activeTab}:image-api-hint`)}
+                        checked={f.imageApi === 'openai-images'}
+                        onChange={(event) => {
+                          const enabled = event.currentTarget.checked;
+                          // One explicit media owner per provider; other chat routes and keys stay intact.
+                          setRtSynced((prev) => Object.fromEntries(
+                            Object.entries(prev).map(([agent, runtime]) => [agent, {
+                              ...runtime,
+                              imageApi: agent === activeTab && enabled
+                                ? 'openai-images'
+                                : enabled || agent === activeTab ? undefined : runtime.imageApi,
+                            }]),
+                          ) as Record<DialogAgentKind, RuntimeFields>);
+                        }}
+                        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--settings-menu-text-selected)]"
+                      />
+                      {t('settings.providers.custom.fields.openaiImages')}
+                    </label>
+                    <p
+                      id={fieldId(`${activeTab}:image-api-hint`)}
+                      className="text-12 leading-5 text-[var(--settings-section-desc)]"
+                    >
+                      {t('settings.providers.custom.fields.openaiImagesHint')}
+                    </p>
+                  </div>
+                )}
+
+                {authMode !== 'oauth' && (
+                  <div className="flex flex-col gap-1.5 border-t border-[var(--border-default)] pt-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-13 text-[var(--settings-section-title)]">
+                      <input
+                        type="checkbox"
+                        id={fieldId(`${activeTab}:video-api`)}
+                        aria-describedby={fieldId(`${activeTab}:video-api-hint`)}
+                        checked={f.videoApi === 'xai-videos'}
+                        onChange={(event) => {
+                          const enabled = event.currentTarget.checked;
+                          // One explicit media owner per provider; other chat routes and keys stay intact.
+                          setRtSynced((prev) => Object.fromEntries(
+                            Object.entries(prev).map(([agent, runtime]) => [agent, {
+                              ...runtime,
+                              videoApi: agent === activeTab && enabled
+                                ? 'xai-videos'
+                                : enabled || agent === activeTab ? undefined : runtime.videoApi,
+                            }]),
+                          ) as Record<DialogAgentKind, RuntimeFields>);
+                        }}
+                        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--settings-menu-text-selected)]"
+                      />
+                      {t('settings.providers.custom.fields.xaiVideos')}
+                    </label>
+                    <p
+                      id={fieldId(`${activeTab}:video-api-hint`)}
+                      className="text-12 leading-5 text-[var(--settings-section-desc)]"
+                    >
+                      {t('settings.providers.custom.fields.xaiVideosHint')}
+                    </p>
+                  </div>
+                )}
 
                 {/* Codex Responses Provider 级能力。放在自定义请求头之后，默认收起；
                     同一张说明卡片支持 hover/focus 临时预览和 click/tap 固定。 */}
