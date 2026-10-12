@@ -5,6 +5,9 @@
   "sourceLocale": "en",
   "punctuationExempt": ["desktop:settings.help.qnaFeedbackBodyTemplate"],
   "terms": [
+    {"id": "default-reading-adjustment", "status": "proposed", "en": "Default adjustment", "translations": {"zh-CN": "默认适配", "zh-TW": "預設適配", "ja": "既定の調整", "ko": "기본 조정"}, "note": "历史术语，2026-10-12 单滑块方案已移除该开关。此前用户纠正壁纸阅读强度的模式名称：仅跟随主题和壁纸可见度采用默认强度，不分析视频帧或阅读行为，不能称为持续自动调整。"},
+    {"id":"hide-wallpaper-in-sidebars","status":"proposed","en":"Hide Wallpaper in Left Sidebar","translations":{"zh-CN":"左侧边栏不显示壁纸","zh-TW":"左側邊欄不顯示桌布","ja":"左サイドバーに壁紙を表示しない","ko":"왼쪽 사이드바에서 배경화면 숨기기"},"note":"2026-10-12 用户澄清：排除范围仅为左侧任务导航栏；右侧工具与协同区继续显示壁纸并受壁纸可见度控制。任务导航显示时，完整图片或视频等比适配其余连续区域，余白使用主题底色；设置页或导航完全收起时仍铺满窗口，可能裁剪边缘。"},
+    {"id": "reading-background-strength", "status": "proposed", "en": "Reading Background Strength", "translations": {"zh-CN": "阅读背景强度", "zh-TW": "閱讀背景強度", "ja": "読み取り領域の背景濃度", "ko": "읽기 영역 배경 강도"}, "note": "历史术语，2026-10-12 已取消阅读背景控件和显示叠加，仅保留旧配置字段。此前的 Desktop 壁纸阅读设置：统一调节宿主阅读区域的主题底色，并配合局部轻度模糊，不改变文字颜色或不透明度。默认强度结合正文对比度计算并限制在 50% 以内，以保留壁纸可见性。"},
     {"id": "wallpaper-blur", "status": "proposed", "en": "Wallpaper Blur", "translations": {"zh-CN": "壁纸模糊", "zh-TW": "桌布模糊", "ja": "壁紙のぼかし", "ko": "배경화면 흐림"}, "note": "仅使应用壁纸柔化，不模糊文字或控件；0 为关闭，按用户选择应用于静态图片和视频。"},
     {"id": "group-owner", "status": "proposed", "en": "Group Owner", "translations": {"zh-CN": "群主", "zh-TW": "群主", "ja": "グループオーナー", "ko": "그룹 소유자"}, "checkCase": false, "note": "Chat Server 的群角色，可由人或伙伴担任；不要与伙伴主人或分工负责人混同。群设置成员行英文可简写 Owner。"},
     {"id": "group-admin", "status": "proposed", "en": "Group Admin", "translations": {"zh-CN": "群管理员", "zh-TW": "群管理員", "ja": "グループ管理者", "ko": "그룹 관리자"}, "checkCase": false, "note": "可管理群资料和成员，但不能替伙伴主人授权工具或私人资料。群设置内可简称管理员 / Admin。"},
@@ -19,7 +22,7 @@
         "ja": "壁紙の表示濃度",
         "ko": "배경화면 표시 강도"
       },
-      "note": "壁纸背景层的实际可见程度，0% 隐藏，100% 原样显示；不改变文字或控件的不透明度。"
+      "note": "2026-10-12 最终沿用原有可见度字段和滑块，取消新增壁纸强度及迁移机制。表示壁纸背景层的实际可见程度，0% 隐藏，100% 原样显示；不改变文字或控件的不透明度。"
     },
     {
       "id": "wallpaper",

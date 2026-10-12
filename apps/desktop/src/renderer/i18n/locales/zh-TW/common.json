@@ -1547,6 +1547,8 @@
       },
       "wallpaper": {
         "title": "桌布",
+        "visibilityLabel": "桌布可見度",
+        "visibilityHint": "向左文字更清楚，向右桌布更明顯。",
         "description": "為整個應用程式選擇 Cindy 場景、自己的圖片或影片，主題保持獨立。",
         "reset": "恢復預設",
         "aria": "桌布選擇",
@@ -1558,8 +1560,8 @@
           "cindy-dream": "Cindy · 夢境漫遊",
           "custom": "自訂桌布"
         },
-        "visibilityLabel": "桌布可見度",
-        "visibilityHint": "0% 隱藏桌布，100% 完全顯示桌布。",
+        "excludeSidebarsLabel": "左側邊欄不顯示桌布",
+        "excludeSidebarsHint": "左側任務欄使用佈景主題底色；顯示時，桌布和影片在其餘區域等比例完整顯示，包含正文和右側工具、協同區，空餘部分使用佈景主題底色。左側欄調整寬度時畫面隨之適配。設定頁或左側欄完全收起時，桌布鋪滿視窗，可能裁剪畫面邊緣。",
         "blurLabel": "桌布模糊",
         "blurHint": "僅模糊桌布，0 為關閉。動態桌布開啟模糊後會增加顯示卡負載。",
         "motionLabel": "展示方式",

@@ -15,23 +15,27 @@ import {
   clampAppearanceWallpaperVisibility,
   clampAppearanceWallpaperBlur,
   normalizeAppearanceSettings,
+  getWallpaperVisibility,
+  type AppearanceOverrides,
   type AppearanceSettings,
   type WallpaperId,
   type WallpaperMotion,
   normalizeCustomWallpaperUrl,
   isCustomWallpaperVideo,
-  getWallpaperVisibility,
 } from '@/../shared/appearanceSettings';
 
 import { getBuiltinWallpaperBackground } from '@/lib/wallpaper';
 import { useIsDarkMode } from '@/components/markdown/useIsDarkMode';
 import { WallpaperVideo } from '@/components/layout/WallpaperVideo';
+import { useWallpaperContentBounds } from './useWallpaperContentBounds';
 
 export interface WallpaperSettings {
   wallpaperId: WallpaperId;
   wallpaperOverlay: number;
   wallpaperVisibility?: number | null;
   wallpaperBlur?: number | null;
+  wallpaperReadingStrength?: number | null;
+  wallpaperExcludeSidebars?: boolean | null;
   wallpaperMotion: WallpaperMotion;
   customWallpaperUrl?: string;
 }
@@ -41,8 +45,10 @@ interface WallpaperSettingsContextValue extends WallpaperSettings {
   visibility: number;
   setWallpaper: (id: WallpaperId) => void;
   setVisibility: (value: number) => void;
+  previewVisibility: (value: number | null) => void;
   setBlur: (value: number) => void;
   previewBlur: (value: number | null) => void;
+  setExcludeSidebars: (value: boolean) => void;
   setMotion: (value: WallpaperMotion) => void;
   resetWallpaper: () => void;
 }
@@ -68,6 +74,8 @@ function pickWallpaperSettings(settings: AppearanceSettings): WallpaperSettings 
     wallpaperOverlay: settings.wallpaperOverlay,
     wallpaperVisibility: settings.wallpaperVisibility,
     wallpaperBlur: settings.wallpaperBlur,
+    wallpaperReadingStrength: settings.wallpaperReadingStrength,
+    wallpaperExcludeSidebars: settings.wallpaperExcludeSidebars,
     wallpaperMotion: settings.wallpaperMotion,
     customWallpaperUrl: settings.customWallpaperUrl,
   };
@@ -75,7 +83,11 @@ function pickWallpaperSettings(settings: AppearanceSettings): WallpaperSettings 
 
 export function WallpaperSettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<WallpaperSettings>(getInitialWallpaperSettings);
+  useWallpaperContentBounds(
+    settings.wallpaperExcludeSidebars === true && settings.wallpaperId !== 'none',
+  );
   const [blurPreview, setBlurPreview] = useState<number | null>(null);
+  const [visibilityPreview, setVisibilityPreview] = useState<number | null>(null);
   const [failedUrl, setFailedUrl] = useState('');
   const onPlaybackFailure = useCallback(
     () => setFailedUrl(settings.customWallpaperUrl ?? ''),
@@ -83,7 +95,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
   );
   const onPlaybackReady = useCallback(() => setFailedUrl(''), []);
   const isDark = useIsDarkMode();
-  const visibility = getWallpaperVisibility(settings, isDark);
+  const visibility = visibilityPreview ?? getWallpaperVisibility(settings, isDark);
   // Document-level surface also covers settings, split panes, portals and detached
   // app windows, without changing the layout tree or stacking order of its panes.
   useLayoutEffect(() => {
@@ -100,6 +112,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
     const active = Boolean(background);
     if (active) {
       root.dataset.wallpaperActive = 'true';
+      if (settings.wallpaperExcludeSidebars) root.dataset.wallpaperExcludeSidebars = 'true';
       root.style.setProperty('--app-wallpaper-image', background!);
       // One cover-fitted canvas; theme-derived veil keeps messages readable.
       const veil = 100 - visibility * 100;
@@ -113,6 +126,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
     return () => {
       delete root.dataset.wallpaperActive;
       delete root.dataset.wallpaperBlur;
+      delete root.dataset.wallpaperExcludeSidebars;
       for (const name of ['--app-wallpaper-image', '--app-wallpaper-veil', '--app-wallpaper-blur'])
         root.style.removeProperty(name);
     };
@@ -166,7 +180,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
     };
   }, []);
 
-  const patch = useCallback((next: Partial<WallpaperSettings>) => {
+  const patch = useCallback((next: AppearanceOverrides) => {
     const merged = { ...settingsRef.current, ...next };
     settingsRef.current = merged;
     setSettings(merged);
@@ -195,9 +209,21 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
 
   const setWallpaper = useCallback((wallpaperId: WallpaperId) => patch({ wallpaperId }), [patch]);
   const setVisibility = useCallback(
-    (value: number) => patch({ wallpaperVisibility: clampAppearanceWallpaperVisibility(value) }),
+    (value: number) => {
+      setVisibilityPreview(null);
+      patch({ wallpaperVisibility: clampAppearanceWallpaperVisibility(value) });
+    },
     [patch],
   );
+  const previewVisibility = useCallback((value: number | null) => {
+    const next = value === null ? null : clampAppearanceWallpaperVisibility(value);
+    // Keyboard commit precedes change; do not recreate a stale preview.
+    setVisibilityPreview(
+      settingsRef.current.wallpaperId === 'none' || next === settingsRef.current.wallpaperVisibility
+        ? null
+        : next,
+    );
+  }, []);
   const setMotion = useCallback(
     (value: WallpaperMotion) => patch({ wallpaperMotion: value }),
     [patch],
@@ -222,15 +248,22 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
   }, []);
   const resetWallpaper = useCallback(() => {
     setBlurPreview(null);
+    setVisibilityPreview(null);
     patch({
       wallpaperId: DEFAULT_APPEARANCE_SETTINGS.wallpaperId,
       wallpaperOverlay: DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay,
       wallpaperVisibility: null,
       wallpaperBlur: null,
+      wallpaperReadingStrength: null,
+      wallpaperExcludeSidebars: null,
       wallpaperMotion: DEFAULT_APPEARANCE_SETTINGS.wallpaperMotion,
     });
   }, [patch]);
 
+  const setExcludeSidebars = useCallback(
+    (value: boolean) => patch({ wallpaperExcludeSidebars: value }),
+    [patch],
+  );
   const value = useMemo<WallpaperSettingsContextValue>(
     () => ({
       ...settings,
@@ -239,8 +272,10 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
       playbackFailed: !!failedUrl && failedUrl === settings.customWallpaperUrl,
       setWallpaper,
       setVisibility,
+      previewVisibility,
       setBlur,
       previewBlur,
+      setExcludeSidebars,
       setMotion,
       resetWallpaper,
     }),
@@ -248,6 +283,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
       resetWallpaper,
       setMotion,
       setVisibility,
+      previewVisibility,
       setBlur,
       previewBlur,
       blurPreview,
@@ -255,6 +291,7 @@ export function WallpaperSettingsProvider({ children }: { children: ReactNode })
       settings,
       failedUrl,
       visibility,
+      setExcludeSidebars,
     ],
   );
 

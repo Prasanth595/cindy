@@ -19,6 +19,10 @@ export interface AppearanceOverrides {
   wallpaperVisibility?: number | null;
   /** Blur radius in CSS pixels; null removes the override (default: off). */
   wallpaperBlur?: number | null;
+  /** Archived reading preference; the uniform algorithm no longer adds this backing. */
+  wallpaperReadingStrength?: number | null;
+  /** true excludes task navigation only; tool panes retain wallpaper. null restores off. */
+  wallpaperExcludeSidebars?: boolean | null;
   wallpaperMotion?: WallpaperMotion;
 }
 
@@ -35,6 +39,8 @@ export interface AppearanceSettings {
   /** Absent for legacy/default preferences; derive visibility from the theme's old veil. */
   wallpaperVisibility?: number | null;
   wallpaperBlur?: number | null;
+  wallpaperReadingStrength?: number | null;
+  wallpaperExcludeSidebars?: boolean | null;
   wallpaperMotion: WallpaperMotion;
   /** Read-only, host-owned media reference; never accepted by set-patch. */
   customWallpaperUrl?: string;
@@ -59,6 +65,7 @@ export const APPEARANCE_LIMITS = {
   wallpaperOverlay: { min: 0, max: 1, step: 0.05 },
   wallpaperVisibility: { min: 0, max: 1, step: 0.01 },
   wallpaperBlur: { min: 0, max: 20, step: 1 },
+  wallpaperReadingStrength: { min: 0, max: 1, step: 0.01 },
 } as const;
 
 export const WALLPAPER_IDS = [
@@ -101,6 +108,10 @@ export function clampAppearanceWallpaperBlur(value: number): number {
     APPEARANCE_LIMITS.wallpaperBlur.max,
     0,
   );
+}
+
+export function clampAppearanceWallpaperReadingStrength(value: number): number {
+  return Number.isFinite(value) ? roundDecimal(Math.min(1, Math.max(0, value)), 2) : 0;
 }
 
 /** Old settings retain their exact Light/Dark appearance until explicitly adjusted. */
@@ -189,8 +200,19 @@ export function normalizeAppearanceSettings(raw: unknown): AppearanceSettings {
         ? clampAppearanceWallpaperOverlay(value.wallpaperOverlay)
         : DEFAULT_APPEARANCE_SETTINGS.wallpaperOverlay,
     wallpaperMotion: value.wallpaperMotion === 'dynamic' ? 'dynamic' : 'static',
+    ...(typeof value.wallpaperExcludeSidebars === 'boolean'
+      ? { wallpaperExcludeSidebars: value.wallpaperExcludeSidebars }
+      : {}),
     ...(typeof value.wallpaperBlur === 'number' && Number.isFinite(value.wallpaperBlur)
       ? { wallpaperBlur: clampAppearanceWallpaperBlur(value.wallpaperBlur) }
+      : {}),
+    ...(typeof value.wallpaperReadingStrength === 'number' &&
+    Number.isFinite(value.wallpaperReadingStrength)
+      ? {
+          wallpaperReadingStrength: clampAppearanceWallpaperReadingStrength(
+            value.wallpaperReadingStrength,
+          ),
+        }
       : {}),
     ...(typeof value.wallpaperVisibility === 'number' && Number.isFinite(value.wallpaperVisibility)
       ? { wallpaperVisibility: clampAppearanceWallpaperVisibility(value.wallpaperVisibility) }

@@ -7,6 +7,18 @@ import {
 } from '../appearanceSettings';
 
 describe('wallpaper catalog compatibility', () => {
+  it('keeps sidebar exclusion off for old/invalid preferences and retains explicit booleans', () => {
+    for (const wallpaperExcludeSidebars of [undefined, null, 0, 1, 'true', {}]) {
+      expect(normalizeAppearanceSettings({ wallpaperExcludeSidebars })).not.toHaveProperty(
+        'wallpaperExcludeSidebars',
+      );
+    }
+    for (const wallpaperExcludeSidebars of [true, false]) {
+      expect(
+        normalizeAppearanceSettings({ wallpaperExcludeSidebars }).wallpaperExcludeSidebars,
+      ).toBe(wallpaperExcludeSidebars);
+    }
+  });
   it.each([false, true])(
     'preserves legacy visuals but gives explicit visibility the full range (dark=%s)',
     (dark) => {

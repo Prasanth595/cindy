@@ -112,7 +112,7 @@ export function ChatThreadPanel({ group, rootId, onClose }: { group: BotGroupDet
     finally { sending.current = false; setBusy(false); }
   }
   return <aside ref={panelRef} aria-labelledby={titleId}
-        className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
+        className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)] app-wallpaper-surface">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
           <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('replies'))}</h2>
           <Tip text={t('bots.close')}>

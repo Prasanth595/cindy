@@ -65,6 +65,35 @@ const persisted = {
 };
 
 describe('appearance settings IPC authorization', () => {
+  it('accepts only literal sidebar exclusion booleans or a reset', () => {
+    for (const wallpaperExcludeSidebars of [true, false, null]) {
+      expect(__testing.parsePatch({ wallpaperExcludeSidebars })).toEqual({
+        wallpaperExcludeSidebars,
+      });
+    }
+    for (const wallpaperExcludeSidebars of [0, 1, 'true', undefined, {}, []]) {
+      expect(() => __testing.parsePatch({ wallpaperExcludeSidebars })).toThrow('INVALID_PARAMS');
+    }
+  });
+  it('validates reading strength and removes only an explicit override with null', () => {
+    for (const wallpaperReadingStrength of [0, 0.73, 1, null]) {
+      expect(__testing.parsePatch({ wallpaperReadingStrength })).toEqual({
+        wallpaperReadingStrength,
+      });
+    }
+    expect(__testing.parsePatch({ wallpaperReadingStrength: 2 })).toEqual({
+      wallpaperReadingStrength: 1,
+    });
+    expect(__testing.parsePatch({ wallpaperReadingStrength: -1 })).toEqual({
+      wallpaperReadingStrength: 0,
+    });
+    expect(__testing.parsePatch({ wallpaperReadingStrength: 0.736 })).toEqual({
+      wallpaperReadingStrength: 0.74,
+    });
+    for (const wallpaperReadingStrength of ['0.5', true, NaN, Infinity, {}]) {
+      expect(() => __testing.parsePatch({ wallpaperReadingStrength })).toThrow('INVALID_PARAMS');
+    }
+  });
   it('validates literal visibility and accepts null only to reset its override', () => {
     for (const wallpaperBlur of [0, 8, 20, null]) {
       expect(__testing.parsePatch({ wallpaperBlur })).toEqual({ wallpaperBlur });
