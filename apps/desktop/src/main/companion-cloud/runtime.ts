@@ -25,7 +25,7 @@ export interface CompanionCloudHost {
   readValues: (botId: string) => Promise<CompanionPreferenceValue[]>;
   canonicalSession: (botId: string) => Promise<string | null>;
   rowsAfter: (sessionId: string, cursor: CompanionMirrorCursor, limit: number) => Promise<CompanionMirrorRow[]>;
-  latestRows: (sessionId: string, limit: number) => Promise<CompanionMirrorRow[]>;
+  latestRows: (sessionId: string, limit: number, options?: { excludeClientIdPrefix?: string }) => Promise<CompanionMirrorRow[]>;
   /** Hand a room message to the companion's canonical Session as an ordinary user message. */
   deliverToCanonical: (botId: string, text: string, clientId: string) => Promise<{ ok: true } | { ok: false; errorCode: string }>;
   /** Local profile, memory, skill or canonical message change of a companion. */

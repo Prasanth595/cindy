@@ -94,7 +94,8 @@ async function createDevice(name: string, peers: () => DeviceLinkDeviceView[], o
     canonicalSession: async (botId) => sessions.get(botId) ?? null,
     rowsAfter: async (sessionId, cursor, limit) => visible(sessionId)
       .filter(row => row.createdAt > cursor.createdAt || (row.createdAt === cursor.createdAt && row.id > cursor.id)).slice(0, limit),
-    latestRows: async (sessionId, limit) => visible(sessionId).reverse().slice(0, limit),
+    latestRows: async (sessionId, limit, options) => visible(sessionId).reverse()
+      .filter(row => !options?.excludeClientIdPrefix || !row.clientId.startsWith(options.excludeClientIdPrefix)).slice(0, limit),
     deliverToCanonical: async (botId, text, clientId) => {
       deliveries.push({ botId, text, clientId });
       addRow(ensureSession(botId), 'user', text, clientId);

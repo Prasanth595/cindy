@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app, net } from 'electron';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { portableBotAvatarOrFallback, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
@@ -193,8 +193,11 @@ export async function readMirrorRowsAfter(sessionId: string, cursor: CompanionMi
     .orderBy(asc(messages.createdAt), asc(messages.id)).limit(limit);
 }
 
-export async function readLatestMirrorRows(sessionId: string, limit: number): Promise<CompanionMirrorRow[]> {
-  return getDbClient().drizzle.select(mirrorColumns).from(messages).where(visibleRows(sessionId))
+export async function readLatestMirrorRows(sessionId: string, limit: number,
+  options: { excludeClientIdPrefix?: string } = {}): Promise<CompanionMirrorRow[]> {
+  const prefix = options.excludeClientIdPrefix;
+  return getDbClient().drizzle.select(mirrorColumns).from(messages)
+    .where(prefix ? and(visibleRows(sessionId), or(isNull(messages.clientId), sql`substr(${messages.clientId}, 1, ${prefix.length}) <> ${prefix}`)) : visibleRows(sessionId))
     .orderBy(desc(messages.createdAt), desc(messages.id)).limit(limit);
 }
 

@@ -52,7 +52,9 @@ export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
       rows.push({ id: `local-${rows.length}`, clientId: row.clientId, role: row.role, content: row.text, agentMeta: null, createdAt: row.createdAt });
     }),
     rebuildContext: vi.fn(async (): Promise<'rebuilt' | 'busy'> => 'rebuilt'),
-    latestRows: vi.fn(async () => [...rows].sort((a, b) => b.createdAt - a.createdAt)),
+    latestRows: vi.fn(async (_sid: string, limit: number, options?: { excludeClientIdPrefix?: string }) => [...rows]
+      .filter(row => !options?.excludeClientIdPrefix || !row.clientId.startsWith(options.excludeClientIdPrefix))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, limit)),
     ...overrides,
   };
   return { host: host as unknown as CompanionMaterializeHost & typeof host, memories, skills, rows,

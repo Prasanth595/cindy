@@ -41,7 +41,7 @@ describe('materializeCompanion', () => {
     expect(local.host.rebuildContext).not.toHaveBeenCalled();
   });
 
-  it('updates an existing companion; a tombstone deletes only what this device last had, unchanged', async () => {
+  it('updates an existing companion from the cloud; a tombstone deletes the local file whatever it holds', async () => {
     const { api } = cloud([profilePref,
       { key: 'companion.memory.v1:user_old.md', value: null },
       { key: 'companion.memory.v1:user_edited.md', value: null },
@@ -58,16 +58,21 @@ describe('materializeCompanion', () => {
       entry.prefs['companion.memory.v1:user_old.md'] = { hash: valueHash({ filename: 'user_old.md', content: 'old' }), revision: 1, local: true };
       entry.prefs['companion.memory.v1:user_edited.md'] = { hash: valueHash({ filename: 'user_edited.md', content: 'original' }), revision: 1, local: true };
     });
+    const backupHome = vi.fn(async () => '/backup');
+    local.host.backupHome = backupHome;
     const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
     expect(local.host.createProfile).not.toHaveBeenCalled();
     expect(local.host.updateProfile).toHaveBeenCalledWith({ id: 'bot_mia', name: 'Mia', description: 'helper', identitySource: 'I am Mia', userContextSource: 'Owner likes tea', avatar: '🦊' }, expect.anything());
-    expect(vi.mocked(local.host.removeMemory).mock.calls.map(call => call[1])).toEqual(['user_old.md']);
-    expect([...local.memories.keys()].sort()).toEqual(['user_edited.md', 'user_never.md', 'user_same.md']);
+    // Deleted in the cloud means deleted here too, so the uploader cannot bring it back;
+    // the copy was backed up first.
+    expect(vi.mocked(local.host.removeMemory).mock.calls.map(call => call[1]).sort()).toEqual(['user_edited.md', 'user_never.md', 'user_old.md']);
+    expect([...local.memories.keys()].sort()).toEqual(['user_same.md']);
     expect(local.host.restoreMemory).not.toHaveBeenCalled();
-    // The skill was never synced from here: kept.
-    expect(local.host.removeSkill).not.toHaveBeenCalled();
-    // This device had synced before: no backup.
-    expect(result.backup).toBeUndefined();
+    expect(local.host.removeSkill).toHaveBeenCalledWith('bot_mia', 'gone', expect.anything());
+    expect(backupHome).toHaveBeenCalledOnce();
+    expect(result.backup).toBe('/backup');
+    expect(state.bot('bot_mia')?.prefs['companion.memory.v1:user_never.md']).toMatchObject({ local: true });
+    expect(state.bot('bot_mia')?.backedUp).toBeUndefined();
     expect(state.bot('bot_mia')?.prefs['companion.memory.v1:user_same.md']).toMatchObject({ local: true });
   });
 
@@ -207,6 +212,19 @@ describe('materializeCompanion', () => {
     expect(state.bot('bot_mia')?.demoted).toBe(true);
     expect(local.host.updateProfile).not.toHaveBeenCalled();
     expect(local.host.createProfile).not.toHaveBeenCalled();
+  });
+
+  it('seeds the mirror cursor at the newest own row even under many newer imported history rows', async () => {
+    const room = Array.from({ length: 60 }, (_, i) => roomMessage(`m${i}`, i + 1, i % 2 ? 'actor-1' : 'human', `cloud ${i}`, 1_700_000_100_000 + i * 1000));
+    const { api } = cloud([profilePref], room);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    local.rows.push({ id: 'own-last', clientId: 'c-own', role: 'assistant', content: 'old local reply', agentMeta: null, createdAt: 1_600_000_000_000 });
+    const { state } = memoryState();
+    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(result.inserted).toBe(60);
+    // The copy's own older conversation is behind the cursor: it never goes up to the room.
+    expect(state.bot('bot_mia')?.mirror).toMatchObject({ id: 'own-last', createdAt: 1_600_000_000_000 });
   });
 
   it('refuses a profile that is being deleted', async () => {

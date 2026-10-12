@@ -56,7 +56,8 @@ export interface CompanionMaterializeHost {
   insertHistory: (sessionId: string, row: { clientId: string; role: 'user' | 'assistant'; text: string; createdAt: number }, fence: CompanionWriteFence) => Promise<void>;
   /** Rebuild the native context from DB history like a companion restart; never interrupts a turn. */
   rebuildContext: (sessionId: string, fence: CompanionWriteFence) => Promise<'rebuilt' | 'busy'>;
-  latestRows: (sessionId: string, limit: number) => Promise<CompanionMirrorRow[]>;
+  /** Newest first; `excludeClientIdPrefix` leaves out rows whose client id starts with it. */
+  latestRows: (sessionId: string, limit: number, options?: { excludeClientIdPrefix?: string }) => Promise<CompanionMirrorRow[]>;
 }
 
 export interface CompanionMaterializeActor { id: string; externalId: string; name: string; avatar: string | null }
@@ -107,9 +108,9 @@ export async function materializeCompanion(input: {
   // Without the home's profile snapshot this copy's own (or empty) profile would be published as
   // the companion's identity: wait (demoted, retried) until the home has uploaded one.
   if (!profile) throw new Error('PROFILE_SNAPSHOT_MISSING');
-  // A local copy this device never synced (e.g. its own default Cindy) is saved before it is overwritten.
+  // An existing local copy is saved before the cloud copy replaces (or deletes) its files.
   let backup: string | null | undefined;
-  if (local && !(known?.actorId === actor.id && known.backedUp) && !Object.values(knownPrefs).some(entry => entry.local) && host.backupHome) {
+  if (local && !(known?.actorId === actor.id && known.backedUp) && host.backupHome) {
     backup = await step(() => host.backupHome!(botId, fence));
     if (backup) log?.info?.('Companion local copy backed up before take-over', { actorId: actor.id, backup });
     // Once is enough: a take-over that fails later (e.g. avatar unavailable) retries without a new copy.
@@ -138,11 +139,8 @@ export async function materializeCompanion(input: {
       log?.warn('Companion content could not be restored', { actorId: actor.id, kind, code: errorCode(error) });
     }
   };
-  /** A cloud tombstone deletes the local file only if it is exactly what this device last had. */
-  const tombstoneApplies = (key: string, localValue: unknown) => {
-    const prior = knownPrefs[key];
-    return !!prior?.local && prior.hash !== TOMBSTONE_HASH && prior.hash === valueHash(localValue);
-  };
+  // The cloud copy wins: a tombstone deletes the local file (the copy was backed up above), so
+  // the uploader can never bring deleted content back.
   for (const [key, row] of prefs) {
     const value = row.value;
     if (key.startsWith(COMPANION_MEMORY_PREFIX)) {
@@ -151,8 +149,8 @@ export async function materializeCompanion(input: {
       await apply('memory', async () => {
         const current = await host.readMemory(botId, filename);
         if (value === null) {
-          if (current !== null && tombstoneApplies(key, { filename, content: current })) await step(() => host.removeMemory(botId, filename, fence));
-          if (current === null || tombstoneApplies(key, { filename, content: current })) applied.set(key, { hash: TOMBSTONE_HASH, revision: row.revision });
+          if (current !== null) await step(() => host.removeMemory(botId, filename, fence));
+          applied.set(key, { hash: TOMBSTONE_HASH, revision: row.revision });
           return;
         }
         if (content === undefined) return;
@@ -165,8 +163,8 @@ export async function materializeCompanion(input: {
       await apply('skill', async () => {
         const current = await host.readSkill(botId, slug);
         if (value === null) {
-          if (current !== null && tombstoneApplies(key, { slug, content: current })) await step(() => host.removeSkill(botId, slug, fence));
-          if (current === null || tombstoneApplies(key, { slug, content: current })) applied.set(key, { hash: TOMBSTONE_HASH, revision: row.revision });
+          if (current !== null) await step(() => host.removeSkill(botId, slug, fence));
+          applied.set(key, { hash: TOMBSTONE_HASH, revision: row.revision });
           return;
         }
         if (content === undefined) return;
@@ -187,7 +185,7 @@ export async function materializeCompanion(input: {
   const inserted = await importCloudHistory({ api, host, sessionId, botActorId: actor.id, roomId, fence });
   // Keep the mirror coherent: everything up to now is already in the room. Imported history
   // (possibly stamped by a peer's clock) never sets the cursor.
-  const latest = (await host.latestRows(sessionId, 50)).find(row => !row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX));
+  const [latest] = await host.latestRows(sessionId, 1, { excludeClientIdPrefix: COMPANION_HISTORY_CLIENT_PREFIX });
   const cursor: CompanionMirrorCursor = latest ? { createdAt: latest.createdAt, id: latest.id } : { createdAt: 0, id: '' };
   const keepCursor = known?.actorId === actor.id && known.mirror?.sessionId === sessionId
     && (known.mirror.createdAt > cursor.createdAt || (known.mirror.createdAt === cursor.createdAt && known.mirror.id >= cursor.id));
@@ -195,6 +193,8 @@ export async function materializeCompanion(input: {
   fence.assertCurrent();
   state.update(botId, actor.id, entry => {
     delete entry.demoted;
+    // The next take-over (after this copy hands the companion away again) backs it up anew.
+    delete entry.backedUp;
     // Revisions may have moved on while another computer was the home.
     entry.prefsSeeded = false;
     for (const [key, value] of applied) entry.prefs[key] = { ...value, local: true };
