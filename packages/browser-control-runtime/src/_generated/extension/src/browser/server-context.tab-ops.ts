@@ -350,6 +350,7 @@ export function createProfileTabOps({
       cdpUrl: profile.cdpUrl,
       url,
       background: opts?.background,
+      navigationPolicy: ssrfPolicyOpts,
       ssrfPolicy: getCdpControlPolicy(),
     };
     if (cdpActionTimeouts) {

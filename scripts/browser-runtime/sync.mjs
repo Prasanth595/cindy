@@ -1517,7 +1517,11 @@ export async function quarantineTargetWithoutClosing(opts: {
         applyExactReplacements(source, [
           [
             `  cdpUrl: string;\n  url: string;\n  ssrfPolicy?: SsrFPolicy;`,
-            `  cdpUrl: string;\n  url: string;\n  background?: boolean;\n  ssrfPolicy?: SsrFPolicy;`,
+            `  cdpUrl: string;\n  url: string;\n  background?: boolean;\n  navigationPolicy?: ReturnType<typeof withBrowserNavigationPolicy>;\n  ssrfPolicy?: SsrFPolicy;`,
+          ],
+          [
+            `    url: opts.url,\n    ...withBrowserNavigationPolicy(opts.ssrfPolicy),`,
+            `    url: opts.url,\n    ...(opts.navigationPolicy ?? withBrowserNavigationPolicy(opts.ssrfPolicy)),`,
           ],
           [
             `          const created = (await send("Target.createTarget", { url: opts.url })) as {`,
@@ -1573,7 +1577,7 @@ export async function quarantineTargetWithoutClosing(opts: {
           ],
           [
             `      cdpUrl: profile.cdpUrl,\n      url,\n      ssrfPolicy: getCdpControlPolicy(),`,
-            `      cdpUrl: profile.cdpUrl,\n      url,\n      background: opts?.background,\n      ssrfPolicy: getCdpControlPolicy(),`,
+            `      cdpUrl: profile.cdpUrl,\n      url,\n      background: opts?.background,\n      navigationPolicy: ssrfPolicyOpts,\n      ssrfPolicy: getCdpControlPolicy(),`,
           ],
           [
             `    const createdViaCdp = await createTargetViaCdp(createTargetOpts)\n      .then((r) => r.targetId)\n      .catch(() => null);`,
