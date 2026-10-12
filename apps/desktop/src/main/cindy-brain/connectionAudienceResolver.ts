@@ -104,6 +104,8 @@ export interface LoadConnectionAudienceResolverOptions {
   readInstallOrigin?(ghostId: string): 'manual' | 'agent-forge';
   /** Trusted receipt namespace. undefined means no delivery field. */
   readInstallNamespace?(ghostId: string): string | null | undefined;
+  /** See ghostFirstPartyFacts. Path fallback is only legal for unknown. */
+  readNamespaceState?(ghostId: string): 'confirmed' | 'pending' | 'unconfirmed' | 'unknown';
   /** Upgrade-census root install still running under the pre-namespace rules. */
   isPendingLegacyNamespace?(ghostId: string): boolean;
   isPendingLegacyForge?(ghostId: string): boolean;
@@ -173,6 +175,8 @@ export function loadConnectionAudienceResolver(
       // agent-forge receipt。资格绑定当前组织身份，不再要求旧认领前缀。
       const forgeOrigin = options.readInstallOrigin?.(ghostId);
       if (forgeOrigin === 'agent-forge') {
+        const namespaceState = options.readNamespaceState?.(ghostId);
+        if (namespaceState === 'unconfirmed') return reject('installed-namespace-unconfirmed');
         const parsedNamespace = parsePluginInstanceId(ghostId)?.namespace ?? null;
         const recordedNamespace = options.readInstallNamespace?.(ghostId);
         const namespace = recordedNamespace !== undefined ? recordedNamespace : parsedNamespace;

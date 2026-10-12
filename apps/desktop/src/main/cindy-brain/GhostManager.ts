@@ -1612,6 +1612,18 @@ export class GhostManager {
     }
   }
 
+  /**
+   * Registry view used by privilege fallback. A missing row or a blocked
+   * registry is unknown, so callers may still parse a path. unconfirmed is
+   * explicit and must not be treated as unknown.
+   */
+  readNamespaceState(id: string): 'confirmed' | 'pending' | 'unconfirmed' | 'unknown' {
+    this.ensureCurrentOwnerContextSync();
+    if (this.instanceRegistryService.isBlocked()) return 'unknown';
+    const record = this.instanceRecordForAddress(id);
+    return record?.namespaceState ?? 'unknown';
+  }
+
   /** Trusted receipt namespace. undefined means the delivery field is absent. */
   readDeliveryNamespace(id: string): string | null | undefined {
     this.ensureCurrentOwnerContextSync();

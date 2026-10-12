@@ -79,6 +79,11 @@ export interface LoadGhostFirstPartyFactsLoaderOptions {
    * `null` is root. Do not invent the current org slug here.
    */
   readInstallNamespace?(ghostId: string): string | null | undefined;
+  /**
+   * unknown: no registry row, or the registry is blocked. Only then may the
+   * loader parse a namespace out of the install path. unconfirmed must not.
+   */
+  readNamespaceState?(ghostId: string): 'confirmed' | 'pending' | 'unconfirmed' | 'unknown';
   isPendingLegacyForge?(ghostId: string): boolean;
   isPendingLegacyNamespace?(installRelId: string): boolean;
   readTrustedSource?(installRelId: string): GhostFirstPartyTrustedSource | null;
@@ -148,8 +153,13 @@ export function loadGhostFirstPartyFactsLoader(
         overrides?.namespace !== undefined
           ? overrides.namespace
           : options.readInstallNamespace?.(installRelId);
+      const namespaceState = options.readNamespaceState?.(installRelId);
       const namespace =
-        recordedNamespace !== undefined ? recordedNamespace : (parsed?.namespace ?? null);
+        recordedNamespace !== undefined
+          ? recordedNamespace
+          : namespaceState === 'unconfirmed'
+            ? null
+            : (parsed?.namespace ?? null);
       const legacyPendingForge = purpose === 'runtime' && recordedNamespace === undefined &&
         namespace === null && options.isPendingLegacyForge?.(installRelId) === true;
       const legacyPendingNamespace = purpose === 'runtime' && recordedNamespace === undefined &&

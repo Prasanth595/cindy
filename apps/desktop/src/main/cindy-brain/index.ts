@@ -3013,6 +3013,7 @@ function getConnectionAudienceResolver(): ConnectionAudienceResolver {
         getGhostManager().approvedInstallEvidence(ghostId)?.packageSha256 ?? null,
       readInstallOrigin: (ghostId) => getGhostManager().readEffectiveInstallOrigin(ghostId),
       readInstallNamespace: (ghostId) => getGhostManager().readDeliveryNamespace(ghostId),
+      readNamespaceState: (ghostId) => getGhostManager().readNamespaceState(ghostId),
       isPendingLegacyNamespace: (ghostId) => getGhostManager().isPendingLegacyNamespace(ghostId),
       isPendingLegacyForge: (ghostId) => getGhostManager().isPendingLegacyForge(ghostId),
       lookupOrganizationPrefix: (orgId) =>
@@ -3051,6 +3052,7 @@ function getGhostFirstPartyFactsLoader(): GhostFirstPartyFactsLoader {
         ).lookup(orgId),
       readInstallOrigin: (ghostId) => getGhostManager().readEffectiveInstallOrigin(ghostId),
       readInstallNamespace: (ghostId) => getGhostManager().readDeliveryNamespace(ghostId),
+      readNamespaceState: (ghostId) => getGhostManager().readNamespaceState(ghostId),
       isPendingLegacyForge: (ghostId) => getGhostManager().isPendingLegacyForge(ghostId),
       isPendingLegacyNamespace: (ghostId) => getGhostManager().isPendingLegacyNamespace(ghostId),
       readLegacyFirstPartyEligible: (ghostId) => getGhostManager().readLegacyFirstPartyEligible(ghostId),

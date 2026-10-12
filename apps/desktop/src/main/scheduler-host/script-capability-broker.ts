@@ -80,7 +80,8 @@ async function callGhostForScript(
   const ghost = findTrustedXdGhostForScript(request.ghostId);
   const pendingLegacy = ghost?.namespaceState === 'pending'
     && !hasDeliveryNamespace(ghost) && ghost.approval.state === 'approved';
-  if (!ghost || ghost.manifest.id !== request.ghostId ||
+  // Unconfirmed still projects the last namespace. That is not a grant.
+  if (!ghost || ghost.manifest.id !== request.ghostId || ghost.namespaceState === 'unconfirmed' ||
       (ghost.namespace !== 'xd' && !pendingLegacy)) {
     fail('GHOST_NOT_FOUND', 'XD plugin ' + request.ghostId + ' is not available in the current session');
   }
