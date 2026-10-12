@@ -472,6 +472,35 @@ export async function saveBotSkill(
   try { return await pending; }
   finally { if (skillWrites.get(key) === pending) skillWrites.delete(key); }
 }
+/** The skill's SKILL.md as stored, native frontmatter included (old three-field files migrated), or null. */
+export async function readBotSkillSource(userDataDir: string, botId: string, slug: string): Promise<string | null> {
+  const filePath = await readSkillFilePath(resolveSkillDir(userDataDir, botId, slug))
+    ?? await readSkillFilePath(resolveSkillDir(userDataDir, botId, slug, false));
+  return filePath ? readCompatibleBotSkillSource(filePath, slug) : null;
+}
+
+/**
+ * Write a whole SKILL.md verbatim (cloud companions restoring a copy), so native frontmatter
+ * survives; same write queue, size limit and runtime refresh as saveBotSkill.
+ */
+export async function saveBotSkillSource(userDataDir: string, botId: string, slug: string, source: string): Promise<void> {
+  if (!normalizeBotSkillSlug(slug) || normalizeBotSkillSlug(slug) !== slug) throw new BotSkillStoreError('INVALID_ARGS', 'Invalid skill slug');
+  if (Buffer.byteLength(parseBotSkillFile(source).body, 'utf8') > BOT_SKILL_MAX_BODY_BYTES)
+    throw new BotSkillStoreError('SKILL_BODY_TOO_LARGE', 'Skill body too large');
+  const key = botSkillRootDir(userDataDir, botId);
+  const pending = (skillWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const previous = await readBotSkill(userDataDir, botId, slug);
+    await ensureLayout(userDataDir, botId);
+    const skillDir = resolveSkillDir(userDataDir, botId, slug, previous?.enabled !== false);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), source, 'utf8');
+    invalidateBotSkillRuntime(key);
+  });
+  skillWrites.set(key, pending);
+  try { await pending; }
+  finally { if (skillWrites.get(key) === pending) skillWrites.delete(key); }
+}
+
 async function writeBotSkill(
   userDataDir: string,
   botId: string,

@@ -16,8 +16,7 @@ import { botProfiles, messages } from '../localDb/schema.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
 import { botProfileDir, botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
-import { deleteBotSkillForBot, listBotSkillsForBot, readBotSkillForBot, saveBotSkillForBot } from '../maker-ipc/botSkillService.js';
-import { parseBotSkillFile, renderBotSkillFile } from '../maker-ipc/botSkillStore.js';
+import { deleteBotSkillForBot, listBotSkillsForBot, readBotSkillSourceForBot, saveBotSkillSourceForBot } from '../maker-ipc/botSkillService.js';
 import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
@@ -67,11 +66,9 @@ export async function readCompanionValues(botId: string): Promise<CompanionPrefe
   return values;
 }
 
+/** The SKILL.md as stored, so native frontmatter (tools, invocation, …) moves with the companion. */
 async function readSkillContent(botId: string, slug: string): Promise<string | null> {
-  const detail = await readBotSkillForBot(botId, slug);
-  return detail
-    ? renderBotSkillFile({ slug, name: detail.name, description: detail.description, updatedAt: detail.updatedAt, body: detail.body })
-    : null;
+  return readBotSkillSourceForBot(botId, slug);
 }
 
 const AVATAR_FETCH_TIMEOUT_MS = 15_000;
@@ -157,10 +154,7 @@ function createMaterializer(input: {
     restoreMemory: (botId, filename, raw) => getBotMemoryService().restoreRaw(botId, filename, raw),
     removeMemory: (botId, filename) => getBotMemoryService().removeRaw(botId, filename),
     readSkill: readSkillContent,
-    saveSkill: async (botId, slug, content) => {
-      const parsed = parseBotSkillFile(content);
-      await saveBotSkillForBot(botId, { slug, name: parsed.name || slug, description: parsed.description, body: parsed.body });
-    },
+    saveSkill: async (botId, slug, content) => { await saveBotSkillSourceForBot(botId, slug, content); },
     removeSkill: async (botId, slug) => { await deleteBotSkillForBot(botId, slug); },
     ensureCanonicalSession: botId => input.ensureCanonicalSession(botId),
     // Rewound and deleted rows are included (`removed`): removed here means never re-imported.

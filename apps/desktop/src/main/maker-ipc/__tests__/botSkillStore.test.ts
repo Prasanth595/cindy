@@ -19,8 +19,10 @@ import {
   normalizeBotSkillSlug,
   parseBotSkillFile,
   readBotSkill,
+  readBotSkillSource,
   renderBotSkillFile,
   saveBotSkill,
+  saveBotSkillSource,
   seedBotSkillIfMissing,
 } from '../botSkillStore';
 
@@ -367,4 +369,17 @@ it('preserves a foreground edit when background learning uses an older snapshot'
   expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);
   expect((await readBotSkill(userDataDir, 'bot-1', 'weekly-report'))?.body).toBe('Human corrected workflow');
   await expect(saveBotSkill(userDataDir, 'bot-1', { ...SAMPLE, expectedUpdatedAt: null })).rejects.toThrow('Skill changed during review');
+});
+
+describe('verbatim SKILL.md (cloud companions)', () => {
+  it('round-trips native frontmatter the settings model does not know', async () => {
+    const source = '---\nname: brew\ndescription: Brew tea\nallowed-tools: Bash(git:*)\ndisable-model-invocation: true\nmetadata:\n  displayName: Brew\n---\n\nsteps\n';
+    await saveBotSkillSource(userDataDir, 'bot_a', 'brew', source);
+    expect(await readBotSkillSource(userDataDir, 'bot_a', 'brew')).toBe(source);
+    expect((await readBotSkill(userDataDir, 'bot_a', 'brew'))?.body).toBe('steps');
+    expect(await readBotSkillSource(userDataDir, 'bot_a', 'missing')).toBeNull();
+    await expect(saveBotSkillSource(userDataDir, 'bot_a', '../x', source)).rejects.toBeInstanceOf(BotSkillStoreError);
+    await expect(saveBotSkillSource(userDataDir, 'bot_a', 'big', `---\nname: big\n---\n${'x'.repeat(BOT_SKILL_MAX_BODY_BYTES + 1)}`))
+      .rejects.toBeInstanceOf(BotSkillStoreError);
+  });
 });

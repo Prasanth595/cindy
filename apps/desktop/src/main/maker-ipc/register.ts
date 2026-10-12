@@ -11671,6 +11671,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   unsubscribeCompanionCloudBroadcast = companionHomes.onChange((snapshot) => {
     const scope = captureDataOwnerBroadcastScope();
     void companionCloudView(snapshot, listCompanionDevices).then((view) => {
+      // Device lookups can finish out of order: a superseded snapshot is never pushed after a newer one.
+      if (companionHomes.snapshot() !== snapshot) return;
       broadcastToAllWindows(MAKER_PUSH.COMPANION_CLOUD_CHANGED, view, scope);
     });
   });

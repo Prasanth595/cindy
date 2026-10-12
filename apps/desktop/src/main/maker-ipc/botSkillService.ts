@@ -24,7 +24,9 @@ import {
   deleteBotSkill,
   listBotSkills,
   readBotSkill,
+  readBotSkillSource,
   saveBotSkill,
+  saveBotSkillSource,
   type BotSkillSummary,
 } from './botSkillStore.js';
 import type {
@@ -277,14 +279,18 @@ export async function readBotSkillForBot(
     : null;
 }
 
-/** Restore one own skill by bot id (cloud companions); same store, lock and runtime refresh as tool saves. */
-export async function saveBotSkillForBot(
-  botId: string,
-  input: { slug: string; name: string; description: string; body: string },
-  deps: BotSkillServiceDeps = {},
-): Promise<void> {
+/** One own skill's SKILL.md exactly as stored (cloud companions upload it unchanged). */
+export async function readBotSkillSourceForBot(botId: string, slug: string, deps: BotSkillServiceDeps = {}): Promise<string | null> {
   const boundary = captureOwnerBoundary(deps);
-  await saveBotSkill(await skillHomeOf(deps, botId, boundary), botId, input);
+  const source = await readBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug);
+  assertOwnerBoundary(deps, boundary);
+  return source;
+}
+
+/** Restore one own skill's SKILL.md verbatim (cloud companions), keeping its native frontmatter. */
+export async function saveBotSkillSourceForBot(botId: string, slug: string, source: string, deps: BotSkillServiceDeps = {}): Promise<void> {
+  const boundary = captureOwnerBoundary(deps);
+  await saveBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug, source);
   assertOwnerBoundary(deps, boundary);
 }
 

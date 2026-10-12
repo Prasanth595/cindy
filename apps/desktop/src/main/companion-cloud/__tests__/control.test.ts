@@ -321,6 +321,20 @@ describe('installation guard', () => {
     expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.profile.v1')).toBe(true);
   });
 
+  it('never takes a companion handed back to this computer from the other installation here automatically', async () => {
+    const t = guarded({ installationId: 'install-b', deviceId: 'desk' });
+    t.local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    t.state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.calls.some(call => call.method === 'PATCH')).toBe(true));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.install.v1')).toBe(false);
+    expect(t.local.host.updateProfile).not.toHaveBeenCalled();
+    expect(t.state.isDemoted('bot_mia')).toBe(true);
+    // The user's explicit take-over still moves it to this installation.
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
+  });
+
   it('takes over an existing, never-synced copy handed here before this computer saw the move', async () => {
     // Another computer's installation ran it; this device's own copy was never demoted.
     const t = guarded({ installationId: 'install-x', deviceId: 'laptop' });

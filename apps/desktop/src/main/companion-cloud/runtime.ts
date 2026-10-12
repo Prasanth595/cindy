@@ -235,8 +235,12 @@ export function startCompanionCloud(input: {
     return run;
   }
 
-  /** Record (or overwrite) that this installation runs the companion. */
-  async function claimInstall(actor: CompanionRuntimeActor, overwrite: boolean): Promise<InstallOwner> {
+  /**
+   * Record that this installation runs the companion. `check` only claims an empty record;
+   * `handed` (automatic take-over) also replaces another computer's record, never another
+   * installation's claim on this computer; `takeover` (the user's explicit take-over) replaces any.
+   */
+  async function claimInstall(actor: CompanionRuntimeActor, mode: 'check' | 'handed' | 'takeover'): Promise<InstallOwner> {
     if (!installId) return 'mine';
     const rows = await input.api<Array<{ key: string; value: unknown; revision: number }>>('/preferences', 'GET', undefined, actor.id);
     const row = (Array.isArray(rows) ? rows : []).find(candidate => candidate.key === COMPANION_INSTALL_KEY);
@@ -245,7 +249,7 @@ export function startCompanionCloud(input: {
     let owner: InstallOwner = current === installId ? 'mine'
       : typeof record.deviceId === 'string' && record.deviceId !== input.selfDeviceId ? 'handed' : 'other';
     // A hand-over is completed by the take-over (which overwrites), never by this check.
-    if ((owner === 'other' && (overwrite || typeof current !== 'string')) || (owner === 'handed' && overwrite)) {
+    if ((owner === 'other' && (mode === 'takeover' || typeof current !== 'string')) || (owner === 'handed' && mode !== 'check')) {
       try {
         await input.api('/preferences', 'POST', { operationId: `cinstall:${actor.id}:${installId}:${row?.revision ?? 0}`,
           key: COMPANION_INSTALL_KEY, expectedRevision: row?.revision ?? 0,
@@ -265,7 +269,7 @@ export function startCompanionCloud(input: {
     const known = installs.get(actor.externalId);
     if (known && Date.now() - known.checkedAt < INSTALL_RECHECK_MS) return;
     installs.set(actor.externalId, { owner: known?.owner ?? 'pending', checkedAt: Date.now() });
-    void claimInstall(actor, false).then(owner => {
+    void claimInstall(actor, 'check').then(owner => {
       // Handed here before this computer ever saw the move: take the existing copy over.
       if (owner === 'handed' && input.host.materializer) scheduleAuto(actor);
       if (owner !== known?.owner) { publish(); uploads.kick(actor.externalId); mirrors.kick(actor.externalId); }
@@ -283,7 +287,8 @@ export function startCompanionCloud(input: {
     // resurrect a copy whose companion has already moved on.
     void input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: input.selfDeviceId })
       .then(async () => {
-        if (await claimInstall(actor, true) !== 'mine') throw new Error('INSTALL_CLAIM_LOST');
+        // Automatic: never take the companion from the other installation on this computer.
+        if (await claimInstall(actor, 'handed') !== 'mine') throw new Error('INSTALL_CLAIM_LOST');
         return materialize(actor);
       }).then(result => {
       autoRetryAt.delete(botId);
@@ -385,7 +390,7 @@ export function startCompanionCloud(input: {
       actor.homeDeviceId = self;
       try {
         // Taking over from this installation also takes it from another install on the same device.
-        if (await claimInstall(actor, true) !== 'mine') return { ok: false, code: 'FAILED' };
+        if (await claimInstall(actor, 'takeover') !== 'mine') return { ok: false, code: 'FAILED' };
         await materialize(actor);
       } catch (error) {
         input.log?.warn('Companion take-over could not finish locally', { actorId: actor.id, code: errorCode(error) });
