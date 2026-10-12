@@ -7788,16 +7788,17 @@ const registerIpcHandlers = () => {
 
   // Hyprland may drop Chromium clipboard writes; reuse the remote-desktop
   // data-control writer there. Local only; never route this to a remote host.
+  // A user click is local intent, so skip the remote-only compositor lock probe.
   ipcMain.handle(COPY_TEXT_TO_CLIPBOARD_CHANNEL, (event, params) =>
     copyTextToClipboard(event, params, {
       assertTrustedSender: assertTrustedAppRendererEvent,
       write: (text) =>
         supportsLinuxClipboard()
-          ? writeLinuxClipboard({ text }, () => true)
+          ? writeLinuxClipboard({ text }, () => true, { checkLock: false })
           : clipboard.writeText(text),
       read: async () =>
         supportsLinuxClipboard()
-          ? (await readLinuxClipboardSnapshot()).content.text
+          ? (await readLinuxClipboardSnapshot(false, { checkLock: false })).content.text
           : clipboard.readText(),
     }),
   );
