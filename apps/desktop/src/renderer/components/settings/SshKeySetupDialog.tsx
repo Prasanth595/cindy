@@ -672,7 +672,7 @@ function UnlockDialog({ privateKeyPath, onClose, onSubmit }: UnlockDialogProps) 
               onToggleVisible={() => setVisible((v) => !v)}
               autoFocus
               onSubmit={async () => {
-                if (!pass || submitting) return;
+                if (submitting) return;
                 setSubmitting(true);
                 await onSubmit(privateKeyPath, pass);
                 setSubmitting(false);
@@ -695,7 +695,7 @@ function UnlockDialog({ privateKeyPath, onClose, onSubmit }: UnlockDialogProps) 
               compact
               loading={submitting}
               type="button"
-              disabled={!pass || submitting}
+              disabled={submitting}
               onClick={async () => {
                 setSubmitting(true);
                 await onSubmit(privateKeyPath, pass);
