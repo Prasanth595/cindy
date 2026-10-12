@@ -19,7 +19,8 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   readValues?: () => Promise<Array<{ key: string; value: unknown }>> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
-    if (route === '/preferences') return method === 'GET' ? [] : { revision: 1 };
+    // The home has uploaded the profile snapshot a take-over builds from.
+    if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { name: 'Mia' }, revision: 1 }] : { revision: 1 };
     if (route === '/conversations') return { id: ROOM };
     if (route.includes('/messages?')) return [];
     if (route.endsWith('/import')) return {};
@@ -266,7 +267,8 @@ describe('review fixes', () => {
 describe('installation guard', () => {
   const guarded = (owner: string | { installationId: string; deviceId: string } | null) => {
     const record = typeof owner === 'string' ? { installationId: owner } : owner;
-    const prefs = new Map<string, { value: unknown; revision: number }>(record ? [['companion.install.v1', { value: record, revision: 1 }]] : []);
+    const prefs = new Map<string, { value: unknown; revision: number }>([['companion.profile.v1', { value: { name: 'Mia (cloud)' }, revision: 1 }],
+      ...(record ? [['companion.install.v1', { value: record, revision: 1 }] as const] : [])]);
     return setup({ home: 'desk', installationId: 'install-a', handler: (route, method, data) => {
       if (route === '/preferences' && method === 'GET') return [...prefs].map(([key, row]) => ({ key, ...row }));
       if (route === '/preferences') {

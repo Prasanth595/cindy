@@ -198,6 +198,17 @@ describe('materializeCompanion', () => {
     expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
+  it('stays demoted until the home has uploaded a profile snapshot', async () => {
+    const { api } = cloud([{ key: 'companion.memory.v1:user_tea.md', value: { filename: 'user_tea.md', content: 'tea' } }]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mine', description: 'local only' });
+    const { state } = memoryState();
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('PROFILE_SNAPSHOT_MISSING');
+    expect(state.bot('bot_mia')?.demoted).toBe(true);
+    expect(local.host.updateProfile).not.toHaveBeenCalled();
+    expect(local.host.createProfile).not.toHaveBeenCalled();
+  });
+
   it('refuses a profile that is being deleted', async () => {
     const { api } = cloud([profilePref]);
     const local = fakeLocal();

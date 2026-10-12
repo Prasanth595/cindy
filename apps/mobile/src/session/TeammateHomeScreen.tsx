@@ -49,6 +49,11 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
     [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && !roster.isOnline(row.host) ? cloudActorForRow(cloud.actors, row) : null;
+  // A companion moved by another device shows up as a changed set of listed rows: re-read the
+  // main computers then, not only on focus, so the roster follows the move while it stays open.
+  const listedCompanions = roster.items.map(row => row.key).sort().join('\n');
+  const refreshCloud = cloud.refresh;
+  useEffect(() => { if (cloud.supported) void refreshCloud(); }, [cloud.supported, listedCompanions, refreshCloud]);
   const counts = useHomeUnreadCounts();
   const [drawer, setDrawer] = useState(false);
   const [accounts, setAccounts] = useState(false);
@@ -123,7 +128,7 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       loading={roster.items.length + groups.items.length === 0 && (roster.loading || groups.loading)}
       refreshing={roster.refreshing || groups.refreshing}
       error={groups.error ?? roster.error}
-      onRefresh={() => { void roster.refresh(); if (groups.supported) void groups.refresh(); }}
+      onRefresh={() => { void roster.refresh(); void cloud.refresh(); if (groups.supported) void groups.refresh(); }}
       onSelect={(item) => {
         const actor = cloudActor(item);
         if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(item, actor.id, i18n.language)); }

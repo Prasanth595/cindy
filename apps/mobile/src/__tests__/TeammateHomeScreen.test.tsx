@@ -213,6 +213,21 @@ describe('cloud companions (main computer offline)', () => {
       params: { actorId, botId: 'writer', deviceId: 'mac', deviceName: 'Mac', title: 'Writer' } });
     expect(h.nav.openTeammate).not.toHaveBeenCalled();
   });
+  it('re-reads main computers when the listed rows change and on pull-to-refresh', async () => {
+    h.cloud.supported = true;
+    h.cloud.refresh = vi.fn();
+    h.roster.items = [teammate];
+    await render();
+    const afterMount = h.cloud.refresh.mock.calls.length;
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount);
+    // Another device moved the companion: the new main computer now lists it.
+    h.roster.items = [teammate, copy('pc')];
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 1);
+    await act(async () => h.list.onRefresh());
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 2);
+  });
   it('keeps the per-computer behavior on an older server or an online computer', async () => {
     h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
     h.roster.items = [teammate, copy('pc')];

@@ -104,6 +104,9 @@ export async function materializeCompanion(input: {
   // upload its stale files over the cloud values.
   fence.assertCurrent();
   state.update(botId, actor.id, entry => { entry.demoted = true; });
+  // Without the home's profile snapshot this copy's own (or empty) profile would be published as
+  // the companion's identity: wait (demoted, retried) until the home has uploaded one.
+  if (!profile) throw new Error('PROFILE_SNAPSHOT_MISSING');
   // A local copy this device never synced (e.g. its own default Cindy) is saved before it is overwritten.
   let backup: string | null | undefined;
   if (local && !(known?.actorId === actor.id && known.backedUp) && !Object.values(knownPrefs).some(entry => entry.local) && host.backupHome) {

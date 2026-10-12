@@ -363,6 +363,9 @@ describe.skipIf(!BASE)('cloud companions against a real chat-server (two devices
     const devWritesBefore = dev.calls.filter(call => call.method !== 'GET').length;
     await dev.runtime.syncNow();
     expect(dev.calls.filter(call => call.method !== 'GET').length).toBe(devWritesBefore);
+    // Taking over needs the home's profile snapshot; without it the take-over waits.
+    expect(await dev.runtime.takeOver(bot)).toEqual({ ok: false, code: 'FAILED' });
+    await release.runtime.syncNow();
     // Taking over from the dev installation overwrites the claim.
     expect(await dev.runtime.takeOver(bot)).toEqual({ ok: true });
     expect(dev.runtime.isShadowed(bot)).toBe(false);
