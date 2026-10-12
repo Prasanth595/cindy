@@ -9,30 +9,21 @@ vi.mock('react-native', () => ({
   View: ({ children }: any) => <div>{children}</div>, ScrollView: ({ children }: any) => <div>{children}</div>,
   useWindowDimensions: () => ({ width: state.width, height: state.height }),
 }));
+vi.mock('../session/CompanionNativeContent.ios', () => ({
+  CompanionNativeContent: ({ children }: any) => <div data-rn-size="content">{children}</div>,
+}));
 vi.mock('@expo/ui', () => ({ Host: ({ children }: any) => <div>{children}</div> }));
 vi.mock('@expo/ui/swift-ui', () => {
   const Container = ({ children }: any) => <div>{children}</div>;
-  return { Form: ({ children }: any) => <div data-native="Form">{children}</div>,
+  return { ScrollView: ({ children }: any) => <section data-native-scroll>{children}</section>,
+    Form: ({ children }: any) => <div data-native="Form">{children}</div>,
     List: ({ children }: any) => <div data-native="List">{children}</div>, Button: Container, Group: Container, HStack: Container, Image: Container,
-    RNHostView: Container, Spacer: Container, Text: Container, VStack: Container, ZStack: Container,
+    RNHostView: ({ children, matchContents }: any) => <div data-rn-size={matchContents ? "content" : "viewport"}>{children}</div>, Spacer: Container, Text: Container, VStack: Container, ZStack: Container,
     BottomSheet: (props: any) => { state.sheet = props; return <div>{props.children}</div>; },
   };
 });
-
-it('uses a plain list only when requested and preserves form sheets', () => {
-  const container = document.createElement('div');
-  const root = createRoot(container);
-  try {
-    act(() => root.render(<ComposerSheet visible title="" nativeContent nativeList onClose={() => {}}><span>Tasks</span></ComposerSheet>));
-    expect(container.querySelector('[data-native="List"]')).not.toBeNull();
-    expect(container.querySelector('[data-native="Form"]')).toBeNull();
-    act(() => root.render(<ComposerSheet visible title="" nativeContent onClose={() => {}}><span>Settings</span></ComposerSheet>));
-    expect(container.querySelector('[data-native="Form"]')).not.toBeNull();
-    expect(container.querySelector('[data-native="List"]')).toBeNull();
-  } finally { act(() => root.unmount()); }
-});
 vi.mock('@expo/ui/swift-ui/modifiers', () => ({
-  ...Object.fromEntries(['accessibilityLabel', 'contentShape', 'buttonStyle', 'font', 'foregroundStyle', 'frame', 'padding', 'presentationDetents', 'presentationDragIndicator', 'interactiveDismissDisabled', 'scrollContentBackground', 'listStyle', 'scrollDismissesKeyboard'].map(name => [name, vi.fn(() => ({}))])),
+  ...Object.fromEntries(['accessibilityLabel', 'contentShape', 'buttonStyle', 'font', 'foregroundStyle', 'frame', 'padding', 'presentationDetents', 'presentationDragIndicator', 'interactiveDismissDisabled', 'scrollContentBackground', 'scrollDismissesKeyboard', 'listStyle'].map(name => [name, vi.fn(() => ({}))])),
   shapes: { rectangle: () => ({}) },
 }));
 vi.mock('@/theme', () => ({ iconSize: { lg: 20 }, useTheme: () => ({ mode: 'light', colors: {} }) }));
@@ -57,5 +48,34 @@ it('selects a supported native detent when opening and rotating a menu', () => {
     expect(onClosed).not.toHaveBeenCalled();
     act(() => state.sheet.onDismiss());
     expect(onClosed).toHaveBeenCalledOnce();
+  } finally { act(() => root.unmount()); }
+});
+
+// Native components are DOM mocks here: this guards composition only, not
+// medium-detent scrolling, keyboard resizing, final-action reachability or footer visibility on iOS.
+it('composes a content-sized RN bridge inside the native scroll component and a sibling footer', () => {
+  state.width = 402; state.height = 874;
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ComposerSheet visible title="" onClose={() => {}} footer={<span>Save</span>}><span>Delete group</span></ComposerSheet>));
+    const viewport = container.querySelector('[data-native-scroll]');
+    expect(viewport?.textContent).toBe('Delete group');
+    expect(viewport?.querySelector('[data-rn-size=content]')).not.toBeNull();
+    expect(viewport?.textContent).not.toContain('Save');
+    expect(container.textContent).toContain('Save');
+  } finally { act(() => root.unmount()); }
+});
+
+it('uses a plain list only when requested and preserves form sheets', () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ComposerSheet visible title="" nativeContent nativeList onClose={() => {}}><span>Tasks</span></ComposerSheet>));
+    expect(container.querySelector('[data-native="List"]')).not.toBeNull();
+    expect(container.querySelector('[data-native="Form"]')).toBeNull();
+    act(() => root.render(<ComposerSheet visible title="" nativeContent onClose={() => {}}><span>Settings</span></ComposerSheet>));
+    expect(container.querySelector('[data-native="Form"]')).not.toBeNull();
+    expect(container.querySelector('[data-native="List"]')).toBeNull();
   } finally { act(() => root.unmount()); }
 });
