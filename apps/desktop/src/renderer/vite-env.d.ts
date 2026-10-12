@@ -5419,6 +5419,13 @@ interface ElectronAPI {
         ownerStamp?: import('../shared/dataOwnerPush').DataOwnerPushStamp,
       ) => void,
     ) => () => void;
+    getCompanionCloudState: () => Promise<import('../shared/companionCloud').CompanionCloudSnapshot>;
+    onCompanionCloudChanged: (
+      cb: (
+        payload: import('../shared/companionCloud').CompanionCloudSnapshot,
+        ownerStamp?: import('../shared/dataOwnerPush').DataOwnerPushStamp,
+      ) => void,
+    ) => () => void;
     onBotProfileChanged: (
       cb: (payload: { botId: string; change: 'created' | 'updated' }) => void,
     ) => () => void;

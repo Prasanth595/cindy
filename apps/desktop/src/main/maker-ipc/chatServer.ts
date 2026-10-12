@@ -36,8 +36,11 @@ import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal
 import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
+import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
+import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
+import { COMPANION_DIRECT_CLIENT_PREFIX } from '../companion-cloud/mirror.js';
 
-interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null }
+interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null }
 interface Member { id: string; kind: 'human' | 'bot' | 'integration'; name: string; state: string; role: 'owner' | 'admin' | 'member' | 'guest';
   displayName: string; avatar: string | null; nickname: string | null; ownerActorId: string; ownerName: string;
   guestAccess: 'none' | 'chat' | 'tools'; accessRevision: number }
@@ -48,7 +51,7 @@ interface Message {
 }
 interface Room {
   id: string; name: string; topic: string; description: string; response_mode: 'all' | 'mentioned'; speaking_mode: 'auto' | 'sequential';
-  created_at: string; updated_at: string; revision: number; archived: boolean; organizer_id?: string | null;
+  created_at: string; updated_at: string; revision: number; archived: boolean; organizer_id?: string | null; kind?: string;
 }
 interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string }
 interface Execution {
@@ -77,7 +80,7 @@ interface Running {
   releaseToolAuthority?: () => void;
 }
 class ChatResponseError extends Error {
-  constructor(code: string, readonly status: number, readonly retryAt?: number) { super(code); }
+  constructor(code: string, readonly status: number, readonly retryAt?: number, readonly details?: unknown) { super(code); }
 }
 const CHAT_AUTH_RETRY_MS = 60_000;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
@@ -146,6 +149,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   const executorId = `desktop:${randomUUID()}`;
   let actors: Actor[] = [];
   let selfId = '';
+  // Cloud companions (cloud-companions.md): inert unless the server announces homes.
+  let selfDeviceId: string | null = null;
+  let companionHome = false;
+  let companion: CompanionCloudRuntime | undefined;
+  let actorsStale = false;
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -254,7 +262,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             if (res.statusCode === 401 && !retried && CHAT_REFRESHABLE_ERROR_CODES.has(code)) {
               if (await refreshRejectedToken(token) && current()) { resolve(api<T>(route, method, data, actorId, true, successStatus)); return; }
             }
-            if (status >= 400) throw new ChatResponseError(code, status, retryAt);
+            if (status >= 400) throw new ChatResponseError(code, status, retryAt, value?.error?.details);
             if (successStatus && status !== successStatus) throw new Error('CHAT_RESPONSE_INVALID');
             resolve(value);
           } catch (error) { reject(error); }
@@ -371,11 +379,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   };
   async function register() {
     if (refreshActors) return refreshActors;
-    if (Date.now() - registeredAt < 5000) return;
+    if (Date.now() - registeredAt < 5000 && !actorsStale) return;
     refreshActors = (async () => {
+      actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; capabilities?: { groupDiscussionParity?: number } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean } }>('/me'); selfId = me.actor.id;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
+      selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
+      companionHome = !!deps.companionCloud && me.capabilities?.companionHome === true && !!selfDeviceId;
       // Refresh from the issuing auth server, never overwrite with a stale device cache.
       if (Date.now() - profileRefreshedAt > 60000) {
         await api('/profile/refresh', 'POST').then(() => { profileRefreshedAt = Date.now(); }).catch(() => undefined);
@@ -402,9 +413,36 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
         Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
       }
+      await syncCompanionHomes();
       registeredAt = Date.now();
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
+  }
+  /** Claim empty homes for this computer and publish where every companion runs. */
+  async function syncCompanionHomes() {
+    const host = deps.companionCloud;
+    if (!host || !current()) return;
+    if (!companionHome || !selfDeviceId) {
+      companion?.dispose(); companion = undefined;
+      host.homes.update(companionSnapshot({ enabled: false, selfDeviceId, humanActorId: selfId || null, actors: [] }));
+      return;
+    }
+    const self = selfDeviceId;
+    companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, current, log: deps.log,
+      bots: () => actors.filter(a => a.kind === 'bot' && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
+        && !companion?.state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })) });
+    const runtime = companion;
+    await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
+      botIds: profiles.filter(p => p.status === 'active').map(p => p.id), isDemoted: botId => runtime.state.isDemoted(botId) });
+    if (current()) host.homes.update(companionSnapshot({ enabled: true, selfDeviceId: self, humanActorId: selfId, actors }));
+  }
+  /** Another device moved a companion: re-read actors now instead of after the throttle. */
+  async function refreshHomes() {
+    actorsStale = true;
+    // A refresh already in flight may have read the previous actor list.
+    await refreshActors?.catch(() => undefined);
+    if (!actorsStale || !current()) return;
+    await register().catch(error => deps.log?.warn('Companion home refresh failed', chatErrorDiagnostic(error)));
   }
   function subscribe(roomId: string) {
     const fresh = !rooms.has(roomId); rooms.add(roomId);
@@ -439,6 +477,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           }
           else {
             for (const change of event.changes ?? []) if (change.type === 'membership.changed') changed(change.entityId);
+            if (companionHome && (event.changes ?? []).some((change: { type?: unknown }) => change?.type === 'actor.changed')) void refreshHomes();
             changed('');
           }
           ws.send(JSON.stringify({ type: 'ack', scope: event.scope, cursor: event.cursor }));
@@ -769,6 +808,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           throw new Error('INVALID_EXECUTION_TRIGGER');
       }
       if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+      // A companion's 1:1 room is not a group: hand the message to its main task instead.
+      if (s.room.kind === 'direct' || companion?.isDirectRoom(s.room.id)) { await runDirectExecution(run, bot.id, s.room.id); return; }
       // Metadata only: the server remains the sole message store and scheduler.
       if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
         const client = getDbClient();
@@ -907,6 +948,33 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         outcome: 'error', resultText: '', failureCode: botGroupRuntimeFailureCode(error) }, true);
     }
   }
+  /**
+   * The owner wrote in the companion's room (e.g. from a phone while it was queued):
+   * deliver it to the canonical Session like a message from another device. The reply
+   * reaches the room through the conversation mirror, so the execution completes empty.
+   */
+  async function runDirectExecution(run: Running, botId: string, roomId: string) {
+    const { execution } = run;
+    if (!deps.companionCloud) throw new Error('MEMBER_UNAVAILABLE');
+    if (run.context?.kind !== 'message' || execution.plan_id) throw new Error('INVALID_EXECUTION_TRIGGER');
+    const source = await api<Message>(`/conversations/${roomId}/messages/${id.parse(execution.source_message_id)}`);
+    if (source.id !== execution.source_message_id || source.deleted || source.origin === 'system' || source.authorId !== selfId)
+      throw new Error('INVALID_EXECUTION_TRIGGER');
+    const text = source.content.map(block => block.type === 'text' ? block.text ?? ''
+      : block.type === 'media' ? `[附件: ${block.caption ?? '文件'}]` : block.fallback ?? '').filter(Boolean).join('\n').trim();
+    if (!text) throw new Error('INVALID_INPUT');
+    await updateExecution(run, 'heartbeat');
+    if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+    run.clientId = `${COMPANION_DIRECT_CLIENT_PREFIX}${execution.id}`;
+    const delivered = await deps.companionCloud.deliverToCanonical(botId, text, run.clientId);
+    if (!delivered.ok) throw new Error(delivered.errorCode);
+    run.accepted = true;
+    run.settlement = { terminal: { sessionId: '', activeInputClientId: run.clientId, outcome: 'done', resultText: '' },
+      payload: { continueDiscussion: false }, retryAt: 0 };
+    await deliverSettlement(run);
+    companion?.kickMirror(botId);
+    changed(roomId);
+  }
   let polling = false;
   let pollRetryAt = 0;
   let pollFailures = 0;
@@ -920,6 +988,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (!socket) connect();
       for (const actor of actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active')) {
         if (running.has(actor.id)) continue;
+        // The server only hands a companion's work to its home; skip the request.
+        if (companionHome && actor.homeDeviceId && actor.homeDeviceId !== selfDeviceId) continue;
         let claim: { execution: Execution | null };
         const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
         try {
@@ -1156,7 +1226,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       let after: string | undefined;
       do {
         const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
-        const joined = page.filter(r => r.state === 'joined');
+        const joined = page.filter(r => r.state === 'joined' && r.kind !== 'direct');
         for (let i = 0; i < joined.length; i += 8)
           groups.push(...await Promise.all(joined.slice(i, i + 8).map(r => detail(r.id, undefined, true))));
         after = page.length === 100 ? page.at(-1)!.id : undefined;
@@ -1258,6 +1328,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
       disposed = true; clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); socket?.close();
+      companion?.dispose(); companion = undefined; deps.companionCloud?.homes.reset();
       for (const run of running.values()) {
         run.releaseToolAuthority?.();
         if (run.sessionId) void deps.abortLane(run.sessionId).catch(() => undefined);
