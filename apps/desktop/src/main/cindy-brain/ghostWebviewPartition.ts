@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 import { GHOST_PARTITION_PREFIX, ghostInstallApprovalToken, parseGhostPartition, type GhostInstallApproval } from '../../shared/ghost.js';
 import { installedGhostStoragePart, isPluginInstanceKey } from '../../shared/pluginIdentity.js';
 import { dataOwnerStorageKey, type ActiveAppSession } from '../appSessionState.js';
@@ -14,10 +15,12 @@ export interface ResolvedGhostWebviewPartition {
 export function ownerScopedGhostPartition(
   ghostId: string,
   owner: Pick<ActiveAppSession, 'mode' | 'dataOwnerId'>,
-  knownRoot = false,
+  namespace?: string | null,
 ): string | null {
   if (!isPluginInstanceKey(ghostId) || owner.mode === 'signed-out' || !owner.dataOwnerId) return null;
-  return `${GHOST_OWNER_PARTITION_PREFIX}${owner.mode}:${dataOwnerStorageKey(owner.dataOwnerId)}:${ghostId}${knownRoot ? ':root' : ''}`;
+  // 原地确认的旧安装沿用目录键；namespace 段让它离开迁移时撤销的旧分区。
+  const scope = namespace === null ? ':root' : isValidPluginNamespace(namespace) ? `:ns:${namespace}` : '';
+  return `${GHOST_OWNER_PARTITION_PREFIX}${owner.mode}:${dataOwnerStorageKey(owner.dataOwnerId)}:${ghostId}${scope}`;
 }
 
 export function ownerScopedGhostPartitionForInstalledGhost(
@@ -27,7 +30,7 @@ export function ownerScopedGhostPartitionForInstalledGhost(
   const partition = ownerScopedGhostPartition(
     installedGhostStoragePart(ghost),
     owner,
-    ghost.namespace === null,
+    ghost.namespace,
   );
   if (!partition || ghost.approval?.state !== 'approved') return partition;
   const receipt = createHash('sha256')

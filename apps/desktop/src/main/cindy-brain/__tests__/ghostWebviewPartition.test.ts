@@ -79,7 +79,7 @@ describe('ghost WebView Main partition', () => {
     expect(ownerScopedGhostPartitionForInstalledGhost(legacy, ownerA))
       .toBe('cindy-ghost-owner:cloud:opaque-owner-a:helper');
     expect(ownerScopedGhostPartitionForInstalledGhost(organization, ownerA))
-      .toBe('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__helper');
+      .toBe('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__helper:ns:acme');
     expect(ownerScopedGhostPartitionForInstalledGhost(root, ownerA))
       .toBe('cindy-ghost-owner:cloud:opaque-owner-a:helper:root');
   });

@@ -340,7 +340,7 @@ describe('electronSandboxAdapter owner partition', () => {
       isTargetCurrent: (_ghostId, expected) => target === expected,
     });
     ensureGhostProtocolRegistered(installed);
-    const partition = approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:' + installed.manifest.id);
+    const partition = approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:' + installed.manifest.id + ':ns:acme');
     const handler = harness.sessions.get(partition)!.protocolHandler!;
     const pending = handler(new Request('cindy-ghost://' + installed.manifest.id + '/kv', { method: 'PUT' }));
     if (transition === 'replacement') target = 'approved-replacement';
@@ -391,8 +391,8 @@ describe('electronSandboxAdapter owner partition', () => {
   it('keeps an in-place organization session on its directory key and separates a later root install', () => {
     const organization = { ...ghost('shared'), namespace: 'acme' };
     ensureGhostProtocolRegistered(organization);
-    expect(harness.sessions.has(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:shared'))).toBe(true);
-    expect(harness.sessions.has(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__shared'))).toBe(false);
+    expect(harness.sessions.has(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:shared:ns:acme'))).toBe(true);
+    expect(harness.sessions.has(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__shared:ns:acme'))).toBe(false);
     ensureGhostProtocolRegistered({ ...ghost('shared'), namespace: null, dir: '/plugins/_ns/_root/shared' });
     expect(harness.sessions.size).toBe(2);
     expect(harness.sessions.has(approvedPartition(
@@ -402,12 +402,13 @@ describe('electronSandboxAdapter owner partition', () => {
     ))).toBe(true);
   });
 
-  it('reuses the directory key for an in-place organization stamp and opens a root session only for explicit root', () => {
+  it('reuses the directory key for an in-place stamp but opens a separate session per committed namespace', () => {
     ensureGhostProtocolRegistered(ghost('legacy-shared'));
     ensureGhostProtocolRegistered({ ...ghost('legacy-shared'), namespace: 'acme' });
     ensureGhostProtocolRegistered({ ...ghost('legacy-shared'), namespace: null });
     expect([...harness.sessions.keys()]).toEqual([
       approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:legacy-shared'),
+      approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:legacy-shared:ns:acme'),
       approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:legacy-shared:root'),
     ]);
   });
@@ -421,6 +422,16 @@ describe('electronSandboxAdapter owner partition', () => {
     ensureGhostProtocolRegistered({ ...ghost('committed-legacy'), namespace: null });
     const rootHandler = harness.sessions.get(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:committed-legacy:root'))?.protocolHandler;
     expect((await rootHandler?.(new Request('cindy-ghost://committed-legacy/')))?.status).toBe(200);
+  });
+
+  it('serves an in-place organization commit from a fresh session while the legacy one stays revoked', async () => {
+    ensureGhostProtocolRegistered(ghost('committed-org'));
+    const oldHandler = harness.sessions.get(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:committed-org'))?.protocolHandler;
+    revokeLegacyGhostProtocolPartition('committed-org');
+    ensureGhostProtocolRegistered({ ...ghost('committed-org'), namespace: 'acme' });
+    const orgHandler = harness.sessions.get(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:committed-org:ns:acme'))?.protocolHandler;
+    expect((await orgHandler?.(new Request('cindy-ghost://committed-org/')))?.status).toBe(200);
+    expect((await oldHandler?.(new Request('cindy-ghost://committed-org/')))?.status).toBe(403);
   });
   it('同 ghostId 的不同 owner 使用不同的非持久 session，并显式拒绝权限和下载', () => {
     const installed = ghost('same-ghost');
@@ -686,7 +697,7 @@ describe('read-only agent model directory', () => {
     const provider = vi.fn().mockResolvedValue({ ok: true, models: [] });
     setGhostAgentModelsProvider(provider);
     ensureGhostProtocolRegistered({ ...ghost('shared-models'), namespace: 'acme', dir: '/plugins/_ns/acme/shared-models' });
-    const handler = harness.sessions.get(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__shared-models', 1, '/plugins/_ns/acme/shared-models'))?.protocolHandler;
+    const handler = harness.sessions.get(approvedPartition('cindy-ghost-owner:cloud:opaque-owner-a:_ns__acme__shared-models:ns:acme', 1, '/plugins/_ns/acme/shared-models'))?.protocolHandler;
     expect((await handler?.(new Request('cindy-ghost://shared-models/agent-models')))?.status).toBe(200);
     expect(provider).toHaveBeenCalledWith('_ns__acme__shared-models');
   });
