@@ -51,6 +51,18 @@ export function cloudOnlyRemoteBots(cloud: CompanionCloudSnapshot, remoteBots: r
   });
 }
 
+/**
+ * One row per cloud companion: rows another computer still lists for a companion whose home is
+ * known to be elsewhere (old copies, possibly cached while that computer is offline) are
+ * dropped, and companions homed on a computer never listed here get an offline row.
+ */
+export function cloudRemoteBots(cloud: CompanionCloudSnapshot, remoteBots: readonly RemoteBot[]): RemoteBot[] {
+  if (!cloud.enabled) return [...remoteBots];
+  const homes = new Map(cloud.actors.flatMap((actor) => actor.homeDeviceId ? [[actor.externalId, actor.homeDeviceId] as const] : []));
+  const listed = remoteBots.filter((bot) => { const home = homes.get(bot.id); return !home || home === bot.deviceId; });
+  return [...listed, ...cloudOnlyRemoteBots(cloud, listed)];
+}
+
 export function homeDeviceName(cloud: CompanionCloudSnapshot, botId: string, fallback: string): string {
   const actor = cloud.actors.find((candidate) => candidate.externalId === botId);
   return actor?.homeDevice?.name?.trim() || fallback;

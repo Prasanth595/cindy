@@ -19,6 +19,11 @@ describe('mirrorMessageText', () => {
       .toBe('look\n[附件: cat.png]\n[附件: a.pdf]');
     expect(mirrorMessageText(reply('hello'))).toBe('hello');
   });
+  it('keeps an attachment-only message as placeholders, but not one from another source', () => {
+    expect(mirrorMessageText(row('user', { text: '', images: [{ url: 'x', originalName: 'cat.png' }], files: [] }))).toBe('[附件: cat.png]');
+    expect(mirrorMessageText(row('user', { text: '', images: [{ url: 'x' }], files: [] },
+      { agentMeta: JSON.stringify({ imSource: { channel: 'feishu' } }) }))).toBeNull();
+  });
   it.each([
     ['tool rows', row('tool_use', { name: 'Bash' })],
     ['thinking rows', row('thinking', 'hmm')],

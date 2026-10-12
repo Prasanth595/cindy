@@ -22,7 +22,7 @@ import { useTeammateRoster } from './useTeammateRoster';
 import { useBotGroupRoster } from './useBotGroupRoster';
 import { useTeammateNavigation } from './useTeammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
-import { cloudActorForRow, suppressDemotedCompanions } from '@/chat/cloudCompanion';
+import { cloudActorForRow, cloudCompanionRows } from '@/chat/cloudCompanion';
 import { useCloudCompanionHome } from '@/chat/useCloudCompanion';
 import { cloudCompanionRoute } from './teammateNavigation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
@@ -45,8 +45,9 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   const groups = sharedRoster?.groups ?? ownGroups;
   // Main computers (cloud-companions.md): only with a server that declares companionHome.
   const cloud = useCloudCompanionHome(focused);
-  const items = useMemo(() => cloud.supported ? suppressDemotedCompanions(roster.items, cloud.actors) : roster.items,
-    [cloud.actors, cloud.supported, roster.items]);
+  // One row per companion, under its main computer (a row built from the cloud when none is listed).
+  const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
+    [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && !roster.isOnline(row.host) ? cloudActorForRow(cloud.actors, row) : null;
   const counts = useHomeUnreadCounts();
   const [drawer, setDrawer] = useState(false);

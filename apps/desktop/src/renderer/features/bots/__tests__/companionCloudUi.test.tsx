@@ -23,7 +23,7 @@ vi.mock('@/lib/toast', () => ({ toast: { info: h.toast, error: h.toast } }));
 import { CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
 import { BotHomeComputerSetting } from '../BotHomeComputerSetting';
 import { resetCompanionCloudStoreForTests } from '../companionCloudStore';
-import { cloudOnlyRemoteBots, isCloudHomeOffline, withoutShadowedBots } from '../companionCloudPresentation';
+import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from '../companionCloudPresentation';
 import { BotConnectionStatus } from '../BotConnectionStatus';
 
 const maker = {
@@ -62,6 +62,18 @@ describe('presentation helpers', () => {
     expect(isCloudHomeOffline(cloud, extra[0])).toBe(true);
     expect(isCloudHomeOffline(cloud, { ...extra[0]!, online: true })).toBe(false);
     expect(isCloudHomeOffline(snapshot('desk'), { id: 'mia', deviceId: 'desk', online: false })).toBe(false);
+  });
+
+  it('lists a companion once, on its main computer, dropping old computers\' cached copies', () => {
+    const row = (deviceId: string, id = 'mia') => ({ id, deviceId, deviceName: deviceId, name: id, avatar: '', avatarColor: 'violet',
+      description: '', preview: '', activityAt: 0, sessionId: null, online: false, connectionKnown: true }) as const;
+    // The old computer is offline and only its cached row is left: replaced by the main computer's row.
+    expect(cloudRemoteBots(snapshot('laptop'), [row('old-mac'), row('old-mac', 'ada')]).map((bot) => `${bot.deviceId}/${bot.id}`))
+      .toEqual(['old-mac/ada', 'laptop/mia']);
+    expect(cloudRemoteBots(snapshot('laptop'), [row('old-mac'), row('laptop')]).map((bot) => bot.deviceId)).toEqual(['laptop']);
+    // Homed here: other computers' copies are not separate entries.
+    expect(cloudRemoteBots(snapshot('desk'), [row('old-mac')])).toEqual([]);
+    expect(cloudRemoteBots(snapshot('laptop', false), [row('old-mac')])).toHaveLength(1);
   });
 
   it('labels an offline main computer in the row status', () => {

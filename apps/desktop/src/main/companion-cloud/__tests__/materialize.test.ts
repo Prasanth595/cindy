@@ -36,7 +36,7 @@ describe('materializeCompanion', () => {
     expect(local.host.writeSystemPrompt).toHaveBeenCalledWith('bot_mia', 'custom', expect.anything());
     expect(local.memories.get('user_tea.md')).toContain('likes tea');
     expect(local.skills.get('brew')).toContain('steps');
-    expect(result).toEqual({ created: true, inserted: 0, rebuild: 'skipped', failures: 0 });
+    expect(result).toEqual({ created: true, inserted: 0, rebuild: 'skipped' });
     expect(state.bot('bot_mia')?.demoted).toBeUndefined();
     expect(local.host.rebuildContext).not.toHaveBeenCalled();
   });
@@ -154,13 +154,35 @@ describe('materializeCompanion', () => {
     expect(state.bot('bot_mia')?.pendingRebuild).toBe(true);
   });
 
-  it('keeps going when one memory cannot be restored', async () => {
-    const { api } = cloud([profilePref, { key: 'companion.memory.v1:user_bad.md', value: { filename: 'user_bad.md', content: 'x' } }]);
-    const local = fakeLocal({ restoreMemory: vi.fn(async () => { throw new Error('INVALID'); }) });
-    const log = { warn: vi.fn() };
-    const result = await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM, log });
-    expect(result.failures).toBe(1);
-    expect(log.warn).toHaveBeenCalledWith('Companion content could not be restored', { actorId: 'actor-1', kind: 'memory', code: 'INVALID' });
+  it('stays demoted until every memory is restored, then the retry completes the take-over', async () => {
+    const { api } = cloud([profilePref,
+      { key: 'companion.memory.v1:user_ok.md', value: { filename: 'user_ok.md', content: 'ok' } },
+      { key: 'companion.memory.v1:user_bad.md', value: { filename: 'user_bad.md', content: 'x' } }]);
+    let broken = true;
+    const backupHome = vi.fn(async () => '/backup');
+    const local = fakeLocal({ backupHome });
+    vi.mocked(local.host.restoreMemory).mockImplementation(async (_bot: string, filename: string, raw: string) => {
+      if (broken && filename === 'user_bad.md') throw new Error('EBUSY');
+      local.memories.set(filename, raw);
+    });
+    local.setProfile({ status: 'active', displayName: 'Old', description: '' });
+    local.memories.set('user_bad.md', 'stale');
+    const log = { warn: vi.fn(), info: vi.fn() };
+    const { state } = memoryState();
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, log })).rejects.toThrow('RESTORE_INCOMPLETE');
+    expect(log.warn).toHaveBeenCalledWith('Companion content could not be restored', { actorId: 'actor-1', kind: 'memory', code: 'EBUSY' });
+    // Not runnable, so the stale file is never uploaded over the cloud value.
+    expect(state.bot('bot_mia')?.demoted).toBe(true);
+    expect(state.bot('bot_mia')?.prefs['companion.memory.v1:user_ok.md']?.local).toBe(true);
+    expect(state.bot('bot_mia')?.prefs['companion.memory.v1:user_bad.md']).toBeUndefined();
+    expect(local.host.ensureCanonicalSession).not.toHaveBeenCalled();
+
+    broken = false;
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, log });
+    expect(local.memories.get('user_bad.md')).toBe('x');
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
+    // The never-synced copy was backed up once, not again on the retry.
+    expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a profile that is being deleted', async () => {

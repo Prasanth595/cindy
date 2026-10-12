@@ -120,7 +120,9 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
   const rosterRef = useRef(roster); rosterRef.current = roster;
   const openTeammate = useRef(navigation.openTeammate); openTeammate.current = navigation.openTeammate;
   const tick = useCallback(() => {
-    const { state, arrived } = cloudSwitchTick(switchingRef.current, rosterRef.current.items, botId, Date.now());
+    // Only a read of that computer made while waiting counts; a cached row is not the arrival.
+    const { state, arrived } = cloudSwitchTick(switchingRef.current, rosterRef.current.items, botId, Date.now(),
+      row => rosterRef.current.isOnline(row.host));
     if (arrived) {
       switchingRef.current = { phase: 'idle' };
       setSwitching(switchingRef.current);

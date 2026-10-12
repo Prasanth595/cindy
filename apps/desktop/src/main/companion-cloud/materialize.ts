@@ -2,7 +2,9 @@
  * Build or update the local companion from its cloud copy (cloud-companions.md §3.1 step 2-3):
  * profile, memories and own skills from the companion's preferences, then the latest room
  * history as local history, then a deterministic context rebuild. Nothing old is replayed.
- * Every local write is fenced by the owner that started it.
+ * Every local write is fenced by the owner that started it. The copy stays demoted (does not
+ * run, upload or mirror) until everything is restored; a partial restore throws and the
+ * automatic take-over retries it.
  */
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
 import { COMPANION_HISTORY_CLIENT_PREFIX } from './mirror.js';
@@ -59,8 +61,6 @@ export interface CompanionMaterializeResult {
   created: boolean;
   inserted: number;
   rebuild: 'rebuilt' | 'busy' | 'skipped';
-  /** Memories/skills that could not be written; logged, retried by the next materialize. */
-  failures: number;
   /** Where an existing, never-synced local copy was saved before being overwritten. */
   backup?: string | null;
 }
@@ -96,6 +96,10 @@ export async function materializeCompanion(input: {
 
   const local = await step(() => host.readProfile(botId));
   if (local?.status === 'deleting') throw new Error('PROFILE_DELETING');
+  // Not runnable here until the take-over completes: a half-restored copy must never run or
+  // upload its stale files over the cloud values.
+  fence.assertCurrent();
+  state.update(botId, actor.id, entry => { entry.demoted = true; });
   // A local copy this device never synced (e.g. its own default Cindy) is saved before it is overwritten.
   let backup: string | null | undefined;
   if (local && !Object.values(knownPrefs).some(entry => entry.local) && host.backupHome) {
@@ -163,6 +167,12 @@ export async function materializeCompanion(input: {
     }
   }
 
+  if (failures > 0) {
+    // Keep what was restored (so the retry does not back the copy up again) and stay demoted.
+    state.update(botId, actor.id, entry => { for (const [key, value] of applied) entry.prefs[key] = { ...value, local: true }; });
+    throw new Error('RESTORE_INCOMPLETE');
+  }
+
   const sessionId = await step(() => host.ensureCanonicalSession(botId, fence));
   const roomId = await step(() => input.roomId());
   const inserted = await importCloudHistory({ api, host, sessionId, botActorId: actor.id, roomId, fence });
@@ -183,7 +193,7 @@ export async function materializeCompanion(input: {
     if (needsRebuild) entry.pendingRebuild = true;
   });
   const rebuild = needsRebuild ? await rebuildPending({ state, host, botId, actorId: actor.id, sessionId, fence }) : 'skipped';
-  return { created: !local, inserted, rebuild, failures, ...(backup !== undefined ? { backup } : {}) };
+  return { created: !local, inserted, rebuild, ...(backup !== undefined ? { backup } : {}) };
 }
 
 /** Insert the room's latest messages that are not already local, oldest first. */

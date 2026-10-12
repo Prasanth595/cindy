@@ -73,7 +73,9 @@ export function mirrorMessageText(row: CompanionMirrorRow): string | null {
   if (row.role === 'assistant' && meta.botPrivateReply === true) return null;
   if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
   const text = visibleMessageText(row.role, row.content);
-  const names = row.role === 'user' && text ? attachmentNames(parse(row.content)) : [];
+  // Attachments count on their own: an images-only message is still the owner's message.
+  // Hidden synthetic inputs carry no attachments, so they stay out.
+  const names = row.role === 'user' ? attachmentNames(parse(row.content)) : [];
   const result = [text, ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n').trim();
   return result || null;
 }

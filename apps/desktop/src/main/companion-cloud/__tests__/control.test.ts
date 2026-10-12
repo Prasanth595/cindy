@@ -15,7 +15,7 @@ let runtime: CompanionCloudRuntime | undefined;
 afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
-  installationId?: string; probe?: (deviceId: string) => Promise<boolean> }) {
+  installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     if (route === '/preferences') return method === 'GET' ? [] : { revision: 1 };
@@ -31,7 +31,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const publish = vi.fn();
   const host: CompanionCloudHost = {
     homes: createCompanionHomeRegistry(), openState: () => state,
-    readValues: async () => [{ key: 'companion.profile.v1', value: { name: 'Mia' } }],
+    readValues: async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }],
     canonicalSession: async () => 'session-1', rowsAfter: async () => [], latestRows: async () => [],
     deliverToCanonical: async () => ({ ok: true }),
     materializer: local.host, listDevices: async () => options.devices ?? [],
@@ -142,6 +142,15 @@ describe('transfer', () => {
     expect(t.state.isDemoted('bot_mia')).toBe(false);
   });
 
+  it('does not move the home when a value is too large to upload', async () => {
+    const t = setup({ home: 'desk', devices: [device('laptop')], values: [
+      { key: 'companion.profile.v1', value: { name: 'Mia' } },
+      { key: 'companion.skill.v1:huge', value: { slug: 'huge', content: 'x'.repeat(70 * 1024) } }] });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'FAILED' });
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(t.state.isDemoted('bot_mia')).toBe(false);
+  });
+
   it('only transfers from the home computer', async () => {
     const t = setup({ home: 'laptop', devices: [device('tablet')] });
     expect(await t.runtime.transfer('bot_mia', 'tablet')).toMatchObject({ ok: false, code: 'FAILED', homeDeviceId: 'laptop' });
@@ -233,8 +242,9 @@ describe('review fixes', () => {
 });
 
 describe('installation guard', () => {
-  const guarded = (owner: string | null) => {
-    const prefs = new Map<string, { value: unknown; revision: number }>(owner ? [['companion.install.v1', { value: { installationId: owner }, revision: 1 }]] : []);
+  const guarded = (owner: string | { installationId: string; deviceId: string } | null) => {
+    const record = typeof owner === 'string' ? { installationId: owner } : owner;
+    const prefs = new Map<string, { value: unknown; revision: number }>(record ? [['companion.install.v1', { value: record, revision: 1 }]] : []);
     return setup({ home: 'desk', installationId: 'install-a', handler: (route, method, data) => {
       if (route === '/preferences' && method === 'GET') return [...prefs].map(([key, row]) => ({ key, ...row }));
       if (route === '/preferences') {
@@ -251,9 +261,12 @@ describe('installation guard', () => {
   };
 
   it('shadows a companion another installation on this device runs', async () => {
-    const t = guarded('install-b');
+    const t = guarded({ installationId: 'install-b', deviceId: 'desk' });
     t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    // Not confirmed while the claim is still being read: execution polling stays off.
+    expect(t.runtime.installConfirmed('bot_mia')).toBe(false);
     await vi.waitFor(() => expect(t.runtime.isShadowed('bot_mia')).toBe(true));
+    expect(t.runtime.installConfirmed('bot_mia')).toBe(false);
     expect(t.runtime.shadowIds()).toEqual(['bot_mia']);
     await t.runtime.syncNow();
     expect(t.calls.some(call => call.method === 'POST' && call.route === '/preferences' && (call.data as { key: string }).key !== 'companion.install.v1')).toBe(false);
@@ -268,8 +281,23 @@ describe('installation guard', () => {
     const t = guarded(null);
     t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
     await vi.waitFor(() => expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.install.v1')).toBe(true));
+    await vi.waitFor(() => expect(t.runtime.installConfirmed('bot_mia')).toBe(true));
     expect(t.runtime.isShadowed('bot_mia')).toBe(false);
     await t.runtime.syncNow();
     expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.profile.v1')).toBe(true);
+  });
+
+  it('takes over an existing, never-synced copy handed here before this computer saw the move', async () => {
+    // Another computer's installation ran it; this device's own copy was never demoted.
+    const t = guarded({ installationId: 'install-x', deviceId: 'laptop' });
+    t.local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.runtime.installConfirmed('bot_mia')).toBe(true));
+    await vi.waitFor(() => expect(t.local.host.updateProfile).toHaveBeenCalledOnce());
+    expect(t.calls.find(call => call.method === 'PATCH')?.data).toEqual({ homeDeviceId: 'desk', expectedHomeDeviceId: 'desk' });
+    expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string; value?: unknown }).key === 'companion.install.v1'
+      && JSON.stringify((call.data as { value: unknown }).value) === JSON.stringify({ installationId: 'install-a', deviceId: 'desk' }))).toBe(true);
+    await vi.waitFor(() => expect(t.state.isDemoted('bot_mia')).toBe(false));
+    expect(t.runtime.isShadowed('bot_mia')).toBe(false);
   });
 });

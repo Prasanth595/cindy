@@ -3,17 +3,21 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import type { ChatActor, ChatSetHomeResult } from './chatServerClient';
 import { useChatClient } from './useChatServer';
+import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 
 const NO_ACTORS: ChatActor[] = [];
+const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
 /**
  * Whether the account's Chat Server supports main computers (`/me` capabilities.companionHome),
- * and the account's companion actors with their main computers. Read on focus and foreground;
+ * and the account's companion actors with their main computers (and those computers' names,
+ * best effort, for rows of computers this phone never listed). Read on focus and foreground;
  * an older server, a missing chat endpoint or a failed read leaves the feature off (or the last answer).
  */
 export function useCloudCompanionHome(enabled: boolean) {
   const api = useChatClient();
-  const [state, setState] = useState({ owner: api.owner, supported: false, actors: NO_ACTORS });
+  const { readDeviceList } = useDeviceLink();
+  const [state, setState] = useState({ owner: api.owner, supported: false, actors: NO_ACTORS, deviceNames: NO_NAMES });
   const generation = useRef(0);
   const refresh = useCallback(async () => {
     if (!enabled || !api.enabled) return;
@@ -21,12 +25,15 @@ export function useCloudCompanionHome(enabled: boolean) {
     try {
       const { companionHome } = await api.client.capabilities();
       const actors = companionHome ? await api.client.actors() : NO_ACTORS;
+      const deviceNames = companionHome && actors.length
+        ? await readDeviceList().then(({ devices }) => new Map(devices.map(device => [device.deviceId, device.name] as const)), () => NO_NAMES)
+        : NO_NAMES;
       if (run !== generation.current || !api.current()) return;
-      setState({ owner: api.owner, supported: companionHome, actors });
+      setState({ owner: api.owner, supported: companionHome, actors, deviceNames });
     } catch {
       // Keep the previous answer: rows simply behave as before when the server cannot be read.
     }
-  }, [api, enabled]);
+  }, [api, enabled, readDeviceList]);
   useFocusEffect(useCallback(() => {
     if (!enabled || !api.enabled) return;
     void refresh();
@@ -36,5 +43,6 @@ export function useCloudCompanionHome(enabled: boolean) {
   const own = state.owner === api.owner;
   const setHome = useCallback((actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> =>
     api.client.setHome(actorId, homeDeviceId, expected), [api]);
-  return { supported: own && state.supported, actors: own ? state.actors : NO_ACTORS, refresh, setHome };
+  return { supported: own && state.supported, actors: own ? state.actors : NO_ACTORS,
+    deviceNames: own ? state.deviceNames : NO_NAMES, refresh, setHome };
 }

@@ -1015,6 +1015,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (companionHome && actor.homeDeviceId && actor.homeDeviceId !== selfDeviceId) continue;
         // Shadowed here (demoted, or run by another installation on this device): never claim.
         if (companionHome && companion?.isShadowed(actor.externalId)) continue;
+        // Homed here: claim only once this installation is confirmed to run it (the server
+        // tells installations on one device apart only by this check).
+        if (companionHome && actor.homeDeviceId === selfDeviceId && !companion?.installConfirmed(actor.externalId)) continue;
         let claim: { execution: Execution | null };
         const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
         try {

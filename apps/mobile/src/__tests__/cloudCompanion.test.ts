@@ -3,7 +3,7 @@ import { ApiError } from '@/api/client';
 import { createChatServerClient, type ChatActor, type ChatMessage } from '@/chat/chatServerClient';
 import {
   CLOUD_SWITCH_TIMEOUT_MS, cloudActorForRow, cloudCompanionMessages, cloudSwitchAfterSetHome, cloudSwitchCandidates,
-  cloudSwitchTick, suppressDemotedCompanions, type CloudSwitchState,
+  cloudSwitchTick, cloudCompanionRows, type CloudSwitchState,
 } from '@/chat/cloudCompanion';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
@@ -25,13 +25,21 @@ describe('cloud companion rows', () => {
     expect(cloudActorForRow(actors, row('cindy', 'mac-a', 'bot-group'))).toBeNull();
   });
 
-  it('keeps only the main computer\'s copy of a companion listed by several computers', () => {
-    const items = [row('cindy', 'mac-a'), row('cindy', 'mac-b'), row('dash', 'mac-b'), row('lizi', 'mac-a'), row('lizi', 'mac-b')];
-    const actors = [actor(1, 'cindy', 'mac-b'), actor(2, 'dash', 'mac-a'), actor(3, 'lizi', 'mac-c')];
-    expect(suppressDemotedCompanions(items, actors).map(item => item.key))
-      // cindy: only mac-b; dash: single copy stays; lizi: home not listed, every copy stays.
-      .toEqual(['mac-b:cindy', 'mac-b:dash', 'mac-a:lizi', 'mac-b:lizi']);
-    expect(suppressDemotedCompanions(items, []).map(item => item.key)).toEqual(items.map(item => item.key));
+  it('lists each companion once, under its main computer, adding a row for an unlisted main computer', () => {
+    const items = [row('cindy', 'mac-a'), row('cindy', 'mac-b'), row('dash', 'mac-b'), row('lizi', 'mac-a'), row('ada', 'mac-a')];
+    const actors = [actor(1, 'cindy', 'mac-b'), actor(2, 'dash', 'mac-a'), actor(3, 'lizi', 'mac-c'), actor(4, 'ada', null),
+      { ...actor(5, 'mia', 'mac-c'), avatar: '🦊' }];
+    const rows = cloudCompanionRows(items, actors, new Map([['mac-a', 'Studio']]));
+    // cindy: only mac-b; dash and lizi: old copies replaced by their main computer's row; ada: no main computer, as listed.
+    expect(rows.map(item => `${item.host.deviceId}:${item.item.ref.id}`))
+      .toEqual(['mac-b:cindy', 'mac-a:ada', 'mac-a:dash', 'mac-c:lizi', 'mac-c:mia']);
+    expect(rows.find(item => item.item.ref.id === 'dash')?.host.deviceName).toBe('Studio');
+    // A new phone that never saw the main computer still gets an entry for the cloud conversation.
+    const mia = rows.find(item => item.item.ref.id === 'mia')!;
+    expect(mia.host).toEqual({ deviceId: 'mac-c', deviceName: 'mac-c' });
+    expect(mia.item.display).toMatchObject({ title: 'mia', avatar: { kind: 'emoji', value: '🦊' } });
+    expect(cloudActorForRow(actors, mia)?.id).toBe(id(5));
+    expect(cloudCompanionRows(items, []).map(item => item.key)).toEqual(items.map(item => item.key));
   });
 
   it('offers online controllable computers except the current main computer and phones', () => {
@@ -63,15 +71,18 @@ describe('switching the main computer', () => {
     expect(cloudSwitchAfterSetHome(target, { ok: false, homeDeviceId: 'mac-b' }, 5).phase).toBe('waiting');
   });
 
-  it('opens the companion once the new computer lists it, and times out otherwise', () => {
+  it('opens the companion once the new computer lists it in a fresh read, and times out otherwise', () => {
     const waiting: CloudSwitchState = { phase: 'waiting', target, since: 1000 };
     const others = [row('cindy', 'mac-a'), row('dash', 'mac-b')];
-    expect(cloudSwitchTick(waiting, others, 'cindy', 1000 + CLOUD_SWITCH_TIMEOUT_MS - 1)).toEqual({ state: waiting, arrived: null });
-    expect(cloudSwitchTick(waiting, others, 'cindy', 1000 + CLOUD_SWITCH_TIMEOUT_MS)).toEqual({ state: { phase: 'timeout', target }, arrived: null });
+    const fresh = () => true;
+    expect(cloudSwitchTick(waiting, others, 'cindy', 1000 + CLOUD_SWITCH_TIMEOUT_MS - 1, fresh)).toEqual({ state: waiting, arrived: null });
+    expect(cloudSwitchTick(waiting, others, 'cindy', 1000 + CLOUD_SWITCH_TIMEOUT_MS, fresh)).toEqual({ state: { phase: 'timeout', target }, arrived: null });
     const arrived = row('cindy', 'mac-b');
-    expect(cloudSwitchTick(waiting, [...others, arrived], 'cindy', 2000)).toEqual({ state: { phase: 'idle' }, arrived });
+    // A cached row from an earlier stay on that computer does not end the wait.
+    expect(cloudSwitchTick(waiting, [...others, arrived], 'cindy', 2000, () => false)).toEqual({ state: waiting, arrived: null });
+    expect(cloudSwitchTick(waiting, [...others, arrived], 'cindy', 2000, fresh)).toEqual({ state: { phase: 'idle' }, arrived });
     const idle: CloudSwitchState = { phase: 'idle' };
-    expect(cloudSwitchTick(idle, [arrived], 'cindy', 2000)).toEqual({ state: idle, arrived: null });
+    expect(cloudSwitchTick(idle, [arrived], 'cindy', 2000, fresh)).toEqual({ state: idle, arrived: null });
   });
 });
 
@@ -80,7 +91,9 @@ describe('Chat Server client for companions', () => {
     const request = vi.fn(async (path: string): Promise<unknown> => path === '/me'
       ? { actor: { id: id(9), kind: 'human' }, deviceId: 'phone', capabilities: { companionHome: true } }
       : [{ id: id(1), kind: 'bot', externalId: 'cindy', name: 'Cindy', avatar: null, homeDeviceId: 'mac-a' },
-        { id: 'not-an-id', kind: 'bot', externalId: 'x', name: 'X', avatar: null, homeDeviceId: null }]);
+        { id: 'not-an-id', kind: 'bot', externalId: 'x', name: 'X', avatar: null, homeDeviceId: null },
+        // Deleted on its main computer: retired, never offered again.
+        { id: id(2), kind: 'bot', externalId: 'old', name: 'Old', avatar: null, homeDeviceId: 'mac-a', disabled: true }]);
     const client = createChatServerClient(request as never);
     await expect(client.capabilities()).resolves.toEqual({ companionHome: true });
     await expect(client.actors()).resolves.toEqual([{ id: id(1), kind: 'bot', externalId: 'cindy', name: 'Cindy', avatar: null, homeDeviceId: 'mac-a' }]);

@@ -40,7 +40,7 @@ import { useSidebarCollapsedState, useRegisterSidebarUpper } from '../feature-co
 import { SidebarIconButton } from '@/components/sidebar/SidebarIconButton';
 import { useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
-import { cloudOnlyRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
+import { cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
@@ -91,8 +91,8 @@ function BotsSidebarContent() {
   const { botId, sessionId, deviceId, groupId } = useParams();
   const cloud = useCompanionCloud();
   const rosterRemoteBots = useRemoteBots();
-  // Companions homed on a computer never listed here still get an (offline) row.
-  const remoteBots = useMemo(() => [...rosterRemoteBots, ...cloudOnlyRemoteBots(cloud, rosterRemoteBots)], [rosterRemoteBots, cloud]);
+  // One row per companion, on its main computer (offline rows for computers never listed here).
+  const remoteBots = useMemo(() => cloudRemoteBots(cloud, rosterRemoteBots), [rosterRemoteBots, cloud]);
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf);
   const rosterDevices = [

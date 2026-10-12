@@ -222,9 +222,11 @@ export function createChatServerClient(request: ChatRequest) {
       return { companionHome: me?.actor?.kind === 'human' && me.capabilities?.companionHome === true };
     },
     async actors(): Promise<ChatActor[]> {
-      const rows = await request<ChatActor[]>('/actors');
+      const rows = await request<Array<ChatActor & { disabled?: unknown }>>('/actors');
       if (!Array.isArray(rows)) throw new Error('INVALID_CHAT_ACTORS');
       return rows.flatMap(row => {
+        // Retired in the cloud (deleted on its main computer): not a companion any more.
+        if (row.disabled === true) return [];
         try { chatId(row.id); } catch { return []; }
         if (typeof row.externalId !== 'string' && row.externalId != null) return [];
         return [{ id: row.id, kind: String(row.kind), externalId: row.externalId ?? '', name: typeof row.name === 'string' ? row.name : '',

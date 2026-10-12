@@ -13,6 +13,8 @@ export const COMPANION_SKILL_PREFIX = 'companion.skill.v1:';
 const OWNED_PREFIXES = [COMPANION_PROFILE_KEY, COMPANION_MEMORY_PREFIX, COMPANION_SKILL_PREFIX];
 const MAX_KEY_LENGTH = 160;
 export const COMPANION_VALUE_MAX_BYTES = 60 * 1024;
+/** A value over the size limit was not uploaded (thrown only when every value is required). */
+export const COMPANION_VALUE_TOO_LARGE = 'COMPANION_VALUE_TOO_LARGE';
 
 export interface CompanionPreferenceValue { key: string; value: unknown }
 
@@ -85,8 +87,12 @@ export function createCompanionUploader(deps: {
     return write(actorId, key, value, json, server?.revision ?? fallbackRevision);
   }
 
-  /** Upload what changed; returns the number of writes made (bounded by `budget`). */
-  async function syncBot(botId: string, actorId: string, budget = Number.POSITIVE_INFINITY): Promise<number> {
+  /**
+   * Upload what changed; returns the number of writes made (bounded by `budget`). With
+   * `requireAll` (before a hand-over) an oversized value fails the sync instead of being skipped.
+   */
+  async function syncBot(botId: string, actorId: string, budget = Number.POSITIVE_INFINITY,
+    options: { requireAll?: boolean } = {}): Promise<number> {
     const values = await deps.readValues(botId);
     if (deps.state.bot(botId)?.actorId !== actorId || !deps.state.bot(botId)?.prefsSeeded) await seed(botId, actorId);
     const desired = new Map<string, unknown>();
@@ -96,10 +102,12 @@ export function createCompanionUploader(deps: {
       if (!desired.has(key) && entry.local && entry.hash !== TOMBSTONE_HASH) desired.set(key, null);
     }
     let writes = 0;
+    let skipped = 0;
     for (const [key, value] of desired) {
       const json = canonicalJson(value);
       if (key.length > MAX_KEY_LENGTH || Buffer.byteLength(json) > maxBytes) {
         deps.log?.warn('Companion value too large to upload; skipped', { actorId, keyKind: key.split(':')[0], bytes: Buffer.byteLength(json) });
+        skipped += 1;
         continue;
       }
       const hash = sha256(json);
@@ -120,6 +128,7 @@ export function createCompanionUploader(deps: {
       }
       deps.state.update(botId, actorId, entry => { entry.prefs[key] = { hash, revision, local: true }; });
     }
+    if (skipped > 0 && options.requireAll) throw new Error(COMPANION_VALUE_TOO_LARGE);
     return writes;
   }
 
