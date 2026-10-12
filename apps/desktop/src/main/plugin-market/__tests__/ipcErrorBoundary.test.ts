@@ -36,6 +36,8 @@ describe('Plugin Market IPC error boundary', () => {
     const body = registerSource.slice(start, end);
 
     expect(body).toContain('if (isIpcError(error)) throw error;');
+    expect(body).toContain('isPluginMarketPassthroughErrorCode(error.code)');
+    expect(body).toContain("throwIpcError(error.code, 'Plugin market operation failed');");
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
     expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(12);
   });

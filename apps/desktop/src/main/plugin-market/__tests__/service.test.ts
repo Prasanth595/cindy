@@ -5972,3 +5972,49 @@ describe('PluginMarketService install consent', () => {
     );
   });
 });
+
+describe('organization catalog access error', () => {
+  it('keeps public plugins and reports the enterprise outage without uninstalling', async () => {
+    const item = summary();
+    const h = harness([item]);
+    runtime.ghosts = [{
+      manifest: manifest('xd-feishu'),
+      dir: '/userData/cindy-brain/xd-feishu',
+      enabled: true,
+      namespace: 'xd',
+    }];
+    h.api.listAll.mockResolvedValueOnce({
+      plugins: [item],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: {
+        code: 'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+        message: '请升级 Cindy',
+      },
+    });
+
+    const snapshot = await h.service.snapshot({ discoveryOnly: true });
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_NAMESPACE_CLIENT_REQUIRED');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(item.id);
+    expect(runtime.uninstall).not.toHaveBeenCalled();
+  });
+
+  it('keeps a future organization access code with the public catalog', async () => {
+    const item = summary();
+    const h = harness([item]);
+    h.api.listAll.mockResolvedValueOnce({
+      plugins: [item],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: { code: 'PLUGIN_FUTURE_REASON', message: '以后再说' },
+    });
+
+    const snapshot = await h.service.snapshot({ discoveryOnly: true });
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_FUTURE_REASON');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(item.id);
+  });
+});

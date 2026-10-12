@@ -3,6 +3,8 @@ import os from 'node:os';
 import { ipcMain } from 'electron';
 
 import { isIpcError } from '../../shared/ipc-errors.js';
+import { ServerApiError } from '../serverApiClient.js';
+import { isPluginMarketPassthroughErrorCode } from './api.js';
 import {
   isGhostInstallApprovalToken,
   type GhostManifest,
@@ -117,6 +119,9 @@ async function invokePluginMarket<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (isIpcError(error)) throw error;
+    if (error instanceof ServerApiError && isPluginMarketPassthroughErrorCode(error.code)) {
+      throwIpcError(error.code, 'Plugin market operation failed');
+    }
     log.warn('plugin market IPC failed', {
       error: error instanceof Error ? error.message : String(error),
     });

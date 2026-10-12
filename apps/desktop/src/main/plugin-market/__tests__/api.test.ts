@@ -67,6 +67,12 @@ describe('PluginMarketApi 默认 fetcher 的日志隐私', () => {
     const opts = serverApi.serverApiFetch.mock.calls[0]?.[1] ?? {};
     expect(opts.redactErrorDetails).toBe(true);
     expect(opts.logLabel).toBe('/api/plugins');
+    expect(opts.allowedRedactedErrorCodes).toEqual([
+      'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+      'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+      'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+      'PLUGIN_LIST_CHANGED',
+    ]);
   });
 });
 
@@ -269,5 +275,101 @@ describe('PluginMarketApi', () => {
     await expect(new PluginMarketApi(fetcher).listAll()).resolves.toMatchObject({
       currentOrganization: null,
     });
+  });
+
+  it('keeps one organization access error across pages and rejects a disagreement', async () => {
+    const organization = { organizationId: 'org-acme', orgSlug: 'acme', pluginPrefix: 'acme' };
+    const accessError = { code: 'PLUGIN_NAMESPACE_CONFIG_REQUIRED', message: '暂不可用' };
+    const consistent = pagedFetcher(
+      {
+        plugins: [summary(PLUGIN_A, 'alpha')],
+        nextCursor: 'cursor-1',
+        currentOrganization: organization,
+        organizationAccessError: accessError,
+      },
+      {
+        plugins: [summary(PLUGIN_B, 'beta')],
+        nextCursor: null,
+        currentOrganization: organization,
+        organizationAccessError: accessError,
+      },
+    );
+    await expect(new PluginMarketApi(consistent).listAll()).resolves.toMatchObject({
+      plugins: [{ id: PLUGIN_A }, { id: PLUGIN_B }],
+      removals: [],
+      organizationAccessError: accessError,
+    });
+
+    const changedReason = pagedFetcher(
+      {
+        plugins: [summary(PLUGIN_A, 'alpha')],
+        nextCursor: 'cursor-1',
+        currentOrganization: organization,
+        organizationAccessError: {
+          code: 'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+          message: '稍后重试',
+        },
+      },
+      {
+        plugins: [summary(PLUGIN_B, 'beta')],
+        nextCursor: null,
+        currentOrganization: organization,
+        organizationAccessError: accessError,
+      },
+    );
+    await expect(new PluginMarketApi(changedReason).listAll()).resolves.toMatchObject({
+      plugins: [{ id: PLUGIN_A }, { id: PLUGIN_B }],
+      organizationAccessError: {
+        code: 'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+        message: '稍后重试',
+      },
+    });
+
+    const disagreed = pagedFetcher(
+      {
+        plugins: [summary(PLUGIN_A, 'alpha')],
+        nextCursor: 'cursor-1',
+        currentOrganization: organization,
+        organizationAccessError: accessError,
+      },
+      {
+        plugins: [summary(PLUGIN_B, 'beta')],
+        nextCursor: null,
+        currentOrganization: organization,
+      },
+    );
+    await expect(new PluginMarketApi(disagreed).listAll()).rejects.toThrow('organizationAccessError');
+  });
+
+  it('restarts the catalog once after PLUGIN_LIST_CHANGED and does not loop', async () => {
+    const changed = Object.assign(new Error('changed'), {
+      code: 'PLUGIN_LIST_CHANGED',
+      statusCode: 409,
+    });
+    const restarted = vi.fn()
+      .mockResolvedValueOnce({
+        schemaVersion: 2,
+        plugins: [summary(PLUGIN_A, 'alpha')],
+        nextCursor: 'cursor-1',
+        currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme', pluginPrefix: 'acme' },
+      })
+      .mockRejectedValueOnce(changed)
+      .mockResolvedValueOnce({
+        schemaVersion: 2,
+        plugins: [summary(PLUGIN_B, 'beta')],
+        nextCursor: null,
+        currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme', pluginPrefix: 'acme' },
+      });
+    await expect(new PluginMarketApi(restarted).listAll()).resolves.toMatchObject({
+      plugins: [{ id: PLUGIN_B }],
+    });
+    expect(restarted).toHaveBeenCalledTimes(3);
+    expect(String(restarted.mock.calls[2]?.[0])).not.toContain('cursor=');
+
+    const stuck = vi.fn().mockRejectedValue(changed);
+    await expect(new PluginMarketApi(stuck).listAll()).rejects.toMatchObject({
+      code: 'PLUGIN_LIST_CHANGED',
+    });
+    expect(stuck).toHaveBeenCalledTimes(2);
   });
 });

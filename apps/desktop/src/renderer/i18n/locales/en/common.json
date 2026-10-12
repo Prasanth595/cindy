@@ -6087,7 +6087,12 @@
           "invalidPackage": "This plugin package is invalid and cannot be installed. Contact the publisher.",
           "downloadTimeout": "The plugin download timed out. Please try again later.",
           "downloadFailed": "The plugin download failed. Check your connection and try again.",
-          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release."
+          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release.",
+          "namespaceClientRequired": "This version cannot show organization plugins. Update Cindy to continue. Installed organization plugins remain available.",
+          "organizationContextUnavailable": "Organization identity is temporarily unavailable. Try again later. Installed organization plugins remain available.",
+          "namespaceConfigRequired": "Organization plugins are temporarily unavailable. Installed organization plugins remain available.",
+          "listChanged": "The organization plugin catalog changed. Try again.",
+          "organizationUnavailable": "Organization plugins are temporarily unavailable. Installed organization plugins remain available."
         },
         "securityTitle": "Install and permissions",
         "securityDescription": "Cindy verifies package size and SHA-256 in the main process, validates the plugin manifest, then installs atomically. You confirm the plugin’s permissions before it is installed; first-time installs are then enabled automatically and can be disabled anytime on the Plugins page. Updates keep the current enabled state, and you are asked first when a new version needs more permissions.",

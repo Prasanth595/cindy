@@ -6061,7 +6061,12 @@
           "invalidPackage": "插件安装包异常，无法安装，请联系发布者。",
           "downloadTimeout": "插件下载超时，请稍后重试。",
           "downloadFailed": "插件下载失败，请检查网络后重试。",
-          "brokerRedirectPortRequired": "该插件声明了授权 broker，但同一项 OAuth 配置缺少 redirectPort，无法从插件市场安装。请联系发布者补充该字段并重新发布。"
+          "brokerRedirectPortRequired": "该插件声明了授权 broker，但同一项 OAuth 配置缺少 redirectPort，无法从插件市场安装。请联系发布者补充该字段并重新发布。",
+          "namespaceClientRequired": "当前版本无法查看企业插件，请更新 Cindy。已安装的企业插件仍可使用。",
+          "organizationContextUnavailable": "暂时无法确认企业身份，请稍后重试。已安装的企业插件仍可使用。",
+          "namespaceConfigRequired": "企业插件服务暂不可用。已安装的企业插件仍可使用。",
+          "listChanged": "企业插件目录已变化，请重试。",
+          "organizationUnavailable": "企业插件暂不可用。已安装的企业插件仍可使用。"
         },
         "securityTitle": "安装与权限",
         "securityDescription": "安装包会在主进程中校验大小与 SHA-256，再经 Cindy 插件清单校验后原子安装。安装前会请你确认插件的权限，装好后即自动开启，可随时在插件页停用；更新会保留当前生效状态，新版本权限变多时会先请你确认。",
