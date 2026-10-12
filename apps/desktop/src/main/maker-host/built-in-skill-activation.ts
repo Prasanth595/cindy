@@ -4,8 +4,17 @@ import { CINDY_LEARN_NAME, CINDY_SKILL_CREATOR_NAME } from '../../shared/cindyBu
 const BUILT_IN_SKILL_NAMES = [CINDY_SKILL_CREATOR_NAME, CINDY_LEARN_NAME];
 const ACTIVE_BUNDLE_LINK = '.active';
 const VERSIONS_DIRECTORY = '.versions';
+function normalizeForCompare(value: string): string {
+  const withoutWindowsNamespace = process.platform === 'win32'
+    ? value.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '')
+    : value;
+  const resolved = path.resolve(withoutWindowsNamespace);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 function realPathOrNormalized(value: string): string {
-  try { return fs.realpathSync(value); } catch { return path.normalize(value); }
+  try { return normalizeForCompare(fs.realpathSync.native(value)); }
+  catch { return normalizeForCompare(value); }
 }
 export function validActiveBundle(value: unknown): value is string {
   return typeof value === 'string' && /^v[1-9][0-9]*-[a-f0-9]{16}-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
