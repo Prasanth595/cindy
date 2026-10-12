@@ -464,13 +464,15 @@ function hasReviewRunMeta(raw: unknown): boolean {
 
 /**
  * Progress narration between tool calls is the development agent talking to
- * itself; it is neither the user's requirement nor the delivered result. The
- * final answer of each turn stays (as an unverified claim); commentary is dropped
- * so it cannot crowd the bounded context or read as evidence.
+ * itself; it is neither the user's requirement nor the delivered result. Only
+ * each turn's final answer stays (as an unverified claim), so narration cannot
+ * crowd the bounded context or read as evidence. Every harness marks that row:
+ * `turnCompleted` on Claude Code, Codex and Pi, plus Codex's `final_answer`
+ * phase. An unfinished turn has no final answer and contributes no claim.
  */
-function isAssistantCommentary(row: Pick<ReviewVisibleRow, 'role' | 'agentMeta'>): boolean {
-  if (row.role !== 'assistant') return false;
-  return parseJsonRecord(row.agentMeta)?.assistantPhase === 'commentary';
+function isAssistantFinalAnswer(row: Pick<ReviewVisibleRow, 'agentMeta'>): boolean {
+  const meta = parseJsonRecord(row.agentMeta);
+  return meta?.turnCompleted === true || meta?.assistantPhase === 'final_answer';
 }
 
 type ReviewVisibleRow = {
@@ -522,10 +524,14 @@ async function readReviewVisibleRows(sourceSessionId: string): Promise<ReviewVis
     for (const row of page) {
       const visibleRow = row;
       if (hasReviewRunMeta(visibleRow.agentMeta)) continue;
-      if (isAssistantCommentary(visibleRow)) continue;
       const hasVisibleText =
         visibleMessageTextForConversationSearch(visibleRow.role, visibleRow.content).length > 0;
       const hasHistoricalArtifact = historicalAttachmentsFromRows([visibleRow]).length > 0;
+      // Narration is dropped; a narration row that carries a produced artifact
+      // stays so the artifact remains reviewable.
+      if (visibleRow.role === 'assistant' && !isAssistantFinalAnswer(visibleRow) && !hasHistoricalArtifact) {
+        continue;
+      }
       if (!hasVisibleText && !hasHistoricalArtifact) continue;
       rows.push(visibleRow);
       if (rows.length === MAX_CONTEXT_ROWS) break;

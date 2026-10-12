@@ -14164,6 +14164,8 @@
       "baseline": "compared with {{base}}",
       "uncommitted": "includes uncommitted changes",
       "additionalDirectories": "Also: {{dirs}}",
+      "uncovered": "Not covered: {{dirs}}",
+      "uncheckedDirs": "{{count}} more task directories were not checked",
       "artifacts": "Artifacts: {{count}}",
       "focus": "Focus: {{focus}}",
       "task": "Reviewing the current result against the task goal"

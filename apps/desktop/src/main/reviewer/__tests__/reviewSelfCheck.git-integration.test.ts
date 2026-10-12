@@ -120,32 +120,19 @@ it('reviews real committed and dirty code in the Bash worktree despite an empty 
   expect((await runtime.resolveScope('source')).repoRoot).toBe(main);
 }, 30_000);
 
-it('reviews every repository a task changed, skipping checkouts it only read', async () => {
-  fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-multi-repo-review-')));
-  const initRepo = async (dir: string) => {
-    await fs.mkdir(dir);
-    const git = (args: string[]) => runGit(args, { cwd: dir });
-    await git(['init', '-b', 'main']);
-    await git(['config', 'user.name', 'Review Test']);
-    await git(['config', 'user.email', 'review@example.test']);
-    await fs.writeFile(path.join(dir, 'app.ts'), 'export const value = 1;\n');
-    await git(['add', 'app.ts']);
-    await git(['commit', '--no-gpg-sign', '-s', '-m', 'baseline']);
-    return git;
-  };
-  const client = path.join(fixtureRoot, 'client');
-  const server = path.join(fixtureRoot, 'server');
-  const readOnly = path.join(fixtureRoot, 'read-only');
-  await initRepo(client);
-  const serverGit = await initRepo(server);
-  await initRepo(readOnly);
-  await fs.writeFile(path.join(client, 'app.ts'), 'export const value = 2;\n');
-  await serverGit(['checkout', '-b', 'feature']);
-  await fs.writeFile(path.join(server, 'committed.ts'), 'export const removed = true;\n');
-  await serverGit(['add', 'committed.ts']);
-  await serverGit(['commit', '--no-gpg-sign', '-s', '-m', 'server change']);
-  await fs.writeFile(path.join(server, 'app.ts'), 'export const value = 3;\n');
+async function initFixtureRepo(dir: string) {
+  await fs.mkdir(dir);
+  const git = (args: string[]) => runGit(args, { cwd: dir });
+  await git(['init', '-b', 'main']);
+  await git(['config', 'user.name', 'Review Test']);
+  await git(['config', 'user.email', 'review@example.test']);
+  await fs.writeFile(path.join(dir, 'app.ts'), 'export const value = 1;\n');
+  await git(['add', 'app.ts']);
+  await git(['commit', '--no-gpg-sign', '-s', '-m', 'baseline']);
+  return git;
+}
 
+function useClientScope(client: string) {
   runtime.resolveScope.mockImplementation((sessionId: string) => resolveReviewScope(sessionId, {
     getSessionRow: async () => ({ id: 'source', workingDir: client, worktreePath: null, remoteHostId: null }),
     getManagedWorktreePath: () => null,
@@ -154,19 +141,60 @@ it('reviews every repository a task changed, skipping checkouts it only read', a
     }),
     git: runGit,
   }));
+}
+
+const toolRow = (createdAt: number, toolName: string, input: Record<string, unknown>) => ({
+  createdAt,
+  content: JSON.stringify({ toolName, input }),
+});
+
+it('reviews every repository a task changed, skipping checkouts it only read', async () => {
+  fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-multi-repo-review-')));
+  const client = path.join(fixtureRoot, 'client');
+  const server = path.join(fixtureRoot, 'server');
+  const piRepo = path.join(fixtureRoot, 'pi-repo');
+  const commandOnly = path.join(fixtureRoot, 'command-only');
+  const readOnly = path.join(fixtureRoot, 'read-only');
+  await initFixtureRepo(client);
+  const serverGit = await initFixtureRepo(server);
+  await initFixtureRepo(piRepo);
+  await initFixtureRepo(commandOnly);
+  await initFixtureRepo(readOnly);
+
+  // Someone else's edit, made before the task ever looked at this checkout.
+  const taskStartedAt = Date.now();
+  await fs.writeFile(path.join(readOnly, 'app.ts'), 'export const unrelated = true;\n');
+  const before = new Date(taskStartedAt - 60_000);
+  await fs.utimes(path.join(readOnly, 'app.ts'), before, before);
+
+  await fs.writeFile(path.join(client, 'app.ts'), 'export const value = 2;\n');
+  await serverGit(['checkout', '-b', 'feature']);
+  await fs.writeFile(path.join(server, 'committed.ts'), 'export const removed = true;\n');
+  await serverGit(['add', 'committed.ts']);
+  await serverGit(['commit', '--no-gpg-sign', '-s', '-m', 'server change']);
+  await fs.writeFile(path.join(server, 'app.ts'), 'export const value = 3;\n');
+  await fs.writeFile(path.join(piRepo, 'app.ts'), 'export const value = 5;\n');
+  // Changed by a shell command while the task worked there; no edit tool event.
+  await fs.writeFile(path.join(commandOnly, 'app.ts'), 'export const value = 6;\n');
+
+  useClientScope(client);
   const touchedDirs = collectTouchedDirs([
-    JSON.stringify({ toolName: 'exec', input: { cwd: readOnly } }),
-    JSON.stringify({ toolName: 'exec', input: { cwd: path.join(server) } }),
-    JSON.stringify({ toolName: 'file_change', input: { changes: [{ path: path.join(client, 'app.ts') }] } }),
+    toolRow(taskStartedAt + 5, 'exec', { cwd: readOnly }),
+    toolRow(taskStartedAt + 4, 'exec', { cwd: commandOnly }),
+    toolRow(taskStartedAt + 3, 'edit', { path: path.join(piRepo, 'app.ts'), edits: [] }),
+    toolRow(taskStartedAt + 2, 'exec', { cwd: server }),
+    toolRow(taskStartedAt + 1, 'file_change', { changes: [{ path: path.join(server, 'app.ts') }] }),
   ]);
 
-  const repos = await loadAdditionalReviewRepositories({
+  const { repos, skipped, uncheckedDirs } = await loadAdditionalReviewRepositories({
     sourceSessionId: 'source',
     primaryRoot: client,
     touchedDirs,
   });
-  expect(repos.map((repo) => repo.root)).toEqual([server]);
-  const [serverRepo] = repos;
+  expect(repos.map((repo) => repo.root)).toEqual([commandOnly, piRepo, server]);
+  expect(skipped).toEqual([]);
+  expect(uncheckedDirs).toBe(0);
+  const serverRepo = repos.find((repo) => repo.root === server);
   expect(serverRepo?.workspace?.diffs.unstaged.map((diff) => diff.path)).toContain('app.ts');
   expect(serverRepo?.branch?.diffs.map((diff) => diff.path)).toContain('committed.ts');
 
@@ -178,11 +206,42 @@ it('reviews every repository a task changed, skipping checkouts it only read', a
     return buildReviewPrompt({ ...evidence, primaryRoot: client, additionalRepositories: repos }).prompt;
   });
   expect(prompt).toContain(`## 其它仓库：${server}`);
+  expect(prompt).toContain(`## 其它仓库：${piRepo}`);
   expect(prompt).toContain('committed.ts');
   expect(prompt).toContain('export const value = 3;');
   expect(prompt).not.toContain(readOnly);
+  expect(prompt).not.toContain('unrelated');
 
   expect(await additionalReviewRepositoriesAreCurrent('source', repos)).toBe(true);
   await fs.writeFile(path.join(server, 'app.ts'), 'export const value = 4;\n');
   expect(await additionalReviewRepositoriesAreCurrent('source', repos)).toBe(false);
+}, 30_000);
+
+it('reports repositories over the cap as coverage gaps instead of dropping them silently', async () => {
+  fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-multi-repo-cap-')));
+  const client = path.join(fixtureRoot, 'client');
+  await initFixtureRepo(client);
+  const others = Array.from({ length: 6 }, (_, index) => path.join(fixtureRoot!, `repo-${index}`));
+  for (const repo of others) {
+    await initFixtureRepo(repo);
+    await fs.writeFile(path.join(repo, 'app.ts'), 'export const value = 9;\n');
+  }
+  useClientScope(client);
+  const now = Date.now();
+  const result = await loadAdditionalReviewRepositories({
+    sourceSessionId: 'source',
+    primaryRoot: client,
+    touchedDirs: collectTouchedDirs(
+      others.map((repo, index) => toolRow(now - index, 'Edit', { file_path: path.join(repo, 'app.ts') })),
+    ),
+  });
+  expect(result.repos.map((repo) => repo.root)).toEqual(others.slice(0, 4));
+  expect(result.skipped).toEqual(others.slice(4).map((root) => ({ root, reason: 'limit' })));
+
+  const prompt = buildReviewPrompt({
+    context: [], workspace: null, changeSet: null, artifacts: [],
+    primaryRoot: client, additionalRepositories: result.repos, skippedRepositories: result.skipped,
+  }).prompt;
+  expect(prompt).toContain(`${others[4]}（超出仓库数量上限，未检查）`);
+  expect(prompt).toContain('结论中必须写明这一覆盖缺口');
 }, 30_000);

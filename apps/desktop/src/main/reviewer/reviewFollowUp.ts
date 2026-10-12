@@ -22,6 +22,9 @@ export function buildReviewInputSummary(input: {
   baseRef?: string;
   hasUncommittedChanges?: boolean;
   additionalWorkingDirs?: readonly string[];
+  /** Repositories the task touched that this review could not include. */
+  uncoveredWorkingDirs?: readonly string[];
+  uncheckedTaskDirs?: number;
   artifactCount: number;
   focus?: string;
 }): string {
@@ -42,6 +45,16 @@ export function buildReviewInputSummary(input: {
       fill(t('review.inputSummary.additionalDirectories'), {
         dirs: input.additionalWorkingDirs.join(', '),
       }),
+    );
+  }
+  if (input.uncoveredWorkingDirs?.length) {
+    lines.push(
+      fill(t('review.inputSummary.uncovered'), { dirs: input.uncoveredWorkingDirs.join(', ') }),
+    );
+  }
+  if ((input.uncheckedTaskDirs ?? 0) > 0) {
+    lines.push(
+      fill(t('review.inputSummary.uncheckedDirs'), { count: String(input.uncheckedTaskDirs) }),
     );
   }
   if (input.artifactCount > 0) {

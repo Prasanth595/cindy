@@ -27,6 +27,16 @@ describe('review follow-up text', () => {
     ].join('\n'));
   });
 
+  it('names repositories the review could not cover', () => {
+    setMainLocale('zh-CN');
+    expect(buildReviewInputSummary({
+      workingDir: '/work/client',
+      uncoveredWorkingDirs: ['/work/a', '/work/b'],
+      uncheckedTaskDirs: 3,
+      artifactCount: 0,
+    }).split('\n').slice(2)).toEqual(['未覆盖：/work/a, /work/b', '另有 3 个任务目录未检查']);
+  });
+
   it('falls back to a task-goal review line without a directory', () => {
     setMainLocale('en');
     expect(buildReviewInputSummary({ artifactCount: 0 })).toBe(

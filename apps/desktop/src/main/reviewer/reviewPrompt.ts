@@ -88,6 +88,10 @@ export interface BuildReviewPromptInput {
   /** The primary repository root, named when other repositories are also reviewed. */
   primaryRoot?: string;
   additionalRepositories?: ReviewRepositoryEvidence[];
+  /** Repositories the task touched that this review could not include. */
+  skippedRepositories?: Array<{ root: string; reason: 'limit' | 'unreadable' }>;
+  /** Task directories beyond the scan budget that were never checked. */
+  uncheckedTaskDirs?: number;
   artifacts: ReviewArtifactLabel[];
   artifactsOmitted?: boolean;
   artifactExcerpts?: ReviewArtifactExcerpt[];
@@ -434,6 +438,20 @@ export function buildReviewPrompt(input: BuildReviewPromptInput): BuiltReviewPro
     : '') + (additionalRepos.length > 0
     ? `\n本任务同时改动了多个仓库或工作树，它们共同构成本次成果，必须一起审查：主仓库 ${inlineLabel(input.primaryRoot ?? '当前工作目录')}（即当前工作目录）；其它仓库 ${additionalRepos.map((repo) => inlineLabel(repo.root)).join('、')}。读取文件时使用各自的绝对路径；不得用一个仓库的代码去评判另一个仓库的补丁。`
     : '');
+  const skippedRepos = input.skippedRepositories ?? [];
+  const coverageGaps = [
+    ...(skippedRepos.length > 0
+      ? [`以下任务涉及的仓库未纳入本次审查：${skippedRepos
+          .map((repo) => `${inlineLabel(repo.root)}（${repo.reason === 'limit' ? '超出仓库数量上限，未检查' : '读取失败'}）`)
+          .join('、')}。`]
+      : []),
+    ...((input.uncheckedTaskDirs ?? 0) > 0
+      ? [`另有 ${input.uncheckedTaskDirs} 个任务目录超出扫描上限，未检查是否属于其它仓库。`]
+      : []),
+  ];
+  const coverageWithGaps = coverageGaps.length > 0
+    ? `${coverage}\n${coverageGaps.join('')}不得声称已覆盖这些仓库；结论中必须写明这一覆盖缺口。`
+    : coverage;
   const primaryBudget = additionalRepos.length > 0 ? Math.floor(MAX_DIFF_CHARS / 2) : MAX_DIFF_CHARS;
   const changeEvidence = additionalRepos.length > 0
     ? [
@@ -457,7 +475,7 @@ export function buildReviewPrompt(input: BuildReviewPromptInput): BuiltReviewPro
 
 ## 审查目标
 
-${focusSection}${coverage}
+${focusSection}${coverageWithGaps}
 
 显式成果：
 ${artifacts}

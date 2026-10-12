@@ -14111,6 +14111,8 @@
       "baseline": "{{base}}와 비교",
       "uncommitted": "커밋하지 않은 변경 포함",
       "additionalDirectories": "추가: {{dirs}}",
+      "uncovered": "검토 제외: {{dirs}}",
+      "uncheckedDirs": "작업 디렉터리 {{count}}개는 확인하지 않음",
       "artifacts": "결과물: {{count}}개",
       "focus": "중점: {{focus}}",
       "task": "작업 목표에 비추어 현재 결과물을 검토"

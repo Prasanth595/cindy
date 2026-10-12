@@ -381,6 +381,7 @@ import {
   loadAdditionalReviewRepositories,
   resolveReviewRepoRoot,
   type LoadedReviewRepository,
+  type SkippedReviewRepository,
 } from '../reviewer/reviewAdditionalRepositories.js';
 import {
   listReviewHistoricalAttachments,
@@ -9066,6 +9067,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let evidence!: Awaited<ReturnType<typeof loadReviewEvidence>>;
       let primaryRepoRoot: string | null = null;
       let additionalRepositories: LoadedReviewRepository[] = [];
+      let skippedRepositories: SkippedReviewRepository[] = [];
+      let uncheckedTaskDirs = 0;
       let workspaceSelected = false;
       let historyCaptureIncomplete = false;
       let sourceArtifactFingerprint = '';
@@ -9121,12 +9124,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // plus a server checkout). Review them as one deliverable instead of only
         // the directory the latest tool call happened to use.
         primaryRepoRoot = await resolveReviewRepoRoot(sourceWorkingDir);
-        additionalRepositories = await loadAdditionalReviewRepositories({
+        const additional = await loadAdditionalReviewRepositories({
           sourceSessionId: source.id,
           primaryRoot: primaryRepoRoot ?? sourceWorkingDir,
           touchedDirs: await listSessionTouchedDirsLive(source.id),
           warn: (message, fields) => log.warn(message, { sourceSessionId: source.id, ...fields }),
         });
+        additionalRepositories = additional.repos;
+        skippedRepositories = additional.skipped;
+        uncheckedTaskDirs = additional.uncheckedDirs;
         // An empty checkout or non-Git source commonly means the work happened
         // elsewhere. Historical turn metadata cannot tell us which current code
         // the user wants; ask about the directory instead of refusing the run.
@@ -9207,6 +9213,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 additionalRepositories,
               }
             : {}),
+          ...(skippedRepositories.length > 0 ? { skippedRepositories } : {}),
+          ...(uncheckedTaskDirs > 0 ? { uncheckedTaskDirs } : {}),
           artifacts: evidence.artifacts,
           artifactsOmitted: evidence.artifactsOmitted,
           artifactExcerpts: evidence.artifactExcerpts,
@@ -9230,6 +9238,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         replyLanguage: builtPrompt.replyLanguage,
         inputSummary: buildReviewInputSummary({
           ...reviewWorkspaceMeta,
+          uncoveredWorkingDirs: skippedRepositories.map((repo) => repo.root),
+          uncheckedTaskDirs,
           artifactCount: evidence.artifacts.length,
           focus: evidence.focusPath ?? request.focus,
         }),

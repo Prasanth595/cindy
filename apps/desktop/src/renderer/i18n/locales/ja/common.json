@@ -14111,6 +14111,8 @@
       "baseline": "{{base}} と比較",
       "uncommitted": "未コミットの変更を含む",
       "additionalDirectories": "ほかに：{{dirs}}",
+      "uncovered": "対象外：{{dirs}}",
+      "uncheckedDirs": "ほかに {{count}} 個のタスクディレクトリは未確認",
       "artifacts": "成果物：{{count}} 件",
       "focus": "重点：{{focus}}",
       "task": "タスクの目標に照らして現在の成果をレビュー"

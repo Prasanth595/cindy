@@ -14111,6 +14111,8 @@
       "baseline": "對比 {{base}}",
       "uncommitted": "包含未提交修改",
       "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
       "artifacts": "成果：{{count}} 項",
       "focus": "關注：{{focus}}",
       "task": "依任務目標審查目前成果"
