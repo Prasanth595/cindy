@@ -62,6 +62,11 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
     if (id === 'tasks') void navigation.chooseMode('tasks');
   };
   const afterDrawer = (action: () => void) => { pending.current = action; setDrawer(false); };
+  const openDrawerPage = (href: Parameters<typeof push>[0]) => {
+    pending.current = null;
+    setDrawer(false);
+    push(href);
+  };
   const finishOverlay = () => { const action = pending.current; pending.current = null; action?.(); };
   useEffect(() => {
     mounted.current = true;
@@ -121,9 +126,9 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       onModeChange={(mode) => afterDrawer(() => { void navigation.setMode(mode); })}
       onClose={() => { pending.current = null; setDrawer(false); }} onClosed={finishOverlay}
       onOpenSearch={() => afterDrawer(() => setSearchEpoch((epoch) => epoch + 1))}
-      onOpenPlugins={() => afterDrawer(() => push('/plugins'))}
-      onOpenDevices={() => afterDrawer(() => push('/devices/manage'))}
-      onOpenSettings={() => afterDrawer(() => push('/settings'))}
+      onOpenPlugins={() => openDrawerPage('/plugins')}
+      onOpenDevices={() => openDrawerPage('/devices/manage')}
+      onOpenSettings={() => openDrawerPage('/settings')}
       onOpenAccounts={() => afterDrawer(() => setAccounts(true))}
       // 抽屉内部已 confirmLogout;成功后与设置页一致直接回登录页,不依赖外层自动跳转的时序。
       onLogout={() => {

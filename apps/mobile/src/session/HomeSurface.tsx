@@ -628,7 +628,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
   const [chromeMenuOpen, setChromeMenuOpen] = useState(false);
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
-  const [chromeMenuCloseInstant, setChromeMenuCloseInstant] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   // 菜单关闭动画完成(Modal 卸载)后要执行的动作。iOS 上两个兄弟 Modal 重叠时,第二个 Modal
   // 是叠在菜单 Modal 的 VC 上 present 的,菜单淡出后卸载会把它连带 dismiss 掉——所以从菜单里
@@ -1669,7 +1668,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const openChromeMenu = useCallback(() => {
     pendingMenuActionRef.current = null;
     setDeviceMenuOpen(false);
-    setChromeMenuCloseInstant(false);
     setChromeMenuOpen(true);
   }, []);
 
@@ -3317,48 +3315,39 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         mode="tasks"
         onModeChange={onModeChange ? (next) => {
           pendingMenuActionRef.current = () => onModeChange(next);
-          setChromeMenuCloseInstant(false);
           setChromeMenuOpen(false);
         } : undefined}
-        closeInstant={chromeMenuCloseInstant}
         loggingOut={loggingOut}
         onClose={() => {
-          setChromeMenuCloseInstant(false);
+          pendingMenuActionRef.current = null;
           setChromeMenuOpen(false);
         }}
-        onClosed={() => {
-          setChromeMenuCloseInstant(false);
-          handleChromeMenuClosed();
-        }}
+        onClosed={handleChromeMenuClosed}
         onOpenSearch={() => {
           // 搜索框 autoFocus 要等菜单窗口完全卸载(onClosed)后再挂载:Android 的
           // Dialog 还在退场时底层 Activity 没有窗口焦点,首次聚焦和软键盘请求会丢。
           pendingMenuActionRef.current = () => setSearchOpen(true);
-          setChromeMenuCloseInstant(false);
           setChromeMenuOpen(false);
         }}
         onOpenAccounts={() => {
           pendingMenuActionRef.current = () => setAccountSwitcherOpen(true);
-          setChromeMenuCloseInstant(false);
           setChromeMenuOpen(false);
         }}
         onOpenPlugins={() => {
           pendingMenuActionRef.current = null;
-          guardedPush('/plugins');
-          setChromeMenuCloseInstant(true);
           setChromeMenuOpen(false);
+          guardedPush('/plugins');
         }}
         onOpenDevices={() => {
           pendingMenuActionRef.current = null;
-          guardedPush('/devices/manage');
-          setChromeMenuCloseInstant(true);
           setChromeMenuOpen(false);
+          guardedPush('/devices/manage');
         }}
         onOpenSettings={() => {
+          // 页面转场与抽屉退场同步开始;搜索和账号浮层仍等待 onClosed。
           pendingMenuActionRef.current = null;
-          guardedPush('/settings');
-          setChromeMenuCloseInstant(true);
           setChromeMenuOpen(false);
+          guardedPush('/settings');
         }}
         // 抽屉内部先确认(confirmLogout)再调 onLogout,这里不重复确认。
         hasRunningTasks={runningSessionIds.size > 0}
