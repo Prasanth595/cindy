@@ -6,8 +6,32 @@ import { requireObject, throwIpcError } from './utils/ipcValidate.js';
 /** Native clipboard dependencies keep validation testable without Electron. */
 interface TextClipboardDependencies {
   assertTrustedSender: (event: IpcMainInvokeEvent) => void;
+  assertFocusedSender: (event: IpcMainInvokeEvent) => void;
   write: (text: string) => void | Promise<void>;
   read: () => string | undefined | Promise<string | undefined>;
+}
+
+const issuedClipboardText = new Map<string, number>();
+
+/** Record a share link Main just created, so copy only accepts that payload. */
+export function rememberIssuedClipboardText(text: string, expiresAt: string): void {
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!text || !Number.isFinite(expiresAtMs)) return;
+  issuedClipboardText.set(text, expiresAtMs);
+}
+
+export function clearIssuedClipboardText(): void {
+  issuedClipboardText.clear();
+}
+
+function isLiveIssuedClipboardText(text: string): boolean {
+  const expiresAtMs = issuedClipboardText.get(text);
+  if (expiresAtMs == null) return false;
+  if (expiresAtMs <= Date.now()) {
+    issuedClipboardText.delete(text);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -21,9 +45,13 @@ export async function copyTextToClipboard(
   deps: TextClipboardDependencies,
 ): Promise<void> {
   deps.assertTrustedSender(event);
+  deps.assertFocusedSender(event);
   const { text } = requireObject(input);
   if (typeof text !== 'string' || !text || text.length > MAX_CLIPBOARD_TEXT_CHARS) {
     throwIpcError('INVALID_PARAMS', 'Invalid clipboard text');
+  }
+  if (!isLiveIssuedClipboardText(text)) {
+    throwIpcError('PERMISSION_DENIED', 'Clipboard text was not issued by Main');
   }
   let actual: string | undefined;
   try {

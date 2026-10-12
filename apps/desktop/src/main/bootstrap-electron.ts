@@ -7788,10 +7788,16 @@ const registerIpcHandlers = () => {
 
   // Hyprland may drop Chromium clipboard writes; reuse the remote-desktop
   // data-control writer there. Local only; never route this to a remote host.
-  // A user click is local intent, so skip the remote-only compositor lock probe.
+  // Focused app-content is the local-intent check; skip the remote lock probe.
   ipcMain.handle(COPY_TEXT_TO_CLIPBOARD_CHANNEL, (event, params) =>
     copyTextToClipboard(event, params, {
       assertTrustedSender: assertTrustedAppRendererEvent,
+      assertFocusedSender: (senderEvent) => {
+        const win = BrowserWindow.fromWebContents(senderEvent.sender);
+        if (!isFocusedAppContentWindow(win)) {
+          throwIpcError('PERMISSION_DENIED', '此操作只能在 Cindy 主窗口聚焦时发起');
+        }
+      },
       write: (text) =>
         supportsLinuxClipboard()
           ? writeLinuxClipboard({ text }, () => true, { checkLock: false })

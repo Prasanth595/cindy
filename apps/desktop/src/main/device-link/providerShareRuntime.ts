@@ -38,6 +38,7 @@ import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
+import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   getControllerDisplayName,
@@ -369,7 +370,9 @@ async function createLink(providerId: string): Promise<ProviderShareLinkCreated>
   // 倒计时按本机收到响应的时刻计算：链接刚签发，服务端从签发起算 5 分钟。不拿服务端的绝对时间
   // 和本机时钟相减(两边时钟可能有偏差，偏快会一生成就显示已过期)，并留出请求往返的余量。
   const expiresAt = new Date(Date.now() + PROVIDER_SHARE_LINK_TTL_MS - LINK_TTL_SAFETY_MS).toISOString();
-  return { link: providerShareLinkFor(created.invitation), expiresAt };
+  const link = providerShareLinkFor(created.invitation);
+  rememberIssuedClipboardText(link, expiresAt);
+  return { link, expiresAt };
 }
 
 async function execute(command: ProviderShareCommand): Promise<unknown> {
