@@ -189,4 +189,56 @@ describe('market identity backfill', () => {
     expect(next.instances.helper).toMatchObject({ pluginId: null, source: 'manual' });
     expect(next.instances['_ns__xd__helper']).toMatchObject({ pluginId: 'plugin-org', source: 'market' });
   });
+
+  it('does not drop existing records when publish runs before the cache is loaded', () => {
+    const registry: PluginInstanceRegistry = {
+      ...emptyPluginInstanceRegistry(),
+      census: { completedAt: NOW, pendingRelIds: [] },
+      instances: {
+        other: {
+          instanceKey: 'other',
+          contentRelId: 'other',
+          ghostId: 'other',
+          namespace: null,
+          namespaceState: 'confirmed',
+          pluginId: null,
+          source: 'manual',
+          receiptRevision: 'rev-1',
+          packageSha256: 'ab'.repeat(32),
+          active: true,
+        },
+      },
+    };
+    const store = memoryStore(registry);
+    const created = new PluginInstanceRegistryService({
+      ensureOwner: () => {},
+      registryStore: () => store,
+      listContentEntries: () => [{ relId: 'other', dir: 'other' }],
+      receiptFact: () => ({
+        ghostId: 'other',
+        hasNamespace: true,
+        namespace: null,
+        revision: 'rev-1',
+        packageSha256: 'ab'.repeat(32),
+      }),
+      censusCandidates: () => [],
+      readApproval: () => ({ state: 'missing' }),
+      recordLegacyEligibility: () => {},
+    });
+    created.publish({
+      instanceKey: '_ns__acme__helper',
+      contentRelId: '_ns/acme/helper',
+      ghostId: 'helper',
+      namespace: 'acme',
+      namespaceState: 'confirmed',
+      pluginId: 'plugin-helper',
+      source: 'market',
+      receiptRevision: 'rev-2',
+      packageSha256: 'cd'.repeat(32),
+      active: true,
+    });
+    const saved = store.snapshot();
+    expect(saved.instances.other?.namespaceState).toBe('confirmed');
+    expect(saved.instances['_ns__acme__helper']?.namespace).toBe('acme');
+  });
 });

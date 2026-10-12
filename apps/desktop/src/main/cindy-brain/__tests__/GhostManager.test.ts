@@ -6001,3 +6001,63 @@ describe('GhostManager · manual 装入侧对等校验', () => {
     );
   });
 });
+
+describe('registry publish after install commit', () => {
+  it('keeps the install successful when the registry write fails and adopts it on the next list', async () => {
+    let marketPluginId: string | null = null;
+    const warnings: string[] = [];
+    const local = new GhostManager({
+      getRootDir: () => rootDir,
+      getLocale: () => 'zh-CN',
+      log: {
+        info: () => {},
+        warn: (message) => { warnings.push(message); },
+      },
+      marketIdentityForInstance: () => (marketPluginId ? { pluginId: marketPluginId } : null),
+      mutateSnapshot: async (request) => {
+        const { parentDir, ...workerRequest } = request;
+        await runGhostSnapshotWorkerRequest(workerRequest, parentDir);
+      },
+    });
+    const original = fs.writeFileSync.bind(fs);
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((file, data, encoding) => {
+      if (String(file).includes('plugin-instances')) throw new Error('disk full');
+      return original(file, data, encoding as never);
+    });
+    const file = await makeCindy('market.cindy', goodManifest('helper'), { 'main.js': 'module.exports = {};' });
+    const result = await local.install(file, {
+      namespace: 'acme',
+      registrySource: 'market',
+      pluginId: 'plugin-helper',
+    });
+    const afterCommit = vi.fn();
+    expect(result).toHaveProperty('ghost');
+    if (!('ghost' in result)) {
+      spy.mockRestore();
+      return;
+    }
+    afterCommit(result.ghost);
+    expect(afterCommit).toHaveBeenCalledTimes(1);
+    expect(warnings).toContain('plugin instance registry publish failed after install commit');
+    const registryPath = path.join(local.approvalStateRoot(), 'plugin-instances.v2.json');
+    expect(fs.existsSync(registryPath)).toBe(false);
+    expect(fs.existsSync(result.ghost.dir)).toBe(true);
+    spy.mockRestore();
+    local.list();
+    const saved = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as {
+      instances: Record<string, { ghostId: string; namespace: string | null; namespaceState: string; source: string; pluginId: string | null }>;
+    };
+    const adopted = Object.values(saved.instances).find((item) => item.ghostId === 'helper');
+    expect(adopted).toMatchObject({ namespace: 'acme', namespaceState: 'confirmed' });
+    marketPluginId = 'plugin-helper';
+    local.list();
+    const healed = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as typeof saved;
+    const sourced = Object.values(healed.instances).find((item) => item.ghostId === 'helper');
+    expect(sourced).toMatchObject({
+      namespace: 'acme',
+      namespaceState: 'confirmed',
+      source: 'market',
+      pluginId: 'plugin-helper',
+    });
+  });
+});

@@ -284,6 +284,12 @@ export class PluginInstanceRegistryService {
 
   publish(record: PluginInstanceRecord): void {
     if (this.blocked) return;
+    // A cold cache is not an empty registry. Sync first so this write cannot
+    // replace every other instance with the one row being published.
+    if (!this.registry) {
+      this.sync();
+      if (this.blocked) return;
+    }
     const next = upsertInstance(this.registry ?? emptyPluginInstanceRegistry(), record);
     this.deps.registryStore().write(next);
     this.registry = next;

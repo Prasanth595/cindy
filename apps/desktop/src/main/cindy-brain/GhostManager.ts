@@ -821,7 +821,14 @@ export class GhostManager {
    */
 
   private publishInstalledInstance(record: PluginInstanceRecord): void {
-    this.instanceRegistryService.publish(record);
+    try {
+      this.instanceRegistryService.publish(record);
+    } catch (error) {
+      this.options.log?.warn('plugin instance registry publish failed after install commit', {
+        instanceKey: record.instanceKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private confirmRecordedNamespace(
@@ -830,7 +837,17 @@ export class GhostManager {
     revision: string,
     packageSha256: string | null,
   ): boolean {
-    return this.instanceRegistryService.confirmNamespace(relOrKey, namespace, revision, packageSha256);
+    try {
+      return this.instanceRegistryService.confirmNamespace(relOrKey, namespace, revision, packageSha256);
+    } catch (error) {
+      // Receipt is already committed. A registry write failure must not turn
+      // that success into a migration error; the next list() adopts the row.
+      this.options.log?.warn('plugin instance registry confirm failed after namespace commit', {
+        instanceKey: relOrKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
   }
 
 
