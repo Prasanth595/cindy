@@ -12,8 +12,8 @@ import { shouldShowOpenPathError } from '../../../shared/openPathResult';
  *   0. 在侧边栏文件浏览器中打开 → select/reveal the file in the RSB file browser
  *   1. 在侧边栏浏览器中打开(可选,sidebarOpenSessionId 提供时;html chip 用)
  *   2. 打开方式 ▸        →(文件 + 本地会话)默认应用 + 枚举出的可用应用
- *                          (Windows 注册表,见 main/openWithApps.ts)。应用
- *                          列表在子菜单展开时懒加载。不提供「选择其他应用…」
+ *                          (系统注册应用,见 main/openWithApps.ts)。应用
+ *                          列表在右键时预取、子菜单整组显示。不提供「选择其他应用…」
  *                          (系统 OpenAs 对话框实测起不来,且与 Codex 形态不符)。
  *   3. 复制              → copy the file itself as a clipboard file reference
  *                          (pasteable into Explorer / Finder / chat apps)
@@ -32,7 +32,7 @@ import { shouldShowOpenPathError } from '../../../shared/openPathResult';
  * actually opens the menu — chips that are never right-clicked pay nothing.
  */
 
-import { useRef, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import {
   AppWindow,
   ClipboardCopy,
@@ -112,12 +112,17 @@ export function useFileChipContextMenu({
 }): UseFileChipContextMenu {
   const { t } = useTranslation();
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  // 打开方式子菜单的应用列表:null = 未加载;子菜单展开时懒加载(枚举 + 图标
-  // 提取都在 main,未展开不付成本)。root 菜单关闭即重置,注册表变化能被下次
-  // 展开看到。
+  // 右键时预取，子菜单整组呈现，避免默认应用先出现、本地应用再补入。
+  // 每次子菜单重开重新查询；显示期间不会自动重排。
   const [openWithApps, setOpenWithApps] = useState<
     Array<{ id: string; label: string; iconDataUrl?: string }> | null
   >(null);
+  const [openWithOpen, setOpenWithOpen] = useState(false);
+  const prefetchedAppsRef = useRef<{
+    startedAt: number;
+    apps: Promise<NonNullable<typeof openWithApps>>;
+  } | null>(null);
+  const openingAppsRef = useRef(false);
   // 远程会话(device-link / SSH):文件字节在远端机器,「复制文件 / 定位」改走
   // 取回缓存副本;「复制路径」保留远端原始路径;浏览器 / 侧边栏项(读本机
   // file://)隐藏。聊天流外 context 是 local 默认值 → 行为与引入前逐字节一致。
@@ -236,19 +241,51 @@ export function useFileChipContextMenu({
     await onViewSource?.();
   }
 
-  // 懒加载代际:root 菜单每次关闭 +1。在途枚举返回时代际不符 = 菜单已关过,
-  // 丢弃写回——否则过期列表把 state 从 null 顶回非 null,下次展开会跳过重载,
-  // 破坏「关闭即重置,注册表变化下次展开可见」的不变量(PR #1835 review)。
+  // 关闭或离开触发项后丢弃在途响应，不能因查询结束重新弹出菜单。
   const openWithEpochRef = useRef(0);
 
+  function closeOpenWith(): void {
+    openWithEpochRef.current += 1;
+    openingAppsRef.current = false;
+    setOpenWithOpen(false);
+    setOpenWithApps(null);
+  }
+
+  useEffect(() => {
+    if (menuPos === null) {
+      openWithEpochRef.current += 1;
+      openingAppsRef.current = false;
+      prefetchedAppsRef.current = null;
+      setOpenWithOpen(false);
+      setOpenWithApps(null);
+    }
+  }, [menuPos]);
+
+  async function queryOpenWithApps(): Promise<NonNullable<typeof openWithApps>> {
+    try {
+      const abs = location?.absPath ?? (await getAbsPath());
+      const res = await window.electronAPI.listOpenWithApps({ filePath: abs });
+      return res.success ? res.apps : [];
+    } catch {
+      // 系统查询失败仍可使用默认应用。
+      return [];
+    }
+  }
+
   async function loadOpenWithApps(): Promise<void> {
-    if (openWithApps !== null) return;
-    const epoch = openWithEpochRef.current;
-    const abs = await getAbsPath();
-    const res = await window.electronAPI.listOpenWithApps({ filePath: abs });
+    if (openingAppsRef.current || openWithOpen) return;
+    openingAppsRef.current = true;
+    const epoch = ++openWithEpochRef.current;
+    const prefetched = prefetchedAppsRef.current;
+    // 长时间停在 root 菜单后再展开也要读到最新安装/使用状态。
+    const pending = prefetched && Date.now() - prefetched.startedAt <= 1000
+      ? prefetched.apps : queryOpenWithApps();
+    prefetchedAppsRef.current = null;
+    const apps = await pending;
     if (openWithEpochRef.current !== epoch) return;
-    // 枚举失败不挡菜单:空列表 = 只显示「用默认应用打开」。
-    setOpenWithApps(res.success ? res.apps : []);
+    openingAppsRef.current = false;
+    setOpenWithApps(apps);
+    setOpenWithOpen(true);
   }
 
   async function handleOpenWithDefault(): Promise<void> {
@@ -276,6 +313,9 @@ export function useFileChipContextMenu({
   }
 
   const openAt = (x: number, y: number): void => {
+    closeOpenWith();
+    prefetchedAppsRef.current = sidebarFileBrowserKind === 'file' && !remoteOrigin
+      ? { startedAt: Date.now(), apps: queryOpenWithApps() } : null;
     setMenuPos({ x, y });
   };
 
@@ -291,8 +331,8 @@ export function useFileChipContextMenu({
       onOpenChange={(open) => {
         if (!open) {
           setMenuPos(null);
-          setOpenWithApps(null);
-          openWithEpochRef.current += 1;
+          closeOpenWith();
+          prefetchedAppsRef.current = null;
         }
       }}
     >
@@ -337,15 +377,20 @@ export function useFileChipContextMenu({
           // 打开方式:仅文件 + 本地会话。远程会话的字节在远端机器,本机应用
           // 枚举与执行都无意义(与「在浏览器中查看」同一门控口径)。
           <DropdownMenuSub
+            open={openWithOpen}
             onOpenChange={(open) => {
               if (open) void loadOpenWithApps();
+              else closeOpenWith();
             }}
           >
-            <DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger
+              onPointerLeave={() => { if (!openWithOpen) closeOpenWith(); }}
+              onBlur={() => { if (!openWithOpen) closeOpenWith(); }}
+            >
               <AppWindow className="mr-2 h-4 w-4" />
               {t('chat.markdownRenderer.openWith')}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
+            <DropdownMenuSubContent className="max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto">
               <DropdownMenuItem onClick={handleOpenWithDefault}>
                 <AppWindow className="mr-2 h-4 w-4" />
                 {t('chat.media.openWithApp')}

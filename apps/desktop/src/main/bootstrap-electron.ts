@@ -423,6 +423,8 @@ import {
 } from './filePathPolicy';
 import { readFileThumbnail } from './fileThumbnail';
 import { createOpenWithHandlers, decodeRegOutput, parseChcpCodepage } from './openWithApps';
+import { listMacOpenWithApps } from './openWithMacApps';
+import { createOpenWithUsageStore } from './openWithUsage';
 import { resolveShellOpenPathTarget } from './shellOpenPath';
 import { handleOpenFileInBrowser } from './openFileInBrowser';
 import { createWindowsFileUrlOpener } from './windowsFileUrlOpener';
@@ -7464,7 +7466,7 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // 文件 chip 右键「打开方式」:枚举 / 指定应用打开 / 系统选择对话框。
+  // 文件 chip 右键「打开方式」:本地应用枚举 / 排序 / 指定应用打开。
   // 业务体在 openWithApps.ts(依赖注入,单测直接调 handler body);appId → exe
   // 映射只存 main 侧,renderer 传路径执行在结构上不可表达(该文件头注释)。
   {
@@ -7499,8 +7501,16 @@ const registerIpcHandlers = () => {
       });
       return consoleCodepagePromise;
     };
+    const openWithLog = createLogger('open-with');
+    const usage = createOpenWithUsageStore(
+      path.join(app.getPath('userData'), 'open-with-usage.json'),
+      () => openWithLog.warn('usage history unavailable'),
+    );
     const openWith = createOpenWithHandlers({
       platform: process.platform,
+      listMacApps: listMacOpenWithApps,
+      usage,
+      onUsageError: () => openWithLog.warn('usage history could not be saved'),
       isPathAllowed,
       fileExists: (p) => fs.existsSync(p),
       regQuery: async (keyPath, args = []) => {
@@ -7516,15 +7526,20 @@ const registerIpcHandlers = () => {
         });
       },
       getAppIcon,
-      spawnDetached: (command, args) => {
-        const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: false });
-        // detached 子进程无人监听 'error' 会变成 EventEmitter 未处理错误直接压垮
-        // main(典型:existsSync 通过后 exe 被卸载的窗口期)。spawn 错误是异步的,
-        // IPC 已返回,只能记日志兜底(PR #1835 review)。
-        child.once('error', (err) => {
-          createLogger('open-with').warn('spawn failed', { command, message: err.message });
+      spawnDetached: async (command, args) => {
+        const opened = await new Promise<boolean>((resolve) => {
+          if (process.platform === 'darwin') {
+            execFile(command, args, { timeout: 6000 }, (error) => resolve(!error));
+            return;
+          }
+          const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: false });
+          child.once('error', () => {
+            openWithLog.warn('application launch failed');
+            resolve(false);
+          });
+          child.once('spawn', () => { child.unref(); resolve(true); });
         });
-        child.unref();
+        if (!opened) throwIpcError('INTERNAL', '无法用所选应用打开文件');
       },
     });
     ipcMain.handle('open-with:list', (event, params: { filePath: string }) => {
