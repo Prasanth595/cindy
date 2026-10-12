@@ -9377,7 +9377,10 @@
       "transferConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
       "transferFailed": "Couldn’t move {{name}} to “{{device}}”",
-      "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on"
+      "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
+      "shadowTitle": "This teammate now runs on “{{device}}”",
+      "shadowHint": "The conversation here is read only.",
+      "openOnHome": "Open on “{{device}}”"
     }
   },
   "common": {

@@ -34,6 +34,12 @@ export interface CompanionCloudHost {
   materializer?: Omit<CompanionMaterializeHost, 'latestRows'>;
   /** The owner's devices from device-link. */
   listDevices?: () => Promise<DeviceLinkDeviceView[]>;
+  /** Does that computer's Cindy support cloud companions (`maker:companion-cloud:caps`)? */
+  probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
+  /** Random id of this Cindy installation (per userData); absent disables the install guard. */
+  installationId?: () => string;
+  /** Owner-scoped persisted shadow set (demotion survives restarts, an offline server and a disabled feature). */
+  shadows?: { read: () => string[]; write: (ids: string[]) => void };
 }
 
 export interface CompanionCloudBot { botId: string; actorId: string; name: string }
@@ -58,10 +64,18 @@ export interface CompanionCloudRuntime {
   transfer: (botId: string, targetDeviceId: string) => Promise<CompanionCloudActionResult>;
   transferTargets: () => Promise<CompanionTransferTarget[]>;
   transcript: (botId: string, before?: string) => Promise<CompanionTranscriptPage>;
-  /** The companion was deleted on its home (this computer): retire its cloud actor. */
+  /** The companion was deleted on its home (this computer): retire its cloud actor (retried until it succeeds). */
   retire: (botId: string) => Promise<void>;
+  /** Demoted here, or homed on this device but owned by another Cindy installation. */
+  isShadowed: (botId: string) => boolean;
+  /** Every shadowed local companion id (persisted by the caller). */
+  shadowIds: () => string[];
   dispose: () => void;
 }
+
+/** Bot preference naming the installation that runs the companion on its home device. */
+export const COMPANION_INSTALL_KEY = 'companion.install.v1';
+const INSTALL_RECHECK_MS = 2 * 60_000;
 
 let active: CompanionCloudRuntime | null = null;
 /** The running sync of the current account, or null when the feature is off. */
@@ -116,12 +130,29 @@ export function startCompanionCloud(input: {
   initialKick?: boolean;
 }): CompanionCloudRuntime {
   const state = input.host.openState(input.endpoint, input.humanActorId, input.current);
-  const uploader = createCompanionUploader({ api: input.api, state, readValues: input.host.readValues, log: input.log });
+  const uploader = createCompanionUploader({ api: input.api, state, readValues: input.host.readValues, log: input.log,
+    confirmHome: async (_botId, actorId) => {
+      const actors = await input.api<CompanionRuntimeActor[]>('/actors');
+      return actors.find(actor => actor.id === actorId)?.homeDeviceId === input.selfDeviceId;
+    },
+    onLostHome: () => { void input.refresh?.().catch(() => undefined); },
+  });
   const mirror = createCompanionMirror({ api: input.api, state, humanActorId: () => input.humanActorId,
     canonicalSession: input.host.canonicalSession, rowsAfter: input.host.rowsAfter, latestRows: input.host.latestRows });
   let disposed = false;
   const live = () => !disposed && input.current();
-  const pick = (only: Set<string> | null) => input.bots().filter(bot => !only || only.has(bot.botId));
+  const aborts = new AbortController();
+  /** Writes started by this account stop as soon as it is no longer current. */
+  const fence = {
+    assertCurrent: () => { if (!live()) throw new Error('OWNER_CHANGED'); },
+    signal: aborts.signal,
+  };
+  // Install guard: which bots this installation owns on this device ('mine') or not ('other').
+  const installs = new Map<string, { owner: 'mine' | 'other' | 'pending'; checkedAt: number }>();
+  const installId = input.host.installationId?.();
+  const installOwner = (botId: string) => installId ? installs.get(botId)?.owner : 'mine';
+  const pick = (only: Set<string> | null) => input.bots()
+    .filter(bot => (!only || only.has(bot.botId)) && installOwner(bot.botId) === 'mine');
   const actorOf = (botId: string) => (input.actors?.() ?? []).find(a => a.kind === 'bot' && !a.disabled && (a.externalId === botId || a.id === botId));
   const publish = () => { if (live()) input.publish?.(); };
 
@@ -155,14 +186,17 @@ export function startCompanionCloud(input: {
     };
   }
 
-  const uploads = loop(async only => uploader.syncAll(pick(only)), input.uploadIntervalMs ?? 60_000, 15_000);
+  const uploads = loop(async only => {
+    // A first-upgrade burst is spread over cycles; continue soon when the budget ran out.
+    if (await uploader.syncAll(pick(only))) uploads.kick();
+  }, input.uploadIntervalMs ?? 60_000, 15_000);
   const mirrors = loop(async only => {
     for (const bot of pick(only)) {
       if (!live()) return;
       try {
         if (state.bot(bot.botId)?.pendingRebuild && input.host.materializer) {
           const sessionId = await input.host.canonicalSession(bot.botId);
-          if (sessionId) await rebuildPending({ state, host: input.host.materializer, botId: bot.botId, actorId: bot.actorId, sessionId });
+          if (sessionId) await rebuildPending({ state, host: input.host.materializer, botId: bot.botId, actorId: bot.actorId, sessionId, fence });
         }
         await mirror.syncBot(bot.botId, bot.actorId, bot.name);
       } catch (error) { input.log?.warn('Companion conversation mirror will retry', { actorId: bot.actorId, code: errorCode(error) }); }
@@ -179,7 +213,7 @@ export function startCompanionCloud(input: {
     const botId = actor.externalId;
     const pending = materializing.get(botId);
     if (pending) return pending;
-    const run = materializeCompanion({ api: input.api, state, log: input.log, host: { ...materializer, latestRows: input.host.latestRows },
+    const run = materializeCompanion({ api: input.api, state, log: input.log, fence, host: { ...materializer, latestRows: input.host.latestRows },
       actor: { id: actor.id, externalId: botId, name: actor.name, avatar: actor.avatar ?? null },
       roomId: () => mirror.ensureRoom(botId, actor.id, actor.name) })
       .finally(() => { materializing.delete(botId); });
@@ -187,21 +221,67 @@ export function startCompanionCloud(input: {
     return run;
   }
 
+  /** Record (or overwrite) that this installation runs the companion. */
+  async function claimInstall(actor: CompanionRuntimeActor, overwrite: boolean): Promise<'mine' | 'other'> {
+    if (!installId) return 'mine';
+    const rows = await input.api<Array<{ key: string; value: unknown; revision: number }>>('/preferences', 'GET', undefined, actor.id);
+    const row = (Array.isArray(rows) ? rows : []).find(candidate => candidate.key === COMPANION_INSTALL_KEY);
+    const current = row?.value && typeof row.value === 'object' ? (row.value as { installationId?: unknown }).installationId : undefined;
+    let owner: 'mine' | 'other' = current === installId ? 'mine' : 'other';
+    if (owner === 'other' && (overwrite || typeof current !== 'string')) {
+      try {
+        await input.api('/preferences', 'POST', { operationId: `cinstall:${actor.id}:${installId}:${row?.revision ?? 0}`,
+          key: COMPANION_INSTALL_KEY, expectedRevision: row?.revision ?? 0, value: { installationId: installId } }, actor.id);
+        owner = 'mine';
+      } catch (error) {
+        // Another installation on this device claimed it first.
+        if (!chatRejection(error, 409, 'REVISION_CONFLICT')) throw error;
+      }
+    }
+    installs.set(actor.externalId, { owner, checkedAt: Date.now() });
+    return owner;
+  }
+
+  function checkInstall(actor: CompanionRuntimeActor) {
+    if (!installId) return;
+    const known = installs.get(actor.externalId);
+    if (known && Date.now() - known.checkedAt < INSTALL_RECHECK_MS) return;
+    installs.set(actor.externalId, { owner: known?.owner ?? 'pending', checkedAt: Date.now() });
+    void claimInstall(actor, false).then(owner => {
+      if (owner !== known?.owner) { publish(); uploads.kick(actor.externalId); mirrors.kick(actor.externalId); }
+    }, error => {
+      installs.delete(actor.externalId);
+      input.log?.warn('Companion installation check will retry', { actorId: actor.id, code: errorCode(error) });
+    });
+  }
+
   function scheduleAuto(actor: CompanionRuntimeActor) {
     const botId = actor.externalId;
     if (materializing.has(botId) || Date.now() < (autoRetryAt.get(botId) ?? 0)) return;
-    void materialize(actor).then(result => {
+    autoRetryAt.set(botId, Date.now() + AUTO_RETRY_MS);
+    // Confirm the home with the server before un-demoting: a stale actor cache must not
+    // resurrect a copy whose companion has already moved on.
+    void input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: input.selfDeviceId })
+      .then(async () => { await claimInstall(actor, true); return materialize(actor); }).then(result => {
       autoRetryAt.delete(botId);
       input.log?.info?.('Companion moved to this computer', { actorId: actor.id, created: result.created, inserted: result.inserted, rebuild: result.rebuild });
       publish(); mirrors.kick(botId); uploads.kick(botId);
     }, error => {
       autoRetryAt.set(botId, Date.now() + AUTO_RETRY_MS);
+      if (chatRejection(error, 409, 'HOME_DEVICE_CONFLICT')) { void input.refresh?.().catch(() => undefined); return; }
       input.log?.warn('Companion take-over will retry', { actorId: actor.id, code: errorCode(error) });
     });
   }
 
+  async function retireActor(actor: CompanionRuntimeActor) {
+    await input.api(`/actors/${actor.id}`, 'PATCH', { disabled: true });
+    actor.disabled = true;
+    state.update(actor.externalId, actor.id, entry => { delete entry.retirePending; });
+    publish();
+  }
+
   async function flush(botId: string) {
-    const bot = input.bots().find(candidate => candidate.botId === botId);
+    const bot = pick(null).find(candidate => candidate.botId === botId);
     if (!bot) throw new Error('NOT_HOME');
     await uploader.syncBot(bot.botId, bot.actorId);
     await mirror.syncBot(bot.botId, bot.actorId, bot.name);
@@ -223,6 +303,14 @@ export function startCompanionCloud(input: {
         const botId = actor.externalId;
         const local = localProfiles.find(profile => profile.id === botId);
         const entry = state.bot(botId);
+        if (entry?.retirePending) {
+          if (actor.homeDeviceId === self && Date.now() >= (autoRetryAt.get(`retire:${botId}`) ?? 0)) {
+            autoRetryAt.set(`retire:${botId}`, Date.now() + AUTO_RETRY_MS);
+            void retireActor(actor).catch(error => input.log?.warn('Companion retire will retry', { actorId: actor.id, code: errorCode(error) }));
+          }
+          continue;
+        }
+        if (actor.homeDeviceId === self && local) checkInstall(actor);
         if (actor.homeDeviceId && actor.homeDeviceId !== self) {
           if (local && local.status !== 'deleting' && !entry?.demoted) {
             state.update(botId, actor.id, next => { next.demoted = true; });
@@ -232,7 +320,7 @@ export function startCompanionCloud(input: {
           // Handed here: the local copy was demoted, or this computer never ran it. A companion
           // deleted on its own home keeps its sync history and is not revived.
           const ranHere = !!entry?.mirror || entry?.prefsSeeded === true;
-          if (entry?.demoted === true || (!local && !ranHere)) scheduleAuto(actor);
+          if (installOwner(botId) !== 'other' && (entry?.demoted === true || (!local && !ranHere))) scheduleAuto(actor);
         }
       }
     },
@@ -261,6 +349,8 @@ export function startCompanionCloud(input: {
       }
       actor.homeDeviceId = self;
       try {
+        // Taking over from this installation also takes it from another install on the same device.
+        if (await claimInstall(actor, true) !== 'mine') return { ok: false, code: 'FAILED' };
         await materialize(actor);
       } catch (error) {
         input.log?.warn('Companion take-over could not finish locally', { actorId: actor.id, code: errorCode(error) });
@@ -272,8 +362,12 @@ export function startCompanionCloud(input: {
     },
 
     async transferTargets() {
-      const devices = await input.host.listDevices?.().catch(() => []) ?? [];
-      return devices.filter(isCompanionTransferTarget).map(device => ({ deviceId: device.deviceId, name: device.name, online: device.online }));
+      const devices = (await input.host.listDevices?.().catch(() => []) ?? []).filter(isCompanionTransferTarget);
+      // Older Cindy versions cannot take a companion over: never strand one there.
+      const probe = input.host.probeCompanionCloud;
+      const supported = probe ? await Promise.all(devices.map(device => probe(device.deviceId).catch(() => false))) : devices.map(() => true);
+      return devices.filter((_device, index) => supported[index])
+        .map(device => ({ deviceId: device.deviceId, name: device.name, online: device.online }));
     },
 
     async transfer(botId, targetDeviceId) {
@@ -281,7 +375,10 @@ export function startCompanionCloud(input: {
       if (!self || !live()) return { ok: false, code: 'NOT_ENABLED' };
       const actor = actorOf(botId);
       if (!actor || actor.homeDeviceId !== self) return { ok: false, code: 'FAILED', homeDeviceId: actor?.homeDeviceId ?? null };
-      if (!(await runtime.transferTargets()).some(device => device.deviceId === targetDeviceId)) return { ok: false, code: 'TARGET_UNAVAILABLE' };
+      const devices = await input.host.listDevices?.().catch(() => []) ?? [];
+      const target = devices.find(device => device.deviceId === targetDeviceId && isCompanionTransferTarget(device));
+      const probe = input.host.probeCompanionCloud;
+      if (!target || (probe && !(await probe(targetDeviceId).catch(() => false)))) return { ok: false, code: 'TARGET_UNAVAILABLE' };
       // Everything the new home needs must be on the server before the move.
       try { await flush(actor.externalId); }
       catch (error) {
@@ -312,14 +409,18 @@ export function startCompanionCloud(input: {
       const self = input.selfDeviceId;
       const actor = actorOf(botId);
       // A demoted copy is not the companion: deleting it never touches the cloud.
-      if (!self || !live() || !actor || actor.homeDeviceId !== self || state.isDemoted(botId)) return;
-      await input.api(`/actors/${actor.id}`, 'PATCH', { disabled: true });
-      actor.disabled = true;
-      publish();
+      if (!self || !live() || !actor || actor.homeDeviceId !== self || runtime.isShadowed(botId)) return;
+      state.update(botId, actor.id, entry => { entry.retirePending = true; });
+      await retireActor(actor);
     },
+
+    isShadowed: botId => state.isDemoted(botId) || installOwner(botId) === 'other',
+    shadowIds: () => [...new Set([...state.demotedBotIds(),
+      ...[...installs].flatMap(([botId, value]) => value.owner === 'other' ? [botId] : [])])].sort(),
 
     dispose() {
       disposed = true;
+      aborts.abort();
       uploads.dispose(); mirrors.dispose(); unsubscribe?.();
       if (active === runtime) active = null;
     },

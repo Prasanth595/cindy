@@ -30,6 +30,9 @@ const BATCH_MESSAGES = 50;
 const BATCH_BYTES = 200_000;
 const PART_CHARS = 30_000;
 const PART_BYTES = 60_000;
+const RESCAN_WINDOW_MS = 10 * 60_000;
+const RESCAN_LIMIT = 200;
+const RECENT_IDS = 400;
 
 const parse = (raw: string | null): unknown => {
   if (!raw) return null;
@@ -51,13 +54,24 @@ function attachmentNames(content: unknown): string[] {
   return names;
 }
 
+/**
+ * Host-stamped sender/source metadata (message-source.md). A user row carrying any of these
+ * was sent by another task, teammate, plugin, IM channel, automation, Orca or a shared-task
+ * member — not typed by the owner — so it never goes up as the owner's words.
+ * `sourceDevice` (the owner on another device) is the one source that stays.
+ */
+const NON_OWNER_SOURCE_KEYS = ['origin', 'sourcePlugin', 'sharedTaskAuthor', 'imSource', 'hookSource', 'sourceGroup',
+  'botTaskCoordination', 'autoReviewUserText', 'autoResume'] as const;
+
 /** Room text of a canonical row, or null when the row is not part of the visible conversation. */
 export function mirrorMessageText(row: CompanionMirrorRow): string | null {
   if (row.role !== 'user' && row.role !== 'assistant') return null;
   if (row.clientId.startsWith(COMPANION_DIRECT_CLIENT_PREFIX) || row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)) return null;
-  const meta = parse(row.agentMeta);
+  const parsedMeta = parse(row.agentMeta);
+  const meta = parsedMeta && typeof parsedMeta === 'object' ? parsedMeta as Record<string, unknown> : {};
   // Private/coordination replies are hidden in the local timeline as well.
-  if (row.role === 'assistant' && meta && typeof meta === 'object' && (meta as Record<string, unknown>).botPrivateReply === true) return null;
+  if (row.role === 'assistant' && meta.botPrivateReply === true) return null;
+  if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
   const text = visibleMessageText(row.role, row.content);
   const names = row.role === 'user' && text ? attachmentNames(parse(row.content)) : [];
   const result = [text, ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n').trim();
@@ -109,8 +123,12 @@ export function createCompanionMirror(deps: {
     return room.id;
   }
 
-  /** Import rows in order; the cursor moves past each fully imported row. Returns false on failure. */
-  async function importRows(botId: string, actorId: string, roomId: string, sessionId: string, rows: CompanionMirrorRow[]) {
+  /**
+   * Import rows in order. With `advance`, the cursor moves past each fully imported row, but
+   * never onto an imported (`cloud-history:`) row and never backwards. Imported ids are
+   * remembered so the trailing re-scan does not send them again.
+   */
+  async function importRows(botId: string, actorId: string, roomId: string, sessionId: string, rows: CompanionMirrorRow[], advance = true) {
     const parts: Array<{ message: ImportMessage; row: number; last: boolean; bytes: number }> = [];
     rows.forEach((row, index) => {
       const text = mirrorMessageText(row);
@@ -126,9 +144,25 @@ export function createCompanionMirror(deps: {
         parts.push({ message, row: index, last: n === pieces.length - 1, bytes: Buffer.byteLength(JSON.stringify(message)) });
       });
     });
-    const moveTo = (row: CompanionMirrorRow) => deps.state.update(botId, actorId, entry => {
-      entry.mirror = { sessionId, createdAt: row.createdAt, id: row.id };
-    });
+    const moveTo = (upTo: number) => {
+      if (!advance) return;
+      let index = upTo;
+      while (index >= 0 && rows[index]!.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)) index -= 1;
+      if (index < 0) return;
+      const row = rows[index]!;
+      deps.state.update(botId, actorId, entry => {
+        const current = entry.mirror?.sessionId === sessionId ? entry.mirror : undefined;
+        if (current && (current.createdAt > row.createdAt || (current.createdAt === row.createdAt && current.id >= row.id))) return;
+        entry.mirror = { sessionId, createdAt: row.createdAt, id: row.id, ...(current?.recent ? { recent: current.recent } : {}) };
+      });
+    };
+    const remember = (ids: string[]) => {
+      if (!ids.length) return;
+      deps.state.update(botId, actorId, entry => {
+        if (!entry.mirror || entry.mirror.sessionId !== sessionId) return;
+        entry.mirror = { ...entry.mirror, recent: [...new Set([...(entry.mirror.recent ?? []), ...ids])].slice(-RECENT_IDS) };
+      });
+    };
     let start = 0;
     while (start < parts.length) {
       let end = start; let bytes = 0;
@@ -146,10 +180,11 @@ export function createCompanionMirror(deps: {
       }
       const tail = parts[end - 1]!;
       const done = tail.last ? tail.row : tail.row - 1;
-      if (done >= 0) moveTo(rows[done]!);
+      if (done >= 0) moveTo(done);
+      remember([...new Set(parts.slice(start, end).filter(part => part.last).map(part => rows[part.row]!.id))]);
       start = end;
     }
-    if (rows.length) moveTo(rows[rows.length - 1]!);
+    if (rows.length) moveTo(rows.length - 1);
   }
 
   async function syncBot(botId: string, actorId: string, name: string): Promise<void> {
@@ -167,7 +202,15 @@ export function createCompanionMirror(deps: {
       else deps.state.update(botId, actorId, entry => { entry.mirror = { sessionId, createdAt: 0, id: '' }; });
       return;
     }
-    let after: CompanionMirrorCursor = cursor;
+    // Assistant rows are stamped when they start and persisted later, and imported history can
+    // carry a peer's clock: re-scan a trailing window behind the cursor for anything missed.
+    // Server-side sourceId dedupe makes any repeat a no-op; recent ids avoid the request.
+    const recent = new Set(cursor.recent ?? []);
+    const behind = (row: CompanionMirrorRow) => row.createdAt < cursor.createdAt || (row.createdAt === cursor.createdAt && row.id <= cursor.id);
+    const missed = (await deps.rowsAfter(sessionId, { createdAt: cursor.createdAt - RESCAN_WINDOW_MS, id: '' }, RESCAN_LIMIT))
+      .filter(row => behind(row) && !recent.has(row.id) && mirrorMessageText(row));
+    if (missed.length) await importRows(botId, actorId, roomId, sessionId, missed, false);
+    let after: CompanionMirrorCursor = { createdAt: cursor.createdAt, id: cursor.id };
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const rows = await deps.rowsAfter(sessionId, after, PAGE);
       if (!rows.length) return;

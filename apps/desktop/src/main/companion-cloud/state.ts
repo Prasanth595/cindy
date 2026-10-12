@@ -7,12 +7,25 @@ import { z } from 'zod';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
 import type { CompanionLog } from './types.js';
 
-const pref = z.object({ hash: z.string(), revision: z.number().int().nonnegative() });
+const pref = z.object({
+  hash: z.string(),
+  revision: z.number().int().nonnegative(),
+  /**
+   * This device had exactly this value locally (uploaded it, or applied it while taking over).
+   * Only such keys may be tombstoned by the uploader or deleted locally by a cloud tombstone;
+   * keys that merely exist on the server never are.
+   */
+  local: z.boolean().optional(),
+});
 const bot = z.object({
   actorId: z.string(),
   roomId: z.string().optional(),
   /** Last canonical message handed to the room, ordered by (createdAt, id). */
-  mirror: z.object({ sessionId: z.string(), createdAt: z.number(), id: z.string() }).optional(),
+  mirror: z.object({
+    sessionId: z.string(), createdAt: z.number(), id: z.string(),
+    /** Recently imported local message ids, so the trailing re-scan does not re-send them. */
+    recent: z.array(z.string()).optional(),
+  }).optional(),
   prefs: z.record(z.string(), pref).default({}),
   /** Revisions were read back from the server once (after a fresh or lost state file). */
   prefsSeeded: z.boolean().optional(),
@@ -20,6 +33,8 @@ const bot = z.object({
   demoted: z.boolean().optional(),
   /** Cloud history was added while the canonical Session was busy; rebuild at the next idle point. */
   pendingRebuild: z.boolean().optional(),
+  /** Deleted here while this computer was the home; disable the cloud actor until it succeeds. */
+  retirePending: z.boolean().optional(),
 });
 const file = z.object({ version: z.literal(1), bots: z.record(z.string(), bot) });
 

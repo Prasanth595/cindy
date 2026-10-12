@@ -54,7 +54,8 @@ describe('presentation helpers', () => {
   it('hides demoted copies and adds unseen cloud homes as offline rows', () => {
     const cloud = { ...snapshot('laptop'), demotedBotIds: ['mia'] };
     expect(withoutShadowedBots([{ id: 'mia' }, { id: 'ada' }], cloud)).toEqual([{ id: 'ada' }]);
-    expect(withoutShadowedBots([{ id: 'mia' }], { ...cloud, enabled: false })).toEqual([{ id: 'mia' }]);
+    // Persisted demotion holds with the feature off or the server unreachable.
+    expect(withoutShadowedBots([{ id: 'mia' }], { ...cloud, enabled: false })).toEqual([]);
     const extra = cloudOnlyRemoteBots(cloud, []);
     expect(extra).toMatchObject([{ id: 'mia', deviceId: 'laptop', deviceName: 'Laptop', online: false }]);
     expect(cloudOnlyRemoteBots(cloud, extra)).toEqual([]);
@@ -183,5 +184,21 @@ describe('BotHomeComputerSetting', () => {
     render(<BotHomeComputerSetting bot={bot} />);
     openMenu();
     expect(await screen.findByText('bots.cloud.noTargets')).toBeTruthy();
+  });
+});
+
+describe('CompanionShadowBanner', () => {
+  it('opens the companion on its main computer or takes it over here', async () => {
+    const { CompanionShadowBanner } = await import('../CompanionShadowBanner');
+    resetCompanionCloudStoreForTests(snapshot('laptop'));
+    maker.getCompanionCloudState.mockResolvedValue(snapshot('laptop'));
+    maker.takeOverCompanion.mockResolvedValue({ ok: true });
+    render(<CompanionShadowBanner botId="mia" name="Mia" />);
+    expect(screen.getByText('bots.cloud.shadowTitle:{"device":"Laptop"}')).toBeTruthy();
+    fireEvent.click(screen.getByText('bots.cloud.openOnHome:{"device":"Laptop"}'));
+    expect(h.navigate).toHaveBeenCalledWith('/bots/remote/laptop/mia');
+    fireEvent.click(screen.getByText('bots.cloud.continueHere'));
+    await waitFor(() => expect(maker.takeOverCompanion).toHaveBeenCalledWith('mia'));
+    await waitFor(() => expect(h.ensureLoaded).toHaveBeenCalledWith(true));
   });
 });

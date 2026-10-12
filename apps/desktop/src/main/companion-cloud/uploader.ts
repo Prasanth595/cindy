@@ -27,17 +27,33 @@ export function canonicalJson(value: unknown): string {
 }
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
-const TOMBSTONE_HASH = sha256('null');
+export const TOMBSTONE_HASH = sha256('null');
+export const valueHash = (value: unknown) => sha256(canonicalJson(value));
+/** First-upgrade bursts are spread over cycles. */
+export const COMPANION_UPLOAD_WRITES_PER_CYCLE = 30;
+
+export class CompanionLostHomeError extends Error {
+  constructor() { super('NOT_HOME'); }
+}
 
 export function createCompanionUploader(deps: {
   api: CompanionApi;
   state: CompanionCloudState;
   readValues: (botId: string) => Promise<CompanionPreferenceValue[]>;
+  /** Re-read the server: is this computer still the home? Asked before overwriting a conflicting value. */
+  confirmHome?: (botId: string, actorId: string) => Promise<boolean>;
+  /** The home moved away while uploading: re-read actors so this copy is demoted. */
+  onLostHome?: () => void;
   log?: CompanionLog;
   maxValueBytes?: number;
 }) {
   const maxBytes = deps.maxValueBytes ?? COMPANION_VALUE_MAX_BYTES;
   const owned = (key: string) => OWNED_PREFIXES.some(prefix => key === prefix || (prefix.endsWith(':') && key.startsWith(prefix)));
+  type Row = { key: string; value: unknown; revision: number };
+  const readRows = async (actorId: string) => {
+    const rows = await deps.api<Row[]>('/preferences', 'GET', undefined, actorId);
+    return Array.isArray(rows) ? rows : [];
+  };
 
   async function write(actorId: string, key: string, value: unknown, json: string, expectedRevision: number) {
     const operationId = `cpref:${sha256(`${key}\n${expectedRevision}\n${json}`).slice(0, 48)}`;
@@ -45,26 +61,41 @@ export function createCompanionUploader(deps: {
     return typeof result?.revision === 'number' ? result.revision : expectedRevision + 1;
   }
 
-  /** Read the server's revisions once, so a lost state file neither conflicts forever nor leaves stale keys behind. */
+  /** Read the server's revisions once, so a lost state file never conflicts forever. Keeps which keys were ours. */
   async function seed(botId: string, actorId: string) {
-    const rows = await deps.api<Array<{ key: string; value: unknown; revision: number }>>('/preferences', 'GET', undefined, actorId);
+    const rows = await readRows(actorId);
     deps.state.update(botId, actorId, entry => {
-      for (const row of Array.isArray(rows) ? rows : []) {
+      for (const row of rows) {
         if (!owned(row.key) || typeof row.revision !== 'number') continue;
-        entry.prefs[row.key] = { hash: sha256(canonicalJson(row.value)), revision: row.revision };
+        const local = entry.prefs[row.key]?.local;
+        entry.prefs[row.key] = { hash: valueHash(row.value), revision: row.revision, ...(local ? { local } : {}) };
       }
       entry.prefsSeeded = true;
     });
   }
 
-  async function syncBot(botId: string, actorId: string): Promise<void> {
+  /** Someone else wrote this key: only the home may overwrite it, and only once. */
+  async function resolveConflict(botId: string, actorId: string, key: string, value: unknown, json: string, hash: string, fallbackRevision: number) {
+    if (deps.confirmHome && !(await deps.confirmHome(botId, actorId))) {
+      deps.onLostHome?.();
+      throw new CompanionLostHomeError();
+    }
+    const server = (await readRows(actorId)).find(row => row.key === key);
+    if (server && valueHash(server.value) === hash) return server.revision;
+    return write(actorId, key, value, json, server?.revision ?? fallbackRevision);
+  }
+
+  /** Upload what changed; returns the number of writes made (bounded by `budget`). */
+  async function syncBot(botId: string, actorId: string, budget = Number.POSITIVE_INFINITY): Promise<number> {
     const values = await deps.readValues(botId);
     if (deps.state.bot(botId)?.actorId !== actorId || !deps.state.bot(botId)?.prefsSeeded) await seed(botId, actorId);
     const desired = new Map<string, unknown>();
     for (const { key, value } of values) desired.set(key, value);
+    // Only keys this device itself had are tombstoned; never what merely exists on the server.
     for (const [key, entry] of Object.entries(deps.state.bot(botId)?.prefs ?? {})) {
-      if (!desired.has(key) && entry.hash !== TOMBSTONE_HASH) desired.set(key, null);
+      if (!desired.has(key) && entry.local && entry.hash !== TOMBSTONE_HASH) desired.set(key, null);
     }
+    let writes = 0;
     for (const [key, value] of desired) {
       const json = canonicalJson(value);
       if (key.length > MAX_KEY_LENGTH || Buffer.byteLength(json) > maxBytes) {
@@ -73,27 +104,36 @@ export function createCompanionUploader(deps: {
       }
       const hash = sha256(json);
       const prior = deps.state.bot(botId)?.prefs[key];
-      if (prior ? prior.hash === hash : value === null) continue;
+      if (prior ? prior.hash === hash : value === null) {
+        if (prior && !prior.local && value !== null) deps.state.update(botId, actorId, entry => { entry.prefs[key] = { ...prior, local: true }; });
+        continue;
+      }
+      if (writes >= budget) break;
+      writes += 1;
       let revision: number;
       try {
         revision = await write(actorId, key, value, json, prior?.revision ?? 0);
       } catch (error) {
         const conflict = chatRejection(error, 409, 'REVISION_CONFLICT');
         if (!conflict || typeof conflict.revision !== 'number') throw error;
-        revision = await write(actorId, key, value, json, conflict.revision);
+        revision = await resolveConflict(botId, actorId, key, value, json, hash, conflict.revision);
       }
-      deps.state.update(botId, actorId, entry => { entry.prefs[key] = { hash, revision }; });
+      deps.state.update(botId, actorId, entry => { entry.prefs[key] = { hash, revision, local: true }; });
     }
+    return writes;
   }
 
   return {
     syncBot,
-    /** Errors are logged per companion and retried on the next cycle. */
-    async syncAll(bots: Array<{ botId: string; actorId: string }>): Promise<void> {
+    /** Errors are logged per companion and retried next cycle. Returns true when the write budget ran out. */
+    async syncAll(bots: Array<{ botId: string; actorId: string }>, limit = COMPANION_UPLOAD_WRITES_PER_CYCLE): Promise<boolean> {
+      let remaining = limit;
       for (const { botId, actorId } of bots) {
-        try { await syncBot(botId, actorId); }
+        if (remaining <= 0) return true;
+        try { remaining -= await syncBot(botId, actorId, remaining); }
         catch (error) { deps.log?.warn('Companion upload will retry', { actorId, code: errorCode(error) }); }
       }
+      return remaining <= 0;
     },
   };
 }

@@ -1,9 +1,12 @@
 import type { CompanionCloudActor, CompanionCloudSnapshot } from '../../../shared/companionCloud';
 import type { RemoteBot } from './remoteBotRoster';
 
-/** Local copies whose home moved to another computer stay out of the roster and entry choice. */
+/**
+ * Local copies whose home moved to another computer stay out of the roster and entry choice.
+ * The shadow list is persisted in main, so it applies offline and with the feature off too.
+ */
 export function withoutShadowedBots<T extends { id: string }>(bots: readonly T[], cloud: CompanionCloudSnapshot): T[] {
-  if (!cloud.enabled || cloud.demotedBotIds.length === 0) return [...bots];
+  if (cloud.demotedBotIds.length === 0) return [...bots];
   const shadowed = new Set(cloud.demotedBotIds);
   return bots.filter((bot) => !shadowed.has(bot.id));
 }

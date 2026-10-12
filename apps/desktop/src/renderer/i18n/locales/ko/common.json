@@ -9339,7 +9339,10 @@
       "transferConflict": "{{name}}의 주 컴퓨터가 이미 바뀌어 옮기지 않았습니다",
       "transferOffline": "서버에 연결할 수 없습니다. {{name}}은(는) 계속 이 컴퓨터에서 실행됩니다",
       "transferFailed": "{{name}}을(를) '{{device}}'(으)로 옮기지 못했습니다",
-      "targetUnavailable": "'{{device}}'은(는) 지금 사용할 수 없습니다. 온라인 상태이고 원격 제어가 켜져 있어야 합니다"
+      "targetUnavailable": "'{{device}}'은(는) 지금 사용할 수 없습니다. 온라인 상태이고 원격 제어가 켜져 있어야 합니다",
+      "shadowTitle": "이 동료는 '{{device}}'에서 실행 중입니다",
+      "shadowHint": "여기 대화는 보기만 할 수 있습니다.",
+      "openOnHome": "'{{device}}'에서 열기"
     }
   },
   "common": {

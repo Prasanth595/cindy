@@ -50,7 +50,7 @@ function harnessApi(token: string, calls: Array<{ route: string; method: string 
 interface LocalBot { status: string; displayName: string; description: string; soul: string; user: string; systemPrompt: string }
 
 /** One computer: its own token/device claim, state file and in-memory local companion data. */
-async function createDevice(name: string, peers: () => DeviceLinkDeviceView[]) {
+async function createDevice(name: string, peers: () => DeviceLinkDeviceView[], options: { installationId?: string } = {}) {
   const calls: Array<{ route: string; method: string }> = [];
   const api = harnessApi(`${OWNER}@${name}`, calls);
   const dir = mkdtempSync(path.join(os.tmpdir(), `companion-${name}-`));
@@ -127,6 +127,8 @@ async function createDevice(name: string, peers: () => DeviceLinkDeviceView[]) {
       rebuildContext: async (sessionId) => { rebuilds.push(sessionId); return 'rebuilt'; },
     },
     listDevices: async () => peers(),
+    probeCompanionCloud: async () => true,
+    ...(options.installationId ? { installationId: () => options.installationId! } : {}),
   };
 
   let selfDeviceId = '';
@@ -134,7 +136,7 @@ async function createDevice(name: string, peers: () => DeviceLinkDeviceView[]) {
   let actors: CompanionRuntimeActor[] = [];
   let runtime: CompanionCloudRuntime;
   const publish = () => {
-    homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId, actors, demotedBotIds: runtime.state.demotedBotIds() }));
+    homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId, actors, demotedBotIds: runtime.shadowIds() }));
   };
   /** The companion part of chatServer.register(), forced. */
   const refresh = async () => {
@@ -155,7 +157,7 @@ async function createDevice(name: string, peers: () => DeviceLinkDeviceView[]) {
     alive = true;
     runtime = startCompanionCloud({ api, host, endpoint: BASE!, humanActorId, selfDeviceId, current: () => alive,
       bots: () => actors.filter(actor => actor.kind === 'bot' && !actor.disabled && actor.homeDeviceId === selfDeviceId
-        && profiles.get(actor.externalId)?.status === 'active' && !runtime.state.isDemoted(actor.externalId))
+        && profiles.get(actor.externalId)?.status === 'active' && !runtime.isShadowed(actor.externalId))
         .map(actor => ({ botId: actor.externalId, actorId: actor.id, name: actor.name })),
       actors: () => actors, refresh, publish, initialKick: false, uploadIntervalMs: 3_600_000, mirrorIntervalMs: 3_600_000 });
   };
@@ -336,5 +338,36 @@ describe.skipIf(!BASE)('cloud companions against a real chat-server (two devices
     expect(retired?.disabled).toBe(true);
     macmini.stop();
     laptop.stop();
+  });
+
+  it('lets only one Cindy installation on the same computer run a companion', { timeout: 60_000 }, async () => {
+    const bot = `bot_e2e_inst_${randomUUID().slice(0, 8)}`;
+    const local = { status: 'active', displayName: 'E2E Twin', description: '', soul: 'twin', user: '', systemPrompt: '' };
+    const release = await createDevice('studio', () => [], { installationId: `release-${randomUUID()}` });
+    const dev = await createDevice('studio', () => [], { installationId: `dev-${randomUUID()}` });
+    release.profiles.set(bot, { ...local });
+    dev.profiles.set(bot, { ...local });
+    await release.refresh();
+    const actorId = release.actor(bot)!.id;
+    expect(release.actor(bot)!.homeDeviceId).toBe('studio');
+    const installOf = async () => (await release.api<Array<{ key: string; value: { installationId?: string } }>>('/preferences', 'GET', undefined, actorId))
+      .find(row => row.key === 'companion.install.v1')?.value.installationId;
+    await waitFor(installOf, 'release claims the companion');
+    await release.refresh();
+    expect(release.runtime.isShadowed(bot)).toBe(false);
+    // The second installation shares the device id, so the home matches, but the claim is not its own.
+    await dev.refresh();
+    await waitFor(() => dev.runtime.isShadowed(bot), 'dev install sees the other claim');
+    await dev.refresh();
+    expect(dev.homes.isShadowed(bot)).toBe(true);
+    const devWritesBefore = dev.calls.filter(call => call.method !== 'GET').length;
+    await dev.runtime.syncNow();
+    expect(dev.calls.filter(call => call.method !== 'GET').length).toBe(devWritesBefore);
+    // Taking over from the dev installation overwrites the claim.
+    expect(await dev.runtime.takeOver(bot)).toEqual({ ok: true });
+    expect(dev.runtime.isShadowed(bot)).toBe(false);
+    expect(await installOf()).toMatch(/^dev-/);
+    release.stop();
+    dev.stop();
   });
 });

@@ -62,6 +62,7 @@ describe('Chat Server cloud companions', () => {
   let home: string | null;
   let patch: (body: unknown) => { status?: number; body: unknown };
   let claimed: boolean;
+  let directMembers: Array<{ id: string; state: string }>;
   const calls = (route: string, method?: string) => fixture.handle.mock.calls.filter(([r, m]) => r === route && (!method || m === method));
 
   function respond(route: string, method: string, body: unknown) {
@@ -69,7 +70,7 @@ describe('Chat Server cloud companions', () => {
     if (route === '/actors' && method === 'GET') return { body: [{ id: botActor, kind: 'bot', externalId: 'local-bot', name: 'Mia', homeDeviceId: home }] };
     if (route === `/actors/${botActor}` && method === 'PATCH') return patch(body);
     if (route === '/executions/claim') { const next = claimed ? null : execution; claimed = true; return { body: { execution: next } }; }
-    if (route === `/conversations/${roomId}/snapshot`) return { body: { room: { id: roomId, kind: 'direct', name: 'Mia', revision: 1 }, members: [], messages: [], cursor: '1' } };
+    if (route === `/conversations/${roomId}/snapshot`) return { body: { room: { id: roomId, kind: 'direct', name: 'Mia', revision: 1 }, members: directMembers, messages: [], cursor: '1' } };
     if (route === `/conversations/${roomId}/messages/${sourceId}`) return { body: { id: sourceId, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
       deleted: false, threadRootId: null, createdAt: '2026-10-13T00:00:00Z', content: [{ type: 'text', text: 'hi' }, { type: 'media', mediaId: sourceId, caption: 'a.png' }] } };
     if (route === '/preferences') return { body: [] };
@@ -84,6 +85,7 @@ describe('Chat Server cloud companions', () => {
     fixture.sockets = [];
     me = { actor: { id: selfId }, deviceId: 'desk-1', capabilities: { companionHome: true } };
     home = null; claimed = false;
+    directMembers = [{ id: selfId, state: 'joined' }, { id: botActor, state: 'joined' }];
     patch = () => { home = 'desk-1'; return { body: { id: botActor, homeDeviceId: 'desk-1' } }; };
     fixture.handle.mockImplementation((route, method, body) => respond(route, method, body));
     const files = new Map<string, string>();
@@ -123,6 +125,36 @@ describe('Chat Server cloud companions', () => {
     expect(calls('/executions/claim')).toHaveLength(0);
   });
 
+  it('publishes the name only from the home, after the home is known', async () => {
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Mia (renamed)', avatar: null, status: 'active' }];
+    claimed = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    const order = fixture.handle.mock.calls.map(([route, method]) => `${method} ${route}`);
+    expect(order.indexOf(`POST /actors/${botActor}/profile`)).toBeGreaterThan(order.indexOf(`PATCH /actors/${botActor}`));
+  });
+
+  it('never publishes the name or avatar from a copy whose home is another computer', async () => {
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Mia (stale copy)', avatar: null, status: 'active' }];
+    home = 'laptop';
+    claimed = true;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls(`/actors/${botActor}/profile`)).toHaveLength(0);
+    expect(host.homes.isShadowed('local-bot')).toBe(true);
+  });
+
+  it('keeps a demoted copy shadowed from the persisted list before the server answers', async () => {
+    service.dispose();
+    const persisted = { ids: ['local-bot'] };
+    host = { ...host, homes: createCompanionHomeRegistry(),
+      shadows: { read: () => persisted.ids, write: (ids: string[]) => { persisted.ids = ids; } } } as typeof host;
+    deps = { ...deps, companionCloud: host } as BotGroupChatServiceDeps;
+    fixture.handle.mockImplementation(() => { throw new Error('server unreachable'); });
+    service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(host.homes.isShadowed('local-bot')).toBe(true);
+    expect(host.homes.snapshot()).toMatchObject({ enabled: false, demotedBotIds: ['local-bot'] });
+  });
+
   it('stays inert on a server without companion homes', async () => {
     me = { actor: { id: selfId } };
     claimed = true;
@@ -145,6 +177,17 @@ describe('Chat Server cloud companions', () => {
     expect(results[0]![2]).toMatchObject({ action: 'complete', continueDiscussion: false });
     expect(results[0]![2]).not.toHaveProperty('content');
     expect(results[0]![3]).toBe(botActor);
+  });
+
+  it('never treats someone else\'s 1:1 room as the companion\'s own room', async () => {
+    directMembers = [{ id: selfId, state: 'joined' }, { id: '60000000-0000-4000-8000-000000000009', state: 'joined' }];
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.deliverToCanonical).not.toHaveBeenCalled();
+    expect(deps.ensureLane).not.toHaveBeenCalled();
+    const results = fixture.handle.mock.calls.filter(([route, , body]) => route === `/conversations/${roomId}/executions/${execution.id}`
+      && ['complete', 'fail'].includes(body?.action));
+    expect(results.map(call => call[2].action)).toEqual(['fail']);
   });
 
   it('fails the execution with a short reason when the main task does not accept it', async () => {

@@ -144,6 +144,8 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
 function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceDeps, config: { baseUrl: string }): BotGroupChatService {
   const scope = deps.captureOwnerScope?.();
   let disposed = false;
+  // Demotion persisted for this owner applies before the server has answered.
+  if (deps.companionCloud?.shadows) deps.companionCloud.homes.setPersistedShadows(deps.companionCloud.shadows.read());
   let connected = false;
   const current = () => !disposed && (!scope || !deps.isOwnerScopeCurrent || deps.isOwnerScopeCurrent(scope));
   const executorId = `desktop:${randomUUID()}`;
@@ -394,11 +396,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       actors = await api<Actor[]>('/actors');
       for (const profile of profiles.filter(p => p.status === 'active')) {
-        let found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
-        if (!found) {
-          found = await api<Actor>('/actors', 'POST', { operationId: randomUUID(), kind: 'bot', externalId: profile.id, name: profile.displayName });
-          actors.push(found);
-        }
+        if (actors.some(a => a.kind === 'bot' && a.externalId === profile.id)) continue;
+        actors.push(await api<Actor>('/actors', 'POST', { operationId: randomUUID(), kind: 'bot', externalId: profile.id, name: profile.displayName }));
+      }
+      // Homes first: only the home's own copy may publish the companion's name and avatar.
+      await syncCompanionHomes();
+      for (const profile of profiles.filter(p => p.status === 'active')) {
+        const found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
+        if (!found) continue;
+        if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id))) continue;
         const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
         let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
         if (source && found.avatarSource !== source) {
@@ -414,7 +420,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
         Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
       }
-      await syncCompanionHomes();
       registeredAt = Date.now();
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
@@ -432,8 +437,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (companion && companionSelf !== self) { companion.dispose(); companion = undefined; }
     companionSelf = self;
     companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
-      bots: () => actors.filter(a => a.kind === 'bot' && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
-        && !companion?.state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
+      bots: () => actors.filter(a => a.kind === 'bot' && !a.disabled && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
+        && !companion?.isShadowed(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
       actors: () => actors, refresh: refreshHomes, publish: publishHomes });
     const runtime = companion;
     await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
@@ -445,8 +450,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   function publishHomes() {
     const host = deps.companionCloud;
     if (!host || !current() || !companionHome || !companion) return;
-    host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors,
-      demotedBotIds: companion.state.demotedBotIds() }));
+    const shadows = companion.shadowIds();
+    // Persist demotion so it holds before the next /me, offline, and with the feature off.
+    if (JSON.stringify(shadows) !== JSON.stringify(host.homes.persistedShadows())) {
+      try { host.shadows?.write(shadows); } catch (error) { deps.log?.warn('Companion shadow list not saved', chatErrorDiagnostic(error)); }
+      host.homes.setPersistedShadows(shadows);
+    }
+    host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors, demotedBotIds: shadows }));
   }
   /** Another device moved a companion: re-read actors now instead of after the throttle. */
   async function refreshHomes() {
@@ -820,8 +830,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           throw new Error('INVALID_EXECUTION_TRIGGER');
       }
       if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
-      // A companion's 1:1 room is not a group: hand the message to its main task instead.
-      if (s.room.kind === 'direct' || companion?.isDirectRoom(s.room.id)) { await runDirectExecution(run, bot.id, s.room.id); return; }
+      // A companion's own 1:1 room is not a group: hand the message to its main task instead.
+      const joined = new Set(s.members.filter(m => m.state === 'joined').map(m => m.id));
+      const ownDirectRoom = companionHome && (companion?.isDirectRoom(s.room.id)
+        || (s.room.kind === 'direct' && joined.size === 2 && joined.has(selfId) && joined.has(execution.bot_id)));
+      if (ownDirectRoom) { await runDirectExecution(run, bot.id, s.room.id); return; }
+      // Any other 1:1 room is never answered as a group.
+      if (s.room.kind === 'direct') throw new Error('INVALID_EXECUTION_TRIGGER');
       // Metadata only: the server remains the sole message store and scheduler.
       if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
         const client = getDbClient();
@@ -998,6 +1013,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (running.has(actor.id)) continue;
         // The server only hands a companion's work to its home; skip the request.
         if (companionHome && actor.homeDeviceId && actor.homeDeviceId !== selfDeviceId) continue;
+        // Shadowed here (demoted, or run by another installation on this device): never claim.
+        if (companionHome && companion?.isShadowed(actor.externalId)) continue;
         let claim: { execution: Execution | null };
         const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
         try {

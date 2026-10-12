@@ -118,6 +118,19 @@ it('skips a demoted teammate\'s routine while its home is another computer, keep
   }
 });
 
+it('keeps skipping a demoted teammate\'s routine from the persisted list while the server is unreachable', async () => {
+  companionHomes.setPersistedShadows(['bot']);
+  try {
+    const routine = await routineTools.save('bot', { name: 'Offline', prompt: 'Check', enabled: true,
+      triggers: [{ id: 'tick', kind: 'interval', intervalMs: 60000 }] });
+    await routineTools.runNow('bot', routine.id);
+    await vi.waitFor(async () => expect((await routineTools.history('bot', routine.id))[0]?.status).toBe('skipped'));
+    expect(mock.scheduler.runNow).not.toHaveBeenCalled();
+  } finally {
+    companionHomes.reset();
+  }
+});
+
 it.skipIf(process.platform === 'win32')('rejects saving a pre-run hook command with a shell syntax error', async () => {
   const input = {
     name: 'Broken check',

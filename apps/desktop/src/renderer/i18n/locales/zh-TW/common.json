@@ -9339,7 +9339,10 @@
       "transferConflict": "{{name}} 的主力電腦已經變了，這次沒有交出",
       "transferOffline": "連不上伺服器，{{name}} 仍在這台電腦執行",
       "transferFailed": "未能把 {{name}} 交給「{{device}}」",
-      "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制"
+      "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制",
+      "shadowTitle": "這個夥伴已在「{{device}}」上執行",
+      "shadowHint": "這裡的對話只能檢視。",
+      "openOnHome": "開啟「{{device}}」上的夥伴"
     }
   },
   "common": {

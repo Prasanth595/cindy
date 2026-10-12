@@ -9339,7 +9339,10 @@
       "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
       "transferFailed": "{{name}} を「{{device}}」に移せませんでした",
-      "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります"
+      "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
+      "shadowTitle": "この仲間は「{{device}}」で動作しています",
+      "shadowHint": "ここの会話は閲覧のみできます。",
+      "openOnHome": "「{{device}}」で開く"
     }
   },
   "common": {

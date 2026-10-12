@@ -14,7 +14,8 @@ const device = (deviceId: string, extra: Partial<DeviceLinkDeviceView> = {}): De
 let runtime: CompanionCloudRuntime | undefined;
 afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
-function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[] }) {
+function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
+  installationId?: string; probe?: (deviceId: string) => Promise<boolean> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     if (route === '/preferences') return method === 'GET' ? [] : { revision: 1 };
@@ -34,6 +35,8 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
     canonicalSession: async () => 'session-1', rowsAfter: async () => [], latestRows: async () => [],
     deliverToCanonical: async () => ({ ok: true }),
     materializer: local.host, listDevices: async () => options.devices ?? [],
+    ...(options.installationId ? { installationId: () => options.installationId! } : {}),
+    ...(options.probe ? { probeCompanionCloud: options.probe } : {}),
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
@@ -178,5 +181,95 @@ describe('retire', () => {
     if (demoted) t.state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
     await t.runtime.retire('bot_mia');
     expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+});
+
+describe('review fixes', () => {
+  it('confirms the home with a self-to-self compare-and-set before un-demoting', async () => {
+    const t = setup({ home: 'desk' });
+    t.local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    t.state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.state.isDemoted('bot_mia')).toBe(false));
+    const patch = t.calls.find(call => call.method === 'PATCH');
+    expect(patch).toMatchObject({ route: '/actors/actor-1', data: { homeDeviceId: 'desk', expectedHomeDeviceId: 'desk' } });
+    expect(t.calls.indexOf(patch!)).toBeLessThan(t.calls.findIndex(call => call.route === '/preferences' && call.method === 'GET'));
+  });
+
+  it('does not resurrect a demoted copy when the cached home is stale', async () => {
+    const t = setup({ home: 'desk', handler: (route, method) => {
+      if (method === 'PATCH') throw rejection(409, 'HOME_DEVICE_CONFLICT', { homeDeviceId: 'laptop' });
+      return [];
+    } });
+    t.local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    t.state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.refresh).toHaveBeenCalled());
+    expect(t.state.isDemoted('bot_mia')).toBe(true);
+    expect(t.local.host.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a hand-over target whose Cindy cannot take a companion over', async () => {
+    const t = setup({ home: 'desk', devices: [device('laptop')], probe: async () => false });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'TARGET_UNAVAILABLE' });
+    expect(await t.runtime.transferTargets()).toEqual([]);
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('keeps retrying to retire a companion deleted on its home until it succeeds', async () => {
+    let fail = true;
+    const t = setup({ home: 'desk', handler: (_route, method, data) => {
+      if (method === 'PATCH' && (data as { disabled?: boolean }).disabled && fail) throw rejection(503, 'UNAVAILABLE');
+      return {};
+    } });
+    await expect(t.runtime.retire('bot_mia')).rejects.toThrow('UNAVAILABLE');
+    expect(t.state.bot('bot_mia')?.retirePending).toBe(true);
+    fail = false;
+    t.runtime.reconcile([]);
+    await vi.waitFor(() => expect(t.state.bot('bot_mia')?.retirePending).toBeUndefined());
+    expect(t.actors[0]!.disabled).toBe(true);
+    expect(t.local.host.createProfile).not.toHaveBeenCalled();
+  });
+});
+
+describe('installation guard', () => {
+  const guarded = (owner: string | null) => {
+    const prefs = new Map<string, { value: unknown; revision: number }>(owner ? [['companion.install.v1', { value: { installationId: owner }, revision: 1 }]] : []);
+    return setup({ home: 'desk', installationId: 'install-a', handler: (route, method, data) => {
+      if (route === '/preferences' && method === 'GET') return [...prefs].map(([key, row]) => ({ key, ...row }));
+      if (route === '/preferences') {
+        const body = data as { key: string; value: unknown; expectedRevision: number };
+        const current = prefs.get(body.key)?.revision ?? 0;
+        if (current !== body.expectedRevision) throw rejection(409, 'REVISION_CONFLICT', { revision: current });
+        prefs.set(body.key, { value: body.value, revision: current + 1 });
+        return { revision: current + 1 };
+      }
+      if (route === '/conversations') return { id: ROOM };
+      if (route.includes('/messages?')) return [];
+      return {};
+    } });
+  };
+
+  it('shadows a companion another installation on this device runs', async () => {
+    const t = guarded('install-b');
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.runtime.isShadowed('bot_mia')).toBe(true));
+    expect(t.runtime.shadowIds()).toEqual(['bot_mia']);
+    await t.runtime.syncNow();
+    expect(t.calls.some(call => call.method === 'POST' && call.route === '/preferences' && (call.data as { key: string }).key !== 'companion.install.v1')).toBe(false);
+    // Taking over from this installation overwrites the claim.
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
+    expect(t.runtime.isShadowed('bot_mia')).toBe(false);
+    expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string; value?: unknown }).key === 'companion.install.v1'
+      && (call.data as { value: { installationId: string } }).value.installationId === 'install-a')).toBe(true);
+  });
+
+  it('claims an unclaimed companion for this installation and then syncs it', async () => {
+    const t = guarded(null);
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    await vi.waitFor(() => expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.install.v1')).toBe(true));
+    expect(t.runtime.isShadowed('bot_mia')).toBe(false);
+    await t.runtime.syncNow();
+    expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string }).key === 'companion.profile.v1')).toBe(true);
   });
 });

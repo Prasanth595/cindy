@@ -65,3 +65,19 @@ describe('retired actors', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('persisted shadows', () => {
+  it('keep a demoted copy shadowed while the server is unknown or the feature is off', () => {
+    const homes = createCompanionHomeRegistry();
+    const listener = vi.fn();
+    homes.onChange(listener);
+    homes.setPersistedShadows(['mia']);
+    expect(homes.isShadowed('mia')).toBe(true);
+    expect(homes.snapshot()).toMatchObject({ enabled: false, demotedBotIds: ['mia'] });
+    expect(listener).toHaveBeenCalledOnce();
+    homes.update(companionSnapshot({ enabled: false, selfDeviceId: null, humanActorId: null, actors: [] }));
+    expect(homes.isShadowed('mia')).toBe(true);
+    homes.reset();
+    expect(homes.isShadowed('mia')).toBe(false);
+  });
+});

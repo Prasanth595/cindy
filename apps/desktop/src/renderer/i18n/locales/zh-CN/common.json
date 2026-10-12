@@ -9339,7 +9339,10 @@
       "transferConflict": "{{name}} 的主力电脑已经变了，这次没有交出",
       "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
       "transferFailed": "未能把 {{name}} 交给「{{device}}」",
-      "targetUnavailable": "「{{device}}」现在不可用，它需要在线并开启远程控制"
+      "targetUnavailable": "「{{device}}」现在不可用，它需要在线并开启远程控制",
+      "shadowTitle": "这个伙伴已在「{{device}}」上运行",
+      "shadowHint": "这里的对话只能查看。",
+      "openOnHome": "打开「{{device}}」上的伙伴"
     }
   },
   "common": {

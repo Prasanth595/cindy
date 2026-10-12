@@ -27,8 +27,21 @@ describe('mirrorMessageText', () => {
     ['imported cloud history', reply('old', { clientId: 'cloud-history:abc' })],
     ['empty text', reply('   ')],
     ['private coordination replies', reply('internal', { agentMeta: JSON.stringify({ botPrivateReply: true }) })],
+    ['input sent by another task or teammate', user('do this', { agentMeta: JSON.stringify({ origin: { kind: 'session', senderSessionId: 's' } }) })],
+    ['input from an automation', user('scheduled', { agentMeta: JSON.stringify({ origin: { kind: 'scheduler', scheduleId: 'r' } }) })],
+    ['input from a plugin', user('plugin says', { agentMeta: JSON.stringify({ sourcePlugin: { pluginId: 'p' } }) })],
+    ['input from an IM channel', user('from feishu', { agentMeta: JSON.stringify({ imSource: { channel: 'feishu' } }) })],
+    ['input from a shared-task member', user('guest', { agentMeta: JSON.stringify({ sharedTaskAuthor: { memberId: 'm' } }) })],
+    ['a group-sourced message', user('group', { agentMeta: JSON.stringify({ sourceGroup: { groupId: 'g' } }) })],
   ])('drops %s', (_name, value) => {
     expect(mirrorMessageText(value)).toBeNull();
+  });
+});
+
+describe('owner-typed input', () => {
+  it('keeps what the owner typed on another device', () => {
+    expect(mirrorMessageText(user('from my phone', { agentMeta: JSON.stringify({ sourceDevice: { deviceId: 'phone', platform: 'mobile' } }) })))
+      .toBe('from my phone');
   });
 });
 
@@ -62,7 +75,8 @@ function setup(rows: CompanionMirrorRow[], failImport?: (call: number) => boolea
   const mirror = createCompanionMirror({
     api, state, humanActorId: () => 'human',
     canonicalSession: async () => 'session-1',
-    rowsAfter: async (_sessionId, cursor, limit) => rows.filter(after(cursor)).slice(0, limit),
+    rowsAfter: async (_sessionId, cursor, limit) => rows.filter(after(cursor))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)).slice(0, limit),
     latestRows: async (_sessionId, limit) => [...rows].reverse().slice(0, limit),
   });
   const imported = () => calls.filter(call => call.route.endsWith('/import'))
@@ -126,5 +140,36 @@ describe('companion conversation mirror', () => {
       canonicalSession: async () => null, rowsAfter: async () => [], latestRows: async () => [] });
     await mirror.syncBot('bot', 'actor', 'Mia');
     expect(calls).toEqual([]);
+  });
+});
+
+describe('cursor safety', () => {
+  it('re-scans a trailing window for rows persisted late, without re-sending recent imports', async () => {
+    const rows = [user('one'), reply('two')];
+    const t = setup(rows);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported()).toHaveLength(1);
+    // An assistant reply stamped before the cursor but persisted after the last pass.
+    const late = reply('late reply', { createdAt: rows[1]!.createdAt - 1 });
+    t.rows.push(late);
+    t.rows.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported()[1]!.map(m => m.content[0]!.text)).toEqual(['late reply']);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported()).toHaveLength(2);
+  });
+
+  it('never lets imported history move the cursor forward', async () => {
+    const own = user('mine');
+    const t = setup([own]);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    // A row brought in by take-over, stamped by a peer clock far in the future.
+    t.rows.push(reply('from peer', { clientId: 'cloud-history:x', createdAt: own.createdAt + 86_400_000 }));
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.state.bot('bot')?.mirror?.id).toBe(own.id);
+    const next = user('typed after');
+    t.rows.push(next);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported().at(-1)!.map(m => m.content[0]!.text)).toEqual(['typed after']);
   });
 });
