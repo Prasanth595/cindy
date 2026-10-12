@@ -179,8 +179,12 @@ describe('market Ghost session boundary', () => {
     const assessBody = source.slice(assessStart, assessStart + 1600);
     expect(assessBody).toContain('const ghost = findGhostForInstanceId(ghostId);');
     expect(assessBody).toContain('const storeId = installedGhostStoragePart(ghost);');
-    expect(assessBody).toContain('oauthManager.listAccounts(storeId, key)');
+    expect(assessBody).toContain('getGhostSetupProbes(storeId, runtimeManifest)');
     expect(assessBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
+    const probesStart = source.indexOf('function getGhostSetupProbes(');
+    const probesBody = source.slice(probesStart, source.indexOf('export function getGhostSetupAssessment', probesStart));
+    expect(probesBody).toContain('oauthManager.listAccounts(storeId, key)');
+    expect(probesBody).not.toContain('oauthManager.listAccounts(ghostId, key)');
     expect(source).toContain('return findGhostForInstanceId(id)?.manifest.name ?? null;');
   });
 
