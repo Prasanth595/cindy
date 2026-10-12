@@ -49,6 +49,7 @@ export interface GenerateNewKeyResult {
 }
 
 const SSH_DIR_DEFAULT = path.join(os.homedir(), '.ssh');
+const SSH_ADD_EMPTY_PASSPHRASE_TIMEOUT_MS = 10_000;
 
 // ── public API ────────────────────────────────────────────────────────────
 
@@ -211,14 +212,15 @@ export interface AddKeyToAgentResult {
  *    agent restart, at which point user clicks "Unlock" in the wizard
  *    and types passphrase again. We don't cache.
  *  - Windows: ssh-add exists (Win10 1809+) but SSH_ASKPASS support is
- *    spotty. We try anyway; if it fails the UI falls back to "open a
- *    terminal and run ssh-add <path> yourself".
+ *    spotty. We try anyway; an empty-passphrase probe is time-bounded in
+ *    case the installed build ignores SSH_ASKPASS_REQUIRE.
  */
 export async function addKeyToAgent(opts: {
   privateKeyPath: string;
   passphrase?: string;
 }): Promise<AddKeyToAgentResult> {
-  const { privateKeyPath, passphrase } = opts;
+  const { privateKeyPath } = opts;
+  const passphrase = opts.passphrase ?? '';
 
   // Deterministic pre-flight: confirm the private key actually exists BEFORE
   // handing the path to ssh-add. ssh-add's failure mode for a missing file is
@@ -246,22 +248,11 @@ export async function addKeyToAgent(opts: {
     // attempts the key and buildFailure classifies its stderr downstream.
   }
 
-  // No passphrase = key is unencrypted; ssh-add doesn't need to prompt
-  // and we can skip the askpass dance entirely.
-  if (!passphrase) {
-    try {
-      const args = sshAddArgs(privateKeyPath);
-      // execFile defaults to pipes (not inherit) so ssh-add won't grab a tty.
-      const result = await execFileP('ssh-add', args);
-      return { success: true, failureReason: null, errorHint: null, stderr: result.stderr };
-    } catch (err) {
-      return buildFailure(err);
-    }
-  }
-
-  // Encrypted key: feed passphrase via SSH_ASKPASS. We write a tiny helper
-  // script under os.tmpdir() that just emits the passphrase to stdout.
-  // ssh-add invokes it when it needs the passphrase.
+  // Always answer passphrase prompts through SSH_ASKPASS, even for an empty
+  // passphrase. Unencrypted keys load without prompting; encrypted keys get
+  // an empty answer instead of reading from a terminal. Older OpenSSH builds
+  // may ignore SSH_ASKPASS_REQUIRE, so the empty-passphrase probe is bounded.
+  // The helper script under os.tmpdir() emits the passphrase to stdout.
   //
   // Windows note: file extension MUST be `.cmd` (or `.bat`/`.exe`) — Windows'
   // `CreateProcessW` rejects `.sh` with error 193 (ERROR_BAD_EXE_FORMAT)
@@ -293,15 +284,18 @@ export async function addKeyToAgent(opts: {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       SSH_ASKPASS: askpassPath,
-      // Force askpass even when no tty — OpenSSH 8.4+ flag. Older versions
-      // ignore it gracefully. Required on most modern Linux/macOS.
+      // Force askpass even when ssh-add has a controlling terminal. OpenSSH
+      // 8.4+ honors this; older versions may ignore it.
       SSH_ASKPASS_REQUIRE: 'force',
     };
     // Some Linux distros refuse to invoke askpass without DISPLAY set; pick
     // a benign default. Harmless on macOS / Windows.
     if (process.platform === 'linux' && !env.DISPLAY) env.DISPLAY = ':0';
 
-    const result = await execFileP('ssh-add', args, { env });
+    const execOptions = passphrase
+      ? { env }
+      : { env, timeout: SSH_ADD_EMPTY_PASSPHRASE_TIMEOUT_MS };
+    const result = await execFileP('ssh-add', args, execOptions);
     return { success: true, failureReason: null, errorHint: null, stderr: result.stderr };
   } catch (err) {
     return buildFailure(err);
