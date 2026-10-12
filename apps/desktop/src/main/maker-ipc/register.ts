@@ -412,11 +412,7 @@ import { reviewChangeSetContentPaths, usableReviewChangeSet } from '../reviewer/
 import { enforceReviewCreateOptions } from '../reviewer/reviewSessionPolicy.js';
 import { reviewSourceIdentityMatches } from '../reviewer/reviewSourceIdentity.js';
 import { buildReviewSessionTitle } from '../reviewer/reviewSessionTitle.js';
-import {
-  buildReviewFollowUpMessage,
-  buildReviewInputSummary,
-  reviewFollowUpDisplayText,
-} from '../reviewer/reviewFollowUp.js';
+import { buildReviewFollowUpMessage, buildReviewInputSummary } from '../reviewer/reviewFollowUp.js';
 import { listSessionTouchedDirsLive } from '../git-context/sessionDirResolver.js';
 import {
   readReviewRunFromAgentMeta,
@@ -9231,6 +9227,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return {
         sourceAgentKind: source.agentKind as 'cc' | 'codex' | 'pi',
         prompt: builtPrompt.prompt,
+        replyLanguage: builtPrompt.replyLanguage,
         inputSummary: buildReviewInputSummary({
           ...reviewWorkspaceMeta,
           artifactCount: evidence.artifacts.length,
@@ -9569,14 +9566,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     drainPersistQueue,
     readReviewerResult: readLatestReviewerResult,
     // Close the loop like an inline review: the source agent receives the
-    // conclusion as a host-queued turn labeled as sent by the Reviewer task, and
-    // verifies/fixes it. Busy sources queue it behind their current turn.
-    forwardResultToSource: async ({ sourceSessionId, reviewerSessionId, runId, result, findingsCount }) => {
+    // conclusion as a hidden host-queued turn attributed to the Reviewer task,
+    // and verifies/fixes it. Busy sources queue it behind their current turn.
+    forwardResultToSource: async ({ sourceSessionId, reviewerSessionId, runId, result, replyLanguage }) => {
+      const followUp = buildReviewFollowUpMessage(result, replyLanguage);
       const sent = await sendToSessionInternal({
         targetSessionId: sourceSessionId,
         clientId: `review-follow-up:${runId}`,
-        message: buildReviewFollowUpMessage(result),
-        persistedContent: reviewFollowUpDisplayText(findingsCount),
+        message: followUp,
+        // Hidden host input: the review card is what the user sees; the source
+        // agent's reply follows it. The model text omits this prefix.
+        persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${followUp}`,
         dispatcherSessionId: reviewerSessionId,
         forceQueue: true,
         autoReviewUserText: { kind: 'delegated-continuation' },

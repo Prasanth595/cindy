@@ -11,6 +11,11 @@ import type {
 import type { ReviewTargetKind } from '../../shared/reviewRun.js';
 import type { ReviewArtifactExcerpt, ReviewArtifactWarning } from './reviewArtifactContent.js';
 import { REVIEW_FINDINGS_MARKER_INSTRUCTION } from './reviewFindingsMarker.js';
+import {
+  detectReviewReplyLanguage,
+  reviewerReplyLanguageInstruction,
+  type ReviewReplyLanguage,
+} from './reviewReplyLanguage.js';
 
 export interface ReviewContextMessage {
   role: 'user' | 'assistant';
@@ -92,6 +97,8 @@ export interface BuildReviewPromptInput {
 export interface BuiltReviewPrompt {
   prompt: string;
   targetKind: ReviewTargetKind;
+  /** Detected from the user's own messages; also pins the source follow-up turn. */
+  replyLanguage: ReviewReplyLanguage | null;
 }
 
 const MAX_CONTEXT_CHARS = 28_000;
@@ -396,6 +403,10 @@ function artifactContentSection(input: BuildReviewPromptInput): string {
 
 export function buildReviewPrompt(input: BuildReviewPromptInput): BuiltReviewPrompt {
   const targetKind = resolveTargetKind(input);
+  const replyLanguage = detectReviewReplyLanguage([
+    ...input.context.filter((message) => message.role === 'user').map((message) => message.text),
+    ...(input.focus ? [input.focus] : []),
+  ]);
   const context = contextSection(input.context);
   const focus = input.focus?.trim();
   const focusSection = focus
@@ -476,9 +487,9 @@ ${changeEvidence}
 
 先列 findings，按严重度排序：P0（会造成灾难性后果）、P1（提交/交付前必须修）、P2（明确且值得修）。每条必须包含具体证据（文件与行号、图片区域或原文）、影响和最小修复方向。不要写表扬、泛泛总结或纯风格 nit。
 
-如果没有发现需要修改的问题，明确写“未发现需要修改的问题”，随后只列仍未覆盖的风险或未执行的验证。使用任务主要语言作答。
+如果没有发现需要修改的问题，明确写“未发现需要修改的问题”，随后只列仍未覆盖的风险或未执行的验证。${reviewerReplyLanguageInstruction(replyLanguage)}
 
 ${REVIEW_FINDINGS_MARKER_INSTRUCTION}`;
 
-  return { prompt, targetKind };
+  return { prompt, targetKind, replyLanguage };
 }

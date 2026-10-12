@@ -14164,10 +14164,6 @@
       "artifacts": "Artifacts: {{count}}",
       "focus": "Focus: {{focus}}",
       "task": "Reviewing the current result against the task goal"
-    },
-    "followUp": {
-      "withCount": "Review found {{count}} issue(s). Verify each one and fix it.",
-      "unknownCount": "Review results are back. Verify each finding and fix it."
     }
   },
   "learn": {

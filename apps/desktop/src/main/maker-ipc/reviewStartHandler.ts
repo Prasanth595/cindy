@@ -10,6 +10,7 @@ import { isTurnContinuationBoundaryEvent } from '@cindy/maker-shared/turn-contin
 
 import type { ReviewAttachmentInput } from '../reviewer/reviewEvidence.js';
 import { splitReviewFindingsMarker } from '../reviewer/reviewFindingsMarker.js';
+import type { ReviewReplyLanguage } from '../reviewer/reviewReplyLanguage.js';
 import {
   type ReviewFailureCode,
   type ReviewRunMeta,
@@ -153,6 +154,8 @@ export interface PreparedReviewRun {
   prompt: string;
   /** What the Reviewer task shows as its input. The full prompt is model input only. */
   inputSummary?: string;
+  /** The user's language; the follow-up turn in the source task keeps it. */
+  replyLanguage?: ReviewReplyLanguage | null;
   targetKind: ReviewTargetKind;
   workspace?: ReviewRunMeta['workspace'];
   prepareLaunch(): Promise<PreparedReviewLaunch>;
@@ -228,6 +231,7 @@ export interface ReviewStartHandlerDeps {
     runId: string;
     result: string;
     findingsCount: number | null;
+    replyLanguage: ReviewReplyLanguage | null;
   }): Promise<void>;
   closeReviewer(reviewerSessionId: string): Promise<void>;
   warn(message: string, fields: Record<string, unknown>): void;
@@ -493,6 +497,7 @@ export function registerReviewStartHandler(
       preparedRunCleanup = prepared.cleanup?.bind(prepared) ?? null;
       await assertSourceAccess();
       const preparedSourceAgentKind = prepared.sourceAgentKind;
+      const preparedReplyLanguage = prepared.replyLanguage ?? null;
       sourceAgentKind = preparedSourceAgentKind;
       const startedAt = deps.now();
       if (
@@ -584,6 +589,7 @@ export function registerReviewStartHandler(
                 runId,
                 result,
                 findingsCount: parsed.findingsCount,
+                replyLanguage: preparedReplyLanguage,
               })
               .catch((error) => {
                 deps.warn('review result forward to source failed', {

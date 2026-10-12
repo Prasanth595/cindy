@@ -1,4 +1,8 @@
 import { t } from '../i18n.js';
+import {
+  followUpReplyLanguageInstruction,
+  type ReviewReplyLanguage,
+} from './reviewReplyLanguage.js';
 
 const fill = (template: string, values: Record<string, string>): string =>
   Object.entries(values).reduce(
@@ -54,27 +58,26 @@ export function buildReviewInputSummary(input: {
   return lines.join('\n');
 }
 
-/** The short line shown in the source task for the host-queued follow-up turn. */
-export function reviewFollowUpDisplayText(findingsCount: number | null): string {
-  return findingsCount && findingsCount > 0
-    ? fill(t('review.followUp.withCount'), { count: String(findingsCount) })
-    : t('review.followUp.unknownCount');
-}
-
 /**
- * Model input for the source task's follow-up turn. The Reviewer is independent
- * but can be wrong, so the source agent verifies every finding against the
- * current code before changing anything. The `[消息来源]` note is added at
- * dispatch from the queued origin, not here.
+ * Model input for the source task's follow-up turn. It is a hidden host input:
+ * the user already sees the conclusion in the review card, so nothing else is
+ * shown. The note is written in English and names the language detected from
+ * the user's own messages, so neither the note nor a review written in another
+ * language pulls a Japanese or Korean task into it. The Reviewer can be wrong, so the source agent verifies
+ * every finding against the current code before changing anything.
  */
-export function buildReviewFollowUpMessage(result: string): string {
+export function buildReviewFollowUpMessage(
+  result: string,
+  replyLanguage: ReviewReplyLanguage | null = null,
+): string {
   const clipped =
     result.length > MAX_FOLLOW_UP_RESULT_CHARS
-      ? `${result.slice(0, MAX_FOLLOW_UP_RESULT_CHARS)}\n…（审查结论过长，已截断；完整内容见审查卡片）`
+      ? `${result.slice(0, MAX_FOLLOW_UP_RESULT_CHARS)}\n… (review result truncated; the full text is in the review card)`
       : result;
   return [
-    '[审查结果] 用户运行了 /review。独立审查员（只读、不带开发记忆）对当前成果给出了以下结论。',
-    '审查员可能误报：请逐条对照当前代码核实。属实的问题直接修复并做相应验证；误报说明依据，不要为迎合审查而改动正确的代码。处理完后简要汇报每条的处置。',
+    '[Review result] This is not a message typed by the user. The user ran /review; an independent, read-only reviewer with no development memory returned the conclusion below, which the user already sees in the review card.',
+    'The reviewer can be wrong. Verify each finding against the current code. Fix the findings that hold and verify the fixes; for false positives, explain why instead of changing correct code. Then briefly report how each finding was handled.',
+    followUpReplyLanguageInstruction(replyLanguage),
     '',
     '<review-result>',
     clipped.replace(/<\/?review-result>/gi, (tag) => tag.replace('<', '&lt;').replace('>', '&gt;')),

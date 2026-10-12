@@ -14111,10 +14111,6 @@
       "artifacts": "成果：{{count}} 項",
       "focus": "關注：{{focus}}",
       "task": "依任務目標審查目前成果"
-    },
-    "followUp": {
-      "withCount": "審查發現 {{count}} 個問題，請逐條核實並修正",
-      "unknownCount": "審查結論已返回，請逐條核實並修正"
     }
   },
   "learn": {

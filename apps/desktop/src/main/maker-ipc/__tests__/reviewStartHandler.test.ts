@@ -966,9 +966,19 @@ describe('maker:review:start IPC lifecycle', () => {
         runId: 'run-1',
         result: 'P1: real finding',
         findingsCount: 1,
+        replyLanguage: null,
       });
       expect(vi.mocked(deps.updateSourceCard).mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(deps.forwardResultToSource!).mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('carries the user language detected at preparation into the follow-up', async () => {
+      const deps = await runToCompletion({
+        prepareRun: vi.fn(async () => makePreparedRun(makeLaunch(), { replyLanguage: 'ja' })),
+      });
+      expect(deps.forwardResultToSource).toHaveBeenCalledWith(
+        expect.objectContaining({ replyLanguage: 'ja' }),
       );
     });
 
