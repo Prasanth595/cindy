@@ -37,7 +37,7 @@ const DEFAULT_POLICIES: readonly ProviderDefaultPolicy[] = [
     providerId: 'openai',
     accessKind: 'subscription',
     agents: ['codex'],
-    modelIds: ['gpt-6-sol', 'chatgpt/gpt-6-sol'],
+    modelIds: ['gpt-6.1-sol', 'chatgpt/gpt-6.1-sol'],
   },
   {
     providerId: 'anthropic',
@@ -75,6 +75,7 @@ export function isKnownProductDefaultTupleIdentity(args: {
 }): boolean {
   // Old automatic selections remain recognizable after the factory policy changes.
   const legacyPolicies: readonly ProviderDefaultPolicy[] = [
+    { providerId: 'openai', accessKind: 'subscription', agents: ['codex'], modelIds: ['gpt-6-sol', 'chatgpt/gpt-6-sol'] },
     { providerId: 'openai', accessKind: 'subscription', agents: ['codex'], modelIds: ['gpt-6-astra', 'chatgpt/gpt-6-astra'] },
     { providerId: 'xd', accessKind: 'managed', agents: ['pi'], modelIds: ['z-ai/glm-5.3-flash', 'glm-5.3-flash'] },
     { providerId: 'openai', accessKind: 'subscription', agents: ['codex', 'claude-code', 'pi'], modelIds: ['chatgpt/gpt-5.6-sol', 'gpt-5.6-sol'] },

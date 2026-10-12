@@ -886,9 +886,9 @@ describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', 
 
 describe('factory defaults survive send-time calibration', () => {
   it.each([null, 'openai'])('keeps startup visibility switches during calibration (source %s)', preferredProviderId => {
-    const openai = provider('openai', true, { codex: [model('gpt-6-sol'), model('gpt-6-astra')] }, 'subscription');
+    const openai = provider('openai', true, { codex: [model('gpt-6.1-sol'), model('gpt-6-astra')] }, 'subscription');
     const isModelEnabled = (agent: AgentKind, providerId: string, candidate: { id: string }) =>
-      !(agent === 'codex' && providerId === 'openai' && candidate.id === 'gpt-6-sol');
+      !(agent === 'codex' && providerId === 'openai' && candidate.id === 'gpt-6.1-sol');
     const startup = resolveNewMakerDefaultTuple({ providers: [openai], providersLoading: false,
       availableAgents: new Set(['codex']), availableAgentsLoaded: true, isModelEnabled });
     expect(startup).toMatchObject({ model: 'gpt-6-astra', providerId: 'openai' });
@@ -898,10 +898,10 @@ describe('factory defaults survive send-time calibration', () => {
       .toEqual({ model: 'gpt-6-astra', providerId: 'openai' });
     // Reopening the switch makes the factory recommendation eligible again.
     expect(calibrateDraftModel({ ...input, isModelEnabled: () => true }))
-      .toEqual({ model: 'gpt-6-sol', providerId: 'openai' });
+      .toEqual({ model: 'gpt-6.1-sol', providerId: 'openai' });
     // A hidden model explicitly selected by the user still wins.
-    expect(calibrateDraftModel({ ...input, model: 'gpt-6-sol', chosenByUser: true, isModelEnabled }))
-      .toEqual({ model: 'gpt-6-sol', providerId: null });
+    expect(calibrateDraftModel({ ...input, model: 'gpt-6.1-sol', chosenByUser: true, isModelEnabled }))
+      .toEqual({ model: 'gpt-6.1-sol', providerId: null });
     // Hiding every model must not disable the existing usable-route fallback.
     expect(calibrateDraftModel({ ...input, isModelEnabled: () => false }))
       .toEqual({ model: 'gpt-6-astra', providerId: 'openai' });
