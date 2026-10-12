@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   row: null as any,
   inputs: {} as Record<string, any>,
   teammates: { rows: [] as any[], loading: false, failed: false },
+  teammateQuery: '',
   uuid: 0,
   scroll: null as any,
   scrollToEnd: vi.fn(),
@@ -190,7 +191,7 @@ vi.mock('@/session/MessageRenderer', () => ({
     }, item.name))),
 }));
 vi.mock('@/session/useBotGroupRemoteMedia', () => ({ useBotGroupRemoteMedia: () => async () => { throw new Error('offline'); } }));
-vi.mock('@/session/useHostTeammates', () => ({ useHostTeammates: () => h.teammates }));
+vi.mock('@/session/useHostTeammates', () => ({ useHostTeammates: (_host: unknown, _enabled: boolean, query = '') => { h.teammateQuery = query; return h.teammates; } }));
 vi.mock('@/session/useBotGroupChat', () => ({ useBotGroupChat: () => h.chat }));
 vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsManagement: () => h.management ?? ({
   selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh: vi.fn(),
@@ -264,7 +265,7 @@ async function render(data: BotGroupRemoteChatData | null = group(), kind: 'read
 beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
-  h.uuid = 0; h.inputs = {}; h.teammates = { rows: [], loading: false, failed: false };
+  h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
   h.platform.OS = 'ios'; h.keyboardAvoidingView = null;
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = [];
@@ -921,6 +922,57 @@ describe('group settings', () => {
     data.members = data.members.slice(0, 2);
     await openSettings(data);
     expect(byId('botGroup.settings.memberMenu.abu.action.remove:abu')?.disabled).toBe(true);
+  });
+
+  it.each(['member', 'admin'] as const)('retains compatibility-entry leave for a server %s without granting archive', async (role) => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
+    data.members[0] = { ...data.members[0], isOwned: true, role };
+    await openSettings(data);
+    expect(h.inputs['botGroup.settings.name'].editable).toBe(role === 'admin');
+    expect(byId('botGroup.settings.add')?.disabled).toBe(role !== 'admin');
+    expect(byId('botGroup.settings.delete')?.disabled).toBe(false);
+    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.delete');
+    await click('botGroup.settings.delete');
+    expect(h.chat.act).toHaveBeenCalledWith('delete', {});
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps compatibility leave disabled when the computer is offline', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'member' };
+    h.chat.online = false;
+    await openSettings(data);
+    expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
+    await click('botGroup.settings.delete');
+    expect(h.chat.act).not.toHaveBeenCalled();
+  });
+
+  it('keeps direct server settings archive owner-only', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'admin' };
+    h.chat.server = true;
+    h.management = { selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
+      act: vi.fn(), refresh: vi.fn(), select: vi.fn() };
+    await openSettings(data);
+    expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
+    await click('botGroup.settings.delete');
+    expect(h.management.act).not.toHaveBeenCalled();
+  });
+
+  it('searches the host roster when adding a server group member', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    await openSettings(data);
+    await click('botGroup.settings.add');
+    expect(h.inputs['botGroup.settings.memberSearch']).toBeDefined();
+    await act(async () => { h.inputs['botGroup.settings.memberSearch'].onChangeText('Beyond first page'); });
+    expect(h.teammateQuery).toBe('Beyond first page');
+    h.teammates.rows = [{ key: 'beyond', host: { deviceId: 'pc', deviceName: 'PC' }, item: {
+      ref: { collectionId: 'teammates', kind: 'bot', id: 'bot-201' }, revision: '1', display: { title: 'Beyond first page' }, links: [],
+    } }];
+    await render(data);
+    await click('botGroup.settings.addable.bot-201');
+    expect(h.chat.act).toHaveBeenLastCalledWith('add-member', { botId: 'bot-201', expectedRevision: 5 });
   });
 
   it('deletes after the system confirmation, then leaves once the sheet has closed', async () => {

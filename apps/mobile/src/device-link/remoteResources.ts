@@ -493,12 +493,14 @@ export async function listRemoteCollection(
   target: RemoteResourceHostTarget,
   collectionId: string,
   locale?: string,
+  query?: string,
 ): Promise<RemoteCollectionListResponse> {
   assertMobileRemoteCollectionSupported(collectionId);
   return invoke<RemoteCollectionListResponse>(target.deviceId, REMOTE_RESOURCE_LIST_CHANNEL, [{
     client: clientDescriptor(locale),
     collectionId,
     limit: 200,
+    ...(query ? { query } : {}),
   }]);
 }
 

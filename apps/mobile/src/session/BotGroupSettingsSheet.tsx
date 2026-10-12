@@ -76,33 +76,40 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   const busyRef = useRef<Busy>(null);
   const [errors, setErrors] = useState<Partial<Record<Exclude<Busy, null>, string>>>({});
   const [picking, setPicking] = useState(false);
+  const [memberQuery, setMemberQuery] = useState('');
+  const serverManaged = group.serverBacked === true && group.supportsSettingsManagement === true;
   const nameFocused = useRef(false);
   const nameDirty = useRef(false);
   const nameRevision = useRef(group.revision);
-  const teammates = useHostTeammates(host, visible && picking && !readOnly);
+  const teammates = useHostTeammates(host, visible && picking && !readOnly, serverManaged ? memberQuery : '');
 
   // Follow renames that land from the computer while the field is not being edited.
   useEffect(() => { if (!nameFocused.current && !nameDirty.current) setName(group.name); }, [group.name]);
   useEffect(() => { if (!visible) { setPicking(false); setErrors({}); } }, [visible]);
 
+  useEffect(() => { if (!picking) setMemberQuery(''); }, [picking]);
+
   const memberIds = group.members.map((member) => member.botId);
-  const serverManaged = group.serverBacked === true && group.supportsSettingsManagement === true;
-  const archivesGroup = serverManaged || management !== undefined;
+
   const owner = group.members.some(member => member.isOwned && member.role === 'owner');
+  const leavesGroup = group.serverBacked === true && management === undefined && !owner;
+  const archivesGroup = (serverManaged && !leavesGroup) || management !== undefined;
   const canRemove = serverManaged || group.members.length > BOT_GROUP_MIN_MEMBERS;
   const canAdd = serverManaged || group.members.length < BOT_GROUP_MAX_MEMBERS;
   const addable = teammates.rows.filter((row) => !memberIds.includes(row.item.ref.id));
   const permissionLocked = serverManaged && !canManageBotGroup(group);
   const unavailable = readOnly || permissionLocked || !online;
   const locked = unavailable || busy !== null;
+  const deleteLocked = leavesGroup ? readOnly || !online || busy !== null : locked || (serverManaged && !owner);
 
   const run = async (section: Exclude<Busy, null>, actionId: BotGroupRemoteActionId, input: Record<string, unknown>, fallbackKey: string) => {
-    if (readOnly || permissionLocked || !online || busyRef.current) return false;
+    const leaving = actionId === 'delete' && leavesGroup;
+    if (readOnly || (permissionLocked && !leaving) || !online || busyRef.current) return false;
     busyRef.current = section;
     setBusy(section);
     setErrors((current) => ({ ...current, [section]: undefined }));
     try {
-      await act(actionId, serverManaged ? { expectedRevision: group.revision, ...input } : input);
+      await act(actionId, serverManaged && !leaving ? { expectedRevision: group.revision, ...input } : input);
       return true;
     } catch (error) {
       setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
@@ -254,6 +261,10 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
             {picking && canAdd ? <View style={styles.rowDivider} /> : null}
           </Pressable>
           {picking && canAdd ? <View testID="botGroup.settings.addable">
+            {serverManaged ? <TextInput value={memberQuery} onChangeText={setMemberQuery} editable={!locked}
+              accessibilityLabel={t('devices.companions.search')} placeholder={t('devices.companions.search')}
+              placeholderTextColor={colors.textPlaceholder} autoCorrect={false} returnKeyType="search"
+              style={[styles.input, styles.searchInput]} testID="botGroup.settings.memberSearch" /> : null}
             {teammates.loading && addable.length === 0 ? <ActivityIndicator color={colors.textSecondary} style={styles.spinner} /> : null}
             {!teammates.loading && addable.length === 0
               ? <Text style={styles.note}>{t(teammates.failed ? 'devices.resources.loadFailed' : 'groupChat.settings.noMoreBots')}</Text>
@@ -311,17 +322,17 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
         {error('speakingMode')}
       </View>
 
-      <View style={styles.section}>
-        <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={locked || (serverManaged && !owner)}
+      </View>
+      <View style={[styles.section, (readOnly || !online) && styles.inheritedInactive]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={deleteLocked}
           onPress={() => void remove()}
-          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, !unavailable && (locked || (serverManaged && !owner)) && styles.inactive]}
+          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, !readOnly && online && deleteLocked && styles.inactive]}
           testID="botGroup.settings.delete">
           {busy === 'delete' ? <ActivityIndicator color={colors.destructive} /> : null}
           <Text style={[styles.rowTitle, styles.destructive]}>{t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')}</Text>
         </Pressable>
         <Text style={styles.note}>{t(archivesGroup ? 'groupChat.settings.archiveNote' : 'groupChat.settings.deleteNote')}</Text>
         {error('delete')}
-      </View>
       </View>
     </View>
   </CompanionSheet>;
@@ -341,6 +352,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   sectionTitle: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, fontWeight: fontWeight.semibold },
   input: { minHeight: 44, borderRadius: radius.pill, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.lg, color: colors.textPrimary, backgroundColor: colors.surfaceElevated, fontSize: typeScale.body },
+  searchInput: { fontSize: typeScale.bodySmall },
   group: { backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.container, overflow: 'hidden' },
   memberRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 52, paddingHorizontal: spacing.md,

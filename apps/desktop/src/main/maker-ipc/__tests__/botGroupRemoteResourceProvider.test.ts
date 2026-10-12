@@ -161,6 +161,16 @@ describe('bot group remote resources', () => {
       actionId: 'delete', resourceRef: ref('g1'), input: { expectedRevision: 5 } })).rejects.toMatchObject({ message: 'PERMISSION_DENIED' });
   });
 
+  it('retains legacy delete delegation for a non-owner leaving a server group', async () => {
+    const group = detail({ serverBacked: true, revision: 5 });
+    group.members[0] = { ...group.members[0], isOwned: true, role: 'member' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: {} });
+    expect(service.deleteGroup).toHaveBeenCalledWith('g1');
+    expect(service.chatServer.manage).not.toHaveBeenCalled();
+  });
+
   it('includes server groups with people and companions on another computer', async () => {
     const group = summary({ serverBacked: true, members: [
       { botId: 'person', actorId: 'person', actorKind: 'human', isOwned: false, name: 'Guest', avatar: '', avatarColor: 'red', status: 'active' },
