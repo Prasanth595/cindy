@@ -41,8 +41,12 @@ export function useCloudCompanionHome(enabled: boolean) {
     return () => { generation.current += 1; foreground.remove(); };
   }, [api.enabled, enabled, refresh]));
   const own = state.owner === api.owner;
-  const setHome = useCallback((actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> =>
-    api.client.setHome(actorId, homeDeviceId, expected), [api]);
+  // Never move the home before its profile snapshot is in the cloud: the new computer could not
+  // build the companion, and the old one would already be demoted (cloud-companions.md).
+  const setHome = useCallback(async (actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> => {
+    if (!(await api.client.hasProfileSnapshot(actorId))) throw new Error('PROFILE_SNAPSHOT_MISSING');
+    return api.client.setHome(actorId, homeDeviceId, expected);
+  }, [api]);
   return { supported: own && state.supported, actors: own ? state.actors : NO_ACTORS,
     deviceNames: own ? state.deviceNames : NO_NAMES, refresh, setHome };
 }

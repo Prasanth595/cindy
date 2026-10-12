@@ -16,7 +16,7 @@ import { createCompanionMirror, type CompanionMirrorCursor, type CompanionMirror
 import { readTranscriptPage } from './room.js';
 import type { CompanionCloudState } from './state.js';
 import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
-import { COMPANION_VALUE_TOO_LARGE, createCompanionUploader, type CompanionPreferenceValue } from './uploader.js';
+import { COMPANION_PROFILE_KEY, COMPANION_VALUE_TOO_LARGE, createCompanionUploader, type CompanionPreferenceValue } from './uploader.js';
 
 /** Electron/database side of the feature, wired in register.ts. */
 export interface CompanionCloudHost {
@@ -108,6 +108,12 @@ function actionFailure(error: unknown, fallback: 'FAILED' | 'OFFLINE' = 'FAILED'
 }
 
 const AUTO_RETRY_MS = 60_000;
+
+/** The home has uploaded the profile snapshot a take-over builds the companion from. */
+export function hasProfileSnapshot(rows: unknown): boolean {
+  const row = (Array.isArray(rows) ? rows : []).find((candidate: { key?: unknown }) => candidate?.key === COMPANION_PROFILE_KEY) as { value?: unknown } | undefined;
+  return !!row?.value && typeof row.value === 'object' && !Array.isArray(row.value);
+}
 
 /** Same computers Orca may run work on (orcaRemoteWorkers.isExecutionDeviceCandidate). */
 export function isCompanionTransferTarget(device: DeviceLinkDeviceView): boolean {
@@ -357,6 +363,12 @@ export function startCompanionCloud(input: {
         actor = actorOf(botId);
       }
       if (!actor) return { ok: false, code: 'FAILED' };
+      // Never move the home before the companion's profile snapshot is in the cloud: without it
+      // this copy could not be built, and the old home would already be demoted.
+      try {
+        const rows = await input.api<Array<{ key: string; value: unknown }>>('/preferences', 'GET', undefined, actor.id);
+        if (!hasProfileSnapshot(rows)) return { ok: false, code: 'FAILED' };
+      } catch (error) { return actionFailure(error); }
       // Always compare-and-set, even when the cached home already says "here": the cache may be
       // stale (another computer took over while this one was offline). Unchanged homes are a no-op.
       try {

@@ -56,10 +56,20 @@ describe('take over', () => {
     expect(t.publish).toHaveBeenCalled();
   });
 
+  it('does not move the home while the cloud has no profile snapshot', async () => {
+    const t = setup({ home: 'laptop', handler: (route, method) => {
+      if (route === '/preferences' && method === 'GET') return [];
+      return {};
+    } });
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: false, code: 'FAILED' });
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(t.local.host.createProfile).not.toHaveBeenCalled();
+  });
+
   it('returns the current home when another device won', async () => {
-    const t = setup({ home: 'laptop', handler: (_route, method) => {
+    const t = setup({ home: 'laptop', handler: (route, method) => {
       if (method === 'PATCH') throw rejection(409, 'HOME_DEVICE_CONFLICT', { homeDeviceId: 'tablet' });
-      return [];
+      return route === '/preferences' ? [{ key: 'companion.profile.v1', value: { name: 'Mia' }, revision: 1 }] : [];
     } });
     expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: false, code: 'HOME_CONFLICT', homeDeviceId: 'tablet' });
     expect(t.refresh).toHaveBeenCalled();

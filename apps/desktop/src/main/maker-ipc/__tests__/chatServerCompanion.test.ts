@@ -154,6 +154,23 @@ describe('Chat Server cloud companions', () => {
     expect(host.homes.isShadowed('local-bot')).toBe(true);
   });
 
+  it('never publishes the name or avatar from an installation not confirmed as the home one', async () => {
+    service.dispose();
+    host = { ...host, homes: createCompanionHomeRegistry(), installationId: () => 'install-b' } as typeof host;
+    deps = { ...deps, companionCloud: host } as BotGroupChatServiceDeps;
+    home = 'desk-1';
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Mia (other install)', avatar: null, status: 'active' }];
+    // The other Cindy installation on this computer runs the companion.
+    fixture.handle.mockImplementation((route, method, body) => route === '/preferences' && method === 'GET'
+      ? { body: [{ key: 'companion.install.v1', value: { installationId: 'install-a', deviceId: 'desk-1' }, revision: 1 }] }
+      : respond(route, method, body));
+    service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    claimed = true;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls(`/actors/${botActor}/profile`)).toHaveLength(0);
+    expect(calls('/executions/claim')).toHaveLength(0);
+  });
+
   it('keeps a demoted copy shadowed from the persisted list before the server answers', async () => {
     service.dispose();
     const persisted = { ids: ['local-bot'] };

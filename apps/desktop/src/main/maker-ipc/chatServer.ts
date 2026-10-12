@@ -404,7 +404,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       for (const profile of profiles.filter(p => p.status === 'active')) {
         const found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
         if (!found) continue;
-        if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id))) continue;
+        // Only the confirmed home installation publishes (same predicate as claiming work).
+        if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
+          || !companion?.installConfirmed(profile.id))) continue;
         const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
         let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
         if (source && found.avatarSource !== source) {

@@ -23,6 +23,8 @@ export interface ApiFetchOptions {
   cache?: 'no-store';
   /** Reject stale account-scoped work before transport or auth side effects. */
   assertCurrent?: () => void;
+  /** Extra request headers (e.g. Chat Server's X-Chat-Actor); never overrides auth or content type. */
+  headers?: Record<string, string>;
 }
 
 const DEFAULT_API_TIMEOUT_MS = 20_000;
@@ -48,7 +50,7 @@ export async function apiFetchRaw<T>(
   opts: ApiFetchOptions,
 ): Promise<T> {
   opts.assertCurrent?.();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = { ...opts.headers, 'Content-Type': 'application/json' };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
   if (opts.cache === 'no-store') {
     // Also tell native HTTP caches not to reuse or store short-lived responses.

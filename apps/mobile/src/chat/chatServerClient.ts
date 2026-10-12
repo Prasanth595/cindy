@@ -25,7 +25,8 @@ export interface ChatExecutionFailure {
   failure_code?: unknown; updated_at?: string; plan_id?: string | null;
 }
 export interface ChatPage { snapshot: ChatSnapshot; messages: ChatMessage[]; before: string | null; failures?: ChatExecutionFailure[] }
-export type ChatRequest = <T>(path: string, method?: 'GET' | 'POST' | 'PATCH', body?: unknown) => Promise<T>;
+/** `actorId` acts as one of the account's own actors (Chat Server `X-Chat-Actor`). */
+export type ChatRequest = <T>(path: string, method?: 'GET' | 'POST' | 'PATCH', body?: unknown, actorId?: string) => Promise<T>;
 /** An actor the account owns; a companion's `externalId` is its bot id on every computer. */
 export interface ChatActor { id: string; kind: string; externalId: string; name: string; avatar: string | null; homeDeviceId: string | null }
 export interface ChatCapabilities { companionHome: boolean }
@@ -232,6 +233,12 @@ export function createChatServerClient(request: ChatRequest) {
         return [{ id: row.id, kind: String(row.kind), externalId: row.externalId ?? '', name: typeof row.name === 'string' ? row.name : '',
           avatar: typeof row.avatar === 'string' ? row.avatar : null, homeDeviceId: typeof row.homeDeviceId === 'string' && row.homeDeviceId ? row.homeDeviceId : null }];
       });
+    },
+    /** The main computer has uploaded the profile snapshot another computer builds the companion from. */
+    async hasProfileSnapshot(actorId: string): Promise<boolean> {
+      const rows = await request<Array<{ key?: unknown; value?: unknown }>>('/preferences', 'GET', undefined, chatId(actorId));
+      const row = (Array.isArray(rows) ? rows : []).find(candidate => candidate?.key === 'companion.profile.v1');
+      return !!row?.value && typeof row.value === 'object' && !Array.isArray(row.value);
     },
     /** Move a companion's main computer only if it is still `expected` (no two devices race it). */
     async setHome(actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> {
