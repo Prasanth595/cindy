@@ -13,6 +13,13 @@ export const composerPluginListSchema = z.array(z.object({
     })).optional(),
   }),
   enabled: z.boolean(),
+  /** Absent on old peers. null is an explicit root instance. */
+  namespace: z.string().min(1).nullable().optional(),
+  /**
+   * Physical instance key. Absent on old peers; never a filesystem path.
+   * In-place migrated installs keep their original key, which can differ from manifest.id.
+   */
+  instanceKey: z.string().min(1).max(167).optional(),
   iconDataUrl: z.string().optional(),
 }));
 export type ComposerPlugin = z.infer<typeof composerPluginListSchema>[number];

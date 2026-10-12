@@ -28,6 +28,10 @@ export interface GhostCommandSource {
   manifest: { id: string; name: string; command?: string; tools?: GhostToolDecl[] };
   enabled: boolean;
   iconDataUrl?: string;
+  /** Absent on old peers. null is an explicit root instance. */
+  namespace?: string | null;
+  /** Physical instance key. Absent on old peers; never a filesystem path. */
+  instanceKey?: string;
 }
 
 function hasDeliveryNamespace<T extends object>(
