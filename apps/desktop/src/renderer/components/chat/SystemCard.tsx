@@ -1348,7 +1348,15 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
             compact
             tone="quiet"
             type="button"
-            onClick={() => navigate(`/cc-agent/${reviewerSessionId}`)}
+            onClick={() =>
+              navigate(`/cc-agent/${reviewerSessionId}`, {
+                state: {
+                  from: 'review-source',
+                  sourceSessionId:
+                    typeof data?.sourceSessionId === 'string' ? data.sourceSessionId : undefined,
+                },
+              })
+            }
           >
             {t('chat.systemCard.review.openTask')}
             <ArrowRight size={12} />

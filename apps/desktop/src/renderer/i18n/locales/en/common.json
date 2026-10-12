@@ -11459,6 +11459,7 @@
       },
       "dialogueLabel": "Chat",
       "backToAutomations": "Back to Automations",
+      "backToReviewSource": "Back to source task",
       "waitForReply": "Waiting for your reply in the document area…",
       "modelSwitchedFastModeOff": "Model switched, Fast Mode disabled"
     },

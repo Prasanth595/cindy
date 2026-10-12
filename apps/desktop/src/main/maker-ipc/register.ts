@@ -9550,11 +9550,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .where(eq(sessions.id, reviewerSessionId));
     },
     broadcastReviewerCreated: broadcastSessionCreated,
-    persistReviewerPrompt: async ({ reviewerSessionId, runId, prompt, sourceAgentKind }) => {
+    persistReviewerPrompt: async ({ reviewerSessionId, sourceSessionId, runId, prompt, sourceAgentKind }) => {
+      // The existing "sent by task" label links the Reviewer back to its source.
+      // Reviewer tasks are not in the task list, so this is their durable way back.
+      const origin = sessionQueueOriginForDispatcher({
+        dispatcherSessionId: sourceSessionId,
+        ...(await readSenderIdentity(sourceSessionId)),
+        message: prompt,
+      });
       await createDbMessage(reviewerSessionId, {
         clientId: `review-prompt:${runId}`,
         role: 'user',
         content: prompt,
+        ...(origin ? { agentMeta: { origin } } : {}),
         agentKind: sourceAgentKind,
       });
     },

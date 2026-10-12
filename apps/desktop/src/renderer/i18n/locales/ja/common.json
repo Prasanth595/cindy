@@ -11408,6 +11408,7 @@
       },
       "dialogueLabel": "対話",
       "backToAutomations": "Automations に戻る",
+      "backToReviewSource": "元のタスクに戻る",
       "waitForReply": "ドキュメント領域での返信を待っています…",
       "modelSwitchedFastModeOff": "モデルを切り替えました。Fast Mode は無効になりました"
     },

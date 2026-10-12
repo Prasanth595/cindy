@@ -943,7 +943,10 @@ describe('maker:review:start IPC lifecycle', () => {
         ),
       });
       expect(deps.persistReviewerPrompt).toHaveBeenCalledWith(
-        expect.objectContaining({ prompt: 'Independent review\nDirectory: /repo' }),
+        expect.objectContaining({
+          sourceSessionId: 'source-1',
+          prompt: 'Independent review\nDirectory: /repo',
+        }),
       );
     });
 

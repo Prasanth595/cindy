@@ -11408,6 +11408,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },

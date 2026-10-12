@@ -209,6 +209,8 @@ export interface ReviewStartHandlerDeps {
   broadcastReviewerCreated(reviewerSessionId: string): void;
   persistReviewerPrompt(input: {
     reviewerSessionId: string;
+    /** Labels the Reviewer input as sent from its source task, a durable way back. */
+    sourceSessionId: string;
     runId: string;
     /** Display text for the Reviewer task's first message. */
     prompt: string;
@@ -667,6 +669,7 @@ export function registerReviewStartHandler(
         onAccepted: async () => {
           await deps.persistReviewerPrompt({
             reviewerSessionId,
+            sourceSessionId: request.sourceSessionId,
             runId,
             prompt: prepared.inputSummary || prepared.prompt,
             sourceAgentKind: preparedSourceAgentKind,
