@@ -496,10 +496,12 @@ function selectWorkerModel(params: {
   return input.model
     ?? defaults.model
     ?? (input.agent === lead.agentKind && inheritLeadModel ? lead.model : undefined)
-    // 新建任务草稿还没推过来时不写死型号：取目录里排第一、且有已连接来源提供的模型；
-    // 一个都没有则留空，由后续模型解析明确报错。
-    ?? params.availableModels.find((model) =>
-      params.providers.some((provider) => provider.models.includes(model.id)))?.id
+    // Cursor 没有跨引擎默认型号：只取本机原生目录的第一项，取不到就留下空串交给后续校验。
+    // 其它引擎不写死型号：取目录里排第一、且有已连接来源提供的模型；一个都没有则留空。
+    ?? (input.agent === 'cursor'
+      ? (params.availableModels[0]?.id ?? '')
+      : params.availableModels.find((model) =>
+        params.providers.some((provider) => provider.models.includes(model.id)))?.id)
     ?? '';
 }
 
@@ -673,7 +675,7 @@ export function budgetModelRequiresApiKeyMessage(model: string): string {
 
 /** agent 的人类可读名,用于 preflight 失败信息。 */
 function agentDisplayName(agent: AgentKind): string {
-  return agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude Code';
+  return agent === 'cursor' ? 'Cursor' : agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude Code';
 }
 
 /**
@@ -1068,6 +1070,13 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     if (!workerLocation.ok) {
       return { ok: false, errorCode: 'INVALID_PARAMS', message: workerLocation.message };
     }
+    // Cursor 只在本机工作区运行：SSH、Lead 的 Agent 在别的电脑、运行设备、以及把 Agent
+    // 放到另一台电脑或分享上，都不创建。跨设备入口不提供 Cursor。
+    if (params.agent === 'cursor' && (
+      lead.remoteHostId || lead.agentDeviceId || params.executionDeviceId !== undefined || workerLocation.agentDeviceId
+    )) {
+      return { ok: false, errorCode: 'INVALID_PARAMS', message: 'Cursor workers require a local workspace' };
+    }
     if (params.executionDeviceId !== undefined) {
       return createRemoteWorkerInTeam({
         params,
@@ -1108,6 +1117,10 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       : lead;
     const explicitSourceId = groupFollow && requestedSourceId !== null ? groupFollow.providerId : requestedSourceId;
     const workerAgentDeviceId = groupFollow ? groupFollow.agentDeviceId : workerLocation.agentDeviceId;
+    // 跟 Lead 的供应商组可能把本机 Worker 改放到另一台电脑。Cursor 不跟随过去。
+    if (params.agent === 'cursor' && workerAgentDeviceId) {
+      return { ok: false, errorCode: 'INVALID_PARAMS', message: 'Cursor workers require a local workspace' };
+    }
     // Lead 的模型与来源属于它自己所在位置的目录：Worker 换了位置就不沿用 Lead 的来源(来源 id 在
     // 不同电脑上不是一回事)，只在同一位置时继承；模型只在那一处也有时沿用。
     const sameLocationAsLead = workerAgentDeviceId === leadAgentDeviceId(followedLead);

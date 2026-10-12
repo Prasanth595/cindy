@@ -1,3 +1,4 @@
+import { refreshLocalCapabilities } from '@/hooks/useAgentCapabilities';
 import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
 import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
 import { CodexResetCredits } from '../status/CodexResetCredits';
@@ -91,6 +92,7 @@ import { useProviderSubscriptionCard } from './useProviderSubscriptionCard';
 import { QuotaHoverCard } from '../status/QuotaHoverCard';
 import { ProviderConnectionDialog } from './ProviderConnectionDialog';
 import { AddProviderWizard, type WizardEntry } from './AddProviderWizard';
+import { CursorProviderSetup } from './CursorProviderSetup';
 import { OllamaProviderDetail } from './OllamaProviderDetail';
 import {
   OwnRemoteProviderDetail,
@@ -705,6 +707,8 @@ function DetailHeader({
           agent:
             provider.agents[0] === 'claude-code'
               ? 'Claude Code'
+              : provider.agents[0] === 'cursor'
+                ? 'Cursor'
               : provider.agents[0] === 'pi'
                 ? 'Pi'
                 : 'Codex',
@@ -1072,7 +1076,6 @@ function OpenAiHeader({
     refresh,
     triggerLogin,
     cancelLogin,
-    logout,
   } = useCodexAuth();
   const reconnectRequired = state.kind === 'reconnect-required';
   const loggingIn = state.kind === 'login-pending';
@@ -2575,6 +2578,8 @@ export function ProvidersSection() {
         const openaiHasImageCap = p.id === 'openai' && (p.imageModels?.length ?? 0) > 0;
         if (
           p.id === 'xd' ||
+          // Native installation remains manageable even when model discovery has not succeeded.
+          (p.id === 'cursor' && detections.some((d) => d.providerId === 'cursor' && d.installed)) ||
           p.connected ||
           p.removed === false ||
           (p.id === 'openai' && openaiReconnectRequired) ||
@@ -2600,7 +2605,7 @@ export function ProvidersSection() {
       }
     }
     return rows;
-  }, [providers, openaiReconnectRequired]);
+  }, [providers, openaiReconnectRequired, detections]);
 
   const orderedVisibleProviders = useMemo(
     () => applyProviderOrder(visibleProviders, providerOrder),
@@ -2768,7 +2773,7 @@ export function ProvidersSection() {
     const model = searchParams.get('model')?.trim() || null;
     const agentParam = searchParams.get('agent');
     const agent =
-      agentParam === 'claude-code' || agentParam === 'codex' || agentParam === 'pi'
+      agentParam === 'claude-code' || agentParam === 'codex' || agentParam === 'pi' || agentParam === 'cursor'
         ? agentParam
         : undefined;
     const importId = searchParams.get('import');
@@ -2939,6 +2944,7 @@ export function ProvidersSection() {
       if (!isBuiltinRefreshableProviderId(p.id) || !beginProviderRefresh(p.id)) return;
       try {
         await window.electronAPI.maker.refreshBuiltinProviderModels(p.id);
+        await refreshLocalCapabilities();
         toast.success(t('settings.providers.models.refreshDone'));
         refetch();
       } catch (err) {
@@ -2949,7 +2955,9 @@ export function ProvidersSection() {
         if (ipcError?.code === 'MODEL_CATALOG_FETCH_DISABLED') {
           toast.info(t('settings.providers.models.refreshFetchDisabled'));
         } else {
-          toast.error(t('settings.providers.models.refreshFailed'));
+          toast.error(t(p.id === 'cursor'
+            ? 'settings.providers.cursor.refreshFailed'
+            : 'settings.providers.models.refreshFailed'));
         }
       } finally {
         finishProviderRefresh(p.id);
@@ -2997,6 +3005,14 @@ export function ProvidersSection() {
     if (p.id === 'openai')
       return <OpenAiHeader children={children} provider={p} onChanged={refetch} />;
     if (p.id === 'xai') return <XaiHeader children={children} provider={p} onChanged={refetch} />;
+    if (p.id === 'cursor') return (
+      <DetailHeader children={children} icon={providerIcon(p, 18)} title={p.name} provider={p}
+        subtitle={t('settings.providers.cursor.localAccount')}
+        status={p.connected ? { kind: 'connected' } : {
+          kind: 'neutral', label: t('settings.providers.cursor.modelsUnavailable'),
+        }}
+        detail={!p.connected ? <CursorProviderSetup /> : undefined} />
+    );
     if (p.source === 'builtin' && p.auth.method === 'apiKey' && isBuiltinApiKeyProviderId(p.id)) {
       return (
         <BuiltinApiKeyHeader children={children} key={p.id} provider={p} onChanged={refetch} />

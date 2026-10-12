@@ -32,7 +32,7 @@ class MemLocalStorage {
   }
 }
 
-function model(id: string, sortOrder = 0): CatalogModel {
+function model(id: string, sortOrder = 0, mode?: string): CatalogModel {
   return {
     id,
     name: id,
@@ -43,6 +43,7 @@ function model(id: string, sortOrder = 0): CatalogModel {
     defaultEffort: null,
     supportsFastMode: false,
     status: 'active',
+    ...(mode ? { mode } : {}),
   } as CatalogModel;
 }
 
@@ -73,6 +74,7 @@ const PROVIDERS: ProviderView[] = [
     codex: [model('gpt-6-luna', 0)],
   }),
   provider('anthropic', { 'claude-code': [model('claude-opus-5-5', 0)] }, 'subscription'),
+  provider('cursor', { cursor: [model('grok-4.7', 0, 'chat')] }, 'subscription'),
 ];
 
 const SCHEDULE_PREFS_KEY = 'xdt:scheduleFormPrefs:v1';
@@ -142,6 +144,7 @@ describe('getScheduleDefaultModel 三级回退', () => {
     const { getScheduleDefaultModel } = await loadModule();
     expect(getScheduleDefaultModel('claude-code', PROVIDERS)).toBe('claude-opus-5-5');
     expect(getScheduleDefaultModel('codex', PROVIDERS)).toBe('gpt-6-luna');
+    expect(getScheduleDefaultModel('cursor', PROVIDERS)).toBe('grok-4.7');
   });
 
   it('三级:默认模型与来源成对返回;一级没记来源时为 null', async () => {

@@ -558,7 +558,7 @@ describe('deferred switch (turn running)', () => {
     const store = new Map<
       string,
       {
-        targetAgentKind: 'claude-code' | 'codex' | 'pi';
+        targetAgentKind: 'claude-code' | 'codex' | 'pi' | 'cursor';
         model: string;
         providerId: string | null | undefined;
         effort?: string;
@@ -1305,7 +1305,10 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
 
   it('不带位置(旧控制端 / 内部调用)保持原位置,同引擎仍走换模型', async () => {
     const h = relocationHarness();
-    const { agentDeviceId: _omit, ...withoutLocation } = backToTaskComputer;
+    const withoutLocation: Omit<typeof backToTaskComputer, 'agentDeviceId'> & {
+      agentDeviceId?: typeof backToTaskComputer.agentDeviceId;
+    } = { ...backToTaskComputer };
+    delete withoutLocation.agentDeviceId;
     await performSessionAgentSwitch(h.deps, withoutLocation);
     expect(h.selectSameAgentModel).toHaveBeenCalledTimes(1);
     expect(h.pending.get('s1')?.targetAgentDeviceId).toBeUndefined();
@@ -1680,5 +1683,57 @@ describe('relocateForFreshStart (opening a task elsewhere when its own computer 
     await expect(relocateForFreshStart(noModel.deps, { sessionId: 's1', agentDeviceId: 'studio', providerId: 'xd' }))
       .rejects.toBeTruthy();
     expect(noModel.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+  });
+});
+
+describe('Cursor switch capability normalization', () => {
+  it.each(['ask', 'default', 'auto', 'bypassPermissions'] as const)('preserves supported permission %s when switching to Cursor', async permissionMode => {
+    const { deps } = makeDeps({ getSessionRow: async () => makeRow({ permissionMode }) });
+    await performSessionAgentSwitch(deps, { sessionId: 's1', targetAgentKind: 'cursor', model: 'native', providerId: 'cursor', applyNow: true });
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({ agentKind: 'cursor', permissionMode }));
+  });
+  it.each(['acceptEdits', 'plan'] as const)('tightens unsupported %s permission to Ask when switching to Cursor', async permissionMode => {
+    const { deps } = makeDeps({ getSessionRow: async () => makeRow({ permissionMode }) });
+    await performSessionAgentSwitch(deps, { sessionId: 's1', targetAgentKind: 'cursor', model: 'native', applyNow: true });
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({ permissionMode: 'ask' }));
+  });
+  it('defaults missing permission to Ask and disables unspecified Fast', async () => {
+    const { deps } = makeDeps();
+    await performSessionAgentSwitch(deps, { sessionId: 's1', targetAgentKind: 'cursor', model: 'native', providerId: 'cursor', applyNow: true });
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentKind: 'cursor', model: 'native', permissionMode: 'ask', fastMode: false,
+    }));
+  });
+  it('retains explicit native tuning when switching to Cursor', async () => {
+    const { deps } = makeDeps();
+    await performSessionAgentSwitch(deps, { sessionId: 's1', targetAgentKind: 'cursor', model: 'native', effort: 'high', fastMode: true, applyNow: true });
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({ agentKind: 'cursor', effort: 'high', fastMode: true, permissionMode: 'ask' }));
+  });
+  it('rejects Cursor when the target workspace is on another computer', async () => {
+    const { deps } = makeDeps();
+    await expect(performSessionAgentSwitch(deps, {
+      sessionId: 's1', targetAgentKind: 'cursor', model: 'native', providerId: 'cursor', agentDeviceId: 'office-pc', applyNow: true,
+    })).rejects.toThrow(/Cursor requires a workspace on the executing desktop/);
+    expect(deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+  });
+  it('rejects Cursor when a provider group places the switch on another computer', async () => {
+    const resolveProviderGroupTarget = vi.fn(async () => ({ agentDeviceId: 'office-pc', providerId: 'cursor' }));
+    const { deps } = makeDeps({ resolveProviderGroupTarget });
+    await expect(performSessionAgentSwitch(deps, {
+      sessionId: 's1', targetAgentKind: 'cursor', model: 'native', providerId: 'cursor', agentDeviceId: 'group-host', applyNow: true,
+    })).rejects.toThrow(/Cursor requires a workspace on the executing desktop/);
+    expect(resolveProviderGroupTarget).toHaveBeenCalled();
+    expect(deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+  });
+  it('allows Cursor when a provider group resolves the switch back to this computer', async () => {
+    const { deps } = makeDeps({
+      resolveProviderGroupTarget: vi.fn(async () => ({ agentDeviceId: null, providerId: 'cursor' })),
+    });
+    await performSessionAgentSwitch(deps, {
+      sessionId: 's1', targetAgentKind: 'cursor', model: 'native', providerId: 'cursor', agentDeviceId: 'group-host', applyNow: true,
+    });
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentKind: 'cursor', model: 'native', permissionMode: 'ask',
+    }));
   });
 });

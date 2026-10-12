@@ -57,7 +57,6 @@ import type {
   Effort,
   PermissionMode,
   Session,
-  TurnContinuationState,
 } from '@cindy/maker-core';
 import { clampEffortToSupported } from '@cindy/model-providers';
 import {
@@ -197,12 +196,10 @@ const INTERRUPTED_ERROR_DONE_FALLBACK_MS = 250;
  * 一个可用来源都没有就让本次运行明确失败。表单层的回退(任务上次选择 → 对话上次选择 →
  * 新建任务默认)保存时落显式值，runner 这条兜 MCP 创建的 / 历史遗留的空 model 任务。
  *
- * 普通 schedule 的 permissionMode 两个 agent 都用 'bypassPermissions'（types/common.ts:23 注释确认
- * codex 支持子集 ask/auto/bypassPermissions）—— 调度本质是 unattended，bypass 是
+ * 普通 schedule 的 permissionMode 各引擎都用 'bypassPermissions' —— 调度本质是 unattended，bypass 是
  * 既有独立调度策略。绑定任务的心跳与伙伴例行任务不使用此默认值，继承原任务的权限与计划模式。
  */
 function defaultPermissionModeForSchedule(): PermissionMode {
-  // 两个 agent 都支持 bypassPermissions（types/common.ts:23），暂不按 agentKind 分支
   return 'bypassPermissions';
 }
 

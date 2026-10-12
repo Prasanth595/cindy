@@ -859,7 +859,7 @@ export function ProviderConnectionDialog({
       // 的 runtime 上,handleSave 的守卫拦不住"用户已经看不到"的这条草稿,表单
       // 卡死报错却找不到对应输入框(review P1)。
       const first = configuredPresetAgents(p)[0];
-      if (first) setActiveTab(first);
+      if (first && first !== 'cursor') setActiveTab(first);
       // 预设整体替换名称/鉴权/全部 runtime:任何既有字段错误的指向(字段值、
       // 行结构、tab)都已失效。程序化赋值不触发输入的 change,须在此显式清除
       // (review P1)。

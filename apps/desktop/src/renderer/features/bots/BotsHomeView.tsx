@@ -127,7 +127,7 @@ export function BotSettings({
   const { availableVendors, loaded: availableAgentsLoaded } = useAvailableAgents();
   const hiddenVendors = useMemo<MakerVendor[]>(() => {
     if (!availableAgentsLoaded) return [];
-    return (['cc', 'codex', 'pi'] as const).filter((item) => !availableVendors.has(item));
+    return (['cc', 'codex', 'pi', 'cursor'] as const).filter((item) => !availableVendors.has(item));
   }, [availableAgentsLoaded, availableVendors]);
   useSyncExternalStore(subscribeBotGlobalModel, () => JSON.stringify(getEffectiveBotModelChain()));
   const displayedModelChain =
@@ -743,7 +743,7 @@ export function BotsHomeView() {
   const { availableVendors, loaded: availableAgentsLoaded } = useAvailableAgents();
   const hiddenVendors = useMemo<MakerVendor[]>(() => {
     if (!availableAgentsLoaded) return [];
-    return (['cc', 'codex', 'pi'] as const).filter((item) => !availableVendors.has(item));
+    return (['cc', 'codex', 'pi', 'cursor'] as const).filter((item) => !availableVendors.has(item));
   }, [availableAgentsLoaded, availableVendors]);
   const hasDefaultModel = useSyncExternalStore(
     subscribeBotGlobalModel,
