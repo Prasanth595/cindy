@@ -80,8 +80,9 @@ OpenAI（Codex 订阅）与 Anthropic（Claude 订阅）的 root **成员只来�
 返回顺序为准：Codex 取 `models_cache.json` 的 `priority` 或 app-server `model/list` 的返回位置，
 Claude 取 SDK `supportedModels()` 的返回位置。用户本地 addition 按 Registry / 本地 `sortOrder`
 接在其后。装配时重写为连续 `sortOrder`，选择器、设置页、新对话默认与 Claude Code
-bridge 共用这一顺序；OpenAI 订阅的 Pi 清单成员与能力仍来自 Pi 目录，但同样按账号顺序排列，
-并沿用 Registry 条目的 `defaultEnabled: false`；用户本地 `sortOrder` patch 仍最高。
+bridge 共用这一顺序；OpenAI 订阅的 Pi 以公共 Pi 目录为基础，按同一账号的当前发现／恢复
+清单补入新型号并排序，能力按 Pi 协议适配，沿用 Registry 条目的 `defaultEnabled: false`；
+用户本地 `sortOrder` patch 仍最高。
 
 Claude 订阅没有 HTTP 清单接口，清单来自内置 Claude Code 的 SDK `supportedModels()`：会话启动时
 捕获；此外 maker 就绪、登录／认领 Claude 登录以及手动刷新时，用本机 CLI 起一个空闲 Query 只读
