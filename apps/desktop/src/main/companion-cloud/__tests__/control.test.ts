@@ -15,7 +15,8 @@ let runtime: CompanionCloudRuntime | undefined;
 afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
-  installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }> }) {
+  installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
+  readValues?: () => Promise<Array<{ key: string; value: unknown }>> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     if (route === '/preferences') return method === 'GET' ? [] : { revision: 1 };
@@ -31,7 +32,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const publish = vi.fn();
   const host: CompanionCloudHost = {
     homes: createCompanionHomeRegistry(), openState: () => state,
-    readValues: async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }],
+    readValues: options.readValues ?? (async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }]),
     canonicalSession: async () => 'session-1', rowsAfter: async () => [], latestRows: async () => [],
     deliverToCanonical: async () => ({ ok: true }),
     materializer: local.host, listDevices: async () => options.devices ?? [],
@@ -140,6 +141,27 @@ describe('transfer', () => {
     expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'OFFLINE' });
     expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
     expect(t.state.isDemoted('bot_mia')).toBe(false);
+  });
+
+  it('uploads again when the companion changed during the flush, and refuses while it keeps changing', async () => {
+    // Changes once while the first pass uploads, then stays put: the move uses the newest value.
+    let version = 0;
+    const once = setup({ home: 'desk', devices: [device('laptop')], readValues: async () => {
+      const current = [{ key: 'companion.profile.v1', value: { name: `Mia ${version}` } }];
+      if (version < 1) version += 1;
+      return current;
+    } });
+    expect(await once.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
+    const order = once.calls.map(call => `${call.method} ${call.route}`);
+    expect(order.filter(entry => entry === 'POST /preferences')).toHaveLength(2);
+    expect(order.lastIndexOf('POST /preferences')).toBeLessThan(order.indexOf('PATCH /actors/actor-1'));
+    once.runtime.dispose();
+
+    let tick = 0;
+    const busy = setup({ home: 'desk', devices: [device('laptop')],
+      readValues: async () => [{ key: 'companion.profile.v1', value: { name: `Mia ${tick++}` } }] });
+    expect(await busy.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'FAILED' });
+    expect(busy.calls.some(call => call.method === 'PATCH')).toBe(false);
   });
 
   it('does not move the home when a value is too large to upload', async () => {

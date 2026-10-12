@@ -106,9 +106,11 @@ export async function materializeCompanion(input: {
   state.update(botId, actor.id, entry => { entry.demoted = true; });
   // A local copy this device never synced (e.g. its own default Cindy) is saved before it is overwritten.
   let backup: string | null | undefined;
-  if (local && !Object.values(knownPrefs).some(entry => entry.local) && host.backupHome) {
+  if (local && !(known?.actorId === actor.id && known.backedUp) && !Object.values(knownPrefs).some(entry => entry.local) && host.backupHome) {
     backup = await step(() => host.backupHome!(botId, fence));
     if (backup) log?.info?.('Companion local copy backed up before take-over', { actorId: actor.id, backup });
+    // Once is enough: a take-over that fails later (e.g. avatar unavailable) retries without a new copy.
+    state.update(botId, actor.id, entry => { entry.backedUp = true; });
   }
   const name = text(profile?.name)?.trim() || actor.name || local?.displayName || '伙伴';
   if (!local) {

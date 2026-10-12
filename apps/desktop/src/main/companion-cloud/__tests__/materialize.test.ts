@@ -185,14 +185,17 @@ describe('materializeCompanion', () => {
     expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
-  it('stays demoted when the cloud avatar cannot be restored, so a stale one is never published', async () => {
+  it('stays demoted when the cloud avatar cannot be restored, and backs the copy up only once', async () => {
     const { api } = cloud([profilePref]);
-    const local = fakeLocal({ updateProfile: vi.fn(async () => { throw new Error('AVATAR_UNAVAILABLE'); }) });
+    const backupHome = vi.fn(async () => '/backup');
+    const local = fakeLocal({ backupHome, updateProfile: vi.fn(async () => { throw new Error('AVATAR_UNAVAILABLE'); }) });
     local.setProfile({ status: 'active', displayName: 'Old', description: '' });
     const { state } = memoryState();
-    await expect(materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM }))
-      .rejects.toThrow('AVATAR_UNAVAILABLE');
+    const run = () => materializeCompanion({ api, state, host: local.host, actor: { ...actor, avatar: 'https://cdn/a.png' }, roomId: async () => ROOM });
+    await expect(run()).rejects.toThrow('AVATAR_UNAVAILABLE');
+    await expect(run()).rejects.toThrow('AVATAR_UNAVAILABLE');
     expect(state.bot('bot_mia')?.demoted).toBe(true);
+    expect(backupHome).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a profile that is being deleted', async () => {

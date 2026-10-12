@@ -33,6 +33,8 @@ const bot = z.object({
   demoted: z.boolean().optional(),
   /** Cloud history was added while the canonical Session was busy; rebuild at the next idle point. */
   pendingRebuild: z.boolean().optional(),
+  /** The never-synced local copy was backed up before a take-over; retries do not back it up again. */
+  backedUp: z.boolean().optional(),
   /** Deleted here while this computer was the home; disable the cloud actor until it succeeds. */
   retirePending: z.boolean().optional(),
 });

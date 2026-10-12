@@ -300,8 +300,12 @@ export function startCompanionCloud(input: {
   async function flush(botId: string) {
     const bot = pick(null).find(candidate => candidate.botId === botId);
     if (!bot) throw new Error('NOT_HOME');
-    // Every portable value must reach the server: a skipped one would be lost by the move.
-    await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true });
+    // Every portable value must reach the server: a skipped one would be lost by the move. Repeat
+    // until a pass writes nothing, so the move starts from what is on disk right now.
+    for (let pass = 0; ; pass += 1) {
+      if (await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true }) === 0) break;
+      if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
+    }
     await mirror.syncBot(bot.botId, bot.actorId, bot.name);
   }
 
@@ -401,7 +405,8 @@ export function startCompanionCloud(input: {
       try { await flush(actor.externalId); }
       catch (error) {
         input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
-        return errorCode(error) === COMPANION_VALUE_TOO_LARGE ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
+        const code = errorCode(error);
+        return code === COMPANION_VALUE_TOO_LARGE || code === 'COMPANION_STILL_CHANGING' ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
       }
       try {
         await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: targetDeviceId, expectedHomeDeviceId: self });

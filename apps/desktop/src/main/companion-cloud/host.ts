@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app, net } from 'electron';
 import { and, asc, desc, eq, gt, gte, inArray, isNull, or } from 'drizzle-orm';
-import { isManagedBotAvatarUrl, isSupportedBotAvatarValue, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
+import { portableBotAvatarOrFallback, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
@@ -90,13 +90,12 @@ async function fetchAvatarBase64(url: string, signal?: AbortSignal): Promise<str
 }
 
 /**
- * The cloud avatar in a form the local profile holds. A downloadable image that cannot be read
- * throws: the take-over must not finish with a stale avatar that the new home would publish.
+ * The cloud avatar in a form the local profile holds; no usable cloud avatar means the same
+ * default a new profile gets. A downloadable image that cannot be read throws: the take-over
+ * must not finish with a stale avatar that the new home would publish.
  */
-async function cloudAvatar(avatar: string | null, signal?: AbortSignal): Promise<{ portable: string } | { imageBase64: string } | null> {
-  if (!avatar) return null;
-  if (isSupportedBotAvatarValue(avatar) && !isManagedBotAvatarUrl(avatar)) return { portable: avatar };
-  if (!avatar.startsWith('https://')) return null;
+async function cloudAvatar(avatar: string | null, signal?: AbortSignal): Promise<{ portable: string } | { imageBase64: string }> {
+  if (!avatar?.startsWith('https://')) return { portable: portableBotAvatarOrFallback(avatar) };
   const imageBase64 = await fetchAvatarBase64(avatar, signal);
   if (!imageBase64) throw new Error('AVATAR_UNAVAILABLE');
   return { imageBase64 };
@@ -120,8 +119,7 @@ function createMaterializer(input: {
       const restored = await cloudAvatar(avatar, fence.signal);
       fence.assertCurrent();
       await createBotProfile({ id, name: name.slice(0, 200), description, identitySource, userContextSource,
-        ...(restored && 'portable' in restored ? { avatar: restored.portable } : {}),
-        ...(restored && 'imageBase64' in restored ? { avatarImageBase64: restored.imageBase64 } : {}) });
+        ...('portable' in restored ? { avatar: restored.portable } : { avatarImageBase64: restored.imageBase64 }) });
     },
     updateProfile: async ({ id, name, description, identitySource, userContextSource, avatar }, fence) => {
       const restored = await cloudAvatar(avatar, fence.signal);
@@ -130,8 +128,8 @@ function createMaterializer(input: {
         ...(description !== undefined ? { description } : {}),
         ...(identitySource !== undefined ? { identitySource } : {}),
         ...(userContextSource !== undefined ? { userContextSource } : {}),
-        ...(restored && 'portable' in restored ? { avatar: restored.portable } : {}) });
-      if (restored && 'imageBase64' in restored) {
+        ...('portable' in restored ? { avatar: restored.portable } : {}) });
+      if ('imageBase64' in restored) {
         const image = decodeBotAvatarImage(restored.imageBase64);
         fence.assertCurrent();
         if (image) await setBotProfileAvatar(id, image);
