@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  generation: 1, enabled: true, revoked: new Set<string>(), online: true, syncing: false,
+  generation: 1, enabled: true, revoked: new Set<string>(), online: true, listOnline: true, syncing: false, listError: null as string | null,
   targets: [{ deviceId: 'mac', deviceName: 'Mac' }, { deviceId: 'pc', deviceName: 'PC' }],
   items: [] as any[], listeners: new Set<(id: string, payload: any) => void>(),
   invoke: vi.fn(), openLink: vi.fn(async () => {}), epoch: 1,
@@ -21,7 +21,7 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({
 function onChanged(listener: (id: string, payload: any) => void) { h.listeners.add(listener); return () => h.listeners.delete(listener); }
 vi.mock('@/session/useTeammateRoster', () => ({ useTeammateRoster: () => ({ groupTargets: h.targets, loading: false, refresh: vi.fn() }) }));
 vi.mock('@/session/useRemoteResourceList', () => ({ useRemoteResourceList: () => ({
-  items: h.items, syncing: h.syncing, isOnline: () => h.online, refresh: vi.fn(),
+  items: h.items, syncing: h.syncing, isOnline: () => h.online && h.listOnline, error: h.listError, refresh: vi.fn(),
 }) }));
 
 import { useBotGroupSettingsManagement } from '@/session/useBotGroupSettingsManagement';
@@ -45,6 +45,7 @@ const writes = () => h.invoke.mock.calls.filter(call => call[1] === 'maker:remot
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 beforeEach(() => {
   vi.clearAllMocks(); h.enabled = true; h.generation = 1; h.epoch = 1; h.online = true; h.syncing = false; h.revoked = new Set(); h.listeners.clear();
+  h.listOnline = true; h.listError = null;
   h.items = [row()]; h.openLink.mockResolvedValue();
   h.invoke.mockImplementation(async (_id, channel) => channel === 'maker:remote-resources:get' ? resource() : { effects: [] });
 });
@@ -107,4 +108,69 @@ it('disables a previously verified computer when presence goes offline', async (
   await render(); expect(result.selected).toBeDefined();
   h.online = false; await render(); expect(result.selected).toBeUndefined();
   await expect(result.act('update')).rejects.toThrow('PERMISSION_DENIED');
+});
+
+it('keeps the selected device name through reconnecting without retaining write authority', async () => {
+  h.items = [row(), row('g1', h.targets[1])]; await render();
+  await act(async () => { result.select('pc'); });
+  h.online = false; h.items = []; await render();
+  expect(result.displayHost?.deviceName).toBe('PC');
+  expect(result.selected).toBeUndefined();
+  await expect(result.act('update')).rejects.toThrow('PERMISSION_DENIED');
+  h.enabled = false; await render(); h.enabled = true; h.syncing = true; await render();
+  expect(result.loading).toBe(true);
+  expect(result.displayHost?.deviceName).toBe('PC');
+  h.generation = 2; await render();
+  expect(result.displayHost).toBeUndefined();
+});
+
+it('does not reuse the previous authorization while a reopened sheet is being verified', async () => {
+  await render(); h.enabled = false; await render();
+  let finish!: (value: unknown) => void;
+  h.invoke.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  h.enabled = true; await render();
+  expect(result.loading).toBe(true); expect(result.selected).toBeUndefined();
+  await act(async () => { finish(resource('member')); });
+  expect(result.selected).toBeUndefined(); expect(result.reason).toBe('permission');
+});
+
+it('rejects a receipt from an earlier opening of the same sheet', async () => {
+  await render(); let finish!: (value: unknown) => void;
+  h.invoke.mockImplementation(async (_id, channel) => channel === 'maker:remote-resources:invoke'
+    ? new Promise(resolve => { finish = resolve; }) : resource());
+  let pending!: Promise<unknown>;
+  await act(async () => { pending = result.act('update', { name: 'Late' }); });
+  h.enabled = false; await render(); h.enabled = true; await render();
+  await act(async () => { finish({ effects: [] }); await expect(pending).rejects.toThrow('PERMISSION_DENIED'); });
+});
+
+it('checks the sheet identity again when a queued write actually leaves the transport', async () => {
+  await render(); let send!: () => void; let sent = false;
+  h.invoke.mockImplementation(async (_id, channel, _args, opts) => channel === 'maker:remote-resources:invoke'
+    ? new Promise((resolve, reject) => { send = () => { try { opts?.preSend?.(); sent = true; resolve({ effects: [] }); } catch (error) { reject(error); } }; }) : resource());
+  let pending!: Promise<unknown>;
+  await act(async () => { pending = result.act('update', { name: 'Queued' }); });
+  h.enabled = false; await render(); h.enabled = true; await render();
+  await act(async () => { send(); await expect(pending).rejects.toThrow('PERMISSION_DENIED'); });
+  expect(sent).toBe(false);
+  expect(writes()[0]?.[3]?.preSend).toBeTypeOf('function');
+});
+
+it('coalesces refreshes while an earlier detail read is still in flight', async () => {
+  const finishes: ((value: unknown) => void)[] = [];
+  h.invoke.mockImplementation(() => new Promise(resolve => { finishes.push(resolve); }));
+  await render(); expect(reads()).toHaveLength(1);
+  h.syncing = true; await render(); h.syncing = false; await render();
+  await act(async () => { result.refresh(); result.refresh(); });
+  expect(reads()).toHaveLength(1);
+  await act(async () => { finishes.shift()!(resource()); });
+  expect(reads()).toHaveLength(2);
+  await act(async () => { finishes.shift()!(resource()); });
+  expect(result.selected).toBeDefined(); expect(result.loading).toBe(false);
+});
+
+it('distinguishes a failed online roster read from a disconnected computer', async () => {
+  h.listOnline = false; h.listError = 'Read failed'; await render();
+  expect(result.reason).toBe('unavailable'); expect(result.selected).toBeUndefined();
+  h.online = false; await render(); expect(result.reason).toBe('noHost');
 });

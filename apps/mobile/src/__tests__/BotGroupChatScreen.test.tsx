@@ -27,8 +27,9 @@ const h = vi.hoisted(() => ({
 
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn(async () => ({})) }));
 vi.mock('react-native', () => {
-  const box = (tag: string) => ({ children, testID, accessibilityLabel }: any) =>
-    el(tag, { 'data-testid': testID, 'aria-label': accessibilityLabel }, children);
+  const box = (tag: string) => ({ children, testID, accessibilityLabel, style }: any) =>
+    el(tag, { 'data-testid': testID, 'aria-label': accessibilityLabel,
+      style: { opacity: [style].flat().filter(Boolean).findLast((item: any) => item.opacity !== undefined)?.opacity } }, children);
   return {
     View: box('div'), ScrollView: ({ ref, children, ...props }: any) => {
       h.scroll = props;
@@ -41,7 +42,7 @@ vi.mock('react-native', () => {
     Pressable: ({ children, onPress, disabled, testID, accessibilityLabel }: any) => el('button',
       { 'data-testid': testID, 'aria-label': accessibilityLabel, disabled, onClick: onPress },
       typeof children === 'function' ? children({ pressed: false }) : children),
-    ActivityIndicator: () => el('i', { 'data-testid': 'spinner' }),
+    ActivityIndicator: ({ testID }: any) => el('i', { 'data-testid': testID ?? 'spinner' }),
     StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
     Platform: { get OS() { return h.platform.OS; }, select: (value: any) => value[h.platform.OS] },
     Alert: { alert: h.alert },
@@ -76,7 +77,7 @@ vi.mock('lucide-react-native', () => Object.fromEntries(
     .map((name) => [name, () => null]),
 ));
 vi.mock('@/theme', async () => ({
-  ...await import('@/theme/tokens'), useThemedStyles: () => ({}), useTheme: () => ({ colors: {} }), monoFont: 'mono',
+  ...await import('@/theme/tokens'), useThemedStyles: (makeStyles: any) => makeStyles({}), useTheme: () => ({ colors: {} }), monoFont: 'mono',
 }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({
   user: { id: 'owner' }, accountGeneration: 1, getAccessToken: async () => 'token', apiFetch: async () => ({}),
@@ -813,13 +814,17 @@ describe('group settings', () => {
     data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
     h.chat.server = true;
     const manage = vi.fn(async () => ({ effects: [] }));
-    h.management = { selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
+    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
       act: manage, refresh: vi.fn(), select: vi.fn() };
     h.teammates = { rows: [{ key: 'new', host: { deviceId: 'pc', deviceName: 'PC' }, item: {
       ref: { collectionId: 'teammates', kind: 'bot', id: 'new-bot' }, revision: '1', display: { title: 'New bot' }, links: [],
     } }], loading: false, failed: false };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(true);
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.ready');
+    expect(byId('botGroup.settings.connectedDot')).not.toBeNull();
+    expect(byId('botGroup.settings.retry')).toBeNull();
+    expect(byId('botGroup.settings.body')?.style.opacity).toBe('');
     await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('Managed'); });
     await act(async () => { await h.inputs['botGroup.settings.name'].onSubmitEditing(); });
     expect(manage).toHaveBeenCalledWith('update', { name: 'Managed', expectedRevision: 5 });
@@ -829,13 +834,39 @@ describe('group settings', () => {
   });
 
   it('explains unavailable management and offers retry without enabling edits', async () => {
+    const refresh = vi.fn();
+    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh };
     h.chat.server = true; await openSettings(group({ serverBacked: true }));
     expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
-    expect(byId('botGroup.settings.management')?.textContent).toContain('groupChat.settings.management.noHost');
-    expect(byId('botGroup.settings.retry')).not.toBeNull();
+    expect(byId('botGroup.settings.body')?.style.opacity).toBe('0.6');
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.noHost');
+    expect(byId('botGroup.settings.computerName')?.textContent).toBe('PC');
+    expect(byId('botGroup.settings.retry')?.textContent).toBe('groupChat.settings.reconnect');
+    expect((byId('botGroup.settings.member.mimi') as HTMLButtonElement)?.disabled).toBe(true);
+    await click('botGroup.settings.add');
+    expect(byId('botGroup.settings.addable')).toBeNull();
+    await click('botGroup.settings.retry'); expect(refresh).toHaveBeenCalledOnce();
+    expect(h.chat.act).not.toHaveBeenCalled();
     expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.archive');
     expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.archiveNote');
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
+  });
+
+  it.each(['upgrade', 'permission', 'unavailable', 'loading'])('keeps the %s reason explicit in the compact status row', async reason => {
+    const refresh = vi.fn();
+    h.chat.server = true;
+    h.management = { selected: undefined, managers: [], loading: reason === 'loading', reason: reason === 'loading' ? null : reason,
+      act: vi.fn(), select: vi.fn(), refresh };
+    await openSettings(group({ serverBacked: true }));
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe(`groupChat.settings.managementStatus.${reason}`);
+    expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
+    if (reason === 'loading') {
+      expect(byId('botGroup.settings.connecting')).not.toBeNull();
+      expect(byId('botGroup.settings.retry')).toBeNull();
+    } else {
+      expect(byId('botGroup.settings.connecting')).toBeNull();
+      await click('botGroup.settings.retry'); expect(refresh).toHaveBeenCalledOnce();
+    }
   });
 
   it('renames, changes the organizer and edits members on this computer', async () => {

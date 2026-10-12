@@ -40,7 +40,6 @@ export function botGroupResourceRef(groupId: string): RemoteResourceRef {
   return { collectionId: BOT_GROUP_REMOTE_COLLECTION_ID, kind: BOT_GROUP_REMOTE_RESOURCE_KIND, id: groupId };
 }
 
-/** A fresh host projection is required; cached roles are never management authority. */
 export function canManageBotGroup(group: BotGroupRemoteChatData) {
   return group.serverBacked === true && !group.archived && group.supportsSettingsManagement === true
     && group.revision !== undefined && group.members.some(member => member.isOwned && (member.role === 'owner' || member.role === 'admin'));

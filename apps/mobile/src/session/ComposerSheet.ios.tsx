@@ -183,9 +183,7 @@ export function ComposerSheet({
               </Form>
             ) : (
               <>
-                {/* Let SwiftUI own the viewport at every sheet detent instead
-                    of scrolling inside a full-height RN bridge that can be
-                    clipped by the medium presentation. */}
+                {/* SwiftUI owns the viewport so medium detents do not clip the RN content. */}
                 <ScrollView modifiers={[scrollDismissesKeyboard("interactively")]}>
                   <CompanionNativeContent>
                     <View testID={testID} style={{ paddingHorizontal: 16, paddingBottom: 16 }}>

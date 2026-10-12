@@ -176,17 +176,18 @@
     "memberActions": "{{name}} 的操作",
     "managementComputer": "管理电脑",
     "retry": "重试",
+    "reconnect": "重连",
     "conflict": "群设置已更新，请核对后再保存。输入已保留。",
     "archive": "归档群聊",
     "archiveConfirmTitle": "归档「{{name}}」？",
     "archiveNote": "仅群主可归档。归档后不能继续发消息，历史消息保留。",
-    "management": {
-      "loading": "正在查找可管理这个群的电脑…",
-      "ready": "修改通过所选电脑保存，电脑离线时仍可在群里发消息。",
-      "noHost": "未找到可管理这个群的在线电脑。请打开电脑上的 Cindy 并启用远程控制，然后重试。",
-      "permission": "当前账号没有群主或管理员权限，暂时只能查看。",
-      "upgrade": "请先更新电脑上的 Cindy，再重试群设置。",
-      "unavailable": "群设置暂时无法读取，请检查电脑连接后重试。"
+    "managementStatus": {
+      "ready": "已连接",
+      "loading": "连接中…",
+      "noHost": "已断开",
+      "permission": "无管理权限",
+      "upgrade": "需更新电脑端",
+      "unavailable": "设置读取失败"
     }
   },
   "errors": {

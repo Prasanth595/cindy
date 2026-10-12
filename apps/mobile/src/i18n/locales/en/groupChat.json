@@ -176,17 +176,18 @@
     "memberActions": "Actions for {{name}}",
     "managementComputer": "Management computer",
     "retry": "Retry",
+    "reconnect": "Reconnect",
     "conflict": "Group settings changed. Review them before saving again. Your input was kept.",
     "archive": "Archive group chat",
     "archiveConfirmTitle": "Archive “{{name}}”?",
     "archiveNote": "Only a group owner can archive it. This stops new messages and keeps the history.",
-    "management": {
-      "loading": "Finding computers that can manage this group…",
-      "ready": "Changes are saved through the selected computer. Chat remains available when it is offline.",
-      "noHost": "No online computer can manage this group. Open Cindy on your computer, enable remote control, then retry.",
-      "permission": "Your account has no owner or admin role in this group. Settings are read-only.",
-      "upgrade": "Update Cindy on your computer, then retry group settings.",
-      "unavailable": "Group settings could not be read. Check the computer connection and retry."
+    "managementStatus": {
+      "ready": "Connected",
+      "loading": "Connecting…",
+      "noHost": "Disconnected",
+      "permission": "Read-only",
+      "upgrade": "Update needed",
+      "unavailable": "Settings unavailable"
     }
   },
   "errors": {

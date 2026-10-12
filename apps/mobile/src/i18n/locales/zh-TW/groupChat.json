@@ -176,17 +176,18 @@
     "memberActions": "{{name}} 的操作",
     "managementComputer": "管理電腦",
     "retry": "重試",
+    "reconnect": "重連",
     "conflict": "群設定已更新，請核對後再儲存。輸入已保留。",
     "archive": "封存群聊",
     "archiveConfirmTitle": "封存「{{name}}」？",
     "archiveNote": "僅群主可封存。封存後無法繼續傳送訊息，歷史訊息會保留。",
-    "management": {
-      "loading": "正在尋找可管理這個群的電腦…",
-      "ready": "修改透過所選電腦儲存，電腦離線時仍可在群裡傳送訊息。",
-      "noHost": "找不到可管理這個群的線上電腦。請開啟電腦上的 Cindy 並啟用遠端控制，然後重試。",
-      "permission": "目前帳號沒有群主或管理員權限，暫時只能檢視。",
-      "upgrade": "請先更新電腦上的 Cindy，再重試群設定。",
-      "unavailable": "暫時無法讀取群設定，請檢查電腦連線後重試。"
+    "managementStatus": {
+      "ready": "已連線",
+      "loading": "連線中…",
+      "noHost": "已中斷",
+      "permission": "無管理權限",
+      "upgrade": "需更新電腦端",
+      "unavailable": "設定讀取失敗"
     }
   },
   "errors": {

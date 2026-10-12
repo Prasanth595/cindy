@@ -1,14 +1,7 @@
-/**
- * 群设置（对照桌面 BotGroupSettingsDrawer.tsx）：群名称、成员（点成员行弹菜单：设为负责人 / 移出；添加伙伴）、
- * 项目文件夹（只读：手机不能指定电脑上的文件夹，在电脑上选择或更换）、没有 @ 人时的回复方式、
- * 发言方式、删除群聊（系统确认框二次确认）。
- *
- * 每项改动立即交给电脑；群数据以电脑推送后重读的结果为准，失败就地提示并保持原值。
- * 成员数 2–6 由电脑最终校验，这里只把不会成立的操作提前禁用。能加入的只有这台电脑上的伙伴。
- */
+/** 群设置由管理电脑保存；项目文件夹仅可查看。 */
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
-import { Ellipsis, Folder, Plus } from 'lucide-react-native';
+import { ChevronDown, Ellipsis, Folder, Plus } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
 import {
@@ -100,9 +93,9 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   const canAdd = serverManaged || group.members.length < BOT_GROUP_MAX_MEMBERS;
   const addable = teammates.rows.filter((row) => !memberIds.includes(row.item.ref.id));
   const permissionLocked = serverManaged && !canManageBotGroup(group);
-  const locked = readOnly || permissionLocked || busy !== null || !online;
+  const unavailable = readOnly || permissionLocked || !online;
+  const locked = unavailable || busy !== null;
 
-  /** Run one change; the section shows the failure copy, or clears it on success. */
   const run = async (section: Exclude<Busy, null>, actionId: BotGroupRemoteActionId, input: Record<string, unknown>, fallbackKey: string) => {
     if (readOnly || permissionLocked || !online || busyRef.current) return false;
     busyRef.current = section;
@@ -157,29 +150,36 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       {options.map((option) => <MainWindowOptionButton key={option.value} accessibilityRole="tab" density="default" variant="segmented"
         label={option.label} selected={option.value === value} disabled={locked}
         onPress={() => { if (option.value !== value) void run(section, 'update', { [section]: option.value }, `groupChat.settings.${section}SaveFailed`); }}
-        style={styles.segment} testID={`botGroup.settings.${section}.${option.value}`} />)}
+        style={[styles.segment, unavailable && styles.inheritedInactive]} testID={`botGroup.settings.${section}.${option.value}`} />)}
     </View>;
 
   return <CompanionSheet visible={visible} title={t('groupChat.settings.title')} onClose={onClose} onClosed={onClosed}
     preventDismiss={busy !== null} testID="botGroup.settings">
     <View style={styles.content}>
-      {management ? <View style={styles.section} testID="botGroup.settings.management">
-        {management.loading ? <ActivityIndicator color={colors.textSecondary} /> : null}
-        {management.selected ? <BotGroupMenu title={t('groupChat.settings.managementComputer')} disabled={busy !== null || management.managers.length < 2}
+      {management ? <View style={styles.managementRow} testID="botGroup.settings.management">
+        {management.managers.length > 1 ? <View style={styles.computerSlot}><BotGroupMenu title={t('groupChat.settings.managementComputer')} disabled={busy !== null}
           testID="botGroup.settings.computerMenu" sections={[{ id: 'computers', options: management.managers.map(manager => ({
             id: manager.host.deviceId, title: manager.host.deviceName,
           })) }]} onSelect={management.select}>
-          {open => <Pressable accessibilityRole="button" disabled={busy !== null || management.managers.length < 2} onPress={open} style={[styles.group, styles.memberRow]}>
-            <Text style={[styles.rowTitle, styles.flex]}>{t('groupChat.settings.managementComputer')}</Text>
-            <Text style={styles.rowMeta}>{management.selected?.host.deviceName}</Text>
+          {open => <Pressable accessibilityRole="button" disabled={busy !== null} onPress={open} style={styles.computerPicker}>
+            <Text numberOfLines={1} style={[styles.managementText, styles.flex]}>{management.selected?.host.deviceName}</Text>
+            <ChevronDown size={iconSize.sm} color={colors.textSecondary} />
           </Pressable>}
-        </BotGroupMenu> : null}
-        <Text style={styles.note}>{t(`groupChat.settings.management.${management.loading ? 'loading' : management.reason ?? 'ready'}`)}</Text>
-        {!management.loading && !management.selected ? <Pressable accessibilityRole="button" onPress={management.refresh}
-          style={[styles.group, styles.memberRow]} testID="botGroup.settings.retry">
-          <Text style={styles.rowTitle}>{t('groupChat.settings.retry')}</Text>
+        </BotGroupMenu></View> : <Text numberOfLines={1} style={[styles.managementText, styles.flex]} testID="botGroup.settings.computerName">
+          {management.displayHost?.deviceName ?? t('groupChat.settings.managementComputer')}
+        </Text>}
+        {management.loading ? <ActivityIndicator size="small" color={colors.textSecondary} testID="botGroup.settings.connecting" />
+          : !unavailable ? <View style={styles.connectedDot} testID="botGroup.settings.connectedDot" /> : null}
+        <Text style={styles.managementText} testID="botGroup.settings.managementStatus">
+          {t(`groupChat.settings.managementStatus.${management.loading ? 'loading' : !unavailable ? 'ready' : management.reason ?? 'unavailable'}`)}
+        </Text>
+        {unavailable && !management.loading ? <Pressable accessibilityRole="button" onPress={management.refresh}
+          style={styles.reconnect} testID="botGroup.settings.retry">
+          <Text style={styles.reconnectText}>{t(management.reason === 'noHost' || management.reason === 'unavailable'
+            ? 'groupChat.settings.reconnect' : 'groupChat.settings.retry')}</Text>
         </Pressable> : null}
       </View> : null}
+      <View style={[styles.settingsBody, unavailable && styles.inactive]} testID="botGroup.settings.body">
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>{t('groupChat.create.nameLabel')}</Text>
         <TextInput accessibilityLabel={t('groupChat.create.nameLabel')} value={name} maxLength={BOT_GROUP_NAME_MAX_CHARS}
@@ -203,7 +203,6 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
             const removable = canRemove && (!member.actorKind || member.actorKind === 'bot' || group.supportsMemberRemoval === true)
               && (!serverManaged || (!member.isSelf && (owner || member.role !== 'owner')));
             const organizer = member.botId === group.organizerBotId;
-            // G12: one row per member; a tap opens its menu (设为负责人 / 移出群聊) instead of two inline buttons.
             const options = [
               ...(!organizer && canOrganize ? [{ id: `organizer:${member.botId}`, title: t('groupChat.settings.setOrganizer') }] : []),
               {
@@ -246,7 +245,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: picking, disabled: locked || !canAdd }}
             accessibilityLabel={canAdd ? t('groupChat.settings.add') : t('groupChat.settings.maxMembers', { max: BOT_GROUP_MAX_MEMBERS })}
             disabled={locked || !canAdd} onPress={() => setPicking((value) => !value)}
-            style={({ pressed }) => [styles.memberRow, pressed && mobileInteractionStyles.pressed, (locked || !canAdd) && styles.inactive]}
+            style={({ pressed }) => [styles.memberRow, pressed && mobileInteractionStyles.pressed, !unavailable && (locked || !canAdd) && styles.inactive]}
             testID="botGroup.settings.add">
             <View style={styles.addMark}><Plus size={iconSize.sm} color={colors.textSecondary} /></View>
             <Text numberOfLines={1} style={[styles.rowTitle, styles.flex]}>{t('groupChat.settings.add')}</Text>
@@ -314,7 +313,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       <View style={styles.section}>
         <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={locked || (serverManaged && !owner)}
           onPress={() => void remove()}
-          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, (locked || (serverManaged && !owner)) && styles.inactive]}
+          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, !unavailable && (locked || (serverManaged && !owner)) && styles.inactive]}
           testID="botGroup.settings.delete">
           {busy === 'delete' ? <ActivityIndicator color={colors.destructive} /> : null}
           <Text style={[styles.rowTitle, styles.destructive]}>{t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')}</Text>
@@ -322,12 +321,21 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
         <Text style={styles.note}>{t(archivesGroup ? 'groupChat.settings.archiveNote' : 'groupChat.settings.deleteNote')}</Text>
         {error('delete')}
       </View>
+      </View>
     </View>
   </CompanionSheet>;
 }
 
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   content: { gap: spacing.xl, paddingTop: spacing.sm, paddingBottom: spacing.xl },
+  settingsBody: { gap: spacing.xl },
+  managementRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  managementText: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
+  computerSlot: { flex: 1, minWidth: 0 },
+  computerPicker: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  connectedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.statusDone },
+  reconnect: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
+  reconnectText: { color: colors.textPrimary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   section: { gap: spacing.sm },
   sectionTitle: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, fontWeight: fontWeight.semibold },
   input: { minHeight: 44, borderRadius: radius.pill, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
@@ -336,7 +344,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderRadius: radius.container, overflow: 'hidden' },
   memberRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 52, paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm },
-  // Dividers start at the name column (after the avatar), like the companion list rows; the add row is last and has none.
   rowDivider: { position: 'absolute', left: spacing.md + BOT_GROUP_ROW_AVATAR_SIZE + spacing.sm, right: 0, bottom: 0,
     height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
   memberName: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
@@ -345,6 +352,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   rowMeta: { flexShrink: 0, color: colors.textTertiary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
   flex: { flex: 1 },
   inactive: { opacity: 0.6 },
+  // The body already supplies the disabled opacity; avoid dimming segmented controls twice.
+  inheritedInactive: { opacity: 1 },
   addMark: { width: BOT_GROUP_ROW_AVATAR_SIZE, height: BOT_GROUP_ROW_AVATAR_SIZE, borderRadius: radius.pill, borderWidth: 1,
     borderStyle: 'dashed', borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   spinner: { paddingVertical: spacing.md },
