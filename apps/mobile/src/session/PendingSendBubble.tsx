@@ -66,6 +66,7 @@ import {
   type ThemeColors,
 } from '@/theme';
 import { radius, spacing, typeScale } from '@/theme/tokens';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 
 /** 与已发送消息上的来源标签同一组图标(自动化 Timer / 任务 Send / Orca Bot / 插件 Ghost)。 */
 function sourceIcon(kind: MobilePendingSendSourceKind): LucideIcon {
@@ -228,6 +229,8 @@ export function PendingSendBubble({
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // 待发送的一定是自己的消息;与落定后的正式气泡同色,避免发出瞬间换色。
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   const spinning = pendingSendSpins(item.phase);
   const editing = item.phase === 'editing';
   const failed = item.phase === 'failed';
@@ -426,7 +429,12 @@ export function PendingSendBubble({
               onTouchMove={interactive ? handleBubbleTouchMove : undefined}
               onTouchStart={interactive ? handleBubbleTouchStart : undefined}
               onTouchCancel={cancelBubbleTouch}
-              style={[styles.bubble, density === 'compact' && styles.bubbleCompact, density === 'rich' && styles.bubbleRich]}
+              style={[
+                styles.bubble,
+                density === 'compact' && styles.bubbleCompact,
+                density === 'rich' && styles.bubbleRich,
+                userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+              ]}
               testID={`pendingSend.body.${item.clientId}`}
             >
               {rendersSentInlineBody ? (

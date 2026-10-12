@@ -85,6 +85,7 @@ import {
 } from '@/session/mobileVoiceDictionaryCache';
 import { buildMobileVoiceDictionaryEntryViews } from '@/session/mobileVoiceDictionaryView';
 import { buildMobileUpdateInfoRows, currentMobileOtaVersion } from '@/settings/updateInfo';
+import { UserBubbleSettings } from '@/settings/UserBubbleSettings';
 import { shouldCheckBundleUpdate } from '@/update/bundleUpdate';
 import { isGooglePlayInstallation } from '@/update/androidInstallSource';
 import {
@@ -904,6 +905,7 @@ export default function SettingsScreen() {
                 value={t(`settings.appearance.options.${themePreference}`)}
               />
             </NativePullDownMenu>
+            <UserBubbleSettings />
           </SettingsGroup>
 
           {/* 显示语言:默认跟随系统,手动选择即持久化 override(恢复跟随系统 = 清除 override) */}

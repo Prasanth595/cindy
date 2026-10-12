@@ -65,3 +65,4 @@ export * from './taskTags';
 
 export * from './workingStatus.js';
 export * from './runningTokenRateHistory.js';
+export * from './userBubbleAppearance.js';

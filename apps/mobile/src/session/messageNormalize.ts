@@ -32,7 +32,7 @@ import {
   type MessageSourceGroup,
   type MessageSourcePlugin,
 } from '@cindy/maker-shared/message-source';
-import { sharedTaskAuthorMemberId, sharedTaskAuthorName } from '@cindy/maker-shared';
+import { sharedTaskAuthorAccountId, sharedTaskAuthorMemberId, sharedTaskAuthorName } from '@cindy/maker-shared';
 import { stripGoalVerdictBlock } from '@cindy/maker-shared/goal-verdict';
 import {
   formatToolResultCompactionBytes,
@@ -170,6 +170,8 @@ export interface NormalizedRemoteMessage {
   sharedAuthorName?: string;
   /** 共享任务成员 id(作者标签长按显示,与模型 `[消息来源]` 的 member_id 同源)。 */
   sharedAuthorMemberId?: string;
+  /** 共享任务作者账号 id;只用于展示归属(如「我的消息气泡颜色」只染自己的消息),不作权限依据。 */
+  sharedAuthorAccountId?: string;
   /**
    * user 专用:合成 UI 指令行(桌面「失败后继续 / 中断续跑」等隐藏 prompt,
    * `[UI_ACTION_TRIGGER]` 前缀,对齐桌面 makerChatStore 同名标记)。保留在
@@ -1103,16 +1105,18 @@ function readAutomationOrigin(message: RemoteMessage): Pick<NormalizedRemoteMess
 // message-source 助手,与发给模型的来源说明同一份事实。
 function readMessageSourceFields(
   message: RemoteMessage,
-): Pick<NormalizedRemoteMessage, 'sourceDevice' | 'sourcePlugin' | 'sharedAuthorName' | 'sharedAuthorMemberId'> {
+): Pick<NormalizedRemoteMessage, 'sourceDevice' | 'sourcePlugin' | 'sharedAuthorName' | 'sharedAuthorMemberId' | 'sharedAuthorAccountId'> {
   const sourceDevice = readMessageSourceDevice(message.agentMeta);
   const sourcePlugin = readMessageSourcePlugin(message.agentMeta);
   const sharedAuthorName = sanitizeSourceName(sharedTaskAuthorName(message.agentMeta));
   const sharedAuthorMemberId = sharedAuthorName ? sharedTaskAuthorMemberId(message.agentMeta) : undefined;
+  const sharedAuthorAccountId = sharedTaskAuthorAccountId(message.agentMeta);
   return {
     ...(sourceDevice ? { sourceDevice } : {}),
     ...(sourcePlugin ? { sourcePlugin } : {}),
     ...(sharedAuthorName ? { sharedAuthorName } : {}),
     ...(sharedAuthorMemberId ? { sharedAuthorMemberId } : {}),
+    ...(sharedAuthorAccountId ? { sharedAuthorAccountId } : {}),
   };
 }
 

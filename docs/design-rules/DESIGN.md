@@ -194,6 +194,14 @@ motion; inspect the complete action and loop boundary before accepting an asset.
 
 用户确认的任务标签色板为红、橙、黄、绿、蓝、紫、灰、粉、珊瑚、青、靛蓝、白共十二色。只用于标签色球与编辑色板，表示用户分类，不表示任务运行状态。色球为圆形、细描边，选中时勾位于球内；白色在 Light/Dark 中均保持白色，用独立深色勾保证对比度。Desktop 使用 `task-tag-*` 语义 token；Mobile 使用对应 `taskTag*` 色板字段。默认面板只显示选择列表，添加或编辑后才显示名称和两行六列色板，不显示双击编辑提示。
 
+### Personal message bubble colors (Mobile, 2026-10-12)
+
+手机版设置提供「我的消息气泡颜色」:默认继续跟随现有主题,另有初稿、晨光、灵感、梦境、夜猫、项圈六个预设和自定义颜色。名称取自 Cindy 自身的设定(创作的一天、黑猫与红项圈),不使用公司名或游戏 IP;各语言意译,不逐字翻译。此项是用户主动选择的个性化例外,只作用于确认是自己发出的消息气泡(会话、待发送与伙伴群聊)和设置预览,不染色 Agent 回复、系统卡片或页面背景。共享任务里所有 user 消息都右对齐,因此按归属而不是对齐判断:访客消息只有作者账号是当前账号才染,房主消息只在不是以访客身份查看时染;归属只用于展示,不作权限依据。偏好仅保存在本机;选「默认」即删除 override。桌面端暂未提供。
+
+颜色由 packages/maker-shared/src/userBubbleAppearance.ts 在运行期按 light/dark 生成背景、前景与描边,属于治理合同 §3.4 的运行时派生值,消费者只用该结果,不把用户输入直接拼进样式。预设柔化较强;自定义色着色更明显。着色强度会自动收敛到气泡内实际出现的文字(正文、次要文字、弱提示、行内代码)都不低于 4.5:1、派生前景不低于 7:1;已满足的颜色不降低。项圈取品牌红色相,只用柔化后的浅红调,不直接使用品牌红。
+
+iOS 使用原生 Form 二级页:顶部是与真实气泡同款的预览,预设与「自定义颜色」同在一个 inline Picker 勾选列表;选中自定义才在其下展开一条彩虹色带(仅选色相,外形对齐系统滑块)。iOS 没有比系统 ColorPicker 更轻的自由选色组件,系统取色面板因功能过多不采用。拖动时只更新本页预览,松手才保存;保存失败的提示提供「重试」。Android 沿用设置页内的面板实现。
+
 ### Chip & Button Neutrals
 
 Small interactive chips (button backgrounds, tag pills, avatar fills, selected-nav pills) sit outside the layer system — they're foreground elements, not background layers.
