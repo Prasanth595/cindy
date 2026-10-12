@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CODEX_HISTORY_CONTINUE_MESSAGE,
+  canContinueContextRecovery,
   createContextOverflowRollover,
   effectiveContextWindow,
   effectivePiContextWindow,
@@ -311,6 +312,7 @@ describe('createContextOverflowRollover', () => {
         async (): Promise<{
           status: string;
           source?: string;
+          botRole?: string | null;
           agentKind: string;
           remoteHostId: string | null;
           clearedAt: number | null;
@@ -339,6 +341,7 @@ describe('createContextOverflowRollover', () => {
       getLiveSession: vi.fn(
         (): {
           isTurnRunning(): boolean;
+          listBackgroundTasks?(): ReadonlyArray<unknown>;
           getUsageSnapshot?: () => {
             contextTokens: number;
             contextWindow: number;
@@ -360,6 +363,131 @@ describe('createContextOverflowRollover', () => {
       log: { info: vi.fn(), warn: vi.fn() },
     };
   }
+
+  it.each(['cc', 'codex', 'pi'])('checkpoints a pressured %s companion before send, retaining outcomes without replay', async (agentKind) => {
+    const deps = makeDeps([
+      msg('user', 'Keep the game keyboard accessible', 'u1'),
+      { ...msg('tool_use', { toolName: 'Write', input: { file_path: '/game/index.html' } }, 't1'), toolUseId: 'write-1' },
+      { ...msg('tool_result', { fullText: 'Saved index.html; keyboard test passed' }, 'r1'), toolUseId: 'write-1' },
+      msg('assistant', 'Keyboard controls are ready. Next: add touch controls.', 'a1'),
+    ]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), agentKind, source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
+    const rollover = createContextOverflowRollover(deps);
+    await expect(rollover.prepareUnhealthySession('s1')).resolves.toBe(true);
+    const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
+    expect(handoff).toContain('Keep the game keyboard accessible');
+    expect(handoff).toContain('Saved index.html; keyboard test passed');
+    expect(handoff).toContain('Next: add touch controls');
+    expect(handoff.length).toBeLessThanOrEqual(16_000);
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+    // Persisted reset prevents another checkpoint after a cold restart.
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), sdkSessionId: null, contextTokens: 0 });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(deps.commitRebuild).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'group', 180_000],
+    ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'canonical', 0],
+  ] as const)('leaves healthy/non-canonical contexts alone: %s %s %s', async (source, botRole, contextTokens) => {
+    const deps = makeDeps([msg('user', 'hello', 'u1'), msg('assistant', 'hello', 'a1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source, botRole, contextTokens });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(deps.closeSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Error running remote compact task: summarization produced empty response', true],
+    ['Error running remote compact task: invalid_request_error', true],
+    ['Error during compaction: invalid-argument', true],
+    ['Error running remote compact task: connection timed out', false],
+    ['Error running remote compact task: HTTP 401 unauthorized', false],
+    ['Error running remote compact task: HTTP 429 usage limit exceeded', false],
+    ['summarization produced empty response', false],
+    ['invalid_request_error', false],
+  ])('new companion input handles only proven compact failures: %s', async (message, expected) => {
+    const deps = makeDeps([msg('user', 'save the game', 'u1'), msg('assistant', 'Saved', 'a1'), msg('error', { message }, 'e1')]);
+    const row = { ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', agentKind: 'codex' };
+    deps.getSessionRow.mockResolvedValue(row);
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(expected);
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+    // The new policy is scoped to companions, not all ordinary/manual compaction.
+    deps.getSessionRow.mockResolvedValue({ ...row, source: 'desktop', botRole: null });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
+  });
+
+  it.each(['healthy', 'unknown', 'oversized'] as const)('checks companion image bytes before an error: %s', async (health) => {
+    const deps = makeDeps([msg('user', 'continue the game', 'u1'), msg('assistant', 'ready', 'a1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', agentKind: 'codex' });
+    const classifyCodexHistory = vi.fn(async () => health);
+    await expect(createContextOverflowRollover({ ...deps, classifyCodexHistory }).prepareUnhealthySession('s1')).resolves.toBe(health === 'oversized');
+    expect(classifyCodexHistory).toHaveBeenCalledOnce();
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('continues a direct companion image failure once without replaying a completed tool', async () => {
+    const deps = makeDeps([
+      msg('user', 'save the game and then test it', 'u1'),
+      { ...msg('tool_result', { fullText: 'Game saved successfully' }, 'r1'), toolUseId: 'write-1' },
+    ]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', agentKind: 'codex' });
+    const rollover = createContextOverflowRollover(deps);
+    await expect(rollover.tryRecover('s1', { reason: 'codex_history_oversized' })).resolves.toBe(true);
+    expect(deps.replayUserMessage).toHaveBeenCalledWith('s1', CODEX_HISTORY_CONTINUE_MESSAGE, undefined,
+      expect.objectContaining({ continueFromHistory: true, sourceUserClientId: 'u1' }));
+    expect(deps.setPendingHandoff.mock.calls[0]![1]).toContain('Game saved successfully');
+    await expect(rollover.tryRecover('s1', { reason: 'codex_history_oversized' })).resolves.toBe(false);
+    expect(deps.replayUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['group', 'delegation', null])('does not take over noncanonical Bot recovery: %s', async (botRole) => {
+    const deps = makeDeps([msg('user', 'continue', 'u1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole, agentKind: 'codex' });
+    expect(canContinueContextRecovery(await deps.getSessionRow())).toBe(false);
+    await expect(createContextOverflowRollover(deps).tryRecover('s1', { reason: 'codex_history_oversized' })).resolves.toBe(false);
+    expect(deps.closeSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps a companion external-dispatch turn with its original owner', async () => {
+    const deps = makeDeps([{ ...msg('user', 'scheduled work', 'u1'), agentMeta: { origin: { kind: 'scheduler' } } }]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', agentKind: 'codex' });
+    await expect(createContextOverflowRollover(deps).tryRecover('s1', { reason: 'codex_history_oversized' })).resolves.toBe(false);
+    expect(deps.closeSession).not.toHaveBeenCalled();
+  });
+
+  it('does not checkpoint while native background execution is still active', async () => {
+    const deps = makeDeps([msg('user', 'continue', 'u1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 190_000 });
+    deps.getLiveSession.mockReturnValue({ isTurnRunning: () => false, listBackgroundTasks: () => [{ id: 'active' }] });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(deps.closeSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['history', 'close'])('stopping companion preparation during %s forbids a late rebuild', async (stage) => {
+    const deps = makeDeps([msg('user', 'continue', 'u1')]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 190_000 });
+    const rollover = createContextOverflowRollover(deps);
+    if (stage === 'history') deps.listMessages.mockImplementation(async () => { rollover.cancelRecovery('s1'); return [msg('user', 'continue', 'u1')]; });
+    else deps.closeSession.mockImplementation(async () => { rollover.cancelRecovery('s1'); });
+    await expect(rollover.prepareUnhealthySession('s1')).rejects.toThrow();
+    expect(deps.commitRebuild).not.toHaveBeenCalled();
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+    if (stage === 'history') expect(deps.closeSession).not.toHaveBeenCalled();
+  });
+
+  it('manual restart retains tool outcomes and strips image bodies even after a partial reply', async () => {
+    const deps = makeDeps([
+      msg('user', 'create the game', 'u1'),
+      { ...msg('tool_result', { content: [{ type: 'text', text: 'Build completed; preview ready' }, { type: 'image', data: 'IMAGE_BYTES' }] }, 'r1'), toolUseId: 'build-1' },
+      msg('assistant', 'Checking the preview next', 'a1'),
+    ]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical' });
+    await createContextOverflowRollover(deps).prepareNativeSessionRecovery('s1', null, vi.fn());
+    const handoff = deps.setPendingHandoff.mock.calls[0]![1];
+    expect(handoff).toContain('Build completed; preview ready');
+    expect(handoff).not.toContain('IMAGE_BYTES');
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+  });
 
   it.each(['cc', 'codex', 'pi'] as const)('explicit Bot restart replaces a running %s context without replay', async (agentKind) => {
     const deps = makeDeps([msg('user', 'keep my request', 'u1', 1)]);
@@ -1250,6 +1378,7 @@ describe('createContextOverflowRollover', () => {
       's1',
       expect.any(String),
       expect.objectContaining({ reason: 'pi-prompt-timeout' }),
+      expect.any(AbortSignal),
     );
   });
 
@@ -1343,6 +1472,7 @@ describe('createContextOverflowRollover', () => {
       's1',
       expect.any(String),
       expect.objectContaining({ sourceUserClientId: 'u-old' }),
+      expect.any(AbortSignal),
     );
   });
 
@@ -1676,7 +1806,7 @@ describe('createContextOverflowRollover', () => {
     const rollover = createContextOverflowRollover(deps);
     await expect(rollover.prepareUnhealthySession('s1')).resolves.toBe(true);
     expect(deps.commitRebuild).toHaveBeenCalledWith('s1', expect.stringContaining('Saved revision 42'),
-      expect.objectContaining({ sourceUserClientId: 'u1' }));
+      expect.objectContaining({ sourceUserClientId: 'u1' }), expect.any(AbortSignal));
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
   });
 });
