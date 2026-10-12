@@ -51,7 +51,7 @@ import {
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
-import { remoteAgentHostRunningProviders } from '../remote-agent/host/service.js';
+import { remoteAgentHostRunningProviders, resolveRemoteAgentHostClaudeSessionId } from '../remote-agent/host/service.js';
 import {
   createProviderGroupService,
   PROVIDER_GROUP_SUPERSEDED_ERROR,
@@ -6850,7 +6850,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   setClaudeProxySessionIdResolver((sdkSessionId) => {
     if (isAppSessionBoundaryPending()) return null;
     const s = maker.listActiveSessions().find((x) => x.requestSessionId === sdkSessionId);
-    return s ? s.id : null;
+    return s ? s.id : resolveRemoteAgentHostClaudeSessionId(sdkSessionId);
   });
 
   // 会话移动转录迁移:活跃会话桥(查内存 sdkSessionId + 关闭 handle)。

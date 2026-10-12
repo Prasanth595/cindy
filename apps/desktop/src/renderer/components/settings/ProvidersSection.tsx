@@ -135,7 +135,7 @@ import { localCliDisplayName, type LocalCliDetection } from '../../../shared/loc
 import { isBuiltinRefreshableProviderId } from '../../../shared/providerModelRefresh';
 import { applyProviderOrder } from '../../../shared/providerOrder';
 import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
-import { isCustomRoutedProvider, isOrganizationManagedProvider } from '@cindy/model-providers';
+import { isCustomRoutedProvider, isOrganizationManagedProvider, storedCustomProviderId } from '@cindy/model-providers';
 
 // ---------------------------------------------------------------------------
 // 工具
@@ -3471,6 +3471,8 @@ export function ProvidersSection() {
       {dialog && (
         <ProviderConnectionDialog
           initial={dialog.mode === 'edit' ? dialog.config : undefined}
+          catalogModels={dialog.mode === 'edit' ? providers.find(p =>
+            p.source === 'user' && storedCustomProviderId(p.id) === dialog.config.id)?.models : undefined}
           focusAgent={dialog.mode === 'edit' ? dialog.focusAgent : undefined}
           existingIds={providers.map((p) => p.id)}
           returnFocusRef={dialog.mode === 'create' ? addProviderButtonRef : undefined}

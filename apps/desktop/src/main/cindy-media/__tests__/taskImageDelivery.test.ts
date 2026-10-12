@@ -433,7 +433,13 @@ describe('task image delivery', () => {
       if (kind === 'symlink') {
         const outside = path.join(state.root, 'private.png');
         await fs.writeFile(outside, PNG);
-        await fs.symlink(outside, source);
+        if (process.platform === 'win32') {
+          // Junctions preserve the real path escape without requiring file-symlink privileges.
+          const link = path.join(work, 'linked');
+          await fs.symlink(state.root, link, 'junction');
+          source = path.join(link, 'private.png');
+        } else await fs.symlink(outside, source);
+        expect(await fs.realpath(source)).toBe(await fs.realpath(outside));
       } else await fs.writeFile(source, kind === 'not-image' ? Buffer.from('not png') : PNG);
       const row = insert(`![image](${source})`);
       expect(await restoreTaskImageRows(client, [row])).toEqual([row]);

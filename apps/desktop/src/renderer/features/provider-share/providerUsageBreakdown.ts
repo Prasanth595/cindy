@@ -13,20 +13,18 @@ function addMoney(a: ProviderShareMoney | null, b: ProviderShareMoney | null): P
 
 /**
  * 合并几份按模型的用量：同一 Agent、供应商、模型、组内电脑的行相加。
- * `ignoreMember` 时不分组内电脑(没有组的供应商按模型列)。金额币种不一致的那一行不给金额，不伪造合计。
+ * 金额币种不一致的那一行不给金额，不伪造合计。
  */
 export function mergeModelUsage(
   lists: ReadonlyArray<readonly ProviderShareModelUsageView[]>,
-  options: { ignoreMember?: boolean } = {},
 ): ProviderShareModelUsageView[] {
   const merged = new Map<string, ProviderShareModelUsageView & { mixed?: boolean }>();
   for (const list of lists) {
     for (const row of list) {
-      const memberKey = options.ignoreMember ? null : row.memberKey;
-      const key = JSON.stringify([row.kind, row.providerId, row.model, memberKey]);
+      const key = JSON.stringify([row.kind, row.providerId, row.model, row.memberKey]);
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, { ...row, memberKey, amount: row.amount ? { ...row.amount } : null });
+        merged.set(key, { ...row, amount: row.amount ? { ...row.amount } : null });
         continue;
       }
       existing.turns += row.turns;

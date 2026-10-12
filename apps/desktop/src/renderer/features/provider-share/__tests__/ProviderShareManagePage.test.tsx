@@ -232,17 +232,36 @@ describe('ProviderShareManagePage', () => {
     expect(lizi.textContent).toContain('providerGroup.usage.unattributed');
   });
 
-  it('re-reads usage when the period changes and expands the per-model breakdown', async () => {
+  it('re-reads usage when the period changes', async () => {
     renderPage();
     await screen.findAllByTestId('provider-usage-row');
     fireEvent.click(screen.getByRole('radio', { name: 'providerShare.manage.members.range.7d' }));
     await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'owned', range: '7d' }));
     expect(command).toHaveBeenCalledWith({ action: 'own-usage', providerId: 'xd', range: '7d' });
+  });
+
+  it('shows a provider without a group as a group of just this computer', async () => {
+    renderPage();
+    const rows = await screen.findAllByTestId('provider-usage-row');
+    expect(screen.getByText(/providerGroup\.usage\.description:/)).toBeTruthy();
+    // 和建了组的一样有摘要与占比，只是收起时不写用了几台电脑(只有一台)。
+    expect(screen.getByTestId('provider-usage-summary')).toBeTruthy();
+    expect(rows[0]!.textContent).not.toMatch(/computerCount/);
+
+    fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Magi/ }));
+    const self = screen.getAllByTestId('provider-usage-row')[0]!;
+    const members = within(self).getAllByTestId('provider-usage-member');
+    // 本机一行在前；以前经组在 Studio 上运行的那部分排在后面，写已移出组。
+    expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual(['local', 'device:studio:xd-2']);
+    expect(members[0]!.textContent).toContain('providerGroup.member.local');
+    expect(members[0]!.textContent).toContain("Magi's Mac Mini");
+    expect(members[1]!.textContent).toContain('providerGroup.usage.removedMember');
 
     fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Lizi/ }));
-    expect(screen.getByText('Opus 5.5')).toBeTruthy();
-    expect(screen.getByText('$31.20')).toBeTruthy();
-    expect(screen.getByText('providerShare.manage.members.estimateNote')).toBeTruthy();
+    const lizi = screen.getAllByTestId('provider-usage-row')[1]!;
+    expect(within(lizi).getByText('Opus 5.5')).toBeTruthy();
+    expect(within(lizi).getAllByText('$31.20').length).toBeGreaterThan(0);
+    expect(within(lizi).getByText('providerShare.manage.members.estimateNote')).toBeTruthy();
   });
 
   it('does not show zero for this computer when its usage could not be read', async () => {

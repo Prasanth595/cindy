@@ -202,8 +202,6 @@ function NavigationGate() {
           <Stack.Screen name="sessions/new" options={({ route }) => ({
             animation: readComposerEntry((route.params as { composerMorph?: string } | undefined)?.composerMorph) ? 'none' : 'default',
           })} />
-          {/* 设置从左侧抽屉进入:接着抽屉方向从左边推出,不要默认从右边盖上来。 */}
-          <Stack.Screen name="settings" options={{ animation: 'slide_from_left' }} />
           <Stack.Screen
             name="add-account"
             options={{ animation: 'fade', gestureEnabled: false }}

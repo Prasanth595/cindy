@@ -18,6 +18,7 @@ import {
 } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle, StartSessionOptions } from '@cindy/maker-core';
 
+import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { RemoteExecutor, type ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor, type ExecutorAction } from '../executor/gate';
@@ -182,7 +183,11 @@ export function shadowAliases(
 
 /** 凭证类操作的确认卡：用与 Agent 自带工具同名的工具显示本机路径或命令。 */
 export function credentialConfirmation(action: ExecutorAction, description: string): LocalConfirmation {
-  const base = { description, metadata: { hostOwnedConfirmation: 'shared_provider_credential' } };
+  const base = {
+    description,
+    metadata: { hostOwnedConfirmation: 'shared_provider_credential' },
+    suggestions: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
+  };
   switch (action.kind) {
     case 'exec':
       return { ...base, toolName: 'Bash', input: { command: action.command } };
@@ -387,10 +392,12 @@ export async function startRemoteAgentSession(
     newId: deps.newId,
     ...(deps.groupSwitch?.takeNewRound ? { takeGroupNewRound: deps.groupSwitch.takeNewRound } : {}),
     onPermissionMode: (mode) => {
+      if (permissionMode === mode) return;
       permissionMode = mode as typeof permissionMode;
       executor.setGateMode(executorGateModeFor(permissionMode, planMode));
     },
     onPlanMode: (enabled) => {
+      if (planMode === enabled) return;
       planMode = enabled;
       executor.setGateMode(executorGateModeFor(permissionMode, planMode));
     },

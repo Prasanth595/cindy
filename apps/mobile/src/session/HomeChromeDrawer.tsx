@@ -280,8 +280,11 @@ export function HomeChromeDrawer({
 
   const overlay = (
     <View
-      accessibilityViewIsModal
-      pointerEvents="auto"
+      accessibilityViewIsModal={open}
+      accessibilityElementsHidden={!open}
+      importantForAccessibility={open ? 'auto' : 'no-hide-descendants'}
+      // Keep the exit animation mounted without accepting a second menu/backdrop action.
+      pointerEvents={open ? 'auto' : 'none'}
       style={styles.overlay}
       testID="home.chromeDrawer"
     >

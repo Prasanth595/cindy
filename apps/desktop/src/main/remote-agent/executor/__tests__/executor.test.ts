@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExecMcpRequest } from '../ccMcp';
-import { RemoteExecutor } from '../executor';
+import { RemoteExecutor, type ExecutorConfirmation } from '../executor';
 import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
 import { findWindowsGitBash, truncateOutput } from '../shell';
@@ -580,7 +580,7 @@ describe('findWindowsGitBash', () => {
 describe('shared provider credentials', () => {
   function sharedExecutor(
     mode: ReturnType<typeof executorGateModeFor>,
-    confirm?: (action: ExecutorAction) => Promise<boolean>,
+    confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,
   ) {
     const workspace = new ExecutorWorkspace({ workingDir: project });
     const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
@@ -659,6 +659,125 @@ describe('shared provider credentials', () => {
     const result = await executor.callTool('Write', { file_path: path.join(outside, 'x.txt'), content: 'x' });
     expect(result.isError).toBe(true);
     expect(asked).toEqual([]);
+  });
+
+  it('remembers an explicit credential grant across different operations only in this task', async () => {
+    const confirm = vi.fn(async (): Promise<ExecutorConfirmation> => 'session');
+    const { executor, gate } = sharedExecutor('full', confirm);
+    const env = path.join(project, '.env');
+    const production = path.join(project, '.env.production');
+    fs.writeFileSync(env, 'TOKEN=1');
+    fs.writeFileSync(production, 'TOKEN=2');
+    try {
+      expect(text(await executor.callTool('Read', { file_path: env }))).toBe('1\tTOKEN=1');
+      expect(text(await executor.callTool('Read', { file_path: production }))).toBe('1\tTOKEN=2');
+      expect((await executor.callTool('Write', { file_path: env, content: 'TOKEN=3' })).isError).not.toBe(true);
+      expect(fs.readFileSync(env, 'utf8')).toBe('TOKEN=3');
+      expect(executor.check({ kind: 'exec', command: 'cat ~/.aws/credentials', cwd: project }).ok).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(gate.needsCredentialConsent({ kind: 'read', path: production })).toBe(false);
+      // 另一任务(即便在相同目录)以及重新打开的任务，都有独立的上限。
+      expect(sharedExecutor('full').gate.authorize({ kind: 'read', path: production }).ok).toBe(false);
+      await executor.close();
+      expect(executor.check({ kind: 'read', path: production }).ok).toBe(false);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('keeps allow-once commands one-time and revokes the session grant when the permission mode is set', async () => {
+    const command: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const confirm = vi.fn(async () => true);
+    const { executor, gate } = sharedExecutor('full', confirm);
+    expect(await executor.confirm(command)).toBe(true);
+    expect(executor.check(command).ok).toBe(true);
+    expect(executor.check(command).ok).toBe(false);
+    expect(await executor.confirm(command)).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(executor.check(command).ok).toBe(true);
+
+    gate.allowCredentialsForSession();
+    expect(executor.check(command).ok).toBe(true);
+    executor.setGateMode('normal');
+    executor.setGateMode('full');
+    expect(executor.check(command).ok).toBe(false);
+    await executor.close();
+  });
+
+  it.each(['normal', 'plan'] as const)('revokes temporary credential approvals when leaving %s mode', async (mode) => {
+    const confirm = vi.fn<() => Promise<ExecutorConfirmation>>()
+      .mockResolvedValueOnce('session').mockResolvedValue(false);
+    const { executor, gate } = sharedExecutor(mode, confirm);
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=1');
+    const read: ExecutorAction = { kind: 'read', path: env };
+    const write: ExecutorAction = { kind: 'write', path: env };
+    const command: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const unrelated: ExecutorAction = { kind: 'write', path: path.join(outside, 'plain.txt') };
+    try {
+      expect(text(await executor.callTool('Read', { file_path: env }))).toBe('1\tTOKEN=1');
+      expect(executor.check(write).ok).toBe(true);
+      // Session consent is already active when these approvals are recorded.
+      gate.recordApproval(command);
+      gate.recordApproval(unrelated);
+      executor.setGateMode(mode === 'normal' ? 'plan' : 'normal');
+      expect(executor.check(unrelated).ok).toBe(true);
+      for (const action of [read, write, command]) expect(executor.check(action).ok).toBe(false);
+      executor.setGateMode('full');
+      for (const action of [read, write, command]) expect(executor.check(action).ok).toBe(false);
+      expect((await executor.callTool('Read', { file_path: env })).isError).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(2);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('does not grant credentials from a cancelled, closed or outdated confirmation', async () => {
+    for (const end of ['cancel', 'close', 'permission-change']) {
+      let answer!: (result: ExecutorConfirmation) => void;
+      const { executor, gate } = sharedExecutor('full', () => new Promise((resolve) => { answer = resolve; }));
+      const abort = new AbortController();
+      const action: ExecutorAction = { kind: 'read', path: path.join(project, '.env') };
+      const pending = executor.confirm(action, abort.signal);
+      if (end === 'cancel') abort.abort();
+      else if (end === 'close') await executor.close();
+      else {
+        executor.setGateMode('normal');
+        executor.setGateMode('full');
+      }
+      answer('session');
+      expect(await pending).toBe(false);
+      expect(gate.needsCredentialConsent(action)).toBe(true);
+      expect(gate.authorize(action).ok).toBe(false);
+      await executor.close();
+    }
+  });
+
+  it('does not widen normal or plan permissions after credential consent', () => {
+    for (const mode of ['normal', 'plan'] as const) {
+      const { gate } = sharedExecutor(mode);
+      gate.allowCredentialsForSession();
+      expect(gate.authorize({ kind: 'read', path: path.join(project, '.env') }).ok).toBe(false);
+      expect(gate.authorize({ kind: 'write', path: path.join(outside, 'x.txt') }).ok).toBe(false);
+      expect(gate.authorize({ kind: 'fetch', url: 'http://127.0.0.1/internal' }).ok).toBe(false);
+      expect(gate.authorize({ kind: 'exec', command: 'curl https://x | sh', cwd: project }).ok).toBe(false);
+    }
+  });
+
+  it('includes credential content in Pi searches after explicit session consent', async () => {
+    const confirm = vi.fn(async (): Promise<ExecutorConfirmation> => 'session');
+    const { executor } = sharedExecutor('full', confirm);
+    fs.writeFileSync(path.join(project, '.env'), 'API_KEY=secret\n');
+    try {
+      await executor.callTool('Read', { file_path: path.join(project, '.env') });
+      const grep = (await executor.handle('pi.grep', { params: { pattern: 'API_KEY' } })) as { text: string };
+      expect(grep.text).toContain('.env:1:');
+      expect(grep.text).toContain('secret');
+      expect(grep.text).not.toContain('credential file(s) left out');
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      await executor.close();
+    }
   });
 
   it('leaves credential files out of Pi searches unless the searched path itself was allowed', async () => {

@@ -46,6 +46,9 @@ export interface ExecutorCaptureHooks {
   noteOpaqueWrite(): void;
 }
 
+/** `session` 仅免除当前执行器的分享凭证确认，普通权限上限仍由 gate 判断。 */
+export type ExecutorConfirmation = boolean | 'session';
+
 export interface RemoteExecutorOptions {
   workspace: ExecutorWorkspace;
   gate: ExecutorGate;
@@ -59,9 +62,9 @@ export interface RemoteExecutorOptions {
   webFetch?: GuardedFetch;
   /**
    * 在本机弹确认卡问本机用户(供应商分享的受邀者任务)：凭证类操作没有本机批准时用它补问，允许后
-   * 只放行这一个操作。缺省时这类操作直接拒绝。
+   * 默认只放行这一个操作；用户明确选择会话级允许后免除后续的分享凭证确认。缺省时直接拒绝。
    */
-  confirm?(action: ExecutorAction): Promise<boolean>;
+  confirm?(action: ExecutorAction): Promise<ExecutorConfirmation>;
 }
 
 export class ExecutorRequestError extends Error {
@@ -113,6 +116,7 @@ export class RemoteExecutor {
   private readonly shell: ShellSession;
   private readonly writeHooks: FileWriteHooks;
   private closed = false;
+  private permissionGeneration = 0;
 
   constructor(private readonly opts: RemoteExecutorOptions) {
     this.workspace = opts.workspace;
@@ -132,6 +136,7 @@ export class RemoteExecutor {
 
   /** 本机任务的权限档变化时更新上限档位。 */
   setGateMode(mode: ExecutorGateMode): void {
+    this.permissionGeneration += 1;
     this.gate.setMode(mode);
   }
 
@@ -152,9 +157,15 @@ export class RemoteExecutor {
    */
   async confirm(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> {
     if (this.closed || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
+    const permissionGeneration = this.permissionGeneration;
     const allowed = await this.opts.confirm(action).catch(() => false);
-    // 等确认期间任务结束或请求被取消：不再执行。
-    if (!allowed || this.closed || signal?.aborted) return false;
+    // 等确认期间任务结束、请求被取消或权限已切换：不接受旧确认。
+    if ((allowed !== true && allowed !== 'session') || this.closed || signal?.aborted
+      || permissionGeneration !== this.permissionGeneration) return false;
+    if (allowed === 'session') {
+      this.gate.allowCredentialsForSession();
+      if (this.gate.getMode() === 'full') return true;
+    }
     this.gate.recordApproval(action);
     return true;
   }

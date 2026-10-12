@@ -1,4 +1,7 @@
 import { useRemoteModelFavorites } from '@/state/useRemoteModelFavorites';
+import { useProviderShareFavorites } from '@/state/providerShareFavorites';
+import { ensureProviderShareReceivedStarted } from '@/features/provider-share/providerShareStore';
+import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, Loader2, TriangleAlert } from 'lucide-react';
@@ -357,9 +360,14 @@ export function UnifiedModelPanel({
 }: UnifiedModelPanelProps) {
   const { t } = useTranslation();
   const storedFavorites = useModelFavorites();
-  // 分享来的供应商(`share:<id>`)不是同账号的电脑，没有可同步的收藏：不去读，也不报同步失败。
-  const remoteFavorites = useRemoteModelFavorites(isProviderShareAgentDeviceId(deviceId) ? undefined : deviceId);
-  const favorites = selectionPolicy === 'official' ? NO_FAVORITES : deviceId ? remoteFavorites.items : storedFavorites;
+  const isSharedProvider = isProviderShareAgentDeviceId(deviceId);
+  const remoteFavorites = useRemoteModelFavorites(isSharedProvider ? undefined : deviceId);
+  const sharedFavorites = useProviderShareFavorites(deviceId, storedFavorites);
+  useEffect(() => {
+    if (isSharedProvider) ensureProviderShareReceivedStarted();
+  }, [isSharedProvider]);
+  const favorites = selectionPolicy === 'official' ? NO_FAVORITES
+    : isSharedProvider ? sharedFavorites.items : deviceId ? remoteFavorites.items : storedFavorites;
   // 引擎 override / 深度 / Fast 三份 store 的版本号:任一变化都要重算行三元组与浮层
   // (其它窗口的 storage 事件、device-link 推送同样经这两个版本号进来)。远程 Agent 的档位记忆
   // 是另一份 store,版本号并进 memoryVersion。
@@ -481,19 +489,22 @@ export function UnifiedModelPanel({
         : null,
     [remoteActiveDeviceId, remoteActiveProviderId],
   );
-  const effectiveRail = remoteRail ?? (query.trim() ? RAIL_ALL : rail);
+  const effectiveRail = isSharedProvider && rail.kind === 'favorites' && !query.trim()
+    ? rail : remoteRail ?? (query.trim() ? RAIL_ALL : rail);
   // 切到另一台电脑的途中(或读取失败)列表数据还不是那台的目录:列表区只显示状态,不出行。
   const remoteListPending = remoteRail !== null && !remoteSources?.ready;
   const handleRailSelect = useCallback(
     (item: UnifiedRailItem) => {
       if (item.kind === 'remote-provider') {
+        setRail(RAIL_ALL);
         remoteSources?.onActivate({ deviceId: item.deviceId, providerId: item.providerId });
         return;
       }
-      if (remoteSources?.active) remoteSources.onActivate(null);
+      // 分享收藏属于受邀者，但条目仍要在该分享的目录里解析与选用。
+      if (remoteSources?.active && !(isSharedProvider && item.kind === 'favorites')) remoteSources.onActivate(null);
       setRail(item);
     },
-    [remoteSources],
+    [remoteSources, isSharedProvider],
   );
 
   // ── 行配置合成 ────────────────────────────────────────────────────────────
@@ -870,7 +881,8 @@ export function UnifiedModelPanel({
     optimistic: optimisticConfig,
     runExternal,
   } = useUnifiedRowActions({
-    favoriteStore: deviceId ? remoteFavorites.store : undefined,
+    favoriteStore: isSharedProvider ? sharedFavorites.store : deviceId ? remoteFavorites.store : undefined,
+    onFavoriteError: () => toast.error(t('newChat.modelSelector.unified.favoritesSaveFailed')),
     interactionDisabled,
     isLiveRow,
     // 两笔实时写入(深度 + Fast)里第二笔失败时回滚第一笔用的原值,以及收藏 live 判定

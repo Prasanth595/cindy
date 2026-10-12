@@ -614,9 +614,9 @@ export function buildUserProvider(
       const registry = options.modelRegistry ?? undefined;
       const resolveDeclaration = (source: ModelRegistry | undefined) => {
         const baseModel = findBaseModel(source, m.id);
-        const routeNativeApi = resolveModelNativeApi(source, config.id, m.id);
+        const routeNativeApi = resolveModelNativeApi(source, config.id, m.id, projected.mode);
         return routeNativeApi !== undefined ? routeNativeApi
-          : resolveCatalogModelNativeApi(source, baseModel?.id ?? m.id);
+          : resolveCatalogModelNativeApi(source, baseModel?.id ?? m.id, projected.mode);
       };
       const projected = toCatalogModel(
         m,
@@ -633,9 +633,10 @@ export function buildUserProvider(
       const declaration = currentDeclaration !== undefined ? currentDeclaration
         : projected.nativeApi !== undefined ? projected.nativeApi
         : resolveDeclaration(BUNDLED_CATALOG.modelRegistry);
-      const nativeApi = declaration === null || declaration === 'anthropic-messages'
-        || declaration === 'openai-responses' || declaration === 'openai-completions'
-        || declaration === 'google-generative-ai' ? declaration : undefined;
+      // Only an explicit user value may override the current media declaration.
+      // projected also contains discovery metadata, including stale protocol claims.
+      const nativeApi = providerMediaField(projected.mode) && storedModel.nativeApi !== undefined
+        ? storedModel.nativeApi : declaration;
       return {
         ...(imported?.cost ? { cost: imported.cost } : {}),
         ...projected,

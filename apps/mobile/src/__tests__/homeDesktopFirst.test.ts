@@ -270,11 +270,17 @@ describe('mobile home desktop-first surface', () => {
     expect(chromeDrawer).toContain('GestureHandlerRootView');
     expect(chromeDrawer).not.toContain('remoteSettings');
     expect(source).toContain("guardedPush('/settings')");
-    expect(source).toContain('setChromeMenuCloseInstant(true)');
-    expect(source).not.toContain("pendingMenuActionRef.current = () => guardedPush('/settings')");
+    expect(source).not.toContain('setChromeMenuCloseInstant');
+    expect(source).toContain('onClosed={handleChromeMenuClosed}');
+    for (const route of ['/settings', '/devices/manage', '/plugins']) {
+      expect(source).not.toContain(`pendingMenuActionRef.current = () => guardedPush('${route}')`);
+      expect(source).toContain(`setChromeMenuOpen(false);\n          guardedPush('${route}');`);
+    }
+    const teammateHome = readSource('src/session/TeammateHomeScreen.tsx');
+    expect(teammateHome).toContain("onOpenSettings={() => openDrawerPage('/settings')}");
+    expect(teammateHome).toContain("onOpenAccounts={() => afterDrawer(() => setAccounts(true))}");
     const rootLayout = readSource('app/_layout.tsx');
-    expect(rootLayout).toContain('name="settings"');
-    expect(rootLayout).toContain("animation: 'slide_from_left'");
+    expect(rootLayout).not.toContain("animation: 'slide_from_left'");
     expect(source).toContain("label={t('devices.list.allConversations')}");
     // 显示菜单只有一份菜单模型(homeChromeMenus),原生下拉 / 自绘兜底都消费它,不再有平行的自绘面板。
     expect(source).toContain('homeDisplayActionPatch(id, displayMenuState)');

@@ -18,18 +18,20 @@ export type ModelFavoriteMutation =
       item: Omit<RemoteModelFavorite, "uid">;
     }
   | { kind: "remove"; expected: RemoteModelFavorite };
-const text = (v: unknown): v is string =>
-  typeof v === "string" && v.length > 0 && v.length <= 512;
+export const MODEL_FAVORITE_TEXT_MAX_LENGTH = 512;
+const text = (v: unknown, max = MODEL_FAVORITE_TEXT_MAX_LENGTH): v is string =>
+  typeof v === "string" && v.length > 0 && v.length <= max;
 export function parseRemoteModelFavorite(
   value: unknown,
   needsUid = true,
+  providerIdMaxLength = MODEL_FAVORITE_TEXT_MAX_LENGTH,
 ): RemoteModelFavorite {
   if (!value || typeof value !== "object")
     throw new Error("Invalid model favorite");
   const p = value as RemoteModelFavorite;
   if (
     (needsUid && !text(p.uid)) ||
-    !text(p.providerId) ||
+    !text(p.providerId, providerIdMaxLength) ||
     p.providerId === "*" ||
     !text(p.modelId) ||
     !["cc", "codex", "pi"].includes(p.agent) ||
@@ -51,17 +53,19 @@ export function parseRemoteModelFavorite(
 }
 export function parseModelFavoriteMutation(
   value: unknown,
+  // Local composite source keys may be longer; wire callers retain the default.
+  providerIdMaxLength = MODEL_FAVORITE_TEXT_MAX_LENGTH,
 ): ModelFavoriteMutation {
   if (!value || typeof value !== "object")
     throw new Error("Invalid favorite operation");
   const p = value as ModelFavoriteMutation;
   if (p.kind === "add")
-    return { kind: p.kind, item: parseRemoteModelFavorite(p.item, false) };
+    return { kind: p.kind, item: parseRemoteModelFavorite(p.item, false, providerIdMaxLength) };
   if (p.kind === "remove")
-    return { kind: p.kind, expected: parseRemoteModelFavorite(p.expected) };
+    return { kind: p.kind, expected: parseRemoteModelFavorite(p.expected, true, providerIdMaxLength) };
   if (p.kind === "update") {
-    const expected = parseRemoteModelFavorite(p.expected),
-      item = parseRemoteModelFavorite(p.item, false);
+    const expected = parseRemoteModelFavorite(p.expected, true, providerIdMaxLength),
+      item = parseRemoteModelFavorite(p.item, false, providerIdMaxLength);
     if (
       expected.providerId !== item.providerId ||
       expected.modelId !== item.modelId

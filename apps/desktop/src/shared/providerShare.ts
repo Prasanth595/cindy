@@ -9,6 +9,21 @@ import type {
   ProviderShareRequestItem,
   ProviderShareRequestState,
 } from '@cindy/device-link';
+import type { DataOwnerPushStamp } from './dataOwnerPush';
+
+/** 本机收藏清理依据。未加载、断线和账号切换的空列表不能用于撤权清理。 */
+export interface ProviderShareReceivedSnapshot {
+  ownerStamp: DataOwnerPushStamp;
+  /** 仅这些区域的名单完整，可据此清理已撤权收藏；其它区域不受影响。 */
+  confirmedRegions: readonly ProviderShareReceived['owner']['region'][];
+  received: readonly ProviderShareReceived[];
+}
+
+/** 本机收藏作为重启后的查询线索，不作为授权或撤权依据。 */
+export interface ProviderShareFavoriteRecovery {
+  ownerStamp: DataOwnerPushStamp;
+  regions: readonly ProviderShareReceived['owner']['region'][];
+}
 
 export const PROVIDER_SHARE_IPC = {
   /** Renderer → Main：全部操作走同一个命令通道。 */
@@ -121,6 +136,7 @@ export type ProviderShareCommand =
   | { action: 'approve' | 'reject'; requestId: string }
   | { action: 'set-member'; memberId: string; status: 'pause' | 'resume' | 'remove' }
   | { action: 'received' }
+  | { action: 'received-snapshot'; favoriteRecovery?: ProviderShareFavoriteRecovery }
   | { action: 'preview'; link: string }
   | { action: 'send-request'; link: string }
   | { action: 'get-request'; requestId: string }
@@ -135,6 +151,7 @@ export interface ProviderShareCommandResult {
   reject: { ok: true };
   'set-member': { ok: true };
   received: ProviderShareReceived[];
+  'received-snapshot': ProviderShareReceivedSnapshot;
   preview: ProviderShareLinkPreview;
   'send-request': ProviderShareRequestState;
   'get-request': ProviderShareRequestState;

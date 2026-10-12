@@ -42,3 +42,15 @@ it("strips unknown fields and rejects invalid identities, duplicates, and effort
     }),
   ).toThrow("identity");
 });
+
+it("allows a larger local source bound without changing wire or other field limits", () => {
+  const longItem = { ...item, providerId: 'p'.repeat(2048) };
+  const add = { kind: 'add', item: longItem };
+  expect(parseModelFavoriteMutation(add, 2048)).toMatchObject({ kind: 'add', item: { providerId: longItem.providerId } });
+  expect(() => parseModelFavoriteMutation(add)).toThrow();
+  expect(() => parseModelFavorites([longItem])).toThrow();
+  expect(() => parseModelFavoriteMutation({ kind: 'add', item: { ...item, providerId: 'p'.repeat(2049) } }, 2048)).toThrow();
+  expect(() => parseModelFavoriteMutation({ kind: 'add', item: { ...item, modelId: 'm'.repeat(513) } }, 2048)).toThrow();
+  expect(() => parseModelFavoriteMutation({ kind: 'remove', expected: { ...longItem, uid: 'u'.repeat(513) } }, 2048)).toThrow();
+  expect(parseModelFavorites([{ ...item, providerId: 'p'.repeat(512) }])).toHaveLength(1);
+});

@@ -2,8 +2,9 @@
 import { useRef, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CustomProviderConfig } from '@cindy/model-providers';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildUserProvider, type CustomProviderConfig, type ModelRegistry } from '@cindy/model-providers';
+import { customProviderModelConfigFromCatalogModel } from '@/lib/customProviders';
 
 import { ProviderConnectionDialog } from '../ProviderConnectionDialog';
 
@@ -49,6 +50,148 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+describe('BYOK speech catalog settings', () => {
+  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+  beforeAll(() => { HTMLElement.prototype.scrollIntoView = vi.fn(); });
+  afterAll(() => { HTMLElement.prototype.scrollIntoView = originalScrollIntoView; });
+  function speechConnection(models: NonNullable<CustomProviderConfig['runtimes']['codex']>['models']): CustomProviderConfig {
+    return { id: 'speech-only', name: 'Speech account', runtimes: {
+      codex: { baseUrl: 'https://speech.example.test/v1', wireProtocol: 'openai-chat', models },
+    } };
+  }
+  const activeSpeechRegistry: ModelRegistry = { schemaVersion: 5, updatedAt: '2026-10-12T06:00:00.000Z',
+    baseModels: [{ id: 'new-server-voice', aliases: [], defaults: { mode: 'audio_speech' } }], models: [],
+  };
+
+  it.each([false, true])('keeps active-only speech models out of chat tests with edited key: %s', async (editKey) => {
+    const provider = buildUserProvider(speechConnection([{ id: 'new-server-voice', name: 'Voice' }]), { modelRegistry: activeSpeechRegistry });
+    const initial = speechConnection(provider.models.codex!.map(model => customProviderModelConfigFromCatalogModel(model, 'codex')));
+    customProviderMocks.readCustomProviderKey.mockResolvedValue('old-secret');
+    const user = userEvent.setup();
+    render(<ProviderConnectionDialog initial={initial} catalogModels={provider.models} onSaved={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText('settings.providers.custom.fields.apiKeySaved');
+    if (editKey) {
+      const key = screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyEditPlaceholder');
+      await user.clear(key);
+      await user.type(key, 'new-secret');
+    }
+    expect(screen.queryByRole('button', { name: 'settings.providers.custom.test.button' })).toBeNull();
+    expect(screen.getByText('settings.providers.connection.mediaOnlyTestHint')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+    expect(customProviderMocks.updateCustomProvider.mock.calls[0][0].runtimes.codex.models).toEqual(initial.runtimes.codex!.models);
+    expect(window.electronAPI.maker.testProviderConnection).not.toHaveBeenCalled();
+  });
+
+  it.each(['saved', 'adhoc'] as const)('uses the chat member in a mixed active catalog for %s probes', async (kind) => {
+    const initial = speechConnection([{ id: 'new-server-voice', name: 'Voice' }, { id: 'private-chat', name: 'Chat' }]);
+    const provider = buildUserProvider(initial, { modelRegistry: activeSpeechRegistry });
+    customProviderMocks.readCustomProviderKey.mockResolvedValue('old-secret');
+    const user = userEvent.setup();
+    render(<ProviderConnectionDialog initial={initial} catalogModels={provider.models} onSaved={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText('settings.providers.custom.fields.apiKeySaved');
+    if (kind === 'adhoc') {
+      const key = screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyEditPlaceholder');
+      await user.clear(key);
+      await user.type(key, 'new-secret');
+    }
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    expect(window.electronAPI.maker.testProviderConnection).toHaveBeenCalledWith(kind === 'saved'
+      ? { kind: 'saved', providerId: initial.id, agent: 'codex' }
+      : { kind: 'adhoc', spec: expect.objectContaining({ modelId: 'private-chat', apiKey: 'new-secret' }) });
+  });
+
+  it('discards an in-flight chat result when the active catalog identifies its model as speech', async () => {
+    const initial = speechConnection([{ id: 'new-server-voice', name: 'Voice' }]);
+    const provider = buildUserProvider(initial, { modelRegistry: activeSpeechRegistry });
+    let finish!: (result: { ok: true; latencyMs: number }) => void;
+    window.electronAPI.maker.testProviderConnection = vi.fn().mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    customProviderMocks.readCustomProviderKey.mockResolvedValue('old-secret');
+    const user = userEvent.setup();
+    const props = { initial, onSaved: vi.fn(), onClose: vi.fn() };
+    const { rerender } = render(<ProviderConnectionDialog {...props} />);
+    await screen.findByText('settings.providers.custom.fields.apiKeySaved');
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => { rerender(<ProviderConnectionDialog {...props} catalogModels={provider.models} />); });
+    await act(async () => { finish({ ok: true, latencyMs: 1 }); });
+    expect(screen.queryByRole('button', { name: 'settings.providers.custom.test.button' })).toBeNull();
+    await act(async () => { rerender(<ProviderConnectionDialog {...props} />); });
+    expect(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.queryByText('settings.providers.custom.test.ok')).toBeNull();
+  });
+
+  it('manually marks an unknown model as speech and preserves that choice and its protocol through refresh and save', async () => {
+    customProviderMocks.readCustomProviderKey.mockResolvedValue(null);
+    window.electronAPI.maker.fetchProviderModels = vi.fn().mockResolvedValue({ ok: true, models: [
+      { id: 'private-voice', name: 'Upstream name', discoveredMetadata: { mode: 'chat', nativeApi: 'openai-responses' } },
+    ] });
+    const user = userEvent.setup();
+    render(<ProviderConnectionDialog initial={speechConnection([
+      { id: 'private-voice', name: 'My Voice', nativeApi: 'openai-audio-speech', defaultEnabled: false },
+    ])} onSaved={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(customProviderMocks.readCustomProviderKey).toHaveBeenCalled());
+    await user.type(screen.getByLabelText('settings.providers.connection.manualModel'), 'private-voice');
+    screen.getByRole('combobox', { name: 'settings.providers.custom.fields.modelType' }).focus();
+    await user.keyboard('{ArrowDown}');
+    await user.click(screen.getByRole('option', { name: 'newChat.modelSelector.category.tts' }));
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.addModel' }));
+    expect(screen.queryByRole('button', { name: 'settings.providers.custom.test.button' })).toBeNull();
+    expect(screen.getByText('settings.providers.connection.mediaOnlyTestHint')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.button' }));
+    await screen.findByRole('heading', { name: 'settings.providers.custom.fetch.pickerTitle' });
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.confirm' }));
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+    expect(customProviderMocks.updateCustomProvider.mock.calls[0][0].runtimes.codex.models).toEqual([
+      expect.objectContaining({ id: 'private-voice', name: 'My Voice', mode: 'audio_speech',
+        nativeApi: 'openai-audio-speech', defaultEnabled: false,
+        discoveredMetadata: { mode: 'chat', nativeApi: 'openai-responses' } }),
+    ]);
+    expect(window.electronAPI.maker.testProviderConnection).not.toHaveBeenCalled();
+  });
+
+  it('imports speech metadata into a connection with no chat models, without claiming an inference test', async () => {
+    customProviderMocks.readCustomProviderKey.mockResolvedValue(null);
+    window.electronAPI.maker.fetchProviderModels = vi.fn().mockResolvedValue({ ok: true, models: [
+      { id: 'gpt-4o-mini-tts', name: 'Speech', discoveredMetadata: { mode: 'audio_speech', nativeApi: 'openai-audio-speech' } },
+    ] });
+    const user = userEvent.setup();
+    render(<ProviderConnectionDialog initial={speechConnection([
+      { id: 'gpt-4o-mini-tts', name: 'Speech' },
+    ])} onSaved={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(customProviderMocks.readCustomProviderKey).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: 'settings.providers.custom.test.button' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.button' }));
+    await screen.findByRole('heading', { name: 'settings.providers.custom.fetch.pickerTitle' });
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fetch.confirm' }));
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+    const model = customProviderMocks.updateCustomProvider.mock.calls[0][0].runtimes.codex.models[0];
+    expect(model.mode).toBeUndefined();
+    expect(model.discoveredMetadata).toMatchObject({ mode: 'audio_speech', nativeApi: 'openai-audio-speech' });
+    expect(window.electronAPI.maker.testProviderConnection).not.toHaveBeenCalled();
+    expect(screen.queryByText('settings.providers.custom.test.ok')).toBeNull();
+  });
+
+  it('restores inherited model type without dropping other user settings', async () => {
+    customProviderMocks.readCustomProviderKey.mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<ProviderConnectionDialog initial={speechConnection([
+      { id: 'private-model', name: 'My model', mode: 'audio_speech', defaultEnabled: false,
+        discoveredMetadata: { mode: 'chat' } },
+    ])} onSaved={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(customProviderMocks.readCustomProviderKey).toHaveBeenCalled());
+    await user.type(screen.getByLabelText('settings.providers.connection.manualModel'), 'private-model');
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.addModel' }));
+    expect(screen.getByRole('button', { name: 'settings.providers.custom.test.button' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+    const model = customProviderMocks.updateCustomProvider.mock.calls[0][0].runtimes.codex.models[0];
+    expect(model.mode).toBeUndefined();
+    expect(model).toMatchObject({ name: 'My model', defaultEnabled: false, discoveredMetadata: { mode: 'chat' } });
+  });
+});
 
 it('retains standalone Images on edit and saves only the selected runtime when toggled off', async () => {
   const initial: CustomProviderConfig = {

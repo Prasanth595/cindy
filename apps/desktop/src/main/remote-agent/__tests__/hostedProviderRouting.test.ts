@@ -9,13 +9,21 @@ import { buildUserProvider } from '@cindy/model-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../appCapabilities.js', () => ({ getAppCapabilities: () => ({ canUseCindyGateway: true }) }));
+vi.mock('../../maker-host/runtime-configs', () => ({ claudeUpstreamEndpoint: () => 'https://gateway.example.invalid' }));
+vi.mock('../../maker-host/silent-encrypted-retry-store', () => ({ readSilentEncryptedRetrySettings: () => ({ enabled: false }) }));
+vi.mock('../../maker-host/claude-fast-mode-log', () => ({
+  createClaudeFastModeRequestTransform: () => () => null,
+  createClaudeFastModeResponseObserver: () => () => undefined,
+}));
 
 import { setCustomProviders } from '../../maker-host/active-catalog';
+import { createModelRoutingTransform, setClaudeProxyGatewayKeyReader, setClaudeProxySessionIdResolver } from '../../maker-host/anthropic-compat-proxy-host';
 import { resolveSessionRouteDecision, setCustomProviderKeyReader } from '../../maker-host/provider-route';
 import { bindHostedSessionProvider, clearAllSessionProviders, getSessionProvider, hasSessionProvider } from '../../maker-host/session-provider-store';
 import { createRemoteAgentHost, hostSessionIdFor, type HostedStartInput } from '../host/runHost';
 
 const MODEL = 'gpt-6-astra';
+const CLAUDE_MODEL = 'claude-sonnet-4-5-20250929';
 const OWNER = 'controller-1';
 let root: string;
 let host: ReturnType<typeof createRemoteAgentHost>;
@@ -36,9 +44,14 @@ beforeEach(() => {
   clearAllSessionProviders();
   setCustomProviders(['fp', 'other'].map((id) => buildUserProvider({
     id, name: id,
-    runtimes: { codex: { baseUrl: 'https://' + id + '.example.invalid/v1', wireProtocol: 'openai-responses', models: [{ id: MODEL, name: MODEL }] } },
+    runtimes: {
+      codex: { baseUrl: 'https://' + id + '.example.invalid/v1', wireProtocol: 'openai-responses', models: [{ id: MODEL, name: MODEL }] },
+      'claude-code': { baseUrl: 'https://' + id + '.example.invalid/anthropic', wireProtocol: 'anthropic-messages', models: [MODEL, CLAUDE_MODEL].map((model) => ({ id: model, name: model })) },
+    },
   })));
   setCustomProviderKeyReader((id) => 'test-key-' + id);
+  setClaudeProxyGatewayKeyReader(() => 'test-gateway-key');
+  setClaudeProxySessionIdResolver((sdkSessionId) => host.resolveClaudeSessionId(sdkSessionId));
 });
 
 afterEach(async () => {
@@ -50,12 +63,19 @@ afterEach(async () => {
     for (const dir of shadowRoots) expect(fs.existsSync(dir)).toBe(false);
   });
   clearAllSessionProviders();
+  setClaudeProxySessionIdResolver(() => null);
+  setClaudeProxyGatewayKeyReader(() => null);
   setCustomProviders([]);
   setCustomProviderKeyReader(() => null);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function setup(hooks: { start?: (input: HostedStartInput) => Promise<void> } = {}) {
+function setup(hooks: {
+  start?: (input: HostedStartInput) => Promise<void>;
+  requestSessionId?: (input: HostedStartInput) => string;
+  isOwnerCurrent?: () => boolean;
+  trust?: 'owner' | 'guest';
+} = {}) {
   const starts: HostedStartInput[] = [];
   const routes: unknown[] = [];
   const switches = vi.fn(async (_input: HostedStartInput) => {});
@@ -63,11 +83,13 @@ function setup(hooks: { start?: (input: HostedStartInput) => Promise<void> } = {
   host = createRemoteAgentHost({
     isAgentAvailable: () => true,
     isControllerAuthorized: () => true,
+    controllerTrust: () => hooks.trust ?? 'owner',
     providerAccess: {
       resolve: async (_kind, _model, providerId) => providerId === 'forbidden' ? null : providerId ?? 'fp',
       isAllowed: (providerId) => providerId !== 'forbidden',
     },
     bindOwnerProviderRoute: bindHostedSessionProvider,
+    bindGuestProviderRoute: async () => ({ routeToken: 'test-guest-route', modelIds: [MODEL], release() {} }),
     startHosted: async (input) => {
       starts.push(input);
       shadowRoots.add(path.dirname(input.mirrorRoot));
@@ -76,7 +98,8 @@ function setup(hooks: { start?: (input: HostedStartInput) => Promise<void> } = {
       await hooks.start?.(input);
       const end = deferred();
       return {
-        id: 'sdk-' + input.hostSessionId, agentKind: 'codex', model: MODEL,
+        id: 'sdk-' + input.hostSessionId, agentKind: input.kind, model: MODEL,
+        get requestSessionId() { return hooks.requestSessionId?.(input) ?? 'sdk-' + input.hostSessionId; },
         async send() {}, async steer() {}, async abort() {},
         async close() { closed(); end.resolve(); },
         async setModel() { await switches(input); },
@@ -85,16 +108,17 @@ function setup(hooks: { start?: (input: HostedStartInput) => Promise<void> } = {
         setInteractionResolver() {},
       } satisfies AgentSessionHandle;
     },
-    captureOwner: () => 'owner', isOwnerCurrent: () => true, runsRoot: path.join(root, 'host'),
+    captureOwner: () => 'owner', isOwnerCurrent: hooks.isOwnerCurrent ?? (() => true), runsRoot: path.join(root, 'host'),
   });
   return { starts, routes, switches, closed };
 }
 
-async function open(providerId: string | null = 'fp', sessionId = 'task-1', controller = OWNER) {
+async function open(providerId: string | null = 'fp', sessionId = 'task-1', controller = OWNER, kind: HostedStartInput['kind'] = 'codex', virtualWorkspace = false) {
   const runId = randomUUID();
   await host.handle(controller, {
-    op: 'open', runId, agentKind: 'codex', payload: { json: {
+    op: 'open', runId, agentKind: kind, payload: { json: {
       sessionId, options: { model: MODEL, providerId },
+      ...(virtualWorkspace ? { virtualWorkspace: true } : {}),
       // 控制端的逻辑 POSIX 路径，与测试宿主平台无关。
       workspace: { workingDir: '/Users/owner/proj', platform: 'darwin', shell: 'zsh' },
       projectFiles: [], ancestorFiles: [], personal: { files: [] }, mcpServers: [],
@@ -124,6 +148,91 @@ async function switchProvider(runId: string, providerId?: string | null) {
 }
 
 describe('same-account hosted provider routing', () => {
+  it.each([CLAUDE_MODEL, MODEL])('routes Claude SDK-ID requests to the selected provider for %s', async (model) => {
+    const sdkSessionId = randomUUID();
+    setup({ requestSessionId: () => sdkSessionId });
+    const runId = await open('fp', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(runId, 'started');
+    const decision = await createModelRoutingTransform()({ model }, {
+      reqId: 1, method: 'POST', url: '/v1/messages',
+      headers: { 'x-claude-code-session-id': sdkSessionId, 'x-api-key': 'test-gateway-key' },
+    });
+    expect(decision).toMatchObject({
+      upstreamOverride: 'https://fp.example.invalid/anthropic',
+      headerOverride: { 'x-api-key': 'test-key-fp' },
+    });
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBe(hostSessionIdFor(OWNER, 'task-1'));
+    await host.handle(OWNER, { op: 'close', runId, mode: 'close', reason: 'navigation' });
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+  });
+
+  it('follows the live Claude request ID instead of the durable transcript ID', async () => {
+    let sdkSessionId: string = randomUUID();
+    let ownerCurrent = true;
+    setup({ requestSessionId: () => sdkSessionId, isOwnerCurrent: () => ownerCurrent });
+    const runId = await open('fp', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(runId, 'started');
+    const previousId = sdkSessionId;
+    expect(host.resolveClaudeSessionId(randomUUID())).toBeNull();
+    sdkSessionId = '<pending>';
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+    sdkSessionId = randomUUID();
+    expect(host.resolveClaudeSessionId(previousId)).toBeNull();
+    expect(host.resolveClaudeSessionId('sdk-' + hostSessionIdFor(OWNER, 'task-1'))).toBeNull();
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBe(hostSessionIdFor(OWNER, 'task-1'));
+    ownerCurrent = false;
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+    ownerCurrent = true;
+    host.dispose();
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+  });
+
+  it.each(['codex', 'pi'] as const)('does not resolve %s handles as Claude sessions', async (kind) => {
+    const sdkSessionId = randomUUID();
+    setup({ requestSessionId: () => sdkSessionId });
+    const runId = await open('fp', 'task-1', OWNER, kind);
+    await waitForEvent(runId, 'started');
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+  });
+
+  it('removes a controller identity when its running task is revoked', async () => {
+    const sdkSessionId = randomUUID();
+    setup({ requestSessionId: () => sdkSessionId });
+    const runId = await open('fp', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(runId, 'started');
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBe(hostSessionIdFor(OWNER, 'task-1'));
+    await host.abortControllers((controller) => controller === OWNER);
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+  });
+
+  it('does not expose guest request IDs through the owner resolver', async () => {
+    const sdkSessionId = randomUUID();
+    setup({ requestSessionId: () => sdkSessionId, trust: 'guest' });
+    const runId = await open('fp', 'task-1', OWNER, 'claude-code', true);
+    await waitForEvent(runId, 'started');
+    expect(host.resolveClaudeSessionId(sdkSessionId)).toBeNull();
+    expect(host.resolveClaudeSessionId('<pending>')).toBeNull();
+  });
+
+  it('drops a superseded Claude handle without losing another controller identity', async () => {
+    const ids = new Map<HostedStartInput, string>();
+    const { starts } = setup({
+      start: async (input) => { ids.set(input, randomUUID()); },
+      requestSessionId: (input) => ids.get(input)!,
+    });
+    const first = await open('fp', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(first, 'started');
+    const firstId = ids.get(starts[0])!;
+    const peer = await open('other', 'task-1', 'controller-2', 'claude-code');
+    await waitForEvent(peer, 'started', undefined, 'controller-2');
+    const peerId = ids.get(starts[1])!;
+    const replacement = await open('other', 'task-1', OWNER, 'claude-code');
+    await waitForEvent(replacement, 'started');
+    expect(host.resolveClaudeSessionId(firstId)).toBeNull();
+    expect(host.resolveClaudeSessionId(ids.get(starts[2])!)).toBe(hostSessionIdFor(OWNER, 'task-1'));
+    expect(host.resolveClaudeSessionId(peerId)).toBe(hostSessionIdFor('controller-2', 'task-1'));
+  });
+
   it.each(['fp', null])('routes the first request to the authorized custom provider (%s)', async (providerId) => {
     const { routes } = setup();
     const runId = await open(providerId);

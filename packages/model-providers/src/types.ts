@@ -313,7 +313,7 @@ export interface CatalogModel {
   discoveredCost?: ModelCost;
   nameExplicit?: boolean;
   /** Canonical model API from the accepted Registry; null explicitly means unverified. */
-  nativeApi?: PiModelApi | null;
+  nativeApi?: PiModelApi | import('./modelAccessBean.js').ModelNativeApi | null;
   /** 与 maker-core 现有 model id 一致（如 'claude-opus-4-8' / 'gpt-5.5' / 'codex/gpt-5.5'）。 */
   id: string;
   /** Server entitlement state. Paid-locked models remain present for UI but are never routable. */

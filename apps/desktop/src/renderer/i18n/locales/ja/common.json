@@ -241,13 +241,11 @@
         "collapseAria": "{{name}} のモデル別使用量を折りたたむ",
         "empty": "まだ誰とも共有していません。共有リンクを作成して相手に送ってください。相手が申請し、あなたが承認するとここに表示されます。",
         "table": {
-          "model": "モデル",
           "turns": "メッセージ",
           "input": "入力",
           "output": "出力",
           "amount": "推定金額"
         },
-        "noUsage": "この期間の使用量はありません",
         "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。"
       },
       "removeConfirm": {
@@ -3456,7 +3454,10 @@
       "connection": {
         "modelCount": "{{count}} 個のモデルを設定済み",
         "modelsAutomatic": "モデル情報は自動取得されます。個別の設定はモデル一覧から変更できます。",
-        "manualModel": "モデル ID（自動取得できない場合）"
+        "manualModel": "モデル ID（自動取得できない場合）",
+        "modelTypeAutomatic": "自動判別",
+        "manualModelTypeHint": "同じ ID で種類を更新できます。自動判別を選ぶと、カタログの種類に戻ります。",
+        "mediaOnlyTestHint": "この接続にはチャット以外のモデルのみが含まれています。モデル一覧の取得でカタログへのアクセスを確認できます。ここではモデルの実行はテストしません。"
       },
       "byok": {
         "managed": "組織が接続とモデルを管理",
@@ -9167,6 +9168,7 @@
       "avatar": "{{name}} が新しいアバターを選んでいます",
       "welcome": "最初の挨拶を準備しています",
       "failed": "準備が一時停止しました。完了した内容は保存されています。もう一度試せます。",
+      "changeModel": "モデルを変更",
       "retryFailed": "再試行できませんでした。少し待ってお試しください。",
       "leave": "いったん離れる",
       "avatarSkipped": "今は初期アバターを使っています。いつでも変更できます。"
@@ -9207,7 +9209,9 @@
       "generate": "パートナーを生成",
       "generating": "パートナーを考えています…",
       "generationFailed": "生成できませんでした。入力内容は残っています。もう一度お試しください。",
-      "modelRequired": "まず Cindy で利用可能な既定のモデルを選択してください。",
+      "modelRequired": "上で利用可能なモデルを選択して続けてください。",
+      "modelFollowsDefault": "パートナーの既定モデルに従います。",
+      "modelForThisBot": "この選択はこのパートナーにのみ適用されます。",
       "cindyDescription": "Cindy の使い方やツールの接続をお手伝いし、一緒にやり遂げます。",
       "cindySummary": "Cindy の管理、ツールの接続、仕事のお手伝い。",
       "openCindy": "Cindy を開く",
@@ -9762,6 +9766,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "そのパソコンのモデルを読み込み中…",
         "favoritesGroup": "お気に入り",
+        "favoritesSaveFailed": "お気に入りの変更を保存できませんでした",
+        "favoritesCleanupFailed": "共有が解除されたモデルのお気に入りを削除できませんでした",
         "favoritesEmpty": "お気に入りはまだありません——モデルの行にカーソルを合わせて ☆ で保存できます",
         "addFavorite": "お気に入りに保存",
         "customize": "カスタマイズ",
@@ -10112,7 +10118,7 @@
       "saveEdit": "テキストを保存"
     },
     "sharedProviderCredential": {
-      "description": "このタスクは共有されたプロバイダーを使っているため、Agent が読み取った内容は共有元のパソコンを経由します。この操作は認証情報のファイル（鍵や .env など）に関わるため、確認してから続行します。"
+      "description": "このタスクは共有されたプロバイダーを使うため、Agent が読み取った内容は共有元または共有元が手配したパソコンを経由します。この操作は認証情報（鍵や .env など）に関わる可能性があり、確認が必要です。「このセッションで常に許可」を選ぶと、このタスクで共有に伴う認証情報の確認を繰り返しません。タスクを開き直すか権限モードを変更すると、再度確認します。"
     },
     "mediaDownload": {
       "title": "生成されたメディアをダウンロードしますか？",

@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "還沒有分享給任何人。產生分享連結傳給對方，對方申請、你同意後會出現在這裡。",
         "table": {
-          "model": "模型",
           "turns": "訊息",
           "input": "輸入",
           "output": "輸出",
           "amount": "估算金額"
         },
-        "noUsage": "這段時間沒有用量",
         "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
       },
       "removeConfirm": {
@@ -422,7 +420,7 @@
       "expandAria": "展開 {{name}} 的用量明細",
       "collapseAria": "收起 {{name}} 的用量明細",
       "table": {
-        "member": "組內電腦 / 模型"
+        "member": "電腦 / 模型"
       }
     },
     "section": {
@@ -3456,7 +3454,10 @@
       "connection": {
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
-        "manualModel": "模型 ID（無法自動取得時填寫）"
+        "manualModel": "模型 ID（無法自動取得時填寫）",
+        "modelTypeAutomatic": "自動辨識",
+        "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
+        "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
       },
       "byok": {
         "managed": "由企業管理連線與模型",
@@ -9167,6 +9168,7 @@
       "avatar": "{{name}} 正在挑選新頭像",
       "welcome": "正在準備第一聲問候",
       "failed": "準備暫時停住了。已完成的內容會保留，可以再試一次。",
+      "changeModel": "更換模型",
       "retryFailed": "暫時無法重試，請稍後再試。",
       "leave": "先去忙",
       "avatarSkipped": "暫時用了預設頭像，你隨時可以換一張。"
@@ -9207,7 +9209,9 @@
       "generate": "產生夥伴",
       "generating": "正在構思夥伴…",
       "generationFailed": "暫時無法產生，請保留你的想法再試一次。",
-      "modelRequired": "請先在 Cindy 中選擇可用的預設模型。",
+      "modelRequired": "請在上方選擇可用模型後繼續。",
+      "modelFollowsDefault": "跟隨夥伴預設模型。",
+      "modelForThisBot": "此選擇僅用於這位夥伴。",
       "cindyDescription": "我會幫你使用 Cindy、連接工具，也會和你一起把事情做完。",
       "cindySummary": "管理 Cindy，連接工具，把事情做完。",
       "openCindy": "開啟 Cindy",
@@ -9761,6 +9765,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能儲存收藏變更",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
         "addFavorite": "存為收藏",
         "customize": "自訂",
@@ -10112,7 +10118,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",

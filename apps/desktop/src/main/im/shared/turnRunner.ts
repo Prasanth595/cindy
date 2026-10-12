@@ -2174,7 +2174,7 @@ export function createTurnRunner(
         {
           owner: pendingOwner,
           ...(req.kind === 'permission'
-            ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+            ? { permissionRequest: req, permissionCard: { title: spec.title ?? '', body: spec.body } }
             : askMultiExtras(req)),
         },
       );
@@ -3730,7 +3730,7 @@ export function createTurnRunner(
         const permissionUi = adapter.ui.cards.permission;
         return presentSharedPermissionCard({
           requestId: req.requestId,
-          toolName: req.toolName,
+          permissionRequest: req,
           owner: pendingOwner,
           permission: sharedPermission,
           send: async () => {
@@ -3816,13 +3816,12 @@ export function createTurnRunner(
           req.requestId,
           req.kind as InteractionDecision['kind'],
           messageId,
-          // Stash toolName for permission requests so cardActionHandler can
-          // build permissionUpdates when the user picks 'allow:always'.
+          // Preserve the permission scope for the 'allow:always' decision.
           // permissionCard 留着收口时恢复原始正文(工具名 + 参数预览)。
           {
             owner: pendingOwner,
             ...(req.kind === 'permission'
-              ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+              ? { permissionRequest: req, permissionCard: { title: spec.title ?? '', body: spec.body } }
               : askMultiExtras(req)),
           },
         );

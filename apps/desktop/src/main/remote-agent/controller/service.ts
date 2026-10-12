@@ -80,8 +80,10 @@ export interface DeviceAgentServiceDeps {
 
 /** 没有提供界面语言的说明时用的英文说明。 */
 const SHARED_PROVIDER_CREDENTIAL_NOTICE =
-  "This task uses a provider shared with you, so what the agent reads passes through the sharer's computer. "
-  + 'This involves a credential file, so it needs your confirmation.';
+  "This task uses a shared provider, so what the agent reads passes through the sharer's computer or another computer they arrange. "
+  + 'This may involve credentials, so it needs your confirmation. '
+  + 'Always allow for this session skips further shared-provider credential confirmations in this task. '
+  + 'Reopening the task or changing its permission mode requires confirmation again.';
 
 function mcpTargets(extra: PiExtraSpawnConfig | null): Map<string, LocalMcpTarget> {
   const targets = new Map<string, LocalMcpTarget>();

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
+import { MAIN_OWNED_SEND_CONTEXT, type InteractionDecision } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
@@ -17,6 +17,7 @@ import { EventLog, LineSplitter } from '../eventLog';
 import { ExecutorGate } from '../executor/gate';
 import { ExecutorWorkspace } from '../executor/workspace';
 import { createRunTunnel } from '../host/tunnel';
+import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
 import { decodeOpenPayload, decodeSendOptions, encodeSendOptions, isSafeProjectFilePath } from '../wire';
 
 let root: string;
@@ -125,7 +126,7 @@ describe('tunnel', () => {
 });
 
 describe('confirmations raised on this computer', () => {
-  it('use the Agent confirmation channel and accept only a one-time allow', async () => {
+  it('uses the Agent confirmation channel and offers an explicit credential grant for this task', async () => {
     let next = 0;
     const controller = createRemoteAgentHandle({
       client: {} as RemoteAgentRunClient,
@@ -153,6 +154,7 @@ describe('confirmations raised on this computer', () => {
       input: { file_path: env },
       description: 'goes through the sharer',
       metadata: { hostOwnedConfirmation: 'shared_provider_credential' },
+      suggestions: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
     }]);
     behavior = 'deny';
     expect(await controller.confirm(request)).toBe(false);
@@ -160,6 +162,42 @@ describe('confirmations raised on this computer', () => {
       toolName: 'Bash',
       input: { command: 'cat .env' },
     });
+  });
+
+  it('accepts a session grant only when offered by this computer, and ignores late answers', async () => {
+    const controller = createRemoteAgentHandle({
+      client: {} as RemoteAgentRunClient,
+      started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: '', methods: [], state: {} },
+      workspace: new ExecutorWorkspace({ workingDir: root }),
+      recordApproval: () => undefined,
+      newId: () => 'req',
+      dispose: async () => undefined,
+    });
+    const request = credentialConfirmation({ kind: 'read', path: path.join(root, '.env') }, 'shared credentials');
+    controller.handle.setInteractionResolver(async () => ({
+      kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
+    }));
+    expect(await controller.confirm(request)).toBe('session');
+    expect(await controller.confirm({ ...request, suggestions: [] })).toBe(true);
+    expect(await controller.confirm({ ...request, metadata: {} })).toBe(true);
+    for (const permissionUpdates of [
+      [{ ...PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, destination: 'userSettings' }],
+      [{ ...PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, mode: 'bypassPermissions' }],
+      [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL, { type: 'setMode', destination: 'session' }],
+    ]) {
+      controller.handle.setInteractionResolver(async () => ({ kind: 'permission', behavior: 'allow', permissionUpdates }));
+      expect(await controller.confirm(request)).toBe(true);
+    }
+    // 远端的普通交互仍只登记同一操作，不建立本机的凭证授权。
+    const remote = await controller.onRequest({ type: 'interaction', request: { ...request, kind: 'permission', requestId: 'remote' } });
+    expect(remote?.type).toBe('interaction');
+
+    let answer!: (decision: InteractionDecision) => void;
+    controller.handle.setInteractionResolver(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = controller.confirm(request);
+    controller.onClosed('closed');
+    answer({ kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL] });
+    expect(await pending).toBe(false);
   });
 });
 

@@ -2244,6 +2244,22 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
 
   return {
     handle,
+    resolveClaudeSessionId(sdkSessionId: string): string | null {
+      if (disposed || !sdkSessionId || sdkSessionId === '<pending>') return null;
+      for (const run of runs.values()) {
+        if (
+          run.kind !== 'claude-code'
+          || run.trust !== 'owner'
+          || run.closing
+          || run.closedAt !== undefined
+          || run.relay
+          || run.handle?.requestSessionId !== sdkSessionId
+        ) continue;
+        if (!deps.isOwnerCurrent(run.owner)) return null;
+        return run.hostSessionId ?? null;
+      }
+      return null;
+    },
     /** 远程控制关闭 / 退出时结束全部任务。 */
     async abortAll(reason: RemoteAgentTeardownReason = 'navigation'): Promise<void> {
       await Promise.all([...runs.values()].map((run) => finishRun(run, 'aborted', reason)));

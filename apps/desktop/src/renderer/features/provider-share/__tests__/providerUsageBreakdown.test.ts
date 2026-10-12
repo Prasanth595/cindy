@@ -34,12 +34,9 @@ describe('mergeModelUsage', () => {
     ]);
   });
 
-  it('can ignore the computer, and never adds amounts in different currencies', () => {
-    const merged = mergeModelUsage(
-      [[usage({}), usage({ memberKey: 'device:studio:xd', amount: { amount: 7, currency: 'CNY' } })]],
-      { ignoreMember: true },
-    );
-    expect(merged).toEqual([expect.objectContaining({ memberKey: null, turns: 2, inputTokens: 20, amount: null })]);
+  it('never adds amounts in different currencies', () => {
+    const merged = mergeModelUsage([[usage({}), usage({ amount: { amount: 7, currency: 'CNY' } })]]);
+    expect(merged).toEqual([expect.objectContaining({ memberKey: 'local', turns: 2, inputTokens: 20, amount: null })]);
   });
 });
 
@@ -53,6 +50,14 @@ describe('groupUsageByMember', () => {
       ['local', true, 0],
       ['device:studio:xd', true, 1],
       ['device:gone:xd', false, 1],
+      [null, false, 1],
+    ]);
+  });
+
+  it('treats a provider without a group as a group of just this computer', () => {
+    const groups = groupUsageByMember([usage({}), usage({ memberKey: null, model: 'sonnet' })], ['local']);
+    expect(groups.map((group) => [group.memberKey, group.inGroup, group.models.length])).toEqual([
+      ['local', true, 1],
       [null, false, 1],
     ]);
   });

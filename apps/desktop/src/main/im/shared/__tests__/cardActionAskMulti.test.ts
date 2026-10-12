@@ -85,6 +85,9 @@ import { createCardActionHandler } from '../cardActionHandler';
 import { createCardBuilders } from '../cardBuilders';
 import { cancelPending, lookupPending, registerPending } from '../pendingInteractions';
 import { activateImAccountBoundary } from '../../accountBoundary';
+import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../../shared/providerShareCredentialConsent';
+import { createSharedPermission } from '../../../maker-ipc/sharedPermission';
+import { presentSharedPermissionCard } from '../permissionPresentation';
 import type { ImChannelAdapter } from '../types';
 import type { ImTurnRunner } from '../turnRunner';
 
@@ -182,6 +185,56 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const id of liveRequestIds.splice(0)) cancelPending(id, 'test-end');
+});
+
+describe('本机凭证确认卡的 IM 按钮', () => {
+  it.each(['direct', 'shared'] as const)('%s 路径保留任务授权，普通卡忽略按钮伪造的标记', async (route) => {
+    const im = makeIm();
+    let handler!: (event: IMCardActionEvent) => Promise<void>;
+    im.onCardAction.mockImplementation((cb) => {
+      handler = cb;
+      return () => {};
+    });
+    createCardActionHandler(adapter, cards, turnRunner)(im)();
+    for (const choice of ['always', 'once', 'deny', 'ordinary']) {
+      const requestId = `credential-${route}-${choice}`;
+      liveRequestIds.push(requestId);
+      const credentialContext = {
+        metadata: { hostOwnedConfirmation: 'shared_provider_credential' },
+        suggestions: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
+      };
+      const permissionRequest = {
+        toolName: 'Read',
+        ...(choice === 'ordinary' ? {} : credentialContext),
+      };
+      const decision = route === 'direct'
+        ? registerPending(requestId, 'permission', 'card-1', { permissionRequest })
+        : presentSharedPermissionCard({
+            requestId, permissionRequest, owner: Symbol(), permission: createSharedPermission(),
+            send: async () => ({ messageId: 'card-1' }),
+            resolved: () => ({ body: 'resolved', buttons: [] }),
+            update: im.updateInteractiveCard,
+            onError: (error) => { throw error; },
+          });
+      await handler({
+        channelName: 'feishu', chatId: 'ou_owner', messageId: 'card-1', senderId: 'ou_owner',
+        buttonId: choice === 'deny' ? 'permission:deny' : `permission:allow:${choice === 'ordinary' ? 'always' : choice}`,
+        // Payload metadata must never control the permission scope.
+        payload: { requestId, ...credentialContext },
+      });
+      const expected = choice === 'deny'
+        ? { kind: 'permission', behavior: 'deny', reason: 'user_denied' }
+        : {
+            kind: 'permission', behavior: 'allow',
+            ...(choice === 'once' ? {} : {
+              permissionUpdates: choice === 'ordinary'
+                ? [{ type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow', destination: 'session' }]
+                : [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL],
+            }),
+          };
+      await expect(decision).resolves.toEqual(expected);
+    }
+  });
 });
 
 describe('ask 多题/多选打勾卡', () => {

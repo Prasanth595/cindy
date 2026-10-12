@@ -241,13 +241,11 @@
         "collapseAria": "{{name}}님의 모델별 사용량 접기",
         "empty": "아직 아무와도 공유하지 않았습니다. 공유 링크를 만들어 보내세요. 상대방이 요청하고 내가 승인하면 여기에 표시됩니다.",
         "table": {
-          "model": "모델",
           "turns": "메시지",
           "input": "입력",
           "output": "출력",
           "amount": "예상 금액"
         },
-        "noUsage": "이 기간에는 사용량이 없습니다",
         "estimateNote": "금액은 로컬 단가로 추정한 값이며 제공자의 실제 청구액이 아닙니다."
       },
       "removeConfirm": {
@@ -3456,7 +3454,10 @@
       "connection": {
         "modelCount": "모델 {{count}}개 설정됨",
         "modelsAutomatic": "모델 정보는 자동으로 가져옵니다. 개별 설정은 모델 목록에서 변경하세요.",
-        "manualModel": "모델 ID (자동으로 가져올 수 없는 경우)"
+        "manualModel": "모델 ID (자동으로 가져올 수 없는 경우)",
+        "modelTypeAutomatic": "자동 감지",
+        "manualModelTypeHint": "같은 ID로 유형을 변경할 수 있습니다. 자동 감지를 선택하면 카탈로그의 유형으로 돌아갑니다.",
+        "mediaOnlyTestHint": "이 연결에는 채팅 이외의 모델만 있습니다. 모델 목록을 가져와 카탈로그 접근을 확인할 수 있습니다. 여기서는 모델 실행을 테스트하지 않습니다."
       },
       "byok": {
         "managed": "조직에서 연결 및 모델 관리",
@@ -9167,6 +9168,7 @@
       "avatar": "{{name}}이 새 아바타를 고르고 있어요",
       "welcome": "첫인사를 준비하고 있어요",
       "failed": "준비가 잠시 멈췄어요. 완료된 내용은 저장되어 있으니 다시 시도할 수 있어요.",
+      "changeModel": "모델 변경",
       "retryFailed": "지금은 다시 시도할 수 없어요. 잠시 후 시도해 주세요.",
       "leave": "잠시 나가기",
       "avatarSkipped": "지금은 기본 아바타를 사용해요. 언제든 바꿀 수 있어요."
@@ -9207,7 +9209,9 @@
       "generate": "파트너 생성",
       "generating": "파트너를 구상하고 있어요…",
       "generationFailed": "생성하지 못했습니다. 입력 내용은 남아 있으니 다시 시도해 주세요.",
-      "modelRequired": "먼저 Cindy에서 사용 가능한 기본 모델을 선택해 주세요.",
+      "modelRequired": "위에서 사용 가능한 모델을 선택한 후 계속해 주세요.",
+      "modelFollowsDefault": "파트너 기본 모델을 따릅니다.",
+      "modelForThisBot": "이 선택은 이 파트너에게만 적용됩니다.",
       "cindyDescription": "Cindy 사용과 도구 연결을 도와드리고 함께 일을 마무리할게요.",
       "cindySummary": "Cindy 관리, 도구 연결, 일 마무리.",
       "openCindy": "Cindy 열기",
@@ -9762,6 +9766,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "그 컴퓨터의 모델을 불러오는 중…",
         "favoritesGroup": "즐겨찾기",
+        "favoritesSaveFailed": "즐겨찾기 변경 사항을 저장하지 못했습니다",
+        "favoritesCleanupFailed": "공유가 해제된 모델의 즐겨찾기를 삭제하지 못했습니다",
         "favoritesEmpty": "즐겨찾기가 없습니다 — 모델 행에 마우스를 올리고 ☆를 눌러 저장하세요",
         "addFavorite": "즐겨찾기에 저장",
         "customize": "사용자 지정",
@@ -10112,7 +10118,7 @@
       "saveEdit": "텍스트 저장"
     },
     "sharedProviderCredential": {
-      "description": "이 작업은 공유받은 제공자를 사용하므로 Agent가 읽은 내용이 공유한 사람의 컴퓨터를 거칩니다. 이 단계는 자격 증명 파일(키, .env 등)과 관련되어 있어 확인한 후에 계속됩니다."
+      "description": "이 작업은 공유받은 제공자를 사용하므로 Agent가 읽은 내용은 공유한 사람의 컴퓨터 또는 그 사람이 지정한 컴퓨터를 거칩니다. 이 단계는 자격 증명(키, .env 등)과 관련될 수 있어 확인이 필요합니다. ‘이 세션에서 항상 허용’을 선택하면 이 작업에서 공유에 따른 자격 증명 확인을 반복하지 않습니다. 작업을 다시 열거나 권한 모드를 변경하면 다시 확인합니다."
     },
     "mediaDownload": {
       "title": "생성된 미디어를 다운로드할까요?",
