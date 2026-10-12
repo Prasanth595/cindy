@@ -40,7 +40,7 @@ import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/ho
 import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
 import { COMPANION_DIRECT_CLIENT_PREFIX } from '../companion-cloud/mirror.js';
 
-interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null }
+interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null; disabled?: boolean }
 interface Member { id: string; kind: 'human' | 'bot' | 'integration'; name: string; state: string; role: 'owner' | 'admin' | 'member' | 'guest';
   displayName: string; avatar: string | null; nickname: string | null; ownerActorId: string; ownerName: string;
   guestAccess: 'none' | 'chat' | 'tools'; accessRevision: number }

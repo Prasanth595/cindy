@@ -54,3 +54,14 @@ describe('registerCompanionHomes', () => {
     expect(log.warn).toHaveBeenCalledWith('Companion home registration will retry', { actorId: 'actor-a', code: 'UPSTREAM_FAILED' });
   });
 });
+
+describe('retired actors', () => {
+  it('drops disabled actors from the snapshot and never registers them', async () => {
+    const snapshot = companionSnapshot({ enabled: true, selfDeviceId: 'me', humanActorId: 'human', actors: [
+      { ...bot('actor-a', 'a', null), disabled: true }, bot('actor-b', 'b', 'me')] });
+    expect(snapshot.actors.map(actor => actor.externalId)).toEqual(['b']);
+    const { api, calls } = fakeApi(() => ({}));
+    await registerCompanionHomes({ api, selfDeviceId: 'me', actors: [{ ...bot('actor-a', 'a', null), disabled: true }], botIds: ['a'], isDemoted: () => false });
+    expect(calls).toEqual([]);
+  });
+});

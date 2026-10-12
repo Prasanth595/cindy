@@ -44,7 +44,9 @@ const mocks = vi.hoisted(() => ({
   registered: { node: null as ReactNode },
   /** 灵动岛活动镜像:sessionId -> phase。侧栏据此显示「正在输入…」。 */
   islandActivity: new Map<string, { sessionId: string; phase: string; compactDetail?: string }>(),
+  cloud: { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] } as import('../../../../shared/companionCloud').CompanionCloudSnapshot,
 }));
+vi.mock('../companionCloudStore', () => ({ useCompanionCloud: () => mocks.cloud }));
 
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => mocks.remoteBots }));
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
@@ -157,6 +159,7 @@ beforeEach(() => {
   mocks.devices = [];
   mocks.registered.node = null;
   mocks.islandActivity = new Map();
+  mocks.cloud = { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] };
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     writable: true,
@@ -782,5 +785,39 @@ describe('BotsSidebar rows', () => {
     });
     // Debounced: a burst of rows from one turn triggers a single refresh.
     expect(mocks.refreshBotProfiles).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('cloud companions in the roster', () => {
+  it('hides demoted local copies and lists companions homed on a computer never seen here', async () => {
+    mocks.profiles = [bot({ id: 'mia', name: 'Mia' }), bot({ id: 'ada', name: 'Ada' })];
+    mocks.cloud = {
+      enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: ['mia'],
+      actors: [
+        { id: 'a-mia', externalId: 'mia', name: 'Mia', avatar: null, homeDeviceId: 'laptop',
+          homeDevice: { deviceId: 'laptop', name: 'Laptop', online: false, isSelf: false } },
+        { id: 'a-ada', externalId: 'ada', name: 'Ada', avatar: null, homeDeviceId: 'desk' },
+      ],
+    };
+    await renderSidebar();
+    expect(screen.getByText('Ada')).toBeTruthy();
+    const rows = screen.getAllByText('Mia');
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!.closest('button')!;
+    expect(row.textContent).toContain('bots.cloud.homeOfflineShort');
+    fireEvent.click(row);
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/laptop/mia');
+  });
+
+  it('does not offer a demoted local Cindy as the local option', async () => {
+    mocks.profiles = [bot({ id: 'cindy-default', name: 'Cindy', lastMessagePreview: 'Local preview' })];
+    mocks.remoteBots = [{ id: 'cindy-default', deviceId: 'laptop', deviceName: 'Laptop', name: 'Cindy', avatar: '🤖',
+      avatarColor: 'violet', description: '', preview: 'Laptop preview', activityAt: 1, sessionId: 'laptop-chat', online: true }];
+    mocks.cloud = { enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: ['cindy-default'],
+      actors: [{ id: 'a-cindy', externalId: 'cindy-default', name: 'Cindy', avatar: null, homeDeviceId: 'laptop' }] };
+    await renderSidebar();
+    expect(screen.queryByText('Local preview')).toBeNull();
+    expect(screen.queryByTestId('cindy-device-row')).toBeNull();
+    expect(screen.getByText('Laptop preview')).toBeTruthy();
   });
 });

@@ -40,6 +40,8 @@ export interface CompanionCloudBot { botId: string; actorId: string; name: strin
 /** Live actor record owned by chatServer.ts; home changes are written back in place. */
 export interface CompanionRuntimeActor {
   id: string; kind: string; externalId: string; name: string; avatar?: string | null; homeDeviceId?: string | null;
+  /** Retired in the cloud (deleted on its home); ignored everywhere. */
+  disabled?: boolean;
 }
 
 export interface CompanionCloudRuntime {
@@ -56,6 +58,8 @@ export interface CompanionCloudRuntime {
   transfer: (botId: string, targetDeviceId: string) => Promise<CompanionCloudActionResult>;
   transferTargets: () => Promise<CompanionTransferTarget[]>;
   transcript: (botId: string, before?: string) => Promise<CompanionTranscriptPage>;
+  /** The companion was deleted on its home (this computer): retire its cloud actor. */
+  retire: (botId: string) => Promise<void>;
   dispose: () => void;
 }
 
@@ -116,7 +120,7 @@ export function startCompanionCloud(input: {
   let disposed = false;
   const live = () => !disposed && input.current();
   const pick = (only: Set<string> | null) => input.bots().filter(bot => !only || only.has(bot.botId));
-  const actorOf = (botId: string) => (input.actors?.() ?? []).find(a => a.kind === 'bot' && (a.externalId === botId || a.id === botId));
+  const actorOf = (botId: string) => (input.actors?.() ?? []).find(a => a.kind === 'bot' && !a.disabled && (a.externalId === botId || a.id === botId));
   const publish = () => { if (live()) input.publish?.(); };
 
   function loop(run: (only: Set<string> | null) => Promise<void>, intervalMs: number, debounceMs: number) {
@@ -213,7 +217,7 @@ export function startCompanionCloud(input: {
       const self = input.selfDeviceId;
       if (!self || !live()) return;
       for (const actor of input.actors?.() ?? []) {
-        if (actor.kind !== 'bot') continue;
+        if (actor.kind !== 'bot' || actor.disabled) continue;
         const botId = actor.externalId;
         const local = localProfiles.find(profile => profile.id === botId);
         const entry = state.bot(botId);
@@ -300,6 +304,16 @@ export function startCompanionCloud(input: {
       if (!actor) throw new Error('COMPANION_NOT_FOUND');
       const roomId = await mirror.ensureRoom(actor.externalId, actor.id, actor.name);
       return readTranscriptPage(input.api, roomId, actor.id, before);
+    },
+
+    async retire(botId) {
+      const self = input.selfDeviceId;
+      const actor = actorOf(botId);
+      // A demoted copy is not the companion: deleting it never touches the cloud.
+      if (!self || !live() || !actor || actor.homeDeviceId !== self || state.isDemoted(botId)) return;
+      await input.api(`/actors/${actor.id}`, 'PATCH', { disabled: true });
+      actor.disabled = true;
+      publish();
     },
 
     dispose() {

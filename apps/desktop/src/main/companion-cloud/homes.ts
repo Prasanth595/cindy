@@ -52,7 +52,7 @@ export function isCompanionShadowed(botId: string): boolean {
   return companionHomes.isShadowed(botId);
 }
 
-interface HomeActor { id: string; kind: string; externalId: string; homeDeviceId?: string | null }
+interface HomeActor { id: string; kind: string; externalId: string; homeDeviceId?: string | null; disabled?: boolean }
 
 /**
  * First registration only: claim companions whose home is still empty for this
@@ -69,7 +69,7 @@ export async function registerCompanionHomes(input: {
 }): Promise<void> {
   for (const botId of input.botIds) {
     const actor = input.actors.find(a => a.kind === 'bot' && a.externalId === botId);
-    if (!actor || actor.homeDeviceId != null || input.isDemoted(botId)) continue;
+    if (!actor || actor.disabled || actor.homeDeviceId != null || input.isDemoted(botId)) continue;
     try {
       const result = await input.api<{ homeDeviceId?: string | null }>(`/actors/${actor.id}`, 'PATCH',
         { homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: null });
@@ -89,7 +89,8 @@ export function companionSnapshot(input: {
   actors: Array<HomeActor & { name: string; avatar?: string | null }>;
   demotedBotIds?: string[];
 }): CompanionCloudSnapshot {
-  const actors: CompanionCloudActor[] = input.actors.filter(a => a.kind === 'bot').map(a => ({
+  // Retired actors (deleted on their home) are not companions any more.
+  const actors: CompanionCloudActor[] = input.actors.filter(a => a.kind === 'bot' && !a.disabled).map(a => ({
     id: a.id, externalId: a.externalId, name: a.name, avatar: a.avatar ?? null, homeDeviceId: a.homeDeviceId ?? null,
   }));
   return { enabled: input.enabled, selfDeviceId: input.selfDeviceId, humanActorId: input.humanActorId, actors,

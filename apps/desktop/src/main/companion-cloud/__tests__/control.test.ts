@@ -157,3 +157,26 @@ describe('transcript', () => {
     expect(result.messages.at(-2)).toMatchObject({ id: 'm1', role: 'assistant', text: '[附件: a.png]' });
   });
 });
+
+describe('retire', () => {
+  it('disables the cloud companion when it is deleted on its main computer', async () => {
+    const t = setup({ home: 'desk' });
+    await t.runtime.retire('bot_mia');
+    expect(t.calls.filter(call => call.method === 'PATCH')).toEqual([expect.objectContaining({ route: '/actors/actor-1', data: { disabled: true } })]);
+    expect(t.actors[0]!.disabled).toBe(true);
+    // A retired companion is never revived or demoted again.
+    t.runtime.reconcile([]);
+    await Promise.resolve();
+    expect(t.local.host.createProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a demoted local copy', 'desk', true],
+    ['a copy whose home is elsewhere', 'laptop', false],
+  ])('leaves the cloud companion alone when deleting %s', async (_name, home, demoted) => {
+    const t = setup({ home });
+    if (demoted) t.state.update('bot_mia', 'actor-1', entry => { entry.demoted = true; });
+    await t.runtime.retire('bot_mia');
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+});

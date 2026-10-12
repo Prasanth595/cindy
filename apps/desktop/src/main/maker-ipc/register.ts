@@ -11812,6 +11812,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await updateBotRoutineLifecycle(botId, 'delete');
       assertOwner();
       await finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner);
+      // Deleted on its home: other devices stop showing it. Best-effort; a demoted copy never retires the cloud companion.
+      void activeCompanionCloud()?.retire(botId).catch((error: unknown) => {
+        log.warn('companion cloud retire failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
+      });
     },
   });
   const delegationForRestore = botDelegationServiceHolder;
