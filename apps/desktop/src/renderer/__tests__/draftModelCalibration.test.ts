@@ -881,3 +881,24 @@ describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', 
     ).toBeNull();
   });
 });
+
+describe('factory defaults survive send-time calibration', () => {
+  const gateway = provider('xd', true, { pi: [
+    model('z-ai/glm-5.3-flash', { newSessionDefault: ['pi'] }), model('auto'),
+  ] });
+  it.each([null, 'xd'])('keeps Cindy Auto despite old default markers (source %s)', preferredProviderId => {
+    expect(calibrateDraftModel({ providers: [gateway], agent: 'pi', model: 'auto',
+      chosenByUser: false, preferredProviderId, providersLoading: false }))
+      .toEqual({ model: 'auto', providerId: 'xd' });
+    expect(resolveNewTaskDefaultRoute({ providers: [gateway], agent: 'pi',
+      draft: { model: 'auto', providerId: preferredProviderId, chosenByUser: false } }))
+      .toEqual({ model: 'auto', providerId: 'xd' });
+  });
+  it('preserves explicit user models and follows Auto without a renderer snapshot', () => {
+    expect(calibrateDraftModel({ providers: [gateway], agent: 'pi', model: 'z-ai/glm-5.3-flash',
+      chosenByUser: true, preferredProviderId: 'xd', providersLoading: false }))
+      .toEqual({ model: 'z-ai/glm-5.3-flash', providerId: null });
+    expect(resolveNewTaskDefaultRoute({ providers: [gateway], agent: 'pi' }))
+      .toEqual({ model: 'auto', providerId: 'xd' });
+  });
+});

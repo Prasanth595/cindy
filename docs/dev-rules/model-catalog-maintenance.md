@@ -98,10 +98,13 @@ xAI 保留 Registry 声明顺序，XD 以 Gateway `/models` 为准，均不受�
 来源内的默认推荐可由服务端按区域下发的 `newSessionDefault` 指定；公共 Registry 的
 同名字段不进入活动目录。未标记时取排序第一的默认可见模型，即账号返回的第一个可见模型。
 
-未手动选择模型时，客户端出厂来源顺序为 Claude 订阅 Opus 5.5（Claude Code）、
-Codex 订阅 Astra（Codex）、Cindy 推荐模型（Pi），最后保留 xAI 回退。
+未手动选择模型时，客户端出厂来源顺序为 Codex 订阅 GPT-6 Sol（Codex）、
+Claude 订阅 Opus 5.5（Claude Code）、Cindy AI 下发的 Auto（Pi），最后保留 xAI 回退。
+订阅按认证身份识别独立账号，始终保留实际账号 ID；Auto 必须存在于 Cindy AI 的可用 Pi
+目录，不依赖旧 GLM 默认标记，也不在客户端将其替换成固定型号。草稿发送校准与无人值守
+默认解析复用同一策略，避免初始化选中 Auto 后又被旧标记改回 GLM。
 策略在 `apps/desktop/src/shared/newMakerDefaultTuple.ts`；连接、型号和对应引擎必须实际可用，
-不能为了满足推荐而把 Opus / Astra 放入另一个引擎。用户手动选择及型号开关始终优先，
+不能为了满足推荐而把 Sol / Opus 放入另一个引擎。用户手动选择及型号开关始终优先，
 不修改已有任务的运行配置；伙伴默认复用应用选择，不另造一套来源优先级。
 定时任务、`/learn`、IM 新建任务与分享导入等不由用户当场选模型的入口，
 没指定模型时同样按新建任务口径解析（`apps/desktop/src/shared/draftModelCalibration.ts`

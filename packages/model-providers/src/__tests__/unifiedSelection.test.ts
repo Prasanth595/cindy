@@ -520,6 +520,17 @@ describe('recommendedAgentForModel', () => {
     expect(recommendedAgentForModel(providers, 'xai', 'xai/grok-4.5')).toBe('pi');
   });
 
+  it.each(['xai', 'xd', 'custom-gateway'])('Grok Responses on %s recommends Pi without changing other candidates', (id) => {
+    const grok = view({ id, models: {
+      codex: [m('x-ai/grok-future', { group: 'grok', nativeApi: 'openai-responses', api: 'openai-responses' })],
+      pi: [m('x-ai/grok-future', { group: 'grok', nativeApi: 'openai-responses', piApi: 'openai-responses' })],
+    } });
+    expect(pickRecommendedAgent(grok, 'x-ai/grok-future', ['codex', 'pi'])).toBe('pi');
+    expect(pickRecommendedAgent(grok, 'x-ai/grok-future', ['codex'])).toBe('codex');
+    expect(nativeAgentForProviderModel(grok, 'x-ai/grok-future')).toBeNull();
+    expect(candidateAgentsForModel([grok], id, 'x-ai/grok-future')).toEqual(['codex', 'pi']);
+  });
+
   it('xd 网关:按家族推荐 —— gpt 系(含 codex/ 折扣)→ codex,claude 系 → claude-code', () => {
     expect(recommendedAgentForModel(providers, 'xd', 'codex/gpt-5.5')).toBe('codex');
     // 2026-08-14 改判:GPT 非折扣行主场也是 codex,推荐随主场(此前落 null 走 cc 优先

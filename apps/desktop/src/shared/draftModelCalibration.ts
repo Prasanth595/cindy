@@ -21,6 +21,16 @@ import {
   type CatalogModel,
   type ProviderView,
 } from '@cindy/model-providers';
+import { resolveNewMakerDefaultTuple } from './newMakerDefaultTuple.js';
+
+/** Keep startup, send-time calibration and headless defaults on one factory policy. */
+function factoryModelForAgent(providers: readonly ProviderView[], agent: AgentKind): PickedConnectedModel | null {
+  const tuple = resolveNewMakerDefaultTuple({
+    providers, providersLoading: false, availableAgentsLoaded: true,
+    availableAgents: new Set([agent === 'claude-code' ? 'cc' : agent]),
+  });
+  return tuple ? { model: tuple.model, providerId: tuple.providerId } : null;
+}
 
 /**
  * 挑选顺序（2026-07-30 产品定稿）：**可用的里面选第一个 —— 供应商优先订阅的，
@@ -128,7 +138,7 @@ function markedDefaultModelIdForAgent(
 
 /**
  * 在该 agent 的已连接来源里挑 (模型, 来源)：
- *   0. 目录/服务端**显式标记**为新对话默认（`newSessionDefault`）、且可用且默认可见的模型
+ *   0. 同一 Harness 的可用出厂组合优先；没有时才取目录/服务端**显式标记**为新对话默认（`newSessionDefault`）、且可用且默认可见的模型
  *      优先 —— 未显式选过模型的用户应跟随它，即便种子恰好是另一个可用模型（种子是
  *      capabilities 未到位时算的冷启动值，不反映标记）。按订阅优先取第一家提供它的来源，
  *      同一来源多个被标记时按 sortOrder 决胜。每个 Agent 只接受自己的标记，不跨 Agent
@@ -157,7 +167,9 @@ export function pickConnectedModelForAgent(
 ): PickedConnectedModel | null {
   const ranked = providersByPreference(providers, agent);
   if (ranked.length === 0) return null;
-  // 0. 目录/服务端显式标记的新对话默认(newSessionDefault)优先；每个 Agent 只认自己的标记。
+  const factory = factoryModelForAgent(ranked, agent);
+  if (factory) return factory;
+  // 无可用出厂组合时，保留目录/服务端显式标记的回退；每个 Agent 只认自己的标记。
   const flaggedModelId = markedDefaultModelIdForAgent(ranked, agent);
   if (flaggedModelId !== null) {
     // 标记只存在于区域门控后的 XD 条目；来源选择仍必须独立遵守 ranked 的订阅优先。
@@ -232,6 +244,8 @@ export function calibrateDraftModel({
       )
     : undefined;
   if (connectedPreferred) {
+    const factory = factoryModelForAgent([connectedPreferred], agent);
+    if (factory) return factory;
     // marker 只需由策略来源声明一次（当前为 XD），用户选定的来源若也提供同一 ID，仍应由
     // 该来源承接；不能因它自己的目录副本没重复 marker 就退回旧模型或偷偷改走 XD。
     const markedModelId = markedDefaultModelIdForAgent(providers, agent);
@@ -266,7 +280,7 @@ export interface NewTaskDraftSelection {
  * 不由用户当场选模型的入口（定时任务、/learn、IM 新建任务、协同 Worker 兜底等）的默认
  * (模型, 来源)：与新建任务同一口径，不另写一个固定型号。
  *   1. 用户在新建任务里显式选过、且仍有已连接来源可用的模型 → 用它；
- *   2. 否则按新建任务「没选过模型」的校准口径挑（区域标记 → 草稿种子 → 订阅优先的第一项）；
+ *   2. 否则按新建任务「没选过模型」的校准口径挑（可用出厂组合 → 区域标记 → 草稿种子 → 订阅优先的第一项）；
  *   3. 一个可用来源都没有 → null，由调用方明确失败，不编造一个看似可用的模型。
  * `requiredProviderId` 给定时只在该来源内挑（任务显式指定了来源）。
  */

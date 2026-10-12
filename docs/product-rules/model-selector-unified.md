@@ -115,6 +115,7 @@
   显式空数组不回填。不能从 Claude Code/Codex 的发现清单猜测 Pi 路由；旧 Registry
   wire enum 仍不增加 pi。原生 SDK 名单不再是成员门槛；具体协议仍由客户端执行。
   缺项表示尚未配置，不能仅凭目录缺席显示“不支持”。
+- **Grok 默认 Pi**：Grok 行有可用 Pi 候选时优先推荐 Pi，包括 Responses 路由；Pi 不可用时沿用已有候选回落。此推荐不改变协议、原生底座排序或用户手动引擎覆盖。
 - **推荐依据缺失时默认 Pi（2026-09-11）**：模型没有可据以推导的原生协议或底座时，使用候选中的 Pi 兜底，适用于本地和自定义模型；已有协议、底座和用户手动选择仍按原规则生效。Pi 不可用时沿用已有候选回落，不按本地供应商身份强制指定 Harness。
 - **Google 原生协议优先（2026-09-05）**：Cindy 模型目录明确声明
   `nativeApi: google-generative-ai`，且 Pi 的实际协议匹配、在候选中时推荐 Pi。Claude Code / Codex 的
@@ -175,8 +176,8 @@
 
 | 情形 | 行为 |
 |---|---|
-| 新用户 | 本地新任务按完整组合落点：OpenAI 订阅→GPT-5.6-Sol / Codex / 模型目录默认深度；Anthropic 订阅→Claude Opus 5 / Claude Code / 模型目录默认深度；xAI 订阅→Grok 4.6 / Pi / 模型目录默认深度；CN / Global Cindy Gateway→原生多模态 GLM-5.3-Flash / Pi / 模型目录默认深度。Gateway 默认必须同时明确声明图片输入与 Pi 实时能力；Pi 不可用时不把该默认强塞进 Codex 或 Claude Code |
-| 多来源 | Gateway 的可用推荐组合优先于订阅（CN / Global 一致）；Gateway 未就绪或推荐组合不可用时回退订阅，多订阅稳定按 OpenAI→Anthropic→xAI。本机自动发现 ChatGPT 登录不改变此优先级。来源仍在加载、账号目录没有目标模型、或零来源时不编造组合，保留连接引导 |
+| 新用户 | 本地新任务按完整组合落点：OpenAI 订阅→GPT-6 Sol / Codex；Anthropic 订阅→Claude Opus 5.5 / Claude Code；Cindy AI→服务端下发的 Auto / Pi；之后保留 xAI 订阅→Grok / Pi 回退。深度沿用各模型目录默认值；来源、模型和引擎必须可用，不伪造 Auto，也不借旧 GLM 默认标记选固定型号 |
+| 多来源 | 未自定义时按 OpenAI→Anthropic→Cindy AI→xAI 选择可用组合（CN / Global 一致）；独立订阅账号按认证身份识别，保留真实账号 ID。用户手动选择保持优先；来源仍在加载、账号没有可用目标、或零来源时不编造组合 |
 | 未自定义老用户 | 同新用户；自动下放不设置 `modelChosenByVendor`。仅由旧版 cc 不可用触发并持久化的非 cc Harness 仍属于系统回退，不算用户自定义 |
 | 已自定义老用户 | 任一明确的 Harness / 来源 / 模型 / 思考深度 / Fast 选择会封住后续自动下放；`modelChosenByVendor`、providerModelMemory、引擎 override 与形态偏好全部保留 |
 | 远程任务 | SSH / device-link 不套用控制端本机登录态；继续由执行端能力与来源快照决定，避免把本机授权强塞给远端 |
