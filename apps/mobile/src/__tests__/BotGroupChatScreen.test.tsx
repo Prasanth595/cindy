@@ -799,6 +799,16 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')).not.toBeNull();
   }
 
+  it('follows a remote rename on blur without saving an untouched name', async () => {
+    await openSettings();
+    await act(async () => { h.inputs['botGroup.settings.name'].onFocus(); });
+    await render(group({ name: '电脑端的新名称' }));
+    expect(h.inputs['botGroup.settings.name'].value).toBe('官网介绍页');
+    await act(async () => { h.inputs['botGroup.settings.name'].onBlur(); });
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(h.inputs['botGroup.settings.name'].value).toBe('电脑端的新名称');
+  });
+
   it('keeps a failed name draft and lets the user retry it', async () => {
     await openSettings(); h.chat.act.mockRejectedValueOnce(new Error('PRECONDITION_FAILED'));
     await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('保留草稿'); });

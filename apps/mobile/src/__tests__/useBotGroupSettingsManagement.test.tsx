@@ -19,7 +19,7 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({
   onRemoteResourceChanged: onChanged,
 }) }));
 function onChanged(listener: (id: string, payload: any) => void) { h.listeners.add(listener); return () => h.listeners.delete(listener); }
-vi.mock('@/session/useTeammateRoster', () => ({ useTeammateRoster: () => ({ groupTargets: h.targets, loading: false, refresh: vi.fn() }) }));
+vi.mock('@/session/useTeammateRoster', () => ({ useTeammateRoster: () => ({ groupTargets: h.targets, loading: h.syncing, error: h.listError, refresh: vi.fn() }) }));
 vi.mock('@/session/useRemoteResourceList', () => ({ useRemoteResourceList: () => ({
   items: h.items, syncing: h.syncing, isOnline: () => h.online && h.listOnline, error: h.listError, refresh: vi.fn(),
 }) }));
@@ -46,20 +46,32 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 beforeEach(() => {
   vi.clearAllMocks(); h.enabled = true; h.generation = 1; h.epoch = 1; h.online = true; h.syncing = false; h.revoked = new Set(); h.listeners.clear();
   h.listOnline = true; h.listError = null;
+  h.targets = [{ deviceId: 'mac', deviceName: 'Mac' }];
   h.items = [row()]; h.openLink.mockResolvedValue();
   h.invoke.mockImplementation(async (_id, channel) => channel === 'maker:remote-resources:get' ? resource() : { effects: [] });
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 
 it('reads the exact room and sends settings only to its verified host with a revision', async () => {
-  h.items = [row('other', h.targets[1]), row()];
+  h.targets.push({ deviceId: 'pc', deviceName: 'PC' });
+  h.invoke.mockImplementation(async (id, channel) => channel === 'maker:remote-resources:get'
+    ? resource('owner', id === 'pc' ? { id: 'other' } : {}) : { effects: [] });
   await render();
-  expect(reads()).toHaveLength(1);
+  expect(reads()).toHaveLength(2);
   expect(result.selected?.host.deviceId).toBe('mac');
   expect(result.reason).toBeNull();
   await act(async () => { await result.act('update', { name: 'New name' }); });
   expect(writes()[0]?.slice(0, 2)).toEqual(['mac', 'maker:remote-resources:invoke']);
   expect(writes()[0]?.[2][0]).toMatchObject({ actionId: 'update', resourceRef: { id: 'g1' }, input: { name: 'New name', expectedRevision: 4 } });
+});
+
+it('probes the exact room even when it is absent from a truncated group list', async () => {
+  h.targets = [host];
+  h.items = Array.from({ length: 200 }, (_, index) => row(`other-${index}`));
+  await render();
+  expect(reads()).toHaveLength(1);
+  expect(reads()[0]?.[2][0].ref.id).toBe('g1');
+  expect(result.selected?.host.deviceId).toBe('mac');
 });
 
 it.each(['member', 'guest'])('keeps %s read-only even on an online matching computer', async role => {
@@ -78,6 +90,7 @@ it('never uses offline or revoked cached rows as authority', async () => {
 });
 
 it('allows choosing among multiple independently verified computers', async () => {
+  h.targets.push({ deviceId: 'pc', deviceName: 'PC' });
   h.items = [row(), row('g1', h.targets[1])]; await render(); expect(result.managers).toHaveLength(2);
   await act(async () => { result.select('pc'); });
   await act(async () => { await result.act('add-member', { botId: 'local-pc-bot' }); });
@@ -111,6 +124,7 @@ it('disables a previously verified computer when presence goes offline', async (
 });
 
 it('keeps the selected device name through reconnecting without retaining write authority', async () => {
+  h.targets.push({ deviceId: 'pc', deviceName: 'PC' });
   h.items = [row(), row('g1', h.targets[1])]; await render();
   await act(async () => { result.select('pc'); });
   h.online = false; h.items = []; await render();
@@ -156,6 +170,41 @@ it('checks the sheet identity again when a queued write actually leaves the tran
   expect(writes()[0]?.[3]?.preSend).toBeTypeOf('function');
 });
 
+it.each(['reading', 'refreshed'])('keeps a queued write authorized through a content refresh (%s)', async phase => {
+  await render(); let send!: () => void; let finishRead!: (value: unknown) => void;
+  h.invoke.mockImplementation(async (_id, channel, _args, opts) => channel === 'maker:remote-resources:invoke'
+    ? new Promise((resolve, reject) => { send = () => { try { opts?.preSend?.(); resolve({ effects: [] }); } catch (error) { reject(error); } }; })
+    : new Promise(resolve => { finishRead = resolve; }));
+  let pending!: Promise<unknown>;
+  await act(async () => { pending = result.act('update', { name: 'Queued' }); });
+  h.syncing = true; await render();
+  if (phase === 'refreshed') {
+    h.items = [{ ...row(), item: { ...row().item, revision: 'v2' } }];
+    h.syncing = false; await render();
+    await act(async () => { result.refresh(); });
+    await act(async () => { finishRead(resource()); });
+  }
+  await act(async () => { send(); await expect(pending).resolves.toEqual({ effects: [] }); });
+  expect(writes()[0]?.[2][0].input.expectedRevision).toBe(4);
+});
+
+it.each(['permission', 'revoked', 'host removed', 'room removed', 'offline', 'epoch'])('rejects a queued write after authorization changes: %s', async change => {
+  await render(); let send!: () => void;
+  h.invoke.mockImplementation(async (_id, channel, _args, opts) => channel === 'maker:remote-resources:invoke'
+    ? new Promise((resolve, reject) => { send = () => { try { opts?.preSend?.(); resolve({ effects: [] }); } catch (error) { reject(error); } }; })
+    : change === 'room removed' ? null : resource(change === 'permission' ? 'member' : 'owner'));
+  let pending!: Promise<unknown>;
+  await act(async () => { pending = result.act('update', { name: 'Denied' }); });
+  if (change === 'permission') await act(async () => { result.refresh(); });
+  if (change === 'revoked') h.revoked = new Set(['mac']);
+  if (change === 'host removed') h.targets = h.targets.filter(target => target.deviceId !== 'mac');
+  if (change === 'room removed') await act(async () => { result.refresh(); });
+  if (change === 'offline') h.online = false;
+  if (change === 'epoch') h.epoch += 1;
+  await render();
+  await act(async () => { send(); await expect(pending).rejects.toThrow('PERMISSION_DENIED'); });
+});
+
 it('coalesces refreshes while an earlier detail read is still in flight', async () => {
   const finishes: ((value: unknown) => void)[] = [];
   h.invoke.mockImplementation(() => new Promise(resolve => { finishes.push(resolve); }));
@@ -170,7 +219,7 @@ it('coalesces refreshes while an earlier detail read is still in flight', async 
 });
 
 it('distinguishes a failed online roster read from a disconnected computer', async () => {
-  h.listOnline = false; h.listError = 'Read failed'; await render();
+  h.listError = 'Read failed'; h.invoke.mockRejectedValue(new Error('Read failed')); await render();
   expect(result.reason).toBe('unavailable'); expect(result.selected).toBeUndefined();
   h.online = false; await render(); expect(result.reason).toBe('noHost');
 });

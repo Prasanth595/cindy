@@ -331,6 +331,7 @@ export type BotGroupErrorCode =
   | 'SERVICE_ERROR'
   | 'GROUP_ARCHIVED'
   | 'INVALID_PARAMS'
+  | 'REVISION_CONFLICT'
   | 'NOT_FOUND'
   | 'MEMBER_LIMIT'
   | 'MEMBER_UNAVAILABLE'

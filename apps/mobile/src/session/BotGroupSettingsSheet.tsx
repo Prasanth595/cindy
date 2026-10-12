@@ -114,6 +114,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   };
 
   const saveName = async () => {
+    if (!nameDirty.current) { setName(group.name); return; }
     if (readOnly) return;
     const trimmed = name.trim();
     if (!trimmed) { nameDirty.current = false; setName(group.name); return; }
@@ -333,7 +334,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   managementText: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   computerSlot: { flex: 1, minWidth: 0 },
   computerPicker: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  connectedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.statusDone },
+  connectedDot: { width: 6, height: 6, borderRadius: radius.pill, backgroundColor: colors.statusDone },
   reconnect: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
   reconnectText: { color: colors.textPrimary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   section: { gap: spacing.sm },

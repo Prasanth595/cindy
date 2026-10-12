@@ -7,7 +7,6 @@ import { useRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
 import { useRevokedDevices } from '@/device-link/revokedDevicesStore';
 import { getRemoteResource, invokeRemoteResourceAction, type RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { BOT_GROUP_CLIENT_PRIMITIVES, botGroupChatDataFromResource, botGroupResourceRef, canManageBotGroup } from './botGroupRemote';
-import { useRemoteResourceList } from './useRemoteResourceList';
 import { useTeammateRoster } from './useTeammateRoster';
 
 type Manager = { host: RemoteResourceHostTarget; group: BotGroupRemoteChatData };
@@ -19,7 +18,6 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
   const { invoke, openLink, connectionEpoch, status, getPresenceAvailability, onRemoteResourceChanged } = useDeviceLink();
   const revoked = useRevokedDevices();
   const roster = useTeammateRoster(enabled);
-  const list = useRemoteResourceList(BOT_GROUP_REMOTE_COLLECTION_ID, roster.groupTargets, enabled);
   const scope = JSON.stringify([accountGeneration, groupId, enabled, connectionEpoch]);
   // Reopening the same group must not revive an earlier authorization or receipt.
   const binding = useMemo(() => Symbol(scope), [scope]);
@@ -33,17 +31,19 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [snapshot, setSnapshot] = useState<{ binding: typeof binding; key: string; managers: Manager[]; reason: 'noHost' | 'permission' | 'upgrade' | 'unavailable' | null }>();
   const writing = useRef(false);
-  const candidates = list.items.filter(row => row.item.ref.id === groupId && row.item.ref.kind === 'bot-group'
-    && roster.groupTargets.some(host => host.deviceId === row.host.deviceId) && !revoked.has(row.host.deviceId) && list.isOnline(row.host));
-  const candidateKey = JSON.stringify(candidates.map(row => [row.host.deviceId, row.item.revision]));
+  const candidates = roster.groupTargets.filter(host => status === 'online'
+    && !revoked.has(host.deviceId) && getPresenceAvailability(host.deviceId) !== false);
+  const candidateKey = JSON.stringify(candidates.map(host => host.deviceId));
   const onlineHost = roster.groupTargets.some(host => !revoked.has(host.deviceId) && getPresenceAvailability(host.deviceId) !== false);
-  const emptyReason = status === 'online' && ((roster.error && (!roster.groupTargets.length || onlineHost)) || (list.error && onlineHost))
+  const emptyReason = status === 'online' && roster.error && (!roster.groupTargets.length || onlineHost)
     ? 'unavailable' : 'noHost';
   const key = JSON.stringify([candidateKey, refreshVersion, status, emptyReason, i18n.language]);
-  const ready = !roster.loading && !list.syncing;
+  const ready = !roster.loading;
   const currentRef = useRef({ key, enabled, ready, managers: [] as Manager[] });
   const own = snapshot?.binding === binding && snapshot.key === key;
-  const managers = own ? snapshot.managers.filter(manager => !revoked.has(manager.host.deviceId) && list.isOnline(manager.host)) : [];
+  // Content refreshes preserve verified authority until a new detail read replaces it.
+  const managers = snapshot?.binding === binding ? snapshot.managers.filter(manager =>
+    candidates.some(host => host.deviceId === manager.host.deviceId) && canManageBotGroup(manager.group)) : [];
   currentRef.current = { key, enabled, ready, managers };
   const selected = managers.find(manager => manager.host.deviceId === selectedId) ?? managers[0];
   // Remember only the display name, never authorization or an editable snapshot.
@@ -51,8 +51,7 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
   const rememberedHost = useRef<{ identity: string; host: RemoteResourceHostTarget } | undefined>(undefined);
   const previousHost = rememberedHost.current?.identity === displayIdentity
     && !revoked.has(rememberedHost.current.host.deviceId) ? rememberedHost.current.host : undefined;
-  const displayHost = selected?.host ?? previousHost ?? list.items.find(row => row.item.ref.id === groupId && row.item.ref.kind === 'bot-group'
-    && !revoked.has(row.host.deviceId))?.host;
+  const displayHost = selected?.host ?? previousHost ?? candidates[0];
   useEffect(() => {
     if (displayHost) rememberedHost.current = { identity: displayIdentity, host: displayHost };
     else if (rememberedHost.current?.identity !== displayIdentity) rememberedHost.current = undefined;
@@ -64,7 +63,7 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
     const found: Manager[] = [];
     let reason: NonNullable<typeof snapshot>['reason'] = candidates.length ? 'unavailable' : emptyReason;
     for (let offset = 0; offset < candidates.length; offset += 2) {
-      const replies = await Promise.allSettled(candidates.slice(offset, offset + 2).map(async ({ host }) => {
+      const replies = await Promise.allSettled(candidates.slice(offset, offset + 2).map(async host => {
         await openLink(host.deviceId);
         if (!current()) return null;
         const resource = await getRemoteResource(invoke, host, botGroupResourceRef(groupId), i18n.language, BOT_GROUP_CLIENT_PRIMITIVES);
@@ -91,7 +90,7 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
     if (!enabled) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const off = onRemoteResourceChanged((deviceId, payload) => {
-      if (!candidates.some(row => row.host.deviceId === deviceId) || payload.collectionId !== BOT_GROUP_REMOTE_COLLECTION_ID) return;
+      if (!candidates.some(host => host.deviceId === deviceId) || payload.collectionId !== BOT_GROUP_REMOTE_COLLECTION_ID) return;
       if (payload.resourceRefs?.length && !payload.resourceRefs.some(ref => ref.id === groupId)) return;
       if (!timer) timer = setTimeout(() => { timer = undefined; refresh(); }, 150);
     });
@@ -104,7 +103,7 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
     if (!currentRef.current.enabled || !manager || writing.current) throw new Error('PERMISSION_DENIED');
     writing.current = true;
     const valid = () => activeBinding.current === binding && bindingRef.current === binding && currentRef.current.enabled
-      && currentRef.current.ready && currentRef.current.managers.includes(manager)
+      && currentRef.current.managers.some(current => current.host.deviceId === manager.host.deviceId && canManageBotGroup(current.group))
       && getPresenceAvailability(manager.host.deviceId) !== false;
     try {
       await openLink(manager.host.deviceId);
@@ -123,7 +122,7 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
     }
   }, [binding, groupId, selected, getPresenceAvailability, openLink, invoke, i18n.language, refresh]);
 
-  const loading = enabled && (roster.loading || list.syncing || !own);
+  const loading = enabled && !selected && (roster.loading || !own);
   return { selected, displayHost, managers, select, act, loading, reason: loading ? null : snapshot ? snapshot.reason : 'noHost',
-    refresh: () => { void roster.refresh(); void list.refresh(); refresh(); } };
+    refresh: () => { void roster.refresh(); refresh(); } };
 }

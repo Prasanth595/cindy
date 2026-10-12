@@ -8,6 +8,7 @@ describe('chat group errors', () => {
     ['MEDIA_UPLOAD_FAILED', 'MEDIA_UPLOAD_FAILED'], ['INVALID_MEDIA_URL', 'MEDIA_UPLOAD_FAILED'],
     ['AUTH_REQUIRED', 'AUTH_REQUIRED'], ['CHAT_ENDPOINT_UNAVAILABLE', 'CHAT_UNAVAILABLE'],
     ['IMPORT_PENDING', 'IMPORT_PENDING'], ['REQUEST_TIMEOUT', 'REQUEST_TIMEOUT'],
+    ['REVISION_CONFLICT', 'REVISION_CONFLICT'],
     ['ROLE_REQUIRED', 'PERMISSION_DENIED'], ['CONVERSATION_ARCHIVED', 'GROUP_ARCHIVED'],
     ['CONVERSATION_NOT_FOUND', 'NOT_FOUND'], ['untrusted /private/path?token=secret', 'SERVICE_ERROR'],
   ])('classifies %s without exposing exception text', (code, expected) => {

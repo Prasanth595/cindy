@@ -124,6 +124,13 @@ describe('Chat Server result delivery and refresh', () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
   });
+  it('preserves a server revision conflict after the host precheck', async () => {
+    fixture.handle.mockImplementation((route, method) => method === 'PATCH'
+      ? { status: 409, body: { error: { code: 'REVISION_CONFLICT', message: 'private server detail' } } }
+      : response(route));
+    await expect(service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 1 }))
+      .resolves.toEqual({ ok: false, errorCode: 'REVISION_CONFLICT', message: 'REVISION_CONFLICT' });
+  });
   it('an additive invite preserves people and all previously joined companions', async () => {
     const other = '60000000-0000-4000-8000-000000000002';
     fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: room(roomId), messages: [], cursor: '1', members: [
