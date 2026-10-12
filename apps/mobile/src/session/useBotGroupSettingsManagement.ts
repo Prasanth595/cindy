@@ -115,6 +115,9 @@ export function useBotGroupSettingsManagement(groupId: string, enabled: boolean)
       }, i18n.language);
       // A reply from a prior account/sheet must not close the current screen.
       if (bindingRef.current !== binding || activeBinding.current !== binding) throw new Error('PERMISSION_DENIED');
+      // Fence pre-write reads and edits until the new revision is verified.
+      currentRef.current = { ...currentRef.current, key: '', managers: [] };
+      setSnapshot(undefined);
       return receipt;
     } finally {
       writing.current = false;

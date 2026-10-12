@@ -74,6 +74,54 @@ it('probes the exact room even when it is absent from a truncated group list', a
   expect(result.selected?.host.deviceId).toBe('mac');
 });
 
+it('blocks consecutive edits until the successful write is read back with its new revision', async () => {
+  await render();
+  let revision = 4; let finishRead!: (value: unknown) => void;
+  h.invoke.mockImplementation(async (_id, channel, args) => {
+    if (channel === 'maker:remote-resources:get') return new Promise(resolve => { finishRead = resolve; });
+    if (args[0].input.expectedRevision !== revision) throw new Error('PRECONDITION_FAILED');
+    revision += 1;
+    return { effects: [] };
+  });
+  await act(async () => {
+    await result.act('update', { name: 'Renamed' });
+    // Also exercise the interval before React commits the refreshed controls.
+    await expect(result.act('update', { organizerBotId: 'bot' })).rejects.toThrow('PERMISSION_DENIED');
+  });
+  expect(writes()).toHaveLength(1); expect(result.selected).toBeUndefined(); expect(result.loading).toBe(true);
+  await act(async () => { finishRead(resource('owner', { name: 'Renamed', revision })); });
+  expect(result.selected?.group.revision).toBe(5);
+  await act(async () => { await result.act('update', { organizerBotId: 'bot' }); });
+  expect(writes()[1]?.[2][0].input.expectedRevision).toBe(5);
+});
+
+it('does not restore the pre-write revision from an already pending background read', async () => {
+  await render(); const finishes: ((value: unknown) => void)[] = [];
+  h.invoke.mockImplementation(async (_id, channel) => channel === 'maker:remote-resources:get'
+    ? new Promise(resolve => { finishes.push(resolve); }) : { effects: [] });
+  await act(async () => { result.refresh(); });
+  await act(async () => { await result.act('update', { name: 'Renamed' }); });
+  await act(async () => { finishes.shift()!(resource()); });
+  expect(result.selected).toBeUndefined(); expect(finishes).toHaveLength(1);
+  await expect(result.act('add-member', { botId: 'other' })).rejects.toThrow('PERMISSION_DENIED');
+  await act(async () => { finishes.shift()!(resource('owner', { revision: 5, name: 'Renamed' })); });
+  expect(result.selected?.group.revision).toBe(5); expect(writes()).toHaveLength(1);
+});
+
+it('keeps a confirmed save successful but disables further edits if readback fails', async () => {
+  await render();
+  h.invoke.mockImplementation(async (_id, channel) => {
+    if (channel === 'maker:remote-resources:get') throw new Error('Read failed');
+    return { effects: [] };
+  });
+  await act(async () => { await expect(result.act('update', { name: 'Renamed' })).resolves.toEqual({ effects: [] }); });
+  expect(result.selected).toBeUndefined(); expect(result.reason).toBe('unavailable');
+  await expect(result.act('add-member', { botId: 'other' })).rejects.toThrow('PERMISSION_DENIED');
+  h.invoke.mockResolvedValue(resource('owner', { revision: 5 }));
+  await act(async () => { result.refresh(); });
+  expect(result.selected?.group.revision).toBe(5); expect(writes()).toHaveLength(1);
+});
+
 it.each(['member', 'guest'])('keeps %s read-only even on an online matching computer', async role => {
   h.invoke.mockResolvedValue(resource(role)); await render();
   expect(result.selected).toBeUndefined(); expect(result.reason).toBe('permission');
