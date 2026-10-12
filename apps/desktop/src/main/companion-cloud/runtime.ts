@@ -112,6 +112,8 @@ export function startCompanionCloud(input: {
   log?: CompanionLog;
   uploadIntervalMs?: number;
   mirrorIntervalMs?: number;
+  /** Run a first pass shortly after start (default). Harnesses drive passes explicitly. */
+  initialKick?: boolean;
 }): CompanionCloudRuntime {
   const state = input.host.openState(input.endpoint, input.humanActorId, input.current);
   const uploader = createCompanionUploader({ api: input.api, state, readValues: input.host.readValues, log: input.log });
@@ -244,20 +246,20 @@ export function startCompanionCloud(input: {
         actor = actorOf(botId);
       }
       if (!actor) return { ok: false, code: 'FAILED' };
-      if (actor.homeDeviceId !== self) {
-        try {
-          await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: self, expectedHomeDeviceId: actor.homeDeviceId ?? null });
-        } catch (error) {
-          const failure = actionFailure(error);
-          if (!failure.ok && failure.code === 'HOME_CONFLICT') {
-            actor.homeDeviceId = failure.homeDeviceId ?? null;
-            await input.refresh?.().catch(() => undefined);
-            publish();
-          }
-          return failure;
+      // Always compare-and-set, even when the cached home already says "here": the cache may be
+      // stale (another computer took over while this one was offline). Unchanged homes are a no-op.
+      try {
+        await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: self, expectedHomeDeviceId: actor.homeDeviceId ?? null });
+      } catch (error) {
+        const failure = actionFailure(error);
+        if (!failure.ok && failure.code === 'HOME_CONFLICT') {
+          actor.homeDeviceId = failure.homeDeviceId ?? null;
+          await input.refresh?.().catch(() => undefined);
+          publish();
         }
-        actor.homeDeviceId = self;
+        return failure;
       }
+      actor.homeDeviceId = self;
       try {
         await materialize(actor);
       } catch (error) {
@@ -324,6 +326,6 @@ export function startCompanionCloud(input: {
   };
   active = runtime;
   // First pass soon after start; later passes follow the intervals and local changes.
-  uploads.kick(); mirrors.kick();
+  if (input.initialKick !== false) { uploads.kick(); mirrors.kick(); }
   return runtime;
 }

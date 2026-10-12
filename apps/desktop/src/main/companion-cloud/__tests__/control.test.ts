@@ -66,10 +66,10 @@ describe('take over', () => {
     expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: false, code: 'OFFLINE' });
   });
 
-  it('is idempotent when this computer is already the home', async () => {
+  it('still compares with the server when the cached home already says this computer', async () => {
     const t = setup({ home: 'desk' });
     expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
-    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(t.calls.filter(call => call.method === 'PATCH').map(call => call.data)).toEqual([{ homeDeviceId: 'desk', expectedHomeDeviceId: 'desk' }]);
   });
 });
 

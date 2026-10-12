@@ -86,6 +86,18 @@ describe('materializeCompanion', () => {
     expect(local.host.rebuildContext).toHaveBeenCalledOnce();
   });
 
+  it('does not re-insert a room message that was already delivered here as a direct-room input', async () => {
+    const room = [roomMessage('m9', 9, 'human', 'from the phone', 1_700_000_000_000)];
+    const { api } = cloud([profilePref], room);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    // Delivered later than the room message was written, under its own client id.
+    local.rows.push({ id: 'd', clientId: 'chat-direct:exec-1:m9', role: 'user', content: 'from the phone', agentMeta: null, createdAt: 1_700_000_005_000 });
+    const result = await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM });
+    expect(result.inserted).toBe(0);
+    expect(local.host.insertHistory).not.toHaveBeenCalled();
+  });
+
   it('defers the rebuild while the Session is busy', async () => {
     const { api } = cloud([profilePref], [roomMessage('m1', 1, 'human', 'hello', 1_700_000_000_000)]);
     const local = fakeLocal({ rebuildContext: vi.fn(async () => 'busy' as const) });

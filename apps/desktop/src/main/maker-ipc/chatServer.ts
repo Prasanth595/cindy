@@ -38,7 +38,7 @@ import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botG
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
 import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
 import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
-import { COMPANION_DIRECT_CLIENT_PREFIX } from '../companion-cloud/mirror.js';
+import { DIRECT_ROOM_COMPLETION, deliverDirectRoomMessage, directRoomClientId } from '../companion-cloud/directRoom.js';
 
 interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null; disabled?: boolean }
 interface Member { id: string; kind: 'human' | 'bot' | 'integration'; name: string; state: string; role: 'owner' | 'admin' | 'member' | 'guest';
@@ -969,20 +969,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const { execution } = run;
     if (!deps.companionCloud) throw new Error('MEMBER_UNAVAILABLE');
     if (run.context?.kind !== 'message' || execution.plan_id) throw new Error('INVALID_EXECUTION_TRIGGER');
-    const source = await api<Message>(`/conversations/${roomId}/messages/${id.parse(execution.source_message_id)}`);
-    if (source.id !== execution.source_message_id || source.deleted || source.origin === 'system' || source.authorId !== selfId)
-      throw new Error('INVALID_EXECUTION_TRIGGER');
-    const text = source.content.map(block => block.type === 'text' ? block.text ?? ''
-      : block.type === 'media' ? `[附件: ${block.caption ?? '文件'}]` : block.fallback ?? '').filter(Boolean).join('\n').trim();
-    if (!text) throw new Error('INVALID_INPUT');
-    await updateExecution(run, 'heartbeat');
-    if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
-    run.clientId = `${COMPANION_DIRECT_CLIENT_PREFIX}${execution.id}`;
-    const delivered = await deps.companionCloud.deliverToCanonical(botId, text, run.clientId);
-    if (!delivered.ok) throw new Error(delivered.errorCode);
+    run.clientId = directRoomClientId(execution.id, execution.source_message_id);
+    await deliverDirectRoomMessage({ api, roomId, executionId: execution.id, sourceMessageId: id.parse(execution.source_message_id),
+      humanActorId: selfId, botId, deliver: deps.companionCloud.deliverToCanonical,
+      beforeDeliver: async () => {
+        await updateExecution(run, 'heartbeat');
+        if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+      } });
     run.accepted = true;
     run.settlement = { terminal: { sessionId: '', activeInputClientId: run.clientId, outcome: 'done', resultText: '' },
-      payload: { continueDiscussion: false }, retryAt: 0 };
+      payload: { ...DIRECT_ROOM_COMPLETION }, retryAt: 0 };
     await deliverSettlement(run);
     companion?.kickMirror(botId);
     changed(roomId);

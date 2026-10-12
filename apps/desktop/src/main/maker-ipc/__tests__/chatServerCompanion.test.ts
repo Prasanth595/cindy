@@ -136,7 +136,7 @@ describe('Chat Server cloud companions', () => {
   it('delivers a 1:1 room message to the canonical Session and completes without content', async () => {
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(0);
-    expect(host.deliverToCanonical).toHaveBeenCalledWith('local-bot', 'hi\n[附件: a.png]', `chat-direct:${execution.id}`);
+    expect(host.deliverToCanonical).toHaveBeenCalledWith('local-bot', 'hi\n[附件: a.png]', `chat-direct:${execution.id}:${sourceId}`);
     expect(deps.ensureLane).not.toHaveBeenCalled();
     expect(deps.dispatch).not.toHaveBeenCalled();
     const results = fixture.handle.mock.calls.filter(([route, , body]) => route === `/conversations/${roomId}/executions/${execution.id}`

@@ -5,6 +5,7 @@
  */
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
 import { COMPANION_HISTORY_CLIENT_PREFIX } from './mirror.js';
+import { directRoomSourceId } from './directRoom.js';
 import { readRecentRoomMessages } from './room.js';
 import type { CompanionCloudState } from './state.js';
 import { errorCode, type CompanionApi, type CompanionLog } from './types.js';
@@ -32,8 +33,8 @@ export interface CompanionMaterializeHost {
   saveSkill: (botId: string, slug: string, content: string) => Promise<void>;
   removeSkill: (botId: string, slug: string) => Promise<void>;
   ensureCanonicalSession: (botId: string) => Promise<string>;
-  /** Local user/assistant rows in a closed time window (dedupe against mirrored rows). */
-  localMessageTimes: (sessionId: string, fromMs: number, toMs: number) => Promise<Array<{ role: string; createdAt: number }>>;
+  /** Local user/assistant rows created at or after `fromMs` (dedupe against mirrored and delivered rows). */
+  localMessageTimes: (sessionId: string, fromMs: number) => Promise<Array<{ role: string; createdAt: number; clientId: string }>>;
   insertHistory: (sessionId: string, row: { clientId: string; role: 'user' | 'assistant'; text: string; createdAt: number }) => Promise<void>;
   /** Rebuild the native context from DB history like a companion restart; never interrupts a turn. */
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
@@ -136,11 +137,14 @@ export async function importCloudHistory(input: {
   if (!messages.length) return 0;
   // Rows mirrored from this Session keep their local timestamp; the server does not
   // return import source ids, so (role, createdAt) identifies them.
-  const local = await input.host.localMessageTimes(input.sessionId, messages[0]!.createdAt, messages[messages.length - 1]!.createdAt);
+  // Delivered direct-room messages are local rows with their own (later) timestamp;
+  // their client id names the room message, so they are never inserted a second time.
+  const local = await input.host.localMessageTimes(input.sessionId, messages[0]!.createdAt);
   const present = new Set(local.map(row => `${row.role}:${row.createdAt}`));
+  const delivered = new Set(local.flatMap(row => directRoomSourceId(row.clientId) ?? []));
   let inserted = 0;
   for (const message of messages) {
-    if (present.has(`${message.role}:${message.createdAt}`)) continue;
+    if (present.has(`${message.role}:${message.createdAt}`) || delivered.has(message.id)) continue;
     await input.host.insertHistory(input.sessionId, { clientId: `${COMPANION_HISTORY_CLIENT_PREFIX}${message.id}`,
       role: message.role, text: message.text, createdAt: message.createdAt });
     inserted += 1;

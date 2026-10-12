@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { net } from 'electron';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, or } from 'drizzle-orm';
 import { isManagedBotAvatarUrl, isSupportedBotAvatarValue, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
@@ -119,9 +119,9 @@ function createMaterializer(input: {
     },
     removeSkill: async (botId, slug) => { await deleteBotSkillForBot(botId, slug); },
     ensureCanonicalSession: input.ensureCanonicalSession,
-    localMessageTimes: (sessionId, fromMs, toMs) => getDbClient().drizzle
-      .select({ role: messages.role, createdAt: messages.createdAt }).from(messages)
-      .where(and(visibleRows(sessionId), gte(messages.createdAt, fromMs), lte(messages.createdAt, toMs))),
+    localMessageTimes: (sessionId, fromMs) => getDbClient().drizzle
+      .select({ role: messages.role, createdAt: messages.createdAt, clientId: messages.clientId }).from(messages)
+      .where(and(visibleRows(sessionId), gte(messages.createdAt, fromMs))),
     // Same row shape as ordinary messages; the client id keeps it out of the mirror.
     insertHistory: async (sessionId, row) => {
       await createMessage(sessionId, { clientId: row.clientId, role: row.role, createdAt: row.createdAt,

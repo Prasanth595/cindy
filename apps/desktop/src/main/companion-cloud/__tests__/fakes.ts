@@ -46,8 +46,8 @@ export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
     saveSkill: vi.fn(async (_bot: string, slug: string, content: string) => { skills.set(slug, content); }),
     removeSkill: vi.fn(async (_bot: string, slug: string) => { skills.delete(slug); }),
     ensureCanonicalSession: vi.fn(async () => 'session-1'),
-    localMessageTimes: vi.fn(async (_sid: string, from: number, to: number) =>
-      rows.filter(row => row.createdAt >= from && row.createdAt <= to).map(row => ({ role: row.role, createdAt: row.createdAt }))),
+    localMessageTimes: vi.fn(async (_sid: string, from: number) =>
+      rows.filter(row => row.createdAt >= from).map(row => ({ role: row.role, createdAt: row.createdAt, clientId: row.clientId }))),
     insertHistory: vi.fn(async (_sid: string, row: { clientId: string; role: string; text: string; createdAt: number }) => {
       rows.push({ id: `local-${rows.length}`, clientId: row.clientId, role: row.role, content: row.text, agentMeta: null, createdAt: row.createdAt });
     }),
