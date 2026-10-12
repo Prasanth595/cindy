@@ -28,17 +28,19 @@ import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { showConfirm } from '@/platform/chrome';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, iconSize, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
-import { BOT_GROUP_ROW_AVATAR_SIZE, BotGroupAvatar } from './BotGroupAvatars';
+import { BOT_GROUP_ROW_AVATAR_SIZE, BotGroupAvatar, useBotGroupIdentities } from './BotGroupAvatars';
 import { BotGroupOrganizerTag, type BotGroupIdentityLookup } from './BotGroupPlan';
 import { botGroupActionErrorText } from './botGroupCopy';
 import { CompanionSheet } from './CompanionSheet';
 import { useHostTeammates } from './useHostTeammates';
 import { BotGroupMenu } from './BotGroupMenu';
+import { useBotGroupSettingsManagement } from './useBotGroupSettingsManagement';
+import { canManageBotGroup } from './botGroupRemote';
 
 type Busy = 'name' | 'members' | 'organizer' | 'replyMode' | 'speakingMode' | 'delete' | null;
 type Act = (actionId: BotGroupRemoteActionId, input?: Record<string, unknown>) => Promise<unknown>;
 
-export function BotGroupSettingsSheet({ visible, group, host, identityFor, online, act, onClose, onClosed, onDeleted, readOnly = false }: {
+type SettingsProps = {
   visible: boolean;
   readOnly?: boolean;
   group: BotGroupRemoteChatData;
@@ -50,6 +52,28 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
   onClosed?(): void;
   /** The group is gone; the screen leaves once the sheet has closed. */
   onDeleted(): void;
+  onRefresh?(): void;
+};
+
+/** Server chat remains direct; only the open settings sheet resolves a management host. */
+export function BotGroupSettingsSheet(props: SettingsProps) {
+  return props.readOnly ? <ServerGroupSettings {...props} /> : <BotGroupSettingsContent {...props} />;
+}
+
+function ServerGroupSettings(props: SettingsProps) {
+  const management = useBotGroupSettingsManagement(props.group.id, props.visible);
+  const host = management.selected?.host ?? props.host;
+  const group = management.selected?.group ?? props.group;
+  const lookup = useBotGroupIdentities(host.deviceId);
+  return <BotGroupSettingsContent {...props} group={group} host={host}
+    identityFor={(id, name) => lookup(id, name, group.members.find(member => member.botId === id))}
+    online={!!management.selected && !management.loading} readOnly={!management.selected || management.loading}
+    act={async (action, input) => { const receipt = await management.act(action, input); props.onRefresh?.(); return receipt; }}
+    management={management} />;
+}
+
+function BotGroupSettingsContent({ visible, group, host, identityFor, online, act, onClose, onClosed, onDeleted, readOnly = false, management }: SettingsProps & {
+  management?: ReturnType<typeof useBotGroupSettingsManagement>;
 }) {
   const { t, i18n } = useTranslation();
   const { colors } = useTheme();
@@ -60,26 +84,32 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
   const [errors, setErrors] = useState<Partial<Record<Exclude<Busy, null>, string>>>({});
   const [picking, setPicking] = useState(false);
   const nameFocused = useRef(false);
+  const nameDirty = useRef(false);
+  const nameRevision = useRef(group.revision);
   const teammates = useHostTeammates(host, visible && picking && !readOnly);
 
   // Follow renames that land from the computer while the field is not being edited.
-  useEffect(() => { if (!nameFocused.current) setName(group.name); }, [group.name]);
+  useEffect(() => { if (!nameFocused.current && !nameDirty.current) setName(group.name); }, [group.name]);
   useEffect(() => { if (!visible) { setPicking(false); setErrors({}); } }, [visible]);
 
   const memberIds = group.members.map((member) => member.botId);
-  const canRemove = group.members.length > BOT_GROUP_MIN_MEMBERS;
-  const canAdd = group.members.length < BOT_GROUP_MAX_MEMBERS;
+  const serverManaged = group.serverBacked === true && group.supportsSettingsManagement === true;
+  const archivesGroup = serverManaged || management !== undefined;
+  const owner = group.members.some(member => member.isOwned && member.role === 'owner');
+  const canRemove = serverManaged || group.members.length > BOT_GROUP_MIN_MEMBERS;
+  const canAdd = serverManaged || group.members.length < BOT_GROUP_MAX_MEMBERS;
   const addable = teammates.rows.filter((row) => !memberIds.includes(row.item.ref.id));
-  const locked = readOnly || busy !== null || !online;
+  const permissionLocked = serverManaged && !canManageBotGroup(group);
+  const locked = readOnly || permissionLocked || busy !== null || !online;
 
   /** Run one change; the section shows the failure copy, or clears it on success. */
   const run = async (section: Exclude<Busy, null>, actionId: BotGroupRemoteActionId, input: Record<string, unknown>, fallbackKey: string) => {
-    if (readOnly || busyRef.current) return false;
+    if (readOnly || permissionLocked || !online || busyRef.current) return false;
     busyRef.current = section;
     setBusy(section);
     setErrors((current) => ({ ...current, [section]: undefined }));
     try {
-      await act(actionId, input);
+      await act(actionId, serverManaged ? { expectedRevision: group.revision, ...input } : input);
       return true;
     } catch (error) {
       setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
@@ -93,10 +123,11 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
   const saveName = async () => {
     if (readOnly) return;
     const trimmed = name.trim();
-    if (!trimmed) { setName(group.name); return; }
-    if (trimmed === group.name) return;
-    const saved = await run('name', 'update', { name: trimmed }, 'groupChat.settings.nameSaveFailed');
-    if (!saved) setName(group.name);
+    if (!trimmed) { nameDirty.current = false; setName(group.name); return; }
+    if (trimmed === group.name) { nameDirty.current = false; return; }
+    if (errors.name) nameRevision.current = group.revision;
+    const saved = await run('name', 'update', { name: trimmed, ...(serverManaged ? { expectedRevision: nameRevision.current } : {}) }, 'groupChat.settings.nameSaveFailed');
+    if (saved) nameDirty.current = false;
   };
 
   const setMembers = async (botIds: string[]) => {
@@ -107,10 +138,10 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
   const remove = async () => {
     if (busyRef.current) return;
     const confirmed = await showConfirm({
-      title: t('groupChat.settings.deleteConfirmTitle', { name: group.name }),
-      message: t('groupChat.settings.deleteNote'),
+      title: t(archivesGroup ? 'groupChat.settings.archiveConfirmTitle' : 'groupChat.settings.deleteConfirmTitle', { name: group.name }),
+      message: t(archivesGroup ? 'groupChat.settings.archiveNote' : 'groupChat.settings.deleteNote'),
       cancelLabel: t('devices.common.cancel'),
-      confirmLabel: t('groupChat.settings.delete'),
+      confirmLabel: t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete'),
       destructive: true,
     });
     if (!confirmed) return;
@@ -132,11 +163,29 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
   return <CompanionSheet visible={visible} title={t('groupChat.settings.title')} onClose={onClose} onClosed={onClosed}
     preventDismiss={busy !== null} testID="botGroup.settings">
     <View style={styles.content}>
+      {management ? <View style={styles.section} testID="botGroup.settings.management">
+        {management.loading ? <ActivityIndicator color={colors.textSecondary} /> : null}
+        {management.selected ? <BotGroupMenu title={t('groupChat.settings.managementComputer')} disabled={busy !== null || management.managers.length < 2}
+          testID="botGroup.settings.computerMenu" sections={[{ id: 'computers', options: management.managers.map(manager => ({
+            id: manager.host.deviceId, title: manager.host.deviceName,
+          })) }]} onSelect={management.select}>
+          {open => <Pressable accessibilityRole="button" disabled={busy !== null || management.managers.length < 2} onPress={open} style={[styles.group, styles.memberRow]}>
+            <Text style={[styles.rowTitle, styles.flex]}>{t('groupChat.settings.managementComputer')}</Text>
+            <Text style={styles.rowMeta}>{management.selected?.host.deviceName}</Text>
+          </Pressable>}
+        </BotGroupMenu> : null}
+        <Text style={styles.note}>{t(`groupChat.settings.management.${management.loading ? 'loading' : management.reason ?? 'ready'}`)}</Text>
+        {!management.loading && !management.selected ? <Pressable accessibilityRole="button" onPress={management.refresh}
+          style={[styles.group, styles.memberRow]} testID="botGroup.settings.retry">
+          <Text style={styles.rowTitle}>{t('groupChat.settings.retry')}</Text>
+        </Pressable> : null}
+      </View> : null}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>{t('groupChat.create.nameLabel')}</Text>
         <TextInput accessibilityLabel={t('groupChat.create.nameLabel')} value={name} maxLength={BOT_GROUP_NAME_MAX_CHARS}
-          editable={!locked || busy === 'name'} returnKeyType="done"
-          onChangeText={(value) => { setName(value); setErrors((current) => ({ ...current, name: undefined })); }}
+          editable={!locked} returnKeyType="done"
+          onChangeText={(value) => { if (!nameDirty.current || errors.name) nameRevision.current = group.revision;
+            nameDirty.current = true; setName(value); setErrors((current) => ({ ...current, name: undefined })); }}
           onFocus={() => { nameFocused.current = true; }}
           onBlur={() => { nameFocused.current = false; void saveName(); }}
           onSubmitEditing={() => void saveName()}
@@ -151,7 +200,8 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
             const identity = identityFor(member.botId, member.name);
             const active = isActiveBotGroupMember(member);
             const canOrganize = active && (!member.actorKind || member.actorKind === 'bot');
-            const removable = canRemove && (!member.actorKind || member.actorKind === 'bot' || group.supportsMemberRemoval === true);
+            const removable = canRemove && (!member.actorKind || member.actorKind === 'bot' || group.supportsMemberRemoval === true)
+              && (!serverManaged || (!member.isSelf && (owner || member.role !== 'owner')));
             const organizer = member.botId === group.organizerBotId;
             // G12: one row per member; a tap opens its menu (设为负责人 / 移出群聊) instead of two inline buttons.
             const options = [
@@ -211,7 +261,8 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
             {addable.map((row, index) => {
               const title = resolveRemoteText(row.item.display.title, i18n.language);
               return <Pressable key={row.key} accessibilityRole="button" accessibilityLabel={title} disabled={locked}
-                onPress={() => void setMembers([...memberIds, row.item.ref.id])}
+                onPress={() => { if (serverManaged) void run('members', 'add-member', { botId: row.item.ref.id }, 'groupChat.settings.membersSaveFailed').then(saved => { if (saved) setPicking(false); });
+                  else void setMembers([...memberIds, row.item.ref.id]); }}
                 style={({ pressed }) => [styles.memberRow, pressed && mobileInteractionStyles.pressed]}
                 testID={`botGroup.settings.addable.${row.item.ref.id}`}>
                 <BotGroupAvatar deviceId={host.deviceId} identity={{ botId: row.item.ref.id, name: title, avatar: row.item.display.avatar }}
@@ -261,14 +312,14 @@ export function BotGroupSettingsSheet({ visible, group, host, identityFor, onlin
       </View>
 
       <View style={styles.section}>
-        <Pressable accessibilityRole="button" accessibilityLabel={t('groupChat.settings.delete')} disabled={locked}
+        <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={locked || (serverManaged && !owner)}
           onPress={() => void remove()}
-          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, locked && styles.inactive]}
+          style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, (locked || (serverManaged && !owner)) && styles.inactive]}
           testID="botGroup.settings.delete">
           {busy === 'delete' ? <ActivityIndicator color={colors.destructive} /> : null}
-          <Text style={[styles.rowTitle, styles.destructive]}>{t('groupChat.settings.delete')}</Text>
+          <Text style={[styles.rowTitle, styles.destructive]}>{t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')}</Text>
         </Pressable>
-        <Text style={styles.note}>{t('groupChat.settings.deleteNote')}</Text>
+        <Text style={styles.note}>{t(archivesGroup ? 'groupChat.settings.archiveNote' : 'groupChat.settings.deleteNote')}</Text>
         {error('delete')}
       </View>
     </View>

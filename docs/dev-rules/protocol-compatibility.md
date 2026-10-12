@@ -11,6 +11,17 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 手机直连群的设置管理
+
+现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
+声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
+`expectedRevision`，Host 在调用服务前核验，群信息 PATCH 和归档继续携带该编辑版本给
+Chat Server。新增资源动作 `add-member` (`botId`) 只邀请一个本机可见伙伴，不替换成员名单；
+移出仍使用已有 `remove-member` 和 actor ID。旧手机忽略能力并保留原动作；新版手机遇到旧
+Host 显示更新提示。账号切换、关闭设置、断连或撤销设备使旧读取和未发出的操作失效。
+复用原有 collection、channel、订阅、账号和群权限，不扩 IPC allowlist、relay、服务端
+schema、数据库或 Mobile 原生指纹。完整管理需要两端客户端更新。
+
 ## 实时生成速度
 
 既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、

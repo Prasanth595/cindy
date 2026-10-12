@@ -361,6 +361,8 @@ export interface BotGroupCreateInput {
 
 export interface BotGroupUpdateInput {
   groupId: string;
+  /** Optional optimistic precondition for server-backed settings. */
+  expectedRevision?: number;
   name?: string;
   replyMode?: BotGroupReplyMode;
   speakingMode?: BotGroupSpeakingMode;
@@ -374,6 +376,8 @@ export interface BotGroupSetMembersInput {
   groupId: string;
   /** Complete ordered member list. */
   botIds: string[];
+  /** Server-backed additive invite; preserves every existing member. */
+  addOnly?: boolean;
 }
 
 export interface BotGroupSendInput {
@@ -456,6 +460,7 @@ export type BotGroupRemoteActionId =
   | 'stop'
   | 'update'
   | 'set-members'
+  | 'add-member'
   | 'remove-member'
   | 'delete'
   | 'plan-start'
@@ -477,6 +482,8 @@ export interface BotGroupRemoteChatData extends BotGroupDetail {
   supportsAttachments?: boolean;
   /** Host supports removing one server actor, including a human. */
   supportsMemberRemoval?: boolean;
+  /** Revision-checked settings and additive `add-member` ({ botId }) on server groups. */
+  supportsSettingsManagement?: boolean;
 }
 
 export const BOT_GROUP_CLIENT_ID_PREFIX = 'bot-group:';

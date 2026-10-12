@@ -6,6 +6,7 @@ import { BOT_GROUP_RUNTIME_FAILURE_CODES, type BotGroupRemoteChatData } from '@c
 
 const h = vi.hoisted(() => ({
   chat: null as any,
+  management: null as any,
   alert: vi.fn(),
   confirm: vi.fn(),
   leave: vi.fn(),
@@ -190,6 +191,9 @@ vi.mock('@/session/MessageRenderer', () => ({
 vi.mock('@/session/useBotGroupRemoteMedia', () => ({ useBotGroupRemoteMedia: () => async () => { throw new Error('offline'); } }));
 vi.mock('@/session/useHostTeammates', () => ({ useHostTeammates: () => h.teammates }));
 vi.mock('@/session/useBotGroupChat', () => ({ useBotGroupChat: () => h.chat }));
+vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsManagement: () => h.management ?? ({
+  selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh: vi.fn(),
+}) }));
 
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
@@ -257,6 +261,7 @@ async function render(data: BotGroupRemoteChatData | null = group(), kind: 'read
 }
 
 beforeEach(() => {
+  h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammates = { rows: [], loading: false, failed: false };
   h.platform.OS = 'ios'; h.keyboardAvoidingView = null;
@@ -792,6 +797,46 @@ describe('group settings', () => {
     await click('botGroup.settingsButton');
     expect(byId('botGroup.settings')).not.toBeNull();
   }
+
+  it('keeps a failed name draft and lets the user retry it', async () => {
+    await openSettings(); h.chat.act.mockRejectedValueOnce(new Error('PRECONDITION_FAILED'));
+    await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('保留草稿'); });
+    await act(async () => { await h.inputs['botGroup.settings.name'].onSubmitEditing(); });
+    expect(h.inputs['botGroup.settings.name'].value).toBe('保留草稿');
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.conflict');
+    await act(async () => { await h.inputs['botGroup.settings.name'].onSubmitEditing(); });
+    expect(h.chat.act).toHaveBeenLastCalledWith('update', { name: '保留草稿' });
+  });
+
+  it('edits a direct server group through the management host while chat stays direct', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsMemberRemoval: true, revision: 5 });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    h.chat.server = true;
+    const manage = vi.fn(async () => ({ effects: [] }));
+    h.management = { selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
+      act: manage, refresh: vi.fn(), select: vi.fn() };
+    h.teammates = { rows: [{ key: 'new', host: { deviceId: 'pc', deviceName: 'PC' }, item: {
+      ref: { collectionId: 'teammates', kind: 'bot', id: 'new-bot' }, revision: '1', display: { title: 'New bot' }, links: [],
+    } }], loading: false, failed: false };
+    await openSettings(data);
+    expect(h.inputs['botGroup.settings.name'].editable).toBe(true);
+    await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('Managed'); });
+    await act(async () => { await h.inputs['botGroup.settings.name'].onSubmitEditing(); });
+    expect(manage).toHaveBeenCalledWith('update', { name: 'Managed', expectedRevision: 5 });
+    expect(h.chat.act).not.toHaveBeenCalled(); expect(h.chat.reload).toHaveBeenCalled();
+    await click('botGroup.settings.add'); await click('botGroup.settings.addable.new-bot');
+    expect(manage).toHaveBeenLastCalledWith('add-member', { botId: 'new-bot', expectedRevision: 5 });
+  });
+
+  it('explains unavailable management and offers retry without enabling edits', async () => {
+    h.chat.server = true; await openSettings(group({ serverBacked: true }));
+    expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
+    expect(byId('botGroup.settings.management')?.textContent).toContain('groupChat.settings.management.noHost');
+    expect(byId('botGroup.settings.retry')).not.toBeNull();
+    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.archive');
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.archiveNote');
+    expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
+  });
 
   it('renames, changes the organizer and edits members on this computer', async () => {
     h.teammates = { rows: [{ key: 'k', host: { deviceId: 'mac', deviceName: 'Mac' }, item: {

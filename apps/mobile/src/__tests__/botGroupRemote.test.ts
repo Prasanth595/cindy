@@ -45,6 +45,13 @@ function chatData(overrides: Record<string, unknown> = {}) {
 }
 
 describe('parseBotGroupChatData', () => {
+  it('retains validated management roles, revisions and capability without granting them to old hosts', () => {
+    const parsed = parseBotGroupChatData(chatData({ revision: 3, supportsSettingsManagement: true,
+      members: [{ botId: 'mimi', name: 'Mimi', role: 'admin', isOwned: true }] }));
+    expect(parsed).toMatchObject({ revision: 3, supportsSettingsManagement: true, members: [{ role: 'admin', isOwned: true }] });
+    expect(parseBotGroupChatData(chatData({ revision: -1 }))?.revision).toBeUndefined();
+    expect(parseBotGroupChatData(chatData())?.supportsSettingsManagement).toBe(false);
+  });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('preserves only allowlisted runtime failure codes from the computer: %s', runtimeFailureCode => {
     const data = chatData({ messages: [{ id: 'failure', sequence: 1, kind: 'notice', authorKind: 'system',
       authorName: 'Bot', content: '', createdAt: 1, noticeCode: 'member-failed', runtimeFailureCode }] });

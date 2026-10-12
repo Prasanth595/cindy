@@ -1197,13 +1197,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     },
     updateGroup: input => safe(async () => {
       const i = z.object({ groupId: id, name: z.string().min(1).max(40).optional(), replyMode: z.enum(['all', 'mentioned']).optional(),
-        speakingMode: z.enum(['auto', 'sequential']).optional(), organizerBotId: z.string().nullable().optional(), projectDir: z.string().max(4096).nullable().optional() }).parse(input);
+        speakingMode: z.enum(['auto', 'sequential']).optional(), organizerBotId: z.string().nullable().optional(), projectDir: z.string().max(4096).nullable().optional(), expectedRevision: z.number().int().positive().optional() }).parse(input);
       i.groupId = await resolveGroup(i.groupId);
       const s = await snapshot(i.groupId);
       let projectDir = i.projectDir;
       if (projectDir) { const checked = await deps.validateProjectDir?.(projectDir); if (!checked?.ok) throw new Error('INVALID_DIRECTORY'); projectDir = checked.dir; }
       const organizerId = i.organizerBotId ? actors.find(a => a.externalId === i.organizerBotId)?.id ?? id.parse(i.organizerBotId) : i.organizerBotId;
-      if (i.name !== undefined || i.replyMode !== undefined || i.speakingMode !== undefined || organizerId !== undefined) await api(`/conversations/${i.groupId}`, 'PATCH', { operationId: randomUUID(), expectedRevision: s.room.revision,
+      if (i.name !== undefined || i.replyMode !== undefined || i.speakingMode !== undefined || organizerId !== undefined) await api(`/conversations/${i.groupId}`, 'PATCH', { operationId: randomUUID(), expectedRevision: i.expectedRevision ?? s.room.revision,
         name: i.name, responseMode: i.replyMode, speakingMode: i.speakingMode, organizerId }, managementActor(s));
       if (projectDir !== undefined) workspaces().save(i.groupId, { ...workspaces().read(i.groupId) ?? { plans: {} }, projectDir });
       changed(i.groupId); return { ok: true as const };
@@ -1229,10 +1229,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return true;
     },
     setMembers: input => safe(async () => {
-      const i = z.object({ groupId: id, botIds: z.array(z.string()).max(6) }).parse(input);
+      const i = z.object({ groupId: id, botIds: z.array(z.string()).max(6), addOnly: z.boolean().optional() }).parse(input);
       const room = await resolveGroup(i.groupId); const s = await snapshot(room);
       const selected = i.botIds.map(bot => actors.find(a => a.externalId === bot)?.id ?? id.parse(bot));
-      for (const m of s.members.filter(m => m.kind === 'bot' && m.state === 'joined' && !selected.includes(m.id)))
+      for (const m of s.members.filter(m => !i.addOnly && m.kind === 'bot' && m.state === 'joined' && !selected.includes(m.id)))
         await api(`/conversations/${room}/members`, 'POST', { operationId: randomUUID(), actorId: m.id, action: 'remove' }, managementActor(s));
       for (const actorId of selected.filter(bot => !s.members.some(m => m.id === bot && m.state === 'joined')))
         await api(`/conversations/${room}/members`, 'POST', { operationId: randomUUID(), actorId, action: 'invite' }, managementActor(s));

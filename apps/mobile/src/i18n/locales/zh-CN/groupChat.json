@@ -147,7 +147,7 @@
     "minMembers": "群里至少要有 {{min}} 位伙伴",
     "maxMembers": "最多 {{max}} 位",
     "noMoreBots": "没有其他可以加入的伙伴了",
-    "nameSaveFailed": "群名称没能保存，已恢复原来的名字",
+    "nameSaveFailed": "群名称没能保存，输入已保留，请重试。",
     "membersSaveFailed": "成员没能更新，请再试一次",
     "replyMode": "没有 @ 人的时候",
     "replyModeAll": "大家都可以接话",
@@ -173,7 +173,21 @@
     "projectDirNote": "分工做事时，伙伴们在这里干活。不选也行，会用这个群自己的文件夹；选了 git 项目，每次分工会新开一个 worktree 和分支，不动你手上的代码。",
     "add": "添加伙伴",
     "projectDirOnComputer": "在电脑上选择或更换",
-    "memberActions": "{{name}} 的操作"
+    "memberActions": "{{name}} 的操作",
+    "managementComputer": "管理电脑",
+    "retry": "重试",
+    "conflict": "群设置已更新，请核对后再保存。输入已保留。",
+    "archive": "归档群聊",
+    "archiveConfirmTitle": "归档「{{name}}」？",
+    "archiveNote": "仅群主可归档。归档后不能继续发消息，历史消息保留。",
+    "management": {
+      "loading": "正在查找可管理这个群的电脑…",
+      "ready": "修改通过所选电脑保存，电脑离线时仍可在群里发消息。",
+      "noHost": "未找到可管理这个群的在线电脑。请打开电脑上的 Cindy 并启用远程控制，然后重试。",
+      "permission": "当前账号没有群主或管理员权限，暂时只能查看。",
+      "upgrade": "请先更新电脑上的 Cindy，再重试群设置。",
+      "unavailable": "群设置暂时无法读取，请检查电脑连接后重试。"
+    }
   },
   "errors": {
     "memberLimit": "一个群需要 2–6 位伙伴",

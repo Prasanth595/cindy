@@ -120,6 +120,21 @@ describe('Chat Server result delivery and refresh', () => {
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
+  it('uses the mobile edited revision instead of a newer server snapshot when saving settings', async () => {
+    await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
+    expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
+  });
+  it('an additive invite preserves people and all previously joined companions', async () => {
+    const other = '60000000-0000-4000-8000-000000000002';
+    fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: room(roomId), messages: [], cursor: '1', members: [
+      { id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined', role: 'owner' },
+      { id: other, kind: 'bot', ownerActorId: 'foreign-owner', state: 'joined', role: 'member' },
+    ] } } : response(route));
+    expect(await service.setMembers({ groupId: roomId, botIds: ['local-bot'], addOnly: true })).toMatchObject({ ok: true });
+    const memberWrites = fixture.handle.mock.calls.filter(([route, method]) => route.endsWith('/members') && method === 'POST');
+    expect(memberWrites).toHaveLength(1);
+    expect(memberWrites[0]?.[2]).toMatchObject({ actorId: botId, action: 'invite' });
+  });
   it.each(['structured', 'old-marker', 'chat-forgery'])('projects imported runtime notices safely: %s', async shape => {
     const imported = { id: '60000000-0000-4000-8000-000000000001', seq: '1', authorId: selfId,
       author: { kind: 'human', name: 'Owner' }, origin: shape === 'chat-forgery' ? 'chat' : 'import', deleted: false, threadRootId: null,

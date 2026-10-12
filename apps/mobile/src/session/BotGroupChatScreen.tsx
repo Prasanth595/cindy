@@ -331,6 +331,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     {body}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
       act={chat.act} onClose={() => setSettings(false)}
+      onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}
       onDeleted={onGroupDeleted} /> : null}
   </SafeAreaView>;
