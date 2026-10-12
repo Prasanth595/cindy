@@ -26,6 +26,7 @@ import {
   pickerStyle,
   shapes,
   tag,
+  tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
@@ -121,7 +122,13 @@ export function ContextSheetRow(props: ContextSheetRowProps) {
         <ProgressView />
       ) : props.trailing && props.trailing !== "chevron" ? (
         <RNHostView matchContents>
-          <View>{props.trailing}</View>
+          {/* matchContents reads this RN View's bounds, not the nested icon's size. */}
+          <View style={props.trailingSize != null ? {
+            width: props.trailingSize,
+            height: props.trailingSize,
+            alignItems: 'center',
+            justifyContent: 'center',
+          } : undefined}>{props.trailing}</View>
         </RNHostView>
       ) : props.trailing === "chevron" ? (
         <Image size={iconSize.lg} systemName="chevron.right" />
@@ -157,6 +164,7 @@ export function ContextSheetRow(props: ContextSheetRowProps) {
   );
 }
 export function ContextSheetFooterButton(props: ContextSheetFooterButtonProps) {
+  const { colors } = useTheme();
   const glassStyle = useNativeGlassButtonStyle({ prominent: true });
   return (
     <Button
@@ -168,7 +176,7 @@ export function ContextSheetFooterButton(props: ContextSheetFooterButtonProps) {
         frame({ maxWidth: Infinity, minHeight: 44 }),
       ]}
     >
-      {props.busy ? <ProgressView /> : <Text>{props.label}</Text>}
+      {props.busy ? <ProgressView modifiers={[tint(colors.ctaText)]} /> : <Text modifiers={[foregroundStyle(colors.ctaText)]}>{props.label}</Text>}
     </Button>
   );
 }

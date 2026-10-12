@@ -118,6 +118,37 @@ describe('makerChatStore.mirrorAgentSwitchIntent', () => {
     expect(makerChatStore.getSnapshot(s)).toBe(snap); // 引用不变 = 未触发更新
   });
 
+  it('远程 Agent 换电脑:位置随意图镜像(null = 任务所在电脑),脏值按位置不变处理', async () => {
+    const { makerChatStore } = await import('@/lib/makerChatStore');
+    const s = sid();
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'anthropic/claude-opus-5-5[1m]',
+      providerId: 'xd',
+      agentDeviceId: null,
+    });
+    expect(makerChatStore.getSnapshot(s).agentSwitchIntent).toMatchObject({ agentDeviceId: null });
+
+    // 位置不同 = 不同的意图,不能当成同一份回声吞掉。
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'anthropic/claude-opus-5-5[1m]',
+      providerId: 'xd',
+      agentDeviceId: 'studio-mac',
+    });
+    expect(makerChatStore.getSnapshot(s).agentSwitchIntent?.agentDeviceId).toBe('studio-mac');
+
+    makerChatStore.mirrorAgentSwitchIntent(s, {
+      targetAgentKind: 'claude-code',
+      model: 'm',
+      providerId: 'xd',
+      agentDeviceId: 42,
+    });
+    const intent = makerChatStore.getSnapshot(s).agentSwitchIntent;
+    expect(intent?.model).toBe('m');
+    expect(intent && 'agentDeviceId' in intent).toBe(false);
+  });
+
   it('null / 非法值 = 无意图 → 清除', async () => {
     const { makerChatStore } = await import('@/lib/makerChatStore');
     const s = sid();
@@ -839,10 +870,21 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(source).toMatch(
       /!unifiedPanelActive &&\s*\n\s*sessionId &&\s*\n\s*vendorKey &&\s*\n\s*!remoteHostId &&\s*\n\s*sessionAgentSwitchSupported/,
     );
-    expect(source).toContain('ccCaps.capabilities?.supportsSessionAgentSwitch === true');
-    expect(source).toContain('ccCaps.capabilities.supportsSessionAgentSwitchCas === true');
-    expect(source).toContain('codexCaps.capabilities?.supportsSessionAgentSwitch === true');
-    expect(source).toContain('codexCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    expect(source).toContain('hostCcCaps.capabilities?.supportsSessionAgentSwitch === true');
+    expect(source).toContain('hostCcCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    expect(source).toContain('hostCodexCaps.capabilities?.supportsSessionAgentSwitch === true');
+    expect(source).toContain('hostCodexCaps.capabilities.supportsSessionAgentSwitchCas === true');
+    // 能力位读**任务所在的被控电脑**,不跟模型目录走(2026-10-09 review P1):Agent 在离线的
+    // 第三台电脑时目录读不到,入口不能因此消失,否则改不回被控电脑。
+    expect(source).toMatch(
+      /const hostCcCaps = useAgentCapabilities\(\s*deviceLinkDeviceId \? 'claude-code' : null,\s*deviceLinkDeviceId \?\? undefined,\s*\);/,
+    );
+    expect(source).toMatch(
+      /const hostCodexCaps = useAgentCapabilities\(\s*deviceLinkDeviceId \? 'codex' : null,\s*deviceLinkDeviceId \?\? undefined,\s*\);/,
+    );
+    expect(source).toContain(
+      "hostCcCaps.capabilities?.supportsSessionAgentSwitchCas === true ||\n    hostCodexCaps.capabilities?.supportsSessionAgentSwitchCas === true;",
+    );
     const hostSource = readFileSync(
       resolve(process.cwd(), 'src/main/maker-ipc/register.ts'),
       'utf8',
@@ -937,7 +979,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
       'const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);',
     );
     const invoke = source.indexOf(
-      'const result = await switchApi.switchSessionAgent(',
+      // 换电脑时多带一个位置参数,两种调用形态共用同一个 result。
+      'const result = relocateTo !== undefined',
       reservation,
     );
     const scopeGuard = source.indexOf(

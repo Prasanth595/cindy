@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { expect, it, vi } from 'vitest';
 import { appendAutoReviewUserIntent, AUTO_REVIEW_DELEGATED_CONTINUATION, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, MAIN_OWNED_SEND_CONTEXT, type SendOptions } from '@cindy/maker-core';
+import { HOST_ONLY_AGENT_PREFIX, buildMakerUserMessage, sanitizeQueuedMessageForPersistence } from '../../../shared/agentInputQueue.js';
+import { redactInputProjectionForSharedGuest } from '../../device-link/sharedTaskMessageOrigin.js';
 
 const source = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8');
 const compile = (code: string) => ts.transpileModule(code, {
@@ -49,7 +51,11 @@ it('marks plugin dispatch and every queue fallback with the host-only receipt', 
   expect(dispatch).toContain("message: text, autoReviewUserText: { kind: 'delegated-continuation' }, forceQueue: true");
   const queues = [...dispatch.matchAll(/await enqueueSendToSessionMessage\(\{([\s\S]*?)\}\);/g)];
   expect(queues).toHaveLength(4);
-  for (const call of queues) expect(call[1]).toContain('autoReviewUserText: params.autoReviewUserText');
+  for (const call of queues) {
+    expect(call[1]).toContain('autoReviewUserText: params.autoReviewUserText');
+    // 插件来源随每个入队回退分支传递(含 queued-before-dispatch 竞态),排队项不丢插件身份。
+    expect(call[1]).toMatch(/\bsourcePlugin\b/);
+  }
   // Both newly created and resumed direct tasks persist the same authored metadata.
   expect(dispatch.match(/agentMeta: inputAgentMeta/g)).toHaveLength(2);
 });
@@ -69,14 +75,60 @@ it('builds a durable queued plugin input without promoting plugin text to user i
   const end = source.indexOf('  const orcaInterAgentDispatcher:', start);
   expect(start).toBeGreaterThan(0);
   const createOpts = { model: 'm', effort: 'high', permissionMode: 'auto', workingDir: '/answer' };
-  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk',
+  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX',
     compile(source.slice(start, end) + '\nreturn buildSessionControlInputItem;'))(
-      vi.fn(async () => createOpts), (mode: string) => mode,
+      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX,
     );
   const base = { targetSessionId: 'lead', clientId: 'plugin-input', message: 'Plugin instructions', persistedContent: 'Plugin instructions', meta: {} };
   const queued = JSON.parse(JSON.stringify(await build({ ...base, autoReviewUserText: { kind: 'delegated-continuation' } })));
   expect(queued).toMatchObject({ text: base.message, persistedContent: base.persistedContent, autoReviewUserText: { kind: 'delegated-continuation' }, permissionMode: 'auto' });
   expect(await build(base)).not.toHaveProperty('autoReviewUserText');
+  expect(await build(base)).not.toHaveProperty('agentOmitsTriggerPrefix');
+  // Plugin attribution travels on the queued item for the label and source note; it is not an origin.
+  const fromPlugin = await build({ ...base, sourcePlugin: { pluginId: 'gh-1', name: 'Reviewer' } });
+  expect(fromPlugin).toMatchObject({ sourcePlugin: { pluginId: 'gh-1', name: 'Reviewer' } });
+  expect(fromPlugin).not.toHaveProperty('origin');
+});
+
+it('keeps host receipts hidden in the queue while the model text omits the trigger prefix', async () => {
+  const start = source.indexOf('  async function buildSessionControlInputItem(params: {');
+  const end = source.indexOf('  const orcaInterAgentDispatcher:', start);
+  const createOpts = { model: 'm', effort: 'high', permissionMode: 'auto', workingDir: '/answer' };
+  const build = new Function('buildCreateOptsForQueuedSession', 'permissionModeOrAsk', 'UI_ACTION_TRIGGER_PREFIX', 'HOST_ONLY_AGENT_PREFIX',
+    compile(source.slice(start, end) + '\nreturn buildSessionControlInputItem;'))(
+      vi.fn(async () => createOpts), (mode: string) => mode, '[UI_ACTION_TRIGGER]', HOST_ONLY_AGENT_PREFIX,
+    );
+  const receipt = '[任务回执] 后台任务已完成。task_id: d-1';
+  const queued = await build({
+    targetSessionId: 'lead', clientId: 'bot-delegation-completion:d-1', meta: {},
+    message: receipt, persistedContent: `[UI_ACTION_TRIGGER]${receipt}`,
+  });
+  // Queue rows mask on `text`; the prefix stays there and is dropped at wire assembly.
+  expect(queued).toMatchObject({ text: `[UI_ACTION_TRIGGER]${receipt}`, persistedContent: `[UI_ACTION_TRIGGER]${receipt}`, agentOmitsTriggerPrefix: true });
+  // A group DM has a private wire envelope and a separate safe durable body.
+  // Keep the queue row hidden without substituting the safe body into the model input.
+  const envelope = '[Group source: Private group (group-private); lane: private-lane]\n\nMessage body';
+  const groupInput = await build({
+    targetSessionId: 'lead', clientId: 'bot-dm:fixture', meta: {},
+    message: envelope, persistedContent: '[UI_ACTION_TRIGGER]Message body',
+    origin: { kind: 'session', senderSessionId: 'private-lane', displayText: envelope },
+  });
+  expect(groupInput).toMatchObject({ text: '[UI_ACTION_TRIGGER]Message body', agentOmitsTriggerPrefix: true,
+    persistedContent: '[UI_ACTION_TRIGGER]Message body', chatMessage: { content: '[UI_ACTION_TRIGGER]Message body' } });
+  expect(buildMakerUserMessage(groupInput)).toMatchObject({ content: envelope });
+  const snapshot = sanitizeQueuedMessageForPersistence(groupInput);
+  expect(snapshot[HOST_ONLY_AGENT_PREFIX]).toBeUndefined();
+  expect(snapshot.text).toBe('[UI_ACTION_TRIGGER]Message body');
+  expect(snapshot.origin).toMatchObject({ kind: 'session', displayText: '[UI_ACTION_TRIGGER]Message body' });
+  expect(JSON.stringify(snapshot)).not.toContain('Group source:');
+  const guest = redactInputProjectionForSharedGuest({ pendingQueue: [groupInput], recovery: { item: groupInput } });
+  expect(JSON.stringify(guest)).not.toMatch(/Private group|group-private|private-lane|Group source/);
+  // Ordinary prefixed synthetic input (continue prompts) is untouched.
+  const continueItem = await build({
+    targetSessionId: 'lead', clientId: 'c', meta: {},
+    message: '[UI_ACTION_TRIGGER] continue', persistedContent: '[UI_ACTION_TRIGGER] continue',
+  });
+  expect(continueItem).not.toHaveProperty('agentOmitsTriggerPrefix');
 });
 
 it.each(['empty', 'user', 'worker', 'reserved', 'started', 'ended', 'unavailable'])('seals initial plans against persisted activity: %s', async state => {

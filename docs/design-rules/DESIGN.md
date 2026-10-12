@@ -69,7 +69,7 @@ the whole host application: title bar, navigation, messages, tool-pane chrome,
 settings and other host pages share continuous viewport-aligned artwork. This
 opt-in setting supersedes the CINDY sidebar-only backdrop treatment while active;
 disabling it restores the original theme without modifying theme files or tokens.
-Use a theme-surface veil, never a fixed black overlay in Light mode. Image opacity
+Blend wallpaper with the theme surface, never a fixed black overlay in Light mode. Image opacity
 must not affect text or icons. Elevated controls, menus, dialogs and embedded web
 or editor content keep their readable surfaces. Composer scroll masking must
 align with the same wallpaper instead of introducing an opaque footer rectangle.
@@ -78,10 +78,11 @@ Verify actual Light/Dark screenshots across host pages and the expanded tool pan
 
 The built-in wallpaper catalog contains only Window Companion, Future Atelier and Dream
 Wander, plus None to restore the theme canvas (user decision, 2026-10-01).
-Custom wallpaper is available through Choose image, Replace image and Remove image
-in the same section (user addition, 2026-10-01). Accept local PNG/JPEG/WebP up to
+Custom wallpaper is available through Choose Wallpaper, Replace Wallpaper and Remove Wallpaper
+in the same section (user addition, 2026-10-01; video support, 2026-10-05). Accept local PNG/JPEG/WebP up to
 20 MB and 40 megapixels, store a metadata-free static image up to 3840 pixels
-in the managed media store. Wallpaper selection and the custom image reference
+in the managed media store. Also accept local MP4 videos up to 100 MB, preserving their bytes;
+H.264 is recommended for playback compatibility. Wallpaper selection and the custom media reference
 are shared within the Desktop profile, just like theme preferences (user decision,
 2026-10-02). Import, replacement, removal and recycling are client-wide as well:
 no account database, account-bound operation guard or pre-release owner migration.
@@ -90,9 +91,36 @@ switching accounts (or signing out) keeps the same wallpaper. Font-only utility 
 custom media URLs.
 Detached sidebar and plugin-panel host chrome use the same wallpaper provider;
 embedded plugin webviews retain their own surfaces and permission boundary.
-Cancellation and import failures retain the existing image. Switching to a built-in
-or None keeps the imported image available; Remove image forgets it. Custom imagery
-shares the continuous cover-fit canvas and readability veil; no dynamic toggle.
+Cancellation and import failures retain the existing media. Switching to a built-in
+or None keeps the imported media available; Remove Wallpaper forgets it. Custom imagery
+shares the continuous cover-fit canvas and readability veil. Custom MP4 exposes the existing
+Static / Dynamic choice: Static and reduced motion show a paused frame; Dynamic loops silently
+and pauses when hidden/minimized. Playback failure releases the decoder, leaves the theme surface
+visible and shows an actionable error in wallpaper settings. The custom video tile uses a film icon
+instead of opening a second decoder for a thumbnail.
+Wallpaper Visibility ranges from 0% (hidden) to 100% (fully visible), in 1% steps
+(user decision, 2026-10-05). Static images use the theme-surface veil with opacity equal to
+100% minus visibility. Video uses visibility directly as the video element's opacity over
+an opaque theme-surface backing, without a separate translucent veil; this avoids the
+observed Windows HDR brightness shift when P3 content changes the output composition.
+The video wrapper's opacity is reserved for loading/exit crossfades. Never reduce text
+or control opacity. Release video playback at 0%. Blend-mode controls remain out of scope.
+Optional Wallpaper Blur (user addition, 2026-10-06) ranges from 0 (off, default) to 20
+in whole steps, applying a CSS-pixel radius only to the wallpaper image/video. No UI,
+theme backing, or text is blurred; video opacity remains on the video itself. At zero,
+retain the existing filter-free rendering path. Overscan the artwork by three radii
+and clip the video at the viewport to avoid transparent edges; static and video crops
+must match. For blurred static scenes, reuse the moving-scene message fade instead
+of repainting a sharp wallpaper behind the composer. Persist only explicit overrides;
+Reset removes the blur override. Reuse the settings Slider with a localized accessible
+label and hint, disable it for None, and explain the additional GPU cost for video.
+Dragging previews blur locally; only a committed pointer/keyboard value is saved and
+broadcast. Cancelled gestures or leaving settings discard the preview.
+Existing preferences without an explicit visibility override keep the previous Light/Dark veil
+mapping and display its equivalent visibility. The unchanged soft default is 37% visible in
+Light and 27% in Dark. Adjusting the slider saves literal visibility, shared across themes;
+Reset removes that override and restores the theme-dependent default. Do not rewrite old
+preferences just because they were read or a theme changed.
 Remove the previous arrow, standalone portrait, gradient and paper
 options and assets. Retired saved selections normalize to None; unrelated theme
 and font preferences remain unchanged. All three scenes use the same cover fit,
@@ -464,9 +492,9 @@ Reference implementation: `apps/desktop/src/renderer/components/ui/confirm-dialo
 
 **Cindy Make preflight exception (owner decision, 2026-09-20):** this progress dialog uses a top-right × instead of a footer Cancel. The header stays visible while the report scrolls. The ×, Esc and scrim all open the same confirmation, with live copy distinguishing environment preparation, source preparation, upstream search and finished checks. Explain that stopping shared preparation also stops its Settings projection and that prepared resources are kept. Creating the build session temporarily disables dismissal. This exception supersedes the general closing-affordance rule below only for `CindyMakePreflightDialog`; the request form keeps its existing footer.
 
-- **Overlay**: the full-screen scrim uses the `--overlay-modal` token (ConfirmDialog's current `neutral-900/40` hardcoded pair is legacy — **new dialogs always use the token**; do not copy the legacy pair).
+- **Overlay** (blur added 2026-10-04): every modal scrim — Radix `Dialog.Overlay` / `AlertDialog.Overlay`, hand-built scrims and the Radix side drawers — uses the shared `.modal-scrim` class (`styles/globals.css`): `--overlay-modal` (Light `rgba(0,0,0,0.5)` / Dark `rgba(0,0,0,0.7)`) plus a 4px `backdrop-filter` blur of whatever is behind; on Windows (`html[data-platform='win32']`) there is no blur, the same reason as the opaque Windows menus (§15.12). Never write a scrim colour, `bg-black/…`, `backdrop-blur-*` or an inline background at the call site; to change depth or blur, change the token or the class, never one component. Not dialogs and therefore not covered: the lighter whole-window closing dim in `WindowControls.tsx`, the tap-to-close drawer scrims in `DiffPanelShell.tsx`, lightboxes (`--overlay-lightbox`), the login brand canvas (§16) and the transparent click blocker behind anchored plugin-card prompts.
 - **Tooltips opened inside the modal** (2026-09-08, DS-6 review fix): the shared `Tip` portals its content to `document.body` on the default `z-[60]` layer — **below** the `z-[10000]` modal overlay, so an unraised tooltip is covered by its own dialog. Any `Tip` whose trigger lives inside a modal must raise its content above the host dialog: pass `contentClassName="z-[10001]"` to `Tip`, and `secretTipContentClassName="z-[10001]"` on `Input` for the password reveal button (both DS-6 forms do). This mirrors the existing `z-[10001]` popover/dropdown convention inside `z-[10000]` dialogs.
-- **Container**: a container — 12px radius (`rounded-xl`), `--confirm-bg`, `--confirm-shadow`, 16px padding (`p-4`), centered. Width: confirm/notice dialogs ≈ 400px (`max-w-[400px]`); dialogs with inputs/forms may widen to ≈ 460px and shrink with the viewport (`min(460px, 100vw-32px)`). The DS-6 multi-runtime provider and MCP forms use 600px with the same 16px viewport gutters and a scrollable body capped within 88vh.
+- **Container**: every centered modal panel uses the shared `.modal-panel` class — 12px radius, `--confirm-bg` Card fill, 1px Board (`--border-default`) outline and the registered floating-layer shadow `--shadow-menu` — the same shadow as menu panels (2026-10-04 unification; user ruling the same day). Bot dialogs share this panel; the Bot zero-shadow rule covers in-page Bot surfaces, not modal panels. Call sites never add their own radius, background, border colour or shadow, nor glass `--cmd-palette-bg`; they set only width, position, padding (16px `p-4` by default) and layout. Radix side drawers keep their own edge-anchored panel and share only the scrim. Guard: `__tests__/modalSurfaceContract.test.ts`. Width: confirm/notice dialogs ≈ 400px (`max-w-[400px]`); dialogs with inputs/forms may widen to ≈ 460px and shrink with the viewport (`min(460px, 100vw-32px)`). The DS-6 multi-runtime provider and MCP forms use 600px with the same 16px viewport gutters and a scrollable body capped within 88vh.
 - **Title / description**: `--confirm-title` / `--confirm-desc`, medium weight.
 - **Buttons**: pill (9999px); primary = inverse neutral (`--confirm-btn-primary-*`, not an automatic CTA assignment), secondary/cancel = outlined (`--confirm-btn-secondary-*`, transparent fill + Board border); footer `justify-end`.
 - **Focus on open**: dismissible forms focus their primary input. Ordinary AlertDialog confirmation retains Cancel by default; explicit `autoFocusConfirm` focuses the primary action, while a required typed confirmation takes precedence. Preserve primary → optional third → Cancel DOM order (DS-6 decision).
@@ -660,7 +688,7 @@ Making something clickable never moves a layer between Step 1 and Step 2.
 | Bordered (Level 1) | `1px solid` Board (`#d7d7d4` Light / `#3c3c3a` Dark)                      | Cards, code blocks, dividers, section outlines |
 | Lifted (Card)      | Card fill (`#ffffff` Light / `#2c2c2a` Dark) + optional 1px Board outline | Login cards, modals, raised panels             |
 
-**Shadow Philosophy**: Cindy's base visual language uses **zero shadows**. This is not an oversight — it's a deliberate design decision. The flat, shadowless approach creates a paper-like experience where elements are distinguished purely by background color and single-pixel borders. Depth is communicated through **content hierarchy and typography weight**, not visual layering. (The only shadows in the system are the mobile home drawer exception above and the token-gated floating-layer exceptions and the Slider thumb (§15.18) / Segmented selected-pill (§4) exceptions registered in §10 — `--shadow-menu` / `--cmd-palette-shadow` / `--confirm-shadow` / `--segmented-selected-shadow`; never add ad-hoc shadows to in-page elements. A Switch-knob shadow was trialed and explicitly rejected — user ruling 2026-08-05: the legacy `shadow-lg` on the 16px thumb was invisible in practice, and a visible replacement read as noise; the knob is flat by decision, don't re-add it.)
+**Shadow Philosophy**: Cindy's base visual language uses **zero shadows**. This is not an oversight — it's a deliberate design decision. The flat, shadowless approach creates a paper-like experience where elements are distinguished purely by background color and single-pixel borders. Depth is communicated through **content hierarchy and typography weight**, not visual layering. (The only shadows in the system are the mobile home drawer exception above and the token-gated floating-layer exceptions and the Slider thumb (§15.18) / Segmented selected-pill (§4) exceptions registered in §10 — `--shadow-menu` (menus, popovers and modal panels, §4) / `--cmd-palette-shadow` / `--segmented-selected-shadow` (`--confirm-shadow` stays registered for theme compatibility but is no longer consumed by dialogs); never add ad-hoc shadows to in-page elements. A Switch-knob shadow was trialed and explicitly rejected — user ruling 2026-08-05: the legacy `shadow-lg` on the 16px thumb was invisible in practice, and a visible replacement read as noise; the knob is flat by decision, don't re-add it.)
 
 ## 7. Do's and Don'ts
 
@@ -1030,7 +1058,7 @@ long duration to leak into any other hover or transition.
 | Semantic                                    | Spec                                                                                                                                                                                                                                                                                         | Reference implementation                        |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | Light overlay (menu / popover / tooltip)    | In: `animate-float-in` (opacity + scale 0.97→1, fast/ease-out; pure-opacity tooltips use `animate-fade-in`). Out: `animate-float-out` (opacity only, instant/ease-in). **Exit is always faster than enter, and never scales** (a scaling exit reads as "sucked away" — paper fades in place) | `components/ui/dropdown-menu.tsx`               |
-| Heavy overlay (modal / confirm)             | In: 250ms fade + scale 0.95→1; out: 150ms                                                                                                                                                                                                                                                    | `components/ui/confirm-dialog.tsx`              |
+| Heavy overlay (modal / confirm)             | Every modal, from the shared `.modal-scrim` / `.modal-panel` (2026-10-04): scrim fades in; panel fades in + rises 8px + scale 0.96→1 on `--motion-enter` / `--motion-ease-out` (entrance borrowed from Fluid Functionalism's chat-message). Out: fade only on `--motion-exit` / `--motion-ease-in` — a dismissal does not replay the entrance. Radix dialogs animate by `data-state`; hand-built dialogs have the entrance only. Call sites add no `animate-*` classes | `styles/globals.css`, `__tests__/modalSurfaceContract.test.ts` |
 | Expand / collapse                           | base/ease-move, grid `0fr↔1fr` height + opacity                                                                                                                                                                                                                                              | `features/cc-agent/sidebar/SectionCollapse.tsx` |
 | List reorder                                | FLIP, transform translation                                                                                                                                                                                                                                                                  | `components/ui/toast/ToastContainer.tsx`        |
 | Press                                       | Shared Desktop Button / ChromeIconButton / SidebarIconButton: paint-only 1px inset, instant/ease-out, stable text and hitbox (§4). Legacy frames retain their existing `active:scale-[0.98]` until separately migrated. Registered shapes follow §5; a button tag does not authorize scaling a contained data mark or its data mapping. | `components/ui/button.css` |
