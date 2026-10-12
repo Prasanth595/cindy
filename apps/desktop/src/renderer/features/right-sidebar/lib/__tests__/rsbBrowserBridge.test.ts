@@ -21,6 +21,7 @@ import {
   _resetRsbBrowserBridgeForTests,
   consumePendingKillCause,
   forceKillBrowserTab,
+  eagerSpawnAndReport,
   initRsbBrowserBridge,
   PENDING_KILL_CAUSE_TTL_MS,
   releaseRsbBrowserTab,
@@ -485,6 +486,49 @@ describe('rsbBrowserBridge — initialization & teardown', () => {
     );
 
     acquireSpy.mockRestore();
+  });
+
+  it('eager registration waits for main IPC before acknowledging an attached guest', async () => {
+    const api = installFakeIpc();
+    let registered!: () => void;
+    api.report.mockImplementation(() => new Promise<void>((resolve) => { registered = resolve; }));
+    const entry = browserWebviewPool.acquire('attached-tab');
+    entry.webview.getWebContentsId = () => 77;
+    let finished = false;
+    const pending = eagerSpawnAndReport('owner-session', 'attached-tab', 'https://example.test')
+      .then(() => { finished = true; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    registered();
+    await pending;
+    expect(finished).toBe(true);
+  });
+
+  it('focus restores registration of an existing browser tab', async () => {
+    const api = installFakeIpc();
+    initRsbBrowserBridge();
+    await ensureHydrated('owner');
+    const tab = await addTab('owner', 'web-browser', { url: 'https://example.test' });
+    const entry = browserWebviewPool.acquire(tab.id);
+    entry.webview.getWebContentsId = () => 78;
+    api.tabOpCb?.({ reqId: 'focus-existing', op: 'focus', sessionId: 'owner', tabId: tab.id });
+    await vi.waitFor(() => expect(api.tabOpResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reqId: 'focus-existing', ok: true, tabId: tab.id }),
+    ));
+    expect(api.report).toHaveBeenCalledWith({ sessionId: 'owner', tabId: tab.id, webContentsId: 78 });
+  });
+
+  it('ensure cannot restore a tab belonging to another session', async () => {
+    const api = installFakeIpc();
+    initRsbBrowserBridge();
+    await ensureHydrated('owner');
+    const tab = await addTab('owner', 'web-browser', { url: 'https://example.test' });
+    api.tabOpCb?.({ reqId: 'foreign', op: 'ensure', sessionId: 'other', tabId: tab.id });
+    await vi.waitFor(() => expect(api.tabOpResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reqId: 'foreign', ok: false }),
+    ));
+    expect(api.report).not.toHaveBeenCalled();
+    expect(browserWebviewPool.peek(tab.id)).toBeNull();
   });
 
   it('tab-op request: close routes through store and acks with ok=false on unknown session (P3)', async () => {

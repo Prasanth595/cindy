@@ -35,6 +35,19 @@ describe('browserWebviewPool', () => {
     expect(BROWSER_WEBVIEW_POOL_CAPACITY).toBe(5);
   });
 
+  it('keeps parked automation pages at a usable invisible viewport inside compositor bounds', () => {
+    const entry = browserWebviewPool.acquire('background-tab');
+    const parking = entry.wrapper.parentElement!;
+    expect(parking.isConnected).toBe(true);
+    expect(parking.style.width).toBe('1280px');
+    expect(parking.style.height).toBe('720px');
+    expect(parking.style.left).toBe('0px');
+    expect(parking.style.opacity).toBe('0');
+    expect(parking.style.zIndex).toBe('-1');
+    expect(parking.getAttribute('aria-hidden')).toBe('true');
+    expect(parking.style.pointerEvents).toBe('none');
+  });
+
   it('acquire returns same entry on repeated tabId', () => {
     const a1 = browserWebviewPool.acquire('tab-a');
     const a2 = browserWebviewPool.acquire('tab-a');

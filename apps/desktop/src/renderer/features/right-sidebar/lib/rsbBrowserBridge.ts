@@ -477,7 +477,7 @@ async function handleTabOpRequest(
       // with "tab not found".
       //
       // Fix: synchronously acquire the pool entry NOW. That creates the
-      // <webview> DOM node inside the off-screen parking container (already
+      // <webview> DOM node inside the invisible parking container (already
       // attached to document.body — see browserWebviewPool.ensureContainer),
       // which is enough for Electron to create the guest webContents.
       // Setting `src` kicks off navigation. We wait for `dom-ready`, report
@@ -510,13 +510,21 @@ async function handleTabOpRequest(
         result = { reqId, ok: false, error: `tab ${req.tabId} not found` };
       } else {
         await setActiveTab(req.sessionId, req.tabId);
+        const tab = bucket.tabs.find((t) => t.id === req.tabId);
+        if (tab?.kind === 'web-browser') {
+          await eagerSpawnAndReport(
+            req.sessionId,
+            tab.id,
+            (tab.state as { url?: string } | null)?.url ?? 'about:blank',
+          );
+        }
         // Same rationale as open: focus implies the user should see the tab —
         // but it's still the agent acting, so no OS-level focus steal.
         requestRightSidebarVisibility('open', { sessionId: req.sessionId, userInitiated: false });
         result = { reqId, ok: true, tabId: req.tabId };
       }
     } else if (req.op === 'ensure') {
-      // 直连动作(navigate / screenshot / pdf / console / act)的 detached 恢复
+      // 直连动作(navigate / screenshot / pdf / console / act)的 guest 恢复
       // 路径:把一个已存在的 web-browser tab 的 webview 在本 renderer 重新物化
       // 并 report 回 main 的 TabRegistry。与 focus 的区别:零用户可见副作用 ——
       // 不改 activeTab、不发 visibility 请求(agent 只是要继续操作这个 tab,
@@ -607,9 +615,8 @@ export async function eagerSpawnAndReport(
   const entry = browserWebviewPool.acquire(tabId);
   try {
     const webContentsId = entry.webview.getWebContentsId();
-    // Fire-and-forget:report 失败不致命 —— agent 下一个动作会得到清晰的
-    // "tab not found"。
-    void reportRsbBrowserTab({ sessionId, tabId, webContentsId });
+    // Wait for registration before acknowledging open / ensure / focus.
+    await reportRsbBrowserTab({ sessionId, tabId, webContentsId });
     return;
   } catch {
     /* 尚未 attach —— 走下面的首次 spawn 路径 */
