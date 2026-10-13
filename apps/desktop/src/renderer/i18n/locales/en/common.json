@@ -1135,12 +1135,9 @@
       "today": "Today",
       "manageTitle": "Manage",
       "done": "Done",
-      "manageHero": "What the menu shows,\nand in what order.",
-      "manageHeroSub": "Drag to reorder. Sources you turn off don't appear in the menu and aren't part of the summary above.",
       "sources": "Sources",
       "sourcesShown": "{{a}} of {{b}} shown",
       "statusIcon": "Menu bar icon",
-      "statusIconSub": "Monochrome, follows the menu bar",
       "statusIconMode": {
         "icon": "Icon only",
         "lowest": "Lowest left",
@@ -1149,13 +1146,11 @@
       },
       "other": "Other",
       "lowAlert": "Notify when running low",
-      "lowAlertSub": "Sends a system notification when every source with room left is nearly empty",
       "privacy": "Hide personal info",
-      "privacySub": "Shows only the first and last letter of accounts and hides task titles. Good for recordings and screenshots.",
       "usageScope": "Usage covers",
-      "manageFoot": "Sign in to accounts and connect them in Cindy Settings › Model Providers.",
+      "manageFoot": "Manage providers",
       "showSource": "Show {{name}} in the menu",
-      "reorderHint": "Drag, or use the actions menu to reorder",
+      "reorderHint": "Drag to reorder",
       "moveUp": "Move up",
       "moveDown": "Move down"
     }

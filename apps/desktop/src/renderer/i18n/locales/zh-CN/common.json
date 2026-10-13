@@ -1112,12 +1112,9 @@
       "today": "今天",
       "manageTitle": "管理",
       "done": "完成",
-      "manageHero": "菜单里显示什么，\n按什么顺序。",
-      "manageHeroSub": "拖动调整顺序；关掉的来源不在菜单里出现，也不参与上面的余量判断。",
       "sources": "余量来源",
       "sourcesShown": "{{a}} / {{b}} 显示",
       "statusIcon": "菜单栏图标",
-      "statusIconSub": "单色，随菜单栏深浅变化",
       "statusIconMode": {
         "icon": "只图标",
         "lowest": "最低余量",
@@ -1126,13 +1123,11 @@
       },
       "other": "其他",
       "lowAlert": "快用完时通知",
-      "lowAlertSub": "所有还有余量的来源都快见底时，发一条系统通知",
       "privacy": "隐藏个人信息",
-      "privacySub": "账号只显示首尾字母，任务标题也会隐藏，适合录屏和截图",
       "usageScope": "用量统计范围",
-      "manageFoot": "账号登录和连接在 Cindy 设置 › 模型供应商 里管理。",
+      "manageFoot": "管理模型供应商",
       "showSource": "在菜单里显示 {{name}}",
-      "reorderHint": "拖动，或用操作菜单调整顺序",
+      "reorderHint": "拖动排序",
       "moveUp": "上移",
       "moveDown": "下移"
     }

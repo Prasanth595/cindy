@@ -1112,12 +1112,9 @@
       "today": "今日",
       "manageTitle": "管理",
       "done": "完了",
-      "manageHero": "メニューに何を、\nどの順で表示するか。",
-      "manageHeroSub": "ドラッグで並べ替えます。オフにしたソースはメニューに表示されず、上の判断にも含まれません。",
       "sources": "ソース",
       "sourcesShown": "{{b}} 件中 {{a}} 件を表示",
       "statusIcon": "メニューバーのアイコン",
-      "statusIconSub": "モノクロで、メニューバーの明暗に合わせて変わります",
       "statusIconMode": {
         "icon": "アイコンのみ",
         "lowest": "最小の残り",
@@ -1126,13 +1123,11 @@
       },
       "other": "その他",
       "lowAlert": "残りわずかで通知",
-      "lowAlertSub": "余裕のあるソースがどれも上限に近づいたら、システム通知を送ります",
       "privacy": "個人情報を隠す",
-      "privacySub": "アカウントは最初と最後の文字だけ表示し、タスク名も隠します。録画やスクリーンショットに便利です",
       "usageScope": "使用量の集計範囲",
-      "manageFoot": "アカウントのログインと接続は Cindy の設定 › モデルプロバイダー で管理します。",
+      "manageFoot": "プロバイダーを管理",
       "showSource": "{{name}} をメニューに表示",
-      "reorderHint": "ドラッグするか、アクションメニューで並べ替えます",
+      "reorderHint": "ドラッグして並べ替え",
       "moveUp": "上へ移動",
       "moveDown": "下へ移動"
     }

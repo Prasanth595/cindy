@@ -1112,12 +1112,9 @@
       "today": "今天",
       "manageTitle": "管理",
       "done": "完成",
-      "manageHero": "選單裡顯示什麼，\n按什麼順序。",
-      "manageHeroSub": "拖動調整順序；關掉的來源不在選單裡出現，也不參與上面的餘量判斷。",
       "sources": "餘量來源",
       "sourcesShown": "{{a}} / {{b}} 顯示",
       "statusIcon": "選單列圖示",
-      "statusIconSub": "單色，隨選單列深淺變化",
       "statusIconMode": {
         "icon": "只圖標",
         "lowest": "最低餘量",
@@ -1126,13 +1123,11 @@
       },
       "other": "其他",
       "lowAlert": "快用完時通知",
-      "lowAlertSub": "所有還有餘量的來源都快見底時，發一則系統通知",
       "privacy": "隱藏個人資訊",
-      "privacySub": "帳號只顯示首尾字母，任務標題也會隱藏，適合錄影和截圖",
       "usageScope": "用量統計範圍",
-      "manageFoot": "帳號登入和連線在 Cindy 設定 › 模型供應商 裡管理。",
+      "manageFoot": "管理模型供應商",
       "showSource": "在選單裡顯示 {{name}}",
-      "reorderHint": "拖動，或用操作選單調整順序",
+      "reorderHint": "拖曳排序",
       "moveUp": "上移",
       "moveDown": "下移"
     }

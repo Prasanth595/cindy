@@ -1112,12 +1112,9 @@
       "today": "오늘",
       "manageTitle": "관리",
       "done": "완료",
-      "manageHero": "메뉴에 무엇을,\n어떤 순서로 보여 줄지.",
-      "manageHeroSub": "드래그해서 순서를 바꿔요. 끈 소스는 메뉴에 나타나지 않고 위의 판단에도 포함되지 않아요.",
       "sources": "소스",
       "sourcesShown": "{{b}}개 중 {{a}}개 표시",
       "statusIcon": "메뉴 막대 아이콘",
-      "statusIconSub": "단색이며 메뉴 막대 밝기에 맞춰 바뀌어요",
       "statusIconMode": {
         "icon": "아이콘만",
         "lowest": "가장 적게 남음",
@@ -1126,13 +1123,11 @@
       },
       "other": "기타",
       "lowAlert": "곧 소진될 때 알림",
-      "lowAlertSub": "여유가 남은 소스가 모두 거의 다 찼을 때 시스템 알림을 보내요",
       "privacy": "개인 정보 숨기기",
-      "privacySub": "계정은 첫 글자와 마지막 글자만 보이고 작업 제목도 숨겨요. 녹화나 스크린샷에 좋아요",
       "usageScope": "사용량 집계 범위",
-      "manageFoot": "계정 로그인과 연결은 Cindy 설정 › 모델 제공자에서 관리해요.",
+      "manageFoot": "제공자 관리",
       "showSource": "메뉴에 {{name}} 표시",
-      "reorderHint": "드래그하거나 작업 메뉴로 순서를 바꿔요",
+      "reorderHint": "드래그해서 순서 변경",
       "moveUp": "위로 이동",
       "moveDown": "아래로 이동"
     }
