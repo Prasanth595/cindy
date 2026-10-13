@@ -564,6 +564,12 @@ func handoffKey(_ code: CGKeyCode, flags: CGEventFlags = []) {
     usleep(6000)
   }
 }
+/// Typed keys travel through the window server's queue, while an accessibility press reaches the
+/// app at once: give the queue time to drain so a press right after cannot overtake the last keys.
+func handoffTypeAndSettle(_ text: String) {
+  handoffType(text)
+  usleep(useconds_t(min(1_500_000, 300_000 + 10_000 * text.count)))
+}
 func handoffType(_ text: String) {
   for character in text {
     var units = Array(String(character).utf16)
@@ -589,20 +595,62 @@ func handoffFocused(_ app: AXUIElement, is element: AXUIElement) -> Bool {
   guard let focused = handoffElement(handoffAttr(app, kAXFocusedUIElementAttribute)) else { return false }
   return CFEqual(focused, element)
 }
-func handoffActivate(_ pid: Int32, _ window: AXUIElement) {
-  if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+/// The app that takes typed keys right now, read fresh from accessibility: this short-lived
+/// process never runs its event loop, so NSWorkspace's frontmost app goes stale inside it.
+func handoffFrontPid() -> Int32? {
+  let system = AXUIElementCreateSystemWide()
+  for _ in 0..<3 {
+    if let focused = handoffElement(handoffAttr(system, kAXFocusedApplicationAttribute)) {
+      var pid: pid_t = 0
+      if AXUIElementGetPid(focused, &pid) == .success { return pid }
+    }
+    usleep(20000)
+  }
+  return nil
+}
+func handoffWaitFront(_ pid: Int32, _ seconds: Double) -> Bool {
+  let deadline = Date().addingTimeInterval(seconds)
+  while handoffFrontPid() != pid {
+    if Date() >= deadline { return false }
+    usleep(40000)
+  }
+  return true
+}
+/// Bring the window forward. Reports whether its app now takes keys: typing must never go anywhere else.
+@discardableResult
+func handoffActivate(_ pid: Int32, _ window: AXUIElement) -> Bool {
+  let front = handoffFrontPid() == pid
+  if !front {
     _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+    AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
   }
   AXUIElementPerformAction(window, kAXRaiseAction as CFString)
   AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
-  let deadline = Date().addingTimeInterval(1.5)
-  while NSWorkspace.shared.frontmostApplication?.processIdentifier != pid && Date() < deadline { usleep(30000) }
+  if front || handoffWaitFront(pid, 0.6) { return true }
+  // macOS may refuse to bring another app forward for a background helper. A click on the window's
+  // own title bar still does, as the owner's click would; only when that spot is the bare window.
+  guard let frame = handoffFrame(window), frame[2] > 60, frame[3] > 30 else { return false }
+  let point = CGPoint(x: frame[0] + frame[2] / 2, y: frame[1] + 8)
+  var hit: AXUIElement?
+  guard handoffOwnsPoint(pid, point),
+    AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(pid), Float(point.x), Float(point.y), &hit) == .success,
+    let spot = hit, ["AXWindow", "AXStaticText"].contains(handoffString(spot, kAXRoleAttribute) ?? "")
+  else { return false }
+  handoffClick([point.x - 0.5, point.y - 0.5, 1, 1])
+  return handoffWaitFront(pid, 1.0)
+}
+/// A synthesized click lands on whatever is on top there: only click where this app's window is.
+func handoffClickOwned(_ pid: Int32, _ frame: [Double]) -> Bool {
+  guard frame.count == 4, handoffOwnsPoint(pid, CGPoint(x: frame[0] + frame[2] / 2, y: frame[1] + frame[3] / 2)) else { return false }
+  handoffClick(frame)
+  return true
 }
 func handoffFocus(_ app: AXUIElement, _ element: AXUIElement) -> Bool {
   AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
   usleep(80000)
   if handoffFocused(app, is: element) { return true }
-  if let frame = handoffFrame(element) { handoffClick(frame); usleep(120000) }
+  var pid: pid_t = 0
+  if AXUIElementGetPid(app, &pid) == .success, let frame = handoffFrame(element), handoffClickOwned(pid, frame) { usleep(120000) }
   return handoffFocused(app, is: element)
 }
 func handoffAct(_ request: [String: Any]) -> [String: Any] {
@@ -616,12 +664,11 @@ func handoffAct(_ request: [String: Any]) -> [String: Any] {
   if let expected = request["fp"] as? String, handoffFingerprint(element) != expected { return ["error": "stale"] }
   if handoffBool(element, kAXEnabledAttribute) == false { return ["error": "disabled"] }
   let kind = request["kind"] as? String ?? ""
-  handoffActivate(pid, window)
+  let front = handoffActivate(pid, window)
   switch kind {
   case "press":
     if AXUIElementPerformAction(element, kAXPressAction as CFString) != .success {
-      guard let frame = handoffFrame(element) else { return ["error": "action_failed"] }
-      handoffClick(frame)
+      guard let frame = handoffFrame(element), handoffClickOwned(pid, frame) else { return ["error": "action_failed"] }
     }
     return ["ok": true]
   case "text":
@@ -632,12 +679,12 @@ func handoffAct(_ request: [String: Any]) -> [String: Any] {
       _ = handoffFocus(app, element)
       return ["ok": true, "method": "set"]
     }
-    guard handoffFocus(app, element) else { return ["error": "focus_failed"] }
+    // Keys go to whichever app is in front: never type unless it is this one.
+    guard front, handoffFocus(app, element), handoffFrontPid() == pid else { return ["error": "focus_failed"] }
     handoffKey(0, flags: .maskCommand) // select all
     handoffKey(51) // delete
-    guard handoffFocused(app, is: element) else { return ["error": "focus_failed"] }
-    handoffType(value)
-    usleep(60000)
+    guard handoffFocused(app, is: element), handoffFrontPid() == pid else { return ["error": "focus_failed"] }
+    handoffTypeAndSettle(value)
     guard handoffFocused(app, is: element) else { return ["error": "focus_lost"] }
     if secure {
       if let count = handoffAttr(element, kAXNumberOfCharactersAttribute) as? NSNumber {
@@ -651,6 +698,7 @@ func handoffAct(_ request: [String: Any]) -> [String: Any] {
     guard let name = request["value"] as? String, let code: CGKeyCode = ["return": 36, "escape": 53, "tab": 48][name]
     else { return ["error": "invalid"] }
     if name == "return", !handoffFocused(app, is: element) { _ = handoffFocus(app, element) }
+    guard front, handoffFrontPid() == pid else { return ["error": "focus_failed"] }
     handoffKey(code)
     return ["ok": true]
   default:
@@ -728,7 +776,7 @@ func handoffPointer(_ request: [String: Any]) -> [String: Any] {
   handoffPrepare(app)
   guard let window = handoffResolveWindow(app, request)?.0 else { return ["error": "target_gone"] }
   guard let expected = handoffNumbers(request["windowFrame"], count: 4) else { return ["error": "invalid"] }
-  handoffActivate(pid, window)
+  let front = handoffActivate(pid, window)
   usleep(120000)
   guard handoffSameFrame(handoffFrame(window), expected) else { return ["error": "moved"] }
   switch request["kind"] as? String {
@@ -748,8 +796,8 @@ func handoffPointer(_ request: [String: Any]) -> [String: Any] {
     guard secure || handoffEditableRoles.contains(handoffString(focused, kAXRoleAttribute) ?? "") else { return ["error": "focus_failed"] }
     // A password typed for a password field never lands in a visible one, and the reverse.
     guard secure == wantsSecure else { return ["error": "moved"] }
-    handoffType(value)
-    usleep(60000)
+    guard front, handoffFrontPid() == pid else { return ["error": "focus_failed"] }
+    handoffTypeAndSettle(value)
     if request["submit"] as? Bool == true { handoffKey(36) }
     return ["ok": true]
   default:

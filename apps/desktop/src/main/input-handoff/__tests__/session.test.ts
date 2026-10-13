@@ -56,6 +56,23 @@ describe('InputHandoffSession', () => {
     expect(JSON.stringify([finished, latest()])).not.toMatch(/owner@example|synthetic-secret/);
   });
 
+  it('stays on a form that still asks when the owner switches to an app they already had open', async () => {
+    const desktop = fakeDesktop({ rejects: true });
+    const { session, finished, latest } = harness(desktop.driver);
+    await session.start();
+    const step = latest();
+    const press = desktop.driver.act;
+    desktop.driver.act = async (request) => {
+      const result = await press(request);
+      if (request.kind === 'press') desktop.switchToBrowser();
+      return result;
+    };
+    await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'owner@example.test' }, action: { kind: 'submit' } });
+    expect(finished).toHaveLength(0);
+    expect(latest()).toMatchObject({ phase: 'ready', source: { app: 'Example' } });
+    expect(latest().controls.map((control) => control.kind)).toEqual(['text']);
+  });
+
   it('ends at once when the screen has nothing to type', async () => {
     const desktop = fakeDesktop({ start: 'choose' });
     const { session, finished, published } = harness(desktop.driver);

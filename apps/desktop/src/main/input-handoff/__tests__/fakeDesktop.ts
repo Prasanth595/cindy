@@ -12,19 +12,27 @@ export type FakeStage = 'choose' | 'account' | 'password' | 'consent' | 'done';
  * password on the browser's sign-in page → consent (buttons only) → back in the app.
  * Only the account and password steps have anything for the owner to type.
  */
-export function fakeDesktop(options: { pictures?: boolean; live?: boolean; start?: FakeStage } = {}) {
+export function fakeDesktop(options: {
+  pictures?: boolean;
+  live?: boolean;
+  start?: FakeStage;
+  /** The app turns the account down: pressing Next leaves the form as it was. */
+  rejects?: boolean;
+} = {}) {
   let stage: FakeStage = options.start ?? 'account';
   const acts: NativeActRequest[] = [];
   const pointers: PointerRequest[] = [];
   const raised: number[] = [];
+  let switched = false;
   const app = { pid: 10, app: 'Example', bundleId: 'com.example.app' };
   const browser = { pid: 20, app: 'Google Chrome', bundleId: 'com.google.Chrome' };
   const inBrowser = () => stage === 'password' || stage === 'consent';
   const windows = (): NativeWindowList => ({
-    frontmost: inBrowser() ? 20 : 10,
+    frontmost: inBrowser() || switched ? 20 : 10,
     apps: [
       { ...app, windows: [{ index: 0, title: stage === 'done' ? 'Example' : 'Sign in', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
-      { ...browser, windows: [{ index: 0, title: 'Sign in - Example', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
+      // The browser was already open; the app opening the sign-in page turns its window into that page.
+      { ...browser, windows: [{ index: 0, title: stage === 'choose' || stage === 'account' ? 'New Tab' : 'Sign in - Example', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
       { pid: 1, app: 'Cindy', bundleId: 'host', windows: [{ index: 0, title: 'Cindy', frame: [0, 0, 1, 1], focused: true, minimized: false }] },
     ],
   });
@@ -74,7 +82,7 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean; start
       acts.push(request);
       const press = request.kind === 'press';
       if (stage === 'choose' && press && request.ref === '1') stage = 'account';
-      else if (stage === 'account' && press && request.ref === '1') stage = 'password';
+      else if (stage === 'account' && press && request.ref === '1' && !options.rejects) stage = 'password';
       else if (stage === 'password' && press && request.ref === '0.2') stage = 'consent';
       else if (stage === 'consent' && press && request.ref === '0.1') stage = 'done';
       return { ok: true };
@@ -112,6 +120,10 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean; start
     pointers,
     raised,
     stage: () => stage,
+    /** The owner, at the computer, switches to the browser they already had open. */
+    switchToBrowser: () => {
+      switched = true;
+    },
     /** The owner (in the live view) or the agent moved the screen on, outside the card. */
     advanceOutside: (next: FakeStage) => {
       stage = next;

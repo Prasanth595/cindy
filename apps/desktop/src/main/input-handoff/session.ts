@@ -978,7 +978,8 @@ export class InputHandoffSession {
     while (!this.ended) {
       const windows = await this.options.driver.windows().catch(() => null);
       if (windows) {
-        const follow = this.followTarget(windows, before);
+        const asks = last ? actionable(last) : !!this.step && actionable(this.step);
+        const follow = this.followTarget(windows, before, asks);
         if (follow === 'ended') return 'ended';
         if (follow && (follow.pid !== this.target?.pid || follow.window.index !== this.target?.window.index ||
             follow.window.title !== this.target?.window.title)) {
@@ -1005,7 +1006,7 @@ export class InputHandoffSession {
   }
 
   /** Decide which window the flow now lives in. `'ended'` when nothing remains to follow. */
-  private followTarget(list: NativeWindowList, before: NativeWindowList | null): HandoffTarget | 'ended' | null {
+  private followTarget(list: NativeWindowList, before: NativeWindowList | null, currentAsks = false): HandoffTarget | 'ended' | null {
     const current = this.target;
     if (!current) return null;
     const hints = this.options.completeWhen;
@@ -1013,11 +1014,15 @@ export class InputHandoffSession {
     const toTarget = (entry: NativeWindowList['apps'][number], window: NativeWindowList['apps'][number]['windows'][number]): HandoffTarget => ({
       pid: entry.pid, app: entry.app, bundleId: entry.bundleId, window: { index: window.index, title: window.title },
     });
-    // Another app came to the front (for example the browser for an authorization page).
+    // Another app came to the front (for example the browser for an authorization page). While the
+    // form still asks the owner for something, only a window that just opened or changed counts:
+    // someone switching to an app they already had open is not where the sign-in went.
     if (list.frontmost !== current.pid && list.frontmost !== this.options.hostPid) {
       const front = app(list.frontmost);
       const window = front?.windows.find((w) => w.focused && !w.minimized) ?? front?.windows.find((w) => !w.minimized);
-      if (front && window) return toTarget(front, window);
+      const unchanged = !!window && !!before?.apps.find((entry) => entry.pid === list.frontmost)?.windows
+        .some((w) => w.index === window.index && w.title === window.title);
+      if (front && window && !(currentAsks && unchanged)) return toTarget(front, window);
     }
     const mine = app(current.pid);
     const sameWindow = mine?.windows.find((w) => w.index === current.window.index && w.title === current.window.title)
