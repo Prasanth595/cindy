@@ -12,7 +12,7 @@ function directory(ids = ['xd', 'ollama']) {
   })) };
 }
 
-async function fixture() {
+async function fixture(retainDisplaySnapshot = true) {
   const pending = new Map<string, {
     resolve: (value: ReturnType<typeof directory>) => void;
     reject: (error: Error) => void;
@@ -33,7 +33,9 @@ async function fixture() {
   const mod = await import('@/hooks/useDeviceProviders');
   const { useDevicesProviders } = await import('@/hooks/useDevicesProviders');
   const { refreshRemoteCatalogSnapshot } = await import('@/lib/remoteCatalogSnapshot');
-  const hook = renderHook(({ ids }) => useDevicesProviders(ids), {
+  const hook = renderHook(({ ids }) => useDevicesProviders(
+    ids, retainDisplaySnapshot ? { retainDisplaySnapshot: true } : undefined,
+  ), {
     initialProps: { ids: ['a', 'b'] },
   });
   await waitFor(() => expect(hook.result.current.get('a')?.providers).toHaveLength(2));
@@ -49,6 +51,16 @@ async function fixture() {
 }
 
 describe('multi-device provider rows during real catalog refresh', () => {
+  it('keeps the default model-selector consumer empty and loading during refresh', async () => {
+    const f = await fixture(false);
+    const { done } = await f.start();
+    expect(f.result.current.get('a')).toMatchObject({ providers: [], loading: true, error: null });
+    expect(f.result.current.get('b')?.providers).toHaveLength(2);
+    await act(async () => { f.pending.get('a')!.resolve(directory()); await done; });
+    expect(f.result.current.get('a')?.providers).toHaveLength(2);
+    expect(f.result.current.get('a')?.loading).toBe(false);
+  });
+
   it('keeps both existing rows through repeated refreshes, then publishes the new list', async () => {
     const f = await fixture();
     for (let n = 0; n < 2; n++) {

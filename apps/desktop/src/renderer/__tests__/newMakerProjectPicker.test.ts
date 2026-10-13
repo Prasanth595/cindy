@@ -1408,9 +1408,10 @@ describe('Shared create project picker', () => {
     //    这里只锁「本仓存在那个正确范例」,它是这条规则的出处。
     expect(deviceLinkRemoteProjectsSource).toContain('void refreshRemoteCatalogSnapshot(push.deviceId);');
     const refreshSource = readSource('lib', 'remoteCatalogSnapshot.ts');
-    expect(refreshSource).toContain('evictDeviceProviders(deviceId)');
+    const evictAt = refreshSource.search(/evictDeviceProviders\(deviceId(?:,|\))/);
+    expect(evictAt).toBeGreaterThan(-1);
     expect(refreshSource).toContain('prefetchDeviceProviders(deviceId)');
-    expect(refreshSource.indexOf('evictDeviceProviders(deviceId)')).toBeLessThan(
+    expect(evictAt).toBeLessThan(
       refreshSource.indexOf('prefetchDeviceProviders(deviceId)'),
     );
   });
@@ -1435,8 +1436,8 @@ describe('Shared create project picker', () => {
     expect(agentCapabilitiesHookSource).toContain(
       "notifyRemoteCapabilities(deviceId, agentKind, { status: 'loading' });",
     );
-    expect(deviceProvidersHookSource).toContain(
-      "notifyDeviceProviders(deviceId, { status: 'loading' });",
+    expect(deviceProvidersHookSource).toMatch(
+      /notifyDeviceProviders\(deviceId,\s*\{\s*status: 'loading'/,
     );
     // 上游事实:fetch effect 只按 (agentKind, deviceId) 重跑,换项目不会触发它。
     expect(agentCapabilitiesHookSource).toContain('}, [agentKind, deviceId]);');
