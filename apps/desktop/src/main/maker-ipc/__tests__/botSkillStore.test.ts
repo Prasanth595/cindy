@@ -386,7 +386,8 @@ describe('verbatim SKILL.md (cloud companions)', () => {
 });
 
 describe('strict skill reads (cloud companions)', () => {
-  it('lists every skill source, empty without a folder, and fails instead of hiding an unreadable one', async () => {
+  // chmod cannot make a file unreadable on Windows.
+  it.skipIf(process.platform === 'win32')('lists every skill source, empty without a folder, and fails instead of hiding an unreadable one', async () => {
     expect(await listBotSkillSources(userDataDir, 'bot_b')).toEqual([]);
     const source = '---\nname: brew\ndescription: Brew\n---\n\nsteps\n';
     await saveBotSkillSource(userDataDir, 'bot_b', 'brew', source);

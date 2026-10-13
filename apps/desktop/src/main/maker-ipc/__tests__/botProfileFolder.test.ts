@@ -416,7 +416,8 @@ describe('搬家', () => {
 });
 
 describe('strict reads (cloud companions)', () => {
-  it('treats a missing file as empty but never an unreadable one', async () => {
+  // chmod cannot make a file unreadable on Windows.
+  it.skipIf(process.platform === 'win32')('treats a missing file as empty but never an unreadable one', async () => {
     expect((await readBotProfileFolder(root, 'bot-a', { strict: true })).identitySource).toBe('');
     await writeBotProfileFolder(root, 'bot-a', { identitySource: SEED.identitySource });
     const soul = path.join(botProfileDir(root, 'bot-a'), 'SOUL.md');
