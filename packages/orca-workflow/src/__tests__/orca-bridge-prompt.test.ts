@@ -230,12 +230,12 @@ describe('renderOrcaWorkerSystemPrompt', () => {
     const leadPrompt = renderOrcaLeadSystemPrompt(null);
     expect(leadPrompt).toContain('10. Token hygiene: do not re-issue a tool call just to re-fetch a result you already have and that is still current');
     expect(leadPrompt).toContain('Re-running a state read after something changed, re-running verification after new edits, and retrying a failed call are not repetition.');
-    expect(leadPrompt).toContain('require gate/verification commands (build/test/smoke/LSP/md5/git) to be answered with a one-line pass/fail summary');
+    expect(leadPrompt).toContain('require gate/verification commands (build/test/smoke/LSP/md5/git) to be answered with a one-line pass/fail summary naming the command, the outcome and the log file path');
 
     const workerPrompt = renderOrcaWorkerSystemPrompt(workerMeta);
     expect(workerPrompt).toContain('12. Token hygiene: do not re-issue a tool call just to re-fetch a result you already have and that is still current');
     expect(workerPrompt).toContain('Re-running a state read after something changed, re-running verification (build/test/smoke/LSP) after new edits, and retrying a failed call are not repetition.');
-    expect(workerPrompt).toContain('keep full output in a file and report only a one-line pass/fail summary to the lead');
+    expect(workerPrompt).toContain('report only a one-line pass/fail summary to the lead — command, outcome and the log file path');
   });
 
   it('keeps the Worker rule concise without the unreachable fallback', () => {
