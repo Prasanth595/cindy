@@ -21,6 +21,7 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
     const home = path.join(root, 'codex');
     const workingDir = path.join(root, 'repo', 'work');
     const projectRule = 'ANCESTOR_PROJECT_RULE_MUST_NOT_REACH_REVIEW';
+    const workspaceRule = 'WORKSPACE_PROJECT_RULE_MUST_REACH_REVIEW';
     const reviewEvidence = 'CINDY_STRUCTURED_REVIEW_EVIDENCE';
     const requests: unknown[] = [];
     const server = createServer(async (req, res) => {
@@ -47,6 +48,7 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
       await mkdir(path.join(root, 'repo', '.git'), { recursive: true });
       await mkdir(workingDir, { recursive: true });
       await writeFile(path.join(root, 'repo', 'AGENTS.md'), projectRule);
+      await writeFile(path.join(workingDir, 'AGENTS.md'), workspaceRule);
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       await writeFile(path.join(home, 'config.toml'), [
@@ -96,6 +98,7 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
       expect(requests).toHaveLength(1);
       const requestPayload = JSON.stringify(requests);
       expect(requestPayload).toContain(reviewEvidence);
+      expect(requestPayload).toContain(workspaceRule);
       expect(requestPayload).not.toContain(projectRule);
       expect(JSON.stringify(receivedEvents)).toContain(
         'P2 fixture finding: structured review evidence reached the model',
