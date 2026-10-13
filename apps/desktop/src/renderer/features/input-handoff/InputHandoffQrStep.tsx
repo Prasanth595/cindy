@@ -179,13 +179,14 @@ export function InputHandoffQrStep({ sessionId, snapshot, busy, inputBlocked, on
       <p className="max-w-[360px] text-center text-12 leading-relaxed text-[var(--text-secondary)]">
         {t(openable ? 'inputHandoff.qr.hintLink' : 'inputHandoff.qr.hint')}
       </p>
+      {/* Opening the link here comes first: many codes open an app straight from the browser. */}
+      {openable && (
+        <Button type="button" size="lg" variant="cta" palette="confirmation" className="w-full" disabled={disabled} onClick={open}>
+          <ExternalLink size={14} aria-hidden />
+          {t('inputHandoff.qr.open', { site: openable.site })}
+        </Button>
+      )}
       <div className="flex flex-wrap justify-center gap-2">
-        {openable && (
-          <Button type="button" size="sm" variant="primary" disabled={disabled} onClick={open}>
-            <ExternalLink size={13} aria-hidden />
-            {t('inputHandoff.qr.open', { site: openable.site })}
-          </Button>
-        )}
         <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={copyImage}>
           <ImageDown size={13} aria-hidden />
           {t('inputHandoff.qr.copyImage')}

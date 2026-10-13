@@ -133,7 +133,7 @@ export function buildInputHandoffContinuation(result: HandoffResult): string {
     : result.failure === 'permission'
       ? 'Cindy lacks macOS Accessibility permission for input handoff. Ask the owner to allow it on this computer, or continue another way.'
     : result.failure === 'screen_locked'
-      ? 'This computer\'s screen is locked, so nothing was read or typed. Ask the owner to unlock it; request input handoff again only after they say it is unlocked.'
+      ? 'This computer\'s screen is locked (a display going to sleep locks it too), so nothing was read or typed. Ask the owner to wake and unlock it; request input handoff again only after they say it is unlocked.'
       : 'The handoff did not complete. Do not retry it automatically; tell the owner what is still needed or continue another way.';
   return `${INPUT_HANDOFF_ENDED_PREFIX} ${facts}. ${next}`;
 }

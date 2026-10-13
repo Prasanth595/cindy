@@ -278,7 +278,7 @@
       "unsupported": "這台電腦暫不支援代輸入。",
       "origin_changed": "填寫前頁面已變化，什麼都沒有填入。請確認現在的頁面後再填寫。",
       "picture_unavailable": "無法顯示這一步的畫面。請在系統設定中允許 Cindy 錄製螢幕，並確認視窗沒有被縮到最小。",
-      "screen_locked": "這台電腦的螢幕已鎖定。請先解鎖，再讓 Agent 重試。",
+      "screen_locked": "這台電腦的螢幕已鎖定（顯示器休眠也會鎖定螢幕）。請先喚醒並解鎖，再讓 Agent 重試。",
       "nothing_to_fill": "這個介面沒有需要你輸入的內容，已交還給 Agent 繼續。"
     },
     "phase": {

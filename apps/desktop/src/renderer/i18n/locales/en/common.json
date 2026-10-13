@@ -13197,7 +13197,7 @@
       "unsupported": "This computer doesn't support input handoff yet.",
       "origin_changed": "The page changed before Cindy could fill it, so nothing was entered. Check the current page, then try again.",
       "picture_unavailable": "Couldn't show this step as a picture. Allow Cindy to record the screen in System Settings, and make sure the window isn't minimized.",
-      "screen_locked": "This computer's screen is locked. Unlock it, then ask the agent to try again.",
+      "screen_locked": "This computer's screen is locked (a display going to sleep locks it too). Wake and unlock it, then ask the agent to try again.",
       "nothing_to_fill": "Nothing on this screen needs typing, so the agent carries on by itself."
     },
     "phase": {

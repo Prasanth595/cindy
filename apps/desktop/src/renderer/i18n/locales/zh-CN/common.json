@@ -13146,7 +13146,7 @@
       "unsupported": "这台电脑暂不支持代输入。",
       "origin_changed": "填写前页面已变化，什么都没有填入。请确认现在的页面后再填写。",
       "picture_unavailable": "没能显示这一步的画面。请在系统设置中允许 Cindy 录制屏幕，并确认窗口没有被最小化。",
-      "screen_locked": "这台电脑的屏幕已锁定。请先解锁，再让 Agent 重试。",
+      "screen_locked": "这台电脑的屏幕已锁定（显示器休眠也会锁屏）。请先唤醒并解锁，再让 Agent 重试。",
       "nothing_to_fill": "这个界面没有需要你输入的内容，已交还给 Agent 继续。"
     },
     "phase": {
