@@ -16,7 +16,7 @@ import { botProfiles, messages } from '../localDb/schema.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
 import { botProfileDir, botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
-import { deleteBotSkillForBot, listBotSkillsForBot, readBotSkillSourceForBot, saveBotSkillSourceForBot } from '../maker-ipc/botSkillService.js';
+import { deleteBotSkillForBot, listBotSkillSourcesForBot, readBotSkillSourceForBot, saveBotSkillSourceForBot } from '../maker-ipc/botSkillService.js';
 import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import type { CompanionMirrorCursor, CompanionMirrorRow } from './mirror.js';
@@ -39,7 +39,8 @@ export async function readCompanionValues(botId: string): Promise<CompanionPrefe
     .select({ displayName: botProfiles.displayName, description: botProfiles.description })
     .from(botProfiles).where(eq(botProfiles.id, botId)).limit(1);
   if (!row) return [];
-  const folder = await readBotProfileFolder(userDataDir, botId);
+  // Strict: an unreadable SOUL/USER/prompt file aborts the cycle instead of uploading it as empty.
+  const folder = await readBotProfileFolder(userDataDir, botId, { strict: true });
   const values: CompanionPreferenceValue[] = [{ key: COMPANION_PROFILE_KEY, value: {
     name: row.displayName, description: row.description, soul: folder.identitySource,
     systemPrompt: folder.systemPromptOverride, user: folder.userContextSource,
@@ -56,11 +57,10 @@ export async function readCompanionValues(botId: string): Promise<CompanionPrefe
     const content = await fs.readFile(path.join(memoryDir, entry.name), 'utf8');
     values.push({ key: `${COMPANION_MEMORY_PREFIX}${entry.name}`, value: { filename: entry.name, content } });
   }
-  for (const skill of await listBotSkillsForBot(botId)) {
-    const content = await readSkillContent(botId, skill.slug);
-    if (content === null) continue;
+  // Strict too: a skill that cannot be read must not look deleted (the uploader would tombstone it).
+  for (const skill of await listBotSkillSourcesForBot(botId)) {
     values.push({ key: `${COMPANION_SKILL_PREFIX}${skill.slug}`, value: {
-      slug: skill.slug, content, ...(skill.enabled === false ? { enabled: false } : {}),
+      slug: skill.slug, content: skill.source, ...(skill.enabled ? {} : { enabled: false }),
     } });
   }
   return values;
@@ -153,7 +153,9 @@ function createMaterializer(input: {
     },
     readMemory: async (botId, filename) => {
       if (path.basename(filename) !== filename) return null;
-      return fs.readFile(path.join(botProfileMemoryDir(ownerScopedUserDataPath(), botId), filename), 'utf8').catch(() => null);
+      // Only a missing file is "no memory"; other errors keep the take-over demoted for a retry.
+      return fs.readFile(path.join(botProfileMemoryDir(ownerScopedUserDataPath(), botId), filename), 'utf8')
+        .catch((error: NodeJS.ErrnoException) => { if (error?.code === 'ENOENT') return null; throw error; });
     },
     restoreMemory: (botId, filename, raw) => getBotMemoryService().restoreRaw(botId, filename, raw),
     removeMemory: (botId, filename) => getBotMemoryService().removeRaw(botId, filename),

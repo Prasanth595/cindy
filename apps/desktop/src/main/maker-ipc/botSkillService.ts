@@ -25,6 +25,7 @@ import {
   listBotSkills,
   readBotSkill,
   readBotSkillSource,
+  listBotSkillSources,
   saveBotSkill,
   saveBotSkillSource,
   type BotSkillSummary,
@@ -285,6 +286,14 @@ export async function readBotSkillSourceForBot(botId: string, slug: string, deps
   const source = await readBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug);
   assertOwnerBoundary(deps, boundary);
   return source;
+}
+
+/** Every own skill's SKILL.md for cloud sync; read errors propagate instead of reading as "no skill". */
+export async function listBotSkillSourcesForBot(botId: string, deps: BotSkillServiceDeps = {}): Promise<Array<{ slug: string; source: string; enabled: boolean }>> {
+  const boundary = captureOwnerBoundary(deps);
+  const sources = await listBotSkillSources(await skillHomeOf(deps, botId, boundary), botId);
+  assertOwnerBoundary(deps, boundary);
+  return sources;
 }
 
 /** Restore one own skill's SKILL.md verbatim (cloud companions), keeping its native frontmatter. */
