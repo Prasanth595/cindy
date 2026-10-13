@@ -191,6 +191,26 @@ describe('legacy library reattach', () => {
     expectReattached();
   });
 
+  it('keeps the journal when the account switches while the moves are flushed', async () => {
+    plantDefaultPair();
+    const ownJournal = path.join(root, 'library-reattach.json');
+    const otherJournal = path.join(root, 'other-account', 'library-reattach.json');
+    fs.mkdirSync(path.dirname(otherJournal), { recursive: true });
+    fs.writeFileSync(otherJournal, 'other account');
+    let switched = false;
+    await expect(startLegacyLibraryReattach({ fromId: FROM, toId: TO, oldLocation: 'default', now: 7 }, deps({
+      journalFile: () => (switched ? otherJournal : ownJournal),
+      assertCurrent: () => {
+        if (switched) throw new Error('owner changed');
+      },
+      syncDirectory: async () => {
+        switched = true;
+      },
+    }))).rejects.toThrow('owner changed');
+    expect(fs.existsSync(ownJournal)).toBe(true);
+    expect(fs.readFileSync(otherJournal, 'utf8')).toBe('other account');
+  });
+
   it('stops before moving anything when the custom destination is already taken', async () => {
     plantDefaultPair();
     const custom = path.join(root, 'custom');

@@ -192,6 +192,9 @@ export async function finishLegacyLibraryReattach(
   deps: LegacyLibraryReattachDeps,
 ): Promise<void> {
   const { fromId, toId } = journal;
+  // Paths are owner scoped. Pin this account's journal so a switch midway
+  // cannot make the final removal hit another account's journal.
+  const journalFile = deps.journalFile();
   const trash = path.join(deps.trashRoot(), journal.trashName);
   deps.assertCurrent();
   await trashIfSame(deps.defaultRoot(toId), journal.newLibrary, trash);
@@ -225,8 +228,9 @@ export async function finishLegacyLibraryReattach(
   ])) {
     await sync(dir);
   }
-  await fs.promises.rm(deps.journalFile(), { force: true });
-  await sync(path.dirname(deps.journalFile()));
+  deps.assertCurrent();
+  await fs.promises.rm(journalFile, { force: true });
+  await sync(path.dirname(journalFile));
 }
 
 /**
