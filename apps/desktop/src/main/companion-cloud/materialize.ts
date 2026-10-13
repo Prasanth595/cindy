@@ -82,6 +82,8 @@ export async function materializeCompanion(input: {
   roomId: () => Promise<string>;
   fence?: CompanionWriteFence;
   log?: CompanionLog;
+  /** Publish the demotion (send guard, routines, lists) before the first local write. */
+  onDemoted?: () => void;
 }): Promise<CompanionMaterializeResult> {
   const { api, state, host, actor, log } = input;
   const fence = input.fence ?? noFence;
@@ -106,6 +108,7 @@ export async function materializeCompanion(input: {
   // upload its stale files over the cloud values.
   fence.assertCurrent();
   state.update(botId, actor.id, entry => { entry.demoted = true; });
+  input.onDemoted?.();
   // Without the home's profile snapshot this copy's own (or empty) profile would be published as
   // the companion's identity: wait (demoted, retried) until the home has uploaded one.
   if (!profile) throw new Error('PROFILE_SNAPSHOT_MISSING');
@@ -224,17 +227,18 @@ export async function importCloudHistory(input: {
   const fence = input.fence ?? noFence;
   const messages = await readRecentRoomMessages(input.api, input.roomId, input.botActorId, COMPANION_HISTORY_LIMIT);
   if (!messages.length) return 0;
-  // Rows mirrored from this Session keep their local timestamp; the server does not return
-  // import source ids, so (role, createdAt) identifies them. Rewound or deleted rows count
-  // too: what the owner removed here does not come back. Delivered direct-room messages name
-  // their room message in the client id.
+  // Rows already imported, and delivered direct-room messages, name their room message in the
+  // client id: exact. Rows mirrored from this Session keep their local timestamp; the server
+  // does not return import source ids, so (role, createdAt) identifies only those. Rewound or
+  // deleted rows count too: what the owner removed here does not come back.
   const local = await input.host.localMessageTimes(input.sessionId, messages[0]!.createdAt);
-  const present = new Set(local.flatMap(row => row.removed
-    ? [`user:${row.createdAt}`, `assistant:${row.createdAt}`] : [`${row.role}:${row.createdAt}`]));
-  const delivered = new Set(local.flatMap(row => directRoomSourceId(row.clientId) ?? []));
+  const known = new Set(local.flatMap(row => (row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)
+    ? row.clientId.slice(COMPANION_HISTORY_CLIENT_PREFIX.length) : directRoomSourceId(row.clientId)) ?? []));
+  const present = new Set(local.flatMap(row => row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX) ? []
+    : row.removed ? [`user:${row.createdAt}`, `assistant:${row.createdAt}`] : [`${row.role}:${row.createdAt}`]));
   let inserted = 0;
   for (const message of messages) {
-    if (present.has(`${message.role}:${message.createdAt}`) || delivered.has(message.id)) continue;
+    if (known.has(message.id) || present.has(`${message.role}:${message.createdAt}`)) continue;
     fence.assertCurrent();
     await input.host.insertHistory(input.sessionId, { clientId: `${COMPANION_HISTORY_CLIENT_PREFIX}${message.id}`,
       role: message.role, text: message.text, createdAt: message.createdAt }, fence);

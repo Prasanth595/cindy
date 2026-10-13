@@ -100,6 +100,30 @@ describe('materializeCompanion', () => {
     expect(local.host.rebuildContext).not.toHaveBeenCalled();
   });
 
+  it('publishes the demotion before the first local write', async () => {
+    const { api } = cloud([profilePref]);
+    const local = fakeLocal();
+    const { state } = memoryState();
+    const onDemoted = vi.fn(() => {
+      expect(state.isDemoted('bot_mia')).toBe(true);
+      expect(local.host.createProfile).not.toHaveBeenCalled();
+    });
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, onDemoted });
+    expect(onDemoted).toHaveBeenCalledOnce();
+  });
+
+  it('retries history by room message id, so parts sharing a timestamp are not skipped', async () => {
+    const at = 1_700_000_000_000;
+    // Two parts of one split reply share role and time; the first was inserted before a failure.
+    const { api } = cloud([profilePref], [roomMessage('m2', 2, 'actor-1', 'part two', at), roomMessage('m1', 1, 'actor-1', 'part one', at)]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    local.rows.push({ id: 'p1', clientId: 'cloud-history:m1', role: 'assistant', content: 'part one', agentMeta: null, createdAt: at });
+    const result = await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM });
+    expect(result.inserted).toBe(1);
+    expect(vi.mocked(local.host.insertHistory).mock.calls.map(call => call[1].clientId)).toEqual(['cloud-history:m2']);
+  });
+
   it('does not bring back a message that was rewound or deleted here', async () => {
     const at = 1_700_000_000_000;
     const { api } = cloud([profilePref], [roomMessage('m1', 1, 'human', 'regretted', at)]);
