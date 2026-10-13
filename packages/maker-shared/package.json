@@ -30,6 +30,7 @@
     "./file-preview": "./src/filePreview.ts",
     "./fixtures": "./src/fixtures.ts",
     "./ghost-command": "./src/ghostCommand.ts",
+    "./goal-command": "./src/goalCommand.ts",
     "./goal-verdict": "./src/goalVerdict.ts",
     "./history-gap": "./src/historyGap.ts",
     "./image-annotation": "./src/imageAnnotation.ts",

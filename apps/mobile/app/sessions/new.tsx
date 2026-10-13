@@ -1,3 +1,5 @@
+import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
+import { mergeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreatedWorktreeRecovery';
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
@@ -993,6 +995,10 @@ export default function NewRemoteSessionScreen() {
     incomingShareBatch,
     isShareTargetFocused,
   ]);
+  const pendingGoalSkillRef = useRef<string | null>(null);
+  useEffect(() => {
+    pendingGoalSkillRef.current = null;
+  }, [selectedDeviceId, draft.agentKind, draft.workspaceKind, draft.workingDir]);
   const [slashCommands, setSlashCommands] = useState<MobileSlashCommand[]>([]);
   const [slashPaletteLoading, setSlashPaletteLoading] = useState(false);
   const [slashPaletteError, setSlashPaletteError] = useState<string | null>(null);
@@ -2143,9 +2149,9 @@ export default function NewRemoteSessionScreen() {
   const composerAtQuery = composerTrigger.kind === 'at' ? composerTrigger.query : '';
   const visibleSlashCommands = useMemo(
     () => composerTrigger.kind === 'slash'
-      ? filterSlashCommands(slashCommands, composerTrigger.query, 5)
+      ? filterSlashCommands(mergeMobileGoalCommand(slashCommands, t('session.common.goalMode')), composerTrigger.query, 5)
       : [],
-    [composerTrigger, slashCommands],
+    [composerTrigger, slashCommands, t],
   );
   const visibleAtResources = useMemo(
     () => composerTrigger.kind === 'at'
@@ -2571,6 +2577,7 @@ export default function NewRemoteSessionScreen() {
       return;
     }
     const seq = ++slashLoadSeqRef.current;
+    pendingGoalSkillRef.current = null;
     const agentKind = draft.agentKind;
     const workingDir = draft.workspaceKind === 'project' ? draft.workingDir.trim() : '';
     const paletteCacheKey = buildComposerPaletteCacheKey(selectedDeviceId, agentKind, workingDir);
@@ -4459,6 +4466,7 @@ export default function NewRemoteSessionScreen() {
 
   const selectSlashCommand = useCallback((command: MobileSlashCommand) => {
     const current = firstMessageRef.current;
+    pendingGoalSkillRef.current = command.kind === 'agent-skill' ? command.name : null;
     const next = insertSlashCommand(current, detectComposerTrigger(current), command);
     if (next === current) return;
     setFirstMessageDraft(next);
@@ -4694,7 +4702,7 @@ export default function NewRemoteSessionScreen() {
     patchDraft({ permissionMode: remembered && remembered !== 'plan' ? remembered : fallback });
   }, [draft.permissionMode, patchDraft, planModeCapability, runtimeOptions.permissionOptions]);
 
-  const create = useCallback(async () => {
+  const createMessageSession = useCallback(async () => {
     if (leaveForeignOutboxRecovery()) return;
     if (
       creatingRef.current
@@ -5386,8 +5394,8 @@ export default function NewRemoteSessionScreen() {
 
   // 目标模式建会话(对齐桌面 handleCreateGoal):createSession → goal.set(被控端落
   // 目标消息 + 自动开跑第一轮)→ 跳转会话页。不走普通首条消息发送,目标文案即对话起点;
-  // composer 附件不随目标带入(与桌面一致)。goal.set 失败时报错留在面板,会话已创建,
-  // 用户可进会话重设目标,重试本表单会新建会话。
+  // composer 附件不随目标带入(与桌面一致)。goal.set 失败后进入同一任务恢复目标表单，
+  // 不重放写入、不重复创建；成功交接后保留创建锁直到页面卸载。
   const createGoalSession = useCallback(async (input: { objective: string; limits?: MobileGoalLimitsInput }) => {
     if (leaveForeignOutboxRecovery()) return;
     if (creatingRef.current || goalBusy) return;
@@ -5426,6 +5434,7 @@ export default function NewRemoteSessionScreen() {
     setCreating(true);
     setGoalBusy(true);
     setGoalError(null);
+    let handedOff = false;
     let releasePrecreatedRegistration: (() => void) | null = null;
     let precreatedWorktree: {
       sessionId: string;
@@ -5991,7 +6000,7 @@ export default function NewRemoteSessionScreen() {
       try {
         await maker.goal.set({ sessionId: result.sessionId, objective: input.objective, ...(input.limits ? { limits: input.limits } : {}) });
       } catch (goalErr) {
-        goalSetError = formatRemoteError(goalErr);
+        goalSetError = humanizeRemoteError(goalErr);
       }
       // ── settle 段(可降级):本地同步/UI,owner + 设备检查恢复正常语义 ──
       // 设备复核(greptile P1):goal.set 等待期间同账号可能切换设备——owner 检查
@@ -6060,6 +6069,7 @@ export default function NewRemoteSessionScreen() {
           } : {}),
         },
       });
+      handedOff = true;
     } catch (err) {
       if (!isCurrentOwner()) return;
       // 只有 session 尚未认领 worktree 时才补偿回收；Goal 已建成后 goal.set
@@ -6081,7 +6091,7 @@ export default function NewRemoteSessionScreen() {
             sessionClaimed = true;
           }
           if (sessionClaimed) {
-            setGoalError(formatRemoteError(err));
+            setGoalError(humanizeRemoteError(err));
             return;
           }
           if (sessionCreateStarted) {
@@ -6117,7 +6127,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
       }
-      setGoalError(formatRemoteError(err));
+      setGoalError(humanizeRemoteError(err));
     } finally {
       if (
         isCurrentOwner()
@@ -6136,9 +6146,11 @@ export default function NewRemoteSessionScreen() {
         }).catch(() => undefined);
       }
       releasePrecreatedRegistration?.();
-      creatingRef.current = false;
-      setCreating(false);
-      setGoalBusy(false);
+      if (!handedOff) {
+        creatingRef.current = false;
+        setCreating(false);
+        setGoalBusy(false);
+      }
     }
   }, [
     agentAuthVerdict,
@@ -6174,6 +6186,33 @@ export default function NewRemoteSessionScreen() {
     isWorktreeCreateIntentCurrent,
     resolveWorktreeCreateErrorKey,
   ]);
+
+  const create = useCallback(async () => {
+    const parsed = parseMobileDesktopCommand(firstMessageRef.current, slashCommands);
+    if (parsed?.name !== 'goal' || pendingGoalSkillRef.current === 'goal') {
+      await createMessageSession();
+      return;
+    }
+    if (creatingRef.current || voiceIsBusy) return;
+    if (attachmentsRef.current.length > 0 || pendingUploads.length > 0) {
+      setError(t('session.screen.goalCommandAttachments'));
+      return;
+    }
+    const command = parseGoalCommand(parsed.args);
+    if (command.action === 'clear') {
+      setError(t('session.new.goalCommandNeedsSession'));
+      return;
+    }
+    setGoalError(null);
+    setContextSheetView('goal');
+    setContextSheetOpen(true);
+    if (command.action === 'set') await createGoalSession({ objective: command.objective });
+  }, [attachmentsRef, createGoalSession, createMessageSession, pendingUploads.length, slashCommands, t, voiceIsBusy]);
+
+  const goalDraftCommand = parseMobileDesktopCommand(draft.firstMessage, slashCommands);
+  const goalDraftObjective = goalDraftCommand?.name === 'goal' && pendingGoalSkillRef.current !== 'goal'
+    ? goalDraftCommand.args
+    : draft.firstMessage.trim();
 
   return (
     <SafeAreaView edges={composerDock.enabled ? ['left', 'right'] : simpleScreenSafeAreaEdges()} style={styles.safeArea} testID="newSession.screen">
@@ -7004,7 +7043,7 @@ export default function NewRemoteSessionScreen() {
                 ? t(worktreeControlCaptionKey)
                 : undefined}
             error={goalError}
-            initial={draft.firstMessage.trim() ? { objective: draft.firstMessage.trim() } : undefined}
+            initial={goalDraftObjective ? { objective: goalDraftObjective } : undefined}
             onSetGoal={(input) => void createGoalSession(input)}
             testID="newSession.contextSheetGoalView"
           />

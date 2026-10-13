@@ -227,6 +227,7 @@
     "sessionNotSyncedRetry": "The session hasn't finished syncing; try again shortly.",
     "savingPreviousQueueEdit": "Saving the previous queued message edit; edit again once it finishes.",
     "attachmentsUploadingBeforeEdit": "Attachments are still uploading; edit the queued message after they finish.",
+    "goalCommandAttachments": "Send /goal without attachments. Your draft and attachments are kept.",
     "goalAlreadyActive": "This session already has an active goal; handle it here first.",
     "resetReconfirmTitle": "Confirm Again",
     "resetOfferExpired": "The reset credential has expired; review the refreshed quota info.",
@@ -287,6 +288,7 @@
     "shareMessage": "Share this message"
   },
   "new": {
+    "goalCommandNeedsSession": "Open an existing session to clear its goal.",
     "selectDevice": "Select a device",
     "workspaceDialogue": "Chat",
     "workspaceProject": "Project",
