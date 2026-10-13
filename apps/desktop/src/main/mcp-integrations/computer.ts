@@ -22,6 +22,7 @@ import type {
   ComputerMcpToolName,
 } from '@cindy/mcps';
 import { createLogger } from '../logger.js';
+import { isSecureInputTarget } from '../input-handoff/macDriver.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
 import { resolveDesktopOutboundProxy } from '../maker-host/outbound-proxy-resolver.js';
 import { adaptComputerDriverArgs, type ComputerDriverToolSchema } from './computer-contract.js';
@@ -3754,6 +3755,7 @@ export function getComputerMcpDeps(options: ComputerMcpDepsOptions = {}): Comput
       await ensureRuntime();
       return callComputerDriverTool(name, args, context);
     },
+    isSecureTarget: isSecureInputTarget,
     logger,
   };
 }

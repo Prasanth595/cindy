@@ -3624,6 +3624,13 @@ assertRouteCurrent();
     // 受邀者只能用分享给它的那一个供应商(启动来源就是它)：app-server 不升格、不开智能子代理调配，
     // 自定义供应商路由与按模型分流也只留它(见 prepareCodexExtraSpawnConfig 的 deviceHostedGuestProviderId)。
     const guestProviderId = hostedGuest ? hosted?.guestProvider?.providerId : undefined;
+    // Input handoff askpass for this owner's own local tasks. The app-server is
+    // shared, so the variables reach this thread's commands through its config.
+    const taskShellEnvConfig = Object.fromEntries(Object.entries(
+      !opts.remoteHostId && !hosted && !reviewMode && sid
+        ? this.deps.runtimeConfig.taskShellEnv?.({ sessionId: sid }) ?? {}
+        : {},
+    ).map(([name, value]) => [`shell_environment_policy.set.${name}`, value]));
     if (hostedGuest && (!guestProviderId || guestProviderId !== opts.providerId)) {
       throw new Error('[REMOTE_AGENT_PROVIDER_NOT_ALLOWED] this provider is not allowed for remote use on this computer');
     }
@@ -6464,6 +6471,7 @@ assertRouteCurrent();
         // starts a second continuation loop whose turns bypass Session.send
         // and lose the Host origin after the first terminal event.
         'features.goals': false,
+        ...taskShellEnvConfig,
         // Keep companion memory in its own Home. Native delegation uses the
         // same feature settings and permissions as an ordinary task.
         ...(opts.botRuntimeProfile ? {

@@ -49,3 +49,28 @@ for phase in [0, 1, 2, 0] {
   precondition(wheelGate.consume(physical: true, press: nil, down: false, trigger: false, scroll: true) == (true, phase == 0))
   precondition(wheelGate.swallowed.isEmpty)
 }
+
+// 代输入 live view: decisions only, nothing is posted. A window id and pid that
+// cannot exist stand in for a window that is gone or an app that is not focused.
+do {
+  let absent = HandoffConfine(window: 0xFFFF_FFF0, pid: 99_999_999)
+  keys = []; buttons = []; location = CGPoint(x: 40, y: 50)
+  precondition(confined(["kind": "move", "x": 0.5, "y": 0.5], absent) == nil, "No window, no pointer")
+  precondition(confined(["kind": "button", "button": 0, "down": true, "x": 0.5, "y": 0.5], absent) == nil)
+  let up = confined(["kind": "button", "button": 0, "down": false, "x": 0.9, "y": 0.9], absent)
+  precondition(up?["x"] as? Double == 40 && up?["y"] as? Double == 50, "A release always lands where the pointer is")
+  precondition(confined(["kind": "scroll", "dx": 0.0, "dy": 3.0], absent) == nil)
+  precondition(confined(["kind": "text", "text": "a"], absent) == nil, "Typing only while the app is focused")
+  precondition(confined(["kind": "key", "code": "KeyA", "down": true], absent) == nil)
+  precondition(confined(["kind": "key", "code": "F3", "down": true], absent) == nil, "No function keys")
+  precondition(confined(["kind": "key", "code": "KeyA", "down": false], absent) == nil, "Nothing to release")
+  keys = [0]
+  precondition(confined(["kind": "key", "code": "KeyA", "down": false], absent) != nil, "A held key is always released")
+  keys = [55]
+  precondition(confined(["kind": "key", "code": "Tab", "down": true], absent) == nil, "No app switcher")
+  keys = [55, 59]
+  precondition(confined(["kind": "key", "code": "KeyQ", "down": true], absent) == nil, "No lock-screen shortcut")
+  precondition(confined(["kind": "wheel"], absent) == nil)
+  keys = []
+}
+print("native window confinement passed")

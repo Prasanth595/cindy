@@ -4539,7 +4539,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Device Link (设备互联/跨设备远程控制) ─────────────────────────────
   // 同账号设备经 server relay 互联;此处只暴露开关 + 设备列表管理面,
   // 隧道(远程会话控制)在 M3 接入。
-  openRemoteDesktop: (target: { deviceId: string; name: string }): Promise<void> =>
+  openRemoteDesktop: (target: { deviceId: string; name: string; handoff?: string }): Promise<void> =>
     ipcRenderer.invoke(REMOTE_VIEWER.OPEN, target),
   remoteDesktop: {
     state: (checkWindowsSupport) => ipcRenderer.invoke(DESKTOP_LOCAL.STATE, checkWindowsSupport),
@@ -6928,6 +6928,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
       request: import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeRequest,
     ): Promise<import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeView | null> =>
       ipcRenderer.invoke('plugin-oauth:device-code', request),
+
+    /** 代输入 values for a task on this computer; trusted top-level frame only, never remote. */
+    submitInputHandoff: (requestId: string, submission: unknown): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('input-handoff:submit', requestId, submission),
+    /** 代输入 values for a task on another computer, over the signed v3 exchange. */
+    submitRemoteInputHandoff: (
+      request: import('../shared/pluginOauth').LocalInputHandoffRequest,
+    ): Promise<{ accepted: boolean }> => ipcRenderer.invoke('plugin-oauth:submit-input', request),
+    /** 代输入 screenshot step on this computer; trusted top-level frame only. */
+    getInputHandoffPicture: (
+      requestId: string,
+      revision: number,
+    ): Promise<import('@cindy/device-link').InputHandoffPicture | null> =>
+      ipcRenderer.invoke('input-handoff:picture', requestId, revision),
+    /** 代输入 screenshot step on another computer: the sealed picture for this window only. */
+    openRemoteInputHandoffPicture: (
+      request: import('../shared/pluginOauth').LocalInputHandoffPictureRequest,
+    ): Promise<{ token: string; picture: import('@cindy/device-link').InputHandoffPicture }> =>
+      ipcRenderer.invoke('plugin-oauth:open-input-picture', request),
+    /** The owner's tap or typing on an opened remote screenshot step; null closes it. */
+    answerRemoteInputHandoffPicture: (
+      token: string,
+      submission: unknown,
+    ): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('plugin-oauth:answer-input-picture', { token, submission }),
 
     /** Local-only Secret handoff; Main verifies this is Cindy's trusted top-level frame. */
     submitPluginSetupInline: (request: {

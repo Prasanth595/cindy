@@ -308,6 +308,19 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   事件、上下文和结果，不在中间造成无意损失（见
   [`../product-rules/core-product-principles.md`](../product-rules/core-product-principles.md)）。
 
+### 代输入：任务 shell 环境与工具说明（2026-10-13）
+
+- `runtimeConfig.taskShellEnv({ sessionId })` 给本任务 Agent 运行的命令注入代输入 askpass
+  （`SUDO_ASKPASS` / `SSH_ASKPASS` / `GIT_ASKPASS` 等，只含本机一次性路由，不含秘密）。三个 Harness
+  只对**本账号的本机任务**调用：SSH 远程、Review、设备托管访客任务一律不注入。Claude Code 与 Pi 写进
+  Agent 进程 env；Codex 的 app-server 共享，按线程经 `shell_environment_policy.set.<名>` 设置。
+  返回值必须按 sessionId 确定，重启进程得到字节相同的 env（否则破坏缓存与重建一致性）。
+- `request_input_handoff`（`packages/lizi-mcps/src/xdt-helper/input_handoff.ts`）的使用时机只写在工具
+  说明里，**不改 system prompt**；子 Agent（`mcpCallerKind === 'descendant'`）与远程工作区任务直接拒绝。
+  何时该发起靠工具返回提示（如 `cindy_computer` 拒绝直接操作保密输入框），不靠提示词。
+- 续接是隐藏的 `[Input handoff ended]` 合成消息，只有事实；产品规则见
+  [`../product-rules/input-handoff.md`](../product-rules/input-handoff.md)。
+
 ## 2. 优先用代码保证确定性，而非依赖 prompt
 
 能用代码保证的行为都写在代码里，让结果可预测、可测试、可调试；prompt 只承担真正需要

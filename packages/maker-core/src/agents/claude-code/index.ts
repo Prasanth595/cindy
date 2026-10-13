@@ -1659,6 +1659,10 @@ export class ClaudeCodeAgent extends BaseAgent {
       ? `${DEVICE_HOSTED_GUEST_ROUTE_HEADER}: ${guestProvider.routeToken}`
       : undefined;
     if (guestProvider) env.ANTHROPIC_SMALL_FAST_MODEL = sdkModel;
+    // Input handoff askpass for this owner's own local tasks only.
+    if (!opts.remoteHostId && !hosted && !reviewMode && opts.sessionId) {
+      Object.assign(env, this.deps.runtimeConfig.taskShellEnv?.({ sessionId: opts.sessionId }));
+    }
     if (guestRouteHeader) {
       env.ANTHROPIC_CUSTOM_HEADERS = env.ANTHROPIC_CUSTOM_HEADERS
         ? `${env.ANTHROPIC_CUSTOM_HEADERS}\n${guestRouteHeader}`

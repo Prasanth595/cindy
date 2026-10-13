@@ -35,6 +35,14 @@
 - 切换引擎、上下文滚动、重建式分叉从落库数据重建交接摘要时，按 `agentMeta` 重新生成
   来源标记；`[UI_ACTION_TRIGGER]` 合成行仍不进交接。
 
+### 代输入续接（2026-10-13）
+
+- 代输入结束时宿主给 Agent 发一条隐藏续接，首句 `[Input handoff ended]` 声明这是宿主事实、
+  不是用户消息；只含状态、结束方式、步数、最终应用 / origin 与作答设备类别，**不含主人填写的任何值**
+  （`packages/maker-shared/src/syntheticTrigger.ts`）。
+- 界面不显示续接原文，桌面与手机从同一行派生一条可见留痕「主人在 iPhone 完成了 3 步输入 ·
+  <域名>」；IM 渠道只收固定指引，不收续接。产品规则见 [代输入](input-handoff.md)。
+
 ## 界面
 
 - 桌面与手机同一文案；Android 跟随 iOS。

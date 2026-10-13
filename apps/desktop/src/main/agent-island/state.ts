@@ -47,11 +47,8 @@ import {
 
 export type AgentIslandInteractionRequest =
   | InteractionRequest
-  | {
-      kind: 'plugin_setup';
-      requestId: string;
-      detail: string;
-    };
+  | { kind: 'plugin_setup'; requestId: string; detail: string }
+  | { kind: 'input_handoff'; requestId: string; detail: string };
 
 export const AGENT_ISLAND_COMPLETION_DWELL_MS = 5_000;
 export const AGENT_ISLAND_ERROR_DWELL_MS = 12_000;
@@ -2791,7 +2788,7 @@ function detailForInteraction(
   request: AgentIslandInteractionRequest,
   wording: ToolRowWording,
 ): string {
-  if (request.kind === 'plugin_setup') return request.detail;
+  if (request.kind === 'plugin_setup' || request.kind === 'input_handoff') return request.detail;
   if (request.kind === 'permission') {
     // 权限确认:requireCommandVisible 保证用户批准的真实命令始终可见。
     return formatIslandToolDetail(request.toolName, request.input, { wording, requireCommandVisible: true }, {

@@ -360,6 +360,12 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
 - SDK 成功与正文入库／交付分开取证。只见 JSONL 成功但 SQLite 缺正文时，不能自动重跑
   已成功的工作；应沿 RPC → translator → Session → persistence 查丢失边界。
 
+- 代输入 askpass(2026-10-13):Pi 本机任务的 Agent 进程 env 合入 `runtimeConfig.taskShellEnv`,
+  只在 `!remote && !hosted && !reviewMode` 时合入,且按 sessionId 确定(respawn 字节一致)。这只是给
+  sudo/ssh/git 提供口令来源,不改 Pi 原生命令、扩展或权限行为;Pi 自身的 bash 工具照常执行,口令由宿主
+  核验进程链后写回发起进程。见 [`maker-core-and-agent-behavior.md`](maker-core-and-agent-behavior.md)
+  「代输入：任务 shell 环境与工具说明」。
+
 ## 5. 已交付(2026-07 里程碑)
 
 - redacted thinking 不再显示为空卡片;PI 会话图标(π);Auto-review 核心 + pi adapter + auto 档;

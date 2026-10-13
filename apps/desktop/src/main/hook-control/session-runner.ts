@@ -112,6 +112,7 @@ import { getDesktopProviderService } from '../maker-host/createDesktopProviderSe
 import { beginHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
 import { observeHookTurn, type HookTurnObserver } from './turnObserver.js';
 import { bindRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
+import { bindInputHandoffChannelNotice } from '../im/shared/inputHandoffChannelNotice.js';
 import { beginGroupHistoryAccess } from '../im/shared/groupHistoryAccess.js';
 import {
   captureChannelAccount,
@@ -1331,6 +1332,11 @@ export function createMakerHookSessionRunner(deps: {
               if (getMaker().getSession(session.id) !== session) return false;
               return req.onRuntimeRecovery!(text);
             }, log);
+            // 代输入: the same independent channel send carries the fixed pointer.
+            if (req.onRuntimeRecovery) bindInputHandoffChannelNotice(session, async (text) => {
+              if (getMaker().getSession(session.id) !== session) return false;
+              return req.onRuntimeRecovery!(text);
+            });
             if (req.groupHistoryAccess) {
               releaseGroupHistoryAccess = beginGroupHistoryAccess({
                 sessionId: session.id,

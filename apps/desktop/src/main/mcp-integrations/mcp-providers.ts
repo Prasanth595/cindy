@@ -83,10 +83,13 @@ import {
 } from '../maker-ipc/botWorkbenchTools.js';
 import { createTaskToolCallAuthorizer } from '../maker-ipc/taskToolCallAuthorizer.js';
 import {
+  getSessionRowSnapshot,
   patchSessionMetaInDb,
   renameSessionTitlesInDb,
   setSessionsStatusInDb,
 } from '../localDb/ipc/sessions.js';
+import { getInputHandoffService } from '../input-handoff/service.js';
+import { isInputHandoffDisabledForSession } from '../input-handoff/botPolicy.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import type { PluginRegistry } from '../maker-host/plugins/plugin-registry.js';
 import { getDesktopContactsManager } from '../maker-host/maker-contacts-host.js';
@@ -478,6 +481,34 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       appUpdate: createAgentAppUpdateCallbacks((sessionId, sessionInstanceId) =>
         deps.isCurrentLocalSessionInstance?.(sessionId, sessionInstanceId) === true),
       logger: createLogger('mcp/cindy_helper'),
+      // 代输入: Host-owned card; values never return through this tool.
+      inputHandoff: {
+        start: async (context, request) => {
+          if (!context.sessionId || !deps.isCurrentLocalSessionInstance?.(context.sessionId, context.sessionInstanceId))
+            return { ok: false, errorCode: 'NO_SESSION_CONTEXT', message: 'This task is no longer current.' };
+          const service = getInputHandoffService();
+          if (!service) return { ok: false, errorCode: 'CAPABILITY_NOT_AVAILABLE', message: 'Input handoff is not ready yet.' };
+          // Unknown policy (store unreadable) fails closed; a teammate switch must hold.
+          if (await isInputHandoffDisabledForSession(context.sessionId).catch(() => true))
+            return {
+              ok: false,
+              errorCode: 'DISABLED_BY_OWNER',
+              message: 'The owner turned off input handoff for this teammate. Tell the owner what is still needed instead.',
+            };
+          const row = await getSessionRowSnapshot(context.sessionId).catch(() => null);
+          const requester = row?.title?.trim().slice(0, 120);
+          const result = service.start({
+            sessionId: context.sessionId,
+            purpose: request.purpose,
+            ...(request.note ? { note: request.note } : {}),
+            ...(requester ? { requester } : {}),
+            target: request.target,
+            ...(request.completeWhen ? { completeWhen: request.completeWhen } : {}),
+            ...(request.timeoutMinutes ? { timeoutMinutes: request.timeoutMinutes } : {}),
+          });
+          return result.ok ? { ok: true, requestId: result.requestId } : result;
+        },
+      },
       grokLogin: {
         start: async (context) => {
           if (!context.sessionId || !context.sessionInstanceId

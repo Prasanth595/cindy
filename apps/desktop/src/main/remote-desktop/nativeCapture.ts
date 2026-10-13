@@ -98,6 +98,14 @@ export class NativeDesktopCapture {
     this.stop();
     this.excludedWindows = next;
   }
+  private onlyWindow = '';
+  /** 代输入 live view (macOS): capture just this window; null returns to the whole display. */
+  setWindow(id: number | null): void {
+    const next = id && Number.isSafeInteger(id) && id > 0 && id <= 0xffff_ffff ? `window:${id}` : '';
+    if (next === this.onlyWindow) return;
+    this.stop();
+    this.onlyWindow = next;
+  }
   get privacyReady(): boolean {
     return !!this.excludedWindows && this.confirmedExclusion === this.excludedWindows;
   }
@@ -178,6 +186,8 @@ export class NativeDesktopCapture {
     )
       return null;
     if (this.busy) return null;
+    // A window view exists only as the macOS overlay stream; never widen it to the display.
+    if (this.onlyWindow && (linux || !overlay)) return null;
     if (this.display && this.display !== display) this.stop();
     this.busy = true;
     const generation = this.generation;
@@ -204,7 +214,8 @@ export class NativeDesktopCapture {
                 String(profile.maxFrameBytes),
               ]
             : [display];
-        if (!linux && this.excludedWindows) args.push(this.excludedWindows);
+        if (!linux && this.onlyWindow) args.push(this.onlyWindow);
+        else if (!linux && this.excludedWindows) args.push(this.excludedWindows);
         const child = spawn(executable, args, { stdio: 'pipe' });
         this.child = child;
         this.display = display;

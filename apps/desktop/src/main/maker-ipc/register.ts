@@ -182,7 +182,7 @@ import { isRetainableProjectSession } from '../../shared/sessionSource.js';
 import { initializePluginOauthCards } from '../plugin-oauth/cards.js';
 import { currentOauthIdentityScope, loadOauthSigningKey } from '../plugin-oauth/desktopIdentity.js';
 import { readDeviceLinkSettings, readLastKnownDeviceNames } from '../device-link/settings-store.js';
-import { getDeviceLinkStatus, getMobileNotifyGeneration, sendMobileBotGroupNotify } from '../device-link/index.js';
+import { getDeviceLinkStatus, getMobileNotifyGeneration, sendMobileBotGroupNotify, sendMobileSessionNotify } from '../device-link/index.js';
 import type { AgentMeta, Session as RendererSession } from '../../renderer/lib/ccAgent.types';
 import {
   deriveAutoTitleSeed,
@@ -219,6 +219,8 @@ import {
   type GhostGrantConfirmInteractionSnapshot,
 } from '../cindy-brain/ghostGrantConfirmBridge.js';
 import { createFeishuDesktopConfirmNotifier } from '../im/desktopConfirmNoticeWiring.js';
+import { buildInputHandoffNoticeText } from '../im/desktopConfirmNotice.js';
+import { sendInputHandoffChannelNotice } from '../im/shared/inputHandoffChannelNotice.js';
 import { bindingStore } from '../im/binding.js';
 import { isHeadlessGhostSetupTurn } from '../mcp-integrations/ghostSetupInteractionSurface.js';
 import {
@@ -563,7 +565,9 @@ import { withChatServer } from './chatServer.js';
 import { createBotGroupPlanDecider } from './botGroupPlanDecider.js';
 import { botGroupMembersVisibleRemotely, registerBotGroupRemoteResourceProvider } from './botGroupRemoteResourceProvider.js';
 import { broadcastBotGroupRemoteResourceChanged } from './botGroupRemoteResourceInvalidation.js';
-import { getBotGroupStepNotificationBody } from '../sessionNotificationCopy.js';
+import { getBotGroupStepNotificationBody, getInputHandoffNotificationBody } from '../sessionNotificationCopy.js';
+import { readSessionTitle } from '../im/shared/controlProjects.js';
+import { readSessionNotificationPreview } from '../localDb/sessionNotificationPreview.js';
 import { createBotGroupWorkDir } from './botGroupWorkDir.js';
 import { createBotGroupAttachmentStore } from './botGroupAttachments.js';
 import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
@@ -950,6 +954,13 @@ import {
 import { createOrcaRemoteWorkers, isExecutionDeviceCandidate, type OrcaRemoteWorkers } from './orcaRemoteWorkers.js';
 import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import { ORCA_EXECUTION_DEVICES_CHANNEL } from '@cindy/device-link';
+import { INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL, type InputHandoffHolder, type InputHandoffSnapshot } from '@cindy/device-link';
+import { getInputHandoffService, initInputHandoffService } from '../input-handoff/service.js';
+import { closeInputHandoffAskpass, initInputHandoffAskpass } from '../input-handoff/askpass/index.js';
+import { onQuit } from '../lifecycle.js';
+import { isInputHandoffDisabledForSession } from '../input-handoff/botPolicy.js';
+import { createMacHandoffDriver } from '../input-handoff/macDriver.js';
+import { supportsRemotePluginOauth } from '../plugin-oauth/runtime.js';
 import {
   parseOrcaRemoteLead,
   serializeOrcaRemoteLead,
@@ -2931,6 +2942,118 @@ const ghostSetupInteractionBridge = initGhostSetupInteractionBridge({
   logger: log,
 });
 
+/**
+ * 代输入 (input handoff). Like Desktop-only confirmations these are Host-owned
+ * waits: they never block a later user turn and are not turn-idle zombies.
+ * Broadcasts carry step structure only; owner values never leave the
+ * trusted local channel or the signed v3 exchange.
+ */
+const inputHandoffImNotified = new Set<string>();
+/** Who is answering: this Desktop, or the server-verified controller device. */
+function inputHandoffActor(): InputHandoffHolder {
+  const context = getDeviceLinkInvokeContext();
+  if (!context) return { local: true };
+  return { deviceId: context.controllerDeviceId };
+}
+function describeInputHandoffDevice(deviceId: string): Omit<InputHandoffHolder, 'local' | 'deviceId'> {
+  const source = readDeviceLinkInvokeSourceDevice();
+  const name = (source?.deviceId === deviceId ? source.name : undefined) ?? readLastKnownDeviceNames()[deviceId];
+  return {
+    ...(name ? { name: name.slice(0, 60) } : {}),
+    ...(source?.deviceId === deviceId ? { platform: source.platform } : {}),
+  };
+}
+const inputHandoffImNotifier = createFeishuDesktopConfirmNotifier(buildInputHandoffNoticeText);
+/**
+ * Tell the owner a screen is waiting, wherever they are. The phone push is
+ * sent from main (not the renderer) so an unattended desktop with Cindy
+ * focused still alerts, and each new screen alerts again. The body is fixed
+ * copy: no screen contents, no purpose text, never a value.
+ */
+function notifyInputHandoffOwner(sessionId: string, snapshot: InputHandoffSnapshot): void {
+  const generation = getMobileNotifyGeneration();
+  void (async () => {
+    try {
+      const [title, preview] = await Promise.all([
+        readSessionTitle(sessionId),
+        readSessionNotificationPreview(sessionId, false).catch(() => undefined),
+      ]);
+      // An IM-driven task gets one text pointer per request, not one per screen.
+      if (!inputHandoffImNotified.has(snapshot.requestId)) {
+        inputHandoffImNotified.add(snapshot.requestId);
+        // Channel-driven tasks get it in their chat; a desktop task taken over from Feishu (/ctr) by its binding.
+        if (!sendInputHandoffChannelNotice(sessionId, buildInputHandoffNoticeText(title), log))
+          inputHandoffImNotifier(sessionId, title);
+      }
+      sendMobileSessionNotify({
+        sessionId,
+        title: preview?.teammateName ?? title,
+        kind: 'needs-reply',
+        fallbackBody: getInputHandoffNotificationBody(),
+        eventId: `input-handoff:${snapshot.requestId}:${snapshot.stepNumber}`,
+        generation,
+        ...(preview?.teammateBotId ? { teammateBotId: preview.teammateBotId } : {}),
+        ...(preview?.teammateAvatar ? { teammateAvatar: preview.teammateAvatar } : {}),
+      });
+    } catch (err) {
+      log.warn('[input-handoff] owner push failed (non-fatal)', err);
+    }
+  })();
+}
+let inputHandoffContinuation:
+  | ((sessionId: string, requestId: string, message: string) => Promise<void>)
+  | null = null;
+initInputHandoffService({
+  broadcast: (channel, payload) => {
+    broadcastToAllWindows(channel, payload);
+    const value = payload as { sessionId?: unknown; requestId?: unknown; request?: InputHandoffSnapshot };
+    if (typeof value.sessionId !== 'string') return;
+    if (channel === MAKER_PUSH.INTERACTION_REQUEST && value.request?.kind === 'input_handoff') {
+      if (!shouldNotifyAgentIslandForSession(value.sessionId)) return;
+      if (value.request.terminal === true) {
+        getAgentIslandService()?.handleInteractionDismissed(value.sessionId, value.request.requestId);
+        return;
+      }
+      getAgentIslandService()?.handlePluginSetupInteraction(
+        value.sessionId,
+        value.request.requestId,
+        value.request.purpose,
+        'input_handoff',
+      );
+      return;
+    }
+    if (channel === MAKER_PUSH.INTERACTION_DISMISSED && typeof value.requestId === 'string') {
+      getAgentIslandService()?.handleInteractionDismissed(value.sessionId, value.requestId);
+    }
+  },
+  createDriver: () => (process.platform === 'darwin' ? createMacHandoffDriver() : null),
+  hostPid: process.pid,
+  remoteInputAvailable: supportsRemotePluginOauth,
+  // A live view of just the window rides remote desktop, so only where the owner allowed it.
+  liveViewAvailable: () => {
+    if (process.platform !== 'darwin') return false;
+    const settings = readDeviceLinkSettings();
+    return settings.remoteControlEnabled && settings.remoteDesktopEnabled;
+  },
+  notifyOwner: (sessionId, snapshot) => notifyInputHandoffOwner(sessionId, snapshot),
+  describeDevice: describeInputHandoffDevice,
+  onClosed: (_sessionId, requestId) => {
+    inputHandoffImNotified.delete(requestId);
+  },
+  continueAgent: async (sessionId, requestId, message) => {
+    if (!inputHandoffContinuation) throw new Error('INPUT_HANDOFF_CONTINUATION_UNAVAILABLE');
+    await inputHandoffContinuation(sessionId, requestId, message);
+  },
+  logger: log,
+});
+// sudo / ssh / git password prompts in the owner's local tasks become one-step 代输入 cards.
+initInputHandoffAskpass({
+  startTerminalPrompt: (request) => getInputHandoffService()?.startTerminalPrompt(request) ?? { ok: false },
+  isDisabledForSession: isInputHandoffDisabledForSession,
+  logger: log,
+});
+onQuit('input-handoff-askpass', closeInputHandoffAskpass, 'async');
+
 initGhostSetupCoordinator({
   getTargetToken: ghostInstallMutationTargetFor,
   remoteConnection: true,
@@ -2994,6 +3117,7 @@ initializePluginOauthCards({
   loadKey: loadOauthSigningKey,
   bridge: ghostSetupInteractionBridge,
   bots: getBotAuthorizationService,
+  inputHandoff: getInputHandoffService,
   owner: () => currentOauthIdentityScope() ? activeOwnerScopeKey() : null,
   available: peer => {
     const settings = readDeviceLinkSettings();
@@ -3058,7 +3182,8 @@ type RecoverableInteractionSnapshot =
   | GhostSetupInteractionSnapshot
   | IssueConfirmInteractionSnapshot
   | RenameSessionsConfirmInteractionSnapshot
-  | GhostGrantConfirmInteractionSnapshot;
+  | GhostGrantConfirmInteractionSnapshot
+  | InputHandoffSnapshot;
 
 type PendingInteractionSnapshotEntry = {
   request: RecoverableInteractionSnapshot;
@@ -3085,6 +3210,7 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
       .map(({ request }) => ({ request })),
     ...ghostGrantConfirmBridge.pendingSnapshots(sessionId).map(({ request }) => ({ request })),
     ...ghostSetupInteractionBridge.pendingSnapshots(sessionId).map(({ request }) => ({ request })),
+    ...(getInputHandoffService()?.pendingSnapshots(sessionId) ?? []).map(({ request }) => ({ request })),
   );
   return out;
 }
@@ -3343,6 +3469,8 @@ function cleanupPendingInteractionsForSession(sessionId: string, reason: string)
     sessionId,
     reason === 'session_closed' ? 'session_closed' : 'session_aborted',
   );
+  // 代输入 follows the same real close/abort boundary; silent, no continuation.
+  getInputHandoffService()?.cleanupForSession(sessionId);
   // fs 槽 workdir 写确认的会话级记忆只在会话真正关闭时清(防 Set 无界增长)。
   // 本函数在 session_aborted(用户点停止)等瞬态也会被调,那些场景确认卡该收、
   // 但"同目录本会话免弹"的记忆要保住——否则用户每
@@ -11396,6 +11524,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
 
   setBotInvitationWelcomeDispatch(dispatchBotSessionMessage);
+
+  // 代输入 ended: hidden metadata-only continuation, mirroring the bot
+  // authorization resume. A deterministic client id keeps delivery idempotent.
+  inputHandoffContinuation = async (sessionId, requestId, message) => {
+    await inputCoordinator.ensureQueueRestored(sessionId).catch(() => undefined);
+    const result = await dispatchBotSessionMessage({
+      targetSessionId: sessionId,
+      message,
+      persistedContent: `${UI_ACTION_TRIGGER_PREFIX}${message}`,
+      clientId: `input-handoff-result:${requestId}`,
+    });
+    if (!result.ok) throw new Error(`Input handoff continuation not accepted: ${result.errorCode}`);
+  };
 
   initializeBotAuthorizationHost(async (card, validate, assertAuthorizationCurrent) => {
     await inputCoordinator.ensureQueueRestored(card.sessionId);
@@ -19549,6 +19690,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return { accepted: true };
       }
       if (await getBotAuthorizationService()?.resolve(requestId, decision, pluginSetupResponseTarget)) return { accepted: true };
+      // 代输入: value-less decisions only (hand back / cancel / stay / refresh).
+      // Values never use this generic channel; see INPUT_HANDOFF_LOCAL_CHANNEL.
+      if (!sharedTask && getInputHandoffService()?.resolve(requestId, decision, inputHandoffActor())) return { accepted: true };
       log.warn('resolve-interaction: no pending resolver (likely already dismissed/timed out)', {
         requestId,
       });
@@ -19569,8 +19713,32 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 快照:打开/重连/刷新会话时,renderer 拉当前挂起交互重建面板(本机 + device-link 远程共用)。
   ipcMain.handle(MAKER_INVOKE.GET_PENDING_INTERACTIONS, (_e, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || !sessionId) return [];
-    const pending = getPendingInteractionsForSession(sessionId);
+    let pending = getPendingInteractionsForSession(sessionId);
+    // Shared-task guests never see the owner's input handoff.
+    if (getDeviceLinkInvokeContext()?.sharedTask)
+      pending = pending.filter(({ request }) => request.kind !== 'input_handoff');
     return projectPendingInteractionsForRemote(pending, isDeviceLinkInvoke());
+  });
+
+  /**
+   * 代输入 values: Cindy's own trusted top-level renderer only. Never on the
+   * device-link allowlist; remote devices use the signed v3 exchange instead.
+   * The payload is never logged, persisted or echoed back.
+   */
+  ipcMain.handle(INPUT_HANDOFF_LOCAL_CHANNEL, async (event, requestId: unknown, submission: unknown) => {
+    if (isDeviceLinkInvoke()) throwIpcError('PERMISSION_DENIED', 'input handoff values must be entered on this Desktop');
+    assertTrustedAppRendererEvent(event);
+    if (typeof requestId !== 'string' || !requestId) throwIpcError('INVALID_PARAMS', 'requestId required');
+    return { accepted: (await getInputHandoffService()?.submit(requestId, submission)) ?? false };
+  });
+
+  /** 代输入 screenshot step on this computer: shown in Cindy's own window only, never pushed or stored. */
+  ipcMain.handle(INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL, (event, requestId: unknown, revision: unknown) => {
+    if (isDeviceLinkInvoke()) throwIpcError('PERMISSION_DENIED', 'input handoff pictures stay on this Desktop');
+    assertTrustedAppRendererEvent(event);
+    if (typeof requestId !== 'string' || !requestId || !Number.isSafeInteger(revision))
+      throwIpcError('INVALID_PARAMS', 'requestId and revision required');
+    return getInputHandoffService()?.picture(requestId, revision as number) ?? null;
   });
 
   // ── 运行时切换 (Stage 2 B) ───────────────────────────────────────────────

@@ -783,3 +783,55 @@ describe('control granted with the lease (autoControl)', () => {
     });
   });
 });
+
+describe('代输入 window view', () => {
+  it('starts only the window view it was opened for, and keeps whole-desktop features off', async () => {
+    const request = vi.fn(async (_target: string, message: RemoteDesktopRequest) => {
+      if (message.op === 'capabilities')
+        return {
+          version: 1,
+          enabled: true,
+          canControl: true,
+          platform: 'darwin',
+          displays: [],
+          handoffWindow: true,
+          clipboardSync: true,
+          privacyScreen: true,
+          lockOnExit: true,
+        };
+      return { lease: 'lease-w', controlling: true, display: { id: '1', width: 800, height: 600 } };
+    });
+    const connection = new RemoteViewerConnection({
+      owner: () => 'account-a:1',
+      request,
+      readClipboard: () => '',
+      writeClipboard: () => {},
+    });
+    connection.bind({ deviceId: 'computer-a', name: 'Computer', handoff: 'req1' });
+    connection.setActive(true);
+    const { generation } = connection.snapshot();
+    const caps = await connection.request(generation, { op: 'capabilities' });
+    expect(caps.ok).toBe(true);
+    // The page cannot drop the window view or swap it for another request.
+    for (const start of [
+      { op: 'start', displayId: '1' },
+      { op: 'start', displayId: '1', handoff: 'req2' },
+    ])
+      expect(await connection.request(generation, start)).toEqual({
+        ok: false,
+        code: 'DESKTOP_UNAVAILABLE',
+      });
+    expect(
+      (await connection.request(generation, { op: 'start', displayId: '1', handoff: 'req1' })).ok,
+    ).toBe(true);
+    expect(request).toHaveBeenLastCalledWith(
+      'computer-a',
+      expect.objectContaining({ op: 'start', handoff: 'req1' }),
+      expect.any(Function),
+    );
+    // Safety ticks use the window-view capabilities: no clipboard sync, masks or lock.
+    const safety = await connection.safety(generation);
+    expect(safety.privacyActive).toBe(false);
+    expect(request.mock.calls.map(([, message]) => message.op)).not.toContain('clipboardSync');
+  });
+});
