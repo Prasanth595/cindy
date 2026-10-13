@@ -12,6 +12,7 @@ const productionIdentityDeps = {
   installedGhostStoragePart,
   isPluginInstanceKey,
   resolvePluginInstanceQuery,
+  libraryRestartRequiredReason: (): string | null => null,
 };
 
 /**

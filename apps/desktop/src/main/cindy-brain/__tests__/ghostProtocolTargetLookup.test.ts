@@ -57,7 +57,10 @@ async function installTarget(): Promise<void> {
 
 const session = { mode: 'cloud' as const, dataOwnerId: 'owner-a', generation: 1 };
 
-function productionCallbacks(spawn = vi.fn(async () => ({ ok: true, state: 'running' }))) {
+function productionCallbacks(
+  spawn = vi.fn(async () => ({ ok: true, state: 'running' })),
+  libraryRestartRequiredReason: (id: string) => string | null = () => null,
+) {
   const callbacks = createGhostProductionCallbacks<{
     store: TargetStore;
     wake: WakeHandler;
@@ -78,6 +81,7 @@ function productionCallbacks(spawn = vi.fn(async () => ({ ok: true, state: 'runn
     ghostWebviewEntryPaths,
     GHOST_SCHEME: 'cindy-ghost',
     ensureGhostProtocolRegistered: vi.fn(),
+    libraryRestartRequiredReason,
   });
   return { ...callbacks, spawn };
 }
@@ -132,6 +136,11 @@ describe('cindy-ghost:// target lookup', () => {
     }
     expect(resolveGhostWebviewAttach(claim, 'cindy-ghost://canvas/other.html')).toBeNull();
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it('does not attach a panel the host holds stopped until restart', () => {
+    const { resolveGhostWebviewAttach } = productionCallbacks(undefined, (id) => (id === TARGET ? 'restart' : null));
+    expect(resolveGhostWebviewAttach(ghostPartition(TARGET), 'cindy-ghost://canvas/panel.html')).toBeNull();
   });
 
   it('keeps the root and organization instances of the same plugin apart', () => {

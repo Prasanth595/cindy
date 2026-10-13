@@ -1986,6 +1986,9 @@ export function getGhostRuntime(): GhostRuntime {
     runtimeSingleton = new GhostRuntime({
       adapter: electronSandboxAdapter,
       log,
+      startBlockedReason: (id) => libraryRestartRequiredReason(
+        isValidPluginInstallRelId(id) ? pluginInstallStoragePart(id) : id,
+      ),
       // 熔断不再自动转沉睡(Lizi 2026-07-09 定案):面板原地显示错误状态,
       // 关闭(沉睡)/ 重载都由用户在面板上决定,主机只记日志。
       onFused: (id) => log.warn('ghost fused after repeated crashes', { id }),
@@ -2173,6 +2176,7 @@ export function getGhostNodeRuntimeBroker(): GhostNodeRuntimeBroker {
   if (!nodeRuntimeBrokerSingleton) {
     nodeRuntimeBrokerSingleton = new GhostNodeRuntimeBroker({
       getGhost: findGhostForInstanceId,
+      startBlockedReason: libraryRestartRequiredReason,
       getCallSignal: (ghostId, callId) =>
         getGhostPipeDispatcher().getPendingCallSignal(ghostId, callId),
       getCallSessionId: (ghostId, callId) =>
@@ -6379,6 +6383,23 @@ function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReat
  * runtime and panels share an in-memory partition whose cache would otherwise
  * be written back over the swapped library.
  */
+/**
+ * Instances whose partition cache could not be cleared after a library swap.
+ * They stay stopped until Cindy restarts, which empties the in-memory
+ * partition; panel attach and both runtimes check this before starting.
+ */
+const libraryRestartRequired = new Set<string>();
+
+function libraryRestartRequiredKey(id: string): string {
+  return `${activeOwnerScopeKey()}\0${id}`;
+}
+
+function libraryRestartRequiredReason(id: string): string | null {
+  return libraryRestartRequired.has(libraryRestartRequiredKey(id))
+    ? t('settings.ghosts.library.legacyReattachNeedsRestart')
+    : null;
+}
+
 /** Close every page still open in a plugin partition and wait until each is gone. */
 async function closePartitionPages(partitionSession: Session, timeoutMs = 5_000): Promise<void> {
   const pages = electronWebContents.getAllWebContents()
@@ -6440,7 +6461,10 @@ async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Pro
     warn: (message, error) => log.warn(message, {
       id: toId, error: error instanceof Error ? error.message : String(error),
     }),
-  }, run);
+  }, run).catch((error: unknown) => {
+    if (error instanceof LibrarySwapNeedsRestartError) libraryRestartRequired.add(libraryRestartRequiredKey(toId));
+    throw error;
+  });
 }
 
 let pendingLegacyLibraryReattach: Promise<void> | null = null;
@@ -9885,6 +9909,7 @@ export function resolveGhostWebviewAttach(
   // reads only that instance.
   const ghost = findGhostForInstanceId(resolvedPartition.ghostId);
   if (!ghost || !ghost.enabled) return null;
+  if (libraryRestartRequiredReason(resolvedPartition.ghostId) !== null) return null;
   if (resolvedPartition.ghostId !== installedGhostStoragePart(ghost)) return null;
   const partition = ownerScopedGhostPartitionForInstalledGhost(ghost, owner);
   if (!partition) return null;
