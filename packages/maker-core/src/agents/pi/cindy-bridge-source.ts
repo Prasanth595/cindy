@@ -2886,7 +2886,17 @@ function acquireDisclosureLock(lockPath: string): number | undefined {
       if (attempt === 1) return undefined;
       const owner = readLockOwner(lockPath);
       if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return undefined;
-      try { rmSync(lockPath, { force: true }); } catch { return undefined; }
+      // 回收：把残留锁**原子地挪走**，只有 rename 成功的那个实例才有权回收。否则两个
+      // 实例会先各自读到旧 owner，然后都执行 rmSync——A 删掉旧锁并重新加锁后，B 仍然
+      // 会把 A 的新锁删掉，两边同时进入写入路径，后一次替换覆盖前一次刚存的披露记录。
+      const stale = lockPath + '.stale-' + process.pid;
+      try { rmSync(stale, { force: true }); } catch { /* 上次没清掉的回收槽 */ }
+      try {
+        renameSync(lockPath, stale);
+      } catch {
+        return undefined; // 已被另一个实例回收或重建：不争，跳过本次落盘。
+      }
+      try { rmSync(stale, { force: true }); } catch { /* 残留回收槽不影响正确性 */ }
     }
   }
   return undefined;
@@ -2906,8 +2916,10 @@ function isProcessAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // EPERM = 进程存在但不属于当前用户，仍算活着；其余（ESRCH 等）视为已退出。
-    return (error as { code?: string }).code === 'EPERM';
+    // 只有明确的 ESRCH（进程确实不存在）才允许回收锁。EPERM = 进程存在但不属于当前
+    // 用户；EINVAL / 平台不支持 signal 0 等其他错误一律保守当作“可能还活着”，宁可
+    // 这一次不落盘，也不误删另一个实例正在使用的锁。
+    return (error as { code?: string }).code !== 'ESRCH';
   }
 }
 

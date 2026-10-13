@@ -45,6 +45,10 @@ function loadGateway(options: {
   onDisk?: DisclosedFile | null;
   /** 预先存在的锁文件持锁 pid；777 = 活进程，999 = 已退出进程。 */
   lockOwner?: number;
+  /** process.kill(pid, 0) 抛出的错误码，默认 ESRCH。 */
+  killErrorCode?: string;
+  /** 模拟回收残留锁时被另一个实例抢先（rename 失败）。 */
+  reclaimLostRace?: boolean;
 } = {}) {
   const writes: DisclosedFile[] = [];
   const renames: string[] = [];
@@ -57,6 +61,7 @@ function loadGateway(options: {
   const lockFile: { value: string | null } = { value: null };
   if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
   const externalWrite = (value: DisclosedFile) => { disk.value = value; };
+  const reclaimed: string[] = [];
 
   const code = ts.transpileModule(
     `${GATEWAY_SOURCE}\n(globalThis as any).CindyMcpGateway = CindyMcpGateway;`,
@@ -76,7 +81,7 @@ function loadGateway(options: {
           if (signal !== 0) alivePids.delete(pid);
           return;
         }
-        throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+        throw Object.assign(new Error('kill failed'), { code: options.killErrorCode ?? 'ESRCH' });
       },
     },
     path: {
@@ -100,8 +105,18 @@ function loadGateway(options: {
       disk.value = JSON.parse(body) as DisclosedFile;
       writes.push(disk.value);
     },
-    renameSync: (from: string, to: string) => { renames.push(`${from} -> ${to}`); },
-    rmSync: (file: string) => { if (file.endsWith('.lock')) lockFile.value = null; },
+    renameSync: (from: string, to: string) => {
+      if (options.reclaimLostRace && from.endsWith('.lock')) {
+        // 模拟另一个实例先把残留锁回收并重建了新锁：本实例的 rename 失败。
+        throw Object.assign(new Error('lock gone'), { code: 'ENOENT' });
+      }
+      if (from.endsWith('.lock')) lockFile.value = null;
+      renames.push(`${from} -> ${to}`);
+    },
+    rmSync: (file: string) => {
+      if (file.endsWith('.lock') && !file.includes('.stale-')) lockFile.value = null;
+      reclaimed.push(file);
+    },
     openSync: (file: string, flags: string) => {
       if (flags === 'wx' && lockFile.value !== null) {
         throw Object.assign(new Error('locked'), { code: 'EEXIST' });
@@ -155,6 +170,7 @@ function loadGateway(options: {
     gateway,
     httpClient,
     externalWrite,
+    reclaimed,
     writes,
     renames,
     warnings,
@@ -254,6 +270,26 @@ describe('MCP gateway schema disclosure', () => {
     // 本进程内存里的披露已生效
     expect((gateway as unknown as { isSchemaDisclosed(c: unknown): boolean })
       .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
+  });
+
+  it('keeps a stale lock when the liveness probe fails for a reason other than ESRCH', async () => {
+    // EINVAL 等非 ESRCH 错误不能证明进程已退出 → 不回收，跳过落盘但不挡工具执行。
+    const { gateway, call, requests, disk } = loadGateway({ lockOwner: 999, killErrorCode: 'EINVAL' });
+    await call();
+    expect(requests).toHaveLength(1);
+    expect(disk.value).toBeNull();
+    expect((gateway as unknown as { isSchemaDisclosed(c: unknown): boolean })
+      .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
+  });
+
+  it('skips persisting when another instance reclaimed the stale lock first', async () => {
+    // 回收必须与重新加锁互斥：rename 失败说明锁已被别人收走/重建，本实例直接放弃，
+    // 不能继续 rmSync（那会删掉对方刚建的锁，两边都进写入路径互相覆盖记录）。
+    const { call, requests, disk, reclaimed } = loadGateway({ lockOwner: 999, reclaimLostRace: true });
+    await call();
+    expect(requests).toHaveLength(1);
+    expect(disk.value).toBeNull();
+    expect(reclaimed.some((file) => file.endsWith('.lock') && !file.includes('.stale-'))).toBe(false);
   });
 
   it('treats a missing or corrupt disclosure file as undisclosed and still executes', async () => {
