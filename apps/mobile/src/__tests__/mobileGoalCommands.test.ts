@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
 import { executeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
-import { emptyComposerDocument, normalizeComposerDocument, textComposerDocument } from '@/session/composerDocument';
+import { composerDocumentProjectedText, emptyComposerDocument, normalizeComposerDocument, reconcileComposerProjectedText, serializeComposerDocument, textComposerDocument } from '@/session/composerDocument';
 
 // Execute the actual page callbacks, excluding unrelated native/network UI.
 function callback(path: string, name: string) {
@@ -23,10 +23,15 @@ function callback(path: string, name: string) {
 }
 const newCreate = callback('app/sessions/new.tsx', 'create');
 const goalCreate = callback('app/sessions/new.tsx', 'createGoalSession');
-const page = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8').replace(/\r\n/g, '\n');
-const start = page.indexOf("    if (outboxEligible && earlyDesktopCommand?.name === 'goal')");
-const end = page.indexOf('    // A known hidden model requires', start);
-const compiledExisting = ts.transpileModule(`return async () => { ${page.slice(start, end)} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const sessionSource = ts.createSourceFile('session.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let sendSource = '';
+function findSend(node: ts.Node) {
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'send') sendSource = node.getText(sessionSource);
+  ts.forEachChild(node, findSend);
+}
+findSend(sessionSource);
+if (!sendSource) throw new Error('Missing complete SessionScreen.send entry');
+const compiledExisting = ts.transpileModule(`${sendSource}\nreturn send;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 function newHarness(text = '/goal target') {
   const noop = vi.fn();
@@ -61,19 +66,40 @@ function newHarness(text = '/goal target') {
 
 function existingHarness(args = 'target') {
   const initial = textComposerDocument(`/goal ${args}`);
+  const release = vi.fn();
+  const noop = vi.fn();
+  const session = { id: 'existing-task', agentKind: 'pi', model: 'test-model', permissionMode: 'ask', workingDir: '/test-workdir' };
   const bindings = {
-    outboxEligible: true, earlyDesktopCommand: { name: 'goal', args }, willHaveAttachments: false,
     setError: vi.fn(), setGoalError: vi.fn(), t: (key: string) => key,
-    isRemoteSessionMissing: () => false, readSessionRowNow: () => ({}), goalBusy: false, setGoalBusy: vi.fn(),
+    isRemoteSessionMissing: () => false, readSessionRowNow: () => session, goalBusy: false, setGoalBusy: vi.fn(),
     executeMobileGoalCommand, sessionId: 'existing-task', deviceId: 'host', deviceIdRef: { current: 'host' },
     outboxSessionAliveRef: { current: 'existing-task' }, getMobileAuthOwner: () => ({}), isMobileAuthOwnerCurrent: () => true,
     maker: { goal: { set: vi.fn(async () => {}), clear: vi.fn(async () => {}), getStatus: vi.fn(async () => ({ status: 'active', objective: 'target' })) } },
-    remoteSessionStore: { setGoalStatus: vi.fn() }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
-    setGoalRestore: vi.fn(), router: { setParams: vi.fn() }, composerDocumentRef: { current: initial }, documentAtSend: initial,
+    remoteSessionStore: { setGoalStatus: vi.fn(), acquireSessionMessageWork: vi.fn(() => ({ release })), getSessionDeviceId: () => 'host' }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
+    setGoalRestore: vi.fn(), router: { setParams: vi.fn() }, composerDocumentRef: { current: initial },
     composerDocumentsEqual: (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b),
     applyComposerDocument: vi.fn(), normalizeComposerDocument, humanizeRemoteError,
+    composerDraftHydrated: true, voiceState: 'idle', slashCommandsRef: { current: [] }, queueEditingRef: { current: null },
+    composerDocumentProjectedText, serializeComposerDocument, reconcileComposerProjectedText, emptyComposerDocument,
+    canUseComposer: true, attachments: [] as unknown[], attachmentsRef: { current: [] as unknown[] }, pendingUploads: [],
+    sendInFlightRef: { current: false }, sending: false, setSending: vi.fn((_sending: boolean) => {}), currentSession: session,
+    outboxConnectionBlockedNow: () => false, getPendingUploadCount: () => 0,
+    parseMobileLocalSystemCommand: () => null, parseMobileDesktopCommand, pendingSkillSelectionRef: { current: null },
+    resolveSessionAgentKind: () => 'pi', modelNeedsReselection: () => false, getCachedDeviceProviders: () => undefined,
+    commandNeedsRemoteSession: () => false, extractMobileSessionReferences: () => [], outboxDispatchBlockedNow: () => false,
+    runtimeOptions: { planModeSupported: true }, permissionModeOrAsk: (mode: string) => mode,
+    dismissPromptRecommendation: noop, hydrateComposerMessageReferenceBodies: async (doc: unknown) => doc,
+    resolvePastedSessionLinkLabel: noop, requestMessageListFollowLatest: noop, hasPastePlaceholders: () => false,
+    beginOutboxAttachmentHandoff: async () => ({ prepare: async () => [], release: noop }),
+    attachmentPreviews: {}, buildOutboxItem: (input: unknown) => input, createOutboxClientId: () => 'ordinary-message',
+    mobileDurableOutbox: { add: vi.fn(async (_record: unknown) => {}) }, rememberSentAttachmentPreviews: noop,
+    releaseUploadedSources: noop, setMediaAssetAttachments: noop, setAttachmentPreviews: noop,
+    composerAnnotationsRef: { current: null }, setAttachments: noop, setAttachmentError: noop,
+    voiceDictionaryLearningTrackerRef: { current: null }, formatRemoteError: String,
   };
-  return { bindings, run: () => new Function(...Object.keys(bindings), compiledExisting)(...Object.values(bindings))() as Promise<void> };
+  bindings.setSending = vi.fn((value: boolean) => { bindings.sending = value; });
+  bindings.applyComposerDocument = vi.fn((doc: typeof initial) => { bindings.composerDocumentRef.current = doc; });
+  return { bindings, release, run: () => new Function(...Object.keys(bindings), compiledExisting)(...Object.values(bindings))() as Promise<void> };
 }
 
 describe('new task /goal page callback', () => {
@@ -147,7 +173,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.applyComposerDocument).not.toHaveBeenCalled();
   });
   it('rejects attachments and retains the command', async () => {
-    const h = existingHarness(); h.bindings.willHaveAttachments = true; await h.run();
+    const h = existingHarness(); h.bindings.attachmentsRef.current = [{}]; await h.run();
     expect(h.bindings.setError).toHaveBeenCalledWith('session.screen.goalCommandAttachments');
     expect(h.bindings.maker.goal.set).not.toHaveBeenCalled();
     expect(h.bindings.applyComposerDocument).not.toHaveBeenCalled();
@@ -156,5 +182,42 @@ describe('existing task /goal send boundary', () => {
     const h = existingHarness(); h.bindings.maker.goal.set.mockImplementationOnce(async () => { h.bindings.outboxSessionAliveRef.current = 'other-task'; }); await h.run();
     expect(h.bindings.remoteSessionStore.setGoalStatus).not.toHaveBeenCalled();
     expect(h.bindings.applyComposerDocument).not.toHaveBeenCalled();
+    expect(h.bindings.sendInFlightRef.current).toBe(false);
+    expect(h.release).toHaveBeenCalledOnce();
+  });
+  it('keeps the send lock while Goal is in flight and rejects a duplicate submission', async () => {
+    const h = existingHarness();
+    let finish!: () => void;
+    h.bindings.maker.goal.set.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const first = h.run();
+    expect(h.bindings.sendInFlightRef.current).toBe(true);
+    await h.run();
+    expect(h.bindings.maker.goal.set).toHaveBeenCalledOnce();
+    expect(h.release).not.toHaveBeenCalled();
+    finish();
+    await first;
+    expect(h.bindings.sendInFlightRef.current).toBe(false);
+    expect(h.bindings.sending).toBe(false);
+    expect(h.release).toHaveBeenCalledOnce();
+  });
+  it.each(['set', 'clear', 'bare', 'failure', 'attachments', 'busy'] as const)('releases the complete send boundary after Goal %s so an ordinary message can follow', async scenario => {
+    const h = existingHarness(scenario === 'clear' ? 'clear' : scenario === 'bare' ? '' : 'target');
+    if (scenario === 'failure') h.bindings.maker.goal.set.mockRejectedValueOnce(new Error('[NOT_CONNECTED] offline'));
+    if (scenario === 'attachments') h.bindings.attachmentsRef.current = [{}];
+    if (scenario === 'busy') h.bindings.goalBusy = true;
+    await h.run();
+    expect(h.bindings.sendInFlightRef.current).toBe(false);
+    expect(h.bindings.sending).toBe(false);
+    expect(h.release).toHaveBeenCalledOnce();
+    h.bindings.goalBusy = false;
+    h.bindings.attachmentsRef.current = [];
+    h.bindings.composerDocumentRef.current = textComposerDocument('ordinary follow-up');
+    await h.run();
+    expect(h.bindings.mobileDurableOutbox.add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      item: expect.objectContaining({ sessionId: 'existing-task', text: 'ordinary follow-up' }),
+    }));
+    expect(h.bindings.sendInFlightRef.current).toBe(false);
+    expect(h.bindings.sending).toBe(false);
+    expect(h.release).toHaveBeenCalledTimes(2);
   });
 });
