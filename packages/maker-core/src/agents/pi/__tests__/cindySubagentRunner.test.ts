@@ -618,6 +618,21 @@ describe('Cindy durable PI Subagent runner', () => {
     expect(await readCommandsIfPresent(fixture.commandsFile)).toBeNull();
   });
 
+  // 预算按字节算：汉字在 UTF-8 下是 3 字节/字，按字符数估会漏掉三分之二，
+  // 于是一段「字符数没超、字节数超了」的中文提示词会漏过守卫并炸在 spawn 上。
+  it('counts multi-byte argv in bytes, not characters', async () => {
+    // ~4.5 万字符 ≈ 13.5 万 UTF-8 字节：字符数在 POSIX 的 128k 之下，字节数在其上。
+    const fixture = await makeFixture({
+      profilePrompt: '中文提示词'.repeat(9000),
+    });
+    const failed = await waitFor(async () => {
+      const [run] = await listPiSubagentRuns(fixture.root);
+      return run?.state === 'failed' ? run : null;
+    });
+    expect(failed.tasks[0]?.error).toMatch(/\d+ > \d+ bytes/);
+    expect(await readCommandsIfPresent(fixture.commandsFile)).toBeNull();
+  });
+
   it('uses unique exact child session ids and persists terminal output/usage', async () => {
     const fixture = await makeFixture({ tasks: 2 });
     const completed = await waitFor(async () => {

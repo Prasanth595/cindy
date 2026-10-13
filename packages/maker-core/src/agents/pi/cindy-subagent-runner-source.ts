@@ -830,9 +830,16 @@ function main() {
       const childArgs = Array.isArray(config.binaryPrefixArgs)
         ? config.binaryPrefixArgs.concat(args)
         : args;
-      if (childArgs.reduce((total, arg) => total + String(arg).length + 3, 0) > SPAWN_ARGV_BUDGET) {
+      // 启动参数的长度上限按字节算（Windows 命令行、POSIX ARG_MAX 都是字节），
+      // 不能用 String.length：中文提示词在 UTF-8 下是 3 字节/字，会漏检一大截。
+      const argvBytes = childArgs.reduce(
+        (total, arg) => total + Buffer.byteLength(String(arg), 'utf8') + 3,
+        0,
+      );
+      if (argvBytes > SPAWN_ARGV_BUDGET) {
         task.status = 'failed';
-        task.error = 'Subagent command line exceeds the platform spawn budget.';
+        task.error = 'Subagent command line exceeds the platform spawn budget ('
+          + argvBytes + ' > ' + SPAWN_ARGV_BUDGET + ' bytes).';
         task.endedAt = Date.now();
         scheduleStatus();
         resolve();
