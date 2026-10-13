@@ -6607,7 +6607,10 @@
         "legacyReattachConfirmDescription": "The plugin will use the earlier work data instead. Its current work data is moved to the trash and kept for 30 days, then permanently removed.",
         "legacyReattachConfirmText": "Reattach",
         "legacyReattachDone": "Earlier work data reattached",
-        "legacyReattachFailed": "Reattach failed"
+        "legacyReattachFailed": "Reattach failed",
+        "legacyInUseBanner": "Another install on this computer (such as a local copy) is still using this plugin's earlier work data. Uninstall that install to reattach the data here.",
+        "legacyFoundUnknownBanner": "This computer has work data that may have been left by this plugin ({{size}} · {{count}} files). It has no source record, and the current install does not use it.",
+        "legacyReattachUnknownSource": "This work data has no source record. It may have been copied in by hand or by a script. Make sure it belongs to this plugin."
       },
       "updateConfirm": {
         "title": "Update plugin \"{{name}}\"?",

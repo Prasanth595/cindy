@@ -1284,15 +1284,16 @@ describe('plugin instance registry boundaries', () => {
   });
 
   it('offers a bare-id library only while nothing installed or foreign owns the bare id', async () => {
-    expect(manager.canOfferBareLibrary('hello', 'acme')).toBe(true);
+    expect(manager.bareLibraryOffer('hello', 'acme')).toBe('available');
     await plantLegacyInstall('hello');
     manager.list();
-    expect(manager.canOfferBareLibrary('hello', 'acme')).toBe(false);
+    expect(manager.bareLibraryOffer('hello', 'acme')).toBe('in-use');
     await expect(manager.commitPendingNamespace('hello', 'acme', 'market-organization')).resolves.toEqual({ ok: true });
+    expect(manager.bareLibraryOffer('hello', 'acme')).toBe('in-use');
     await expect(manager.uninstall('hello', { notify: false })).resolves.toEqual({ ok: true });
-    expect(manager.canOfferBareLibrary('hello', 'acme')).toBe(true);
-    expect(manager.canOfferBareLibrary('hello', 'other')).toBe(false);
-    expect(manager.canOfferBareLibrary('hello', null)).toBe(false);
+    expect(manager.bareLibraryOffer('hello', 'acme')).toBe('available');
+    expect(manager.bareLibraryOffer('hello', 'other')).toBe('unavailable');
+    expect(manager.bareLibraryOffer('hello', null)).toBe('unavailable');
   });
 
   it('records the market plugin id instead of treating the install as manual', async () => {

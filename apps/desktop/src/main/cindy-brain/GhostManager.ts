@@ -845,22 +845,25 @@ export class GhostManager {
 
   /**
    * Whether the library left under the bare id may move to an installed
-   * instance in this namespace. Nothing is installed under the bare id, and no
-   * record of another organization owns it. The caller asks the user.
+   * instance in this namespace. `in-use` means an install still runs under the
+   * bare id (for example the local copy), so its library is not left behind.
+   * A record of another organization never gives the bare id away. The caller
+   * asks the user.
    */
-  canOfferBareLibrary(ghostId: string, namespace: string | null): boolean {
+  bareLibraryOffer(ghostId: string, namespace: string | null): 'available' | 'in-use' | 'unavailable' {
     this.ensureCurrentOwnerContextSync();
     const registry = this.syncInstanceRegistry();
-    if (this.instanceRegistryService.isBlocked()) return false;
+    if (this.instanceRegistryService.isBlocked()) return 'unavailable';
     const holders = Object.values(registry.instances).filter((record) =>
       record.instanceKey === ghostId || record.contentRelId === ghostId);
-    if (holders.some((record) => record.active || (record.namespace !== null && record.namespace !== namespace))) {
-      return false;
+    if (holders.some((record) => !record.active && record.namespace !== null && record.namespace !== namespace)) {
+      return 'unavailable';
     }
+    if (holders.some((record) => record.active)) return 'in-use';
     try {
-      return fs.lstatSync(this.contentPath(ghostId), { throwIfNoEntry: false }) === undefined;
+      return fs.lstatSync(this.contentPath(ghostId), { throwIfNoEntry: false }) === undefined ? 'available' : 'in-use';
     } catch {
-      return false;
+      return 'unavailable';
     }
   }
 

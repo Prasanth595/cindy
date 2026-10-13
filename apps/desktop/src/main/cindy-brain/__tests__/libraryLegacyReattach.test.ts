@@ -7,8 +7,11 @@ import { relocateLibraryMetaOwner } from '../libraryBinding.js';
 import {
   finishLegacyLibraryReattach,
   readLegacyLibraryReattachJournal,
+  relocateOrAdoptLibraryMeta,
   startLegacyLibraryReattach,
+  withPluginHeldForLibrarySwap,
   type LegacyLibraryReattachDeps,
+  type PluginHoldForLibrarySwapDeps,
 } from '../libraryLegacyReattach.js';
 
 const FROM = 'xd-mivo-canvas';
@@ -162,5 +165,71 @@ describe('legacy library reattach', () => {
     }));
     expect(relocateCustomBinding).toHaveBeenCalledWith(FROM, TO);
     expect(readMeta(path.join(custom, TO)).ghostId).toBe(TO);
+  });
+});
+
+describe('library without host identity', () => {
+  it('gets the new owner written in, and a rerun keeps it', async () => {
+    const library = path.join(root, 'libraries', FROM);
+    fs.mkdirSync(path.join(library, 'store'), { recursive: true });
+    fs.writeFileSync(path.join(library, 'store', 'canvas.json'), '{}');
+    const relocate = vi.fn(async (dir: string, fromId: string, toId: string) => {
+      await relocateLibraryMetaOwner(dir, fromId, toId);
+    });
+    await relocateOrAdoptLibraryMeta(library, FROM, TO, relocate, 9);
+    expect(readMeta(library)).toMatchObject({ ghostId: TO, createdAt: 9 });
+    expect(relocate).not.toHaveBeenCalled();
+    await relocateOrAdoptLibraryMeta(library, FROM, TO, relocate, 10);
+    expect(relocate).toHaveBeenCalledTimes(1);
+    expect(readMeta(library)).toMatchObject({ ghostId: TO, createdAt: 9 });
+  });
+
+  it('relocates an existing identity instead of overwriting it', async () => {
+    const library = path.join(root, 'libraries', FROM);
+    plantLibrary(library, FROM, 'old');
+    const relocate = vi.fn(async (dir: string, fromId: string, toId: string) => {
+      await relocateLibraryMetaOwner(dir, fromId, toId);
+    });
+    await relocateOrAdoptLibraryMeta(library, FROM, TO, relocate);
+    expect(relocate).toHaveBeenCalledWith(library, FROM, TO);
+    expect(readMeta(library)).toMatchObject({ ghostId: TO, createdAt: 1 });
+  });
+});
+
+describe('plugin hold during a library swap', () => {
+  function recorder(overrides: Partial<PluginHoldForLibrarySwapDeps> = {}) {
+    const calls: string[] = [];
+    const deps: PluginHoldForLibrarySwapDeps = {
+      stopRuntime: async () => { calls.push('stop'); return { browser: true, node: false }; },
+      notifyPanels: (phase) => { calls.push('panels:' + phase); },
+      holdLibraries: (on) => { calls.push(on ? 'hold' : 'release'); },
+      disposeLibraries: async () => { calls.push('dispose'); },
+      clearPartitionStorage: async () => { calls.push('clear'); },
+      restartRuntime: (running) => { calls.push('restart:' + running.browser + ':' + running.node); },
+      warn: () => { calls.push('warn'); },
+      ...overrides,
+    };
+    return { calls, deps };
+  }
+
+  it('clears the partition while nothing runs, then restores the plugin and reloads panels', async () => {
+    const { calls, deps } = recorder();
+    await withPluginHeldForLibrarySwap(deps, async () => { calls.push('swap'); });
+    expect(calls).toEqual([
+      'stop', 'panels:start', 'hold', 'dispose', 'swap', 'clear', 'release', 'restart:true:false', 'panels:done',
+    ]);
+  });
+
+  it('still clears and restores when the swap stops midway', async () => {
+    const { calls, deps } = recorder();
+    await expect(withPluginHeldForLibrarySwap(deps, async () => { throw new Error('stopped'); }))
+      .rejects.toThrow('stopped');
+    expect(calls.slice(-4)).toEqual(['clear', 'release', 'restart:true:false', 'panels:done']);
+  });
+
+  it('restores the plugin even when the partition clear fails', async () => {
+    const { calls, deps } = recorder({ clearPartitionStorage: async () => { throw new Error('busy'); } });
+    await withPluginHeldForLibrarySwap(deps, async () => {});
+    expect(calls.slice(-4)).toEqual(['warn', 'release', 'restart:true:false', 'panels:done']);
   });
 });

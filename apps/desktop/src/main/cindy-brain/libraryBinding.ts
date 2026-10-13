@@ -132,6 +132,7 @@ export async function assertLibraryMetaOwner(root: string, ownerId: string): Pro
 
 export async function relocateLibraryMetaOwner(
   root: string, fromId: string, toId: string, assertCurrent: () => void = () => {},
+  options: { clearOrphaned?: boolean } = {},
 ): Promise<boolean> {
   if (!isLibraryOwnerId(fromId) || !isLibraryOwnerId(toId)) {
     throw new Error('library meta relocate ids are invalid');
@@ -140,12 +141,15 @@ export async function relocateLibraryMetaOwner(
   assertCurrent();
   if (!meta) return false;
   const owner = meta.ghostId;
-  if (owner === toId) return false;
-  if (owner !== fromId) throw new Error('library meta belongs to a different plugin');
+  const clearOrphaned = options.clearOrphaned === true && meta.orphaned !== undefined;
+  if (owner === toId && !clearOrphaned) return false;
+  if (owner !== fromId && owner !== toId) throw new Error('library meta belongs to a different plugin');
+  const next: Record<string, unknown> = { ...meta, ghostId: toId };
+  if (clearOrphaned) delete next.orphaned;
   const file = path.join(root, '.cindy-library', 'meta.json');
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
-    await fs.promises.writeFile(temporary, JSON.stringify({ ...meta, ghostId: toId }), { flag: 'wx', mode: 0o600 });
+    await fs.promises.writeFile(temporary, JSON.stringify(next), { flag: 'wx', mode: 0o600 });
     assertCurrent();
     await fs.promises.rename(temporary, file);
   } finally {

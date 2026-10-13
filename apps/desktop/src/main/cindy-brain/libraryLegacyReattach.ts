@@ -9,6 +9,9 @@
  *   2. 旧库改名到当前实例键（自定义位置由 binding store 搬，它自带日志）；
  *   3. 改旧库与暂存区里记录的身份。
  *
+ * 换库期间插件进程停掉、面板卸下，并清掉插件分区的缓存，换完再恢复
+ * （withPluginHeldForLibrarySwap）。
+ *
  * 动手前先写日志，每一步都可以重跑：中途崩溃后，下次打开作品库前按日志做完。
  * 纯 Node + 依赖注入，单测拿 tmpdir 直测。
  */
@@ -172,4 +175,73 @@ export async function finishLegacyLibraryReattach(
   await deps.relocateStaging(deps.stagingRoot(toId), fromId, toId);
   deps.assertCurrent();
   await fs.promises.rm(deps.journalFile(), { force: true });
+}
+
+/**
+ * A library copied in without host identity (no `.cindy-library`) gets the new
+ * owner written in; one that has an identity is relocated as usual. Safe to
+ * run again: the written identity already names the new owner.
+ */
+export async function relocateOrAdoptLibraryMeta(
+  root: string,
+  fromId: string,
+  toId: string,
+  relocate: (root: string, fromId: string, toId: string) => Promise<void>,
+  now = Date.now(),
+): Promise<void> {
+  const hostDir = path.join(root, '.cindy-library');
+  if (await directoryIdentity(root) !== null && await directoryIdentity(hostDir) === null) {
+    await fs.promises.mkdir(hostDir, { recursive: true });
+    const metaFile = path.join(hostDir, 'meta.json');
+    const temporary = `${metaFile}.${randomUUID()}.tmp`;
+    await fs.promises.writeFile(temporary, JSON.stringify({ version: 1, ghostId: toId, createdAt: now }), {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    await fs.promises.rename(temporary, metaFile);
+    return;
+  }
+  await relocate(root, fromId, toId);
+}
+
+export interface PluginHoldForLibrarySwapDeps {
+  /** 停掉插件运行进程，返回停之前在跑的运行时，供换完后按原样恢复。 */
+  stopRuntime(): Promise<{ browser: boolean; node: boolean }>;
+  /** 通知各窗口里这个插件的面板：start = 先卸下，done = 从磁盘重新挂上。 */
+  notifyPanels(phase: 'start' | 'done'): void;
+  holdLibraries(on: boolean): void;
+  disposeLibraries(): Promise<void>;
+  /**
+   * 清掉这个实例的 Electron 分区存储。分区只在内存里，面板和后台进程都用它；
+   * 不清的话，插件会拿换库前的缓存覆盖刚换上来的库。
+   */
+  clearPartitionStorage(): Promise<void>;
+  restartRuntime(running: { browser: boolean; node: boolean }): void;
+  warn(message: string, error: unknown): void;
+}
+
+/**
+ * 换库期间插件不能运行、面板不能挂着：进程与面板都可能把旧库的状态写回来。
+ * 顺序：停进程、卸面板 → 换库 → 清分区（此时没人在用）→ 放行作品库 → 重启进程、挂回面板。
+ */
+export async function withPluginHeldForLibrarySwap<T>(
+  deps: PluginHoldForLibrarySwapDeps,
+  run: () => Promise<T>,
+): Promise<T> {
+  const running = await deps.stopRuntime();
+  deps.notifyPanels('start');
+  deps.holdLibraries(true);
+  try {
+    await deps.disposeLibraries();
+    return await run();
+  } finally {
+    try {
+      await deps.clearPartitionStorage();
+    } catch (error) {
+      deps.warn('plugin partition storage clear failed after library swap', error);
+    }
+    deps.holdLibraries(false);
+    deps.restartRuntime(running);
+    deps.notifyPanels('done');
+  }
 }

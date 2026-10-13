@@ -64,6 +64,7 @@ import {
   ipcMain,
   nativeImage,
   safeStorage,
+  session as electronSession,
   shell,
   type WebContents,
 } from 'electron';
@@ -438,7 +439,9 @@ import { trashGhostLibrary } from './libraryTrash.js';
 import {
   finishLegacyLibraryReattach,
   readLegacyLibraryReattachJournal,
+  relocateOrAdoptLibraryMeta,
   startLegacyLibraryReattach,
+  withPluginHeldForLibrarySwap,
   type LegacyLibraryReattachDeps,
 } from './libraryLegacyReattach.js';
 import { migrateGhostLibrary } from './libraryMigrate.js';
@@ -6158,6 +6161,7 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
       softLimitExceeded: false,
       orphaned: false,
       legacyLibrary: null,
+      legacyLibraryInUse: false,
     };
   }
   await finishPendingLegacyLibraryReattach()?.catch((error: unknown) => {
@@ -6224,29 +6228,65 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
     softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     softLimitExceeded: usedBytes > DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     orphaned,
-    legacyLibrary: supported && ghost ? await findLegacyLibraryUsage(ghost) : null,
+    ...(supported && ghost
+      ? await findLegacyLibraryUsage(ghost)
+      : { legacyLibrary: null, legacyLibraryInUse: false }),
   };
 }
 
 interface LegacyLibraryCandidate {
+  kind: 'candidate';
   fromId: string;
   toId: string;
   oldLocation: 'default' | 'custom';
+  /** uninstalled = 宿主卸载时留下的库；unknown = 没有宿主身份文件、来源无法证明。 */
+  provenance: 'uninstalled' | 'unknown';
   usedBytes: number;
   fileCount: number;
 }
 
+/** 一个目录树的文件数与字节数；只用于展示，数到上限即停。 */
+async function countLibraryFiles(root: string, limit = 20000): Promise<{ usedBytes: number; fileCount: number }> {
+  let usedBytes = 0;
+  let fileCount = 0;
+  const stack = [root];
+  while (stack.length > 0 && fileCount < limit) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) {
+        fileCount += 1;
+        usedBytes += (await fs.promises.stat(full).catch(() => null))?.size ?? 0;
+      }
+    }
+  }
+  return { usedBytes, fileCount };
+}
+
 /**
  * An installed instance under a namespaced key may have an older library left
- * under the bare id by an earlier install. Only a library marked as left by an
- * uninstall counts, and the current instance must still use the default
- * location. GhostManager decides whether the bare id is free to give away.
+ * under the bare id by an earlier install. A library the host marked as left
+ * by an uninstall counts; so does a directory without any host identity
+ * (copied in by hand or by a migration script), whose source is unknown. A
+ * library with an identity of another owner never counts. The current
+ * instance must still use the default location. GhostManager decides whether
+ * the bare id is free; `in-use` means another install still runs on it.
  */
-async function findLegacyLibraryCandidate(ghost: InstalledGhost): Promise<LegacyLibraryCandidate | null> {
+async function findLegacyLibraryCandidate(
+  ghost: InstalledGhost,
+): Promise<LegacyLibraryCandidate | { kind: 'in-use' } | null> {
   const fromId = ghost.manifest.id;
   const toId = installedGhostStoragePart(ghost);
   if (fromId === toId || ghost.manifest.library !== true || !isValidGhostId(fromId)) return null;
-  if (!getGhostManager().canOfferBareLibrary(fromId, ghost.namespace ?? null)) return null;
+  const offer = getGhostManager().bareLibraryOffer(fromId, ghost.namespace ?? null);
+  if (offer === 'unavailable') return null;
   const store = getGhostLibraryBindingStore();
   if (await store.getBinding(toId) !== null) return null;
   let oldLocation: 'default' | 'custom' = 'default';
@@ -6257,9 +6297,18 @@ async function findLegacyLibraryCandidate(ghost: InstalledGhost): Promise<Legacy
     oldLocation = 'custom';
     root = resolution.root;
   }
+  const rootStat = await fs.promises.lstat(root).catch(() => null);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) return null;
+  if (offer === 'in-use') return { kind: 'in-use' };
+  const hostDir = path.join(root, '.cindy-library');
+  if (!(await fs.promises.lstat(hostDir).catch(() => null))) {
+    const usage = await countLibraryFiles(root);
+    if (usage.fileCount === 0) return null;
+    return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'unknown', ...usage };
+  }
   let meta: { ghostId?: unknown; orphaned?: unknown };
   try {
-    meta = JSON.parse(await fs.promises.readFile(path.join(root, '.cindy-library', 'meta.json'), 'utf8')) as typeof meta;
+    meta = JSON.parse(await fs.promises.readFile(path.join(hostDir, 'meta.json'), 'utf8')) as typeof meta;
   } catch {
     return null;
   }
@@ -6268,25 +6317,31 @@ async function findLegacyLibraryCandidate(ghost: InstalledGhost): Promise<Legacy
   let fileCount = 0;
   try {
     const usage = JSON.parse(
-      await fs.promises.readFile(path.join(root, '.cindy-library', 'usage.json'), 'utf8'),
+      await fs.promises.readFile(path.join(hostDir, 'usage.json'), 'utf8'),
     ) as { files?: number; bytes?: number };
     usedBytes = Number(usage.bytes ?? 0);
     fileCount = Number(usage.files ?? 0);
   } catch {
     /* 账本缺失按 0 计 */
   }
-  return { fromId, toId, oldLocation, usedBytes, fileCount };
+  return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'uninstalled', usedBytes, fileCount };
 }
 
 async function findLegacyLibraryUsage(
   ghost: InstalledGhost,
-): Promise<GhostLibraryOverview['legacyLibrary']> {
+): Promise<Pick<GhostLibraryOverview, 'legacyLibrary' | 'legacyLibraryInUse'>> {
   try {
-    const candidate = await findLegacyLibraryCandidate(ghost);
-    return candidate ? { usedBytes: candidate.usedBytes, fileCount: candidate.fileCount } : null;
+    const found = await findLegacyLibraryCandidate(ghost);
+    if (found?.kind === 'in-use') return { legacyLibrary: null, legacyLibraryInUse: true };
+    return {
+      legacyLibrary: found
+        ? { usedBytes: found.usedBytes, fileCount: found.fileCount, provenance: found.provenance }
+        : null,
+      legacyLibraryInUse: false,
+    };
   } catch (error) {
     log.warn('legacy library lookup failed', { error: error instanceof Error ? error.message : String(error) });
-    return null;
+    return { legacyLibrary: null, legacyLibraryInUse: false };
   }
 }
 
@@ -6304,7 +6359,11 @@ function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReat
       return binding ? path.join(binding.root, id) : null;
     },
     relocateMeta: async (root, fromId, toId) => {
-      await relocateLibraryMetaOwner(root, fromId, toId, assertCurrent);
+      assertCurrent();
+      // 接回的目标实例已装好，顺手清掉卸载时留的 orphaned，设置页不用等插件首次打开才自愈。
+      await relocateOrAdoptLibraryMeta(root, fromId, toId, async (dir, from, to) => {
+        await relocateLibraryMetaOwner(dir, from, to, assertCurrent, { clearOrphaned: true });
+      });
     },
     relocateStaging: (root, fromId, toId) =>
       relocateLibraryStagingOwner(root, fromId, toId, ownerKey, assertCurrent),
@@ -6313,38 +6372,55 @@ function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReat
 }
 
 /**
- * Holds the library slot closed for both ends while their directories move.
- * The plugin runtime keeps library state in memory, so it is stopped first and
- * restarted afterwards; open panels are told to reload from disk.
+ * Holds the plugin out of the way while both library directories move: the
+ * runtime and panels share an in-memory partition whose cache would otherwise
+ * be written back over the swapped library.
  */
 async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Promise<T>): Promise<T> {
-  const browserRuntimeRunning = getGhostRuntime().stateOf(toId) === 'running';
-  const nodeRuntimeRunning = getGhostNodeRuntimeBroker().stateOf(toId) === 'running';
-  getGhostRuntime().stop(toId);
-  await getGhostNodeRuntimeBroker().stopAndWait(toId);
   const slot = getGhostLibrarySlot();
   const ids = [fromId, toId];
-  for (const id of ids) slot.setRelocating(id, true);
-  try {
-    for (const id of ids) await slot.disposeGhost(id);
-    return await run();
-  } finally {
-    for (const id of ids) slot.setRelocating(id, false);
-    const ghost = findGhostForInstanceId(toId);
-    if (ghost?.enabled && isGhostAvailableForActiveSession(ghost.manifest.id)) {
+  const ghostBefore = findGhostForInstanceId(toId);
+  const partition = ghostBefore
+    ? ownerScopedGhostPartitionForInstalledGhost(ghostBefore, getActiveAppSession())
+    : null;
+  return withPluginHeldForLibrarySwap({
+    stopRuntime: async () => {
+      const running = {
+        browser: getGhostRuntime().stateOf(toId) === 'running',
+        node: getGhostNodeRuntimeBroker().stateOf(toId) === 'running',
+      };
+      getGhostRuntime().stop(toId);
+      await getGhostNodeRuntimeBroker().stopAndWait(toId);
+      return running;
+    },
+    notifyPanels: (phase) => broadcastGhostWindowPush('ghosts:library-replaced', { id: toId, phase }),
+    holdLibraries: (on) => {
+      for (const id of ids) slot.setRelocating(id, on);
+    },
+    disposeLibraries: async () => {
+      for (const id of ids) await slot.disposeGhost(id);
+    },
+    clearPartitionStorage: async () => {
+      if (partition) await electronSession.fromPartition(partition).clearStorageData();
+    },
+    restartRuntime: (running) => {
+      const ghost = findGhostForInstanceId(toId);
+      if (!ghost?.enabled || !isGhostAvailableForActiveSession(ghost.manifest.id)) return;
       spawnIfResident(ghost);
       const warn = (error: unknown) => log.warn('plugin restart after library reattach failed', {
         id: toId, error: error instanceof Error ? error.message : String(error),
       });
-      if (browserRuntimeRunning && !isResidentBrowserGhost(ghost.manifest)) {
+      if (running.browser && !isResidentBrowserGhost(ghost.manifest)) {
         void getGhostRuntime().spawn(ghost).catch(warn);
       }
-      if (nodeRuntimeRunning && ghost.manifest.node?.lifecycle !== 'resident') {
+      if (running.node && ghost.manifest.node?.lifecycle !== 'resident') {
         void getGhostNodeRuntimeBroker().startForRecovery(ghost).catch(warn);
       }
-    }
-    broadcastGhostWindowPush('ghosts:library-replaced', { id: toId });
-  }
+    },
+    warn: (message, error) => log.warn(message, {
+      id: toId, error: error instanceof Error ? error.message : String(error),
+    }),
+  }, run);
 }
 
 let pendingLegacyLibraryReattach: Promise<void> | null = null;
@@ -6398,8 +6474,9 @@ export async function reattachLegacyLibraryForActiveOwner(
     };
     assertCurrent();
     const ghost = findGhostForInstanceId(ghostId);
-    const candidate = ghost ? await findLegacyLibraryCandidate(ghost) : null;
-    if (!candidate) return { ok: false, message: '没有可以接回的作品数据' };
+    const found = ghost ? await findLegacyLibraryCandidate(ghost) : null;
+    if (found?.kind !== 'candidate') return { ok: false, message: '没有可以接回的作品数据' };
+    const candidate = found;
     assertCurrent();
     // A failure midway leaves the journal; the next library request finishes it.
     legacyLibraryReattachClearOwner = null;
@@ -9522,12 +9599,17 @@ export function registerGhostIpc(): void {
     const expectedTarget = ghostLibraryDeleteTargetFor(id);
     // 换掉当前作品数据是破坏性操作，唯一有效的确认在 Main(与删除同口径)。
     const parent = BrowserWindow.fromWebContents(event.sender);
-    const ghostName = findGhostForInstanceId(id)?.manifest.name ?? id;
+    const ghost = findGhostForInstanceId(id);
+    const ghostName = ghost?.manifest.name ?? id;
+    const found = ghost ? await findLegacyLibraryCandidate(ghost).catch(() => null) : null;
+    const unknownSource = found?.kind === 'candidate' && found.provenance === 'unknown'
+      ? `\n\n${t('settings.ghosts.library.legacyReattachUnknownSource')}`
+      : '';
     const options = {
       type: 'question' as const,
       title: t('settings.ghosts.library.legacyReattachConfirmTitle'),
       message: t('settings.ghosts.library.legacyReattachConfirmTitle'),
-      detail: `${ghostName}\n\n${t('settings.ghosts.library.legacyReattachConfirmDescription')}`,
+      detail: `${ghostName}\n\n${t('settings.ghosts.library.legacyReattachConfirmDescription')}${unknownSource}`,
       buttons: [
         t('settings.ghosts.library.legacyReattachConfirmText'),
         t('settings.ghosts.library.cancel'),

@@ -204,13 +204,21 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
             {overview.orphaned ? (
               <p className="mb-3 text-13 text-[var(--text-secondary)]">{t('settings.ghosts.library.orphanedBanner')}</p>
             ) : null}
+            {overview.legacyLibraryInUse ? (
+              <p className="mb-3 text-13 text-[var(--text-secondary)]">{t('settings.ghosts.library.legacyInUseBanner')}</p>
+            ) : null}
             {overview.legacyLibrary ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                 <p className="min-w-0 flex-1 text-13 text-[var(--text-secondary)]">
-                  {t('settings.ghosts.library.legacyFoundBanner', {
-                    size: formatBytes(overview.legacyLibrary.usedBytes),
-                    count: overview.legacyLibrary.fileCount,
-                  })}
+                  {t(
+                    overview.legacyLibrary.provenance === 'unknown'
+                      ? 'settings.ghosts.library.legacyFoundUnknownBanner'
+                      : 'settings.ghosts.library.legacyFoundBanner',
+                    {
+                      size: formatBytes(overview.legacyLibrary.usedBytes),
+                      count: overview.legacyLibrary.fileCount,
+                    },
+                  )}
                 </p>
                 <button
                   type="button"
