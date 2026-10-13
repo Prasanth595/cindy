@@ -319,6 +319,12 @@ const PI_MODELS_JSON_HASH_ENV = 'CINDY_PI_MODELS_JSON_HASH';
 const PI_PERMISSION_HASH_ENV = 'CINDY_PI_PERMISSION_HASH';
 /** Cindy-owned extension 源码指纹。bridge/subagent 字节变则远端必须 restart，不能 reattach 到旧进程。 */
 const PI_EXTENSION_BUNDLE_HASH_ENV = 'CINDY_PI_EXTENSION_BUNDLE_HASH';
+/**
+ * 追加提示词的内容指纹（值无凭证）。追加段走 configHome 内的文件后，命令行里
+ * 只剩固定路径：提示词正文变了也不会改远端 launch 身份，daemon 会 attach 到仍持
+ * 旧提示词的旧进程。进 spawn env 后由远端 envHash 覆盖，变化即条件 restart。
+ */
+const PI_APPEND_SYSTEM_PROMPT_HASH_ENV = 'CINDY_PI_APPEND_SYSTEM_PROMPT_HASH';
 /** 远端附件内联上限:超过则 fail-before-dispatch, 不静默截断。 */
 const REMOTE_PI_ATTACHMENT_MAX_BYTES = 256 * 1024;
 /** 会话 configHome 内的追加提示词文件名(见 startSession 里 --append-system-prompt 的传参)。 */
@@ -5533,6 +5539,12 @@ export class PiAgent extends BaseAgent {
           .update(CINDY_BRIDGE_EXTENSION_SOURCE)
           .update('\n')
           .update(CINDY_SUBAGENT_EXTENSION_SOURCE)
+          .digest('hex')
+          .slice(0, 16);
+        // 追加提示词本体在文件里，命令行不再带它；指纹进 env 才让提示词变化
+        // 触发远端 restart 而不是纯 attach。
+        spawnEnv[PI_APPEND_SYSTEM_PROMPT_HASH_ENV] = createHash('sha256')
+          .update(appendSystemPrompt)
           .digest('hex')
           .slice(0, 16);
       }
