@@ -157,8 +157,10 @@ describe('GhostLibrarySlot', () => {
     let release!: () => void;
     const prepared = new Promise<void>((resolve) => { release = resolve; });
     await slot.disposeAll();
-    slot = new GhostLibrarySlot({ ...slotDeps, prepareRequest: () => prepared });
+    const prepareRequest = vi.fn(() => prepared);
+    slot = new GhostLibrarySlot({ ...slotDeps, prepareRequest });
     const pending = slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
+    expect(prepareRequest).toHaveBeenCalledWith(GHOST_ID);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(resolveLibraryRoot).not.toHaveBeenCalled();
     release();

@@ -192,8 +192,8 @@ class GhostLibraryRequestCancelled extends Error {}
 
 export interface GhostLibrarySlotDeps {
   getGhost(id: string): InstalledGhost | null;
-  /** Host work that must settle before any library request opens a root; undefined when none is due. */
-  prepareRequest?(): Promise<void> | undefined;
+  /** Host work that must settle before this plugin's library request opens a root; undefined when none is due. */
+  prepareRequest?(ghostId: string): Promise<void> | undefined;
   /** 自定义位置 binding 存储(owner-scoped;生产注入)。 */
   bindingStore: LibraryBindingStore;
   /** 系统默认库根(生产 = ownerScopedUserDataPath('libraries', ghostId))。 */
@@ -406,7 +406,7 @@ export class GhostLibrarySlot {
   /** 处理一条 library-request(ghost-pipe:send 的 invoke 返回值即本结果)。 */
   async handleLibraryRequest(ghostId: string, payload: unknown): Promise<GhostPipeLibraryResult> {
     try {
-      const preparing = this.deps.prepareRequest?.();
+      const preparing = this.deps.prepareRequest?.(ghostId);
       if (preparing) await preparing;
       return await this.dispatch(ghostId, payload);
     } catch (err) {
@@ -563,7 +563,7 @@ export class GhostLibrarySlot {
    */
   async resolvePanelFilePath(ghostId: string, relPath: string): Promise<string | null> {
     try {
-      const preparing = this.deps.prepareRequest?.();
+      const preparing = this.deps.prepareRequest?.(ghostId);
       if (preparing) await preparing;
       if (!this.checkEligibility(ghostId)) return null;
       const session = await this.getOrCreateSession(ghostId, this.deps.captureOwnerScope());

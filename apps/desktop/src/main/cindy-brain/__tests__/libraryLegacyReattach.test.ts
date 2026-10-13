@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { relocateLibraryMetaOwner } from '../libraryBinding.js';
+import { LibraryStagingStore, relocateLibraryStagingOwner } from '../libraryStaging.js';
 import {
   finishLegacyLibraryReattach,
   readLegacyLibraryReattachJournal,
@@ -94,7 +96,7 @@ describe('legacy library reattach', () => {
     expect(fs.existsSync(path.join(root, 'libraries-trash'))).toBe(false);
   });
 
-  it.each(Array.from({ length: 9 }, (_, index) => index + 1))(
+  it.each(Array.from({ length: 10 }, (_, index) => index + 1))(
     'finishes from the journal after stopping at check %i',
     async (stopAt) => {
       plantDefaultPair();
@@ -111,7 +113,7 @@ describe('legacy library reattach', () => {
       )).rejects.toThrow('stopped');
       const journal = await readLegacyLibraryReattachJournal(path.join(root, 'library-reattach.json'));
       if (journal) await finishLegacyLibraryReattach(journal, deps());
-      if (stopAt <= 2) {
+      if (stopAt <= 3) {
         // Stopped before the journal was written: nothing moved.
         expect(journal).toBeNull();
         expect(fs.readFileSync(path.join(root, 'libraries', TO, 'marker.txt'), 'utf8')).toBe('new');
@@ -129,7 +131,7 @@ describe('legacy library reattach', () => {
         let checks = 0;
         return () => {
           checks += 1;
-          if (checks === 3) throw new Error('stopped');
+          if (checks === 4) throw new Error('stopped');
         };
       })() }),
     )).rejects.toThrow('stopped');
@@ -165,6 +167,120 @@ describe('legacy library reattach', () => {
     }));
     expect(relocateCustomBinding).toHaveBeenCalledWith(FROM, TO);
     expect(readMeta(path.join(custom, TO)).ghostId).toBe(TO);
+  });
+
+  it('stops before moving anything when the old custom library is unavailable', async () => {
+    plantDefaultPair();
+    const relocateCustomBinding = vi.fn(async () => {});
+    await expect(startLegacyLibraryReattach({ fromId: FROM, toId: TO, oldLocation: 'custom', now: 7 }, deps({
+      relocateCustomBinding,
+      customRoot: async (id) => path.join(root, 'unmounted', id),
+    }))).rejects.toThrow();
+    expect(relocateCustomBinding).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(root, 'library-reattach.json'))).toBe(false);
+    expect(fs.readFileSync(path.join(root, 'libraries', TO, 'marker.txt'), 'utf8')).toBe('new');
+  });
+
+  it('treats an existing trash target as done, even if directory identity cannot tell the libraries apart', async () => {
+    plantDefaultPair();
+    await startLegacyLibraryReattach({ fromId: FROM, toId: TO, oldLocation: 'default', now: 7 }, deps());
+    // A volume without inode numbers reports the same identity for every
+    // directory; make the recorded identity match the reattached library.
+    const stat = fs.lstatSync(path.join(root, 'libraries', TO));
+    const stagingStat = fs.lstatSync(path.join(root, 'library-staging', TO));
+    await finishLegacyLibraryReattach({
+      version: 1, fromId: FROM, toId: TO, oldLocation: 'default',
+      newLibrary: { dev: stat.dev, ino: stat.ino },
+      newStaging: { dev: stagingStat.dev, ino: stagingStat.ino },
+      trashName: `${TO}-7-replaced`,
+    }, deps());
+    expectReattached();
+  });
+
+  it.each([
+    ['a path in fromId', { fromId: '../outside' }],
+    ['a path in toId', { toId: '../../outside' }],
+    ['a parent trash name', { trashName: '..' }],
+  ])('rejects a journal with %s', async (_label, change) => {
+    fs.writeFileSync(path.join(root, 'library-reattach.json'), JSON.stringify({
+      version: 1, fromId: FROM, toId: TO, oldLocation: 'default', newLibrary: null, newStaging: null, trashName: 'x',
+      ...change,
+    }));
+    await expect(readLegacyLibraryReattachJournal(path.join(root, 'library-reattach.json'))).rejects.toThrow('invalid');
+  });
+});
+
+describe('staging tasks during a reattach', () => {
+  const OWNER_SCOPE = 'local:owner-a:1';
+
+  function stagingStore(dir: string, ghostId: string): LibraryStagingStore {
+    return new LibraryStagingStore({
+      rootDir: dir, ghostId, ownerScopeKey: OWNER_SCOPE,
+      captureOwnerScope: () => OWNER_SCOPE, getDiskFreeBytes: async () => 1024 ** 4,
+    });
+  }
+
+  async function beginUpload(store: LibraryStagingStore, taskId: string, body: string): Promise<string> {
+    const bytes = Buffer.from(body);
+    const begin = await store.begin({
+      ghostId: FROM, taskId, sourceRevision: 'rev-1', totalBytes: bytes.byteLength,
+      sha256: createHash('sha256').update(bytes).digest('hex'), mime: 'image/png',
+      recovery: { sceneId: 's1', nodeId: 'n1' },
+    });
+    if (!begin.ok) throw new Error(JSON.stringify(begin));
+    const chunk = await store.chunk({
+      ghostId: FROM, stagingId: begin.stagingId, seq: 1, content: bytes.toString('base64'), encoding: 'base64',
+    });
+    if (!chunk.ok) throw new Error(JSON.stringify(chunk));
+    return begin.stagingId;
+  }
+
+  function taskOwners(dir: string): string[] {
+    const tasks = path.join(dir, 'tasks');
+    return fs.readdirSync(tasks).flatMap((id) => ['manifest.json', 'intent.json']
+      .map((name) => path.join(tasks, id, name))
+      .filter((file) => fs.existsSync(file))
+      .map((file) => (JSON.parse(fs.readFileSync(file, 'utf8')) as { ghostId: string }).ghostId));
+  }
+
+  it('finishes rewriting upload tasks after stopping with only some of them moved', async () => {
+    plantLibrary(path.join(root, 'libraries', FROM), FROM, 'old');
+    const oldStaging = path.join(root, 'library-staging', FROM);
+    const store = stagingStore(oldStaging, FROM);
+    const durable = await beginUpload(store, 'durable', 'pixel-bytes');
+    expect((await store.commit({ ghostId: FROM, stagingId: durable })).ok).toBe(true);
+    await beginUpload(store, 'unfinished-1', 'pending-1');
+    await beginUpload(store, 'unfinished-2', 'pending-2');
+    await store.dispose();
+
+    const newStaging = path.join(root, 'library-staging', TO);
+    let stopped = false;
+    const relocateStaging = async (dir: string, fromId: string, toId: string): Promise<void> => {
+      await relocateLibraryStagingOwner(dir, fromId, toId, OWNER_SCOPE, () => {
+        const owners = taskOwners(newStaging);
+        if (!stopped && owners.includes(TO) && owners.includes(FROM)) {
+          stopped = true;
+          throw new Error('stopped');
+        }
+      });
+    };
+    await expect(startLegacyLibraryReattach(
+      { fromId: FROM, toId: TO, oldLocation: 'default', now: 7 },
+      deps({ relocateStaging }),
+    )).rejects.toThrow('stopped');
+    expect(new Set(taskOwners(newStaging))).toEqual(new Set([FROM, TO]));
+
+    const journal = await readLegacyLibraryReattachJournal(path.join(root, 'library-reattach.json'));
+    await finishLegacyLibraryReattach(journal!, deps({ relocateStaging }));
+    expect(new Set(taskOwners(newStaging))).toEqual(new Set([TO]));
+    const restored = stagingStore(newStaging, TO);
+    expect(await restored.list({ ghostId: TO })).toMatchObject({
+      ok: true, items: [expect.objectContaining({ stagingId: durable })],
+    });
+    expect(await restored.read({ ghostId: TO, stagingId: durable })).toMatchObject({
+      ok: true, content: Buffer.from('pixel-bytes').toString('base64'),
+    });
+    await restored.dispose();
   });
 });
 

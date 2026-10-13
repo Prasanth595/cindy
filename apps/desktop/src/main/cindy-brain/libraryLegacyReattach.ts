@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { isLibraryOwnerId, syncDirectory } from './libraryBinding.js';
 
 interface DirectoryIdentity {
   dev: number;
@@ -73,12 +74,13 @@ function isJournal(value: unknown): value is LegacyLibraryReattachJournal {
   if (!value || typeof value !== 'object') return false;
   const journal = value as Partial<LegacyLibraryReattachJournal>;
   return journal.version === 1 &&
-    typeof journal.fromId === 'string' && typeof journal.toId === 'string' &&
+    isLibraryOwnerId(journal.fromId) && isLibraryOwnerId(journal.toId) &&
     journal.fromId !== journal.toId &&
     (journal.oldLocation === 'default' || journal.oldLocation === 'custom') &&
     (journal.newLibrary === null || isIdentity(journal.newLibrary)) &&
     (journal.newStaging === null || isIdentity(journal.newStaging)) &&
-    typeof journal.trashName === 'string' && /^[A-Za-z0-9_.-]+$/.test(journal.trashName);
+    typeof journal.trashName === 'string' && /^[A-Za-z0-9_.-]+$/.test(journal.trashName) &&
+    journal.trashName !== '.' && journal.trashName !== '..';
 }
 
 export async function readLegacyLibraryReattachJournal(
@@ -107,6 +109,21 @@ async function writeJournal(file: string, journal: LegacyLibraryReattachJournal)
     await handle.close();
   }
   await fs.promises.rename(temporary, file);
+  // The journal entry must be on disk before any library moves.
+  await syncDirectory(path.dirname(file));
+}
+
+async function assertCustomLibraryRelocatable(root: string | null): Promise<void> {
+  if (root === null) throw new Error('old custom library root is unavailable');
+  // The binding store moves a custom library by the identity of the library
+  // and its parent. A volume without inode numbers cannot be moved, so stop
+  // before anything changes.
+  for (const dir of [path.dirname(root), root]) {
+    const stat = await fs.promises.lstat(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino === 0) {
+      throw new Error('old custom library cannot be moved on this volume');
+    }
+  }
 }
 
 /** 记下要换的两边，然后执行。日志已存在时拒绝开始新的一次。 */
@@ -117,6 +134,8 @@ export async function startLegacyLibraryReattach(
   if (await readLegacyLibraryReattachJournal(deps.journalFile())) {
     throw new Error('another library reattach is unfinished');
   }
+  deps.assertCurrent();
+  if (input.oldLocation === 'custom') await assertCustomLibraryRelocatable(await deps.customRoot(input.fromId));
   deps.assertCurrent();
   const journal: LegacyLibraryReattachJournal = {
     version: 1,
@@ -132,9 +151,13 @@ export async function startLegacyLibraryReattach(
   await finishLegacyLibraryReattach(journal, deps);
 }
 
-/** 只把仍是那个新库的目录移入回收站；已移走或换成别的目录都不动。 */
+/**
+ * 只把仍是那个新库的目录移入回收站；已移走或换成别的目录都不动。回收站里已有
+ * 目标就算这步做完——不提供 inode 的卷上（ino 为 0）目录身份分不出新旧库。
+ */
 async function trashIfSame(dir: string, identity: DirectoryIdentity | null, target: string): Promise<void> {
   if (identity === null) return;
+  if (await directoryIdentity(target) !== null) return;
   if (!isDeepStrictEqual(await directoryIdentity(dir), identity)) return;
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.rename(dir, target);

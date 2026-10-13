@@ -25,7 +25,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { isArchiveInstanceKey, isPluginInstanceKey } from '../../shared/pluginIdentity.js';
 
-function isLibraryOwnerId(value: unknown): value is string {
+export function isLibraryOwnerId(value: unknown): value is string {
   return isPluginInstanceKey(value) || isArchiveInstanceKey(value);
 }
 
@@ -76,7 +76,7 @@ async function directoryIdentity(root: string): Promise<{ dev: number; ino: numb
   }
 }
 
-async function syncDirectory(root: string): Promise<void> {
+export async function syncDirectory(root: string): Promise<void> {
   if (process.platform === 'win32') return;
   const directory = await fs.promises.open(root, 'r');
   try {

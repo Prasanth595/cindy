@@ -6303,13 +6303,16 @@ async function findLegacyLibraryCandidate(
     if (usage.fileCount === 0) return null;
     return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'unknown', ...usage };
   }
-  let meta: { ghostId?: unknown; orphaned?: unknown };
+  let meta: { ghostId?: unknown };
   try {
     meta = JSON.parse(await fs.promises.readFile(path.join(hostDir, 'meta.json'), 'utf8')) as typeof meta;
   } catch {
     return null;
   }
-  if (meta.ghostId !== fromId || meta.orphaned === undefined) return null;
+  // Nothing runs under the bare id (offer is available), so a library still
+  // owned by it was left behind. The uninstall marker is not required: for a
+  // custom location it lands under the default root instead.
+  if (meta.ghostId !== fromId) return null;
   let usedBytes = 0;
   let fileCount = 0;
   try {
@@ -6423,12 +6426,32 @@ async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Pro
 let pendingLegacyLibraryReattach: Promise<void> | null = null;
 /** Owner whose journal is known to be absent; library requests then skip the file read. */
 let legacyLibraryReattachClearOwner: string | null = null;
+/** The two libraries named by the unfinished journal, once it has been read. */
+let legacyLibraryReattachIds: { owner: string; ids: readonly string[] } | null = null;
 
 /**
  * A reattach that stopped midway leaves its journal. Finish it before a
- * library request runs, so neither end is opened half moved.
+ * library request runs, so neither end is opened half moved. When recovery
+ * fails, only the two libraries it names stay closed; with a ghostId, other
+ * plugins' requests go on.
  */
-function finishPendingLegacyLibraryReattach(): Promise<void> | undefined {
+function finishPendingLegacyLibraryReattach(ghostId?: string): Promise<void> | undefined {
+  if (ghostId !== undefined && isOutsideFailedLegacyLibraryReattach(ghostId)) return undefined;
+  const running = runPendingLegacyLibraryReattach();
+  if (!running || ghostId === undefined) return running;
+  return running.catch((error: unknown) => {
+    if (!isOutsideFailedLegacyLibraryReattach(ghostId)) throw error;
+  });
+}
+
+/** A recovery that failed is retried only by the two libraries it names. */
+function isOutsideFailedLegacyLibraryReattach(ghostId: string): boolean {
+  const known = legacyLibraryReattachIds;
+  if (known === null || known.owner !== activeOwnerScopeKey()) return false;
+  return !known.ids.includes(ghostId) && !known.ids.includes(libraryStorageKeyFor(ghostId) ?? ghostId);
+}
+
+function runPendingLegacyLibraryReattach(): Promise<void> | undefined {
   if (isAppSessionBoundaryPending()) return undefined;
   if (legacyLibraryReattachClearOwner === activeOwnerScopeKey()) return undefined;
   pendingLegacyLibraryReattach ??= (async () => {
@@ -6440,13 +6463,16 @@ function finishPendingLegacyLibraryReattach(): Promise<void> | undefined {
         }
       };
       const deps = legacyLibraryReattachDeps(assertCurrent);
+      legacyLibraryReattachIds = null;
       const journal = await readLegacyLibraryReattachJournal(deps.journalFile());
       if (journal) {
+        legacyLibraryReattachIds = { owner: ownerKey, ids: [journal.fromId, journal.toId] };
         await getGhostManager().runExclusiveMutation(() =>
           withLibrariesHeld(journal.fromId, journal.toId, () => finishLegacyLibraryReattach(journal, deps)));
         await refreshMivoLibraryExtraDirGrant().catch(() => undefined);
       }
       legacyLibraryReattachClearOwner = ownerKey;
+      legacyLibraryReattachIds = null;
     } finally {
       pendingLegacyLibraryReattach = null;
     }
