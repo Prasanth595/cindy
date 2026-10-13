@@ -223,6 +223,7 @@
     "sessionNotSyncedRetry": "세션 동기화가 아직 완료되지 않았습니다. 잠시 후 다시 시도하세요.",
     "savingPreviousQueueEdit": "이전 대기열 메시지의 변경을 저장 중입니다. 완료된 후 편집하세요.",
     "attachmentsUploadingBeforeEdit": "첨부 파일을 업로드 중입니다. 완료된 후 대기열 메시지를 편집하세요.",
+    "goalCommandAttachments": "첨부 파일 없이 /goal을 보내세요. 초안과 첨부 파일은 유지됩니다.",
     "goalAlreadyActive": "이 세션에는 진행 중인 목표가 있습니다. 먼저 여기에서 처리하세요.",
     "resetReconfirmTitle": "다시 확인해 주세요",
     "resetOfferExpired": "재설정 자격 증명이 만료되었습니다. 새로 고친 사용량 정보를 확인하세요.",
@@ -283,6 +284,7 @@
     "shareMessage": "이 메시지 공유"
   },
   "new": {
+    "goalCommandNeedsSession": "목표를 해제하려면 기존 세션을 여세요.",
     "selectDevice": "기기 선택",
     "workspaceDialogue": "대화",
     "workspaceProject": "프로젝트",

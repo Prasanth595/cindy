@@ -5972,3 +5972,90 @@ describe('PluginMarketService install consent', () => {
     );
   });
 });
+
+describe('organization catalog access error', () => {
+  const ORGANIZATION_PLUGIN_ID = `c${'e'.repeat(24)}`;
+
+  function deniedCatalog(publicItem: VisiblePluginSummary, code = 'PLUGIN_NAMESPACE_CLIENT_REQUIRED') {
+    return {
+      plugins: [publicItem],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: { code, message: '企业部分不可用' },
+    };
+  }
+
+  it.each([
+    ['a full refresh', { deferReconciliation: false }],
+    ['a deferred reconciliation', { deferReconciliation: true }],
+  ] as const)('keeps public plugins and the installed organization plugin through %s', async (_label, options) => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem));
+    installOrganizationHelper();
+    h.ledger.upsertInstallation(removalRecord({
+      pluginId: ORGANIZATION_PLUGIN_ID,
+      ghostId: 'helper',
+      namespace: 'acme',
+      manifestDigest: ghostManifestDigest(manifest('helper')),
+    }));
+    const organizationRecord = h.ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' });
+    const settled = vi.fn();
+
+    const snapshot = await h.service.snapshot({ ...options, onDeferredReconciliationSettled: settled });
+    if (options.deferReconciliation) await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce());
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_NAMESPACE_CLIENT_REQUIRED');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(publicItem.id);
+    expect(runtime.uninstall).not.toHaveBeenCalled();
+    expect(h.ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' })).toEqual(organizationRecord);
+  });
+
+  it.each([
+    'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+    'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+    'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+  ])('reports %s instead of NOT_FOUND for an unlisted plugin without reading its detail', async (code) => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem, code));
+    const organizationItem = summary({ id: ORGANIZATION_PLUGIN_ID, ghostId: 'helper', scope: 'organization', organizationId: 'org-1' });
+
+    await expect(h.service.detail(ORGANIZATION_PLUGIN_ID)).rejects.toThrow(`[${code}]`);
+    await expect(h.service.install(
+      ORGANIZATION_PLUGIN_ID,
+      reviewedInstallOptions(organizationItem),
+      TEST_INSTALL_CONTEXT,
+    )).rejects.toThrow(`[${code}]`);
+    expect(h.api.detail).not.toHaveBeenCalled();
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('keeps NOT_FOUND for an unlisted plugin when the reason is not a known access code', async () => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem, 'PLUGIN_FUTURE_REASON'));
+
+    await expect(h.service.detail(ORGANIZATION_PLUGIN_ID)).rejects.toThrow('[NOT_FOUND]');
+    expect(h.api.detail).not.toHaveBeenCalled();
+  });
+
+  it('keeps a future organization access code with the public catalog', async () => {
+    const item = summary();
+    const h = harness([item]);
+    h.api.listAll.mockResolvedValueOnce({
+      plugins: [item],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: { code: 'PLUGIN_FUTURE_REASON', message: '以后再说' },
+    });
+
+    const snapshot = await h.service.snapshot({ discoveryOnly: true });
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_FUTURE_REASON');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(item.id);
+  });
+});

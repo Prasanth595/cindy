@@ -276,6 +276,32 @@ describe('Chat Server result delivery and refresh', () => {
     expect(JSON.stringify(failures())).not.toContain('private path and token');
   });
 
+  it('keeps an ordinary group turn alive while waiting for user approval', async () => {
+    let waiting = true;
+    deps.hasPendingInteraction = vi.fn(() => waiting);
+    await start();
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    expect(deps.abortLane).not.toHaveBeenCalled();
+    expect(fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail')).toEqual([]);
+    waiting = false;
+    await vi.advanceTimersByTimeAsync(15_000);
+    await service.settleLaneTurn(terminal);
+    expect(deliveries()).toHaveLength(1);
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+    expect(deps.abortLane).not.toHaveBeenCalled();
+  });
+
+  it('still times out an ordinary group turn after its active runtime budget is exhausted', async () => {
+    deps.hasPendingInteraction = vi.fn(() => false);
+    await start();
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    expect(deps.abortLane).toHaveBeenCalledExactlyOnceWith('lane');
+    const failures = fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toMatchObject({ detail: 'cindy-runtime-error:RUNTIME_TIMEOUT' });
+    expect(deliveries()).toEqual([]);
+  });
+
   it('rejects an old undispatched input instead of failing its replacement', async () => {
     await start();
     expect(await settleUndispatchedBotGroupTurn(service, 'lane', 'old-input', 'failed', 'MODEL_NOT_FOUND')).toBe(false);

@@ -6,7 +6,7 @@ import type { MobileUser } from '@/auth/AuthContext';
 const h = vi.hoisted(() => ({
   disk: new Map<string, string>(), push: vi.fn(), dismissTo: vi.fn(), dismiss: vi.fn(), reset: vi.fn(), accountGeneration: 1,
   user: { id: 'account', passportId: 'passport', membershipKind: 'personal', orgId: null } as MobileUser,
-  get: vi.fn(), set: vi.fn(), routes: [] as Array<{ name: string; params?: unknown }>,
+  sessions: [] as import('@/session/types').RemoteSession[], upsert: vi.fn(), get: vi.fn(), set: vi.fn(), routes: [] as Array<{ name: string; params?: unknown }>,
 }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ dismissTo: h.dismissTo, dismiss: h.dismiss }), useNavigation: () => ({ reset: h.reset, getState: () => ({ routes: h.routes, index: h.routes.length - 1 }) }) }));
 vi.mock('react-native', () => ({ Keyboard: { dismiss() {} } }));
@@ -14,6 +14,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ user: h.user, accountGeneration: h.accountGeneration }) }));
 vi.mock('@/utils/useGuardedPush', () => ({ useGuardedPush: () => h.push }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: { getItem: h.get, setItem: h.set } }));
+vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: { getSessions: () => h.sessions, getSessionDeviceId: () => undefined, upsertDeviceSession: h.upsert } }));
 import { useTeammateNavigation } from '@/session/useTeammateNavigation';
 import { homeNavigationOwner } from '@/session/useHomeMode';
 import { readHomeNavigationPreferences, saveHomeNavigationPreferences } from '@/session/homeViewPreferenceStore';
@@ -29,7 +30,7 @@ function Probe() { result = useTeammateNavigation(); return null; }
 async function render() { root ??= createRoot(document.createElement('div')); await act(async () => root!.render(createElement(Probe))); }
 let serial = 0;
 beforeEach(() => {
-  vi.clearAllMocks(); h.routes = []; h.disk.clear(); h.accountGeneration = ++serial;
+  vi.clearAllMocks(); h.sessions = []; h.routes = []; h.disk.clear(); h.accountGeneration = ++serial;
   h.user = { id: `account-${serial}`, passportId: 'passport', membershipKind: 'personal', orgId: null } as MobileUser;
   h.get.mockImplementation(async (key: string) => h.disk.get(key) ?? null);
   h.set.mockImplementation(async (key: string, value: string) => { h.disk.set(key, value); });
@@ -181,4 +182,18 @@ it('opens a known conversation directly and seeds its first-frame identity', asy
     sessionId: 'chat', deviceId: 'mac', deviceName: 'My Mac', resourceCollectionId: 'teammates', resourceId: 'writer', resourceKind: 'bot',
   } });
   expect(readRemoteCollectionCache(`${h.user.id}:${h.accountGeneration}`, 'teammates')[0]).toBe(linked);
+});
+
+it('opens a disk-cached canonical chat without a task row, seeds presentation once, and preserves real metadata', async () => {
+  const linked = { ...teammate, item: { ...teammate.item, links: [{ rel: 'conversation', target: { kind: 'session' as const, sessionId: 'canonical' } }] } };
+  h.upsert.mockImplementation((_device, _name, session) => { h.sessions.push(session); });
+  await render();
+  await act(async () => Promise.all([result.openTeammate(linked), result.openTeammate(linked)]));
+  expect(h.push).toHaveBeenCalledTimes(1);
+  expect(h.upsert).toHaveBeenCalledExactlyOnceWith('mac', 'My Mac', expect.objectContaining({ id: 'canonical', source: 'bot', cacheSeeded: true, workingDir: null }));
+  expect(h.push.mock.calls[0][0].pathname).toBe('/sessions/[sessionId]');
+  h.sessions[0] = { ...h.sessions[0], cacheSeeded: undefined, model: 'real-model', workingDir: '/real' };
+  await act(async () => result.openTeammate(linked));
+  expect(h.upsert).toHaveBeenCalledTimes(1);
+  expect(h.sessions[0].model).toBe('real-model');
 });

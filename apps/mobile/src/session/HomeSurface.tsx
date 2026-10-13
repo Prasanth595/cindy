@@ -321,6 +321,10 @@ const HOME_PROJECT_HEADER_HEIGHT = 56;
 const HOME_AUTOMATION_VIEW_ALL_ROW_HEIGHT = 54;
 const HOME_SESSION_ROW_HEIGHT = 78;
 const HOME_SESSION_SINGLE_LINE_ROW_HEIGHT = 60;
+// 自动化组行标题后展开箭头的点击区边长(移动端点击目标 ≥44×44)。
+const GROUP_CHEVRON_HIT_SIZE = 44;
+// 与 HomeListVisuals sessionTitleRow 的固定高度一致。
+const SESSION_TITLE_ROW_HEIGHT = 30;
 const CINDY_LIST_GUTTER = 20;
 const CINDY_LIST_FAB_BOTTOM = 45;
 const HOME_HEADER_MIN_HEIGHT = 48;
@@ -4288,6 +4292,7 @@ function HomeSessionRowInner({
   // (error 红 > awaiting TapTap 蓝 > running spinner > 完成未读绿 > 时间)。
   const group = onToggleAutomationGroup ? item.automationGroup : undefined;
   const groupExpanded = !!group && !!expandedAutomationGroups?.includes(group.key);
+  const groupChevronVisible = !!group && !selectionMode;
   const { status: rightStatus, target: statusTarget } = resolveMobileSessionRowStatus(item, sessionIsRunning, groupExpanded);
   const showDraftIndicator = readBooleanField(item.session, 'hasDraft')
     || readBooleanField(item.session, 'hasPausedQueue')
@@ -4377,30 +4382,6 @@ function HomeSessionRowInner({
             {selected ? <Text style={styles.selectionMarkText}>✓</Text> : null}
           </View>
         ) : null}
-        {group && !selectionMode ? (
-          // 展开箭头放行首,与项目组的折叠交互一致(chevron → 图标 → 标题);
-          // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
-          <Pressable
-            accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
-            accessibilityRole="button"
-            hitSlop={{ bottom: 12, left: 12, right: 4, top: 12 }}
-            onPress={(event) => {
-              // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
-              // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
-              event.stopPropagation();
-              onToggleAutomationGroup?.(group.key);
-            }}
-            onPressIn={() => prepareDisclosure(true)}
-            style={styles.sessionGroupChevronCell}
-            testID={`${testID}.automationGroupChevron`}
-          >
-            {groupExpanded ? (
-              <ChevronDown color={colors.textSecondary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-            ) : (
-              <ChevronRight color={colors.textSecondary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-            )}
-          </Pressable>
-        ) : null}
         <View style={[
           styles.sessionIconCell,
           !showPreviewLine && styles.sessionIconCellSingleLine,
@@ -4428,8 +4409,8 @@ function HomeSessionRowInner({
           styles.sessionListContent,
           (hideDivider || blockMode || (!!group && groupExpanded)) && styles.sessionListContentNoDivider,
         ]}>
-          <View style={styles.sessionTitleRow}>
-            <View style={styles.sessionTitleCluster}>
+          <View style={[styles.sessionTitleRow, groupChevronVisible && styles.sessionTitleRowGroupHit]}>
+            <View style={[styles.sessionTitleCluster, groupChevronVisible && styles.sessionTitleClusterGroupHit]}>
               <Text
                 style={styles.sessionTitle}
                 ellipsizeMode="tail"
@@ -4442,6 +4423,34 @@ function HomeSessionRowInner({
               </Text>
               <TaskTagDots tags={item.session.tags} surfaceColor={colors.surface} />
             </View>
+            {group && groupChevronVisible ? (
+              // 展开箭头紧跟标题(对齐桌面 AutomationSessionGroupItem):不占行首,组行的图标 /
+              // 标题与同级普通任务对齐,展开后的子行(deepIndented)才能稳定比组行深一档。
+              // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
+              // 热区 44×44 由箭头自身尺寸承担,不靠 hitSlop(会被父容器边界截掉)。箭头不放进
+              // 标题组:标题组里的标签色球不收缩(最多 32 个),会把组内箭头挤出边界被截掉;
+              // 作为标题行的不收缩子项,标题组先收缩,箭头始终完整。纵向见 sessionTitleRowGroupHit。
+              <Pressable
+                accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
+                accessibilityRole="button"
+                onPress={(event) => {
+                  // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
+                  // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
+                  event.stopPropagation();
+                  onToggleAutomationGroup?.(group.key);
+                }}
+                onPressIn={() => prepareDisclosure(true)}
+                style={styles.sessionGroupChevronCell}
+                testID={`${testID}.automationGroupChevron`}
+              >
+                {groupExpanded ? (
+                  <ChevronDown color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                ) : (
+                  <ChevronRight color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                )}
+              </Pressable>
+            ) : null}
+            {groupChevronVisible ? <View style={styles.sessionTitleSpacer} /> : null}
             {sourceLabel ? (
               <Text
                 ellipsizeMode="tail"
@@ -4495,7 +4504,9 @@ function HomeSessionRowInner({
             )}
           </View>
           {showPreviewLine ? (
-            <View style={styles.sessionPreviewRow}>
+            // 组行的标题行向下撑进预览行 7pt 给箭头热区;预览行只有文字和图标,不接触摸,
+            // 让重叠处的点击落到箭头,其余位置照常落到整行。
+            <View pointerEvents={groupChevronVisible ? 'none' : 'auto'} style={styles.sessionPreviewRow}>
               {group ? (
                 <AutomationGroupPreviewText
                   item={item}
@@ -5139,13 +5150,27 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
 
   sessionGroupChevronCell: {
-    // 自动化组行行首的展开箭头列:与项目组行首 chevron 对齐(尺寸 22、次级色),
-    // 垂直对齐标题行(与 sessionIconCell 同一基线)。
+    // 自动化组行标题后的展开箭头:标题行的不收缩子项,长标题 / 多标签时标题组先收缩;
+    // 自身即 44×44 点击区(图标居中),负左外边距吃掉部分行内间距,让图标视觉上贴近标题。
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    marginRight: -spacing.xs,
-    paddingTop: 23,
-    width: 22,
+    flexShrink: 0,
+    height: GROUP_CHEVRON_HIT_SIZE,
+    justifyContent: 'center',
+    marginLeft: -12,
+    width: GROUP_CHEVRON_HIT_SIZE,
+  },
+  sessionTitleRowGroupHit: {
+    // 组行标题行撑到 44 给箭头热区,上下负外边距抵消,行内布局仍按 sessionTitleRow 高度排。
+    height: GROUP_CHEVRON_HIT_SIZE,
+    marginVertical: -(GROUP_CHEVRON_HIT_SIZE - SESSION_TITLE_ROW_HEIGHT) / 2,
+  },
+  sessionTitleClusterGroupHit: {
+    // 组行标题组按内容宽度、可收缩,让箭头紧跟其后;右侧余量交给 sessionTitleSpacer。
+    flex: 0,
+    flexShrink: 1,
+  },
+  sessionTitleSpacer: {
+    flex: 1,
   },
 
   // 右侧状态槽(替代时间位):18×18 定位槽把点与 spinner 居中到同一锚点;

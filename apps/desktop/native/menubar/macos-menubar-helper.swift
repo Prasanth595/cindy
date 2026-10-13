@@ -2578,26 +2578,13 @@ struct ManagePage: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(store.s("manageHero"))
-          .font(.system(size: 19, weight: .semibold))
-          .tracking(-0.4)
-          .fixedSize(horizontal: false, vertical: true)
-        Text(store.s("manageHeroSub"))
-          .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(Palette.ink3)
-          .lineSpacing(2)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
-
       section(store.s("sources"), store.s("sourcesShown", [
         "a": String(view.manage.filter { !$0.hidden }.count),
         "b": String(view.manage.count),
       ]))
       sourceList
 
-      section(store.s("statusIcon"), store.s("statusIconSub"))
+      section(store.s("statusIcon"), nil)
       StatusPreview(store: store, view: view)
         .padding(.horizontal, 12)
       // Four labels never fit one segmented row in every language; two columns always do.
@@ -2611,12 +2598,12 @@ struct ManagePage: View {
       section(store.s("other"), nil)
       Tile {
         VStack(spacing: 0) {
-          settingRow(store.s("lowAlert"), store.s("lowAlertSub")) {
+          settingRow(store.s("lowAlert"), nil) {
             Toggle("", isOn: Binding(get: { view.settings.lowAlert }, set: { Bridge.emitSettings(["lowAlert": $0]) }))
               .toggleStyle(.switch).controlSize(.small).labelsHidden()
           }
           Divider().overlay(Palette.line)
-          settingRow(store.s("privacy"), store.s("privacySub")) {
+          settingRow(store.s("privacy"), nil) {
             Toggle("", isOn: Binding(get: { view.settings.privacy }, set: { Bridge.emitSettings(["privacy": $0]) }))
               .toggleStyle(.switch).controlSize(.small).labelsHidden()
           }

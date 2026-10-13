@@ -154,6 +154,7 @@ export type PiBundledModelCatalog = ReadonlyMap<string, ReadonlyMap<string, PiBu
 export type PiListedModelIds = ReadonlyMap<string, ReadonlySet<string>>;
 
 const piBundledModelsByBinary = new Map<string, Promise<PiBundledModelCatalog | null>>();
+const resolvedPiBundledModelsByBinary = new Map<string, PiBundledModelCatalog>();
 const listedIdsByCatalog = new WeakMap<PiBundledModelCatalog, PiListedModelIds>();
 let latestPiBundledModelCatalog: PiBundledModelCatalog | null = null;
 
@@ -405,8 +406,12 @@ export async function readPiBundledModels(
   const cached = piBundledModelsByBinary.get(binaryPath);
   if (cached) {
     const catalog = await cached;
+    if (catalog) resolvedPiBundledModelsByBinary.set(binaryPath, catalog);
     latestPiBundledModelCatalog = catalog;
-    if (catalog === null) piBundledModelsByBinary.delete(binaryPath);
+    if (catalog === null) {
+      piBundledModelsByBinary.delete(binaryPath);
+      resolvedPiBundledModelsByBinary.delete(binaryPath);
+    }
     return catalog;
   }
   // A model-switch preview may inspect a live task without launching another Pi
@@ -490,10 +495,14 @@ export async function readPiBundledModels(
   })();
   piBundledModelsByBinary.set(binaryPath, pending);
   const catalog = await pending;
+  if (catalog) resolvedPiBundledModelsByBinary.set(binaryPath, catalog);
   latestPiBundledModelCatalog = catalog;
   // A temp-dir/timeout/parse failure is transient evidence, not a permanent property of this
   // binary. Keep successful probes cached, but let the next session retry a null result.
-  if (catalog === null) piBundledModelsByBinary.delete(binaryPath);
+  if (catalog === null) {
+    piBundledModelsByBinary.delete(binaryPath);
+    resolvedPiBundledModelsByBinary.delete(binaryPath);
+  }
   return catalog;
 }
 
@@ -1616,18 +1625,24 @@ function isPiGatewayModelApi(api: PiBundledModelInfo['api']): api is PiModelApi 
   );
 }
 
-function resolveProbedPiGatewayModel(modelId: string): PiBundledModelInfo | undefined {
+function resolveProbedPiGatewayModel(
+  modelId: string,
+  runtimeBinaryPath?: string,
+): PiBundledModelInfo | undefined {
+  const catalog = runtimeBinaryPath
+    ? resolvedPiBundledModelsByBinary.get(runtimeBinaryPath)
+    : latestPiBundledModelCatalog;
   const normalized = modelId.replace(/\[1m\]$/, '');
   const identity = resolveBundledPiGatewayCatalogIdentity(normalized);
   if (identity) {
-    const matched = latestPiBundledModelCatalog?.get(identity.provider)?.get(identity.modelId);
+    const matched = catalog?.get(identity.provider)?.get(identity.modelId);
     if (matched) return matched;
   }
   // Future namespaced models may use Pi's exact provider/model identity without a client alias.
   // This is an exact pair lookup, never a bare-id or family guess.
   const slash = normalized.indexOf('/');
   if (slash <= 0) return undefined;
-  return latestPiBundledModelCatalog
+  return catalog
     ?.get(normalized.slice(0, slash))
     ?.get(normalized.slice(slash + 1));
 }
@@ -1635,7 +1650,7 @@ function resolveProbedPiGatewayModel(modelId: string): PiBundledModelInfo | unde
 export function resolvePiCindyGatewayModelApi(
   _selectedProviderId: string | null | undefined,
   modelId: string,
-  context?: { remote: boolean },
+  context?: { remote: boolean; runtimeBinaryPath?: string },
 ): PiModelApi | null | undefined {
   // Gateway membership remains the account-availability gate, but its protocol is the last hint.
   const gatewayApi = resolveXdPiGatewayHintApi(modelId);
@@ -1646,7 +1661,7 @@ export function resolvePiCindyGatewayModelApi(
   // sessions skip that probe but still use this client version's explicit static configuration
   // before the last-priority Gateway hint.
   if (context?.remote) return resolveBundledPiGatewayModelProfile(modelId)?.api ?? gatewayApi;
-  const probed = resolveProbedPiGatewayModel(modelId);
+  const probed = resolveProbedPiGatewayModel(modelId, context?.runtimeBinaryPath);
   if (probed) return isPiGatewayModelApi(probed.api) ? probed.api : null;
   return resolveBundledPiGatewayModelProfile(modelId)?.api ?? gatewayApi;
 }
@@ -1654,7 +1669,7 @@ export function resolvePiCindyGatewayModelApi(
 export function resolvePiCindyGatewayModelSpec(
   _selectedProviderId: string | null | undefined,
   modelId: string,
-  context?: { remote: boolean },
+  context?: { remote: boolean; runtimeBinaryPath?: string },
 ): Pick<
   PiNativeModelSpec,
   'api' | 'compat' | 'samplingParams' | 'thinkingLevelMap'
@@ -1662,7 +1677,9 @@ export function resolvePiCindyGatewayModelSpec(
   const api = resolvePiCindyGatewayModelApi(_selectedProviderId, modelId, context);
   if (api === undefined || api === null) return api;
   const bundled = resolveBundledPiGatewayModelProfile(modelId);
-  const probed = context?.remote ? undefined : resolveProbedPiGatewayModel(modelId);
+  const probed = context?.remote
+    ? undefined
+    : resolveProbedPiGatewayModel(modelId, context?.runtimeBinaryPath);
   const compatibleBundled = bundled?.api === api ? bundled : undefined;
   const compatibleProbed = probed?.api === api ? probed : undefined;
   let compat = compatibleProbed?.compat ?? compatibleBundled?.compat;
@@ -1715,6 +1732,8 @@ export async function resolvePiNativeProviders(ctx: {
   remoteHostId?: string | null;
   providerId?: string | null;
   model: string;
+  /** Local Pi binary frozen by maker-core for this session. */
+  runtimeBinaryPath?: string;
   resumeSessionId?: string;
   purpose?: 'startup' | 'preview' | 'live-refresh';
 }): Promise<PiNativeProvidersResult> {
@@ -1735,7 +1754,7 @@ export async function resolvePiNativeProviders(ctx: {
     });
     throw new PiNativeProviderProxyNotReadyError();
   }
-  const piBinaryPath = resolvePiBinaryPath();
+  const piBinaryPath = ctx.runtimeBinaryPath ?? resolvePiBinaryPath();
   // Never treat the Desktop executable as the catalog of a different remote Pi binary.
   const bundledModels = !ctx.remoteHostId && piBinaryPath
     ? await readPiBundledModels(piBinaryPath, { cachedOnly: ctx.purpose === 'preview' })

@@ -1073,7 +1073,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (checking.has(run) || running.get(run.execution.bot_id) !== run) return;
     checking.add(run);
     try {
-      const paused = !!run.plan && !!deps.hasPendingInteraction?.(run.sessionId);
+      // Ordinary group replies can wait for approval too, just like plan steps.
+      const paused = !!deps.hasPendingInteraction?.(run.sessionId);
       if (paused) run.pauseStarted ??= Date.now();
       else if (run.pauseStarted !== undefined) { run.started += Date.now() - run.pauseStarted; run.pauseStarted = undefined; }
       const timedOut = !paused && Date.now() - run.started > (run.plan ? 2 * 60 * 60 * 1000 : 300000);

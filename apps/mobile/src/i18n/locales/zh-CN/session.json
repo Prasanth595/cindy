@@ -223,6 +223,7 @@
     "sessionNotSyncedRetry": "任务尚未同步完成，请稍后再试。",
     "savingPreviousQueueEdit": "正在保存上一条排队消息的修改，完成后再编辑。",
     "attachmentsUploadingBeforeEdit": "还有附件正在上传，等上传完成后再编辑排队消息。",
+    "goalCommandAttachments": "请单独发送 /goal。草稿和附件已保留。",
     "goalAlreadyActive": "该任务已有进行中的目标，请先在此处理它。",
     "resetReconfirmTitle": "请重新确认",
     "resetOfferExpired": "重置凭证已过期，请确认刷新后的配额信息。",
@@ -283,6 +284,7 @@
     "shareMessage": "分享这条消息"
   },
   "new": {
+    "goalCommandNeedsSession": "请进入已有任务清除目标。",
     "selectDevice": "选择设备",
     "workspaceDialogue": "对话",
     "workspaceProject": "项目",

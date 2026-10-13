@@ -6,6 +6,7 @@ import {
   parsePluginDownloadResponse,
   type GetPluginResponse,
   type ListPluginsResponse,
+  type OrganizationPluginAccessError,
   type PluginRemovalNotice,
   type PluginDownloadResponse,
 } from '@cindy/plugin-protocol';
@@ -16,6 +17,31 @@ import { serverApiFetch, type ApiFetchOptions } from '../serverApiClient.js';
 
 const log = createLogger('plugin-market-api');
 const PLUGIN_MARKET_API_TIMEOUT_MS = 15_000;
+
+/** 固定业务码，不含插件身份，可以穿过市场请求的脱敏边界。 */
+export const PLUGIN_MARKET_PASSTHROUGH_ERROR_CODES = [
+  'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+  'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+  'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+  'PLUGIN_LIST_CHANGED',
+] as const;
+
+export type PluginMarketPassthroughErrorCode =
+  (typeof PLUGIN_MARKET_PASSTHROUGH_ERROR_CODES)[number];
+
+export function isPluginMarketPassthroughErrorCode(
+  code: string,
+): code is PluginMarketPassthroughErrorCode {
+  return (PLUGIN_MARKET_PASSTHROUGH_ERROR_CODES as readonly string[]).includes(code);
+}
+
+function isPluginListChangedError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'PLUGIN_LIST_CHANGED'
+  );
+}
 
 type Fetcher = <T>(
   apiPath: string,
@@ -31,6 +57,7 @@ const defaultFetcher: Fetcher = (apiPath, options) =>
     // 详情,logLabel 用不含 ID 的路由模板代替真实 path(2026-08-06 review)。
     redactErrorDetails: true,
     logLabel: '/api/plugins',
+    allowedRedactedErrorCodes: PLUGIN_MARKET_PASSTHROUGH_ERROR_CODES,
   });
 
 /** plugin-server 普通客户端 API；每个响应都经过共享 v2 parser fail-closed。 */
@@ -50,10 +77,28 @@ export class PluginMarketApi {
 
   async listAll(
     query?: string,
-  ): Promise<Pick<ListPluginsResponse, 'plugins' | 'removals' | 'currentOrganization'>> {
+  ): Promise<
+    Pick<ListPluginsResponse, 'plugins' | 'removals' | 'currentOrganization' | 'organizationAccessError'>
+  > {
+    try {
+      return await this.collectList(query);
+    } catch (error) {
+      if (!isPluginListChangedError(error)) throw error;
+      log.warn('plugin list cursor invalidated, retrying from the first page');
+      return this.collectList(query);
+    }
+  }
+
+  private async collectList(
+    query?: string,
+  ): Promise<
+    Pick<ListPluginsResponse, 'plugins' | 'removals' | 'currentOrganization' | 'organizationAccessError'>
+  > {
     const plugins: ListPluginsResponse['plugins'] = [];
     const removalsByPluginId = new Map<string, PluginRemovalNotice>();
     let currentOrganization: ListPluginsResponse['currentOrganization'] = null;
+    let organizationAccessError: OrganizationPluginAccessError | undefined;
+    let organizationAccessState: 'unknown' | 'present' | 'absent' = 'unknown';
     let cursor: string | null = null;
     const seen = new Set<string>();
     for (let page = 0; page < 100; page += 1) {
@@ -86,6 +131,23 @@ export class PluginMarketApi {
         throw new Error('Plugin 市场分页 currentOrganization 不一致');
       }
       currentOrganization ??= response.currentOrganization;
+      const pageError = response.organizationAccessError;
+      if (organizationAccessState === 'unknown') {
+        organizationAccessState = pageError ? 'present' : 'absent';
+        organizationAccessError = pageError;
+      } else if (pageError) {
+        if (organizationAccessState !== 'present') {
+          throw new Error('Plugin 市场分页 organizationAccessError 不一致');
+        }
+        if (organizationAccessError?.code !== pageError.code) {
+          log.warn('organization access error code changed across pages', {
+            first: organizationAccessError?.code,
+            next: pageError.code,
+          });
+        }
+      } else if (organizationAccessState !== 'absent') {
+        throw new Error('Plugin 市场分页 organizationAccessError 不一致');
+      }
       if (!response.nextCursor) {
         // 在架优先(契约:通告与**任一页** plugins 有交集即作废)的作用域是
         // 未经 owner 过滤的完整目录,必须留在聚合层;挪到 service 的 owner
@@ -98,7 +160,12 @@ export class PluginMarketApi {
           return false;
         });
         assertPluginListOrganizationNamespace(currentOrganization, plugins, removals);
-        return { plugins, removals, currentOrganization };
+        return {
+          plugins,
+          removals,
+          currentOrganization,
+          ...(organizationAccessError ? { organizationAccessError } : {}),
+        };
       }
       if (response.nextCursor === cursor) throw new Error('Plugin 市场分页游标未前进');
       cursor = response.nextCursor;

@@ -27,7 +27,9 @@ import {
   useState,
 } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
+import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import {
@@ -762,7 +764,16 @@ export function createWritableDirRemovalQueue() {
   };
 }
 
-export function CCAgentSessionView({
+export function CCAgentSessionView(props: CCAgentSessionViewProps) {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
+      <CCAgentSessionContent {...props} />
+    </CindyMakeSessionGate>
+  );
+}
+
+function CCAgentSessionContent({
   sessionIdProp,
   routeOwner,
   compact,
@@ -3336,6 +3347,9 @@ export function CCAgentSessionView({
         !slashMatch && agentKind === 'pi' ? leadingSlashInvocation(message) : undefined;
       if (!slashMatch && !leading) return { handled: false, accepted: false, message };
       const cmdName = (slashMatch?.[1] ?? leading!.name).toLowerCase();
+      if (!CINDY_MAKE_ENABLED && (cmdName === 'cindy-make' || cmdName === 'cindy-make-doctor')) {
+        return { handled: true, accepted: false, message };
+      }
       const args = slashMatch?.[2] ?? '';
       const allowDesktopDispatch = options?.allowDesktopDispatch ?? true;
       const workingDir = options?.workingDirOverride ?? session?.workingDir;
@@ -4764,6 +4778,10 @@ export function CCAgentSessionView({
   //   - /clear 之后留在空 ChatView 已经在用,体验没问题,本来就跟"空 session"等价
   // 现在所有空消息流/有消息流都走同一套布局(全高 scroll container + sticky bottom
   // overlay),自然消除 view 翻转带来的 layout shift。
+  if (!CINDY_MAKE_ENABLED && isCindyMakeSource(session?.source)) {
+    return <Navigate to="/cc-agent" replace />;
+  }
+
   const composerDir = composerWorkingDirPath({
     workingDir: session?.workingDir,
     liveWorktree,

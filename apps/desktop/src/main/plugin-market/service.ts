@@ -6,6 +6,7 @@ import {
   isValidPluginResourceId,
   isValidPluginNamespace,
   PLUGIN_PREFIX_PATTERN,
+  type OrganizationPluginAccessError,
   type PluginCurrentOrganization,
   type PluginRemovalNotice,
   type VisiblePluginDetail,
@@ -102,7 +103,7 @@ import {
   type GhostInstallConsentPrompt,
 } from '../cindy-brain/ghostInstallConsent.js';
 import type { GhostInstallConsentInitiator } from '../../shared/ghostInstallConsent.js';
-import { PluginMarketApi } from './api.js';
+import { isPluginMarketPassthroughErrorCode, PluginMarketApi } from './api.js';
 import { createOrganizationPrefixStore } from './organizationPrefixStore.js';
 import { downloadVerifiedPlugin } from './download.js';
 import {
@@ -127,6 +128,28 @@ import { MarketSourceManager } from './sources/index.js';
 import { MarketSourceStore } from './sources/store.js';
 
 const log = createLogger('plugin-market');
+
+function organizationAccessErrorCode(
+  error: OrganizationPluginAccessError | undefined,
+): string | null {
+  if (!error) return null;
+  log.warn('organization plugin catalog unavailable', { code: error.code });
+  return error.code;
+}
+
+/**
+ * 目录里找不到条目时的拒绝。企业部分被拒时，条目可能只是没有下发：保留准入原因，
+ * 但仍不读取详情、不安装。
+ */
+function throwListedPluginUnavailable(
+  organizationAccessError: OrganizationPluginAccessError | undefined,
+): never {
+  const code = organizationAccessError?.code;
+  if (code && isPluginMarketPassthroughErrorCode(code)) {
+    throwIpcError(code, 'Organization plugin catalog is unavailable');
+  }
+  throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
+}
 
 class SilentUpgradeBusyError extends Error {}
 class SilentDefaultInstallCancelledError extends Error {}
@@ -1036,6 +1059,7 @@ export class PluginMarketService {
     let plugins: VisiblePluginSummary[];
     let removals: PluginRemovalNotice[];
     let currentOrganization: PluginCurrentOrganization | null | undefined;
+    let organizationAccessError: string | null = null;
     let customDiscovery: CustomMarketDiscovery;
     try {
       // 官方目录与自定义发现并行；单个本地/网络盘来源卡顿不会串行拖住官方请求。
@@ -1043,6 +1067,7 @@ export class PluginMarketService {
       plugins = visiblePluginsForOwner(owner, catalog.plugins);
       removals = catalog.removals;
       currentOrganization = catalog.currentOrganization;
+      organizationAccessError = organizationAccessErrorCode(catalog.organizationAccessError);
       customDiscovery = discovered;
     } catch (error) {
       log.warn('market list unavailable', {
@@ -1126,6 +1151,7 @@ export class PluginMarketService {
       unavailableReason: null,
       customSourceNames,
       unavailableCustomSourceNames: customDiscovery.unavailableSourceNames,
+      organizationAccessError,
     };
     if (!options.discoveryOnly && options.deferReconciliation) {
       // 目录展示不等待默认插件下载；对账仍复用原有串行锁和 owner 校验。
@@ -1152,6 +1178,7 @@ export class PluginMarketService {
         unavailableReason: null,
         customSourceNames: [],
         unavailableCustomSourceNames: [],
+        organizationAccessError: organizationAccessErrorCode(catalog.organizationAccessError),
       };
     } catch (error) {
       log.warn('public market list unavailable', {
@@ -1230,9 +1257,7 @@ export class PluginMarketService {
       this.rememberCurrentOrganization(listed.currentOrganization);
       const catalog = visiblePluginsForOwner(owner, listed.plugins);
       const summary = catalog.find((candidate) => candidate.id === pluginId);
-      if (!summary) {
-        throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
-      }
+      if (!summary) throwListedPluginUnavailable(listed.organizationAccessError);
       const plugin = await this.api.detail(pluginId);
       requireSameMarketOwner(owner);
       assertDetailMatchesSummary(summary, plugin);
@@ -1440,9 +1465,7 @@ export class PluginMarketService {
     this.rememberCurrentOrganization(listed.currentOrganization);
     const catalog = visiblePluginsForOwner(owner, listed.plugins);
     const selected = catalog.find((candidate) => candidate.id === pluginId);
-    if (!selected) {
-      throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
-    }
+    if (!selected) throwListedPluginUnavailable(listed.organizationAccessError);
     if (!isGhostAvailableForActiveSession(selected.ghostId)) {
       throwIpcError('PERMISSION_DENIED', 'This Plugin requires a Cindy account');
     }

@@ -548,14 +548,14 @@ const studioCatalog = {
   providers:[{id:'account',name:'Studio Provider',models:{},connected:true,logoKind:'anthropic'}],
 };
 const remoteId = 'remote:["device-studio-mac","account"]';
-async function mountRemote(selectedDeviceId:string|null,onSelect=vi.fn(async()=>true)) {
+async function mountRemote(selectedDeviceId:string|null,onSelect=vi.fn(async()=>true),catalog:any=studioCatalog) {
   const onClose=vi.fn();
   await act(async()=>root.render(createElement(UnifiedModelPickerSheet,{
     visible:true,onClose,providers:[{id:'account',name:'Provider',models:{},connected:true}],agentKind:'codex',capabilities:{hasFastMode:true},
     activeModelId:'codex/model',selectedProviderId:'account',selectedEffort:'medium',selectedFastMode:false,
     existingSessionRoute:true,modelMemory:{getEffort:()=>undefined,getFast:()=>undefined,setEffort:vi.fn(),setFast:vi.fn()},
     unified:{scope:'user-device',agents:['codex','claude-code'],loadCapabilities:async()=>({hasFastMode:true}),onSelect,
-      remote:{catalogs:[studioCatalog],selectedDeviceId}},
+      remote:{catalogs:[catalog],selectedDeviceId}},
   } as any)));
   return {onSelect,onClose};
 }
@@ -595,7 +595,8 @@ it('opens on the Agent\'s computer and marks the current model there',async()=>{
 it('keeps settings of another computer\'s rows out of this phone\'s preferences',async()=>{
   const {onSelect}=await mountRemote(null);
   await act(async()=>test.view.onOptions(test.view.groups[1].rows[0]));
-  expect(test.view.options.favoritesDisabled).toBe(true);
+  // 收藏照样可用(存到被控电脑,位置编进来源),参数调整仍不写进手机的偏好。
+  expect(test.view.options.favoritesDisabled).toBe(false);
   expect(test.view.options.canReset).toBe(false);
   await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
   expect(test.save).not.toHaveBeenCalled();
@@ -606,6 +607,98 @@ it('keeps settings of another computer\'s rows out of this phone\'s preferences'
   await act(async()=>test.view.onBack());
   await act(async()=>test.view.onSelect(test.view.groups[1].rows[0]));
   expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({effort:'high'}),{deviceId:'device-studio-mac'});
+});
+
+// 收藏另一台电脑上的模型:收藏存在被控电脑,来源里编进电脑;和本机收藏排在一起,点开就在那台运行。
+const studioSource = 'agent-device-favorite:["device-studio-mac","account"]';
+it('favorites another computer\'s model with its location and lists it beside local favorites',async()=>{
+  const {onSelect,onClose}=await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups[1].rows[0]));
+  expect(test.view.options.isFavorite).toBe(false);
+  await act(async()=>test.view.options.onFavorite());
+  expect(test.save).toHaveBeenCalledWith(expect.objectContaining({favorites:[
+    {uid:expect.any(String),providerId:studioSource,modelId:'model',agent:'codex',effort:'medium',fast:false},
+  ]}));
+  expect(test.view.options.isFavorite).toBe(true);
+  expect(test.view.options.notice).toBe('models.unified.favoriteSaved');
+  await act(async()=>test.view.onBack());
+  expect(test.view.groups.map((g:any)=>g.key)).toEqual(['favorites','recommended',remoteId]);
+  const favorite=test.view.groups[0].rows[0];
+  expect(favorite.remoteDevice).toEqual({deviceId:'device-studio-mac',name:'Studio Mac'});
+  expect(favorite.subtitle).toContain('Studio Mac');
+  expect(favorite.providerMark).toMatchObject({name:'Studio Provider'});
+  expect(favorite.selected).toBe(false);
+  // 选中时按那台电脑上的供应商 id 发出,并带上电脑。
+  await act(async()=>test.view.onSelect(favorite));
+  expect(onSelect).toHaveBeenCalledWith({providerId:'account',modelId:'codex/model',agent:'codex',effort:'medium',fast:false},{deviceId:'device-studio-mac'});
+  expect(onClose).toHaveBeenCalledOnce();
+});
+it('keeps a local favorite and another computer\'s favorite of the same model apart',async()=>{
+  test.prefs.favorites=[{uid:'local',providerId:'account',modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups.find((g:any)=>g.key===remoteId).rows[0]));
+  expect(test.view.options.isFavorite).toBe(false);
+  await act(async()=>test.view.onBack());
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups.find((g:any)=>g.key==='recommended').rows[0]));
+  expect(test.view.options.isFavorite).toBe(false);
+});
+it('removes and edits another computer\'s favorite without losing its location',async()=>{
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  expect(test.view.options.isFavorite).toBe(true);
+  await act(async()=>test.view.options.onEditFavorite());
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
+  await act(async()=>test.view.options.onSaveEdit());
+  expect(test.save).toHaveBeenLastCalledWith(expect.objectContaining({favorites:[
+    {uid:'remote',providerId:studioSource,modelId:'model',agent:'codex',effort:'high',fast:false},
+  ]}));
+  expect(test.view.options.isFavorite).toBe(true);
+  await act(async()=>test.view.options.onFavorite());
+  expect(test.save).toHaveBeenLastCalledWith(expect.objectContaining({favorites:[]}));
+});
+it('adjusts parameters from another computer\'s favorite details without changing the copy',async()=>{
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  const {onSelect}=await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  expect(test.view.options.isFavorite).toBe(true);
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
+  // 详情跟着调整走,原收藏不变、星标回到空心,并提示原收藏保留。
+  expect(test.view.options.row.config.effort).toBe('high');
+  expect(test.view.options.isFavorite).toBe(false);
+  expect(test.view.options.notice).toBe('models.unified.originalFavoriteKept');
+  expect(test.view.options.canReset).toBe(true);
+  expect(test.save).not.toHaveBeenCalled();
+  expect(onSelect).not.toHaveBeenCalled();
+  await act(async()=>test.view.options.onReset());
+  expect(test.view.options.row.config.effort).toBe('medium');
+  expect(test.view.options.isFavorite).toBe(true);
+});
+it('hides favorites of a computer that is only listed because the Agent was there and it went offline',async()=>{
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null,undefined,{...studioCatalog,offline:true});
+  expect(test.view.groups.some((g:any)=>g.key==='favorites')).toBe(false);
+  expect(test.save).not.toHaveBeenCalled();
+});
+it('hides a favorite whose computer is not in the list without deleting it',async()=>{
+  test.prefs.favorites=[{uid:'away',providerId:'agent-device-favorite:["device-offline","account"]',modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null);
+  expect(test.view.groups.map((g:any)=>g.key)).toEqual(['recommended',remoteId]);
+  expect(test.save).not.toHaveBeenCalled();
+});
+it('does not offer favorites for providers shared by another account',async()=>{
+  const onSelect=vi.fn(async()=>true);
+  await act(async()=>root.render(createElement(UnifiedModelPickerSheet,{
+    visible:true,onClose:vi.fn(),providers:[{id:'account',name:'Provider',models:{},connected:true}],agentKind:'codex',capabilities:{hasFastMode:true},
+    activeModelId:'codex/model',selectedProviderId:'account',selectedEffort:'medium',selectedFastMode:false,
+    existingSessionRoute:true,modelMemory:{getEffort:()=>undefined,getFast:()=>undefined,setEffort:vi.fn(),setFast:vi.fn()},
+    unified:{scope:'user-device',agents:['codex','claude-code'],loadCapabilities:async()=>({hasFastMode:true}),onSelect,
+      remote:{catalogs:[{...studioCatalog,deviceId:'share:abc',name:'Shared'}],selectedDeviceId:null}},
+  } as any)));
+  await act(async()=>test.view.onOptions(test.view.groups[1].rows[0]));
+  expect(test.view.options.favoritesDisabled).toBe(true);
 });
 
 // 供应商组(provider-groups.md §10,与桌面同口径):Mac Mini 把 Anthropic 建成了组(Mac Mini 自己 + grok-bot-vm),

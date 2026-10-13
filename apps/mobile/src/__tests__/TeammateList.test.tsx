@@ -167,3 +167,14 @@ it('mixes group chats into the list by latest activity', async () => {
   await act(async () => (node.querySelector('[data-testid="group.g1"]') as HTMLButtonElement).click());
   expect(onGroup).toHaveBeenCalledWith(group);
 });
+
+it.each([false, null, true])('opens cached teammates while connection evidence is %s and the roster is unverified', async connected => {
+  const select = vi.fn();
+  await act(async () => root.render(el(TeammateList, { items: [item], error: null, isOnline: () => false,
+    connectionState: () => connected, loading: false, refreshing: false, onRefresh: vi.fn(), onSelect: select, embedded: true })));
+  const button = node.querySelector<HTMLButtonElement>('[data-testid="teammates.item.host.bot"]')!;
+  expect(button.disabled).toBe(false);
+  await act(async () => button.click());
+  expect(select).toHaveBeenCalledExactlyOnceWith(item);
+  if (connected === true) expect(button.textContent).not.toContain('devices.resources.hostOffline');
+});

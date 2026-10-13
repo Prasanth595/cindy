@@ -19,6 +19,8 @@ export interface RemoteAgentCatalog {
   name: string;
   /** loading = 还没读到;error = 读不到(离线 / 没开远程控制 / 旧版本)且没有缓存。 */
   status: 'loading' | 'ready' | 'error';
+  /** 此刻连不上(只因任务的 Agent 在这台才留在清单里,目录可能来自缓存)。 */
+  offline?: true;
   providers: ProviderView[];
   modelVisibilityOverrides?: Record<string, boolean>;
 }

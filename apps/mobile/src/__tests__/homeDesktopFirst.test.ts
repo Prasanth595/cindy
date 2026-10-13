@@ -578,11 +578,16 @@ describe('mobile home desktop-first surface', () => {
     expect(sessionRowSource).toContain('`home.sessionRowTitle.${item.session.id}`');
     // 标签色球紧跟标题(与桌面侧栏一致):标题与色球同在一组,标题只取文字宽度,
     // 不能再用 flex: 1 把色球挤到行尾贴着时间。
-    const titleCluster = sessionRowSource.slice(
-      sessionRowSource.indexOf('<View style={styles.sessionTitleCluster}>'),
-      sessionRowSource.indexOf('{sourceLabel ? ('),
-    );
-    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\}/);
+    const titleClusterStart = sessionRowSource.indexOf('<View style={[styles.sessionTitleCluster, groupChevronVisible && styles.sessionTitleClusterGroupHit]}>');
+    expect(titleClusterStart).toBeGreaterThan(-1);
+    const titleCluster = sessionRowSource.slice(titleClusterStart, sessionRowSource.indexOf('{sourceLabel ? (', titleClusterStart));
+    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\} surfaceColor=\{colors\.surface\} \/>\s*<\/View>/);
+    // 自动化组展开箭头在标题组之外、作为标题行的不收缩子项:标签色球不收缩,放在组内会被挤出
+    // 父容器边界导致 44×44 热区被截(#5909 review);热区靠自身尺寸,不靠 hitSlop。
+    const groupChevron = titleCluster.slice(titleCluster.indexOf('</View>'));
+    expect(groupChevron).toContain('testID={`${testID}.automationGroupChevron`}');
+    expect(groupChevron).toContain('style={styles.sessionGroupChevronCell}');
+    expect(groupChevron).not.toContain('hitSlop={');
     const listStyles = readSource('src/session/HomeListVisuals.tsx');
     const titleStyle = listStyles.slice(listStyles.indexOf('  sessionTitle: {'), listStyles.indexOf('},', listStyles.indexOf('  sessionTitle: {')));
     expect(titleStyle).toContain('flexShrink: 1');

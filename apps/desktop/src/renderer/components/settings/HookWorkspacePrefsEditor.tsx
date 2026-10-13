@@ -382,7 +382,7 @@ export function useHookWorkspacePrefs(
     // 两个持久面串联而非并行(Greptile/codex review: 并行 fire-and-forget 会在
     // 一半失败时留下「新来源配旧模型」的分裂态)。顺序选「先远端后本地」:远端
     // 失败 → 整体失败, 来源不动, 状态与操作前一致;本地失败(概率远小)→ 旧来源
-    // 配新模型, 派发端 effectiveSourceIdForModel 收窄兜底, 行为等于改前语义。
+    // 配新模型, 派发端校验不通过时拒绝新任务并提示重新选择模型(显式来源不换账号)。
     (workspace: string, patch: HookPrefsPatch, alsoProviderSource?: string | null) => {
       // A server push, binding change, retry, or newer mutation must win over
       // this response. Otherwise a delayed set reply can roll the UI back to
@@ -547,8 +547,9 @@ export function WorkspacePrefsEditor({
           订阅来源、推理强度全开。来源(providerId)是纯客户端维度, 落本地
           workspaceProviderSourceStore; model/effort 照旧走 server prefs 通道
           (Slack /model 卡展示不受影响)。派发侧按 (来源, 模型) 经
-          effectiveSourceIdForModel 收窄, 来源断开/不提供该模型时自动回落,
-          不会拼出不可能路由 —— 「选 A 落 B」的根因(选了来源没地方存)已消除。 */}
+          effectiveSourceIdForModel 校验: 显式来源失效时拒绝而不换账号; 目录模型
+          跟随默认时, 不提供该模型的残留来源被忽略(issue #5912), 不会拼出不可能
+          路由 —— 「选 A 落 B」的根因(选了来源没地方存)已消除。 */}
       <PrefsField label={t('settings.tina.prefs.modelLabel')} className="flex-1 basis-[220px]">
         <ModelSelector
           fastModeConfigurable={false}

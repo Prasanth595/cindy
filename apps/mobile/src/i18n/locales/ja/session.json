@@ -227,6 +227,7 @@
     "sessionNotSyncedRetry": "セッションの同期がまだ完了していません。しばらくしてから再試行してください。",
     "savingPreviousQueueEdit": "直前のキュー内メッセージの変更を保存中です。完了してから編集してください。",
     "attachmentsUploadingBeforeEdit": "添付ファイルをアップロード中です。完了してからキュー内メッセージを編集してください。",
+    "goalCommandAttachments": "添付ファイルなしで /goal を送信してください。下書きと添付ファイルは保持されています。",
     "goalAlreadyActive": "このセッションには進行中のゴールがあります。先にこちらで対応してください。",
     "resetReconfirmTitle": "再確認してください",
     "resetOfferExpired": "リセット用の認証が期限切れです。更新後のクォータ情報を確認してください。",
@@ -287,6 +288,7 @@
     "shareMessage": "このメッセージを共有"
   },
   "new": {
+    "goalCommandNeedsSession": "目標を解除するには既存のセッションを開いてください。",
     "selectDevice": "デバイスを選択",
     "workspaceDialogue": "会話",
     "workspaceProject": "プロジェクト",

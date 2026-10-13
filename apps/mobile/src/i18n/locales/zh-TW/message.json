@@ -15,6 +15,7 @@
     "openForkOrigin": "開啟分叉來源訊息",
     "viewForkOrigin": "檢視分叉來源",
     "emptyMessages": "暫無訊息",
+    "historyNotCached": "歷史訊息尚未快取，連線電腦後同步",
     "syncing": "正在同步",
     "copyLinkHint": "點按複製訊息連結",
     "sentTime": "傳送時間 {{time}}",

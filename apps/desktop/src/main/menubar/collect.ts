@@ -7,6 +7,7 @@
  */
 
 import type { ProviderView } from '@cindy/model-providers';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
 import type {
   ClaudeSubscriptionUsageSnapshot,
@@ -62,6 +63,7 @@ export interface MenubarSessionRow {
   title: string | null;
   model: string | null;
   agentKind: string | null;
+  source?: string | null;
 }
 
 export interface MenubarCollectDeps {
@@ -564,37 +566,42 @@ async function collectTasks(
     if (isSessionActivityRunning(activity)) ids.add(sessionId);
   }
   const ranked = [...ids]
+    .filter((sessionId) => CINDY_MAKE_ENABLED || !isCindyMakeSource(meta.get(sessionId)?.source))
     .sort((a, b) => {
       const runningA = activities.get(a) && isSessionActivityRunning(activities.get(a)!) ? 1 : 0;
       const runningB = activities.get(b) && isSessionActivityRunning(activities.get(b)!) ? 1 : 0;
       return runningB - runningA || (tokensBySession.get(b) ?? 0) - (tokensBySession.get(a) ?? 0);
-    })
-    .slice(0, MAX_TASK_ROWS);
+    });
 
-  const rows = await Promise.all(
-    ranked.map(async (sessionId): Promise<MenubarTaskInput | null> => {
-      const row = await safe(`session:${sessionId}`, () => deps.sessionRow(sessionId), null);
-      const info = meta.get(sessionId);
-      const activity = activities.get(sessionId);
-      const model = info?.model || row?.model || '';
-      const title = row?.title?.trim() || info?.title?.trim() || '';
-      if (!title && !model) return null;
-      const tokens = tokensBySession.get(sessionId) ?? 0;
-      const rate = rates.get(model);
-      const running = activity ? isSessionActivityRunning(activity) : false;
-      return {
-        sessionId,
-        title,
-        harness: harnessOf(row?.agentKind ?? rate?.harness),
-        model: model ? formatModelShort(model) : '',
-        tokensToday: tokens,
-        valueToday: rate && rate.tokens > 0 ? (tokens * rate.money) / rate.tokens : 0,
-        contextPercent: info && info.contextWindow > 0 ? clampPercent((info.contextTokens / info.contextWindow) * 100) : null,
-        running,
-        startedAtMs: running ? (activity?.startedAtMs ?? null) : null,
-        lastActiveAtMs: activity?.lastActivityAtMs ?? info?.lastActiveAt ?? deps.nowMs,
-      };
-    }),
-  );
-  return rows.filter((row): row is MenubarTaskInput => row !== null);
+  const rows: MenubarTaskInput[] = [];
+  for (let offset = 0; offset < ranked.length && rows.length < MAX_TASK_ROWS; offset += MAX_TASK_ROWS) {
+    const batch = await Promise.all(
+      ranked.slice(offset, offset + MAX_TASK_ROWS).map(async (sessionId): Promise<MenubarTaskInput | null> => {
+        const row = await safe(`session:${sessionId}`, () => deps.sessionRow(sessionId), null);
+        if (!CINDY_MAKE_ENABLED && isCindyMakeSource(row?.source)) return null;
+        const info = meta.get(sessionId);
+        const activity = activities.get(sessionId);
+        const model = info?.model || row?.model || '';
+        const title = row?.title?.trim() || info?.title?.trim() || '';
+        if (!title && !model) return null;
+        const tokens = tokensBySession.get(sessionId) ?? 0;
+        const rate = rates.get(model);
+        const running = activity ? isSessionActivityRunning(activity) : false;
+        return {
+          sessionId,
+          title,
+          harness: harnessOf(row?.agentKind ?? rate?.harness),
+          model: model ? formatModelShort(model) : '',
+          tokensToday: tokens,
+          valueToday: rate && rate.tokens > 0 ? (tokens * rate.money) / rate.tokens : 0,
+          contextPercent: info && info.contextWindow > 0 ? clampPercent((info.contextTokens / info.contextWindow) * 100) : null,
+          running,
+          startedAtMs: running ? (activity?.startedAtMs ?? null) : null,
+          lastActiveAtMs: activity?.lastActivityAtMs ?? info?.lastActiveAt ?? deps.nowMs,
+        };
+      }),
+    );
+    rows.push(...batch.filter((row): row is MenubarTaskInput => row !== null));
+  }
+  return rows.slice(0, MAX_TASK_ROWS);
 }

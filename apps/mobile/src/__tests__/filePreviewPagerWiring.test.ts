@@ -22,6 +22,12 @@ function readSource(rel: string): string {
 const source = readSource('app/files/preview/[sessionId].tsx');
 
 describe('remote file preview pager wiring', () => {
+  it.each(['app/files/[sessionId].tsx', 'app/files/preview/[sessionId].tsx'])('passes the route device ID into the source gate for %s', (path) => {
+    const routeSource = readSource(path).split('export default function ')[1]?.split('\n}\n')[0] ?? '';
+    expect(routeSource).toContain('const { sessionId, deviceId } = useLocalSearchParams<');
+    expect(routeSource).toContain('deviceId={readRouteString(deviceId) ?? undefined}');
+  });
+
   it('exposes source readiness only on the visible loaded text page', () => {
     const textPage = source.slice(source.indexOf('function TextPreviewPage('), source.indexOf('function ImagePreviewPage('));
     const sourceList = textPage.match(/<FlatList\s[\s\S]*?data=\{state.lines\}[\s\S]*?testID=\{visible \? 'filePreview.sourceReady' : undefined\}/);

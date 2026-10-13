@@ -115,6 +115,17 @@ describe('remote resource discovery', () => {
       .rejects.toThrow('temporarily offline');
   });
 
+  it('commits an authoritative empty manifest even when an uncached sibling fails', async () => {
+    const invoke = vi.fn(async (deviceId: string) => {
+      if (deviceId === 'mac-2') throw new Error('temporarily offline');
+      return { protocolVersion: 1, collections: [] };
+    }) as RemoteInvoke;
+    const previous = [{ id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', targets: [targets[0]] }];
+    const progress = vi.fn();
+    await expect(discoverRemoteHomeCollections(invoke, targets, 'en', previous, progress)).resolves.toEqual([]);
+    expect(progress).toHaveBeenLastCalledWith([]);
+  });
+
   it('treats an old host as unsupported while retaining collections from newer hosts', async () => {
     const invoke = vi.fn(async (deviceId: string) => {
       if (deviceId === 'mac-1') throw new DeviceLinkError('CHANNEL_NOT_ALLOWED', 'old desktop');

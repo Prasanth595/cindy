@@ -5,6 +5,10 @@ import { formatQuotaResetCountdown } from "./sessionUsagePresentation";
 import { useMobileModelQuotas } from "./useMobileModelQuotas";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as ExpoCrypto from "expo-crypto";
+import {
+  agentDeviceFavoriteSource,
+  parseAgentDeviceFavoriteSource,
+} from "@cindy/device-link";
 import { useTranslation } from "react-i18next";
 import type { MobileProviderMarkProps } from "./MobileProviderMark";
 import type { AgentKind } from "@cindy/model-providers/types";
@@ -30,6 +34,7 @@ import { budgetRowDisabled, presentPickerPrice } from "./modelPickerRows";
 import { mobileWeeklyQuota } from "./mobileModelRowPresentation";
 import { mobileAgentLabel } from "./sessionAgentSwitch";
 import type { RemoteAgentCatalog } from "./remoteAgentCatalogs";
+import { isProviderShareAgentDeviceId } from "./providerShareAgentDevice";
 import {
   collectMobileProviderGroups,
   providerGroupEntryKey,
@@ -508,14 +513,6 @@ export function UnifiedModelPickerSheet(
     };
   };
   const rows = entries.map((entry) => makeRow(entry));
-  const favorites = prefs.value.favorites.flatMap((item) => {
-    const entry = entries.find(
-      (entry) =>
-        entry.providerId === item.providerId &&
-        matchesEntry(entry, item.modelId),
-    );
-    return entry ? [makeRow(entry, item)] : [];
-  });
   // 供应商组只写组里有几台,不写是哪几台(provider-groups.md §10):「Claude · 供应商组 · 3 台电脑」。
   const groupBadge = (deviceId: string | null, id: string) => {
     const size = providerGroups.sizes.get(providerGroupEntryKey(deviceId, id));
@@ -554,30 +551,38 @@ export function UnifiedModelPickerSheet(
   const makeRemoteRow = (
     directory: (typeof remoteDirectories)[number],
     entry: UnifiedModelEntry,
+    favorite?: MobileModelFavorite,
   ): UnifiedMobileRow => {
     const { catalog } = directory;
     const selected =
+      !favorite &&
       directory.sourceId !== null &&
       entry.providerId === directory.sourceId &&
       matchesEntry(entry, p.activeModelId);
-    const key = `remote:${catalog.deviceId}:${modelKey(entry.providerId, entry.modelId)}`;
+    const key =
+      favorite?.uid ??
+      `remote:${catalog.deviceId}:${modelKey(entry.providerId, entry.modelId)}`;
     const provider = catalog.providers.find(
       (item) => item.id === entry.providerId,
     );
     // 不用手机这边按被控电脑供应商记的引擎偏好与档位记忆:同 id 的供应商在两台电脑上不是同一个。
+    // 收藏行按收藏副本解析(位置已从 providerId 里拆出来,这里是那台电脑上的供应商 id)。
     const config =
-      (!selected ? remoteConfigs.get(key) : undefined) ??
+      (!selected && !favorite ? remoteConfigs.get(key) : undefined) ??
       resolveMobileModelConfig(entry, {
+        favorite,
         live: selected
           ? { ...selection, providerId: directory.sourceId ?? "" }
           : undefined,
         pinned: p.existingSessionRoute ? p.agentKind : undefined,
         fastCapable,
       });
+    const details = describe(entry, config, catalog.providers);
     return {
       key,
       entry,
       config,
+      ...(favorite ? { favorite } : {}),
       providerMark: {
         providerId: entry.providerId,
         name: provider?.name ?? entry.providerId,
@@ -587,7 +592,10 @@ export function UnifiedModelPickerSheet(
       remoteDevice: { deviceId: catalog.deviceId, name: catalog.name },
       selected,
       disabled: !caps[config.agent],
-      subtitle: describe(entry, config, catalog.providers),
+      // 「收藏」一节没有带电脑名的分段标题,电脑名写进说明行,和本机同名模型的收藏区分开。
+      subtitle: favorite
+        ? [catalog.name, details].filter(Boolean).join(" · ")
+        : details,
       effortLabel: effortText(config),
       costMarks: mobileCostMarks(
         provider,
@@ -603,6 +611,37 @@ export function UnifiedModelPickerSheet(
     catalog: directory.catalog,
     rows: directory.entries.map((entry) => makeRemoteRow(directory, entry)),
   }));
+  // 收藏和本机收藏排在同一节里:位置编在 providerId 里的,到那台电脑的目录里找模型,
+  // 点开即在那台运行。那台电脑离线(包括只因任务的 Agent 在那台、靠缓存留在列表里)或没开放远程调用时
+  // 先不显示,收藏本身保留。
+  const favorites = prefs.value.favorites.flatMap((item) => {
+    const source = parseAgentDeviceFavoriteSource(item.providerId);
+    if (source) {
+      const directory = remoteDirectories.find(
+        (value) =>
+          value.catalog.deviceId === source.deviceId && !value.catalog.offline,
+      );
+      const entry = directory?.entries.find(
+        (value) =>
+          value.providerId === source.providerId &&
+          matchesEntry(value, item.modelId),
+      );
+      return directory && entry
+        ? [
+            makeRemoteRow(directory, entry, {
+              ...item,
+              providerId: source.providerId,
+            }),
+          ]
+        : [];
+    }
+    const entry = entries.find(
+      (entry) =>
+        entry.providerId === item.providerId &&
+        matchesEntry(entry, item.modelId),
+    );
+    return entry ? [makeRow(entry, item)] : [];
+  });
   const rowProviderName = (row: UnifiedMobileRow) => {
     const device = row.remoteDevice;
     const catalog = device
@@ -713,16 +752,35 @@ export function UnifiedModelPickerSheet(
     config: favoriteEdit?.config ?? target?.config ?? sourceRow.config,
     favorite: originFavorite,
   };
+  // 这一行存进收藏时用的来源:被控电脑自己的供应商照旧;同账号另一台电脑的供应商把电脑编进去
+  // (同 id 供应商在两台电脑上不是同一个)。分享来的供应商暂不支持收藏,返回 null。
+  const favoriteSourceOf = (value: UnifiedMobileRow): string | null => {
+    const device = value.remoteDevice;
+    if (!device) return value.entry.providerId;
+    if (isProviderShareAgentDeviceId(device.deviceId)) return null;
+    try {
+      return agentDeviceFavoriteSource({
+        deviceId: device.deviceId,
+        providerId: value.entry.providerId,
+      });
+    } catch {
+      return null;
+    }
+  };
+  const favoriteSource = row ? favoriteSourceOf(row) : null;
   // A source model can have several saved configurations. Match the complete
   // configuration without applying capability fallbacks to the saved values.
-  // 收藏按被控电脑的供应商记;另一台电脑目录里的行不参与(同 id 供应商不是同一个)。
   const matchingFavorite =
     row &&
-    !row.remoteDevice &&
+    favoriteSource !== null &&
     prefs.value.favorites.find(
       (item) =>
+        item.providerId === favoriteSource &&
         matchesEntry(row.entry, item.modelId) &&
-        sameConfiguration({ ...item, modelId: row.config.modelId }, row.config),
+        sameConfiguration(
+          { ...item, providerId: row.config.providerId, modelId: row.config.modelId },
+          row.config,
+        ),
     );
   const recommendedConfig =
     row &&
@@ -839,7 +897,14 @@ export function UnifiedModelPickerSheet(
           ))
         )
           return;
-        if (!isCurrent() || row.selected) return;
+        if (!isCurrent()) return;
+        // 从收藏打开的详情显示的是那份副本(target.config),与本机收藏一样跟着调整走;原收藏不变。
+        if (target?.config) {
+          setTarget({ ...target, config });
+          if (matchingFavorite && !reset)
+            setNotice(t("models.unified.originalFavoriteKept"));
+        }
+        if (row.selected) return;
         setRemoteConfigs((current) => {
           const next = new Map(current);
           if (reset) next.delete(key);
@@ -1096,7 +1161,7 @@ export function UnifiedModelPickerSheet(
                 .filter(Boolean)
                 .join(" · "),
               price: price ? `${price.title}\n${price.amountsLine}` : null,
-              favoritesDisabled: !prefs.favoritesReady || !!row.remoteDevice,
+              favoritesDisabled: !prefs.favoritesReady || favoriteSource === null,
               isFavorite: !!matchingFavorite,
               canReset,
               configurationSummary: [
@@ -1160,6 +1225,7 @@ export function UnifiedModelPickerSheet(
                       item.uid === original.uid
                         ? {
                             ...config,
+                            providerId: item.providerId,
                             modelId: row.entry.modelId,
                             uid: item.uid,
                           }
@@ -1173,7 +1239,7 @@ export function UnifiedModelPickerSheet(
                 });
               },
               onFavorite: () => {
-                if (!prefs.favoritesReady || favoriteEdit || row.remoteDevice)
+                if (!prefs.favoritesReady || favoriteEdit || favoriteSource === null)
                   return;
                 void transact(async (isCurrent) => {
                   if (matchingFavorite) {
@@ -1189,7 +1255,11 @@ export function UnifiedModelPickerSheet(
                     await prefs.save(
                       addModelFavorite(
                         prefs.value,
-                        { ...row.config, modelId: row.entry.modelId },
+                        {
+                          ...row.config,
+                          providerId: favoriteSource,
+                          modelId: row.entry.modelId,
+                        },
                         createFavoriteUid(),
                       ),
                     );

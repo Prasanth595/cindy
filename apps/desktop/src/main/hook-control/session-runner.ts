@@ -46,6 +46,7 @@ import type {
 } from '@cindy/maker-core';
 import {
   effectiveSourceIdForModel,
+  providerOffersModel,
   type ProviderView,
   visibleModelUnion,
 } from '@cindy/model-providers';
@@ -121,10 +122,11 @@ import { describeInteractionSource } from '../im/shared/interactionSource';
 import { hookAutoReviewReferences } from '../im/shared/autoReviewReferences.js';
 import { groupLaneOf } from './groupWindow';
 
-import type {
-  HookContinuationWatchRequest,
-  HookRunOutcome,
-  HookSessionRunner,
+import {
+  HOOK_ROUTE_UNAVAILABLE_PREFIX,
+  type HookContinuationWatchRequest,
+  type HookRunOutcome,
+  type HookSessionRunner,
 } from './dispatcher.js';
 import { resolveHookSessionConfig, type ResolvedHookSessionConfig } from './defaults.js';
 import { decodeAttachments, sanitizeAttachmentName } from './attachments.js';
@@ -157,6 +159,9 @@ function mainOwnedChannelOrigin(value: string | undefined): TurnPermissionOrigin
       return value ? { kind: 'hook', source: value } : null;
   }
 }
+
+/** 路由不可用时附在错误后的恢复指引(渠道回帖与 request ledger 都看得到)。 */
+const ROUTE_RESELECT_HINT = '。请在 设置 → IM 机器人 中为这个渠道的工作目录重新选择模型。';
 
 /**
  * 新会话 agent/model/effort/permissionMode/providerId 合成: IM provider 按目录偏好
@@ -235,14 +240,37 @@ async function resolveNewSessionConfig(
     channel !== null && workspaceCtx?.alias
       ? getWorkspaceProviderSource(channel, workspaceCtx.teamId, workspaceCtx.alias)
       : null;
-  const preferredProviderId = workdirProviderId ?? resolved.providerId;
+  // 目录来源是和目录模型一起选的(issue #5912)。目录模型为空、改为继承 IM 默认时,
+  // 残留来源若账号仍可用、只是目录里根本没有这个继承来的模型,它已不再描述用户可见的
+  // 选择 —— 设置页显示的就是继承模型 —— 按 IM 默认自己的来源路由。来源账号断开 /
+  // 停用,或它提供该模型但模型 / 运行路径被停用、退役时不在此放行,仍走下方「显式来源
+  // 失效不换账号」。
+  const workdirSource =
+    providers !== null && workdirProviderId !== null && mergedOverrides.model === null
+      ? providers.find((p) => p.id === workdirProviderId)
+      : undefined;
+  const staleWorkdirSource =
+    workdirSource !== undefined &&
+    workdirSource.connected === true &&
+    !workdirSource.suspended &&
+    !providerOffersModel(workdirSource, resolved.model, resolved.agentKind);
+  if (staleWorkdirSource) {
+    log.warn(
+      `hook workspace provider source ignored: provider=${workdirProviderId} cannot serve inherited model=${resolved.model} channel=${channel}`,
+    );
+  }
+  const preferredProviderId = staleWorkdirSource
+    ? resolved.providerId
+    : (workdirProviderId ?? resolved.providerId);
 
   // 显式连接失效时不能将 null 再解释为默认账号；未指定连接才可选择默认来源。
   const providerId = providers
     ? effectiveSourceIdForModel(providers, preferredProviderId, resolved.model, resolved.agentKind)
     : preferredProviderId;
   if (providers && preferredProviderId && !providerId) {
-    throw new Error(`hook session route unavailable: selected provider "${preferredProviderId}" cannot serve model "${resolved.model}"`);
+    throw new Error(
+      `${HOOK_ROUTE_UNAVAILABLE_PREFIX} selected provider "${preferredProviderId}" cannot serve model "${resolved.model}"${ROUTE_RESELECT_HINT}`,
+    );
   }
   // 停用收口(PR #744 review 第十、十四轮):两条路径都必须经宽松降级裁决 ——
   //   · 目录读取失败:冻结的 availableModels 不带停用标志、saved provider 未经校验,
@@ -256,10 +284,12 @@ async function resolveNewSessionConfig(
     ? resolveLenientRoute(providers, resolved.agentKind, resolved.model, providerId ?? null)
     : await resolveLenientSessionRoute(resolved.agentKind, resolved.model, providerId ?? null);
   if (preferredProviderId && lenient.providerId !== preferredProviderId) {
-    throw new Error(`hook session route unavailable: selected provider "${preferredProviderId}" is unavailable`);
+    throw new Error(
+      `${HOOK_ROUTE_UNAVAILABLE_PREFIX} selected provider "${preferredProviderId}" is unavailable${ROUTE_RESELECT_HINT}`,
+    );
   }
   if (!lenient.model) {
-    throw new Error('hook session route unavailable: model disabled in settings');
+    throw new Error(`${HOOK_ROUTE_UNAVAILABLE_PREFIX} model disabled in settings${ROUTE_RESELECT_HINT}`);
   }
   if (lenient.degraded) {
     log.warn(
