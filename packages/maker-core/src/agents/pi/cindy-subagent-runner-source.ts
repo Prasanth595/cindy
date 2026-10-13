@@ -830,16 +830,19 @@ function main() {
       const childArgs = Array.isArray(config.binaryPrefixArgs)
         ? config.binaryPrefixArgs.concat(args)
         : args;
-      // 启动参数的长度上限按字节算（Windows 命令行、POSIX ARG_MAX 都是字节），
-      // 不能用 String.length：中文提示词在 UTF-8 下是 3 字节/字，会漏检一大截。
-      const argvBytes = childArgs.reduce(
-        (total, arg) => total + Buffer.byteLength(String(arg), 'utf8') + 3,
-        0,
-      );
-      if (argvBytes > SPAWN_ARGV_BUDGET) {
+      // 两种口径不一样，不能统一：Windows CreateProcess 的命令行上限是 32767 个
+      // UTF-16 字符（按 UTF-8 字节算会把中文路径放大三倍、误拒）；POSIX 的
+      // ARG_MAX 按字节算（用字符数会漏检中文长提示词）。
+      const argvUnits = childArgs.reduce((total, arg) => {
+        const value = String(arg);
+        return total
+          + (process.platform === 'win32' ? value.length : Buffer.byteLength(value, 'utf8'))
+          + 3;
+      }, 0);
+      if (argvUnits > SPAWN_ARGV_BUDGET) {
         task.status = 'failed';
         task.error = 'Subagent command line exceeds the platform spawn budget ('
-          + argvBytes + ' > ' + SPAWN_ARGV_BUDGET + ' bytes).';
+          + argvUnits + ' > ' + SPAWN_ARGV_BUDGET + ').';
         task.endedAt = Date.now();
         scheduleStatus();
         resolve();

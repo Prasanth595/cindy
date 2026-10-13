@@ -618,19 +618,29 @@ describe('Cindy durable PI Subagent runner', () => {
     expect(await readCommandsIfPresent(fixture.commandsFile)).toBeNull();
   });
 
-  // 预算按字节算：汉字在 UTF-8 下是 3 字节/字，按字符数估会漏掉三分之二，
-  // 于是一段「字符数没超、字节数超了」的中文提示词会漏过守卫并炸在 spawn 上。
-  it('counts multi-byte argv in bytes, not characters', async () => {
-    // ~4.5 万字符 ≈ 13.5 万 UTF-8 字节：字符数在 POSIX 的 128k 之下，字节数在其上。
-    const fixture = await makeFixture({
+  // 两种口径：Windows CreateProcess 上限是 32767 个 UTF-16 字符（按字节算会把中文
+  // 放大三倍、误拒），POSIX 的 ARG_MAX 按字节算（按字符算会漏检中文长提示词）。
+  it('measures argv in characters on Windows and in UTF-8 bytes on POSIX', async () => {
+    // ~4.5 万字符 ≈ 13.5 万 UTF-8 字节：字符数超 Windows 的 30k、字节数超 POSIX
+    // 的 128k，两边都该被拒。
+    const oversized = await makeFixture({
       profilePrompt: '中文提示词'.repeat(9000),
     });
     const failed = await waitFor(async () => {
-      const [run] = await listPiSubagentRuns(fixture.root);
+      const [run] = await listPiSubagentRuns(oversized.root);
       return run?.state === 'failed' ? run : null;
     });
-    expect(failed.tasks[0]?.error).toMatch(/\d+ > \d+ bytes/);
-    expect(await readCommandsIfPresent(fixture.commandsFile)).toBeNull();
+    expect(failed.tasks[0]?.error).toMatch(/spawn budget/i);
+    expect(await readCommandsIfPresent(oversized.commandsFile)).toBeNull();
+
+    // ~1.8 万字符 ≈ 5.4 万 UTF-8 字节：两边都没超，必须照常跑完 —— 这条在
+    // Windows 上按字节估时会被误拒。
+    const fits = await makeFixture({ profilePrompt: '中文'.repeat(9000) });
+    const completed = await waitFor(async () => {
+      const [run] = await listPiSubagentRuns(fits.root);
+      return run?.state === 'completed' ? run : null;
+    });
+    expect(completed.tasks[0]?.status).toBe('completed');
   });
 
   it('uses unique exact child session ids and persists terminal output/usage', async () => {
