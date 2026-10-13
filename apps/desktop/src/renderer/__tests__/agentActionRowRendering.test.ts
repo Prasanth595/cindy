@@ -20,6 +20,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 
+const ghostFixtures = vi.hoisted(() => ({ ghosts: [] as unknown[] }));
+vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
+  useInstalledGhosts: () => ghostFixtures.ghosts,
+}));
+
 vi.mock('react-i18next', () => ({
   // t 返回原 key(带 count 时后缀 :count),断言直接对 key 做,避免复制文案表。
   useTranslation: () => ({
@@ -60,7 +65,10 @@ import type { ChatMessage } from '@/lib/makerChatStore';
 afterEach(cleanup);
 // useExpandedBlockMemory 是 module-level 内存态,blockId(agent:<clientId>)
 // 相同会让展开状态跨用例泄漏 — 每个用例前清空。
-beforeEach(() => expandMemory.reset());
+beforeEach(() => {
+  expandMemory.reset();
+  ghostFixtures.ghosts = [];
+});
 
 const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage => ({
   clientId: id,
@@ -69,6 +77,74 @@ const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage =
   toolUseId: `tu-${id}`,
   toolName,
   toolInput,
+});
+
+describe('AgentActionRow — ghost_call 插件名称', () => {
+  const root = {
+    manifest: { id: 'helper', name: 'Root Helper' },
+    namespace: null,
+    instanceKey: '_root__helper',
+  };
+  const organization = {
+    manifest: { id: 'helper', name: 'Organization Helper' },
+    namespace: 'acme',
+    instanceKey: '_ns__acme__helper',
+  };
+  const renderCall = (ghostId: string, namespace?: string | null) => {
+    const toolInput = namespace === undefined
+      ? { ghost_id: ghostId, tool: 'echo' }
+      : { ghost_id: ghostId, namespace, tool: 'echo' };
+    render(createElement(AgentActionRow, {
+      message: mkTool('ghost', 'mcp__cindy__ghost_call', toolInput),
+    }));
+  };
+
+  it('新 root 实例：省略 namespace 与显式 null 都显示名称', () => {
+    ghostFixtures.ghosts = [root];
+    renderCall('helper');
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', null);
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+  });
+
+  it('唯一企业实例：省略 namespace 与显式 slug 都显示名称', () => {
+    ghostFixtures.ghosts = [organization];
+    renderCall('helper');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', 'acme');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+  });
+
+  it('旧 root 裸实例键仍显示名称', () => {
+    ghostFixtures.ghosts = [{ ...root, instanceKey: 'helper' }];
+    renderCall('helper');
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+  });
+
+  it('同 ID 多实例不让旧 root 的物理键掩盖歧义', () => {
+    ghostFixtures.ghosts = [{ ...root, instanceKey: 'helper' }, organization];
+    renderCall('helper');
+    expect(screen.getByText(/「helper」· echo/)).toBeTruthy();
+    expect(screen.queryByText(/「Root Helper」· echo/)).toBeNull();
+    cleanup();
+    renderCall('helper', null);
+    expect(screen.getByText(/「Root Helper」· echo/)).toBeTruthy();
+    cleanup();
+    renderCall('helper', 'acme');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+  });
+
+  it('真实实例键精确查找，卸载后回退为 ID', () => {
+    ghostFixtures.ghosts = [root, organization];
+    renderCall('_ns__acme__helper');
+    expect(screen.getByText(/「Organization Helper」· echo/)).toBeTruthy();
+    cleanup();
+    ghostFixtures.ghosts = [];
+    renderCall('helper');
+    expect(screen.getByText(/「helper」· echo/)).toBeTruthy();
+  });
 });
 
 describe('document tool result presentation', () => {
