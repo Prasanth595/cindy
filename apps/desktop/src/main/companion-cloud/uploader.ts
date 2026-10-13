@@ -78,8 +78,13 @@ export function createCompanionUploader(deps: {
     deps.state.update(botId, actorId, entry => {
       for (const row of rows) {
         if (!owned(row.key) || typeof row.revision !== 'number') continue;
-        const local = entry.prefs[row.key]?.local;
-        entry.prefs[row.key] = { hash: valueHash(row.value), revision: row.revision, ...(local ? { local } : {}) };
+        const known = entry.prefs[row.key];
+        // A key this device holds keeps the value it holds (e.g. what a take-over just restored):
+        // a newer server value written meanwhile (the old home's late upload) is not an edit here,
+        // and must not be overwritten unless this device really changes the key.
+        entry.prefs[row.key] = known?.local
+          ? { ...known, revision: row.revision }
+          : { hash: valueHash(row.value), revision: row.revision };
       }
       entry.prefsSeeded = true;
     });

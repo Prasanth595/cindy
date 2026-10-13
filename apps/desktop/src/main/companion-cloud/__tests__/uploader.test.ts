@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canonicalJson, createCompanionUploader, type CompanionPreferenceValue } from '../uploader.js';
+import { canonicalJson, createCompanionUploader, valueHash as canonicalHash, type CompanionPreferenceValue } from '../uploader.js';
 import { fakeApi, memoryState, rejection } from './fakes.js';
 
 const profile = (soul: string): CompanionPreferenceValue =>
@@ -68,6 +68,23 @@ describe('companion profile uploader', () => {
     t.setValues([profile('soul')]);
     await t.uploader.syncBot('bot', 'actor');
     expect(t.writes().slice(1).map(w => [w.key, w.value])).toEqual([['companion.memory.v1:new.md', null]]);
+  });
+
+  it('keeps a late server value the take-over did not restore, until this device really edits the key', async () => {
+    // The take-over restored soul v1; the old home's late upload then wrote v2 before the first sync here.
+    const t = setup([{ key: 'companion.profile.v1', value: profile('v2').value, revision: 5 }]);
+    t.state.update('bot', 'actor', entry => {
+      entry.prefsSeeded = false;
+      entry.prefs['companion.profile.v1'] = { hash: canonicalHash(profile('v1').value), revision: 4, local: true };
+    });
+    t.setValues([profile('v1')]);
+    await t.uploader.syncBot('bot', 'actor');
+    expect(t.writes()).toEqual([]);
+    expect(t.rows.get('companion.profile.v1')?.value).toEqual(profile('v2').value);
+    // A real edit here still goes up, against the server's current revision.
+    t.setValues([profile('v3')]);
+    await t.uploader.syncBot('bot', 'actor');
+    expect(t.writes().map(w => [w.key, w.expectedRevision])).toEqual([['companion.profile.v1', 5]]);
   });
 
   it('re-checks the home and re-reads the server before overwriting a conflicting value, once', async () => {

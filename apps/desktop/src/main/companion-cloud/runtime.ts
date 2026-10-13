@@ -136,7 +136,7 @@ export function startCompanionCloud(input: {
   /** Publish the registry snapshot after a local home change. */
   publish?: () => void;
   /** Publish the companions' actor name and avatar now (they sync outside the preferences). */
-  syncProfile?: () => Promise<void>;
+  syncProfile?: (botId: string) => Promise<void>;
   log?: CompanionLog;
   uploadIntervalMs?: number;
   mirrorIntervalMs?: number;
@@ -366,7 +366,7 @@ export function startCompanionCloud(input: {
       if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
     }
     // The actor's name and avatar too: once demoted, this copy may no longer publish them.
-    await input.syncProfile?.();
+    await input.syncProfile?.(bot.botId);
   }
 
   /** Everything the new home needs reaches the server, then the home moves and this copy is demoted. */

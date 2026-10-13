@@ -19,7 +19,7 @@ afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
-  readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: () => Promise<void> }) {
+  readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -213,10 +213,10 @@ describe('transfer', () => {
 
   it('publishes the actor name and avatar before moving the home, and stays put when that fails', async () => {
     const order: string[] = [];
-    const t = setup({ home: 'desk', devices: [device('laptop')], syncProfile: async () => { order.push('profile'); } });
+    const t = setup({ home: 'desk', devices: [device('laptop')], syncProfile: async botId => { order.push(`profile:${botId}`); } });
     expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
     const patch = t.calls.findIndex(call => call.method === 'PATCH');
-    expect(order).toEqual(['profile']);
+    expect(order).toEqual(['profile:bot_mia']);
     expect(patch).toBeGreaterThanOrEqual(0);
     t.runtime.dispose();
 

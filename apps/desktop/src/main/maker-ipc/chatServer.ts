@@ -196,6 +196,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // explicit validation rejection, and keep the decision within this account/endpoint.
   let memberJoinedClaims = true;
   let registeredAt = 0;
+  // Per-companion name / avatar publish failures of the last pass: one broken avatar never blocks the rest.
+  let profileFailures = new Map<string, unknown>();
   let profileRefreshedAt = 0;
   const running = new Map<string, Running>();
   const metadata = new Map<string, Promise<void>>();
@@ -382,6 +384,26 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     return upgradedGroups.get(groupId) ?? groupId;
   };
+  /** Publish one companion's name and avatar to its actor (home copy only). */
+  async function publishActorProfile(profile: typeof profiles[number], found: Actor) {
+    // Only the confirmed home installation publishes (same predicate as claiming work).
+    if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
+      || !companion?.installConfirmed(profile.id))) return;
+    const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
+    let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
+    if (source && found.avatarSource !== source) {
+      const media = await readMedia(profile.avatar!);
+      if (media.buffer.length > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(media.mimeType)) throw new Error('INVALID_AVATAR');
+      if (!current()) throw new Error('OWNER_CHANGED');
+      const uploaded = await uploadPublicAsset({ fetchImpl: net.fetch, getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'), getToken: getAccessToken },
+        { scene: 'avatar', contentType: media.mimeType, body: media.buffer });
+      if (!uploaded.ok) throw new Error('AVATAR_UPLOAD_FAILED');
+      avatar = uploaded.publicUrl;
+    }
+    if (found.name === profile.displayName && (found.avatar ?? null) === avatar && (found.avatarSource ?? null) === source) return;
+    await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
+    Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
+  }
   async function register() {
     if (refreshActors) return refreshActors;
     if (Date.now() - registeredAt < 5000 && !actorsStale) return;
@@ -403,27 +425,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       // Homes first: only the home's own copy may publish the companion's name and avatar.
       await syncCompanionHomes();
+      const failures = new Map<string, unknown>();
       for (const profile of profiles.filter(p => p.status === 'active')) {
         const found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
         if (!found) continue;
-        // Only the confirmed home installation publishes (same predicate as claiming work).
-        if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
-          || !companion?.installConfirmed(profile.id))) continue;
-        const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
-        let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
-        if (source && found.avatarSource !== source) {
-          const media = await readMedia(profile.avatar!);
-          if (media.buffer.length > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(media.mimeType)) throw new Error('INVALID_AVATAR');
-          if (!current()) throw new Error('OWNER_CHANGED');
-          const uploaded = await uploadPublicAsset({ fetchImpl: net.fetch, getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'), getToken: getAccessToken },
-            { scene: 'avatar', contentType: media.mimeType, body: media.buffer });
-          if (!uploaded.ok) throw new Error('AVATAR_UPLOAD_FAILED');
-          avatar = uploaded.publicUrl;
+        try { await publishActorProfile(profile, found); } catch (error) {
+          if (!current()) throw error;
+          failures.set(profile.id, error);
+          deps.log?.warn('Companion name / avatar not published', { actorId: found.id, ...chatErrorDiagnostic(error) });
         }
-        if (found.name === profile.displayName && (found.avatar ?? null) === avatar && (found.avatarSource ?? null) === source) continue;
-        await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
-        Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
       }
+      profileFailures = failures;
       registeredAt = Date.now();
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
@@ -463,12 +475,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (key !== JSON.stringify(host.homes.persistedShadows())) host.homes.setPersistedShadows(shadows);
     host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors, demotedBotIds: shadows }));
   }
-  /** Publish name and avatar now (before a hand-over); unlike refreshHomes, failures surface. */
-  async function syncActorProfiles() {
+  /** Publish name and avatar now (before handing `botId` over); unlike refreshHomes, its failure surfaces. */
+  async function syncActorProfiles(botId: string) {
     actorsStale = true;
     // A pass already in flight may have read the profiles before the latest edit.
     await refreshActors?.catch(() => undefined);
     await register();
+    const failure = profileFailures.get(botId);
+    if (failure) throw failure;
   }
   /** Another device moved a companion: re-read actors now instead of after the throttle. */
   async function refreshHomes() {

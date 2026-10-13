@@ -150,6 +150,20 @@ describe('Chat Server cloud companions', () => {
     expect(calls('/executions/claim')).toHaveLength(0);
   });
 
+  it('publishes each companion\'s name on its own, so one broken avatar never blocks the others', async () => {
+    const broken = '60000000-0000-4000-8000-0000000000b2';
+    fixture.profiles = [{ id: 'broken-bot', displayName: 'Bad', avatar: 'cindy-media://missing', status: 'active' },
+      { id: 'local-bot', displayName: 'Mia (renamed)', avatar: null, status: 'active' }];
+    home = 'desk-1'; claimed = true;
+    fixture.handle.mockImplementation((route, method, body) => route === '/actors' && method === 'GET'
+      ? { body: [{ id: broken, kind: 'bot', externalId: 'broken-bot', name: 'Bad', homeDeviceId: 'desk-1' },
+        { id: botActor, kind: 'bot', externalId: 'local-bot', name: 'Mia', homeDeviceId: 'desk-1' }] }
+      : respond(route, method, body));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls(`/actors/${botActor}/profile`, 'POST').map(call => call[2])).toEqual([expect.objectContaining({ name: 'Mia (renamed)' })]);
+    expect(calls(`/actors/${broken}/profile`, 'POST')).toHaveLength(0);
+  });
+
   it('publishes the name only from the home, after the home is known', async () => {
     fixture.profiles = [{ id: 'local-bot', displayName: 'Mia (renamed)', avatar: null, status: 'active' }];
     claimed = true;
