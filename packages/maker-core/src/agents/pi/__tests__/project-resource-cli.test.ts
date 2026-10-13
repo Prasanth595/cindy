@@ -138,4 +138,15 @@ describe('pi project resource path order and spawn argv budget', () => {
     expect(() => assertPiSpawnArgvFitsPlatform(args, 'darwin')).toThrow(/too many Pi skills/);
     expect(() => assertPiSpawnArgvFitsPlatform(args, 'linux')).toThrow(/too many Pi skills/);
   });
+
+  // 预算是字节数：按字符数估会让一段中文提示词在 POSIX 上「看起来没超」，
+  // 实际 UTF-8 字节已超（汉字 3 字节/字），守卫就会漏过。
+  it('measures the command line in UTF-8 bytes, not characters', () => {
+    const cjk = '技'.repeat(50_000);
+    expect(cjk.length).toBeLessThan(PI_POSIX_SPAWN_ARGV_BUDGET);
+    expect(estimateSpawnArgvLength(['--append-system-prompt', cjk]))
+      .toBeGreaterThan(PI_POSIX_SPAWN_ARGV_BUDGET);
+    expect(() => assertPiSpawnArgvFitsPlatform(['--append-system-prompt', cjk], 'linux'))
+      .toThrow(/too many Pi skills/);
+  });
 });

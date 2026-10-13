@@ -165,7 +165,9 @@ export const PI_WINDOWS_SPAWN_ARGV_BUDGET = 30_000;
 export const PI_POSIX_SPAWN_ARGV_BUDGET = 128_000;
 
 export function estimateSpawnArgvLength(args: readonly string[]): number {
-  return args.reduce((total, arg) => total + arg.length + 3, 0);
+  // Windows 命令行与 POSIX ARG_MAX 都按字节计；String.length 会把中文等
+  // 多字节内容少算（UTF-8 下汉字 3 字节/字），守卫就会漏过真正超限的启动。
+  return args.reduce((total, arg) => total + Buffer.byteLength(arg, 'utf8') + 3, 0);
 }
 
 export function piSpawnArgvBudget(platform: NodeJS.Platform): number | null {
