@@ -1127,7 +1127,7 @@
       "usageScope": "用量统计范围",
       "manageFoot": "管理模型供应商",
       "showSource": "在菜单里显示 {{name}}",
-      "reorderHint": "拖动排序",
+      "reorderHint": "拖动，或用操作菜单调整顺序",
       "moveUp": "上移",
       "moveDown": "下移"
     }

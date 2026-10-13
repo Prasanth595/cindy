@@ -2626,11 +2626,14 @@ struct ManagePage: View {
 
       Button { controller.emitAndClose(["type": "open-provider-settings"]) } label: {
         Text(store.s("manageFoot"))
-          .font(.system(size: 11, weight: .medium))
+          .font(.system(size: 11))
           .foregroundStyle(Palette.ink3)
+          .lineSpacing(3)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
       }
       .buttonStyle(.plain)
-      .padding(EdgeInsets(top: 12, leading: 18, bottom: 14, trailing: 18))
+      .padding(EdgeInsets(top: 14, leading: 18, bottom: 16, trailing: 18))
     }
     .frame(width: store.narrowWidth, alignment: .leading)
   }

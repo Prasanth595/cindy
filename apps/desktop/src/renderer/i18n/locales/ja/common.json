@@ -1127,7 +1127,7 @@
       "usageScope": "使用量の集計範囲",
       "manageFoot": "プロバイダーを管理",
       "showSource": "{{name}} をメニューに表示",
-      "reorderHint": "ドラッグして並べ替え",
+      "reorderHint": "ドラッグするか、アクションメニューで並べ替えます",
       "moveUp": "上へ移動",
       "moveDown": "下へ移動"
     }

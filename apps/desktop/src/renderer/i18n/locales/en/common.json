@@ -1150,7 +1150,7 @@
       "usageScope": "Usage covers",
       "manageFoot": "Manage providers",
       "showSource": "Show {{name}} in the menu",
-      "reorderHint": "Drag to reorder",
+      "reorderHint": "Drag, or use the actions menu to reorder",
       "moveUp": "Move up",
       "moveDown": "Move down"
     }
