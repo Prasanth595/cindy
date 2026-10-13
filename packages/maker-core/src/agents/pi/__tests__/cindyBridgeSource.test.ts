@@ -1623,6 +1623,13 @@ describe('cindy-bridge extension source', () => {
     );
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("qualifiedName: 'mcp__' + serverName + '__' + toolName");
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('private readonly disclosedSchemas');
+    // Post-compaction amnesia drives voluntary re-inspection: the persisted
+    // disclosure set is re-surfaced as a one-shot custom message on the first run
+    // after each successful compaction, never as a per-run system-prompt edit.
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("pi.on?.('session_compact'");
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("pi.on?.('before_agent_start'");
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain("customType: 'cindy-mcp-disclosure-state'");
+    expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('disclosedKeysForPrompt');
     // 披露按 schema 指纹持有 + 自愈放行（2026-10-13 pi 升级后整片失效、模型反复
     // 撞墙后放弃的真机事故）；权限/采集分类只认“解析成功”，不再按披露状态。
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain('private schemaFingerprint(');
@@ -2310,6 +2317,48 @@ describe('cindy-bridge extension source', () => {
       ).toContain(sourcePath);
     },
   );
+});
+
+it('re-surfaces the disclosure set once after compaction instead of editing every run prompt', () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const handlers = new Map<string, (event: any) => any>();
+  const gateway = new context.Gateway();
+  gateway.register({ registerTool: () => {}, on: (event: string, cb: (event: any) => any) => handlers.set(event, cb) });
+  expect(handlers.has('session_compact')).toBe(true);
+  expect(handlers.has('before_agent_start')).toBe(true);
+
+  // No compaction yet: the run prompt stays untouched (zero per-run token cost).
+  expect(handlers.get('before_agent_start')!({ systemPrompt: 'base' })).toBeUndefined();
+
+  // A successful compaction arms exactly one reminder with the current keys.
+  gateway.disclosedSchemas.set('cindy_memory\u0000call_tool', 'fp-a');
+  gateway.disclosedSchemas.set('cindy_orca\u0000send_to_worker', 'fp-b');
+  handlers.get('session_compact')!({ reason: 'threshold' });
+  const note = handlers.get('before_agent_start')!({ systemPrompt: 'base' });
+  expect(note?.message?.customType).toBe('cindy-mcp-disclosure-state');
+  expect(note?.message?.display).toBe(false);
+  const text = note?.message?.content?.[0]?.text ?? '';
+  expect(text).toContain('cindy_memory/call_tool');
+  expect(text).toContain('cindy_orca/send_to_worker');
+  expect(text).toContain('do not re-run cindy_mcp_list_tools');
+  // One-shot: the second run after the same compaction stays clean.
+  expect(handlers.get('before_agent_start')!({ systemPrompt: 'base' })).toBeUndefined();
+
+  // An empty disclosure set consumes the flag without emitting an empty note.
+  gateway.disclosedSchemas.clear();
+  handlers.get('session_compact')!({ reason: 'manual' });
+  expect(handlers.get('before_agent_start')!({ systemPrompt: 'base' })).toBeUndefined();
+  expect(handlers.get('before_agent_start')!({ systemPrompt: 'base' })).toBeUndefined();
 });
 
 it('routes Bot shortcuts through the scoped helper entry without exposing them to ordinary Pi tasks', async () => {

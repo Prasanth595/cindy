@@ -56,7 +56,9 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   始终只注册 `cindy_mcp_list_tools` 与 `cindy_mcp_call_tool` 两个稳定网关 schema；完整工具目录与
   input schema 留在 bridge 内部。先发现名称／描述，再按具体 server + tool 取单个 schema，
   未检查 schema 的调用在 bridge 内 fail closed，不会触达 MCP 或弹权限框。Host 审批、策略与变更捕获仍使用真实
-  `mcp__<server>__<tool>` identity 和真实参数，不能退化成对网关包装器授权。Claude Code 与
+  `mcp__<server>__<tool>` identity 和真实参数，不能退化成对网关包装器授权。上下文压缩成功后，bridge 会在
+  下一次运行开始前注入一条一次性的已披露工具清单提醒（display:false 常驻上下文），避免模型因压缩失忆
+  而重跑 `cindy_mcp_list_tools`；这是提示卫生，不改变门的任何判定。Claude Code 与
   Codex 保持各自的直接 MCP 注册方式，不经过此 Pi 专属网关。配置新增、修改、禁用或删除对
   下一新建/重启会话生效；旧活动会话保留启动时 generation 快照至 close。
   展示层通过共享 `parseMessageToolUse` 将网关调用还原为既有 MCP 工具名与参数；实时事件、

@@ -2953,6 +2953,7 @@ class CindyMcpGateway {
    * 因此重启后同 schema 直接沿用；读不到或损坏按未披露处理（fail-closed）。
    */
   private readonly disclosedSchemas = new Map<string, string>();
+  private disclosureNotePending = false;
   private botMemoryFacadeEnabled = false;
   private botHelperFacadeEnabled = false;
 
@@ -3186,6 +3187,17 @@ class CindyMcpGateway {
     return this.disclosedSchemas.get(key) === this.schemaFingerprint(call.tool);
   }
 
+  /** Sorted, prompt-ready server/tool names of the persisted disclosure set. */
+  disclosedKeysForPrompt(limit = 48): string {
+    const all = Array.from(this.disclosedSchemas.keys()).sort();
+    const shown = all.slice(0, limit).map((key) => {
+      const sep = key.indexOf('\u0000');
+      return sep === -1 ? key : key.slice(0, sep) + '/' + key.slice(sep + 1);
+    });
+    if (all.length > limit) shown.push('… +' + (all.length - limit) + ' more');
+    return shown.join(', ');
+  }
+
   /**
    * 按当前 schema 记一次披露并落盘。自愈路径与 list_tools 显式披露共用这里，
    * 所以“被自愈放行”的工具与“看过 schema 的工具”在下一次启动后待遇一致。
@@ -3406,6 +3418,31 @@ class CindyMcpGateway {
     this.botHelperFacadeEnabled = options.botMemoryFacade === true;
     this.botMemoryFacadeEnabled = options.botMemoryFacade === true
       && this.tools.has(mcpGatewayKey('cindy_memory', 'call_tool'));
+    // Token hygiene: post-compaction the model loses the memory of which MCP tools
+    // it already inspected and re-runs cindy_mcp_list_tools "to be safe". Inject a
+    // one-shot custom message into the first run after each successful compaction
+    // instead of editing the system prompt every run; the message then lives in
+    // context like any other turn until the next compaction summarizes it away.
+    this.disclosureNotePending = false;
+    pi.on?.('session_compact', () => { this.disclosureNotePending = true; });
+    pi.on?.('before_agent_start', () => {
+      if (!this.disclosureNotePending) return undefined;
+      this.disclosureNotePending = false;
+      const keys = this.disclosedKeysForPrompt();
+      if (!keys) return undefined;
+      return {
+        message: {
+          customType: 'cindy-mcp-disclosure-state',
+          content: [{
+            type: 'text',
+            text: 'MCP tools whose schemas you already inspected for this session (persisted across restarts): '
+              + keys + '. Call them directly; do not re-run cindy_mcp_list_tools to re-inspect them. '
+              + '(One-shot reminder after context compaction.)',
+          }],
+          display: false,
+        },
+      };
+    });
 
     if (this.botMemoryFacadeEnabled) {
       pi.registerTool({
