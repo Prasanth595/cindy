@@ -302,7 +302,19 @@ export function startCompanionCloud(input: {
   }
 
   async function retireActor(actor: CompanionRuntimeActor) {
-    await input.api(`/actors/${actor.id}`, 'PATCH', { disabled: true });
+    // Compare-and-set on the home: if another computer took the companion over meanwhile, this
+    // was only a copy, and deleting it never retires the companion itself.
+    try {
+      await input.api(`/actors/${actor.id}`, 'PATCH', { disabled: true, homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: input.selfDeviceId });
+    } catch (error) {
+      const conflict = chatRejection(error, 409, 'HOME_DEVICE_CONFLICT');
+      if (!conflict) throw error;
+      actor.homeDeviceId = typeof conflict.homeDeviceId === 'string' ? conflict.homeDeviceId : null;
+      state.update(actor.externalId, actor.id, entry => { delete entry.retirePending; });
+      void input.refresh?.().catch(() => undefined);
+      publish();
+      return;
+    }
     actor.disabled = true;
     state.update(actor.externalId, actor.id, entry => { delete entry.retirePending; });
     publish();

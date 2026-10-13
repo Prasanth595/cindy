@@ -207,12 +207,25 @@ describe('retire', () => {
   it('disables the cloud companion when it is deleted on its main computer', async () => {
     const t = setup({ home: 'desk' });
     await t.runtime.retire('bot_mia');
-    expect(t.calls.filter(call => call.method === 'PATCH')).toEqual([expect.objectContaining({ route: '/actors/actor-1', data: { disabled: true } })]);
+    expect(t.calls.filter(call => call.method === 'PATCH')).toEqual([expect.objectContaining({ route: '/actors/actor-1',
+      data: { disabled: true, homeDeviceId: 'desk', expectedHomeDeviceId: 'desk' } })]);
     expect(t.actors[0]!.disabled).toBe(true);
     // A retired companion is never revived or demoted again.
     t.runtime.reconcile([]);
     await Promise.resolve();
     expect(t.local.host.createProfile).not.toHaveBeenCalled();
+  });
+
+  it('does not retire the companion when another computer took it over in the meantime', async () => {
+    const t = setup({ home: 'desk', handler: (_route, method) => {
+      if (method === 'PATCH') throw rejection(409, 'HOME_DEVICE_CONFLICT', { homeDeviceId: 'laptop' });
+      return [];
+    } });
+    await t.runtime.retire('bot_mia');
+    expect(t.actors[0]!.disabled).toBeFalsy();
+    expect(t.actors[0]!.homeDeviceId).toBe('laptop');
+    expect(t.state.bot('bot_mia')?.retirePending).toBeUndefined();
+    expect(t.refresh).toHaveBeenCalled();
   });
 
   it.each([

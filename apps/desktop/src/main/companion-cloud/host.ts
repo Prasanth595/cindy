@@ -141,7 +141,11 @@ function createMaterializer(input: {
       const source = botProfileDir(ownerScopedUserDataPath(), botId);
       const target = ownerScopedUserDataPath('companion-cloud-backups', `${path.basename(source)}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
       fence.assertCurrent();
-      try { await fs.access(source); } catch { return null; }
+      // Only a missing folder means "nothing to back up"; any other error stops the take-over.
+      try { await fs.access(source); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
       // Identity, prompt, user file, memories and skills; the work folder stays where it is.
       await fs.cp(source, target, { recursive: true, filter: from => path.relative(source, from).split(path.sep)[0] !== 'workspace' });
       fence.assertCurrent();
