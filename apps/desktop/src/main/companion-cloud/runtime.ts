@@ -135,6 +135,8 @@ export function startCompanionCloud(input: {
   refresh?: () => Promise<void>;
   /** Publish the registry snapshot after a local home change. */
   publish?: () => void;
+  /** Publish the companions' actor name and avatar now (they sync outside the preferences). */
+  syncProfile?: () => Promise<void>;
   log?: CompanionLog;
   uploadIntervalMs?: number;
   mirrorIntervalMs?: number;
@@ -288,6 +290,13 @@ export function startCompanionCloud(input: {
     });
   }
 
+  /** Hide and stop the local copy now (materialize lifts it once the take-over completes). */
+  function demoteNow(actor: CompanionRuntimeActor) {
+    if (state.isDemoted(actor.externalId)) return;
+    state.update(actor.externalId, actor.id, entry => { entry.demoted = true; });
+    publish();
+  }
+
   function scheduleAuto(actor: CompanionRuntimeActor) {
     const botId = actor.externalId;
     if (materializing.has(botId) || Date.now() < (autoRetryAt.get(botId) ?? 0)) return;
@@ -296,6 +305,8 @@ export function startCompanionCloud(input: {
     // resurrect a copy whose companion has already moved on.
     void input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: input.selfDeviceId })
       .then(async () => {
+        // Hidden before this installation becomes the owner: no sync cycle may pick up the stale copy.
+        demoteNow(actor);
         // Automatic: never take the companion from the other installation on this computer.
         if (await claimInstall(actor, 'handed') !== 'mine') throw new Error('INSTALL_CLAIM_LOST');
         return materialize(actor);
@@ -354,6 +365,8 @@ export function startCompanionCloud(input: {
       if (await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true }) === 0) break;
       if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
     }
+    // The actor's name and avatar too: once demoted, this copy may no longer publish them.
+    await input.syncProfile?.();
   }
 
   /** Everything the new home needs reaches the server, then the home moves and this copy is demoted. */
@@ -362,7 +375,8 @@ export function startCompanionCloud(input: {
     catch (error) {
       input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
       const code = errorCode(error);
-      return code === COMPANION_VALUE_TOO_LARGE || code === 'COMPANION_STILL_CHANGING' ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
+      return [COMPANION_VALUE_TOO_LARGE, 'COMPANION_STILL_CHANGING', 'INVALID_AVATAR', 'AVATAR_UPLOAD_FAILED'].includes(code)
+        ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
     }
     try {
       await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: targetDeviceId, expectedHomeDeviceId: input.selfDeviceId });
@@ -459,6 +473,7 @@ export function startCompanionCloud(input: {
       actor.homeDeviceId = self;
       try {
         // Taking over from this installation also takes it from another install on the same device.
+        demoteNow(actor);
         if (await claimInstall(actor, 'takeover') !== 'mine') return { ok: false, code: 'FAILED' };
         await materialize(actor);
       } catch (error) {

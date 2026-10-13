@@ -19,7 +19,7 @@ afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
-  readValues?: () => Promise<Array<{ key: string; value: unknown }>> }) {
+  readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: () => Promise<void> }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -45,7 +45,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-    actors: () => actors, refresh, publish });
+    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}) });
   return { runtime, actors, calls, local, state, refresh, publish };
 }
 
@@ -209,6 +209,21 @@ describe('transfer', () => {
     expect(await moved).toEqual({ ok: true });
     const order = t.calls.map(call => `${call.method} ${call.route}`);
     expect(order.lastIndexOf('GET /preferences')).toBeLessThan(order.indexOf('PATCH /actors/actor-1'));
+  });
+
+  it('publishes the actor name and avatar before moving the home, and stays put when that fails', async () => {
+    const order: string[] = [];
+    const t = setup({ home: 'desk', devices: [device('laptop')], syncProfile: async () => { order.push('profile'); } });
+    expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
+    const patch = t.calls.findIndex(call => call.method === 'PATCH');
+    expect(order).toEqual(['profile']);
+    expect(patch).toBeGreaterThanOrEqual(0);
+    t.runtime.dispose();
+
+    const failing = setup({ home: 'desk', devices: [device('laptop')], syncProfile: async () => { throw new Error('AVATAR_UPLOAD_FAILED'); } });
+    expect(await failing.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'FAILED' });
+    expect(failing.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(failing.state.isDemoted('bot_mia')).toBe(false);
   });
 
   it('does not move the home when a value is too large to upload', async () => {
@@ -417,6 +432,24 @@ describe('installation guard', () => {
     await lost.runtime.retire('bot_mia');
     expect(lost.calls.some(call => call.method === 'PATCH')).toBe(false);
     expect(lost.state.bot('bot_mia')?.retirePending).toBeUndefined();
+  });
+
+  it('hides the copy before this installation claims it during a take-over', async () => {
+    let demotedAtClaim: boolean | undefined;
+    let state: { isDemoted: (botId: string) => boolean } | undefined;
+    const t = setup({ home: 'laptop', installationId: 'install-a', handler: (route, method, data) => {
+      if (route === '/preferences' && method === 'GET') return [{ key: 'companion.profile.v1', value: MIA, revision: 1 },
+        { key: 'companion.install.v1', value: { installationId: 'install-b', deviceId: 'desk' }, revision: 1 }];
+      if (route === '/preferences' && (data as { key?: string }).key === 'companion.install.v1') demotedAtClaim = state?.isDemoted('bot_mia');
+      if (route === '/preferences') return { revision: 2 };
+      if (route === '/conversations') return { id: ROOM };
+      if (route.includes('/messages?')) return [];
+      return {};
+    } });
+    state = t.state;
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
+    expect(demotedAtClaim).toBe(true);
+    expect(t.state.isDemoted('bot_mia')).toBe(false);
   });
 
   it('claims an unclaimed companion for this installation and then syncs it', async () => {

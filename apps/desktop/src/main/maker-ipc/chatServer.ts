@@ -443,7 +443,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
       bots: () => actors.filter(a => a.kind === 'bot' && !a.disabled && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
         && !companion?.isShadowed(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-      actors: () => actors, refresh: refreshHomes, publish: publishHomes });
+      actors: () => actors, refresh: refreshHomes, publish: publishHomes, syncProfile: syncActorProfiles });
     const runtime = companion;
     await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
       botIds: profiles.filter(p => p.status === 'active').map(p => p.id), isDemoted: botId => runtime.state.isDemoted(botId) });
@@ -462,6 +462,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     if (key !== JSON.stringify(host.homes.persistedShadows())) host.homes.setPersistedShadows(shadows);
     host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors, demotedBotIds: shadows }));
+  }
+  /** Publish name and avatar now (before a hand-over); unlike refreshHomes, failures surface. */
+  async function syncActorProfiles() {
+    actorsStale = true;
+    // A pass already in flight may have read the profiles before the latest edit.
+    await refreshActors?.catch(() => undefined);
+    await register();
   }
   /** Another device moved a companion: re-read actors now instead of after the throttle. */
   async function refreshHomes() {
