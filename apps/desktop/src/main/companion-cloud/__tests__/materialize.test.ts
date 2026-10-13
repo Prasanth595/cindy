@@ -149,14 +149,16 @@ describe('materializeCompanion', () => {
     expect(local.host.insertHistory).not.toHaveBeenCalled();
   });
 
-  it('defers the rebuild while the Session is busy', async () => {
+  it('stays demoted while the Session is busy, and completes once a retry can rebuild', async () => {
     const { api } = cloud([profilePref], [roomMessage('m1', 1, 'human', 'hello', 1_700_000_000_000)]);
-    const local = fakeLocal({ rebuildContext: vi.fn(async () => 'busy' as const) });
+    const local = fakeLocal({ rebuildContext: vi.fn(async (): Promise<'rebuilt' | 'busy'> => 'busy') });
     local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
     const { state } = memoryState();
-    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
-    expect(result.rebuild).toBe('busy');
-    expect(state.bot('bot_mia')?.pendingRebuild).toBe(true);
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('CONTEXT_REBUILD_PENDING');
+    expect(state.bot('bot_mia')).toMatchObject({ demoted: true, pendingRebuild: true });
+    vi.mocked(local.host.rebuildContext).mockResolvedValue('rebuilt');
+    expect((await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM })).rebuild).toBe('rebuilt');
+    expect(state.bot('bot_mia')?.demoted).toBeUndefined();
   });
 
   it('stays demoted until every memory is restored, then the retry completes the take-over', async () => {

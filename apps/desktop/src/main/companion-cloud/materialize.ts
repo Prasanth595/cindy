@@ -65,7 +65,7 @@ export interface CompanionMaterializeActor { id: string; externalId: string; nam
 export interface CompanionMaterializeResult {
   created: boolean;
   inserted: number;
-  rebuild: 'rebuilt' | 'busy' | 'skipped';
+  rebuild: 'rebuilt' | 'skipped';
   /** Where an existing, never-synced local copy was saved before being overwritten. */
   backup?: string | null;
 }
@@ -198,9 +198,10 @@ export async function materializeCompanion(input: {
     if (!keepCursor) entry.mirror = { sessionId, ...cursor };
     if (needsRebuild) entry.pendingRebuild = true;
   });
-  // Rebuild while still demoted: a failure leaves the copy demoted and the take-over retries.
-  // `busy` (a turn already running) defers the rebuild to the next idle point, as documented.
+  // Rebuild while still demoted: a failure, or a turn still running (`busy`), leaves the copy
+  // demoted and the automatic take-over retries until the rebuild completes.
   const rebuild = needsRebuild ? await rebuildPending({ state, host, botId, actorId: actor.id, sessionId, fence }) : 'skipped';
+  if (rebuild === 'busy') throw new Error('CONTEXT_REBUILD_PENDING');
   fence.assertCurrent();
   state.update(botId, actor.id, entry => {
     delete entry.demoted;

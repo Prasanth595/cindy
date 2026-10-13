@@ -11280,6 +11280,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     files?: AgentInputQueuedMessage['files'];
     onAccepted?: (replayed?: boolean) => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
+    /** Remote-origin input: a cold session resumes with its stored permission mode, never bypass. */
+    resumeWithStoredPermissionMode?: boolean;
   }) => {
     if (params.clientId && params.authorizationGuard) {
       const delivery = await resolveBotAuthorizationDelivery(params.clientId, async (clientId) => {
@@ -11642,7 +11644,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (!botDelegationServiceHolder) return { ok: false as const, errorCode: 'DELEGATION_UNAVAILABLE' };
         const ensured = await botDelegationServiceHolder.ensureCanonicalSession(botId);
         if (!ensured.ok) return { ok: false as const, errorCode: ensured.errorCode };
-        const result = await dispatchBotSessionMessage({ targetSessionId: ensured.sessionId, message: text, clientId });
+        // Content from the cloud room must not wake the task with more permission than the user chose.
+        const result = await dispatchBotSessionMessage({ targetSessionId: ensured.sessionId, message: text, clientId,
+          resumeWithStoredPermissionMode: true });
         return result.ok ? { ok: true as const } : { ok: false as const, errorCode: result.errorCode };
       },
     }),
