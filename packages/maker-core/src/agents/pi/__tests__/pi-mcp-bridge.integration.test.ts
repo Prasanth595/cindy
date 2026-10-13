@@ -1353,7 +1353,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
   );
 
   it(
-    'known tools cannot execute or prompt until their exact input schema has been inspected',
+    'an uninspected tool call still asks permission, executes, and is recorded for next time',
     { timeout: 90_000 },
     async () => {
       echoCalls.length = 0;
@@ -1365,6 +1365,7 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
           permissionCount += 1;
           expect(req.kind).toBe('permission');
           if (req.kind === 'permission') {
+            // 首次调用即便未 inspect 也要按完整 gateway 工具身份过权限（分类只认解析成功）。
             expect(req.toolName).toBe('mcp__cindy_echo__echo');
             expect(req.input).toEqual({ text: 'hello-pi' });
           }
@@ -1375,11 +1376,16 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
       );
 
       expect(permissionAsked).toBe(true);
-      expect(permissionCount).toBe(1);
-      expect(echoCalls).toEqual([{ text: 'hello-pi' }]);
-      expect(requestBodies[1]).toContain('Inspect this tool before execution');
-      expect(requestBodies[2]).toContain('inputSchema');
-      await waitFor(() => opaqueTurnCaptures.length === 1);
+      // 剧本：模型先盲调一次（自愈放行、仍过权限门），再 inspect 后重调一次。
+      expect(permissionCount).toBe(2);
+      expect(echoCalls).toEqual([{ text: 'hello-pi' }, { text: 'hello-pi' }]);
+      // 披露记录已按当前 schema 写入，模型随后补的 list_tools 仍返回 schema。
+      expect(requestBodies.some((body) => body.includes('inputSchema'))).toBe(true);
+      await waitFor(() => opaqueTurnCaptures.length >= 1);
+      expect(opaqueTurnCaptures[0]).toMatchObject({
+        sessionId: 'mcp-itest-ask',
+        provider: 'pi',
+      });
     },
   );
 
