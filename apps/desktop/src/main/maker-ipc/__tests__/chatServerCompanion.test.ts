@@ -184,6 +184,32 @@ describe('Chat Server cloud companions', () => {
     expect(host.homes.snapshot()).toMatchObject({ enabled: false, demotedBotIds: ['local-bot'] });
   });
 
+  it('retries saving the demotion until it reaches the disk', async () => {
+    service.dispose();
+    const writes: string[][] = [];
+    let failing = true;
+    host = { ...host, homes: createCompanionHomeRegistry(), shadows: { read: () => [], write: (ids: string[]) => {
+      writes.push(ids);
+      if (failing) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    } } } as typeof host;
+    deps = { ...deps, companionCloud: host } as BotGroupChatServiceDeps;
+    patch = () => { home = 'laptop'; return { status: 409, body: { error: { code: 'HOME_DEVICE_CONFLICT', details: { homeDeviceId: 'laptop' } } } }; };
+    service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    await vi.advanceTimersByTimeAsync(2000);
+    // Hidden right away even though the list could not be saved.
+    expect(host.homes.isShadowed('local-bot')).toBe(true);
+    expect(writes).toContainEqual(['local-bot']);
+    failing = false;
+    const attempts = writes.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(writes.length).toBeGreaterThan(attempts);
+    expect(writes.at(-1)).toEqual(['local-bot']);
+    // Saved: not written again while unchanged.
+    const saved = writes.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(writes).toHaveLength(saved);
+  });
+
   it('stays inert on a server without companion homes', async () => {
     me = { actor: { id: selfId } };
     claimed = true;

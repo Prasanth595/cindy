@@ -146,6 +146,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let disposed = false;
   // Demotion persisted for this owner applies before the server has answered.
   if (deps.companionCloud?.shadows) deps.companionCloud.homes.setPersistedShadows(deps.companionCloud.shadows.read());
+  // What is on disk: a failed write is retried on the next publish, not taken as saved.
+  let savedShadows = JSON.stringify(deps.companionCloud?.homes.persistedShadows() ?? []);
   let connected = false;
   const current = () => !disposed && (!scope || !deps.isOwnerScopeCurrent || deps.isOwnerScopeCurrent(scope));
   const executorId = `desktop:${randomUUID()}`;
@@ -454,10 +456,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (!host || !current() || !companionHome || !companion) return;
     const shadows = companion.shadowIds();
     // Persist demotion so it holds before the next /me, offline, and with the feature off.
-    if (JSON.stringify(shadows) !== JSON.stringify(host.homes.persistedShadows())) {
-      try { host.shadows?.write(shadows); } catch (error) { deps.log?.warn('Companion shadow list not saved', chatErrorDiagnostic(error)); }
-      host.homes.setPersistedShadows(shadows);
+    const key = JSON.stringify(shadows);
+    if (key !== savedShadows) {
+      try { host.shadows?.write(shadows); savedShadows = key; } catch (error) { deps.log?.warn('Companion shadow list not saved', chatErrorDiagnostic(error)); }
     }
+    if (key !== JSON.stringify(host.homes.persistedShadows())) host.homes.setPersistedShadows(shadows);
     host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors, demotedBotIds: shadows }));
   }
   /** Another device moved a companion: re-read actors now instead of after the throttle. */
