@@ -2896,6 +2896,17 @@ function acquireDisclosureLock(lockPath: string): number | undefined {
       } catch {
         return undefined; // 已被另一个实例回收或重建：不争，跳过本次落盘。
       }
+      // rename 只证明「搬走了某个锁」，不证明搬的是刚读到的残留锁：另一实例可能在
+      // 我们读 owner 与 rename 之间已完成回收并重建，这次 rename 搬走的是它的新锁。
+      // 校验搬到的内容，不是刚看到的残留持有者就原样搬回去并放弃本次落盘；恢复也
+      // 失败（第三者又抢先建了锁）时残件留给下次回收——本锁无授权语义，宁可多一轮
+      // 自愈，也不冒两个实例同时持锁互相覆盖记录的风险。
+      let recoveredOwner: number | undefined;
+      try { recoveredOwner = readLockOwner(stale); } catch { /* 内容读不出按不匹配处理 */ }
+      if (recoveredOwner !== owner) {
+        try { renameSync(stale, lockPath); } catch { /* 第三者已建新锁：残件留待下次回收 */ }
+        return undefined;
+      }
       try { rmSync(stale, { force: true }); } catch { /* 残留回收槽不影响正确性 */ }
     }
   }
@@ -3187,13 +3198,22 @@ class CindyMcpGateway {
     return this.disclosedSchemas.get(key) === this.schemaFingerprint(call.tool);
   }
 
-  /** Sorted, prompt-ready server/tool names of the persisted disclosure set. */
+  /**
+   * Sorted, prompt-ready server/tool names worth re-surfacing after compaction:
+   * only tools that still exist AND whose stored fingerprint still matches the
+   * live schema — a removed or schema-drifted tool must not be advertised as
+   * safe to call directly (the gate would re-close on it and waste a round-trip).
+   */
   disclosedKeysForPrompt(limit = 48): string {
-    const all = Array.from(this.disclosedSchemas.keys()).sort();
-    const shown = all.slice(0, limit).map((key) => {
+    const all: string[] = [];
+    for (const [key, fingerprint] of this.disclosedSchemas) {
+      const tool = this.tools.get(key);
+      if (!tool || this.schemaFingerprint(tool) !== fingerprint) continue;
       const sep = key.indexOf('\u0000');
-      return sep === -1 ? key : key.slice(0, sep) + '/' + key.slice(sep + 1);
-    });
+      all.push(sep === -1 ? key : key.slice(0, sep) + '/' + key.slice(sep + 1));
+    }
+    all.sort();
+    const shown = all.slice(0, limit);
     if (all.length > limit) shown.push('… +' + (all.length - limit) + ' more');
     return shown.join(', ');
   }

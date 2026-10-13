@@ -49,18 +49,24 @@ function loadGateway(options: {
   killErrorCode?: string;
   /** 模拟回收残留锁时被另一个实例抢先（rename 失败）。 */
   reclaimLostRace?: boolean;
+  /** 模拟另一实例在读 owner 与 rename 之间已回收重建：本次 rename 搬走的是新锁。 */
+  stealNewLock?: boolean;
 } = {}) {
   const writes: DisclosedFile[] = [];
   const renames: string[] = [];
   const warnings: string[] = [];
   const requests: unknown[] = [];
-  const disk: { value: DisclosedFile | null } = { value: options.onDisk ?? options.stored ?? null };
   const alivePids = new Set<number>([4242, 777]);
-  // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入。
-  // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入；null = 不存在。
-  const lockFile: { value: string | null } = { value: null };
-  if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
-  const externalWrite = (value: DisclosedFile) => { disk.value = value; };
+  // 按路径保存内容：writeFileSync 只写目标路径，renameSync 真正移动内容——
+  // 「tmp 写成功但替换失败」与「回收 rename 搬走新锁」这类次序问题才能被断言。
+  const files = new Map<string, string>();
+  const disclosurePath = '/runtime/mcp-disclosure-s1.json';
+  const lockPath = disclosurePath + '.lock';
+  if (options.onDisk ?? options.stored) {
+    files.set(disclosurePath, JSON.stringify((options.onDisk ?? options.stored)!));
+  }
+  if (options.lockOwner !== undefined) files.set(lockPath, String(options.lockOwner));
+  const externalWrite = (value: DisclosedFile) => { files.set(disclosurePath, JSON.stringify(value)); };
   const reclaimed: string[] = [];
 
   const code = ts.transpileModule(
@@ -89,39 +95,39 @@ function loadGateway(options: {
       dirname: (file: string) => file.slice(0, file.lastIndexOf('/')),
     },
     readFileSync: (file: string) => {
-      if (file.endsWith('.lock')) {
-        if (lockFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-        return lockFile.value;
-      }
-      if (disk.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-      return JSON.stringify(disk.value);
+      const raw = files.get(file);
+      if (raw === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return raw;
     },
     writeFileSync: (file: string, body: string) => {
       if (options.writeFails) throw Object.assign(new Error('denied'), { code: 'EACCES' });
-      if (file.endsWith('.lock')) {
-        lockFile.value = body; // 记录持锁 pid
-        return;
-      }
-      disk.value = JSON.parse(body) as DisclosedFile;
-      writes.push(disk.value);
+      files.set(file, body);
+      if (file.endsWith('.tmp')) writes.push(JSON.parse(body) as DisclosedFile);
     },
     renameSync: (from: string, to: string) => {
-      if (options.reclaimLostRace && from.endsWith('.lock')) {
+      if (options.reclaimLostRace && from === lockPath) {
         // 模拟另一个实例先把残留锁回收并重建了新锁：本实例的 rename 失败。
         throw Object.assign(new Error('lock gone'), { code: 'ENOENT' });
       }
-      if (from.endsWith('.lock')) lockFile.value = null;
+      let content = files.get(from);
+      if (content === undefined) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      if (options.stealNewLock && from === lockPath) {
+        // 另一实例已在本实例读 owner 与 rename 之间回收重建：搬走的是它的新锁。
+        content = '777';
+      }
+      files.delete(from);
+      files.set(to, content);
       renames.push(`${from} -> ${to}`);
     },
     rmSync: (file: string) => {
-      if (file.endsWith('.lock') && !file.includes('.stale-')) lockFile.value = null;
+      files.delete(file);
       reclaimed.push(file);
     },
     openSync: (file: string, flags: string) => {
-      if (flags === 'wx' && lockFile.value !== null) {
+      if (flags === 'wx' && files.get(file) !== undefined) {
         throw Object.assign(new Error('locked'), { code: 'EEXIST' });
       }
-      if (flags === 'wx') lockFile.value = '';
+      if (flags === 'wx') files.set(file, '');
       return 7;
     },
     closeSync: () => undefined,
@@ -166,6 +172,15 @@ function loadGateway(options: {
   const listTools = registered.find((t) => t.name === 'cindy_mcp_list_tools');
   if (!callTool || !listTools) throw new Error('gateway tools not registered');
 
+  const disk = {
+    get value(): DisclosedFile | null {
+      const raw = files.get(disclosurePath);
+      if (raw === undefined) return null;
+      try { return JSON.parse(raw) as DisclosedFile; } catch { return null; }
+    },
+  };
+  const lockContent = (): string | null => files.get(lockPath) ?? null;
+
   return {
     gateway,
     httpClient,
@@ -176,6 +191,7 @@ function loadGateway(options: {
     warnings,
     requests,
     disk,
+    lockContent,
     call: (args: Record<string, unknown> = { message: 'hi' }) =>
       callTool.execute('call-1', { server: 'cindy_orca', tool: 'send_to_worker', args }),
     list: () => listTools.execute('list-1', { server: 'cindy_orca', tool: 'send_to_worker' }),
@@ -305,11 +321,31 @@ describe('MCP gateway schema disclosure', () => {
     }
   });
 
+  it('restores a fresh lock its recovery rename accidentally moved', async () => {
+    // 本实例读到残留 pid 999；但在 rename 前，另一实例已完成回收并重建新锁（pid 777）。
+    // 本实例的 rename 会成功搬走对方的新锁——必须校验搬到的内容、原样搬回并放弃本次
+    // 落盘；否则两实例同时持锁，后一次替换会覆盖前一次刚存的披露记录。
+    const { call, requests, disk, lockContent } = loadGateway({ lockOwner: 999, stealNewLock: true });
+    await call();
+    expect(requests).toHaveLength(1);
+    expect(disk.value).toBeNull();
+    // 对方的新锁原样回到 lock 路径，没有被删掉
+    expect(lockContent()).toBe('777');
+  });
+
   it('keeps the in-memory gate working when the disclosure file cannot be written', async () => {
-    const { gateway, call, requests, writes } = loadGateway({ writeFails: true });
+    const otherKey = 'cindy_other other_tool';
+    const stored: DisclosedFile = {
+      version: 1,
+      entries: { [otherKey]: fingerprint({ name: 'other_tool', description: '别的工具' }) },
+    };
+    const { gateway, call, requests, writes, disk } = loadGateway({ stored, writeFails: true });
     await call();
     expect(requests).toHaveLength(1);
     expect(writes).toHaveLength(0);
+    // 替换失败：磁盘原文件原样保留（tmp 写失败，rename 未发生），他人记录不丢
+    expect(disk.value?.entries[otherKey]).toBe(stored.entries[otherKey]);
+    expect(disk.value?.entries['cindy_orca\u0000send_to_worker']).toBeUndefined();
     expect((gateway as unknown as { isSchemaDisclosed(c: unknown): boolean })
       .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
   });
