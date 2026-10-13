@@ -169,13 +169,24 @@ export function LoginHandoffProvider({
     return timer;
   }, []);
 
+  const clearScheduledTimers = useCallback(() => {
+    timersRef.current.forEach((timer) => clearTimeout(timer));
+    timersRef.current = [];
+  }, []);
+
+  const exitToAuthenticated = useCallback(() => {
+    if (reducedMotionRef.current) {
+      setPhase('done');
+      return;
+    }
+    setPhase('brand-exit');
+    schedule(() => setPhase('done'), LOGIN_HANDOFF_TIMINGS.brandExitMs);
+  }, [schedule]);
+
   // 卸载时清全部在途 timer(handoff fake-timer 用例断言清理)。
   useEffect(() => {
-    return () => {
-      timersRef.current.forEach((timer) => clearTimeout(timer));
-      timersRef.current = [];
-    };
-  }, []);
+    return clearScheduledTimers;
+  }, [clearScheduledTimers]);
 
   const reportBrandAssetsReady = useCallback(() => setBrandReady(true), []);
   const reportSplashExited = useCallback(() => setSplashExited(true), []);
@@ -241,20 +252,40 @@ export function LoginHandoffProvider({
     );
   }, [brandReady, splashExited, authResolved, authenticated, schedule]);
 
+  // 未登录分支起播后认证仍可能完成。旧 settle/shift/panel 计时器不能再写回等待态，
+  // 否则登录面板已卸载时会永久卡在 awaiting-panel，品牌层遮住已就绪主界面。
+  useEffect(() => {
+    if (!playedRef.current || branch !== 'unauthenticated' || phase === 'done'
+      || !authResolved || !authenticated) return;
+    clearScheduledTimers();
+    setBranch('authenticated');
+    if (!splashExitCompletedRef.current) {
+      setPhase('awaiting-splash-exit');
+      return;
+    }
+    exitToAuthenticated();
+  }, [branch, phase, authResolved, authenticated, clearScheduledTimers, exitToAuthenticated]);
+
   // Splash 延迟卸载时冻结;实际卸载后再恢复终态或 panel/awaiting-panel。
   useEffect(() => {
     if (phase !== 'awaiting-splash-exit' || !splashExitCompleted) return;
+    // 与上方认证翻转 effect 同轮触发时由它接管；下一轮 branch 已切换再继续。
+    if (branch === 'unauthenticated' && authResolved && authenticated) return;
+    if (branch === 'authenticated') {
+      exitToAuthenticated();
+      return;
+    }
     if (reducedMotionRef.current) {
       setPhase('done');
       return;
     }
     setPhase(panelMountedRef.current ? 'panel' : 'awaiting-panel');
-  }, [phase, splashExitCompleted]);
+  }, [phase, splashExitCompleted, branch, authResolved, authenticated, exitToAuthenticated]);
 
   // awaiting-panel → panel:面板挂载信号到达即刻放行。
   useEffect(() => {
-    if (phase === 'awaiting-panel' && panelMounted) setPhase('panel');
-  }, [phase, panelMounted]);
+    if (phase === 'awaiting-panel' && panelMounted && !authenticated) setPhase('panel');
+  }, [phase, panelMounted, authenticated]);
 
   // panel → slogan(+100ms) → done(slogan 起步 +500ms 动画 +60ms demo buffer)。
   useEffect(() => {

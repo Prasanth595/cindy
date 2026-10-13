@@ -216,6 +216,116 @@ describe('LoginHandoff 时序(fake-timer)', () => {
     expect(probe.current!.phase).toBe('panel');
   });
 
+  it('未登录交接中途认证成功且面板卸载时，取消旧时序并释放品牌盖', () => {
+    const view = render(
+      <LoginHandoffProvider authResolved authenticated={false}>
+        <Probe />
+      </LoginHandoffProvider>,
+    );
+    act(() => probe.current!.reportLoginPanelMounted());
+    fireAnchors();
+    act(() => vi.advanceTimersByTime(250));
+
+    view.rerender(
+      <LoginHandoffProvider authResolved authenticated>
+        <Probe />
+      </LoginHandoffProvider>,
+    );
+    act(() => probe.current!.reportLoginPanelUnmounted());
+    expect(probe.current!.branch).toBe('authenticated');
+    expect(probe.current!.phase).toBe('brand-exit');
+    act(() => vi.advanceTimersByTime(T.brandExitMs));
+
+    expect(probe.current!.phase).toBe('done');
+    expect(probe.current!.brandStageMounted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([T.settleMs + 50, T.settleMs + T.shiftMs, T.settleMs + T.shiftMs + T.sloganDelayMs])(
+    '认证在未登录交接第 %ims 翻转后不被旧计时器拉回，加载盖仍按 coverHeld 保留',
+    (elapsedMs) => {
+      const view = render(
+        <LoginHandoffProvider authResolved authenticated={false} coverHeld>
+          <Probe />
+        </LoginHandoffProvider>,
+      );
+      act(() => probe.current!.reportLoginPanelMounted());
+      fireAnchors();
+      act(() => vi.advanceTimersByTime(elapsedMs));
+
+      view.rerender(
+        <LoginHandoffProvider authResolved authenticated coverHeld>
+          <Probe />
+        </LoginHandoffProvider>,
+      );
+      act(() => probe.current!.reportLoginPanelUnmounted());
+      expect(probe.current!.phase).toBe('brand-exit');
+      act(() => vi.advanceTimersByTime(T.brandExitMs));
+      expect(probe.current!.phase).toBe('done');
+      expect(probe.current!.brandStageMounted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      view.rerender(
+        <LoginHandoffProvider authResolved authenticated coverHeld={false}>
+          <Probe />
+        </LoginHandoffProvider>,
+      );
+      expect(probe.current!.brandStageMounted).toBe(false);
+    },
+  );
+
+  it('认证翻转与面板挂载同时到达 awaiting-panel 时不重入未登录动画', () => {
+    const view = render(
+      <LoginHandoffProvider authResolved authenticated={false}>
+        <Probe />
+      </LoginHandoffProvider>,
+    );
+    fireAnchors();
+    act(() => vi.advanceTimersByTime(T.settleMs + T.shiftMs));
+    expect(probe.current!.phase).toBe('awaiting-panel');
+
+    act(() => {
+      probe.current!.reportLoginPanelMounted();
+      view.rerender(
+        <LoginHandoffProvider authResolved authenticated>
+          <Probe />
+        </LoginHandoffProvider>,
+      );
+    });
+    expect(probe.current!.branch).toBe('authenticated');
+    expect(probe.current!.phase).toBe('brand-exit');
+    act(() => vi.advanceTimersByTime(T.brandExitMs));
+    expect(probe.current!.phase).toBe('done');
+  });
+
+  it.each([false, true])('认证翻转仍等待 Splash 实际卸载后收尾 (reduced motion=%s)', (reducedMotion) => {
+    setReducedMotion(reducedMotion);
+    const view = render(
+      <LoginHandoffProvider authResolved authenticated={false}>
+        <Probe />
+      </LoginHandoffProvider>,
+    );
+    fireAnchors({ splashComplete: false });
+    act(() => vi.advanceTimersByTime(250));
+
+    view.rerender(
+      <LoginHandoffProvider authResolved authenticated>
+        <Probe />
+      </LoginHandoffProvider>,
+    );
+    expect(probe.current!.branch).toBe('authenticated');
+    expect(probe.current!.phase).toBe('awaiting-splash-exit');
+    act(() => vi.advanceTimersByTime(T.settleMs + T.shiftMs + T.brandExitMs));
+    expect(probe.current!.phase).toBe('awaiting-splash-exit');
+
+    act(() => probe.current!.reportSplashExitCompleted());
+    expect(probe.current!.phase).toBe(reducedMotion ? 'done' : 'brand-exit');
+    act(() => vi.advanceTimersByTime(T.brandExitMs));
+    expect(probe.current!.phase).toBe('done');
+    expect(probe.current!.brandStageMounted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('冷启动每次播放但不重播:done 后重发锚/信号 phase 恒 done、无残留 timer', () => {
     render(
       <LoginHandoffProvider authResolved authenticated={false}>
