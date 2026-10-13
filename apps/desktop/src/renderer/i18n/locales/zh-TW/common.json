@@ -6583,7 +6583,7 @@
         "legacyReattachConfirmText": "接回",
         "legacyReattachDone": "已接回以前的作品資料",
         "legacyReattachFailed": "接回失敗",
-        "legacyReattachNeedsRestart": "沒能清掉這個外掛的快取。請重新啟動 Cindy 後再使用這個外掛。",
+        "legacyReattachNeedsRestart": "沒能清掉這個插件的快取。請重新啟動 Cindy 後再使用這個插件。",
         "legacyInUseBanner": "這台電腦上另一個安裝（例如本機版）還在使用這個插件以前的作品資料。解除安裝那個版本後，可以在這裡接回。",
         "legacyFoundUnknownBanner": "這台電腦上有一份可能是這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），沒有來源記錄，目前的安裝沒有使用它。",
         "legacyReattachUnknownSource": "這份作品資料沒有來源記錄，可能是手動複製或用腳本搬過來的。請確認它屬於這個插件。"
