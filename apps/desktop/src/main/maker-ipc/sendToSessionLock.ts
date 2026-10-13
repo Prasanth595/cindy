@@ -3,10 +3,18 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const log = createLogger('maker-ipc:send-to-session-lock');
 
-// 当前异步链已持有的锁键集合。ALS 沿 await/回调自动传播，用于识别同链重入：
+// 当前异步链已持有的锁键记录。ALS 沿 await/回调自动传播，用于识别同链重入：
 // 锁临界区内部再触发一次取同把锁的调用（如 orca 派发排水队列时
 // drain → sendToAgentAccepted）若照常排队，会等自己释放 = 自锁到 300s bail。
-const heldLockKeys = new AsyncLocalStorage<ReadonlySet<string>>();
+// 记录绑定到实际安装的锁条目：未 await 的后台任务会继承 ALS 上下文，但外层
+// 释放（或条目被 bail 结算）后记录即失效，它必须重新排队而不是绕过新持有者。
+interface HeldLockRecord {
+  /** 本链安装的锁条目；与锁表当前值不一致即已失效。 */
+  entry: Promise<unknown> | undefined;
+  active: boolean;
+}
+
+const heldLockKeys = new AsyncLocalStorage<ReadonlyMap<string, HeldLockRecord>>();
 
 /**
  * Per-session send/route serialization. Every local send path (maker:send,
@@ -211,13 +219,28 @@ export async function withSendToSessionLock<T>(
 ): Promise<T> {
   // 同异步链重入直接放行：同一条链是天然串行的，与自身不存在竞争；
   // 不放行则嵌套获取会等自己持有的条目结算，自锁到 bail。跨链互斥不变。
-  if (heldLockKeys.getStore()?.has(sessionId)) return task();
+  // 仅当本链的持锁记录仍有效（未释放/未结算，且锁表仍指向本条目）时放行；
+  // 继承上下文的后台任务在锁已易主后落到下方正常排队。
+  const held = heldLockKeys.getStore()?.get(sessionId);
+  if (held?.active && held.entry !== undefined && sendToSessionLocks.get(sessionId) === held.entry) {
+    return task();
+  }
   const release = await acquireSendToSessionLock(sessionId, undefined, getStage);
-  const nextHeld = new Set(heldLockKeys.getStore() ?? []);
-  nextHeld.add(sessionId);
+  const record: HeldLockRecord = { entry: sendToSessionLocks.get(sessionId), active: true };
+  if (record.entry) {
+    // 条目结算（含 300s bail 强制结算）即视为不再持有。
+    void record.entry.then(() => {
+      record.active = false;
+    }, () => {
+      record.active = false;
+    });
+  }
+  const nextHeld = new Map(heldLockKeys.getStore() ?? []);
+  nextHeld.set(sessionId, record);
   try {
     return await heldLockKeys.run(nextHeld, task);
   } finally {
+    record.active = false;
     release();
   }
 }
