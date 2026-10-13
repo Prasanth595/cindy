@@ -124,6 +124,27 @@ function makeDeps(overrides: Partial<OpenWithDeps> = {}): OpenWithDeps & {
 const FILE = 'C:\\work\\报表.xlsx';
 
 describe('createOpenWithHandlers.list', () => {
+  it('discovers applications registered through Windows Capabilities', async () => {
+    const base = makeDeps();
+    const registered: Record<string, string> = {
+      'HKCU\\Software\\RegisteredApplications':
+        '    Visual Studio Code    REG_SZ    Software\\Classes\\Applications\\Code.exe\\Capabilities\r\n',
+      'HKCU\\Software\\Classes\\Applications\\Code.exe\\Capabilities\\FileAssociations':
+        '    .md    REG_SZ    VSCode.md\r\n',
+      'HKCR\\VSCode.md\\shell\\open\\command':
+        '    (Default)    REG_SZ    "C:\\Users\\test\\Code.exe" "%1"\r\n',
+      'HKCR\\VSCode.md': '    (Default)    REG_SZ    Visual Studio Code\r\n',
+    };
+    const deps = makeDeps({
+      regQuery: async (keyPath: string, args?: string[]) =>
+        registered[keyPath] ?? base.regQuery(keyPath, args),
+    });
+    const result = await createOpenWithHandlers(deps).list({
+      filePath: FILE.replace('.xlsx', '.md'),
+    });
+    expect(result.apps.map((app) => app.label)).toContain('Visual Studio Code');
+  });
+
   it('enumerates registry apps, resolves labels and dedupes by exe path', async () => {
     const handlers = createOpenWithHandlers(makeDeps());
     const res = await handlers.list({ filePath: FILE });

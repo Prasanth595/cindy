@@ -300,6 +300,54 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
     const defaultProgId = parseRegValues(await deps.regQuery(`HKCR\\${ext}`, ['/ve']))[0]?.data;
     if (defaultProgId) progIds.add(defaultProgId);
 
+    // Editors such as VS Code often advertise Markdown through the Windows
+    // RegisteredApplications/Capabilities contract instead of OpenWithList.
+    for (const root of [
+      'HKCU\\Software\\RegisteredApplications',
+      'HKLM\\Software\\RegisteredApplications',
+    ]) {
+      for (const registration of parseRegValues(await deps.regQuery(root))) {
+        if (!registration.data) continue;
+        const capabilityRoots = /^HK(?:CU|LM|CR)\\/i.test(registration.data)
+          ? [registration.data]
+          : [
+              `HKCU\\${registration.data}`,
+              `HKLM\\${registration.data}`,
+              `HKCR\\${registration.data}`,
+            ];
+        for (const capabilitiesKey of capabilityRoots) {
+          for (const association of parseRegValues(
+            await deps.regQuery(`${capabilitiesKey}\\FileAssociations`),
+          )) {
+            if (association.name.toLowerCase() === ext && association.data) {
+              progIds.add(association.data);
+            }
+          }
+        }
+      }
+    }
+
+    // Per-user installers may register Capabilities under Applications without
+    // adding RegisteredApplications. Only accept an explicit extension claim.
+    const applicationsRoot = 'HKCR\\Applications';
+    for (const exeName of parseRegSubkeys(
+      await deps.regQuery(applicationsRoot),
+      applicationsRoot,
+    ).filter((name) => /\.exe$/i.test(name))) {
+      const values = parseRegValues(
+        await deps.regQuery(`${applicationsRoot}\\${exeName}\\Capabilities\\FileAssociations`),
+      );
+      const supportedTypes = parseRegValues(
+        await deps.regQuery(`${applicationsRoot}\\${exeName}\\SupportedTypes`),
+      );
+      if (
+        values.some((value) => value.name.toLowerCase() === ext) ||
+        supportedTypes.some((value) => value.name.toLowerCase() === ext)
+      ) {
+        exeNames.add(exeName);
+      }
+    }
+
     const seen = new Set<string>();
     const apps: ResolvedOpenWithApp[] = [];
     const push = (r: ResolvedOpenWithApp | null): void => {
