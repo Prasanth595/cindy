@@ -191,6 +191,26 @@ describe('transfer', () => {
     expect(busy.calls.some(call => call.method === 'PATCH')).toBe(false);
   });
 
+  it('waits for a background upload already in flight before flushing and moving the home', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    const t = setup({ home: 'desk', devices: [device('laptop')], readValues: async () => {
+      if (first) { first = false; await held; }
+      return [{ key: 'companion.profile.v1', value: MIA }];
+    } });
+    const background = t.runtime.syncNow();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const moved = t.runtime.transfer('bot_mia', 'laptop');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    release();
+    await background;
+    expect(await moved).toEqual({ ok: true });
+    const order = t.calls.map(call => `${call.method} ${call.route}`);
+    expect(order.lastIndexOf('GET /preferences')).toBeLessThan(order.indexOf('PATCH /actors/actor-1'));
+  });
+
   it('does not move the home when a value is too large to upload', async () => {
     const t = setup({ home: 'desk', devices: [device('laptop')], values: [
       { key: 'companion.profile.v1', value: { name: 'Mia' } },
@@ -293,6 +313,26 @@ describe('review fixes', () => {
     expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'TARGET_UNAVAILABLE' });
     expect(await t.runtime.transferTargets()).toEqual([]);
     expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('drops a pending retirement once another computer took the companion over', async () => {
+    let fail = true;
+    const t = setup({ home: 'desk', handler: (_route, method, data) => {
+      if (method === 'PATCH' && (data as { disabled?: boolean }).disabled && fail) throw rejection(503, 'UNAVAILABLE');
+      return {};
+    } });
+    await expect(t.runtime.retire('bot_mia')).rejects.toThrow('UNAVAILABLE');
+    fail = false;
+    t.actors[0]!.homeDeviceId = 'laptop';
+    t.runtime.reconcile([]);
+    expect(t.state.bot('bot_mia')?.retirePending).toBeUndefined();
+    // Handed back later: the companion is not retired by the stale deletion.
+    t.actors[0]!.homeDeviceId = 'desk';
+    t.runtime.reconcile([]);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    // Only the first, failed attempt ever asked to disable it.
+    expect(t.calls.filter(call => call.method === 'PATCH' && (call.data as { disabled?: boolean }).disabled)).toHaveLength(1);
+    expect(t.actors[0]!.disabled).toBeFalsy();
   });
 
   it('keeps retrying to retire a companion deleted on its home until it succeeds', async () => {

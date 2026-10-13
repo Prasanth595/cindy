@@ -175,21 +175,30 @@ export function startCompanionCloud(input: {
     let queued: Only;
     let kicked: Only;
     let debounce: ReturnType<typeof setTimeout> | undefined;
+    const hold = (work: Promise<unknown>): Promise<void> => {
+      busy = work.then(() => undefined, () => undefined).finally(() => {
+        busy = undefined;
+        const next = queued; queued = undefined;
+        if (next !== undefined) void fire(next);
+      });
+      return busy;
+    };
     const fire = (only: Set<string> | null): Promise<void> => {
       if (!live()) return Promise.resolve();
       if (busy) { queued = union(queued, only); return busy; }
-      busy = run(only).catch(error => { input.log?.warn('Companion sync cycle failed', { code: errorCode(error) }); })
-        .finally(() => {
-          busy = undefined;
-          const next = queued; queued = undefined;
-          if (next !== undefined) void fire(next);
-        });
-      return busy;
+      return hold(run(only).catch(error => { input.log?.warn('Companion sync cycle failed', { code: errorCode(error) }); }));
     };
     const interval = setInterval(() => { void fire(null); }, intervalMs);
     interval.unref?.();
     return {
       run: () => fire(null),
+      /** Run `task` once the cycle in flight is done; cycles started meanwhile wait for it. */
+      async exclusive<T>(task: () => Promise<T>): Promise<T> {
+        while (busy) await busy;
+        const result = task();
+        void hold(result);
+        return result;
+      },
       kick(botId?: string) {
         kicked = union(kicked, botId === undefined ? null : new Set([botId]));
         clearTimeout(debounce);
@@ -346,6 +355,27 @@ export function startCompanionCloud(input: {
     }
   }
 
+  /** Everything the new home needs reaches the server, then the home moves and this copy is demoted. */
+  async function handOver(actor: CompanionRuntimeActor, targetDeviceId: string): Promise<CompanionCloudActionResult> {
+    try { await flush(actor.externalId); }
+    catch (error) {
+      input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
+      const code = errorCode(error);
+      return code === COMPANION_VALUE_TOO_LARGE || code === 'COMPANION_STILL_CHANGING' ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
+    }
+    try {
+      await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: targetDeviceId, expectedHomeDeviceId: input.selfDeviceId });
+    } catch (error) {
+      const failure = actionFailure(error);
+      if (!failure.ok && failure.code === 'HOME_CONFLICT') await input.refresh?.().catch(() => undefined);
+      return failure;
+    }
+    actor.homeDeviceId = targetDeviceId;
+    state.update(actor.externalId, actor.id, entry => { entry.demoted = true; });
+    publish();
+    return { ok: true };
+  }
+
   const runtime: CompanionCloudRuntime = {
     state,
     kickUploads: botId => uploads.kick(botId),
@@ -371,8 +401,12 @@ export function startCompanionCloud(input: {
           }
           continue;
         }
-        if (entry?.retirePending) {
-          if (actor.homeDeviceId === self && Date.now() >= (autoRetryAt.get(`retire:${botId}`) ?? 0)) {
+        if (entry?.retirePending && actor.homeDeviceId !== self) {
+          // Another computer took the companion over before the retry: the deletion here only
+          // removed a copy (as with HOME_DEVICE_CONFLICT), and must not retire it if handed back.
+          state.update(botId, actor.id, next => { delete next.retirePending; });
+        } else if (entry?.retirePending) {
+          if (Date.now() >= (autoRetryAt.get(`retire:${botId}`) ?? 0)) {
             autoRetryAt.set(`retire:${botId}`, Date.now() + AUTO_RETRY_MS);
             void retireOwned(actor).catch(error => input.log?.warn('Companion retire will retry', { actorId: actor.id, code: errorCode(error) }));
           }
@@ -453,24 +487,9 @@ export function startCompanionCloud(input: {
       const target = devices.find(device => device.deviceId === targetDeviceId && isCompanionTransferTarget(device));
       const probe = input.host.probeCompanionCloud;
       if (!target || (probe && !(await probe(targetDeviceId).catch(() => false)))) return { ok: false, code: 'TARGET_UNAVAILABLE' };
-      // Everything the new home needs must be on the server before the move.
-      try { await flush(actor.externalId); }
-      catch (error) {
-        input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
-        const code = errorCode(error);
-        return code === COMPANION_VALUE_TOO_LARGE || code === 'COMPANION_STILL_CHANGING' ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
-      }
-      try {
-        await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: targetDeviceId, expectedHomeDeviceId: self });
-      } catch (error) {
-        const failure = actionFailure(error);
-        if (!failure.ok && failure.code === 'HOME_CONFLICT') await input.refresh?.().catch(() => undefined);
-        return failure;
-      }
-      actor.homeDeviceId = targetDeviceId;
-      state.update(actor.externalId, actor.id, entry => { entry.demoted = true; });
-      publish();
-      return { ok: true };
+      // No background cycle may write in between: one already in flight could carry older values
+      // past the flush, or past the move. Background sync resumes after the copy is demoted.
+      return mirrors.exclusive(() => uploads.exclusive(() => handOver(actor, targetDeviceId)));
     },
 
     async transcript(botId, before) {
@@ -479,6 +498,7 @@ export function startCompanionCloud(input: {
       const roomId = await mirror.ensureRoom(actor.externalId, actor.id, actor.name);
       return readTranscriptPage(input.api, roomId, actor.id, before);
     },
+
 
     async retire(botId) {
       const self = input.selfDeviceId;
