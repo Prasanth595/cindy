@@ -28,6 +28,20 @@ describe('companion sync state file', () => {
     expect(reread.bot('a')).toEqual({ actorId: 'actor-b', prefs: {} });
   });
 
+  it('applies an update in this run when the disk write fails, and saves it with the next one', () => {
+    const writes: string[] = [];
+    let failing = true;
+    const state = createCompanionCloudState({ filePath: 'state.json', io: { read: () => null, write: (_path, contents) => {
+      if (failing) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      writes.push(contents);
+    } } });
+    state.update('a', 'actor', entry => { entry.demoted = true; });
+    expect(state.isDemoted('a')).toBe(true);
+    failing = false;
+    state.update('b', 'actor-b', () => undefined);
+    expect(JSON.parse(writes.at(-1)!).bots.a.demoted).toBe(true);
+  });
+
   it('refuses writes after the account changed', () => {
     const state = createCompanionCloudState({ filePath: 'unused.json', current: () => false,
       io: { read: () => null, write: () => { throw new Error('must not write'); } } });

@@ -75,7 +75,11 @@ export function createCompanionCloudState(options: {
     demotedBotIds: (): string[] => Object.entries(load().bots).flatMap(([botId, entry]) => entry.demoted ? [botId] : []),
     botForRoom: (roomId: string): string | null =>
       Object.entries(load().bots).find(([, entry]) => entry.roomId === roomId)?.[0] ?? null,
-    /** Mutate one companion's entry and persist atomically. */
+    /**
+     * Mutate one companion's entry and persist atomically. The new state applies in this run even
+     * when the disk write fails (e.g. a full disk): a demotion must never wait on it. Every update
+     * writes the whole file, so the next one retries the lost write.
+     */
     update(botId: string, actorId: string, mutate: (entry: CompanionBotState) => void): CompanionBotState {
       if (options.current && !options.current()) throw new Error('OWNER_CHANGED');
       const state = load();
@@ -85,8 +89,12 @@ export function createCompanionCloudState(options: {
         ? structuredClone(previous) : { actorId, prefs: {} };
       mutate(entry);
       const next = { ...state, bots: { ...state.bots, [botId]: bot.parse(entry) } };
-      io.write(options.filePath, JSON.stringify(next));
       data = next;
+      try {
+        io.write(options.filePath, JSON.stringify(next));
+      } catch (error) {
+        options.log?.warn('Companion sync state not saved; will retry', { code: (error as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' });
+      }
       return next.bots[botId]!;
     },
   };
