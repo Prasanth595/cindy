@@ -138,6 +138,7 @@ describe('file chip open-with submenu', () => {
       render(<Fixture />);
       openRoot();
       await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
+      await act(async () => {});
       mocks.list.mockResolvedValueOnce({
         success: true,
         apps: [{ id: 'new', label: 'New Editor' }],
@@ -150,6 +151,26 @@ describe('file chip open-with submenu', () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it('reuses a slow pending prefetch instead of starting a duplicate Windows scan', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const clock = vi.spyOn(Date, 'now');
+    const startedAt = Date.now();
+    try {
+      render(<Fixture />);
+      openRoot();
+      await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
+      clock.mockReturnValue(startedAt + 2000);
+      await requestSub();
+      expect(mocks.list).toHaveBeenCalledOnce();
+      await act(async () => {
+        finish({ success: true, apps: [{ id: 'vscode', label: 'Visual Studio Code' }] });
+      });
+      expect(screen.getByRole('menuitem', { name: 'Visual Studio Code' })).toBeTruthy();
+      expect(screen.getByRole('menuitem', { name: 'chat.media.openWithApp' })).toBeTruthy();
+    } finally { clock.mockRestore(); }
   });
 
   it.each(['pointerLeave', 'blur'] as const)(

@@ -8,6 +8,7 @@ import {
   parseCommandLineExe,
   parseRegSubkeys,
   parseRegValues,
+  parseWindowsApplicationClaims,
   parseWindowsInstalledApps,
   type OpenWithDeps,
 } from '../openWithApps';
@@ -33,6 +34,7 @@ describe('expandWindowsEnv', () => {
       'C:\\Windows\\notepad.exe',
     );
     expect(expandWindowsEnv('%NOPE%\\a.exe', {})).toBe('%NOPE%\\a.exe');
+    expect(expandWindowsEnv('%LOCALAPPDATA%\\a.exe', { LocalAppData: 'C:\\User' })).toBe('C:\\User\\a.exe');
   });
 });
 
@@ -59,6 +61,7 @@ describe('reg.exe output parsing', () => {
       '',
     ].join('\r\n');
     expect(parseRegValues(stdout)).toEqual([{ name: 'Excel.Sheet.12', data: '' }]);
+    expect(parseRegValues('    VSCode.md    REG_NONE')).toEqual([{ name: 'VSCode.md', data: '' }]);
   });
 
   it('parses subkey listings relative to the parent key', () => {
@@ -69,6 +72,28 @@ describe('reg.exe output parsing', () => {
       '',
     ].join('\r\n');
     expect(parseRegSubkeys(stdout, parent)).toEqual(['EXCEL.EXE', 'wps.exe']);
+  });
+
+  it('accepts real expanded hive output and ignores grandchildren', () => {
+    expect(parseRegSubkeys([
+      'HKEY_CLASSES_ROOT\\Applications\\Code.exe',
+      'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\shell',
+      'HKEY_CURRENT_USER\\Applications\\Other.exe',
+    ].join('\r\n'), 'HKCR\\Applications')).toEqual(['Code.exe']);
+  });
+
+  it('accepts exact application extension claims, not search hits in unrelated keys', () => {
+    const output = [
+      'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\SupportedTypes',
+      '    .MD    REG_SZ    ',
+      'HKEY_CLASSES_ROOT\\Applications\\Typora.exe\\Capabilities\\FileAssociations',
+      '    .md    REG_SZ    Typora.md',
+      'HKEY_CLASSES_ROOT\\Applications\\Other.exe\\SupportedTypes',
+      '    .mdown    REG_SZ    ',
+      'HKEY_CLASSES_ROOT\\Applications\\Unrelated.exe\\Other',
+      '    .md    REG_SZ    something',
+    ].join('\r\n');
+    expect(parseWindowsApplicationClaims(output, '.md')).toEqual(['code.exe', 'typora.exe']);
   });
 });
 
@@ -124,6 +149,90 @@ function makeDeps(overrides: Partial<OpenWithDeps> = {}): OpenWithDeps & {
 const FILE = 'C:\\work\\报表.xlsx';
 
 describe('createOpenWithHandlers.list', () => {
+  it('keeps discovered editors if optional installation-date queries fail', async () => {
+    const base = makeDeps();
+    const onDiscoveryError = vi.fn();
+    const result = await createOpenWithHandlers(makeDeps({
+      onDiscoveryError,
+      regQuery: async (key, args) => {
+        if (key.endsWith('Uninstall')) throw new Error('optional metadata unavailable');
+        return base.regQuery(key, args);
+      },
+    })).list({ filePath: FILE });
+    expect(result.success).toBe(true);
+    expect(result.apps.map((app) => app.label)).toEqual(['Microsoft Excel', 'WPS 表格']);
+    expect(onDiscoveryError).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['HKCU', 'Software\\Editor\\Capabilities', 'HKCU\\Software\\Editor\\Capabilities'],
+    ['HKLM', 'Software\\Editor\\Capabilities', 'HKLM\\Software\\Editor\\Capabilities'],
+    ['HKCU', 'HKLM\\Software\\Editor\\Capabilities', 'HKLM\\Software\\Editor\\Capabilities'],
+    ['HKLM', 'HKEY_CURRENT_USER\\Software\\Editor\\Capabilities', 'HKEY_CURRENT_USER\\Software\\Editor\\Capabilities'],
+  ])('resolves capability paths in their registered hive: %s %s', async (hive, registeredPath, resolvedPath) => {
+    const base = makeDeps();
+    const query = vi.fn(async (key: string, args?: string[]) => {
+      if (key === hive + '\\Software\\RegisteredApplications') return '    Editor    REG_SZ    ' + registeredPath;
+      if (key === resolvedPath + '\\FileAssociations') return '    .xlsx    REG_SZ    Wps.Sheet';
+      return base.regQuery(key, args);
+    });
+    const result = await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
+    expect(result.apps.filter((app) => app.label === 'WPS 表格')).toHaveLength(1);
+    expect(query.mock.calls.filter(([key]) => key.endsWith('Capabilities\\FileAssociations'))).toHaveLength(1);
+  });
+
+  it('bounds capability queries to four concurrent subprocesses', async () => {
+    let active = 0;
+    let peak = 0;
+    const query = vi.fn(async (key: string) => {
+      if (key === 'HKCU\\Software\\RegisteredApplications') {
+        return Array.from({ length: 30 }, (_, i) => '    App' + i + '    REG_SZ    Software\\App' + i + '\\Capabilities').join('\r\n');
+      }
+      if (key.endsWith('Capabilities\\FileAssociations')) {
+        active++; peak = Math.max(peak, active);
+        await Promise.resolve();
+        active--;
+      }
+      return '';
+    });
+    await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
+    expect(peak).toBe(4);
+    expect(query.mock.calls.filter(([key]) => key.endsWith('Capabilities\\FileAssociations'))).toHaveLength(30);
+  });
+
+  it('resolves SupportedTypes applications through user-level App Paths with one bulk query', async () => {
+    const query = vi.fn(async (key: string) => {
+      if (key === 'HKCR\\Applications') return [
+        'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\SupportedTypes',
+        '    .md    REG_SZ    ',
+        ...Array.from({ length: 100 }, (_, i) =>
+          'HKEY_CLASSES_ROOT\\Applications\\Other' + i + '.exe\\SupportedTypes\r\n    .txt    REG_SZ    '),
+      ].join('\r\n');
+      if (key === 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\code.exe') {
+        return '    (Default)    REG_SZ    "C:\\Code\\Code.exe"';
+      }
+      return '';
+    });
+    const result = await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: 'C:\\work\\README.md' });
+    expect(result.apps.map((app) => app.label)).toEqual(['Code']);
+    expect(query).toHaveBeenCalledWith('HKCR\\Applications', ['/s', '/f', '.md', '/e']);
+    expect(query.mock.calls.length).toBeLessThan(20);
+    expect(query.mock.calls.some(([key]) => key.includes('Other'))).toBe(false);
+  });
+
+  it('bounds a stalled registry scan and degrades to a failed empty result', async () => {
+    vi.useFakeTimers();
+    try {
+      const query = vi.fn(() => new Promise<string>(() => {}));
+      const pending = createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(await pending).toEqual({ success: false, apps: [], error: '无法查询可用应用' });
+      expect(query).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('discovers applications registered through Windows Capabilities', async () => {
     const base = makeDeps();
     const registered: Record<string, string> = {
@@ -158,6 +267,24 @@ describe('createOpenWithHandlers.list', () => {
     const res = await handlers.list({ filePath: FILE });
     expect(res.success).toBe(true);
     expect(res.apps.map((a) => a.label)).toEqual(['Microsoft Excel']);
+  });
+
+  it('does not let stale user-level App Paths hide a valid machine-level install', async () => {
+    const base = makeDeps();
+    const query = async (key: string, args?: string[]) => {
+      if (key === 'HKCR\\Applications\\EXCEL.EXE\\shell\\open\\command') return '';
+      if (key.startsWith('HKCU\\Software') && key.endsWith('App Paths\\EXCEL.EXE')) {
+        return '    (Default)    REG_SZ    C:\\Removed\\EXCEL.EXE';
+      }
+      if (key.startsWith('HKLM\\Software') && key.endsWith('App Paths\\EXCEL.EXE')) {
+        return '    (Default)    REG_SZ    C:\\Office\\EXCEL.EXE';
+      }
+      return base.regQuery(key, args);
+    };
+    const result = await createOpenWithHandlers(makeDeps({
+      regQuery: query, fileExists: (p) => p !== 'C:\\Removed\\EXCEL.EXE',
+    })).list({ filePath: FILE });
+    expect(result.apps.map((app) => app.label)).toContain('Microsoft Excel');
   });
 
   it('returns an empty list without a platform discovery adapter', async () => {

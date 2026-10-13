@@ -120,7 +120,7 @@ export function useFileChipContextMenu({
   >(null);
   const [openWithOpen, setOpenWithOpen] = useState(false);
   const prefetchedAppsRef = useRef<{
-    startedAt: number;
+    completedAt?: number;
     apps: Promise<NonNullable<typeof openWithApps>>;
   } | null>(null);
   const openingAppsRef = useRef(false);
@@ -279,7 +279,9 @@ export function useFileChipContextMenu({
     const epoch = ++openWithEpochRef.current;
     const prefetched = prefetchedAppsRef.current;
     // 长时间停在 root 菜单后再展开也要读到最新安装/使用状态。
-    const pending = prefetched && Date.now() - prefetched.startedAt <= 1000
+    // Reuse a pending scan regardless of age; otherwise slow Windows hosts launch
+    // a second full scan while the first one is still running. Freshness starts at completion.
+    const pending = prefetched && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= 1000)
       ? prefetched.apps : queryOpenWithApps();
     prefetchedAppsRef.current = null;
     const apps = await pending;
@@ -315,8 +317,15 @@ export function useFileChipContextMenu({
 
   const openAt = (x: number, y: number): void => {
     closeOpenWith();
-    prefetchedAppsRef.current = sidebarFileBrowserKind === 'file' && !remoteOrigin
-      ? { startedAt: Date.now(), apps: queryOpenWithApps() } : null;
+    if (sidebarFileBrowserKind === 'file' && !remoteOrigin) {
+      const prefetch: NonNullable<typeof prefetchedAppsRef.current> = {
+        apps: queryOpenWithApps(),
+      };
+      void prefetch.apps.then(() => { prefetch.completedAt = Date.now(); });
+      prefetchedAppsRef.current = prefetch;
+    } else {
+      prefetchedAppsRef.current = null;
+    }
     setMenuPos({ x, y });
   };
 

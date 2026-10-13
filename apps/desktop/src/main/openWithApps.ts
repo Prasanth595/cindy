@@ -63,6 +63,7 @@ export interface OpenWithDeps {
   usage?: OpenWithUsage;
   now?(): number;
   onUsageError?(): void;
+  onDiscoveryError?(): void;
 }
 
 export interface OpenWithHandlers {
@@ -87,7 +88,9 @@ const HOST_EXE_DENYLIST = new Set([
 export function expandWindowsEnv(value: string, env: Record<string, string | undefined>): string {
   return value.replace(
     /%([^%]+)%/g,
-    (raw, name: string) => env[name] ?? env[name.toUpperCase()] ?? raw,
+    (raw, name: string) => env[name] ?? Object.entries(env).find(
+      ([key]) => key.toLowerCase() === name.toLowerCase(),
+    )?.[1] ?? raw,
   );
 }
 
@@ -150,21 +153,60 @@ export function parseRegValues(stdout: string): Array<{ name: string; data: stri
   const out: Array<{ name: string; data: string }> = [];
   for (const line of stdout.split(/\r?\n/)) {
     // 形如 `    a    REG_SZ    Excel.exe`(data 可含空格)。
-    const m = line.match(/^\s{2,}(\S(?:.*?\S)?)\s+(REG_[A-Z_]+)\s+(.*)$/);
-    if (m) out.push({ name: m[1], data: m[3].trim() });
+    const m = line.match(/^\s{2,}(\S(?:.*?\S)?)\s+(REG_[A-Z_]+)(?:\s+(.*))?$/);
+    if (m) out.push({ name: m[1], data: (m[3] ?? '').trim() });
   }
   return out;
 }
 
 /** reg.exe query 输出 → 子键名列表(完整行是键路径,取末段)。 */
+export function normalizeRegistryKey(key: string): string {
+  const hives: Record<string, string> = {
+    hkcr: 'hkey_classes_root',
+    hkcu: 'hkey_current_user',
+    hklm: 'hkey_local_machine',
+  };
+  return key.replace(/\\+$/, '').toLowerCase().replace(/^[^\\]+/, (hive) => hives[hive] ?? hive);
+}
+
 export function parseRegSubkeys(stdout: string, parentKey: string): string[] {
-  const prefix = parentKey.replace(/\\+$/, '').toLowerCase() + '\\';
+  // reg.exe expands HKCR/HKCU/HKLM aliases in real output.
+  const prefix = normalizeRegistryKey(parentKey) + '\\';
   const out: string[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     const t = line.trim();
-    if (t.toLowerCase().startsWith(prefix)) out.push(t.slice(prefix.length));
+    const key = normalizeRegistryKey(t);
+    if (key.startsWith(prefix) && !key.slice(prefix.length).includes('\\')) {
+      out.push(t.slice(t.lastIndexOf('\\') + 1));
+    }
   }
   return out;
+}
+
+/** Accept only explicit extension claims in these two Windows application contracts. */
+export function parseWindowsApplicationClaims(stdout: string, ext: string): string[] {
+  const names = new Set<string>();
+  for (const section of stdout.split(/(?=^HKEY_|^HK(?:CR|CU|LM)\\)/m)) {
+    const key = normalizeRegistryKey(section.split(/\r?\n/)[0].trim());
+    const match = key.match(/^hkey_classes_root\\applications\\([^\\]+\.exe)\\(?:capabilities\\fileassociations|supportedtypes)$/);
+    if (match && parseRegValues(section).some((v) => v.name.toLowerCase() === ext)) {
+      names.add(match[1]);
+    }
+  }
+  return [...names];
+}
+
+/** Keep registry subprocess concurrency bounded even on hosts with many installed apps. */
+async function mapRegistryItems<T, R>(items: T[], resolve: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await resolve(items[index]);
+    }
+  }));
+  return results;
 }
 
 /** 只采用 Windows 安装器明确提供的 InstallDate，不使用 exe mtime/birthtime。 */
@@ -231,21 +273,29 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
   }
 
   /** exe 名引用(`Excel.exe`)→ 完整路径 + 友好名。 */
-  async function resolveExeReference(exeName: string): Promise<ResolvedOpenWithApp | null> {
+  async function resolveExeReference(exeName: string, query = deps.regQuery): Promise<ResolvedOpenWithApp | null> {
     const appKey = `HKCR\\Applications\\${exeName}`;
-    const cmdOut = await deps.regQuery(`${appKey}\\shell\\open\\command`, ['/ve']);
+    const cmdOut = await query(`${appKey}\\shell\\open\\command`, ['/ve']);
     let exePath = parseCommandLineExe(parseRegValues(cmdOut)[0]?.data ?? '');
-    if (!exePath) {
-      const appPathsOut = await deps.regQuery(
-        `HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exeName}`,
-        ['/ve'],
-      );
-      exePath = parseRegValues(appPathsOut)[0]?.data?.trim() || null;
-    }
     if (exePath) exePath = expandWindowsEnv(exePath, process.env);
+    if (!exePath || !platformPath.isAbsolute(exePath) || !deps.fileExists(exePath)) {
+      exePath = null;
+      for (const hive of ['HKCU', 'HKLM']) {
+        const appPathsOut = await query(
+          `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${exeName}`,
+          ['/ve'],
+        );
+        const parsed = parseCommandLineExe(parseRegValues(appPathsOut)[0]?.data ?? '');
+        const candidate = parsed ? expandWindowsEnv(parsed, process.env) : null;
+        if (candidate && platformPath.isAbsolute(candidate) && deps.fileExists(candidate)) {
+          exePath = candidate;
+          break;
+        }
+      }
+    }
     if (!exePath || !deps.fileExists(exePath)) return null;
 
-    const friendlyOut = await deps.regQuery(appKey, ['/v', 'FriendlyAppName']);
+    const friendlyOut = await query(appKey, ['/v', 'FriendlyAppName']);
     const friendly = parseRegValues(friendlyOut)[0]?.data;
     // `@resource.dll,-123` 形态的本地化引用没有免原生的解法,回落 exe 名。
     const label =
@@ -256,13 +306,13 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
   }
 
   /** ProgId 引用 → 完整路径 + 友好名。 */
-  async function resolveProgIdReference(progId: string): Promise<ResolvedOpenWithApp | null> {
-    const cmdOut = await deps.regQuery(`HKCR\\${progId}\\shell\\open\\command`, ['/ve']);
+  async function resolveProgIdReference(progId: string, query = deps.regQuery): Promise<ResolvedOpenWithApp | null> {
+    const cmdOut = await query(`HKCR\\${progId}\\shell\\open\\command`, ['/ve']);
     const parsed = parseCommandLineExe(parseRegValues(cmdOut)[0]?.data ?? '');
     const exePath = parsed ? expandWindowsEnv(parsed, process.env) : null;
     if (!exePath || !deps.fileExists(exePath)) return null;
 
-    const nameOut = await deps.regQuery(`HKCR\\${progId}`, ['/ve']);
+    const nameOut = await query(`HKCR\\${progId}`, ['/ve']);
     const friendly = parseRegValues(nameOut)[0]?.data;
     const label =
       friendly && !friendly.startsWith('@')
@@ -272,12 +322,29 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
   }
 
   async function listWindowsApps(ext: string): Promise<ResolvedOpenWithApp[]> {
+    // Bound the entire discovery, not just each individual reg.exe process.
+    const deadline = Date.now() + 8000;
+    const query: OpenWithDeps['regQuery'] = async (key, args) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Registry discovery timed out');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          deps.regQuery(key, args),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Registry discovery timed out')), remaining);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
     const fileExtsKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\${ext}`;
 
     const exeNames = new Set<string>();
     const progIds = new Set<string>();
 
-    const mruOut = await deps.regQuery(`${fileExtsKey}\\OpenWithList`);
+    const mruOut = await query(`${fileExtsKey}\\OpenWithList`);
     const mruValues = parseRegValues(mruOut);
     const mru = mruValues.find((v) => v.name.toLowerCase() === 'mrulist')?.data ?? '';
     const recentExeNames = [...mru]
@@ -288,65 +355,43 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
       if (v.name.toLowerCase() !== 'mrulist' && /\.exe$/i.test(v.data)) exeNames.add(v.data);
     }
     const hkcrListKey = `HKCR\\${ext}\\OpenWithList`;
-    for (const sub of parseRegSubkeys(await deps.regQuery(hkcrListKey), hkcrListKey)) {
+    for (const sub of parseRegSubkeys(await query(hkcrListKey), hkcrListKey)) {
       if (/\.exe$/i.test(sub)) exeNames.add(sub);
     }
     for (const src of [`${fileExtsKey}\\OpenWithProgids`, `HKCR\\${ext}\\OpenWithProgids`]) {
-      for (const v of parseRegValues(await deps.regQuery(src))) {
+      for (const v of parseRegValues(await query(src))) {
         if (v.name && v.name !== '(Default)') progIds.add(v.name);
       }
     }
     // 扩展名默认 ProgId 也入列(它对应的应用不一定出现在 OpenWith* 里)。
-    const defaultProgId = parseRegValues(await deps.regQuery(`HKCR\\${ext}`, ['/ve']))[0]?.data;
+    const defaultProgId = parseRegValues(await query(`HKCR\\${ext}`, ['/ve']))[0]?.data;
     if (defaultProgId) progIds.add(defaultProgId);
 
     // Editors such as VS Code often advertise Markdown through the Windows
     // RegisteredApplications/Capabilities contract instead of OpenWithList.
-    for (const root of [
-      'HKCU\\Software\\RegisteredApplications',
-      'HKLM\\Software\\RegisteredApplications',
-    ]) {
-      for (const registration of parseRegValues(await deps.regQuery(root))) {
-        if (!registration.data) continue;
-        const capabilityRoots = /^HK(?:CU|LM|CR)\\/i.test(registration.data)
-          ? [registration.data]
-          : [
-              `HKCU\\${registration.data}`,
-              `HKLM\\${registration.data}`,
-              `HKCR\\${registration.data}`,
-            ];
-        for (const capabilitiesKey of capabilityRoots) {
-          for (const association of parseRegValues(
-            await deps.regQuery(`${capabilitiesKey}\\FileAssociations`),
-          )) {
-            if (association.name.toLowerCase() === ext && association.data) {
-              progIds.add(association.data);
-            }
-          }
-        }
+    const registrations = await Promise.all(['HKCU', 'HKLM'].map(async (hive) => {
+      const values = parseRegValues(await query(`${hive}\\Software\\RegisteredApplications`));
+      // A relative Capabilities path belongs to the hive owning this registration.
+      return values.filter((v) => v.data).map((v) =>
+        /^(?:HK(?:CU|LM|CR)|HKEY_(?:CURRENT_USER|LOCAL_MACHINE|CLASSES_ROOT))\\/i.test(v.data)
+          ? v.data : `${hive}\\${v.data}`,
+      );
+    }));
+    const associations = await mapRegistryItems([...new Set(registrations.flat())], (key) =>
+      query(`${key}\\FileAssociations`),
+    );
+    for (const stdout of associations) {
+      for (const association of parseRegValues(stdout)) {
+        if (association.name.toLowerCase() === ext && association.data) progIds.add(association.data);
       }
     }
 
     // Per-user installers may register Capabilities under Applications without
     // adding RegisteredApplications. Only accept an explicit extension claim.
-    const applicationsRoot = 'HKCR\\Applications';
-    for (const exeName of parseRegSubkeys(
-      await deps.regQuery(applicationsRoot),
-      applicationsRoot,
-    ).filter((name) => /\.exe$/i.test(name))) {
-      const values = parseRegValues(
-        await deps.regQuery(`${applicationsRoot}\\${exeName}\\Capabilities\\FileAssociations`),
-      );
-      const supportedTypes = parseRegValues(
-        await deps.regQuery(`${applicationsRoot}\\${exeName}\\SupportedTypes`),
-      );
-      if (
-        values.some((value) => value.name.toLowerCase() === ext) ||
-        supportedTypes.some((value) => value.name.toLowerCase() === ext)
-      ) {
-        exeNames.add(exeName);
-      }
-    }
+    // One exact filtered recursive query replaces two processes per installed app.
+    for (const exeName of parseWindowsApplicationClaims(
+      await query('HKCR\\Applications', ['/s', '/f', ext, '/e']), ext,
+    )) exeNames.add(exeName);
 
     const seen = new Set<string>();
     const apps: ResolvedOpenWithApp[] = [];
@@ -358,12 +403,8 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
       seen.add(key);
       apps.push(r);
     };
-    for (const exe of exeNames) {
-      push(await resolveExeReference(exe));
-    }
-    for (const progId of progIds) {
-      push(await resolveProgIdReference(progId));
-    }
+    for (const app of await mapRegistryItems([...exeNames], (name) => resolveExeReference(name, query))) push(app);
+    for (const app of await mapRegistryItems([...progIds], (name) => resolveProgIdReference(name, query))) push(app);
     // 系统 MRU 仅在没有可比较时间时作为排序依据；不拿扫描时间替代使用时间。
     for (const app of apps) {
       const index = recentExeNames.findIndex(
@@ -376,9 +417,15 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
       'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
       'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
     ];
+    // Sorting metadata must never erase editors already discovered successfully.
+    let installQueryFailed = false;
     const installData = await Promise.all(
-      uninstallRoots.map((root) => deps.regQuery(root, ['/s'])),
+      uninstallRoots.map(async (root) => {
+        try { return await query(root, ['/s']); }
+        catch { installQueryFailed = true; return ''; }
+      }),
     );
+    if (installQueryFailed) deps.onDiscoveryError?.();
     for (const stdout of installData) {
       for (const entry of parseWindowsInstalledApps(stdout)) {
         for (const app of apps) {
@@ -459,6 +506,7 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
         appCacheByExt.set(ext, idMap);
         return { success: true, apps };
       } catch {
+        deps.onDiscoveryError?.();
         return { success: false, apps: [], error: '无法查询可用应用' };
       }
     },

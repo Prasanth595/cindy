@@ -7350,17 +7350,22 @@ const registerIpcHandlers = () => {
       listMacApps: listMacOpenWithApps,
       usage,
       onUsageError: () => openWithLog.warn('usage history could not be saved'),
+      onDiscoveryError: () => openWithLog.warn('application discovery failed'),
       isPathAllowed,
       fileExists: (p) => fs.existsSync(p),
       regQuery: async (keyPath, args = []) => {
         const codepage = await getConsoleCodepage();
-        return new Promise<string>((resolve) => {
+        return new Promise<string>((resolve, reject) => {
           execFile(
             'reg.exe',
             ['query', keyPath, ...args],
-            { windowsHide: true, timeout: 5000, encoding: 'buffer' },
-            (err, stdout) =>
-              resolve(err ? '' : decodeRegOutput(stdout ?? Buffer.alloc(0), codepage)),
+            { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'buffer' },
+            (err, stdout) => {
+              // Exit 1 is normal for an absent key/no search hits. Timeouts, missing
+              // reg.exe and output overflow must not look like a successful empty list.
+              if (err && err.code !== 1) { reject(err); return; }
+              resolve(err ? '' : decodeRegOutput(stdout ?? Buffer.alloc(0), codepage));
+            },
           );
         });
       },
