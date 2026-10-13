@@ -321,6 +321,8 @@ const PI_PERMISSION_HASH_ENV = 'CINDY_PI_PERMISSION_HASH';
 const PI_EXTENSION_BUNDLE_HASH_ENV = 'CINDY_PI_EXTENSION_BUNDLE_HASH';
 /** 远端附件内联上限:超过则 fail-before-dispatch, 不静默截断。 */
 const REMOTE_PI_ATTACHMENT_MAX_BYTES = 256 * 1024;
+/** 会话 configHome 内的追加提示词文件名(见 startSession 里 --append-system-prompt 的传参)。 */
+const CINDY_APPEND_SYSTEM_PROMPT_FILENAME = 'append-system-prompt.md';
 /**
  * Compatibility fallback for hosts that do not provide persistent derivation.
  * Desktop injects its owner-scoped safeStorage-backed deriver so restart and
@@ -3962,6 +3964,15 @@ export class PiAgent extends BaseAgent {
         .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)));
       managedSkillRoot = managedLaunchSkills.length ? path.join(configHome, 'cindy-managed-skills') : undefined;
 
+      // pi 的 --append-system-prompt 接受 <text|path>:参数在磁盘上存在即按文件读。
+      // 伙伴提示词(身份 + 能力说明 + teammate-guide + 记忆索引)轻易两三万字符,
+      // 内联进 argv 会单独顶穿 Windows 的 spawn 命令行上限并让整个会话起不来,
+      // 所以永远写进本会话的 configHome、argv 只带路径。
+      const appendSystemPromptPath = appendSystemPrompt.length > 0
+        ? joinRemotePosixPath(configHome, CINDY_APPEND_SYSTEM_PROMPT_FILENAME)
+        : undefined;
+      if (appendSystemPromptPath) await writeFile(appendSystemPromptPath, appendSystemPrompt);
+
       args = [
         '--mode',
         'rpc',
@@ -3991,7 +4002,7 @@ export class PiAgent extends BaseAgent {
           .some((existing) => canonicalSkillPath(existing) === canonicalSkillPath(skillPath)))
           .flatMap((skillPath) => ['--skill', skillPath]),
         ...(managedSkillRoot ? ['--skill', managedSkillRoot] : []),
-        ...(appendSystemPrompt.length > 0 ? ['--append-system-prompt', appendSystemPrompt] : []),
+        ...(appendSystemPromptPath ? ['--append-system-prompt', appendSystemPromptPath] : []),
         // 受邀者的说明文件扩展排在 bridge 之前：托管时 bridge 会按当前选项渲染整段系统提示。
         ...(guestContextExtensionPath ? ['--extension', guestContextExtensionPath] : []),
         '--extension',
