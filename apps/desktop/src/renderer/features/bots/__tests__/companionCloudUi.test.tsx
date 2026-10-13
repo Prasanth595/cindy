@@ -22,7 +22,7 @@ vi.mock('@/lib/toast', () => ({ toast: { info: h.toast, error: h.toast } }));
 
 import { CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
 import { BotHomeComputerSetting } from '../BotHomeComputerSetting';
-import { resetCompanionCloudStoreForTests } from '../companionCloudStore';
+import { resetCompanionCloudStoreForTests, useCompanionCloud } from '../companionCloudStore';
 import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from '../companionCloudPresentation';
 import { BotConnectionStatus } from '../BotConnectionStatus';
 
@@ -196,6 +196,23 @@ describe('BotHomeComputerSetting', () => {
     render(<BotHomeComputerSetting bot={bot} />);
     openMenu();
     expect(await screen.findByText('bots.cloud.noTargets')).toBeTruthy();
+  });
+});
+
+describe('companionCloudStore', () => {
+  it('keeps a newer push when an older refresh answers later', async () => {
+    const { renderHook } = await import('@testing-library/react');
+    resetCompanionCloudStoreForTests(snapshot('desk'));
+    let answer: (value: CompanionCloudSnapshot) => void = () => undefined;
+    maker.getCompanionCloudState.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    let push: (next: CompanionCloudSnapshot) => void = () => undefined;
+    maker.onCompanionCloudChanged.mockImplementation(((listener: typeof push) => { push = listener; return () => undefined; }) as never);
+    const { result, unmount } = renderHook(() => useCompanionCloud());
+    await waitFor(() => expect(maker.getCompanionCloudState).toHaveBeenCalled());
+    act(() => push(snapshot('laptop')));
+    await act(async () => { answer(snapshot('desk')); await Promise.resolve(); });
+    expect(result.current.actors[0]!.homeDeviceId).toBe('laptop');
+    unmount();
   });
 });
 

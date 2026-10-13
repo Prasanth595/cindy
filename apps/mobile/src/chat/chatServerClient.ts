@@ -238,7 +238,10 @@ export function createChatServerClient(request: ChatRequest) {
     async hasProfileSnapshot(actorId: string): Promise<boolean> {
       const rows = await request<Array<{ key?: unknown; value?: unknown }>>('/preferences', 'GET', undefined, chatId(actorId));
       const row = (Array.isArray(rows) ? rows : []).find(candidate => candidate?.key === 'companion.profile.v1');
-      return !!row?.value && typeof row.value === 'object' && !Array.isArray(row.value);
+      // Same check as Desktop (companion-cloud/uploader.ts isCompanionProfileSnapshot): a complete profile.
+      const value = row?.value as Record<string, unknown> | null | undefined;
+      return !!value && typeof value === 'object' && !Array.isArray(value)
+        && ['name', 'description', 'soul', 'systemPrompt', 'user'].every(field => typeof value[field] === 'string');
     },
     /** Move a companion's main computer only if it is still `expected` (no two devices race it). */
     async setHome(actorId: string, homeDeviceId: string, expected: string | null): Promise<ChatSetHomeResult> {

@@ -101,14 +101,17 @@ describe('Chat Server client for companions', () => {
     await expect(client.capabilities()).resolves.toEqual({ companionHome: false });
   });
 
-  it('reads the profile snapshot as the companion, and only an object counts', async () => {
-    const request = vi.fn(async (): Promise<unknown> => [{ key: 'companion.profile.v1', value: { name: 'Cindy' } }]);
+  it('reads the profile snapshot as the companion, and only a complete one counts', async () => {
+    const request = vi.fn(async (): Promise<unknown> => [{ key: 'companion.profile.v1',
+      value: { name: 'Cindy', description: '', soul: '', systemPrompt: '', user: '' } }]);
     const client = createChatServerClient(request as never);
     await expect(client.hasProfileSnapshot(id(1))).resolves.toBe(true);
     expect(request).toHaveBeenLastCalledWith('/preferences', 'GET', undefined, id(1));
     request.mockResolvedValueOnce([{ key: 'companion.memory.v1:a.md', value: { content: 'x' } }]);
     await expect(client.hasProfileSnapshot(id(1))).resolves.toBe(false);
     request.mockResolvedValueOnce([{ key: 'companion.profile.v1', value: null }]);
+    await expect(client.hasProfileSnapshot(id(1))).resolves.toBe(false);
+    request.mockResolvedValueOnce([{ key: 'companion.profile.v1', value: { name: 'Cindy' } }]);
     await expect(client.hasProfileSnapshot(id(1))).resolves.toBe(false);
   });
 

@@ -12,7 +12,7 @@ import { directRoomSourceId } from './directRoom.js';
 import { readRecentRoomMessages } from './room.js';
 import type { CompanionCloudState } from './state.js';
 import { errorCode, type CompanionApi, type CompanionLog } from './types.js';
-import { COMPANION_MEMORY_PREFIX, COMPANION_PROFILE_KEY, COMPANION_SKILL_PREFIX, TOMBSTONE_HASH, valueHash } from './uploader.js';
+import { COMPANION_MEMORY_PREFIX, COMPANION_PROFILE_KEY, COMPANION_SKILL_PREFIX, TOMBSTONE_HASH, isCompanionProfileSnapshot, valueHash } from './uploader.js';
 
 export const COMPANION_HISTORY_LIMIT = 200;
 
@@ -95,7 +95,8 @@ export async function materializeCompanion(input: {
   const botId = actor.externalId;
   const rows = await step(() => api<Array<{ key: string; value: unknown; revision: number }>>('/preferences', 'GET', undefined, actor.id));
   const prefs = new Map((Array.isArray(rows) ? rows : []).map(row => [row.key, row]));
-  const profile = record(prefs.get(COMPANION_PROFILE_KEY)?.value);
+  const profileValue = prefs.get(COMPANION_PROFILE_KEY)?.value;
+  const profile = isCompanionProfileSnapshot(profileValue) ? profileValue : null;
   const known = state.bot(botId);
   const knownPrefs = known?.actorId === actor.id ? known.prefs : {};
 

@@ -16,7 +16,7 @@ import { createCompanionMirror, type CompanionMirrorCursor, type CompanionMirror
 import { readTranscriptPage } from './room.js';
 import type { CompanionCloudState } from './state.js';
 import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
-import { COMPANION_PROFILE_KEY, COMPANION_VALUE_TOO_LARGE, createCompanionUploader, type CompanionPreferenceValue } from './uploader.js';
+import { COMPANION_PROFILE_KEY, COMPANION_VALUE_TOO_LARGE, createCompanionUploader, isCompanionProfileSnapshot, type CompanionPreferenceValue } from './uploader.js';
 
 /** Electron/database side of the feature, wired in register.ts. */
 export interface CompanionCloudHost {
@@ -112,7 +112,7 @@ const AUTO_RETRY_MS = 60_000;
 /** The home has uploaded the profile snapshot a take-over builds the companion from. */
 export function hasProfileSnapshot(rows: unknown): boolean {
   const row = (Array.isArray(rows) ? rows : []).find((candidate: { key?: unknown }) => candidate?.key === COMPANION_PROFILE_KEY) as { value?: unknown } | undefined;
-  return !!row?.value && typeof row.value === 'object' && !Array.isArray(row.value);
+  return isCompanionProfileSnapshot(row?.value);
 }
 
 /** Same computers Orca may run work on (orcaRemoteWorkers.isExecutionDeviceCandidate). */
@@ -301,6 +301,18 @@ export function startCompanionCloud(input: {
     });
   }
 
+  /** Retire only from the installation that may run it: another Cindy on this computer may own it. */
+  async function retireOwned(actor: CompanionRuntimeActor) {
+    let owner = installOwner(actor.externalId);
+    // Still unknown (pending, or the check failed): resolve it first; a failure retries later.
+    if (owner === undefined || owner === 'pending') owner = await claimInstall(actor, 'check');
+    if (owner === 'other') {
+      state.update(actor.externalId, actor.id, entry => { delete entry.retirePending; });
+      return;
+    }
+    await retireActor(actor);
+  }
+
   async function retireActor(actor: CompanionRuntimeActor) {
     // Compare-and-set on the home: if another computer took the companion over meanwhile, this
     // was only a copy, and deleting it never retires the companion itself.
@@ -346,14 +358,23 @@ export function startCompanionCloud(input: {
       const self = input.selfDeviceId;
       if (!self || !live()) return;
       for (const actor of input.actors?.() ?? []) {
-        if (actor.kind !== 'bot' || actor.disabled) continue;
+        if (actor.kind !== 'bot') continue;
         const botId = actor.externalId;
         const local = localProfiles.find(profile => profile.id === botId);
         const entry = state.bot(botId);
+        if (actor.disabled) {
+          // Deleted on its main computer (perhaps while this one was offline): a copy here is no
+          // longer the companion, so it is hidden and stopped like any other old copy.
+          if (local && local.status !== 'deleting' && !entry?.demoted) {
+            state.update(botId, actor.id, next => { next.demoted = true; });
+            input.log?.info?.('Companion was deleted on its main computer; local copy demoted', { actorId: actor.id });
+          }
+          continue;
+        }
         if (entry?.retirePending) {
           if (actor.homeDeviceId === self && Date.now() >= (autoRetryAt.get(`retire:${botId}`) ?? 0)) {
             autoRetryAt.set(`retire:${botId}`, Date.now() + AUTO_RETRY_MS);
-            void retireActor(actor).catch(error => input.log?.warn('Companion retire will retry', { actorId: actor.id, code: errorCode(error) }));
+            void retireOwned(actor).catch(error => input.log?.warn('Companion retire will retry', { actorId: actor.id, code: errorCode(error) }));
           }
           continue;
         }
@@ -465,7 +486,7 @@ export function startCompanionCloud(input: {
       // A demoted copy is not the companion: deleting it never touches the cloud.
       if (!self || !live() || !actor || actor.homeDeviceId !== self || runtime.isShadowed(botId)) return;
       state.update(botId, actor.id, entry => { entry.retirePending = true; });
-      await retireActor(actor);
+      await retireOwned(actor);
     },
 
     isShadowed: botId => state.isDemoted(botId) || installOwner(botId) === 'other',

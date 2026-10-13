@@ -18,6 +18,15 @@ export const COMPANION_VALUE_TOO_LARGE = 'COMPANION_VALUE_TOO_LARGE';
 
 export interface CompanionPreferenceValue { key: string; value: unknown }
 
+const PROFILE_FIELDS = ['name', 'description', 'soul', 'systemPrompt', 'user'] as const;
+export type CompanionProfileSnapshot = Record<(typeof PROFILE_FIELDS)[number], string>;
+
+/** The complete profile the home uploads (host.readCompanionValues); anything less is not a snapshot. */
+export function isCompanionProfileSnapshot(value: unknown): value is CompanionProfileSnapshot {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && PROFILE_FIELDS.every(field => typeof (value as Record<string, unknown>)[field] === 'string');
+}
+
 /** Stable JSON (sorted object keys): the server's JSONB does not preserve key order. */
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

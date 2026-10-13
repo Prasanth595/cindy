@@ -1,7 +1,8 @@
 /**
  * Renderer mirror of where each companion runs (docs/product-rules/cloud-companions.md).
  * Main owns the truth; this keeps the latest snapshot, re-reads on owner change and
- * follows `onCompanionCloudChanged`. Old-owner responses and pushes are dropped.
+ * follows `onCompanionCloudChanged`. Old-owner responses and pushes are dropped, and so is a
+ * refresh answered after a newer push.
  */
 import { useEffect, useSyncExternalStore } from 'react';
 
@@ -19,6 +20,8 @@ type MakerApi = Window['electronAPI']['maker'];
 
 let snapshot: CompanionCloudSnapshot = EMPTY_COMPANION_CLOUD_SNAPSHOT;
 let owner = getDataOwnerGeneration();
+// Counts pushes: a refresh answered after a push may carry the older snapshot.
+let pushes = 0;
 let users = 0;
 let unsubscribePush: (() => void) | null = null;
 const listeners = new Set<() => void>();
@@ -45,8 +48,9 @@ export function refreshCompanionCloud(): void {
   const api = companionCloudApi();
   if (!api) return;
   const requestOwner = owner;
+  const requestPushes = pushes;
   void Promise.resolve().then(() => api.getCompanionCloudState()).then((next) => {
-    if (isDataOwnerGenerationCurrent(requestOwner) && next) apply(next);
+    if (isDataOwnerGenerationCurrent(requestOwner) && pushes === requestPushes && next) apply(next);
   }).catch(() => undefined);
 }
 
@@ -58,6 +62,7 @@ function start(): () => void {
       unsubscribePush = api.onCompanionCloudChanged((next, ownerStamp) => {
         if (!isDataOwnerPushCurrent(ownerStamp)) return;
         ensureOwner();
+        pushes += 1;
         apply(next);
       });
     }

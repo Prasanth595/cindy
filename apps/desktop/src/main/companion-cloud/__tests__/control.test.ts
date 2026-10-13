@@ -11,6 +11,9 @@ const device = (deviceId: string, extra: Partial<DeviceLinkDeviceView> = {}): De
   remoteControlEnabled: true, controlEnabled: true, isSelf: false, ...extra,
 });
 
+// A complete profile snapshot as the home uploads it.
+const MIA = { name: 'Mia', description: '', soul: '', systemPrompt: '', user: '' };
+
 let runtime: CompanionCloudRuntime | undefined;
 afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
@@ -20,7 +23,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
-    if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { name: 'Mia' }, revision: 1 }] : { revision: 1 };
+    if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: MIA, revision: 1 }] : { revision: 1 };
     if (route === '/conversations') return { id: ROOM };
     if (route.includes('/messages?')) return [];
     if (route.endsWith('/import')) return {};
@@ -66,10 +69,19 @@ describe('take over', () => {
     expect(t.local.host.createProfile).not.toHaveBeenCalled();
   });
 
+  it('does not move the home for an incomplete profile snapshot', async () => {
+    const t = setup({ home: 'laptop', handler: (route, method) => {
+      if (route === '/preferences' && method === 'GET') return [{ key: 'companion.profile.v1', value: { name: 'Mia' }, revision: 1 }];
+      return {};
+    } });
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: false, code: 'FAILED' });
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
   it('returns the current home when another device won', async () => {
     const t = setup({ home: 'laptop', handler: (route, method) => {
       if (method === 'PATCH') throw rejection(409, 'HOME_DEVICE_CONFLICT', { homeDeviceId: 'tablet' });
-      return route === '/preferences' ? [{ key: 'companion.profile.v1', value: { name: 'Mia' }, revision: 1 }] : [];
+      return route === '/preferences' ? [{ key: 'companion.profile.v1', value: MIA, revision: 1 }] : [];
     } });
     expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: false, code: 'HOME_CONFLICT', homeDeviceId: 'tablet' });
     expect(t.refresh).toHaveBeenCalled();
@@ -232,6 +244,14 @@ describe('retire', () => {
     expect(t.refresh).toHaveBeenCalled();
   });
 
+  it('hides a copy here once the companion was deleted on its main computer', () => {
+    const t = setup({ home: 'laptop' });
+    t.actors[0]!.disabled = true;
+    t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);
+    expect(t.runtime.isShadowed('bot_mia')).toBe(true);
+    expect(t.local.host.createProfile).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['a demoted local copy', 'desk', true],
     ['a copy whose home is elsewhere', 'laptop', false],
@@ -294,7 +314,7 @@ describe('review fixes', () => {
 describe('installation guard', () => {
   const guarded = (owner: string | { installationId: string; deviceId: string } | null) => {
     const record = typeof owner === 'string' ? { installationId: owner } : owner;
-    const prefs = new Map<string, { value: unknown; revision: number }>([['companion.profile.v1', { value: { name: 'Mia (cloud)' }, revision: 1 }],
+    const prefs = new Map<string, { value: unknown; revision: number }>([['companion.profile.v1', { value: { ...MIA, name: 'Mia (cloud)' }, revision: 1 }],
       ...(record ? [['companion.install.v1', { value: record, revision: 1 }] as const] : [])]);
     return setup({ home: 'desk', installationId: 'install-a', handler: (route, method, data) => {
       if (route === '/preferences' && method === 'GET') return [...prefs].map(([key, row]) => ({ key, ...row }));
@@ -326,6 +346,18 @@ describe('installation guard', () => {
     expect(t.runtime.isShadowed('bot_mia')).toBe(false);
     expect(t.calls.some(call => call.method === 'POST' && (call.data as { key?: string; value?: unknown }).key === 'companion.install.v1'
       && (call.data as { value: { installationId: string } }).value.installationId === 'install-a')).toBe(true);
+  });
+
+  it('deletes only the local copy when the installation check shows another Cindy here runs it', async () => {
+    const t = guarded({ installationId: 'install-b', deviceId: 'desk' });
+    // Deleted before the check finished: confirm first, never disable the other installation's companion.
+    await t.runtime.retire('bot_mia');
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(t.state.bot('bot_mia')?.retirePending).toBeUndefined();
+
+    const mine = guarded(null);
+    await mine.runtime.retire('bot_mia');
+    expect(mine.calls.filter(call => call.method === 'PATCH')).toEqual([expect.objectContaining({ data: expect.objectContaining({ disabled: true }) })]);
   });
 
   it('claims an unclaimed companion for this installation and then syncs it', async () => {
