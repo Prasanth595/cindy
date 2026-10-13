@@ -135,6 +135,31 @@ export function stripCloneAnchors(root: HTMLElement): void {
   }
 }
 
+/**
+ * 纯布局容器标签:清洗后若只剩这些且没有文字,就是空壳。判空用「只剩容器」而不是
+ * 「有某几种媒体」—— 音频播放器、分隔线等非文字元素种类多且会增加,白名单漏一种
+ * 就会把整条有内容的消息误删。
+ */
+const SHARE_LAYOUT_ONLY_TAGS = new Set(['DIV', 'SPAN', 'P', 'SECTION', 'BR']);
+
+/**
+ * 克隆一条消息并做完全部清洗(交互件、来源标注、收起态、锚点)。清洗后没有文字、
+ * 也只剩纯布局容器时返回 null:例如只发了 `$指令` 的消息,插件标注被剥掉后只剩
+ * 空壳,留着会在图里占一段空白,单独分享时更会生成只有页脚的空图。
+ */
+export function prepareShareMessageClone(node: HTMLElement): HTMLElement | null {
+  const clone = node.cloneNode(true) as HTMLElement;
+  stripInteractiveElements(clone);
+  stripMessageSources(clone);
+  expandCollapsedMessages(clone);
+  stripCloneAnchors(clone);
+  if ((clone.textContent ?? '').trim().length > 0) return clone;
+  const hasNonLayoutElement = Array.from(clone.querySelectorAll('*')).some(
+    (el) => !SHARE_LAYOUT_ONLY_TAGS.has(el.tagName),
+  );
+  return hasNonLayoutElement ? clone : null;
+}
+
 const REDACTION_SCOPE_TAGS = new Set([
   'ADDRESS',
   'ARTICLE',
@@ -388,6 +413,38 @@ export function expandCollapsedMessages(root: HTMLElement): void {
 }
 
 /**
+ * 按选中顺序把清洗后的消息放进 stage,返回实际放入的条数。
+ *
+ * 跳选断点按「选中序列」判定(orderInAll 为当前已渲染可选序列的位置);清洗后为空的
+ * 消息(本身是选中项)不放进图里,但它之前出现的断点要延续到下一条实际放进图里的
+ * 消息,不能被吞掉。图首不放断点标记:前面没有内容可与之区隔。
+ */
+export function appendShareMessages(
+  stage: HTMLElement,
+  sourceNodes: readonly HTMLElement[],
+  orderedSelectedIds: readonly string[],
+  orderInAll: ReadonlyMap<string, number>,
+): number {
+  let prevIndex: number | null = null;
+  let appendedCount = 0;
+  let gapPending = false;
+  for (const [i, node] of sourceNodes.entries()) {
+    const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
+    if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
+      gapPending = true;
+    }
+    prevIndex = currentIndex;
+    const clone = prepareShareMessageClone(node);
+    if (!clone) continue;
+    if (gapPending && appendedCount > 0) stage.appendChild(buildShareImageGapMarker());
+    gapPending = false;
+    stage.appendChild(clone);
+    appendedCount += 1;
+  }
+  return appendedCount;
+}
+
+/**
  * 跳选断点处的省略标记。
  *
  * 选了第 1、第 5 条时,两条在图里直接相邻 —— 接收方看不出中间还有对话被跳过,
@@ -541,19 +598,8 @@ export async function buildShareImageBlob({
   const orderInAll = new Map(allIds.map((id, index) => [id, index]));
 
   try {
-    let prevIndex: number | null = null;
-    for (const [i, node] of sourceNodes.entries()) {
-      const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
-      if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
-        stage.appendChild(buildShareImageGapMarker());
-      }
-      stage.appendChild(node.cloneNode(true) as HTMLElement);
-      prevIndex = currentIndex;
-    }
-    stripInteractiveElements(stage);
-    stripMessageSources(stage);
-    expandCollapsedMessages(stage);
-    stripCloneAnchors(stage);
+    const appendedCount = appendShareMessages(stage, sourceNodes, orderedSelectedIds, orderInAll);
+    if (appendedCount === 0) throw new ShareImageNoContentError();
     redactTextNodes(stage);
 
     // 品牌素材是同源打包资源,html-to-image 本可自行内联;预先转掉是为了把

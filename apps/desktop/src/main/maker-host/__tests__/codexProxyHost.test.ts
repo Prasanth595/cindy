@@ -466,6 +466,38 @@ describe('codex gateway config', () => {
 });
 
 describe('createCrossProviderCompactionCompatTransform', () => {
+  it('preserves child ciphertext on GPT API routes even when recorded under a subscription parent', async () => {
+    const host = await freshCodexProxyHost();
+    const legacy = 'OLD_SUBSCRIPTION_COLLAB';
+    const oldPart = { type: 'encrypted_content', encrypted_content: legacy };
+    const freshPart = { type: 'encrypted_content', encrypted_content: 'NEW_API_COLLAB' };
+    const readable = { type: 'input_text', text: 'readable result' };
+    const mixed = { type: 'agent_message', id: 'amsg_old', author: 'worker', recipient: 'parent', content: [readable, oldPart, freshPart] };
+    const opaque = { type: 'agent_message', content: [oldPart] };
+    const reasoning = { type: 'reasoning', encrypted_content: legacy };
+    const compaction = { type: 'compaction', encrypted_content: legacy };
+    const tool = { type: 'function_call_output', call_id: 'call_1', output: JSON.stringify(opaque) };
+    const body = { model: 'openai/gpt-6-luna', input: [mixed, opaque, reasoning, compaction, tool] };
+    const before = structuredClone(body);
+    host.registerComposed('legacy-session', 'legacy-thread', 'PRODUCT_PROMPT');
+    const transform = host.createCrossProviderCompactionCompatTransform();
+    const ctx = { ...CTX_BASE, upstreamBase: 'https://gateway.example.com/v1', headers: { 'thread-id': 'legacy-thread' } };
+    expect(transform(body, ctx)).toBeNull();
+    expect(body).toEqual(before);
+    expect(transform(body, { ...ctx, upstreamBase: 'https://chatgpt.com/backend-api/codex' })).toBeNull();
+    expect(transform(body, { ...ctx, headers: { 'thread-id': 'unrelated-thread' } })).toBeNull();
+    expect(host.registerChildThread('legacy-thread', 'child-thread')).toBe(true);
+    expect(transform(body, { ...ctx, headers: { 'thread-id': 'child-thread' } })).toBeNull();
+    const onlyNew = { model: body.model, input: [{ ...mixed, content: [freshPart] }] };
+    expect(transform(onlyNew, ctx)).toBeNull();
+    expect(transform(onlyNew, { ...ctx, headers: { 'thread-id': 'child-thread' } })).toBeNull();
+    host.unregister('legacy-session');
+    expect(transform(body, ctx)).toBeNull();
+    expect(transform(body, { ...ctx, headers: { 'thread-id': 'child-thread' } })).toBeNull();
+    host.registerComposed('new-session', 'legacy-thread', 'PRODUCT_PROMPT');
+    expect(transform(body, ctx)).toBeNull();
+    host.unregister('new-session');
+  });
   const CTX_BASE = { reqId: 1, method: 'POST', url: '/responses', headers: { 'thread-id': 't-1' } };
   const compactionItem = { type: 'compaction', encrypted_content: 'ENC' };
   const contextCompactionItem = { type: 'context_compaction', id: 'cc_1', encrypted_content: 'ENC2' };

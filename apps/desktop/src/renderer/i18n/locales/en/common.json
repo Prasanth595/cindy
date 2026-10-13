@@ -196,17 +196,14 @@
   },
   "providerShare": {
     "entry": {
-      "manage": "Manage Sharing",
-      "manageWithPending_one": "Manage Sharing · {{count}} pending request",
-      "manageWithPending_other": "Manage Sharing · {{count}} pending requests",
-      "disabledInvocation": "Turn on “Allow remote use” to share this provider",
-      "disabledRemoteControl": "Allow remote control in Remote Connection settings to share this provider",
+      "label": "Remote & Sharing",
+      "pending_one": "{{count}} share request waiting",
+      "pending_other": "{{count}} share requests waiting",
       "remoteControlOff": "This computer doesn’t allow remote control yet, so its providers can’t be used remotely or shared.",
       "openRemoteControl": "Open Remote Connection Settings",
       "descriptionOff": "When on, your other computers and the people you share with can use this provider’s models. While it’s off, existing shares are paused, not deleted."
     },
     "manage": {
-      "title": "Share {{provider}}",
       "description": "People you share with can pick {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}; their files and commands still run on their own computer.",
       "descriptionWithDevice": "People you share with can pick {{provider}} models in their own sessions. The Agent runs on this computer ({{device}}) and usage counts toward your {{provider}}; their files and commands still run on their own computer.",
       "createLink": "Create Share Link",
@@ -246,13 +243,11 @@
         "collapseAria": "Collapse {{name}}’s Model Usage",
         "empty": "You haven’t shared with anyone yet. Create a share link and send it; once they request access and you approve, they’ll appear here.",
         "table": {
-          "model": "Model",
           "turns": "Messages",
           "input": "Input",
           "output": "Output",
           "amount": "Est. Cost"
         },
-        "noUsage": "No usage in this period",
         "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill."
       },
       "removeConfirm": {
@@ -293,6 +288,7 @@
       "requestedAt": "Requested {{time}} with your share link",
       "pairingHint": "Before approving, you can ask them over the channel you sent the link through: “What pairing code do you see?” Approve if it matches.",
       "callout": "Once approved, {{name}} can use {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}. You can pause or remove access anytime in “Share {{provider}}”.",
+      "calloutClaudeEmail": "While {{name}} uses it, the Agent can see the email address you sign in to Claude with.",
       "calloutUnknown": "If you don’t recognize this person, decline; the link stops working once declined.",
       "approve": "Approve Sharing",
       "reject": "Decline Request",
@@ -301,12 +297,11 @@
     "apply": {
       "loading": "Reading share link…",
       "askTitle": "{{name}} Wants to Share {{provider}} with You",
-      "providerOnDevice": "{{provider}} · {{device}}",
-      "factRuns": "The Agent runs on {{name}}’s computer with {{provider}}",
+      "factRuns": "The Agent runs with {{provider}} on {{name}}’s computer or another computer {{name}} arranges",
       "factRunsDetail": "Usage counts toward {{name}}’s {{provider}}, and {{name}} can see your usage",
       "factFiles": "Your project files and commands still run on your own computer",
       "factFilesDetail": "Your session permissions still apply",
-      "factPrivacy": "Chat content and files the Agent reads pass through and are saved on {{name}}’s computer",
+      "factPrivacy": "Chat content and files the Agent reads pass through {{name}}’s computer and are saved on the computer that runs the session",
       "factPrivacyDetail": "{{name}} only sees your nickname and avatar",
       "factApproval": "After you send the request, it takes effect only once {{name}} approves",
       "factApprovalDetail": "{{name}} can pause or remove this share at any time",
@@ -375,21 +370,45 @@
         "open": "Open Link",
         "cancel": "Cancel"
       },
-      "detailNote": "The agent runs on {{name}}'s computer, using their sign-in and quota. To use it, choose it in the model list when you start a task.",
+      "detailNote": "The agent runs on {{name}}'s computer or another computer {{name}} arranges, using their sign-in and quota. Chat content and files the agent reads pass through {{name}}'s computer and are saved on the computer that runs the session. To use it, choose it in the model list when you start a task.",
       "modelsTitle": "Available Models",
       "modelsLoading": "Loading the models they shared…",
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
       "modelsFailedWithCode": "Couldn’t read the models they made available. Try again shortly. (Error code: {{code}})",
       "retryModels": "Reload Models",
+      "groupStatus": {
+        "title": "Group Computer Status",
+        "shareActive": "Sharing Active",
+        "refresh": "Refresh Status",
+        "computer": "Computer {{number}}",
+        "summary": "{{ready}} of {{total}} computers can accept tasks",
+        "loading": "Reading computer status…",
+        "unsupported": "The sharer’s Cindy has not provided status. Ask the sharer to check or update Cindy.",
+        "failed": "Could not read computer status. Refresh to try again.",
+        "unconfirmed": "Some computer statuses are unconfirmed. Refresh shortly.",
+        "noneReady": "No computers can accept tasks right now. Ask the sharer to check.",
+        "note": "Only anonymous status is shown, without computer names or usage. Availability also depends on the selected model.",
+        "updateNote": "The sharer needs to update Cindy on the indicated computers to accept shared tasks.",
+        "state": {
+          "available": "Available",
+          "busy": "Busy, Can Accept Tasks",
+          "cooling": "Cooling Down, No New Tasks",
+          "offline": "Offline or Unreachable",
+          "paused": "Assignment Paused",
+          "unavailable": "Temporarily Unavailable",
+          "needs-update": "Update Required",
+          "unknown": "Status Unknown"
+        }
+      },
       "modelsEmpty": "They haven't made any models available yet.",
       "pausedNote": "They've paused this share. You can use it again once they resume it.",
       "offlineNote": "Their computer is offline. You can use it again once it is back online.",
       "needsUpdateNote": "They need to update Cindy before you can use this share."
     },
     "picker": {
-      "deviceName": "{{device}} · Shared by {{owner}}",
       "unavailable": "Unavailable share",
-      "hostOutdated": "The Cindy version on the owner’s computer is too old to list these models. Ask them to update Cindy, then try again."
+      "hostOutdated": "The Cindy version on the owner’s computer is too old to list these models. Ask them to update Cindy, then try again.",
+      "numbered": "{{name}} ({{index}})"
     },
     "notification": {
       "requestTitle": "New Share Request",
@@ -398,6 +417,148 @@
       "approvedBody": "{{name}} shared {{provider}} with you",
       "rejectedTitle": "Share Request Declined",
       "rejectedBody": "{{name}} declined to share {{provider}}"
+    }
+  },
+  "providerGroup": {
+    "page": {
+      "title": "{{provider}} · Remote & Sharing",
+      "shareTitle": "Sharing"
+    },
+    "usage": {
+      "title": "Usage",
+      "description": "{{provider}} usage by person. Your own usage is counted from this update on.",
+      "shareSource": "Shared with",
+      "unknownDevice": "Another computer",
+      "descriptionGroup": "{{provider}} usage by person. Expand a row to see each computer in the group. Your own usage is counted from this update on.",
+      "summary": {
+        "total": "Total usage",
+        "amount": "Estimated cost",
+        "people": "People",
+        "models": "Models"
+      },
+      "selfTag": "You",
+      "relayName": "Via {{device}}",
+      "computerCount_one": "{{count}} computer",
+      "computerCount_other": "{{count}} computers",
+      "lastUsedOn": "{{lastUsed}} · on {{computers}}",
+      "unattributed": "Earlier usage",
+      "unattributedSource": "Computer not recorded",
+      "removedMember": "Removed from the group",
+      "expandAria": "Show usage details for {{name}}",
+      "collapseAria": "Hide usage details for {{name}}",
+      "table": {
+        "member": "Computer / model"
+      }
+    },
+    "section": {
+      "title": "Provider Group",
+      "addComputer": "Add Computer",
+      "delete": "Delete Group",
+      "empty": "Add {{provider}} from your other computers and tasks will pick one automatically",
+      "loading": "Loading provider group…",
+      "loadFailed": "Couldn’t load the provider group",
+      "note": "For sessions on this computer and sessions of people you share with, the group picks the computer that runs the Agent"
+    },
+    "strategy": {
+      "label": "Group Strategy",
+      "least": "Least Busy",
+      "round": "Round Robin",
+      "order": "In Order",
+      "weight": "By Weight",
+      "usage": "Usage Balancing",
+      "description": {
+        "least": "Goes to the least busy one",
+        "round": "Rotates across computers",
+        "order": "Earlier in the list first",
+        "weight": "Split by weight",
+        "usage": "Balance 5-hour and weekly usage"
+      }
+    },
+    "autoSwitch": {
+      "label": "Switch Computers Automatically",
+      "description": "Switches when one hits its limit, is unreachable or is signed out"
+    },
+    "member": {
+      "local": "This Computer",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "Update needed",
+        "unknown": "Version unknown",
+        "needsUpdate": "Update needed to receive shared tasks",
+        "supportUnknown": "Shared-task compatibility unknown"
+      },
+      "sourceDevice": "My other computer",
+      "sourceShare": "Shared by {{name}}",
+      "shareComputer": "{{name}}'s computer",
+      "shareComputerUnknown": "Shared computer",
+      "quota": {
+        "loading": "Reading quota…",
+        "unavailable": "Can’t read this computer’s quota right now",
+        "none": "This provider has no quota information",
+        "offline": "This computer is offline, so its quota can’t be read",
+        "share": "Quota isn’t shown for computers shared by others"
+      },
+      "runningCount_one": "{{count}} task running",
+      "runningCount_other": "{{count}} tasks running",
+      "limitAria": "Task limit for {{name}}",
+      "limitOption_one": "Max {{count}}",
+      "limitOption_other": "Max {{count}}",
+      "weightAria": "Weight for {{name}}",
+      "weightOption": "Weight {{weight}}",
+      "assignAria": "Assign tasks to {{name}}",
+      "assignLocalAria": "Allow {{name}} to accept new tasks from other computers",
+      "moreAria": "More actions for {{name}}",
+      "remove": "Remove from Group",
+      "status": {
+        "checking": "Checking…",
+        "idle": "Idle",
+        "full": "Full",
+        "paused": "Assignments paused",
+        "pausedLocal": "Not accepting new tasks from other computers",
+        "cooling": "Cooling down",
+        "coolingUntil": "Cooling down · back around {{time}}",
+        "offline": "Offline",
+        "unreachableHere": "Can’t reach it from this computer",
+        "unavailable": {
+          "provider-off": "“Allow remote use” is off for this provider on that computer",
+          "disconnected": "Provider not connected or turned off",
+          "share-paused": "Share paused",
+          "share-removed": "Share removed"
+        }
+      },
+      "removeConfirm": {
+        "title": "Remove {{name}} from the provider group?",
+        "description": "It won’t get new tasks. Tasks already running there stay on that computer.",
+        "lastDescription": "It’s the last computer in the group, so removing it deletes the {{provider}} provider group.",
+        "confirm": "Remove from Group"
+      },
+      "sourceGroupOwner": "Hosts the group"
+    },
+    "deleteConfirm": {
+      "title": "Delete the {{provider}} provider group?",
+      "description": "New tasks on this computer will run here. Tasks already on other computers stay where they are.",
+      "confirm": "Delete Group"
+    },
+    "add": {
+      "title": "Add Computers to the {{provider}} Provider Group",
+      "sourceAria": "Computer source",
+      "tabAvailable": "Already Available",
+      "tabLink": "Share Link",
+      "availableDescription": "Your other computers and providers shared with you. Select to add—no request needed.",
+      "loading": "Looking for computers to add…",
+      "loadFailed": "Couldn’t load computers to add",
+      "empty": "No computers to add. Enable “Allow remote use” for {{provider}} on another computer, or request access with someone’s share link.",
+      "alreadyMember": "Already in group",
+      "confirm": "Add to Group",
+      "cancel": "Cancel",
+      "linkDescription": "Paste a {{provider}} share link from someone else. After they approve, come back to “Already Available” and select it.",
+      "pasteLink": "Paste Share Link"
+    },
+    "toast": {
+      "added_one": "Added {{count}} computer to the {{provider}} provider group",
+      "added_other": "Added {{count}} computers to the {{provider}} provider group",
+      "removed": "Removed {{name}} from the provider group",
+      "deleted": "Deleted the {{provider}} provider group"
     }
   },
   "privacyExit": {
@@ -635,7 +796,8 @@
     "PROVIDER_SHARE_CROSS_REGION_DISABLED": "Cross-region sharing isn’t available yet. This link comes from Cindy’s service in another region.",
     "REMOTE_AGENT_SHARE_PAUSED": "Model not changed: the owner has paused this share for you. Pick another model.",
     "REMOTE_AGENT_SHARE_REMOVED": "Model not changed: this share is no longer available (the owner removed it or you left). Pick another model.",
-    "REMOTE_AGENT_SHARE_UNAVAILABLE": "Model not changed: the shared provider is temporarily unavailable (the owner's computer is offline or sharing is turned off for now). Try again later or pick another model."
+    "REMOTE_AGENT_SHARE_UNAVAILABLE": "Model not changed: the shared provider is temporarily unavailable (the owner's computer is offline or sharing is turned off for now). Try again later or pick another model.",
+    "SSH_HOST_KEY_MISMATCH": "SSH Host Key Changed"
   },
   "providerError": {
     "AUTH_INVALID": "Invalid or expired API key (401). Check the key and try again",
@@ -707,6 +869,290 @@
       "allowOnce": "Allow once",
       "alwaysAllowForSession": "Always allow for this session",
       "deny": "Deny"
+    }
+  },
+  "menubar": {
+    "balance": {
+      "name": "Cindy balance",
+      "quotaName": "Cindy quota",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "today at {{time}}",
+      "tomorrow": "tomorrow at {{time}}",
+      "weekday": "{{day}} at {{time}}",
+      "date": "{{date}} at {{time}}",
+      "minutesAgo_one": "{{n}} min ago",
+      "minutesAgo_other": "{{n}} min ago",
+      "hoursAgo_one": "{{n}} hr ago",
+      "hoursAgo_other": "{{n}} hr ago",
+      "daysAgo_one": "{{n}} day ago",
+      "daysAgo_other": "{{n}} days ago"
+    },
+    "duration": {
+      "daysHours": "{{d}}d {{h}}h",
+      "days_one": "{{d}} day",
+      "days_other": "{{d}} days",
+      "hoursMinutes": "{{h}}h {{m}}m",
+      "hours_one": "{{h}} hour",
+      "hours_other": "{{h}} hours",
+      "minutes_one": "{{m}} minute",
+      "minutes_other": "{{m}} minutes"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}d {{h}}h",
+      "days": "{{d}}d",
+      "hoursMinutes": "{{h}}h {{m}}m",
+      "hours": "{{h}}h",
+      "minutes": "{{m}}m"
+    },
+    "window": {
+      "session": "{{hours}}-hour",
+      "week": "Weekly",
+      "scoped": "{{model}} weekly"
+    },
+    "headline": {
+      "recommend": "{{name}} has the most left.",
+      "balance": "Your Cindy balance still works.",
+      "quota": "Your Cindy quota still has room.",
+      "none": "Everything is used up.",
+      "unread": "Quota not read yet.",
+      "empty": "Nothing with a quota yet.",
+      "emptyHint": "Connect a subscription in Cindy to see what's left here.",
+      "restore": "{{name}} resets in {{duration}}",
+      "soon": "{{name}} is running low",
+      "subscriptionsUsed": "Subscriptions are used up",
+      "waitReset": "Wait for subscriptions to reset",
+      "sentence": "{{text}}.",
+      "joiner": ", "
+    },
+    "cell": {
+      "payg": "API",
+      "plan": "Plan",
+      "noBalance": "No balance",
+      "unknown": "Unknown",
+      "noData": "No data yet",
+      "lastsDays": "~{{n}}d left",
+      "lastsDaysShort": "{{n}}d",
+      "resetsIn": "Resets in {{duration}}",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}, pay per use, no balance available",
+      "plan": "{{name}}, subscription, remaining amount unavailable",
+      "balance": "Cindy balance {{amount}}",
+      "balanceDays": "Cindy balance {{amount}}, lasts about {{n}} days",
+      "quota": "Cindy quota {{amount}} left",
+      "noData": "{{name}}, no data yet",
+      "reserve": "{{name}}, used up, credits still available",
+      "remaining": "{{name}}, {{n}}% left"
+    },
+    "detail": {
+      "balanceCaption": "Balance",
+      "quotaCaption": "Quota left",
+      "apiKey": "API Key",
+      "subscription": "Subscription",
+      "noBalance": "No balance available",
+      "unknownRemaining": "Remaining amount unavailable",
+      "noData": "No data yet",
+      "windowLeft": "{{window}} left"
+    },
+    "say": {
+      "balance": "The balance doesn't refill on its own.",
+      "quota": "The quota is granted each period; it isn't topped up here.",
+      "quotaResets": "The quota resets to full {{at}}.",
+      "balanceLasts_one": "At the last 7 days' pace, it lasts about {{n}} day.",
+      "balanceLasts_other": "At the last 7 days' pace, it lasts about {{n}} days.",
+      "balanceEstimating": "Spending history is still building up. An estimate appears in a few days.",
+      "payg": "{{name}} bills per use.",
+      "paygSub": "Its API doesn't report a balance, so there's nothing to show here. What you use still counts toward Cindy usage.",
+      "plan": "{{name}} is a subscription connection.",
+      "planSub": "Cindy can't read how much is left yet. What you use still counts toward Cindy usage.",
+      "noData": "Nothing read yet.",
+      "noDataSub": "It appears after a refresh or after you run a task with it.",
+      "usedUp": "{{window}} usage is used up.",
+      "usedUpWithCredits": "Back {{at}}. Until then, Codex keeps working on {{credits}} credits.",
+      "creditsOnly": "Codex keeps working on {{credits}} credits.",
+      "resetsAt": "Back {{at}}.",
+      "emptyIn": "At this pace, it runs out in about {{duration}}.",
+      "beforeReset": "That's {{duration}} before the reset.",
+      "full": "Full.",
+      "relaxed": "Plenty of room at this pace.",
+      "onPace": "On pace.",
+      "windowRefresh": "{{window}} window refreshes {{at}}",
+      "usedUpWithResets_one": "{{n}} reset is available; using it refills right away.",
+      "usedUpWithResets_other": "{{n}} resets are available; using one refills right away."
+    },
+    "fact": {
+      "balance": "Balance",
+      "quotaLeft": "Quota left",
+      "quotaTotal": "Quota this period",
+      "updatedAgo": "Updated {{ago}}",
+      "dailyUse": "Daily spend",
+      "about": "~{{value}}",
+      "estimating": "Estimating",
+      "estimatingSub": "Not enough data yet",
+      "last7Days": "Last 7 days",
+      "runsOut": "Runs out",
+      "aroundDate": "Around {{date}}",
+      "atThisPace": "At this pace",
+      "usedFor": "Used for",
+      "cindyModels": "Models from Cindy",
+      "chargedPerUse": "Charged per use",
+      "billing": "Billing",
+      "perUse": "Per use",
+      "subscription": "Subscription",
+      "connected": "Connected",
+      "notProvided": "Not reported by the API",
+      "notReadable": "Can't read it yet",
+      "inMenu": "In the menu",
+      "hidden": "Hidden",
+      "shown": "Shown",
+      "editHint": "Change it in Edit",
+      "usage": "Usage",
+      "counted": "Counted",
+      "countedSub": "In Cindy usage",
+      "resetsFull": "Back",
+      "windowResets": "{{window}} resets",
+      "timeLeft": "{{duration}} left",
+      "remainingPercent": "{{n}}% left",
+      "perModel": "Counted per model",
+      "pace": "Pace",
+      "paceNormal": "Normal",
+      "paceAhead": "{{n}}% ahead",
+      "paceReserve": "{{n}}% in reserve",
+      "paceSub": "Even use leaves {{n}}%",
+      "paceUsedUp": "Used up",
+      "paceWaiting": "Waiting to reset",
+      "extraCredits": "Extra credits",
+      "unlimited": "Unlimited",
+      "creditsUsedAfter": "Used by Codex after the limit",
+      "noCredits": "No extra credits",
+      "prepaid": "Prepaid balance",
+      "xaiAccount": "xAI account",
+      "account": "Account",
+      "todaySpent": "Spent today",
+      "dailySuggested": "Suggested under {{value}} a day",
+      "poolPlan": "Plan balance",
+      "poolPlanSub": "From your plan",
+      "poolPurchased": "Top-up balance",
+      "poolPurchasedSub": "Added by you",
+      "poolPromo": "Promo balance",
+      "poolPromoSub": "From promotions",
+      "promoExpires": "{{value}} expires {{date}}",
+      "promoExpiresAll": "Expires {{date}}",
+      "resetCredits": "Usage limit resets",
+      "resetCount_one": "{{n}} reset",
+      "resetCount_other": "{{n}} resets",
+      "resetExpires": "Valid until {{date}}",
+      "resetAtLimit": "Usable at a usage limit",
+      "device": "Computer",
+      "deviceSub": "One of your other computers"
+    },
+    "action": {
+      "newTask": "Start a task with {{name}}",
+      "topUp": "Top up in Cindy",
+      "manage": "Manage in Cindy settings",
+      "openApp": "Open Cindy",
+      "useReset": "Use a reset in Cindy settings"
+    },
+    "tasks": {
+      "today_one": "{{n}} today",
+      "today_other": "{{n}} today",
+      "withRunning_one": "{{base}} · {{n}} running",
+      "withRunning_other": "{{base}} · {{n}} running",
+      "context": "context {{n}}%",
+      "private": "{{harness}} task"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "Subscription value = what the usage would cost at API reference prices. It is not a bill.",
+      "deviceSelf": "this {{name}} (live)",
+      "deviceSynced": "{{name}} (synced {{date}})",
+      "deviceNotSynced": "{{name}} (not synced yet)",
+      "deviceJoiner": " + ",
+      "allDevices": "All devices = {{list}}."
+    },
+    "manage": {
+      "balance": "Balance · doesn't refill on its own",
+      "quota": "Quota · resets each period",
+      "payg": "API Key · pay per use, no balance",
+      "plan": "Subscription · remaining amount unavailable",
+      "subscription": "Subscription · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
+    },
+    "notify": {
+      "lowTitle": "Running low",
+      "lowBody": "Every source with room left is nearly empty. Click the Cindy icon in the menu bar to see when each one resets."
+    },
+    "ui": {
+      "updatedJustNow": "Updated just now",
+      "updatedMinutes_one": "Updated {{n}} min ago",
+      "updatedMinutes_other": "Updated {{n}} min ago",
+      "updatedHours_one": "Updated {{n}} hr ago",
+      "updatedHours_other": "Updated {{n}} hr ago",
+      "updatedDays_one": "Updated {{n}} day ago",
+      "updatedDays_other": "Updated {{n}} days ago",
+      "tasks": "Tasks",
+      "tokenUnit": "tokens",
+      "noTasksToday": "No tasks yet today",
+      "moreTasks_one": "{{n}} more task",
+      "moreTasks_other": "{{n}} more tasks",
+      "running": "Running",
+      "openApp": "Open Cindy",
+      "gateTitle": "Sign in to see what's left",
+      "gateBody": "Sign in to Cindy, or choose Skip Sign-In, and this panel shows your subscription quota and today's usage.",
+      "settings": "Manage",
+      "refresh": "Refresh",
+      "monthScopeLocal": "Last 30 days · This computer",
+      "monthScopeAll": "Last 30 days · All devices",
+      "expand": "Expand",
+      "expandUsage": "Expand usage",
+      "back": "Back",
+      "usageTitle": "Usage",
+      "wideCaptionMoney_one": "Last {{n}} day · Subscription value",
+      "wideCaptionMoney_other": "Last {{n}} days · Subscription value",
+      "scopeLocal": "This computer",
+      "scopeAll": "All devices",
+      "noUsage": "No usage",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "Daily avg",
+      "paid": "Paid",
+      "range7": "7 days",
+      "range30": "30 days",
+      "range90": "90 days",
+      "listModels_one": "Models · {{n}} day",
+      "listModels_other": "Models · {{n}} days",
+      "listTasks": "Today's tasks",
+      "today": "Today",
+      "manageTitle": "Manage",
+      "done": "Done",
+      "sources": "Sources",
+      "sourcesShown": "{{a}} of {{b}} shown",
+      "statusIcon": "Menu bar icon",
+      "statusIconMode": {
+        "icon": "Icon only",
+        "lowest": "Lowest left",
+        "today": "Today's usage",
+        "task": "Current task"
+      },
+      "other": "Other",
+      "lowAlert": "Notify when running low",
+      "privacy": "Hide personal info",
+      "usageScope": "Usage covers",
+      "manageFoot": "Manage providers",
+      "showSource": "Show {{name}} in the menu",
+      "reorderHint": "Drag, or use the actions menu to reorder",
+      "moveUp": "Move up",
+      "moveDown": "Move down"
     }
   },
   "settings": {
@@ -1040,6 +1486,15 @@
         "preparingRuntime": "Preparing runtime on {{hostId}}…",
         "installingAgent": "Installing {{agent}} on remote {{hostId}}…",
         "failed": "Failed to install {{agent}} on {{hostId}}: {{message}}. Open Settings → Remote → expand {{hostId}} for the full log."
+      },
+      "hostKey": {
+        "title": "SSH Host Key Changed",
+        "review": "Review Host Key",
+        "explanation": "The identity key for {{host}} no longer matches the key Cindy saved. Verify the new fingerprint with the server administrator before updating trust.",
+        "details": "Previously trusted: {{trusted}}\nNew fingerprint: {{presented}}\n\nA server reinstall or an intercepted connection can cause this change. Compare the new fingerprint through a trusted channel, such as the server console.\n\nCindy’s trust record: {{file}}\nCindy does not read ~/.ssh/known_hosts. Changing your login key or deleting and adding the host will not fix this.\n\nUpdating trust replaces only this host’s fingerprint and reconnects. Other hosts stay unchanged.",
+        "cancel": "Keep Existing Key",
+        "trust": "Trust New Key and Reconnect",
+        "updateFailed": "Could not update host trust. The connection details or saved key may have changed, or the trust file could not be written. Reconnect to refresh the fingerprints and check the file permissions."
       }
     },
     "appearance": {
@@ -1220,6 +1675,10 @@
       "wecomGroupClearFailed": "Could not remove the Webhook"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "Show remaining usage in the menu bar",
+        "hint": "Adds a Cindy icon to the macOS menu bar. Click it to see what's left on your subscriptions, your Cindy balance and today's usage."
+      },
       "loginItem": {
         "label": "Start at Login",
         "hint": "Open Cindy when you sign in to your computer. Off by default.",
@@ -2371,6 +2830,10 @@
           "modelSupportsImageInput": "Supports image input",
           "modelSupportsImageInputHelp": "Enable only when the model actually accepts visual input. Start a new Pi task after saving.",
           "runtimeAdvanced": "Advanced",
+          "openaiImages": "Use OpenAI Images API",
+          "openaiImagesHint": "Uses this connection’s address and API key for /images/generations and /images/edits. Enabling it selects this as the provider’s only Images connection. Add missing model IDs manually, then declare their image capability in model details.",
+          "xaiVideos": "Use xAI-compatible Videos API",
+          "xaiVideosHint": "Uses this connection’s address and API key to submit and poll video tasks. Enabling it selects this as the provider’s only video connection. Add missing model IDs, then declare video capability in model details.",
           "runtimeSupportsImageGeneration": "Supports image generation and editing",
           "runtimeSupportsImageGenerationHelpLabel": "About image generation and editing support",
           "runtimeSupportsImageGenerationConditionTitle": "When to enable",
@@ -2620,6 +3083,20 @@
           "tokensApprox": "tokens (~{{approx}})",
           "catalogMissing": "Not in the catalog",
           "capability": "Capabilities",
+          "videoCapability": {
+            "label": "Video capability",
+            "default": "Follow model catalog",
+            "generate": "Text-to-video",
+            "edit": "Text-to-video and image-to-video",
+            "hint": "Applies to the {{agent}} video connection. Only declare capabilities the API supports. Reopen Art details after saving."
+          },
+          "imageCapability": {
+            "label": "Image capability",
+            "default": "Follow model catalog",
+            "generate": "Image generation",
+            "edit": "Image generation and editing",
+            "hint": "Applies to the {{agent}} Images connection. Only declare capabilities the API actually supports. Reopen Art details after saving."
+          },
           "capabilityHint": "Uses capabilities declared by this provider. Image support falls back to model naming when undeclared.",
           "imageInput": "Image input",
           "supported": "Supported",
@@ -2721,7 +3198,13 @@
         "statusReady": "Available",
         "detailNote": "The agent runs on {{device}}, using that computer’s sign-in and quota. To use it, choose it in the model list when you start a task. To change this provider, go to Settings → Providers on that computer.",
         "modelsTitle": "Available Models",
-        "modelsEmpty": "This provider has no models available on that computer yet."
+        "modelsEmpty": "This provider has no models available on that computer yet.",
+        "rowLabelGroup": "{{provider}} · {{device}} · Provider Group",
+        "groupBadge_one": "Provider Group · {{count}} computer",
+        "groupBadge_other": "Provider Group · {{count}} computers",
+        "groupNote": "{{device}} made this provider a provider group. When you start a task with it, {{device}} assigns the task to one of the computers below by its group strategy, and moves it to another one if that computer runs into a problem. To change the group, go to Settings → Providers on {{device}}.",
+        "groupMembersTitle": "Computers in the Group",
+        "groupMembersFailed": "Couldn’t get the status of the computers in the group right now."
       },
       "genericOAuth": {
         "subtitle": "Subscription account",
@@ -2769,6 +3252,7 @@
         "remoteAccess": {
           "label": "Allow remote use",
           "description": "When on, your other computers and the people you share with can use this provider’s models. The Agent runs on this computer, using this computer’s sign-in and quota.",
+          "descriptionGroup": "When on, your other computers and the people you share with can use this provider’s models. The provider group picks the computer that runs the Agent.",
           "ariaLabel": "Allow your other computers and the people you share with to use this provider",
           "writeFailed": "Couldn't save the remote access setting. Please try again."
         },
@@ -3020,7 +3504,10 @@
       "connection": {
         "modelCount": "{{count}} models configured",
         "modelsAutomatic": "Model details are imported automatically. Adjust individual models in the model list.",
-        "manualModel": "Model IDs (if discovery is unavailable)"
+        "manualModel": "Model IDs (if discovery is unavailable)",
+        "modelTypeAutomatic": "Detect Automatically",
+        "manualModelTypeHint": "Use the same ID to update its type. Automatic detection restores the catalog type.",
+        "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here."
       },
       "byok": {
         "managed": "Managed by your organization",
@@ -5607,7 +6094,7 @@
         "installed": "Installed",
         "replace": "Replace",
         "replaceAria": "Replace {{name}} with this marketplace version",
-        "replaceDescription": "A plugin with the same ID is already installed. Continuing will replace it with this marketplace version and keep its data.",
+        "replaceDescription": "A plugin with the same ID is already installed. Continuing switches its source. Existing data is kept separately; the new source does not inherit accounts or secrets and must be connected again.",
         "unavailable": "The plugin market is temporarily unavailable. Installed plugins remain available.",
         "customSourcesUnavailable": "These custom marketplaces are temporarily unavailable: {{names}}. Other marketplaces are unaffected.",
         "authenticationRequired": "Sign in to Cindy to view the plugin market.",
@@ -5628,7 +6115,12 @@
           "invalidPackage": "This plugin package is invalid and cannot be installed. Contact the publisher.",
           "downloadTimeout": "The plugin download timed out. Please try again later.",
           "downloadFailed": "The plugin download failed. Check your connection and try again.",
-          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release."
+          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release.",
+          "namespaceClientRequired": "This version cannot show organization plugins. Update Cindy to continue. Installed organization plugins remain available.",
+          "organizationContextUnavailable": "Organization identity is temporarily unavailable. Try again later. Installed organization plugins remain available.",
+          "namespaceConfigRequired": "Organization plugins are temporarily unavailable. Installed organization plugins remain available.",
+          "listChanged": "The organization plugin catalog changed. Try again.",
+          "organizationUnavailable": "Organization plugins are temporarily unavailable. Installed organization plugins remain available."
         },
         "securityTitle": "Install and permissions",
         "securityDescription": "Cindy verifies package size and SHA-256 in the main process, validates the plugin manifest, then installs atomically. You confirm the plugin’s permissions before it is installed; first-time installs are then enabled automatically and can be disabled anytime on the Plugins page. Updates keep the current enabled state, and you are asked first when a new version needs more permissions.",
@@ -7930,6 +8422,39 @@
       "message": "Moving {{appName}} to the Applications folder gives you a better experience, including automatic updates.",
       "move": "Move (Recommended)",
       "later": "Not Now"
+    },
+    "agentInstall": {
+      "title": "Update {{appName}} to {{version}}?",
+      "versions": "Update from {{from}} to {{to}}. After you confirm, {{appName}} downloads and installs it with the built-in updater, then restarts.",
+      "otherTasks": "{{count}} other task(s) are running and will be interrupted by the restart. Afterwards, click Continue in each task to resume.",
+      "backgroundWork": "Background work is also in progress (such as background commands, media generation, Subagents or automation runs) and will be interrupted by the restart.",
+      "noOtherTasks": "No other tasks are running.",
+      "thisTask": "This task restarts with {{appName}} after the current reply finishes.",
+      "remote": "Phones and other remote connections disconnect briefly during the restart. Reconnect to see the result in this task.",
+      "linuxAuth": "Installing requires your system password on this computer.",
+      "succeeded": "{{appName}} is updated to {{version}} (was {{from}}).",
+      "failed": "The {{appName}} update did not finish. This computer is still on {{version}}.",
+      "retryHint": "Ask me to try again later, or check for updates in Settings → About.",
+      "reasons": {
+        "downloadFailed": "Downloading the update failed. Try again later.",
+        "manifestFailed": "Could not read update information for the current channel.",
+        "manualDownload": "This installation requires downloading the new version manually.",
+        "noUpdate": "The current channel has no installable update for this device.",
+        "versionChanged": "The channel now offers {{version}} instead of the confirmed {{confirmed}}, so nothing was installed.",
+        "notRestarted": "The update was downloaded but {{appName}} did not restart (for example, you signed out or switched accounts).",
+        "notReady": "The downloaded update is no longer available.",
+        "updaterNotStarted": "The updater did not start, so {{appName}} did not restart.",
+        "unsupported": "This installation does not support in-app updates.",
+        "generic": "Something went wrong during installation.",
+        "relaunchInProgress": "{{appName}} was already restarting to install an update from Settings or idle auto-install, so this request did not install separately."
+      }
+    },
+    "agentAutoUpdate": {
+      "enableTitle": "Install updates while idle?",
+      "disableTitle": "Stop installing updates while idle?",
+      "enableDescription": "When an update finishes downloading, {{appName}} restarts to install it once this computer has been idle for 10 minutes and no tasks are running.",
+      "disableDescription": "Downloaded updates will wait until you restart manually.",
+      "settingsHint": "You can change this anytime in Settings → About."
     }
   },
   "sidebar": {
@@ -8116,7 +8641,7 @@
         "message": "Follow up on “{{title}}”",
         "aria": "Follow up on “{{title}}”"
       },
-      "followingMark": "Looked after by {{names}}",
+      "followingMark": "This task is looked after by {{names}}",
       "olderCount_one": "{{count}} older",
       "olderCount_other": "{{count}} older",
       "kind": {
@@ -8498,7 +9023,18 @@
         "workdirUnavailable": "{{name}} can’t find the working directory",
         "stepFailed": "{{name}} ran into a problem and didn’t finish this step",
         "stepTimeout": "{{name}} took too long, so this step was stopped",
-        "stepUnavailable": "{{name}} is unavailable and can’t do this step"
+        "stepUnavailable": "{{name}} is unavailable and can’t do this step",
+        "runtimeFailure": {
+          "IMAGE_INPUT_UNSUPPORTED": "{{name}} could not reply: the current model does not support images.\nChoose an image-capable model, or enable and configure Vision Bridge in Settings → Personalization, then send your message again.",
+          "MODEL_UNAVAILABLE": "{{name}} could not reply: no model is available.\nChoose a connected, available model in the teammate settings, then send your message again.",
+          "AUTH_REQUIRED": "{{name}} could not reply: the model connection needs authentication.\nReconnect the model provider in Settings, then send your message again.",
+          "RATE_LIMITED": "{{name}} could not reply: too many model requests.\nSend your message again later, or choose another available model.",
+          "UPSTREAM_OVERLOADED": "{{name}} couldn't reply: the model service is temporarily overloaded.\nTry sending again later, or choose another available model.",
+          "QUOTA_EXCEEDED": "{{name}} could not reply: the model usage limit was reached.\nCheck the provider quota, or choose another available model.",
+          "NETWORK_ERROR": "{{name}} could not reply: the network connection failed.\nCheck your network or proxy, then send your message again.",
+          "RUNTIME_TIMEOUT": "{{name}} did not reply before the timeout.\nSend your message again, or choose another available model.",
+          "RUNTIME_ERROR": "{{name}} could not reply this time.\nSend your message again. If it still fails, check the logs and report the issue."
+        }
       },
       "settings": {
         "open": "Group Settings",
@@ -8703,6 +9239,7 @@
       "avatar": "{{name}} is choosing a new portrait",
       "welcome": "Getting a first hello ready",
       "failed": "Preparation paused. Everything completed so far is saved. You can try again.",
+      "changeModel": "Change Model",
       "retryFailed": "Couldn’t retry just now. Please try again shortly.",
       "leave": "Step away",
       "avatarSkipped": "Using the default portrait for now. You can change it anytime."
@@ -8743,7 +9280,9 @@
       "generate": "Create teammate",
       "generating": "Shaping your teammate…",
       "generationFailed": "Could not generate your teammate. Your idea is still here; please try again.",
-      "modelRequired": "Select an available default model in Cindy first.",
+      "modelRequired": "Choose an available model above to continue.",
+      "modelFollowsDefault": "Follows the default teammate model.",
+      "modelForThisBot": "This selection applies only to this teammate.",
       "cindyDescription": "I can help you use Cindy, connect your tools, and get things done together.",
       "cindySummary": "Manage Cindy, connect tools, and get things done.",
       "openCindy": "Open Cindy",
@@ -9297,7 +9836,10 @@
         "railAll": "All",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "Loading models from that computer…",
+        "remoteFavoriteUnavailable": "{{source}} · Can't read that computer's models right now",
         "favoritesGroup": "Favorites",
+        "favoritesSaveFailed": "Could not save favorite changes",
+        "favoritesCleanupFailed": "Could not remove favorites for revoked provider shares",
         "favoritesEmpty": "No favorites yet — hover a model and hit ☆ to pin it here",
         "addFavorite": "Save to favorites",
         "customize": "Customize",
@@ -9312,7 +9854,12 @@
         "effortEndSmart": "Smarter",
         "railSameEngine": "{{agent}} only",
         "crossEngineWarning": "Switching engines rebuilds context and may lose content",
-        "favoritesSyncFailed": "Favorites could not sync. Reopen the picker to retry; the remote computer may need an update."
+        "favoritesSyncFailed": "Favorites could not sync. Reopen the picker to retry; the remote computer may need an update.",
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
+        "providerGroupLabel": "{{provider}} · {{group}}",
+        "providerGroupRunningOn": "Running on {{device}}",
+        "providerGroupRunningHere": "Running on this computer",
+        "providerGroupUnassigned": "The Provider Group picks a computer when the task starts; usage then shows for that computer"
       }
     },
     "permissionSelector": {
@@ -9642,6 +10189,9 @@
       "cancelEdit": "Cancel Editing",
       "saveEdit": "Save Text"
     },
+    "sharedProviderCredential": {
+      "description": "This task uses a shared provider, so what the Agent reads passes through the sharer’s computer or another computer they arrange. This step may involve credentials (such as keys or .env) and needs your confirmation. “Always allow for this session” skips further shared-provider credential confirmations in this task. Reopening the task or changing its permission mode requires confirmation again."
+    },
     "mediaDownload": {
       "title": "Download the generated media?",
       "description": "The media has been generated and needs to be downloaded from the address below.",
@@ -9886,7 +10436,9 @@
       "label": "Created from another session"
     },
     "imageMissing": {
-      "title": "Image missing"
+      "title": "Image missing",
+      "unavailable": "Image Unavailable",
+      "loading": "Loading image…"
     },
     "visionBridge": {
       "analyzing": "Analyzing {{count}} image(s)…",
@@ -10011,6 +10563,8 @@
       "syncAuthFailed": "Sync failed: {{msg}}",
       "syncAuthDaemonRestartFailed": "Credentials pushed, but the old daemon did not restart — reconnect to the remote before retrying",
       "invalidEncryptedContent": "Switching providers made the previous encryption unusable. This session can only continue under the original provider, or click Fork to drop the protocol-encrypted content and continue in a new session.",
+      "readableHistoryRecovery": "New task from readable history",
+      "readableHistoryRecoveryDescription": "If retry keeps failing, create a new task using readable history. Internal encrypted information is omitted. The original task is kept, and the failed message is not resent automatically.",
       "forkStripEncrypted": "Fork and strip",
       "forkStripEncryptedRunning": "Forking…",
       "forkStripEncryptedTitle": "Fork and strip into a new session",
@@ -10417,14 +10971,27 @@
           "reason": "Interruption reason",
           "attempt": "Attempt {{attempt}}/{{total}}",
           "sessionTotal": "{{count}} reconnects in this session"
-        }
+        },
+        "agentSwitch": {
+          "usage-limit": "{{from}} hit its usage limit; continued on {{to}}",
+          "auth": "{{from}} is signed out; continued on {{to}}",
+          "unavailable": "Couldn’t reach {{from}}; continued on {{to}}",
+          "overload": "{{from}} was overloaded; continued on {{to}}",
+          "failed": "{{from}} ran into a problem; continued on {{to}}"
+        },
+        "agentReconnect": {
+          "named": "Reconnected to {{computer}}; continued there",
+          "unnamed": "Reconnected to the original computer; continued there"
+        },
+        "groupSwitch": "Continued on another computer automatically"
       },
       "autoResumeSeparator": {
         "label": "Connection interrupted — resumed automatically"
       },
       "autoResumePending": {
         "label": "Reconnecting",
-        "labelWithProgress": "Reconnecting {{attempt}}/{{total}}"
+        "labelWithProgress": "Reconnecting {{attempt}}/{{total}}",
+        "groupSwitch": "Switching to another computer"
       },
       "agentSwitch": {
         "label": "Switched from {{from}} to {{to}}",
@@ -10461,9 +11028,13 @@
           "sourceConversationChanged": "The source task changed. Run /review again for the current task.",
           "sourceFilesChanged": "The source task files changed. Run /review again for the current result.",
           "artifactChanged": "A review artifact changed. Run /review again for the current result.",
-          "artifactUnavailable": "Cindy couldn't safely read the review artifacts. Check the workspace or attachments, then run /review again.",
+          "artifactUnavailable": "Cindy could not prepare the files for review. Check the selected directory or attachments, then run /review again.",
           "providerFailed": "The review task failed"
-        }
+        },
+        "directory": "Directory: ",
+        "baseline": "Base branch: ",
+        "additionalDirectories": "Also: ",
+        "unverifiedResult": "The reviewer produced these findings, but their validity could not be verified."
       }
     },
     "markdownRenderer": {
@@ -10562,13 +11133,8 @@
       },
       "expandLongMessage": "Show full message",
       "collapseLongMessage": "Collapse",
-      "sessionReference": {
-        "recent": "Recent",
-        "aroundAnchor": "Around linked message",
-        "messageCount_one": "{{count}} message",
-        "messageCount_other": "{{count}} messages",
-        "truncated": "truncated"
-      },
+      "sessionLinkFallback": "A session",
+      "messageLinkFallback": "Quoted message",
       "forkBusy": "Wait for the current response to finish before starting a new session from here",
       "editStopTimeout": "Timed out waiting for the task to stop — please try again",
       "editQueueNotEmpty": "This session has queued messages — send or remove them before editing",
@@ -10678,7 +11244,8 @@
       "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",
       "REMOTE_AGENT_SHARE_PAUSED": "The owner has paused this share for you, so these models can’t be used until it’s resumed. Switch to another model to continue.",
       "REMOTE_AGENT_SHARE_REMOVED": "This share is no longer available (the owner removed it or you left). Switch to another model to continue.",
-      "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue."
+      "REMOTE_AGENT_SHARE_UNAVAILABLE": "The shared provider is temporarily unavailable. The owner's computer may be offline, or sharing is turned off for now. Try again later, or switch to another model to continue.",
+      "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page."
     },
     "generatedFiles": {
       "title": "Files created this message",
@@ -10934,6 +11501,7 @@
       },
       "dialogueLabel": "Chat",
       "backToAutomations": "Back to Automations",
+      "backToReviewSource": "Back to source task",
       "waitForReply": "Waiting for your reply in the document area…",
       "modelSwitchedFastModeOff": "Model switched, Fast Mode disabled"
     },
@@ -11381,7 +11949,11 @@
       "untitled": "Untitled session",
       "moreActions": "More actions",
       "agentDevice": "Agent runs on {{device}}",
-      "agentDeviceOffline": "Agent runs on {{device}}, which is offline — it continues once that computer is back"
+      "agentDeviceOffline": "Agent runs on {{device}}, which is offline — it continues once that computer is back",
+      "orcaRemoteLead": "Collaboration from {{device}}",
+      "orcaRemoteLeadReleased": "Collaboration ended · from {{device}}",
+      "orcaRemoteLeadUnknownDevice": "another computer",
+      "orcaRemoteLeadTip": "A Worker for “{{lead}}” on {{device}}. Its task, folder and commands run on this computer. Messages you send here are not reported to the Lead."
     },
     "gitContext": {
       "detached": "Detached HEAD",
@@ -13445,7 +14017,25 @@
       "optional": "(optional)",
       "initialTaskPlaceholder": "Optional first task for this worker",
       "enableCollabTitle": "Start Collaboration",
-      "enableCollabSubmit": "Start Collaboration"
+      "enableCollabSubmit": "Start Collaboration",
+      "executionDeviceLabel": "Run on",
+      "thisComputer": "Local",
+      "deviceOnline": "Online",
+      "deviceNeedsUpdate": "Needs update",
+      "executionDeviceHint": "Only computers on this account that are online and have remote control enabled are listed.",
+      "executionDeviceRemoteHint": "The Worker's task, folder and commands all stay on {{device}}.",
+      "remoteDirLabel": "Folder on {{device}}",
+      "remoteDirChat": "Chat",
+      "remoteDirPath": "Specify folder",
+      "remoteDirChatHint": "Create a chat session on {{device}} without linking it to a project.",
+      "remoteDirPathHint": "Checked on {{device}}. If it doesn't exist, creation fails; a folder on this computer is never used instead.",
+      "remoteDirInvalid": "Enter an absolute path on {{device}}.",
+      "errors": {
+        "deviceUnreachable": "{{device}} isn't available: it must be online with remote control enabled. The Worker wasn't created.",
+        "deviceOutdated": "Cindy on {{device}} is out of date. Update it to run Workers there.",
+        "dirRejected": "The folder wasn't found on {{device}} or can't be used. The Worker wasn't created.",
+        "dirUnavailable": "The folder on {{device}} is temporarily unavailable. Check the connection or network drive, then try again. The Worker wasn't created."
+      }
     },
     "rolePill": {
       "unread": "Unread update",
@@ -13468,13 +14058,19 @@
       "scrollWorkersLeftEdge": "Already at the earliest worker",
       "scrollWorkersRightEdge": "Already at the latest worker",
       "errorBadge": "ERR",
-      "errorBadgeAria": "A worker has an error"
+      "errorBadgeAria": "A worker has an error",
+      "executionDevice": "Runs on {{device}}",
+      "deviceUnreachable": "Status unavailable",
+      "unknownDevice": "Another computer",
+      "archiveRemoteWorkerConfirmDesc": "Removes it from this collaboration and stops the current round on {{device}}. The task, history and files on {{device}} are kept and marked “Collaboration ended”, so you can keep viewing them there."
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session not found",
       "waitingForWorker": "Waiting for worker",
+      "remoteWorkerLoading": "Loading the task on {{device}}…",
+      "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"
     }
   },
@@ -13499,17 +14095,12 @@
     "pluginDisabled": "Disabled",
     "pluginAgentInvoked": "Used automatically by Agent",
     "pluginNoCommand": "Not available here",
-    "sectionTitle": "Reference directories (read-only)",
+    "sectionTitle": "Directories",
     "empty": "No reference directories yet",
     "add": "Add directory…",
     "addReadOnly": "Add read-only directory…",
-    "addWritable": "Add read-write directory…",
-    "writableSectionTitle": "Read-write directories",
-    "writableEmpty": "No read-write directories yet",
     "atLimit": "Limit reached ({{max}})",
     "remove": "Remove {{name}}",
-    "parentConfirmTitle": "Add a parent directory?",
-    "parentConfirmDescription": "The selected directory is a parent or ancestor of the current working directory. This expands the Agent's visible scope beyond the working directory.\n\nAdd it anyway?\n\n{{path}}",
     "writableParentConfirmTitle": "Allow read-write access to a parent directory?",
     "writableParentConfirmDescription": "The selected directory is a parent or ancestor of the current working directory. The Agent will be able to read, create, modify, and delete files inside it.\n\nAllow it anyway?\n\n{{path}}",
     "parentConfirmAccept": "Add anyway",
@@ -13597,6 +14188,26 @@
       "inline": "in-memory attachment",
       "allow": "Allow once",
       "cancel": "Cancel"
+    },
+    "workspaceSelection": {
+      "cancel": "Cancel",
+      "title": "Choose code to review",
+      "message": "No code diff is available in this directory. Review the current code, or select the directory where you worked.",
+      "current": "Review this directory",
+      "choose": "Choose another directory",
+      "open": "Review"
+    },
+    "inputSummary": {
+      "title": "Independent review (read-only, no development memory)",
+      "directory": "Directory: {{dir}}",
+      "baseline": "compared with {{base}}",
+      "uncommitted": "includes uncommitted changes",
+      "additionalDirectories": "Also: {{dirs}}",
+      "uncovered": "Not covered: {{dirs}}",
+      "uncheckedDirs": "{{count}} more task directories were not checked",
+      "artifacts": "Artifacts: {{count}}",
+      "focus": "Focus: {{focus}}",
+      "task": "Reviewing the current result against the task goal"
     }
   },
   "learn": {
@@ -13828,7 +14439,9 @@
         "description": "Please email the following information to {{email}} to request an invoice.",
         "requiredInfo": "Please include these details in your email:",
         "emailSubject": "Invoice request for order {{orderId}}",
-        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
+        "personalInvoicePolicy": "Invoices for Cindy Personal top-ups are issued in <strong>an individual’s name</strong> by default. You can use your name or “Individual” as the invoice title. If you need an invoice in your company’s name for expense reimbursement, provide <strong>a reimbursement statement bearing the company’s official stamp</strong> and specifying the invoice title.",
+        "invoiceTitleHint": "Instructions: For an individual invoice, enter your name or “Individual”. For an invoice in your company’s name for expense reimbursement, attach a reimbursement statement bearing the company’s official stamp and specifying the invoice title.",
+        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \n{{invoiceTitleHint}}\n\nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
         "sendAction": "Send Invoice Request",
         "emailCopied": "Support email copied",
         "emailCopyFailed": "Support email wasn’t copied — try again",
@@ -14850,5 +15463,109 @@
     "idempotencyConflict": "This retry identifier was already used for a different message.",
     "privateUnconfirmed": "Private message delivery is unconfirmed. Retry with the same identifier.",
     "verificationUnavailable": "Group authorization could not be verified. Try again when the connection recovers."
+  },
+  "teammateTodo": {
+    "title": "Todos",
+    "new": "New todo",
+    "search": "Search todos",
+    "open": "Open",
+    "done": "Completed",
+    "hidden": "Dismissed / later",
+    "empty": "No todos",
+    "noMatch": "No matching todos",
+    "loading": "Loading…",
+    "retry": "Retry",
+    "error": "The action did not finish. Try again.",
+    "conflict": "This todo changed. Review it before editing.",
+    "received": "Received",
+    "accepted": "View progress",
+    "unknown": "Check progress",
+    "failed": "Retry next step",
+    "view": "View details",
+    "evidence": "View evidence",
+    "more": "More actions",
+    "discovered": "Discovered",
+    "assigned": "Assigned",
+    "suggested": "Suggested",
+    "candidate": "Confirm date",
+    "overdue": "Overdue",
+    "today": "Today",
+    "next": "Next step",
+    "outcome": "Completion condition",
+    "value": "Why it matters",
+    "sources": "Sources",
+    "associations": "Related work",
+    "deadline": "Due date",
+    "sourceDeadline": "Source deadline",
+    "clearDate": "Clear due date",
+    "date": "Date",
+    "time": "Exact time (optional)",
+    "zone": "Time zone",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete this todo",
+    "mute": "Do not suggest this issue again",
+    "later": "Do later",
+    "until": "Do later until",
+    "restore": "Restore",
+    "reopen": "Reopen",
+    "complete": "Mark complete",
+    "summary": "Completion evidence",
+    "confirmDate": "Confirm date",
+    "deadlineReason": "Why the date needs confirmation",
+    "override": "Your deadline",
+    "reminder": "Deferred until",
+    "edit": "Edit todo",
+    "name": "Title",
+    "progress": "Progress",
+    "link": "Evidence link (optional)",
+    "saved": "Saved",
+    "page": "{{start}}–{{end}} / {{count}}",
+    "previous": "Previous",
+    "following": "Next",
+    "order": "Sort",
+    "dueOrder": "Due first",
+    "createdOrder": "Creation order",
+    "origin": "Origin",
+    "all": "All",
+    "close": "Close",
+    "laterConflict": "Deferring does not extend the deadline",
+    "legacyEvidence": "Legacy completion evidence needs verification",
+    "noPermission": "This source is not connected or authorized",
+    "copy": "Copy",
+    "undo": "Undo",
+    "history": "Completion history",
+    "clockNote": "Date-only deadlines end in the shown time zone; exact times retain their zone.",
+    "deleted": "Deleted",
+    "muted": "Not suggested again",
+    "deferred": "Deferred",
+    "continue": "Continue",
+    "addTime": "Add time",
+    "dateOnly": "Date only"
+  },
+  "codexResets": {
+    "retryReset": "Retry Reset",
+    "retryPending": "Reset result is unconfirmed. Retry the same request.",
+    "confirmRetryTitle": "Retry Codex Reset?",
+    "confirmRetryBody": "Retry the previously confirmed reset for {{account}} with the same request. This will not use another reset.",
+    "title": "Usage Limit Resets",
+    "available": "Available {{count}}",
+    "fullReset": "Full Reset",
+    "expiresAt": "Expires {{at}}",
+    "expiryUnknown": "Expiry not provided",
+    "useReset": "Use Reset",
+    "availableAtLimit": "Available when you reach a usage limit",
+    "noCredit": "No resets available",
+    "detailsUnavailable": "Some reset details are not available",
+    "currentAccount": "your current ChatGPT account",
+    "confirmTitle": "Use One Codex Reset?",
+    "confirmSelectedBody": "Use the selected reset for {{account}}: {{title}} ({{expiry}}). Eligible usage limits will be restored. This cannot be undone.",
+    "confirmBody": "Consume 1 reset for {{account}}, using the earliest expiry first. Eligible usage limits will be restored. This cannot be undone.",
+    "consumeOnce": "Use One Reset",
+    "resetDone": "Codex usage limits restored",
+    "nothingToReset": "No usage limit needs a reset",
+    "offerExpired": "The account or reset offer changed. Refresh usage before resetting.",
+    "resetFailed": "Could not confirm the reset result. Refresh usage to check whether limits were restored.",
+    "limitAction": "Use Reset · {{count}} Available"
   }
 }

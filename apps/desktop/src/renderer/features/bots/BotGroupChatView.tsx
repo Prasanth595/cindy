@@ -19,7 +19,7 @@ import { ArrowLeft, CircleAlert, RefreshCcw, Settings2, Sparkles } from 'lucide-
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import { attachGhostMediaToSession, getGhostMediaUriFromDataTransfer } from '@/cindy-brain/ghostMediaHandover';
+import { attachGhostMediaToSession, getGhostMediaHandoverFromDataTransfer } from '@/cindy-brain/ghostMediaHandover';
 import { ChatImageView } from '@/components/chat/ChatImageView';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
@@ -65,8 +65,10 @@ import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
 import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
-import { ChatThreadPanel } from './ChatThreadPanel';
+import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
+import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
+import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import {
   BotGroupHandoffFiles,
   BotGroupOrganizerTag,
@@ -86,6 +88,7 @@ import {
   botGroupPlanFollowUp,
   continuableRoundEndId,
   mergeBotGroupMessages,
+  projectBotGroupExecutionFailures,
   mergeBotGroupPlans,
   openBotGroupPlan,
 } from './botGroupPresentation';
@@ -152,12 +155,13 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [state, setState] = useState<GroupViewState>({ kind: 'loading' });
+  const stateRef = useRef(state); stateRef.current = state;
   const [reloadVersion, setReloadVersion] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [continuing, setContinuing] = useState(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
-  const loadRef = useRef<() => void>(() => {});
+  const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -171,7 +175,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
-    const load = async () => {
+    const load = async (additionalSources: string[] = []) => {
       const version = ++requestVersion;
       const owner = getDataOwnerGeneration();
       const api = botGroupApi();
@@ -182,7 +186,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         return;
       }
       try {
-        const result = await api.getBotGroup(groupId);
+        const displayed = stateRef.current;
+        const sourceMessageIds = [...new Set([...(displayed.kind === 'ready' && displayed.group.id === groupId
+          ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
+        const result = sourceMessageIds.length ? await api.getBotGroup(groupId, { sourceMessageIds }) : await api.getBotGroup(groupId);
         if (!isCurrent()) return;
         if (result.ok) {
           readOwner.current = owner;
@@ -207,7 +214,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         if (isCurrent()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
       }
     };
-    loadRef.current = () => void load();
+    loadRef.current = additionalSources => void load(additionalSources);
     void load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
@@ -231,7 +238,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const group = state.kind === 'ready' ? state.group : null;
   const messages = useMemo(
-    () => (state.kind === 'ready' ? mergeBotGroupMessages(state.older, state.group.messages) : []),
+    () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
   const acknowledge = useCallback(() => {
@@ -261,13 +268,59 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const separator = t('bots.groupChat.memberSeparator');
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
+  const threadOpenerRef = useRef<HTMLElement | null>(null);
+  const threadLayoutRef = useRef<HTMLDivElement>(null);
+  const threadHeaderRef = useRef<HTMLDivElement>(null);
+  const threadCloseAnimationRef = useRef<Animation | null>(null);
+  const threadWasOpenRef = useRef(false);
+  useLayoutEffect(() => {
+    const opening = !!threadRootId && !threadWasOpenRef.current;
+    threadWasOpenRef.current = !!threadRootId;
+    if (!opening) return;
+    const panel = threadLayoutRef.current?.querySelector('aside');
+    const animation = panel && animateThreadPanelWidth(panel, '0px', '50%');
+    if (!animation) return;
+    void animation.finished.then(() => animation.cancel(), () => {});
+    return () => animation.cancel();
+  }, [threadRootId]);
+  const closeThread = useCallback(() => {
+    if (threadCloseAnimationRef.current) return;
+    const panel = threadLayoutRef.current?.querySelector('aside');
+    const animation = panel && animateThreadPanelWidth(panel, `${panel.getBoundingClientRect().width}px`, '0px');
+    threadOpenerRef.current?.focus();
+    if (!panel || !animation) { setThreadRootId(null); return; }
+    panel.inert = true;
+    threadCloseAnimationRef.current = animation;
+    void animation.finished.then(() => {
+      if (threadCloseAnimationRef.current !== animation) return;
+      threadCloseAnimationRef.current = null;
+      setThreadRootId(null);
+    }, () => {});
+  }, []);
+  useLayoutEffect(() => () => {
+    threadCloseAnimationRef.current?.cancel();
+    threadCloseAnimationRef.current = null;
+  }, [threadRootId]);
+  useEffect(() => {
+    if (!group?.serverBacked || !threadRootId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (event.target !== document.body && !threadLayoutRef.current?.contains(event.target as Node) && !threadHeaderRef.current?.contains(event.target as Node)) return;
+      if (document.querySelector('[data-text-lightbox-overlay], [data-mermaid-lightbox-overlay]')) return;
+      if (shareSelectionStore.isActive(shareScope) || shareSelectionStore.isActive(`${shareScope}:thread:${threadRootId}`)) return;
+      event.stopPropagation();
+      closeThread();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [group?.serverBacked, threadRootId, closeThread, shareScope]);
   const settingsLabel = t('bots.groupChat.settings.open');
   const headerMembers = group ? memberKey(group.members) : '';
   const header = useMemo(() => {
     if (!group) return null;
     const names = botGroupMemberNames(group.members, separator);
     return (
-      <div data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
+      <div ref={threadHeaderRef} data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
         <button
           type="button"
           onClick={openSettings}
@@ -339,7 +392,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const owner = getDataOwnerGeneration();
     setLoadingOlder(true);
     try {
-      const result = await api.getBotGroup(groupId, { beforeSequence: first.sequence });
+      const sourceMessageIds = mergeBotGroupMessages(state.older, state.group.messages).map(message => message.id);
+      const result = await api.getBotGroup(groupId, { beforeSequence: first.sequence, sourceMessageIds });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) {
         toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
@@ -347,16 +401,23 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       }
       const element = scrollRef.current;
       if (element) prependAnchorRef.current = { height: element.scrollHeight, top: element.scrollTop };
-      setState((previous) =>
-        previous.kind === 'ready'
-          ? {
-              ...previous,
-              older: mergeBotGroupMessages(result.group.messages, previous.older),
-              olderPlans: mergeBotGroupPlans(result.group.plans, previous.olderPlans),
-              olderHasMore: result.group.hasMoreBefore,
-            }
-          : previous,
-      );
+      const newerRefresh = stateRef.current.kind === 'ready' && stateRef.current.group !== state.group;
+      setState((previous) => {
+        if (previous.kind !== 'ready') return previous;
+        // A newer push refresh wins over an older in-flight pagination request.
+        const executionFailures = previous.group === state.group
+          ? result.group.executionFailures ?? previous.group.executionFailures
+          : previous.group.executionFailures;
+        return {
+          ...previous,
+          group: { ...previous.group, executionFailures },
+          older: mergeBotGroupMessages(previous.older, result.group.messages),
+          olderPlans: mergeBotGroupPlans(result.group.plans, previous.olderPlans),
+          olderHasMore: result.group.hasMoreBefore,
+        };
+      });
+      // A push may have refreshed before these sources were displayed. Reconcile their current state too.
+      if (newerRefresh) loadRef.current(result.group.messages.map(message => message.id));
     } catch {
       toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
     } finally {
@@ -436,7 +497,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const dropAttachments = (event: DragEvent) => {
     // .cindy / .cshare drops belong to the window-level import; only clear the hint.
     if (isGlobalDropIntercepted(event.nativeEvent)) return;
-    const ghostMediaUri = getGhostMediaUriFromDataTransfer(event.dataTransfer);
+    const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(event.dataTransfer);
     if (ghostMediaUri) {
       void attachGhostMediaToSession(ghostMediaUri, attachmentScope, t);
       return;
@@ -517,8 +578,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     planId && planPending?.planId === planId ? planPending.action : null;
 
   return (
+    <div ref={threadLayoutRef} className="flex h-full min-w-0 overflow-hidden">
     <main
-      className="relative flex h-full min-w-0 flex-col overflow-hidden bg-[var(--surface)]"
+      className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-[var(--surface)]"
       onDragEnter={(event) => {
         if (!isAttachmentDrag(event)) return;
         event.preventDefault();
@@ -593,7 +655,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
-                    onReply={group.serverBacked ? () => setThreadRootId(message.id) : undefined}
+                    onReply={group.serverBacked ? () => {
+                      threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                      if (threadCloseAnimationRef.current) {
+                        threadCloseAnimationRef.current.cancel();
+                        threadCloseAnimationRef.current = null;
+                        const panel = threadLayoutRef.current?.querySelector('aside');
+                        if (panel) panel.inert = false;
+                        if (message.id === threadRootId) {
+                          (panel?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)') ?? panel?.querySelector<HTMLButtonElement>('header button'))?.focus();
+                        }
+                      }
+                      setThreadRootId(message.id);
+                    } : undefined}
                     onChanged={() => loadRef.current()} /> : undefined}
                   member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
                   members={group.members}
@@ -668,7 +742,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         }}
       />}
       {group.migrationPending && <p role="status" className="px-4 py-2 text-13 text-[var(--text-secondary)]">{t('bots.groupChat.migrationPending')}</p>}
-      {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={() => setThreadRootId(null)} />}
       {/* Whole-page drop hint, as over a task's chat area; the card repeats it. */}
       {dragOver ? (
         <div
@@ -681,6 +754,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
     </main>
+    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={closeThread} />}
+    </div>
   );
 }
 
@@ -749,6 +824,9 @@ function BotGroupTimelineItem({
   }
   if (message.kind === 'notice' || message.authorKind === 'system') {
     const name = message.authorName.trim() || member?.name || '';
+    if (isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) {
+      return <BotGroupRuntimeFailureNotice name={name} code={message.runtimeFailureCode} />;
+    }
     const key = botGroupNoticeKey(message.noticeCode, message.planId !== null);
     const text = key ? t(key, { name }) : message.content;
     return <p className="text-center text-12 text-[var(--text-tertiary)]">{text}</p>;

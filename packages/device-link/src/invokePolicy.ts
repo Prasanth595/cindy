@@ -92,6 +92,9 @@ export const MOBILE_INVOKE_TIMEOUT_OVERRIDES_MS: Record<string, number> = {
   'file-browser:remote-op': 30_000,
   'maker:create-session': 30_000,
   'maker:fork': 30_000,
+  // Readable-history recovery also loads history, may start Codex, and copies messages.
+  // Keep the normal fork window; a timeout does not cancel the host-side operation.
+  'maker:fork-strip-encrypted': 30_000,
   'maker:get-context-usage': 30_000,
   'maker:goal:resume': 30_000,
   'maker:goal:set': 30_000,

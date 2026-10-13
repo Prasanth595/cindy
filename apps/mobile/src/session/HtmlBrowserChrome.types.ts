@@ -15,6 +15,8 @@ export interface HtmlBrowserChromeProps {
   source: boolean;
   busy: boolean;
   loading: boolean;
+  /** The file has not opened yet: address editing and the more menu stay disabled. */
+  pending?: boolean;
   notice?: string | null;
   onClose(): void;
   onBack(): void;

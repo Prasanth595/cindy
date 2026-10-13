@@ -19,8 +19,9 @@ import {
   type ProviderShareRequestState,
 } from '@cindy/device-link';
 
-import { isAppSessionBoundaryPending } from '../appSessionState.js';
-import { getAuthState } from '../authManager.js';
+import { getActiveDataOwnerPushStamp, isAppSessionBoundaryPending } from '../appSessionState.js';
+import type { ProviderShareFavoriteRecovery, ProviderShareReceivedSnapshot } from '../../shared/providerShare.js';
+import { getActiveAuthRealm, getAuthState } from '../authManager.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -33,6 +34,8 @@ import {
   crossRegionSendRequest,
   crossRegionWithdraw,
   getCrossRegionReceived,
+  getConfirmedCrossRegionReceivedRegions,
+  ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
@@ -146,12 +149,6 @@ export async function resolveRemoteAgentTargetWhenReady(agentDeviceId: string): 
   return resolveRemoteAgentTarget(agentDeviceId);
 }
 
-/** 分隔条与模型列表展示用的电脑名。 */
-export function describeProviderShareDevice(agentDeviceId: string): string | null {
-  const shareId = parseProviderShareAgentDeviceId(agentDeviceId);
-  return shareId ? findReceivedShare(shareId)?.deviceName ?? null : null;
-}
-
 // ─── 已收到的分享 ────────────────────────────────────────────────
 
 function schedule(rt: Runtime): void {
@@ -242,6 +239,24 @@ export function noteProviderShareAccessFailure(): void {
 
 export function getReceivedShares(): readonly ProviderShareReceived[] {
   return allReceived(runtime);
+}
+
+export function getReceivedSharesSnapshot(recovery?: ProviderShareFavoriteRecovery): ProviderShareReceivedSnapshot {
+  const rt = runtime;
+  const valid = !!rt && current(rt);
+  const ownerStamp = getActiveDataOwnerPushStamp();
+  if (valid && recovery && recovery.ownerStamp.dataOwnerId === ownerStamp.dataOwnerId &&
+      recovery.ownerStamp.ownerGeneration === ownerStamp.ownerGeneration) {
+    // 不等待对方区域网络，已加载区域的收藏仍立即可用。
+    ensureCrossRegionReceivedForFavorites(recovery.regions);
+  }
+  return {
+    ownerStamp,
+    confirmedRegions: valid
+      ? [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()]
+      : [],
+    received: valid ? allReceived(rt) : [],
+  };
 }
 
 // ─── 加入 ────────────────────────────────────────────────────────

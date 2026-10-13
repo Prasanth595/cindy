@@ -202,6 +202,18 @@ export function isResponsesLiteParallelToolCallsError(message: string): boolean 
   return /X-OpenAI-Internal-Codex-Responses-Lite requires `?parallel_tool_calls`? to be false\./i.test(message);
 }
 
+/** UI-only recovery offer. A premature close does not establish an encryption failure. */
+export function canOfferCodexHistoryRecovery(input: {
+  message: string;
+  agentKind?: string | null;
+  remoteHostId?: string | null;
+  agentDeviceId?: string | null;
+  running?: boolean;
+}): boolean {
+  return input.agentKind === 'codex' && !input.remoteHostId && !input.agentDeviceId &&
+    !input.running && /stream disconnected before completion:\s*stream closed before response\.completed\b/i.test(input.message);
+}
+
 const AGENT_CHAT_ERROR_CODES: ReadonlySet<string> = new Set([
   'DEVICE_LINK_BUSY',
   'DEVICE_LINK_CONTROL_DISABLED',

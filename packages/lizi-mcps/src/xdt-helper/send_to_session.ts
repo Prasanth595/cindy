@@ -39,6 +39,7 @@ export type SendToSessionCallback = (params: {
 }) => Promise<
   ControlResult<
     {
+      responsibilityRecorded?: false;
       targetSessionId: string;
       agentKind: ControlWorkerAgent;
       wakeKind: "resumed" | "already-active" | "created" | "queued";
@@ -239,6 +240,7 @@ export function registerSendToSessionTool(
         target_session_id: result.targetSessionId,
         agent_kind: result.agentKind,
         wake_kind: result.wakeKind,
+        ...(result.responsibilityRecorded === false ? { responsibility_recorded: false, responsibility_note: "Task creation succeeded, but the responsibility record could not be saved. Do not recreate or resend this task; reconcile the responsibility with the host." } : {}),
         ...(result.wakeKind === "created"
           ? { note: createdNote(result.targetSessionId) }
           : {}),

@@ -162,3 +162,41 @@ it('does not resurrect a sidebar deletion when an older list response arrives', 
   await act(async () => resolve([page[0]]));
   expect(result.current.rows).toEqual([]);
 });
+
+it('reads exact responsibility IDs across directories and archives, excludes same-project bystanders', async () => {
+  mocks.list.mockResolvedValue([{ ...page[0], id: 'owned', workingDir: '/elsewhere' }]);
+  const { result, rerender } = renderHook(({ ids }) => useWorkbenchSessionPages('bot', 'archived', true, ids),
+    { initialProps: { ids: ['owned'] } });
+  await waitFor(() => expect(result.current.rows.map(r => r.id)).toEqual(['owned']));
+  expect(mocks.list).toHaveBeenCalledWith(200, 'archived', { fresh: true, before: undefined, ids: ['owned'] });
+  act(() => mocks.patch('unrelated', { status: 'archived' }, { ...page[1], id: 'unrelated' }));
+  expect(result.current.rows.map(r => r.id)).toEqual(['owned']);
+  rerender({ ids: [] });
+  await waitFor(() => expect(result.current.rows).toEqual([]));
+});
+it('does not infer tasks from a host without responsibility IDs', async () => {
+  const { result } = renderHook(() => useWorkbenchSessionPages('old-host', 'active', true, []));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.rows).toEqual([]);
+  expect(mocks.list).not.toHaveBeenCalled();
+});
+
+it('shows the newest responsible tasks first across pages and reorders update patches', async () => {
+  const ids = Array.from({ length: 201 }, (_, n) => `owned-${String(n).padStart(3, '0')}`);
+  const newest = { ...page[0], id: ids[200], updatedAt: new Date(5000).toISOString() };
+  const older = { ...page[0], id: ids[0], updatedAt: new Date(1).toISOString() };
+  const first = [newest, ...ids.slice(1, 200).map((id, n) => ({ ...page[0], id, updatedAt: new Date(4999 - n).toISOString() }))];
+  mocks.list.mockResolvedValueOnce(first).mockResolvedValueOnce([older]);
+  const { result } = renderHook(() => useWorkbenchSessionPages('b', 'archived', true, ids));
+  await waitFor(() => expect(result.current.rows).toHaveLength(200));
+  expect(result.current.rows[0].id).toBe(ids[200]);
+  expect(result.current.hasMore).toBe(true);
+  await act(() => result.current.load());
+  expect(mocks.list).toHaveBeenLastCalledWith(200, 'archived', {
+    fresh: true, ids, before: { updatedAt: 4801, id: ids[199] },
+  });
+  expect(result.current.rows.at(-1)?.id).toBe(ids[0]);
+  act(() => mocks.patch(ids[0], { updatedAt: new Date(6000).toISOString() }));
+  expect(result.current.rows[0].id).toBe(ids[0]);
+  expect(result.current.hasMore).toBe(false);
+});

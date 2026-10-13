@@ -5,6 +5,8 @@ import { listWorktreeRecycleStatus, controlWorktreeRecycle } from './worktree/re
 import { registerFilePeerIpc } from './device-link/filePeer';
 import { registerTaskMigrationIpc } from './task-migration/service';
 import { registerLoginItemIpc } from './login-item-ipc.js';
+import { registerMenubarIpc } from './menubar/ipc.js';
+import { initMenubarService, refreshMenubarLocalization, stopMenubarService } from './menubar/service.js';
 import {
   createLatestSourceVersionReader,
   sourceChannel,
@@ -86,6 +88,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { machineIdSync } from 'node-machine-id';
 import windowStateKeeper from 'electron-window-state';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
+import { assertCindyMakeEnabled } from './cindy-make/featureGate.js';
 import {
   shouldRequestSingleInstanceLock,
   resolveSingleInstanceLockUserDataDir,
@@ -325,6 +328,7 @@ import {
 } from './mcp-integrations/piEnvironment.js';
 import { fetchRemoteMediaImageBytes } from './device-link/remoteMediaProtocol';
 import * as imageCacheStore from './imageCacheStore';
+import { readCachedImage } from './cindy-media/readCachedImage';
 import {
   collectStreamWithLimit,
   createLightboxMediaHandlers,
@@ -453,6 +457,7 @@ import {
 } from './localDb/index';
 import { createDbClient, createInprocDbClient } from './localDb/client/DbClient';
 import { createLifecycleDbClientManager } from './localDb/client/lifecycleDbClient';
+import { deliverPendingAgentAppUpdateResult } from './agent-app-update/index';
 import {
   clearCurrentDbClient,
   getCurrentDbClientUserId,
@@ -562,6 +567,13 @@ import { isIpcError } from '../shared/ipc-errors';
 import { readFileBytesForPreview } from './fileReadBytes.js';
 import { copyPngToClipboard } from './pngClipboard.js';
 import { COPY_PNG_TO_CLIPBOARD_CHANNEL } from '../shared/pngClipboard.js';
+import { copyTextToClipboard } from './textClipboard.js';
+import { COPY_TEXT_TO_CLIPBOARD_CHANNEL } from '../shared/textClipboard.js';
+import {
+  readLinuxClipboardSnapshot,
+  supportsLinuxClipboard,
+  writeLinuxClipboard,
+} from './remote-desktop/linuxClipboardNative';
 import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
@@ -582,6 +594,8 @@ import { closeSharedTasksBeforeLogout } from './device-link/sharedTaskRuntime.js
 import { closeSharedTasksBeforeAccountHandover } from './device-link/sharedTaskAccountBoundary.js';
 import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
 import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
+import { registerProviderGroupIpc } from './provider-group/ipc.js';
+import { registerProviderGroupRemoteHandler } from './provider-group/remoteRegistration.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -747,6 +761,8 @@ import {
   registerMakerIpc as registerMakerCoreIpc,
   tryGetBotDelegationService,
   restoreBotRuntimeForCurrentOwner,
+  restoreOrcaRemoteWorkersForCurrentOwner,
+  stopOrcaRemoteWorkersForOwnerBoundary,
   isSessionTurnPendingCompletion,
   isSessionInTurn,
   stopOrcaIdleWatcher,
@@ -935,6 +951,7 @@ import { registerFileBrowserDeviceOp } from './file-browser/device-op.js';
 import { registerSearchIpc } from './file-browser/search/index.js';
 import { registerVoiceInputIpc } from './voice-input/index.js';
 import { installWindowHiddenBroadcast } from './windowHiddenBroadcast.js';
+import { getRenderWatchdogContext } from './renderWatchdogContext.js';
 import {
   isSecondaryAppWindow,
   openSessionInNewWindow,
@@ -1087,6 +1104,7 @@ import {
   suspendAllGhosts,
   waitForGhostMutations,
 } from './cindy-brain/index.js';
+import { installedGhostStoragePart } from '../shared/pluginIdentity.js';
 import { setCodexImageAuthBinding } from './cindy-brain/codexImageAuthBinding.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
@@ -1925,6 +1943,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
     // 撞上它,先清再关)。
     clearDeferredCodexRestartForOwnerBoundary();
     clearWorkingDirectoryRecoveryForOwnerBoundary();
+    stopOrcaRemoteWorkersForOwnerBoundary();
     // interrupted-turn-resume:shutdown 批量 close 会话会触发 close teardown 的
     // markSessionTurnEnded,把"边界时还在飞的 turn"伪装成正常收尾 —— 被切换打断的
     // 任务从此既无中断横幅也无红点,呈现为"卡住且无报错"(与 ⌘Q 的 quit freeze 同款
@@ -2264,14 +2283,14 @@ const ghostPanelWindowsController = new GhostPanelWindowsController({
   createWindow: (ghostId) => {
     const ghost = getGhostManager()
       .list()
-      .find((g) => g.manifest.id === ghostId);
+      .find((g) => installedGhostStoragePart(g) === ghostId);
     const title = ghost?.manifest.panel?.title ?? ghost?.manifest.name ?? ghostId;
     return createGhostPanelWindow(ghostId, title);
   },
   isGhostDetachable: (ghostId) => {
     const ghost = getGhostManager()
       .list()
-      .find((g) => g.manifest.id === ghostId);
+      .find((g) => installedGhostStoragePart(g) === ghostId);
     return (
       ghost !== undefined &&
       ghost.enabled !== false &&
@@ -2402,6 +2421,7 @@ registerAppShortcutIpc();
 registerAppearanceSettingsIpc();
 registerAccessibilitySupportIpc();
 registerLoginItemIpc();
+registerMenubarIpc();
 
 // ── 资源用量面板 IPC ─────────────────────────────────────────────────
 // 订阅驱动采样(面板不开不采样),interval 已 unref 不拖退出;terminate 只认
@@ -2969,6 +2989,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   }
   invalidateWindowsTrayMenu();
   getAgentIslandService()?.refreshLocalization();
+  refreshMenubarLocalization();
   return { ok: true };
 });
 
@@ -4344,6 +4365,15 @@ const registerIpcHandlers = () => {
     });
   });
 
+  // macOS 菜单栏余量:原生 helper 在 Agent Island 之后启动,复用它的任务活动订阅。
+  initMenubarService({
+    openNewTask: () => {
+      const win = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+      if (win) dispatchApplicationMenuCommand(win, resolveNewMakerMenuCommand(false));
+    },
+  });
+  app.once('will-quit', stopMenubarService);
+
   // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session, 初始 bounds 取主窗。
   ipcMain.handle(
     MAKER_IPC_INVOKE.OPEN_SESSION_IN_NEW_WINDOW,
@@ -4496,14 +4526,21 @@ const registerIpcHandlers = () => {
   ipcMain.on(
     'renderer:log',
     (
-      _e,
+      event,
       level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal',
       scope: string,
       msg: string,
     ) => {
       // renderer 能发日志 = JS 已跑起来 → 解除 dev 启动看门狗(见 renderer-boot-guard.ts)。
       rendererBootGuard?.markAlive();
-      writeFromRenderer(level, scope, msg);
+      // 原生状态在收到告警时从真正的 sender 读取,无需增加 renderer 查询 IPC。
+      if (scope === 'render-watchdog') {
+        const win = event.sender.isDestroyed() ? null : BrowserWindow.fromWebContents(event.sender);
+        const context = getRenderWatchdogContext(event.sender, win);
+        writeFromRenderer(level, scope, `${msg} ${JSON.stringify(context)}`);
+      } else {
+        writeFromRenderer(level, scope, msg);
+      }
     },
   );
 
@@ -7491,6 +7528,7 @@ const registerIpcHandlers = () => {
   // The path is derived in main so the renderer cannot choose an arbitrary folder.
   ipcMain.handle('app:open-cindy-make-tools-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeToolsDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7502,10 +7540,12 @@ const registerIpcHandlers = () => {
   configureUpstreamMerge((id) => getMakerIfReady()?.getSession(id)?.isTurnRunning() ?? false);
   ipcMain.handle('app:cindy-make-merge', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actUpstreamMerge(input);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     const userData = app.getPath('userData');
     const root = makeSourceRoot(userData);
     const channel = !app.isPackaged
@@ -7549,12 +7589,14 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-settings', (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return readCindyMakeSettings();
   });
   ipcMain.handle(
     'app:set-cindy-make-sync-latest-before-build',
     (event, enabled: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       if (typeof enabled !== 'boolean')
         throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make setting');
       return writeCindyMakeSyncLatestBeforeBuild(enabled);
@@ -7562,6 +7604,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history', async (event, selected?: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (
       selected !== undefined &&
       (typeof selected !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(selected))
@@ -7589,6 +7632,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-history-action',
     async (event, runId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       try {
         return await actCindyMakeHistory(runId, action);
       } catch (error) {
@@ -7605,6 +7649,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history-build', async (event, selection: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await generateHistoryPersonalVersion(selection);
     } catch {
@@ -7614,6 +7659,7 @@ const registerIpcHandlers = () => {
   app.once('will-quit', stopMakeHistoryBuild);
   ipcMain.handle('app:cindy-make-history-cancel-build', async (event, buildId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await cancelHistoryPersonalVersion(buildId);
     } catch {
@@ -7622,6 +7668,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-make-history-open-build', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       await openHistoryPersonalBuild();
     } catch {
@@ -7635,6 +7682,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-versions-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await getCindyVersions();
     } catch {
@@ -7643,6 +7691,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-versions-action', async (event, action: unknown, id: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actCindyVersion(action, id);
   });
   onQuit('cindy-make-tests', () => cindyMakeTestController.stopAllAndWait(), 'async');
@@ -7651,6 +7700,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-test',
     async (event, sessionId: unknown, completionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       return actCindyMakeTest(sessionId, completionId, action);
     },
   );
@@ -7668,6 +7718,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     refreshUpstreamMergeProjection();
     try {
       await restoreCindyMakeTaskState();
@@ -7688,6 +7739,7 @@ const registerIpcHandlers = () => {
     'app:manage-cindy-make-task',
     async (event, sessionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       await manageCindyMakeTask(sessionId, action).catch((error) => {
         if (error instanceof Error && error.message.startsWith('[')) throw error;
         throwIpcError('INTERNAL', 'cleanupFailed');
@@ -7696,11 +7748,13 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cancel-cindy-make-source', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return { success: cancelCindySourcePreparation() };
   });
 
   ipcMain.handle('app:open-cindy-make-source-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeSourceDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7710,6 +7764,7 @@ const registerIpcHandlers = () => {
   // 只认 runId 形状;路径全部由 main 从 userData 派生,renderer 只拿回结果。
   ipcMain.handle('app:start-cindy-make-task', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return startCindyMakeTask(input, event.sender.id).catch((error) => {
       if (error instanceof Error && error.message.startsWith('[')) throw error;
       throwIpcError('INTERNAL', 'Could not start Cindy Make preparation');
@@ -7717,12 +7772,14 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cancel-cindy-make-task', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     return { success: cindyMakeManager.cancel(runId, event.sender.id) === 'cancelled' };
   });
   ipcMain.handle('app:prepare-cindy-make-workspace', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     const userData = app.getPath('userData');
@@ -7748,6 +7805,29 @@ const registerIpcHandlers = () => {
       assertTrustedSender: assertTrustedAppRendererEvent,
       decode: (bytes) => nativeImage.createFromBuffer(bytes),
       write: (data) => clipboard.write(data),
+    }),
+  );
+
+  // Hyprland may drop Chromium clipboard writes; reuse the remote-desktop
+  // data-control writer there. Local only; never route this to a remote host.
+  // Focused app-content is the local-intent check; skip the remote lock probe.
+  ipcMain.handle(COPY_TEXT_TO_CLIPBOARD_CHANNEL, (event, params) =>
+    copyTextToClipboard(event, params, {
+      assertTrustedSender: assertTrustedAppRendererEvent,
+      assertFocusedSender: (senderEvent) => {
+        const win = BrowserWindow.fromWebContents(senderEvent.sender);
+        if (!isFocusedAppContentWindow(win)) {
+          throwIpcError('PERMISSION_DENIED', '此操作只能在 Cindy 主窗口聚焦时发起');
+        }
+      },
+      write: (text) =>
+        supportsLinuxClipboard()
+          ? writeLinuxClipboard({ text }, () => true, { checkLock: false })
+          : clipboard.writeText(text),
+      read: async () =>
+        supportsLinuxClipboard()
+          ? (await readLinuxClipboardSnapshot(false, { checkLock: false })).content.text
+          : clipboard.readText(),
     }),
   );
 
@@ -8516,14 +8596,14 @@ const registerIpcHandlers = () => {
   ipcMain.handle(
     'image-cache:read-base64',
     async (
-      _event: Electron.IpcMainInvokeEvent,
+      event: Electron.IpcMainInvokeEvent,
       params: { url: string },
     ): Promise<{ base64: string; mimeType: string }> => {
-      if (typeof params?.url === 'string' && params.url.startsWith('cindy-media://')) {
-        const { buffer, mimeType } = await cindyMediaBlobStore.readFile(params.url);
-        return { base64: buffer.toString('base64'), mimeType };
-      }
-      return imageCacheStore.readAsBase64(params.url);
+      assertTrustedAppRendererEvent(event);
+      return readCachedImage(params, {
+        readBlob: cindyMediaBlobStore.readFile,
+        readLegacy: imageCacheStore.readAsBase64,
+      });
     },
   );
 
@@ -9039,12 +9119,23 @@ app.on('ready', async () => {
         }
         return;
       }
+      if (getActiveAppSession().dataOwnerId === userId) {
+        void getGhostManager().retryInterruptedMutationsAfterDbReady().catch((error) => {
+          dbClientLog.warn('ghost mutation recovery after DB readiness failed', {
+            userId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
       checkDatabaseSizeWarningAtStartup();
       // Bot recovery is owner-scoped and must start only after DbClient
       // takeover. registerMakerIpc also invokes this once its services exist,
       // covering both possible splash/login orderings without duplicate runs.
       void restoreBotRuntimeForCurrentOwner();
+      void restoreOrcaRemoteWorkersForCurrentOwner();
       startReadyWorktreeMaintenance();
+      // An Agent-approved update restarted the app: write its outcome back to the task.
+      void deliverPendingAgentAppUpdateResult();
       if (dbClientTakeover.mode === 'unchanged') {
         // 副窗口会再次走 localDb.ensureReady；同 owner 的 lifecycle client 已由首个
         // onReady 完整启动，因此这里只保留 DB 连接交接，不重复执行账号级启动维护。
@@ -9498,6 +9589,8 @@ app.on('ready', async () => {
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
+  registerProviderGroupIpc();
+  registerProviderGroupRemoteHandler();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,

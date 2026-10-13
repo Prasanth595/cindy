@@ -71,6 +71,8 @@ import {
   makeProviderCommandsSet,
 } from '@cindy/slack-hook-protocol';
 import { createTelegramMessageLifecycle, type TelegramMessageLifecycle } from '@cindy/im';
+import type { SendOrigin } from '@cindy/maker-core';
+import type { ChannelTurnSource } from '../maker-ipc/channelTurnSignal.js';
 import type { AutoReviewQuotedMessage } from '@cindy/maker-shared/auto-review-intent';
 
 import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
@@ -163,8 +165,11 @@ export interface HookContinuationWatchRequest {
    * 已不是活跃轮, 于是判定被 Stop 顶掉并就地收口。少了这一步, 附件收集那段时间里它还
    * 挂在表上, 排在后面的桌面消息一 dispatch 就会被误判成顶替
    * (review: "附件收集期间误判顶替")。发帧的闭包不受影响, 迟到的 onEnd 照样如实收口。
+   *
+   * 轮次真正收口时附这一轮的来源(此刻 scheduler run 仍在跑, 可同步读静默态);
+   * 停止观察等其它路径不带。
    */
-  onSettling?: () => void;
+  onSettling?: (origin?: SendOrigin) => void;
   /** 收口(仅 onClaim 之后)。 */
   onEnd: (outcome: HookRunOutcome) => void;
   /** 一个事件都没等到就放弃(onClaim 未发生)。 */
@@ -353,7 +358,7 @@ export interface HookDispatcherDeps {
    * 返回退订函数, dispose 时调用。
    */
   subscribeUiContinuation?: (listener: (sessionId: string, clientId: string) => void) => () => void;
-  subscribeChannelTurn?: (listener: (sessionId: string, workingDir: string, phase: 'starting' | 'undispatched') => void) => () => void;
+  subscribeChannelTurn?: (listener: (sessionId: string, workingDir: string, phase: 'starting' | 'undispatched', source?: ChannelTurnSource) => void) => () => void;
   /**
    * 可选: 订阅「桌面端在某会话里做了与续跑无关的事」(生产为 maker-ipc 的
    * onUiSessionIntervention)。命中即作废该会话的待续跑记账 —— 记账只按 sessionId
@@ -469,6 +474,18 @@ export interface HookDispatcher {
    * 幂等。
    */
   dispose(): void;
+}
+
+/**
+ * 新任务路由不可用(来源 / 模型 / 停用裁决)的错误前缀。这类错误文本只含供应商与
+ * 模型 id, 可原样进主日志; 其余失败原因可能带路径或用户内容, 日志里只记类别。
+ */
+export const HOOK_ROUTE_UNAVAILABLE_PREFIX = 'hook session route unavailable:';
+
+function hookFailureReasonForLog(errorMessage: string | null | undefined): string {
+  const message = errorMessage ?? '';
+  if (!message.startsWith(HOOK_ROUTE_UNAVAILABLE_PREFIX)) return 'unclassified';
+  return message.replace(/\s+/g, ' ').slice(0, 300);
 }
 
 /** 单 session 排队上限 —— 超过按 rejected(invalid) 打回, 防失控上游刷爆。 */
@@ -1436,8 +1453,8 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     sender: (connectionId) => accountActive && serverFeatures.get(connectionId)?.includes(HOOK_FEATURE_SESSION_RESULT)
       ? sendFns.get(connectionId) : undefined,
   });
-  const unsubscribeBackgroundResults = deps.subscribeChannelTurn?.((sessionId, dir, phase) => {
-    if (phase === 'starting') backgroundResults.start(sessionId, dir);
+  const unsubscribeBackgroundResults = deps.subscribeChannelTurn?.((sessionId, dir, phase, source) => {
+    if (phase === 'starting') backgroundResults.start(sessionId, dir, source);
     else backgroundResults.cancel(sessionId);
   });
 
@@ -1840,6 +1857,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     };
 
     let outcome: HookRunOutcome;
+    let runnerThrew = false;
     /**
      * 开跑前按当前映射再确认一次(见 dirStillAllowed)。resolveTarget 到这里之间
      * 隔着排队与若干 await(新建路径还要等 worktree 预建 / 对话目录分配), 映射
@@ -1917,10 +1935,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           isDirAuthorized: (dir) => dirStillAllowed(task.connectionId, dir),
         });
       } catch (err) {
+        runnerThrew = true;
         outcome = {
           status: 'error',
           finalText: '',
           errorMessage: err instanceof Error ? err.message : String(err),
+          // 没有真实测量: runner 在建会话前就失败了, 0 只是占位。
           durationMs: 0,
         };
       }
@@ -1939,6 +1959,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const status: 'ok' | 'error' | 'cancelled' = wasCancelled ? 'cancelled' : outcome.status;
     // 协议约束: error 必须带非空 errorMessage, ok / cancelled 必须为 null
     const isError = status === 'error';
+    if (isError) {
+      // 失败原因原先只进 request ledger, 主日志里只有 dispatch / delivered 两行(issue #5912)。
+      log.warn(
+        `hook task ${task.requestId} failed: im=${task.run.source?.im ?? 'none'} via=${runnerThrew ? 'throw' : 'outcome'} reason=${hookFailureReasonForLog(outcome.errorMessage)}`,
+      );
+    }
     let turnEnd: TurnEndPayload = {
       requestId: task.requestId,
       externalKey: task.externalKey,

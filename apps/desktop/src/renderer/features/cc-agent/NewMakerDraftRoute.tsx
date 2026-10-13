@@ -192,6 +192,7 @@ import {
   type HomeTaskSuggestion,
 } from './pluginHomeSuggestions';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity.js';
 import {
   startPendingPluginSuggestion,
   takePendingPluginSuggestion,
@@ -215,7 +216,7 @@ import { cn } from '@/lib/utils';
 import { InvisibleWindowDragStrip } from '@/components/layout/windowDrag';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import { classifyUnclassifiedDroppedItems, getDroppedFileItems } from '@/lib/fileDrop';
@@ -431,6 +432,8 @@ function draftEnableOrcaOptions(
   providers: ProviderView[],
   providersReady: boolean,
   deferDelegateTask = false,
+  /** `providers` 是哪一处的目录(Agent 所在位置)；null = 任务所在电脑。 */
+  providersAgentDeviceId: string | null = null,
 ) {
   const preferredAgent: 'claude-code' | 'codex' | 'pi' =
     collab.worker === 'codex' ? 'codex' : collab.worker === 'pi' ? 'pi' : 'claude-code';
@@ -452,6 +455,45 @@ function draftEnableOrcaOptions(
   })();
   const cfg = collab.workerConfig;
   if (!cfg) return { workerAgent };
+  // 这次在弹窗里按某个位置(远程供应商或任务所在电脑)的目录选的 Worker：位置与手上这份目录不是同一处时，
+  // 模型与来源已在选择时按那里的目录收窄过，带着位置原样提交，不拿这份目录收窄或换 agent。是同一处时
+  // 照常按 live 目录收窄(发送前来源可能已断开)，并带上位置。跨重启恢复的配置不带位置
+  // (见 CollabWorkerConfig.agentDeviceId)，同样走下面的收窄。
+  const workerLocation = cfg.agentDeviceId !== undefined && !cfg.executionDeviceId
+    ? { agentDeviceId: cfg.agentDeviceId }
+    : {};
+  if (workerLocation.agentDeviceId !== undefined && workerLocation.agentDeviceId !== providersAgentDeviceId) {
+    return {
+      workerAgent: preferredAgent,
+      role: cfg.role,
+      label: createWorkerLabel(cfg.role, []),
+      model: cfg.model,
+      effort: cfg.effort as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
+      fast: cfg.fast,
+      providerId: cfg.providerId ?? undefined,
+      delegateTask: cfg.initialTask,
+      ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
+      workerPermissionMode: cfg.workerPermissionMode,
+      ...workerLocation,
+    };
+  }
+  // 放到另一台电脑的 Worker：模型与来源是按那台的目录选的，不能拿本机目录收窄或换 agent。
+  if (cfg.executionDeviceId) {
+    return {
+      workerAgent: preferredAgent,
+      role: cfg.role,
+      label: createWorkerLabel(cfg.role, []),
+      model: cfg.model,
+      effort: cfg.effort as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
+      fast: cfg.fast,
+      providerId: cfg.providerId ?? undefined,
+      delegateTask: cfg.initialTask,
+      ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
+      workerPermissionMode: cfg.workerPermissionMode,
+      executionDeviceId: cfg.executionDeviceId,
+      ...(cfg.executionWorkingDir ? { workingDir: cfg.executionWorkingDir } : {}),
+    };
+  }
   // 首选 agent 被目标设备目录换掉时,配置里的 model / providerId 属于旧 agent,一并丢弃 ——
   // 留着只会撞 INVALID_PARAMS。让被控端按新 agent 的默认值起 Worker。
   if (workerAgent !== preferredAgent) {
@@ -462,6 +504,7 @@ function draftEnableOrcaOptions(
       delegateTask: cfg.initialTask,
       ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
       workerPermissionMode: cfg.workerPermissionMode,
+      ...workerLocation,
     };
   }
   // 草稿里持久化的来源在发送时按 live 目录重新收窄(已连接 + 提供该模型 + 未被可见性
@@ -499,6 +542,7 @@ function draftEnableOrcaOptions(
     delegateTask: cfg.initialTask,
     ...(deferDelegateTask ? { deferDelegateTask: true } : {}),
     workerPermissionMode: cfg.workerPermissionMode,
+    ...workerLocation,
   };
 }
 
@@ -1342,6 +1386,7 @@ export function NewMakerDraftRoute() {
     if (usesDeviceCatalog) return { model: chatPrefs.model, providerId: null };
     return calibrateDraftModel({
       providers: autoCalibrationProviders,
+      isModelEnabled,
       agent: capabilityAgentKind,
       model: chatPrefs.model,
       chosenByUser: draftModelChosenByUser,
@@ -1356,6 +1401,7 @@ export function NewMakerDraftRoute() {
     chatPrefs.providerId,
     draftModelChosenByUser,
     localProvidersLoading,
+    defaultVisibilityVersion,
   ]);
   const calibratedDraftModel = draftCalibration.model;
 
@@ -3998,6 +4044,8 @@ export function NewMakerDraftRoute() {
                         agentCatalogProviders,
                         !deviceProvidersLoading,
                         true,
+                        // agentCatalogProviders 是草稿 Agent 所在那一处的目录(null = 被控电脑)。
+                        effectiveAgentDeviceId ?? null,
                       ),
                     },
                   }
@@ -4958,6 +5006,8 @@ export function NewMakerDraftRoute() {
                       agentCatalogProviders,
                       !deviceProvidersLoading,
                       true,
+                      // agentCatalogProviders 是草稿 Agent 所在那一处的目录(null = 被控电脑)。
+                      effectiveAgentDeviceId ?? null,
                     ),
                   },
                 }
@@ -5298,7 +5348,7 @@ export function NewMakerDraftRoute() {
       new Map(
         (isDeviceLinkDraft ? [] : filterGhostsForWorkdir(installedGhosts, effectiveWorkingDir))
           .filter((g) => g.enabled)
-          .map((g) => [g.manifest.id, g]),
+          .map((g) => [installedGhostStoragePart(g), g]),
       ),
     [isDeviceLinkDraft, effectiveWorkingDir, installedGhosts],
   );
@@ -5307,7 +5357,7 @@ export function NewMakerDraftRoute() {
       const ghost = suggestion.pluginId
         ? usableSuggestionGhosts.get(suggestion.pluginId)
         : undefined;
-      return ghost ? pluginSuggestionComposerText(suggestion.prompt, ghost, t) : suggestion.prompt;
+      return ghost ? pluginSuggestionComposerText(suggestion.prompt, ghost, t, [...usableSuggestionGhosts.values()]) : suggestion.prompt;
     },
     [t, usableSuggestionGhosts],
   );
@@ -5380,15 +5430,16 @@ export function NewMakerDraftRoute() {
           toast.info(t('newChat.pluginSuggestions.changed'));
           return;
         }
-        const ghost = window.electronAPI.ghosts
-          .listSync()
-          .ghosts.find((g) => g.manifest.id === suggestion.pluginId);
+        const installedGhosts = window.electronAPI.ghosts.listSync().ghosts;
+        const ghost = installedGhosts.find((g) => installedGhostStoragePart(g) === suggestion.pluginId);
+        const usableGhosts = filterGhostsForWorkdir(installedGhosts, request.workingDir)
+          .filter((g) => g.enabled);
         const usable =
-          ghost && ghost.enabled && filterGhostsForWorkdir([ghost], request.workingDir).length > 0;
+          ghost && usableGhosts.includes(ghost);
         if (!usable) {
           let route: string;
           if (ghost) {
-            route = `/plugins?ghost=${encodeURIComponent(ghost.manifest.id)}`;
+            route = `/plugins?ghost=${encodeURIComponent(installedGhostStoragePart(ghost))}`;
           } else {
             const market = await window.electronAPI.pluginMarket.snapshot();
             if (!stillCurrent() || readPluginRecommendationSnapshot().ownerId !== request.ownerId)
@@ -5411,8 +5462,8 @@ export function NewMakerDraftRoute() {
         // 填进输入框而不是直接发送;ChatInput 发送时会自己展开 $command。无指令插件发送时
         // 识别不出所用插件,所以选中插件建议并成功填入即记一次最近使用(有指令的插件发送时
         // 还会再记一次,只刷新时间,不影响排序语义)。
-        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t))) {
-          void window.electronAPI.ghosts.markUsed(ghost.manifest.id).catch(() => undefined);
+        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t, usableGhosts))) {
+          void window.electronAPI.ghosts.markUsed(installedGhostStoragePart(ghost)).catch(() => undefined);
         }
       } catch {
         if (pluginSuggestionMounted.current)
@@ -5497,7 +5548,7 @@ export function NewMakerDraftRoute() {
           setPageDragOver(false);
           // .cindy / .cshare 已被窗口级 capture 接管(装入 / 导入链路),不当附件消费。
           if (isGlobalDropIntercepted(e.nativeEvent)) return;
-          const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+          const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
           if (ghostMediaUri) {
             e.preventDefault();
             e.stopPropagation();
@@ -5932,6 +5983,13 @@ export function NewMakerDraftRoute() {
                 providerId: form.providerId,
                 initialTask: form.initialTask || undefined,
                 workerPermissionMode: form.workerPermissionMode,
+                ...(form.executionDeviceId
+                  ? {
+                      executionDeviceId: form.executionDeviceId,
+                      ...(form.workingDir ? { executionWorkingDir: form.workingDir } : {}),
+                    }
+                  : {}),
+                ...(form.agentDeviceId !== undefined ? { agentDeviceId: form.agentDeviceId } : {}),
               },
             });
             setCreateWorkerOpen(false);
@@ -5943,6 +6001,14 @@ export function NewMakerDraftRoute() {
           // SSH 远程草稿(draft.remoteHostId):worker 在远端 spawn,模型清单按 SSH
           // 口径过滤,与本路由 ChatInput 候选及 main 侧 remote-worker guard 同口径。
           sshRemote={!!effectiveRemoteHostId}
+          // 首个 Worker 也可放到另一台电脑：仅本机草稿(非 SSH、非远程 Agent)。
+          executionDevicesEnabled={
+            !effectiveDeviceLinkDeviceId && !effectiveRemoteHostId && !isAgentDeviceDraft
+          }
+          // Worker 的 Agent 默认跟草稿选的 Agent 所在电脑(远程供应商)，面板里列出与输入框同一份
+          // 其他电脑 / 分享的供应商，可以换到任务所在电脑或别处。
+          leadAgentDeviceId={effectiveAgentDeviceId ?? null}
+          remoteAgentDevices={effectiveRemoteHostId ? undefined : remoteAgentDevices}
         />
 
         {/* 添加远程项目弹窗 (入口在 mode pill 的 FolderPickerPopover 里, gate 走 hasAnyRemoteTarget =

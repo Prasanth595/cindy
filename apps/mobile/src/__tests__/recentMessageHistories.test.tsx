@@ -25,7 +25,8 @@ vi.mock('@/session/useHomeMode', () => ({ useHomeMode: () => ({ mode: 'tasks' })
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/sessionPaneLayout', () => ({ sessionPaneLayout: () => ({ persistent: true }) }));
 vi.mock('@/session/remoteSessionStore', () => ({
-  RemoteSessionStoreSubscriptionGate: ({ children }: { children: ReactNode }) => children,
+  RemoteSessionStoreSubscriptionGate: ({ children, enabled }: { children: ReactNode; enabled: boolean }) =>
+    <div data-store-gate={String(enabled)}>{children}</div>,
 }));
 vi.mock('react-native-reanimated', () => ({
   default: {
@@ -108,6 +109,18 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(original.textContent).toBe('updated:420');
     expect(mounts.get('a')).toBe(1);
   });
+  it('pauses store subscriptions of every retained list that is not the visible task', async () => {
+    const gateOf = (id: string) => container.querySelector(`[data-task="${id}"]`)!
+      .closest<HTMLElement>('[data-store-gate]')!.dataset.storeGate;
+    await show('a'); await show('b');
+    expect(gateOf('a')).toBe('false');
+    expect(gateOf('b')).toBe('true');
+    await show(null);
+    expect(gateOf('a')).toBe('false');
+    expect(gateOf('b')).toBe('false');
+    await show('a');
+    expect(gateOf('a')).toBe('true');
+  });
   it('resizes the same list on rotation without changing its state', async () => {
     await show('a');
     const original = container.querySelector<HTMLButtonElement>('button')!;
@@ -175,7 +188,8 @@ describe('resident five-task message lists outside route lifetimes', () => {
     const original = container.querySelector<HTMLButtonElement>('button')!;
     expect(original.textContent).toBe('cached:0');
     expect(original.dataset.active).toBe('false');
-    expect(original.parentElement?.parentElement?.getAttribute('data-layout')).toContain('\"top\":90');
+    expect(original.closest('[data-store-gate]')?.parentElement?.parentElement?.getAttribute('data-layout'))
+      .toContain('\"top\":90');
     expect(original.closest('[data-input="none"]')).not.toBeNull();
     await show('a', 'fresh'); expect(original.textContent).toBe('fresh:0');
   });

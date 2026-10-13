@@ -127,6 +127,31 @@ export interface AgentSwitchSessionRow {
 const AGENT_DEVICE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 export interface MakerSessionAgentSwitchHandlerDeps {
+  /**
+   * 任务要换到供应商组那一项(组所在电脑上那个建了组的供应商)时，由组按它的状态选一台能用的电脑
+   * (docs/product-rules/provider-groups.md §6)：返回选中那台的位置；不是组那一项或组读不到返回 null(照用户选的位置)；
+   * 组里都不能用时抛错。只在真正提交(applyNow)、要换电脑时调用。缺省 = 不经组选。
+   */
+  resolveProviderGroupTarget?(
+    sessionId: string,
+    target: {
+      agentKind: 'claude-code' | 'codex' | 'pi';
+      model: string;
+      providerId: string | null;
+      /** 用户选的位置(null = 任务所在电脑)。 */
+      agentDeviceId: string | null;
+      /** 任务此刻的位置。 */
+      current: { agentDeviceId: string | null; providerId: string | null };
+    },
+  ): Promise<{
+    agentDeviceId: string | null;
+    providerId: string | null;
+    /**
+     * 把这次选中的组内电脑写进绑定；调用方必须等本次切换真正提交成功再调用，
+     * 不要在选定位置后立即调(chatgpt-codex-connector P2, PR #5792 review)。
+     */
+    commitBinding?: () => Promise<void>;
+  } | null>;
   /** Same-engine choices use SET_MODEL validation; only the send boundary applies them. Caller owns the session lock. */
   selectSameAgentModel?(
     sessionId: string,
@@ -268,6 +293,11 @@ export interface SessionAgentSwitchResult {
   /** 新引擎 live session 是否已就绪;false 时下一条消息走 lazy-create 重试。 */
   engineReady: boolean;
   /**
+   * engineReady=false 时新会话没能启动的原因(错误原文)。供应商组换电脑据此判断是不是那台电脑的问题、要不要
+   * 换下一台(provider-group/failurePolicy)。
+   */
+  bootstrapError?: string;
+  /**
    * turn 运行中登记为 pending:切换不打断当前 turn,推迟到下一条消息发送时刻
    * 由 send 事务执行(applyPendingAgentSwitchIfIdle)。true 时 switched=false,
    * 会话状态(DB / 消息流 / chip)保持旧引擎——旧 turn 确实仍由旧引擎驱动。
@@ -402,6 +432,88 @@ export async function applySetModelThenCancelAgentSwitchIntent<T>(
   return result;
 }
 
+/**
+ * 打开任务时 Agent 没能启动、要换到另一个位置重新打开(供应商组启动阶段换电脑，docs/product-rules/provider-groups.md §6)：
+ * 原生会话在原来那个位置上，换过去不能续接，与换电脑同一套交接——全量交接 + 全新原生会话 + 分隔条。没有开着的会话
+ * (这次就是要打开它)，也不在这里启动：调用方正在启动 Agent，按返回后的任务记录接着打开，这次发送带上交接。
+ * `sharedRelocation`：位置仍是同一个分享、由分享者的组换一台(分隔条不写电脑名称)。
+ */
+export async function relocateForFreshStart(
+  deps: Pick<
+    MakerSessionAgentSwitchHandlerDeps,
+    | 'getSessionRow'
+    | 'listMessagesForHandoff'
+    | 'applyAgentSwitchToDb'
+    | 'setSessionProvider'
+    | 'insertBoundaryMessage'
+    | 'setPendingHandoff'
+    | 'readPendingHandoffGeneration'
+    | 'describeAgentDevice'
+    | 'log'
+  >,
+  params: {
+    sessionId: string;
+    agentDeviceId: string | null;
+    providerId: string | null;
+    /** 原来那个位置(调用方可能已把任务记录改到了目标位置)；不给 = 按任务记录。 */
+    from?: { agentDeviceId: string | null; providerId: string | null };
+    sharedRelocation?: boolean;
+  },
+): Promise<void> {
+  const { sessionId, agentDeviceId, providerId } = params;
+  const row = await deps.getSessionRow(sessionId);
+  if (!row || row.status === 'deleted') throwIpcError('NOT_FOUND', `Session ${sessionId} not found`);
+  if (!row.model) throwIpcError('PRECONDITION_FAILED', `Session ${sessionId} has no model to relocate`);
+  const model = row.model;
+  const dbKind = normalizeDbAgentKind(row.agentKind);
+  const handoffGeneration = deps.readPendingHandoffGeneration?.(sessionId);
+  const handoff = buildHandoffText(await deps.listMessagesForHandoff(sessionId), {
+    fromLabel: `${agentEngineLabel(dbKind)} (on a different computer)`,
+    toLabel: agentEngineLabel(dbKind),
+    sessionId,
+  });
+  const fromAgentDeviceId = params.from ? params.from.agentDeviceId : row.agentDeviceId ?? null;
+  const fromProviderId = params.from ? params.from.providerId : row.providerId;
+  await deps.applyAgentSwitchToDb(sessionId, {
+    agentKind: dbKind,
+    model,
+    providerId,
+    sdkSessionId: null,
+    agentDeviceId,
+  });
+  deps.setSessionProvider(sessionId, providerId);
+  const boundaryContent: AgentSwitchBoundaryContent = {
+    fromAgentKind: dbKind,
+    toAgentKind: dbKind,
+    fromModel: row.model,
+    toModel: row.model,
+    fromProviderId,
+    toProviderId: providerId,
+    fromSdkSessionId: row.sdkSessionId,
+    handoff,
+    resumed: false,
+    consumed: false,
+    fromAgentDeviceId,
+    toAgentDeviceId: agentDeviceId,
+    fromAgentDeviceName: params.sharedRelocation ? null : deps.describeAgentDevice?.(fromAgentDeviceId) ?? null,
+    toAgentDeviceName: params.sharedRelocation ? null : deps.describeAgentDevice?.(agentDeviceId) ?? null,
+  };
+  try {
+    await deps.insertBoundaryMessage(sessionId, boundaryContent);
+  } catch (err) {
+    deps.log.warn('agent-switch: boundary message insert failed on fresh-start relocation (degraded)', {
+      sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  deps.setPendingHandoff(sessionId, handoff, handoffGeneration);
+  deps.log.info('agent-switch: relocated for a fresh start', {
+    sessionId,
+    handoffChars: handoff.length,
+    agentDeviceChange: params.sharedRelocation ? 'reassigned-by-provider-group' : agentDeviceId ? 'other-device' : 'task-device',
+  });
+}
+
 /** 业务体(纯依赖注入,单测直接调):校验 → 交接 → 提交 → 重建。 */
 export async function performSessionAgentSwitch(
   deps: MakerSessionAgentSwitchHandlerDeps,
@@ -439,6 +551,18 @@ export async function performSessionAgentSwitch(
     /** Recheck caller CAS after asynchronous validation, before staging any intent. */
     assertSelectionCurrent?: () => void;
     beforeMutation?: () => Promise<void>;
+    /**
+     * 仅限 main 内部(不接受 IPC 传入)：Agent 位置不变也按换电脑重新交接、新建原生会话。供应商组替分享的人
+     * 换电脑时任务的位置仍是同一个分享，实际运行的电脑由组所在电脑重新选(docs/product-rules/provider-groups.md §6.1)。
+     * 只在 applyNow 且 Agent 在另一台电脑上时生效。
+     */
+    forceRelocation?: boolean;
+    /**
+     * 仅限 main 内部(不接受 IPC 传入)：供应商组为这个任务换电脑——引擎与模型不变、只换 Agent 所在位置。
+     * 协同任务(Lead / Worker)不接受用户换引擎或换位置，只接受这一种切换(docs/product-rules/provider-groups.md §6.1)。
+     * 只在 applyNow 时生效。
+     */
+    providerGroupRelocation?: boolean;
   },
 ): Promise<SessionAgentSwitchResult> {
   const { sessionId, targetAgentKind, model, providerId, signal } = params;
@@ -463,7 +587,7 @@ export async function performSessionAgentSwitch(
   ) {
     throwIpcError('INVALID_PARAMS', 'agentDeviceId must be a device id or null');
   }
-  const requestedAgentDeviceId = rawAgentDeviceId as string | null | undefined;
+  let requestedAgentDeviceId = rawAgentDeviceId as string | null | undefined;
   // 必须在第一个 await 前快照：跨窗口 / 跨设备写入即使 set→clear 回到同值，修订号也会变化。
   const pendingRevisionAtStart = deps.pendingSwitches?.revision?.(sessionId);
   let normalizedProviderId =
@@ -500,7 +624,13 @@ export async function performSessionAgentSwitch(
     // SSH 远程会话:agent 进程在远端机器,cc-manager 链路仅覆盖 Claude,v1 不支持切换。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for remote sessions');
   }
-  if (row.orcaRole) {
+  // 供应商组换电脑：同引擎同模型、只换位置。协同任务只放行这一种(内部 applyNow 调用)。
+  const providerGroupRelocationOnly =
+    params.providerGroupRelocation === true &&
+    params.applyNow === true &&
+    normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
+    row.model === model;
+  if (row.orcaRole && !providerGroupRelocationOnly) {
     // Orca lead/worker:协同运行时对 agent 形态有独立契约(docs/dev-rules/orca-team-architecture.md),不掺和。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for Orca sessions');
   }
@@ -511,12 +641,59 @@ export async function performSessionAgentSwitch(
   const fromDbKind: DbAgentKind = normalizeDbAgentKind(row.agentKind);
   const toDbKind: DbAgentKind = makerToDbAgentKind(targetAgentKind);
   const currentAgentDeviceId = row.agentDeviceId ?? null;
-  const targetAgentDeviceId =
+  let targetAgentDeviceId =
     requestedAgentDeviceId === undefined ? currentAgentDeviceId : requestedAgentDeviceId;
+  // 换到供应商组那一项、要换电脑：交接反正要做，由组按它此刻的状态选一台能用的电脑，不直接落到组所在电脑本身
+  // (docs/product-rules/provider-groups.md §6，2026-10-11 用户反馈)。登记意图时不选，真正提交时按那一刻的状态选。
+  let groupResolvedToCurrentPosition = false;
+  let commitProviderGroupBinding: (() => Promise<void>) | undefined;
+  // 切换已提交后，绑定文件失败不能把整次切换当成未发生，否则重试会丢掉原电脑的交接。
+  async function commitBindingAfterSwitch(): Promise<void> {
+    try {
+      await commitProviderGroupBinding?.();
+    } catch (error) {
+      deps.log.warn('agent-switch: provider group binding save failed after switch committed', {
+        sessionId,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (
+    params.applyNow === true &&
+    params.providerGroupRelocation !== true &&
+    targetAgentDeviceId !== currentAgentDeviceId &&
+    deps.resolveProviderGroupTarget
+  ) {
+    const chosen = await deps.resolveProviderGroupTarget(sessionId, {
+      agentKind: targetAgentKind,
+      model,
+      providerId: typeof normalizedProviderId === 'string' ? normalizedProviderId : null,
+      agentDeviceId: targetAgentDeviceId,
+      current: { agentDeviceId: currentAgentDeviceId, providerId: row.providerId ?? null },
+    });
+    throwIfAgentSwitchAborted(signal);
+    if (chosen) {
+      targetAgentDeviceId = chosen.agentDeviceId;
+      requestedAgentDeviceId = chosen.agentDeviceId;
+      normalizedProviderId = chosen.providerId;
+      // 组把这次换电脑选回了当前位置：下面会撞上同引擎同位置的 no-op 分支——但这次
+      // 提交本来就是新模型 / effort / fastMode 落地的时刻(登记意图时还没经过组选，
+      // 不是走 selectSameAgentModel 的 picker 直选)，no-op 会悄悄丢弹已选的新设置
+      // (greptile-apps P1, PR #5792 review)。标记后改走真正的同引擎模型应用路径。
+      groupResolvedToCurrentPosition = true;
+      // 绑定推迟到本次切换真正提交成功再写：下面还要做目标目录校验和实际交接，
+      // 失败时不应该已经持久化新绑定(chatgpt-codex-connector P2, PR #5792 review)。
+      commitProviderGroupBinding = chosen.commitBinding;
+    }
+  }
   const agentDeviceChanges = targetAgentDeviceId !== currentAgentDeviceId;
+  // 位置不变的强制换电脑(只认内部 applyNow 调用，且 Agent 在另一台电脑上)：交接、提交、分隔条都按换电脑处理。
+  const forcedRelocation =
+    !agentDeviceChanges && params.forceRelocation === true && params.applyNow === true && targetAgentDeviceId !== null;
+  const relocating = agentDeviceChanges || forcedRelocation;
   // 落到另一台电脑的完整切换(换引擎或换电脑)：登记与落地前都按那台的目录裁决。同引擎同位置
   // 的模型选择走 selectSameAgentModel，在 SET_MODEL 链路里裁决。
-  if (targetAgentDeviceId && (agentDeviceChanges || fromDbKind !== toDbKind)) {
+  if (targetAgentDeviceId && (relocating || fromDbKind !== toDbKind)) {
     await deps.assertAgentDeviceRouteUsable?.(
       targetAgentDeviceId,
       targetAgentKind,
@@ -527,10 +704,13 @@ export async function performSessionAgentSwitch(
     throwIfAgentSwitchAborted(signal);
     params.assertSelectionCurrent?.();
   }
-  if (fromDbKind === toDbKind && !agentDeviceChanges) {
+  if (fromDbKind === toDbKind && !relocating) {
     // Only picker calls stage a model choice here. Internal cross-engine apply/recovery
     // callers retain the existing same-engine no-op; send consumes staged choices below.
-    if (deps.selectSameAgentModel && !params.applyNow) {
+    // 组把换电脑的意图选回了当前位置(groupResolvedToCurrentPosition)：这次 applyNow 提交
+    // 本身就是模型 / effort / fastMode 要落地的时刻，必须走真正的同引擎模型应用路径，
+    // 不能当成已经应用过的 no-op 直接丢弹(greptile-apps P1, PR #5792 review)。
+    if (deps.selectSameAgentModel && (!params.applyNow || groupResolvedToCurrentPosition)) {
       const result = await deps.selectSameAgentModel(sessionId, {
         targetAgentKind,
         model,
@@ -540,7 +720,12 @@ export async function performSessionAgentSwitch(
         sameAgentSelection: true,
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
         ...(params.configStaged === true ? { configStaged: true } : {}),
-      }, false, params.assertSelectionCurrent, params.beforeMutation);
+      }, params.applyNow === true, params.assertSelectionCurrent, params.beforeMutation);
+      // 组选回当前位置并且模型应用真正成功(非 deferred/superseded)时才持久化新绑定；
+      // 没落地的调用不应该殊到已纳入组(chatgpt-codex-connector P2, PR #5792 review)。
+      if (groupResolvedToCurrentPosition && !result.deferred && !result.superseded) {
+        await commitBindingAfterSwitch();
+      }
       return {
         switched: false,
         agentKind: targetAgentKind,
@@ -624,14 +809,14 @@ export async function performSessionAgentSwitch(
   // Phase 2:目标引擎有停泊原生会话 → resume + 增量交接(只补离开期间的进展,
   // 工作状态区仍按全量历史提取);无绑定 → v1 全量交接 + 全新原生会话。
   // 换电脑时停泊的原生会话在原来那台电脑上，目标电脑接不上，一律全量交接。
-  const parked = deps.findParkedEngineSession && !agentDeviceChanges
+  const parked = deps.findParkedEngineSession && !relocating
     ? await deps.findParkedEngineSession(sessionId, toDbKind)
     : null;
   const fullSourceMessages = await deps.listMessagesForHandoff(sessionId);
   throwIfAgentSwitchAborted(signal);
   const handoffOptsBase = {
     // 同引擎换电脑时两边引擎名相同，标出旧的那段跑在另一台电脑上。
-    fromLabel: agentDeviceChanges
+    fromLabel: relocating
       ? `${agentEngineLabel(fromDbKind)} (on a different computer)`
       : agentEngineLabel(fromDbKind),
     toLabel: agentEngineLabel(toDbKind),
@@ -689,6 +874,12 @@ export async function performSessionAgentSwitch(
     if (normalizedProviderId !== undefined) {
       deps.setSessionProvider(sessionId, normalizedProviderId);
     }
+    // DB 已过 commit point，切换生效：此刻再持久化组内绑定，前面的目录校验 /
+    // closeSession / assertModelRouteUsable 任何一步抛错都不会让新绑定抔先持久化
+    // (chatgpt-codex-connector P2, PR #5792 review)。
+    if (commitProviderGroupBinding) {
+      await commitBindingAfterSwitch();
+    }
 
     const boundaryContent: AgentSwitchBoundaryContent = {
       fromAgentKind: fromDbKind,
@@ -702,12 +893,13 @@ export async function performSessionAgentSwitch(
       handoff,
       resumed: !!parked,
       consumed: false,
-      ...(agentDeviceChanges
+      ...(relocating
         ? {
             fromAgentDeviceId: currentAgentDeviceId,
             toAgentDeviceId: targetAgentDeviceId,
-            fromAgentDeviceName: deps.describeAgentDevice?.(currentAgentDeviceId) ?? null,
-            toAgentDeviceName: deps.describeAgentDevice?.(targetAgentDeviceId) ?? null,
+            // 强制换电脑时实际运行的电脑由对方选，本机不知道是哪台(也不该显示)：分隔条写「另一台电脑」。
+            fromAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(currentAgentDeviceId) ?? null,
+            toAgentDeviceName: forcedRelocation ? null : deps.describeAgentDevice?.(targetAgentDeviceId) ?? null,
           }
         : {}),
     };
@@ -724,6 +916,7 @@ export async function performSessionAgentSwitch(
     deps.setPendingHandoff(sessionId, handoff, handoffGeneration);
 
     let engineReady = true;
+    let bootstrapError: string | undefined;
     let resumed = !!parked;
     let retryPending = false;
     // resume 模式无视 skipBootstrap:只有 eager spawn 才能确定性观测 resume 失败
@@ -818,6 +1011,7 @@ export async function performSessionAgentSwitch(
               await deps.bootstrapSwitchedSession(sessionId);
             } catch (err2) {
               engineReady = false;
+              bootstrapError = err2 instanceof Error ? err2.message : String(err2);
               deps.log.warn('agent-switch: fresh bootstrap after resume fallback failed', {
                 sessionId,
                 targetAgentKind,
@@ -827,6 +1021,7 @@ export async function performSessionAgentSwitch(
           }
         } else {
           engineReady = false;
+          bootstrapError = err instanceof Error ? err.message : String(err);
           deps.log.warn('agent-switch: bootstrap new engine failed; next send will lazy-create', {
             sessionId,
             targetAgentKind,
@@ -845,12 +1040,14 @@ export async function performSessionAgentSwitch(
       resumed,
       handoffChars: handoff.length,
       ...(agentDeviceChanges ? { agentDeviceChange: targetAgentDeviceId ? 'other-device' : 'task-device' } : {}),
+      ...(forcedRelocation ? { agentDeviceChange: 'reassigned-by-provider-group' } : {}),
     });
     return {
       switched: true,
       agentKind: targetAgentKind,
       model,
       engineReady,
+      ...(bootstrapError !== undefined ? { bootstrapError } : {}),
       ...(retryPending ? { retryPending: true } : {}),
     };
   });

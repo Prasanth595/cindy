@@ -106,6 +106,14 @@ export interface TgDocument {
   file_size?: number;
 }
 
+/** voice / audio / video / video_note 共有的可下载字段(Bot API 均带 file_id)。 */
+export interface TgMediaFile {
+  file_id: string;
+  file_unique_id?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
 export interface TgMessageEntity {
   type: string;
   offset: number;
@@ -147,10 +155,10 @@ export interface TgMessage {
   photo?: TgPhotoSize[];
   document?: TgDocument;
   sticker?: { emoji?: string; set_name?: string };
-  voice?: { duration?: number };
-  audio?: { file_name?: string };
-  video?: { file_name?: string };
-  video_note?: { duration?: number };
+  voice?: TgMediaFile & { duration?: number };
+  audio?: TgMediaFile & { file_name?: string };
+  video?: TgMediaFile & { file_name?: string };
+  video_note?: TgMediaFile & { duration?: number };
   new_chat_members?: TgUser[];
   left_chat_member?: TgUser;
   /**

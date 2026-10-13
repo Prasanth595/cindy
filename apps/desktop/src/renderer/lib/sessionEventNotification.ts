@@ -3,6 +3,7 @@ import { getFeishuNotificationsEnabled } from '@/hooks/useFeishuNotificationSett
 import { getNotificationsEnabled } from '@/hooks/useNotificationSettings';
 import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { getRemoteSessionActivity, subscribeRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
+import { isReviewSessionSource } from '../../shared/sessionSource';
 
 export type SessionEventNotificationKind = 'done' | 'error' | 'needs-reply';
 
@@ -37,6 +38,20 @@ export function findSessionNotificationSession<T extends { id: string; title?: u
  * the group chat itself shows the lane's pending confirmation.
  */
 export const BOT_GROUP_LANE_SESSION: unique symbol = Symbol('bot-group-lane-session');
+
+/**
+ * /review Reviewer tasks are omitted from the ordinary task list and never notify
+ * on their own: the result is published to the source task, which is where the
+ * user (and the source agent) continues.
+ */
+export async function isReviewSessionNotificationTarget(sessionId: string): Promise<boolean> {
+  const row = await window.electronAPI.localDb.sessions.get(sessionId).catch(() => null);
+  return (
+    !!row
+    && typeof row === 'object'
+    && isReviewSessionSource((row as { source?: unknown }).source)
+  );
+}
 
 /** Resolve Bot-owned tasks omitted from the ordinary desktop session list. */
 export async function botOwnedSessionNotificationTitle(

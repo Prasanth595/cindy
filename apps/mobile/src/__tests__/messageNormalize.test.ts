@@ -1198,7 +1198,7 @@ describe('normalizeRemoteMessages', () => {
         agentMeta: {
           sourceDevice: { deviceId: 'phone-1', name: 'Dash 的\niPhone', platform: 'mobile' },
           sourcePlugin: { pluginId: 'plugin-1', name: '日报' },
-          sharedTaskAuthor: { displayName: '访客甲', memberId: 'm1' },
+          sharedTaskAuthor: { displayName: '访客甲', memberId: 'm1', accountId: 'acct-guest' },
         },
       }),
       message({
@@ -1220,6 +1220,8 @@ describe('normalizeRemoteMessages', () => {
         ['unknown-platform', undefined, undefined, undefined],
         ['assistant-ignored', undefined, undefined, undefined],
       ]);
+    // 作者账号只用于判断「是不是我的消息」(气泡配色),不作权限依据。
+    expect(items.map((item) => item.sharedAuthorAccountId)).toEqual(['acct-guest', undefined, undefined]);
   });
 
   it('reads the sending session of tool-sent and Orca messages without mixing it into automation', () => {

@@ -1,7 +1,7 @@
 /**
  * 待发送消息气泡(渲染在消息流里,不再是列表 footer)。
  *
- * 形态与已发送用户气泡同款(右对齐、surfaceElevated + borderStrong)但整体半透明——
+ * 形态与已发送用户气泡同款(右对齐、surfaceElevated + border)但整体半透明——
  * 「这就是你的消息,只是还没生效」;落定时提高不透明度,回流后同一个列表位置换成正式
  * 消息,原地变实。徽标语义:
  *  - 转圈 = 还没有「已被收下」这个事实(enqueue 在途 / 已出队待回流 / 附件上传中);
@@ -66,6 +66,7 @@ import {
   type ThemeColors,
 } from '@/theme';
 import { radius, spacing, typeScale } from '@/theme/tokens';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 
 /** 与已发送消息上的来源标签同一组图标(自动化 Timer / 任务 Send / Orca Bot / 插件 Ghost)。 */
 function sourceIcon(kind: MobilePendingSendSourceKind): LucideIcon {
@@ -228,6 +229,8 @@ export function PendingSendBubble({
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // 待发送的一定是自己的消息;与落定后的正式气泡同色,避免发出瞬间换色。
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   const spinning = pendingSendSpins(item.phase);
   const editing = item.phase === 'editing';
   const failed = item.phase === 'failed';
@@ -426,7 +429,12 @@ export function PendingSendBubble({
               onTouchMove={interactive ? handleBubbleTouchMove : undefined}
               onTouchStart={interactive ? handleBubbleTouchStart : undefined}
               onTouchCancel={cancelBubbleTouch}
-              style={[styles.bubble, density === 'compact' && styles.bubbleCompact, density === 'rich' && styles.bubbleRich]}
+              style={[
+                styles.bubble,
+                density === 'compact' && styles.bubbleCompact,
+                density === 'rich' && styles.bubbleRich,
+                userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+              ]}
               testID={`pendingSend.body.${item.clientId}`}
             >
               {rendersSentInlineBody ? (
@@ -617,7 +625,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   bubbleRich: { gap: spacing.sm },
   bubble: {
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.xs,

@@ -114,6 +114,8 @@ import { imageMimeFromUrl } from '@/session/remoteMediaDiskCache';
 import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
 import type { FileBrowserSearchMatch, MobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
+import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import type { RemoteSession } from '@/session/types';
 import { fontWeight, lineHeight, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { docThumbSnippetType, iconSize, iconStroke, radius, spacing, typeScale } from '@/theme/tokens';
@@ -123,6 +125,15 @@ const NOTICE_DISMISS_MS = 2500;
 const SEARCH_FILES_CAP = 20000;
 
 export default function RemoteFileBrowserScreen() {
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={String(sessionId ?? '')} deviceId={readRouteString(deviceId) ?? undefined}>
+      <RemoteFileBrowserContent />
+    </CindyMakeSessionGate>
+  );
+}
+
+function RemoteFileBrowserContent() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -225,16 +236,23 @@ export default function RemoteFileBrowserScreen() {
       return;
     }
     if (!deviceId || !sessionId) return;
+    let cancelled = false;
     void withTransientRemoteRetry(async () => {
       await openLink(deviceId);
       return maker.getSession(sessionId);
     })
       .then((loaded) => {
+        if (cancelled) return;
+        if (!CINDY_MAKE_ENABLED && isCindyMakeSource(loaded?.source)) {
+          router.replace('/');
+          return;
+        }
         setSession(loaded);
         setError(null);
       })
-      .catch((err) => setError(formatRemoteError(err)));
-  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, sessionId]);
+      .catch((err) => { if (!cancelled) setError(formatRemoteError(err)); });
+    return () => { cancelled = true; };
+  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, router, sessionId]);
 
   // workdir 就绪后加载偏好(异步存储可能比同步内存新)。
   useEffect(() => {

@@ -459,3 +459,10 @@ describe('send_to_session · working_dir (#811)', () => {
     expect(parse(res)).toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
   });
 });
+
+
+it('reports a failed responsibility write without hiding successful task creation', async () => {
+  const { registry, sendToSession } = setup({ result: { ok: true, targetSessionId: 'new-task', agentKind: 'claude-code', wakeKind: 'created', responsibilityRecorded: false, targetTitle: null, targetLastUserSendAt: null } });
+  expect(parse(await registry.call('send_to_session', { message: 'Work' }))).toMatchObject({ ok: true, target_session_id: 'new-task', responsibility_recorded: false });
+  expect(sendToSession).toHaveBeenCalledOnce();
+});

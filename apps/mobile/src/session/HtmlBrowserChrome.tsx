@@ -104,6 +104,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
           /> : <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${t("files.preview.browserAddress")}: ${p.address}`}
+            disabled={p.pending}
             onPress={() => { setAddress(p.address); setEditing(true); }}
             testID="filePreview.browser.editAddress"
             style={styles.addressTitle}
@@ -188,6 +189,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
           t("files.preview.browserMore"),
           () => setMenuOpen(true),
           "filePreview.browser.more",
+          p.pending,
         )}
       </View>
       <SheetModal

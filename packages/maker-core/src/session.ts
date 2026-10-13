@@ -58,6 +58,7 @@ import { isTerminalAgentErrorEvent, parseToolLoopErrorDetails, isTurnWatchdogLiv
 import type { ContextUsageData } from './types/context-usage.js';
 import type { PiRuntimeCapabilityManifest } from './types/pi-runtime-capabilities.js';
 import type {
+  AgentMcpServerToolsReport,
   AgentSessionHandle,
   PiModelSwitchPreview,
   AgentSessionTeardownOptions,
@@ -137,6 +138,12 @@ export const MANUAL_ABORT_RECOVERY_GRACE_MS = 15_000;
 const GRACEFUL_STOP_CONFIRMATION_TIMEOUT_MS = 5_000;
 
 /**
+ * Terminal error message when this host closes a session while its turn is still running.
+ * Hosts match it to tell a local close apart from the agent dying on its own.
+ */
+export const SESSION_CLOSED_MID_TURN_MESSAGE = 'Session closed before the current turn delivered a terminal event';
+
+/**
  * turn 零事件看门狗的计时分片长度。额度按片累加,片尾核对真实经过时间,
  * 借此把系统挂起(合盖睡眠)的那段排除掉 —— 见 armTurnStallSlice。
  */
@@ -180,6 +187,11 @@ export interface SessionOptions {
    * 是不可能存在于本地 fs 的, 没必要也不该 stat。
    */
   remoteHostId?: string | null;
+  /**
+   * 同账号另一台电脑（或 `share:` 分享来源）上运行 Agent 时的设备 id，与 remoteHostId 互斥。
+   * 主进程的发送边界用它判断供应商目录在对端：本机目录不能裁决这类会话的显式来源。
+   */
+  agentDeviceId?: string | null;
   /**
    * turn 零事件看门狗阈值(ms)。省略 = env / DEFAULT_TURN_STALL_MS；0 = 关闭。
    * 主要供测试注入短阈值，宿主正常不传。
@@ -345,6 +357,14 @@ export interface SessionTurnLifecycleObserver {
     event: AgentEvent;
     isCurrentGeneration: boolean;
   }): void | Promise<void>;
+  /**
+   * Called synchronously, before event listeners see its first event, when the provider starts a
+   * turn on its own: top-level output after this generation's product terminal, with no
+   * `Session.send` reserved and no `Session.steer` carried over (e.g. Claude Code waking itself on a
+   * background task notification). The turn reuses the previous generation and has no turnOrigin.
+   * Claimed continuations never reach here: their `done` is not a product terminal.
+   */
+  onProviderInitiatedTurn?(turnGeneration: number): void;
 }
 
 /**
@@ -429,6 +449,8 @@ export class Session {
   readonly capabilities: Capabilities;
   /** 见 SessionOptions.remoteHostId。 */
   readonly remoteHostId: string | null;
+  /** 见 SessionOptions.agentDeviceId。 */
+  readonly agentDeviceId: string | null;
 
   private readonly handle: AgentSessionHandle;
   private readonly logger: Logger;
@@ -451,6 +473,13 @@ export class Session {
   private readonly statusListeners = new Set<SessionStatusListener>();
   private interactionListener: InteractionRequestListener | null = null;
   private turnLifecycleObserver: SessionTurnLifecycleObserver | null = null;
+  /** Generation whose turn after the product terminal (no send) is currently open. */
+  private unsolicitedTurnGeneration: number | null = null;
+  /**
+   * Generation that accepted a steer. Claude may run a steer that missed the ending turn as a new
+   * SDK turn without a send; that turn belongs to the steering input, not to the provider.
+   */
+  private steerAcceptedGeneration: number | null = null;
   private status: SessionStatus = 'active';
   /**
    * 同一 Session 的并发 close 共享一次底层关闭过程。renderer 与 main 生命周期钩子可能
@@ -567,6 +596,7 @@ export class Session {
     this.handle = opts.handle;
     this.capabilities = opts.capabilities;
     this.remoteHostId = opts.remoteHostId ?? null;
+    this.agentDeviceId = opts.agentDeviceId ?? null;
     this.logger = opts.logger.child(`s:${this.id}`);
     this.permissionModeStateValue = {
       mode: opts.permissionMode ?? null,
@@ -1154,7 +1184,17 @@ export class Session {
       throw new Error(`Session ${this.id} has no active turn to steer`);
     }
     this.startEventLoopIfNeeded();
-    await this.handle.steer(msg, { ...opts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
+    // Mark before dispatch: the provider may start the steer's own turn as soon as it accepts it.
+    const previousSteerGeneration = this.steerAcceptedGeneration;
+    this.steerAcceptedGeneration = steerTurnGeneration;
+    try {
+      await this.handle.steer(msg, { ...opts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
+    } catch (error) {
+      if (this.steerAcceptedGeneration === steerTurnGeneration) {
+        this.steerAcceptedGeneration = previousSteerGeneration;
+      }
+      throw error;
+    }
   }
 
   async abort(): Promise<void> {
@@ -1481,7 +1521,7 @@ export class Session {
       // close() fences late provider events before entering here. Settle the
       // owned product turn ourselves before listeners and its claim are lost.
       // Never retry: tools may already have performed external side effects.
-      this.settleUnfinishedTurn('Session closed before the current turn delivered a terminal event');
+      this.settleUnfinishedTurn(SESSION_CLOSED_MID_TURN_MESSAGE);
       this.clearTurnStallWatchdog();
       this.clearTerminalErrorDrain();
       this.cancelSendReservation(this.sendReservation);
@@ -1609,6 +1649,15 @@ export class Session {
       throw new NotSupportedError('contextUsage', { supported: false, reason: 'not-implemented' });
     }
     return this.handle.getContextUsage();
+  }
+
+  /**
+   * The engine's own view of one MCP server in this session. Null when the
+   * engine has no per-session MCP status entry; never starts or calls a server.
+   */
+  async readMcpServerTools(serverName: string): Promise<AgentMcpServerToolsReport | null> {
+    this.ensureActive();
+    return await this.handle.readMcpServerTools?.(serverName) ?? null;
   }
 
   /**
@@ -2088,6 +2137,11 @@ export class Session {
     return this.handle.getCurrentTurnId?.() ?? null;
   }
 
+  /** Product origin of the dispatched turn; Host owner-only actions refuse automated turns. */
+  getCurrentTurnOrigin(): SendOrigin | null {
+    return this.currentTurnOrigin;
+  }
+
   /**
    * dryRun: 问 SDK 这次 rewind 会动哪些文件。返回 RewindFilesResult 给 UI 显示 diff。
    * SDK 软拒绝 (老 session 无 checkpointing) 包成 {canRewind:false, error}, 业务可继续。
@@ -2445,6 +2499,37 @@ export class Session {
     );
   }
 
+  /**
+   * First top-level output after this generation's product terminal while no send is reserved:
+   * the provider started a turn by itself. Subagent output (live `agentMeta.parentUuid`) is the
+   * background work, not the wake-up. A steer carried over from the ended turn owns the first
+   * such turn instead. Returns true only for the opening event of a provider-initiated turn.
+   */
+  private isProviderInitiatedTurnStart(
+    event: AgentEvent,
+    isBackgroundEvent: boolean,
+    isCurrentGeneration: boolean,
+  ): boolean {
+    if (isBackgroundEvent || !isCurrentGeneration || !this.isNewTurnProgressEvent(event)) return false;
+    const parentUuid = event.agentMeta?.parentUuid;
+    if (typeof parentUuid === 'string' && parentUuid.length > 0) return false;
+    const generation = this.turnGeneration;
+    if (
+      generation <= 0 ||
+      this.terminalEventObservedGeneration !== generation ||
+      this.sendReservation !== null ||
+      this.isUnacceptedCurrentSend() ||
+      this.retirementContinuationGeneration === generation ||
+      this.unsolicitedTurnGeneration === generation
+    ) {
+      return false;
+    }
+    this.unsolicitedTurnGeneration = generation;
+    const carriedSteer = this.steerAcceptedGeneration === generation;
+    this.steerAcceptedGeneration = null;
+    return !carriedSteer;
+  }
+
   private resolveSessionTurnGeneration(
     waitStartGeneration: number,
     observedGeneration: number,
@@ -2691,7 +2776,10 @@ export class Session {
       this.terminalEventObservedKind === 'done';
     // A late leftover error must not replace N+1's result-only success,
     // nor fan-out as a current-generation failure to lifecycle / IPC listeners.
-    const lateErrorAfterDoneSnapshot = event.type === 'error' && sameGenerationDone;
+    // A provider-initiated turn reuses the generation whose done was already
+    // seen: its own terminal error is not a leftover of that done.
+    const lateErrorAfterDoneSnapshot =
+      event.type === 'error' && sameGenerationDone && this.unsolicitedTurnGeneration !== this.turnGeneration;
     const reservationWindowLeftover =
       isTerminal &&
       !isBackgroundEvent &&
@@ -2751,6 +2839,16 @@ export class Session {
       // Rolled-back / leftover paired done still belongs to the promoted error.
       this.clearTerminalErrorDrain();
     }
+    if (this.isProviderInitiatedTurnStart(event, isBackgroundEvent, isCurrentGeneration)) {
+      try {
+        this.turnLifecycleObserver?.onProviderInitiatedTurn?.(resolvedGeneration);
+      } catch (error) {
+        this.logger.warn('provider-initiated turn observer failed', {
+          turnGeneration: resolvedGeneration,
+          error: String(error),
+        });
+      }
+    }
     const listenerEvent = redactEventForListeners(event);
     if (
       terminalBoundaryObserved &&
@@ -2773,6 +2871,7 @@ export class Session {
     }
     if (isCurrentGeneration && isTerminal && !isBackgroundEvent && !lateErrorAfterDoneSnapshot && !reservationWindowLeftover) {
       if (!this.isSilentStopDoneEvent(event)) this.retirementContinuationGeneration = null;
+      this.unsolicitedTurnGeneration = null;
       this.clearTurnControl(resolvedGeneration);
     }
     const isLeftoverProductTerminal =

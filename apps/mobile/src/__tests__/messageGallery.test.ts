@@ -1,12 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   collectMobileMessageGalleryImages,
   galleryImageIndexForPayload,
   lightboxImagesForPayload,
 } from '@/session/messageGallery';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
+import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
+import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
+
+const durableThumbs = vi.hoisted(() => new Map<string, string>());
+vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/sentAttachmentThumbStore')>()),
+  getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
+}));
 
 function messageItem(key: string, message: Partial<MobileMessageRenderItem & { message: unknown }>['message']): MobileMessageRenderItem {
   return {
@@ -107,7 +115,7 @@ describe('message gallery', () => {
     ]);
   });
 
-  it('collects user image attachments and tool media images in render order', () => {
+  it('collects user image attachments and tool media images and videos in render order', () => {
     const items: MobileMessageRenderItem[] = [
       messageItem('m1', {
         attachments: [
@@ -140,6 +148,7 @@ describe('message gallery', () => {
     expect(gallery.map((item) => [item.title, item.url, item.payload.media.previewable])).toEqual([
       ['user.png', 'https://example.com/user.png', true],
       ['tool.png', 'xdt-image://cache/tool.png', false],
+      ['tool.mp4', 'xdt-video://cache/tool.mp4', false],
     ]);
     expect(galleryImageIndexForPayload(gallery, gallery[1].payload)).toBe(1);
   });
@@ -315,6 +324,96 @@ describe('message gallery', () => {
     ]);
   });
 
+  it('同一 url 后来又出现在别的消息里,按点击来源仍翻原消息的整组(不再退化单图)', () => {
+    const items: MobileMessageRenderItem[] = [
+      messageItem('m1', {
+        attachments: [
+          { kind: 'image', name: 'shot.png', uri: 'xdt-image://cache/shot.png', previewable: false },
+          { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false },
+        ],
+      }),
+      // 之后 Agent 读同一个文件,工具结果里又出现同一张图。
+      messageItem('m2', {
+        media: [{ kind: 'image', url: 'xdt-image://cache/shot.png', title: 'shot.png', previewable: false }],
+      }),
+    ];
+    const gallery = collectMobileMessageGalleryImages(items);
+    const shot = gallery[0].payload;
+
+    expect(lightboxImagesForPayload(gallery, shot, 'm1').map((image) => image.url)).toEqual([
+      'xdt-image://cache/shot.png',
+      'xdt-image://cache/b.png',
+    ]);
+    expect(lightboxImagesForPayload(gallery, shot, 'm2').map((image) => image.url)).toEqual([
+      'xdt-image://cache/shot.png',
+    ]);
+    // 来源不在图集里 / 没有来源:按 url 反查,多组命中仍保守退化单图。
+    expect(lightboxImagesForPayload(gallery, shot, 'unknown')).toHaveLength(1);
+    expect(lightboxImagesForPayload(gallery, shot)).toHaveLength(1);
+  });
+
+  it('回合结束后「工作过程」嵌套分组里的工具图仍在图集里,点开照常翻页', () => {
+    const row = (i: number, role: string, content: unknown, toolUseId?: string): RemoteMessage => ({
+      id: `r${i}`, clientId: `r${i}`, sessionId: 's', role, content, toolUseId,
+      createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}Z`, agentMeta: null,
+    } as RemoteMessage);
+    const rows: RemoteMessage[] = [row(0, 'user', 'make images')];
+    let n = 1;
+    for (let k = 0; k < 5; k++) {
+      rows.push(row(n++, 'tool_use', { toolName: 'gen', toolUseId: `u${k}`, input: {} }, `u${k}`));
+      rows.push(row(n++, 'tool_result', JSON.stringify({ xdt_image_url: `xdt-image://cache/img${k}.png` }), `u${k}`));
+      if (k === 1) rows.push(row(n++, 'assistant', 'Two are done, continuing with the remaining three images now.'));
+    }
+    rows.push(row(n++, 'assistant', 'All five images are ready.'));
+    const later = ['xdt-image://cache/img2.png', 'xdt-image://cache/img3.png', 'xdt-image://cache/img4.png'];
+
+    for (const isSessionStreaming of [true, false]) {
+      const items = buildMobileMessageRenderItems(rows, { isSessionStreaming });
+      const gallery = collectMobileMessageGalleryImages(items);
+      const block = items.find((item) => item.type === 'tool_media' && item.tools.some(
+        (tool) => tool.media?.some((media) => media.url === later[0]),
+      ))!;
+      // 每个 url 只属于一个组(工具媒体块不另收),url 反查不会因多组命中而退化单图。
+      expect(gallery.filter((image) => image.url === later[0])).toHaveLength(1);
+      const entry = gallery.find((image) => image.url === later[0])!;
+      // 从独立的工具媒体块点开:来源不在图集里,按 url 找回所属的工作过程组。
+      expect(lightboxImagesForPayload(gallery, entry.payload, block.key).map((image) => image.url)).toEqual(later);
+      // 从展开的「工作过程」点开。
+      expect(lightboxImagesForPayload(gallery, entry.payload, entry.groupKey).map((image) => image.url)).toEqual(later);
+    }
+
+    // 查看器打开期间回合结束重组:流式时记下的来源 key 在结束后的图集里已不存在,
+    // 仍按 url 找回同一组,不退化单图(review P1)。
+    const streamingGallery = collectMobileMessageGalleryImages(buildMobileMessageRenderItems(rows, { isSessionStreaming: true }));
+    const streamingKey = streamingGallery.find((image) => image.url === later[0])!.groupKey!;
+    const settledGallery = collectMobileMessageGalleryImages(buildMobileMessageRenderItems(rows, { isSessionStreaming: false }));
+    expect(settledGallery.some((image) => image.groupKey === streamingKey)).toBe(false);
+    const settled = settledGallery.find((image) => image.url === later[0])!;
+    expect(lightboxImagesForPayload(settledGallery, settled.payload, streamingKey).map((image) => image.url)).toEqual(later);
+  });
+
+  it('收同一条消息里的视频,与图片一起翻页', () => {
+    const items: MobileMessageRenderItem[] = [
+      messageItem('m1', {
+        attachments: [
+          { kind: 'image', name: 'a.png', uri: 'https://example.com/a.png', previewable: true },
+        ],
+        media: [{ kind: 'video', url: 'xdt-video://cache/clip.mp4', title: 'clip.mp4', previewable: false }],
+      }),
+      messageItem('m2', {
+        attachments: [
+          { kind: 'image', name: 'b.png', uri: 'https://example.com/b.png', previewable: true },
+        ],
+      }),
+    ];
+    const gallery = collectMobileMessageGalleryImages(items);
+    const clip = gallery.find((image) => image.payload.media.kind === 'video')!;
+    expect(lightboxImagesForPayload(gallery, clip.payload, 'm1').map((image) => image.url)).toEqual([
+      'https://example.com/a.png',
+      'xdt-video://cache/clip.mp4',
+    ]);
+  });
+
   it('walks folded work groups and drops duplicate image urls', () => {
     const items: MobileMessageRenderItem[] = [{
       type: 'work_group',
@@ -338,5 +437,42 @@ describe('message gallery', () => {
       'https://example.com/same.png',
       'https://example.com/other.png',
     ]);
+  });
+  it('carries the sent local image as the viewer backdrop once the host has rewritten the url', () => {
+    const calls: unknown[][] = [];
+    const gallery = collectMobileMessageGalleryImages([
+      messageItem('m-sent', { attachments: [
+        { kind: 'file', name: 'notes.md', path: '/repo/notes.md', previewable: false },
+        { kind: 'image', name: 'a.png', uri: 'xdt-image://cache/a.png', previewable: false },
+        { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false, sha256: 'sha-b' },
+      ] }),
+    ], undefined, undefined, undefined, (...args) => {
+      calls.push(args);
+      return args[1] === 1
+        ? { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', sha256: 'sha-b', uri: 'file:///local/b.jpg' }
+        : undefined;
+    });
+    // 预览按「第几张图片附件」对位,与气泡 AttachmentStrip 同口径(文件附件不占位)。
+    expect(calls.map((args) => args.slice(0, 3))).toEqual([['m-sent', 0, 'a.png'], ['m-sent', 1, 'b.png']]);
+    expect(gallery.map((image) => [image.url, image.previewUri])).toEqual([
+      ['xdt-image://cache/a.png', undefined],
+      ['xdt-image://cache/b.png', 'file:///local/b.jpg'],
+    ]);
+  });
+
+  it('prefers the persisted local copy over the outbox file that is cleaned up after delivery', () => {
+    durableThumbs.set('cindy-oss-attach://b', 'file:///documents/sent-attachment-thumbs/b.jpg');
+    try {
+      const gallery = collectMobileMessageGalleryImages([
+        messageItem('m-sent', { attachments: [
+          { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false },
+        ] }),
+      ], undefined, undefined, undefined, () => (
+        { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', uri: 'file:///outbox/b.jpg' }
+      ));
+      expect(gallery[0].previewUri).toBe('file:///documents/sent-attachment-thumbs/b.jpg');
+    } finally {
+      durableThumbs.clear();
+    }
   });
 });

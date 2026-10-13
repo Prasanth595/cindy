@@ -293,6 +293,7 @@ function createDb(filename = ':memory:'): void {
       writable_dirs TEXT NOT NULL DEFAULT '[]',
       remote_host_id TEXT,
       agent_device_id TEXT,
+      orca_remote_lead TEXT,
       source TEXT NOT NULL DEFAULT 'desktop',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -703,6 +704,73 @@ describe('Bot canonical Session lifecycle', () => {
     expect(capabilities.mcpServers).toEqual([]);
   });
 
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('checks the Desktop invitation selection at submission: %s', async state => {
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    const real = await vi.importActual<typeof control>('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockImplementation(real.validateTaskModel);
+    try {
+      const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+      if (state === 'disconnected') h.providers[0]!.connected = false;
+      if (state === 'deleted') h.providers = [];
+      const before = h.sqlite!.prepare('SELECT id FROM bot_profiles').all();
+      const creating = invoke('local-db:bots:create', { id: 'desktop-selected', name: 'Selected', prepareInvitation: true,
+        capabilities: { modelChainOverride: [route] } });
+      if ((state === 'available' || state === 'implicit')) await expect(creating).resolves.toMatchObject({ id: 'desktop-selected' });
+      else {
+        await expect(creating).rejects.toThrow('Model route unavailable');
+        expect(h.sqlite!.prepare('SELECT id FROM bot_profiles').all()).toEqual(before);
+      }
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('validates the primary route before Desktop settings persist: %s', async state => {
+    await invoke('local-db:bots:create', { id: 'desktop-settings', name: 'Settings' });
+    const before = h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'desktop-settings'").all();
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    const real = await vi.importActual<typeof control>('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockImplementation(real.validateTaskModel);
+    try {
+      const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+      if (state === 'disconnected') h.providers[0]!.connected = false;
+      if (state === 'deleted') h.providers = [];
+      // A stale backup must not prevent saving a usable primary.
+      const modelChainOverride = [route, { ...route, model: 'stale-backup' }];
+      const saving = invoke('local-db:bots:update', { id: 'desktop-settings', capabilities: { modelChainOverride } });
+      if (state === 'available' || state === 'implicit') {
+        await expect(saving).resolves.toMatchObject({ capabilities: { modelChainOverride } });
+      } else {
+        await expect(saving).rejects.toThrow('Model route unavailable');
+        expect(h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'desktop-settings'").all()).toEqual(before);
+        // Unrelated profile edits remain possible with an unavailable stored route.
+        await expect(invoke('local-db:bots:update', { id: 'desktop-settings', name: 'Renamed' }))
+          .resolves.toMatchObject({ name: 'Renamed' });
+      }
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
+  it.each(['rename', 'skills'])('allows legacy chain-only profile maintenance with an unavailable provider: %s', async edit => {
+    const id = 'legacy-chain-only';
+    await invoke('local-db:bots:create', { id, name: 'Legacy' });
+    const route: BotModelRoute = { harness: 'pi', providerId: 'deleted-provider', model: 'legacy-model', effort: 'high', fastMode: false };
+    h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ?')
+      .run(JSON.stringify({ modelChain: [route] }), id);
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockClear().mockResolvedValue(false);
+    try {
+      const patch = edit === 'rename' ? { name: 'Renamed legacy' } : { skills: ['legacy-skill'] };
+      const saved = await invoke('local-db:bots:update', { id, ...patch });
+      expect(saved.capabilities.modelChain).toEqual([route]);
+      if (edit === 'rename') expect(saved.name).toBe('Renamed legacy');
+      else expect(saved.skills).toEqual(['legacy-skill']);
+      expect(control.validateTaskModel).not.toHaveBeenCalled();
+      // Actual model changes must still pass live validation.
+      await expect(invoke('local-db:bots:update', { id, capabilities: {
+        modelChainOverride: [{ ...route, model: 'another-unavailable-model' }],
+      } })).rejects.toThrow('Model route unavailable');
+      expect(control.validateTaskModel).toHaveBeenCalled();
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
   it('preserves explicit creation selections under the new capability contract', async () => {
     const created = await invoke('local-db:bots:create', {
       id: 'selected-bot', name: 'Selected Bot',
@@ -1081,6 +1149,43 @@ describe('Bot canonical Session lifecycle', () => {
     expect((await invoke('local-db:bots:get', created.id)).avatar).toBe(created.avatar);
   });
 
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('advertises a live mobile creation default: %s', async state => {
+    const { botRemoteManagement } = await import('../botRemoteManagement');
+    const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+    const readDefault = vi.spyOn(modelSettings, 'readEffectiveBotModelChain').mockResolvedValue([route]);
+    try {
+      if (state === 'disconnected') h.providers[0]!.connected = false;
+      if (state === 'deleted') h.providers = [];
+      const resource = await botRemoteManagement.getEditor({ controllerDeviceId: 'mobile-default-test' }, 'create', 'en');
+      const data = resource.blocks?.find(block => block.id === 'create')?.data as { creationModelChain: string };
+      expect(data.creationModelChain)
+        .toBe(JSON.stringify((state === 'available' || state === 'implicit') ? [{ ...route, providerId: 'xd' }] : []));
+      expect(await modelSettings.readEffectiveBotModelChain({})).toEqual([route]);
+    } finally { readDefault.mockRestore(); }
+  });
+
+  it.each(['disconnected', 'deleted', 'empty'])('rechecks a mobile default that becomes %s after the form loads', async state => {
+    const { botRemoteManagement } = await import('../botRemoteManagement');
+    const context = { controllerDeviceId: 'mobile-stale-default' };
+    const route: BotModelRoute = { harness: 'pi', providerId: 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+    const readDefault = vi.spyOn(modelSettings, 'readEffectiveBotModelChain').mockResolvedValue([route]);
+    try {
+      const resource = await botRemoteManagement.getEditor(context, 'create', 'en');
+      const before = h.sqlite!.prepare('SELECT id FROM bot_profiles').all();
+      if (state === 'disconnected') h.providers[0]!.connected = false;
+      if (state === 'deleted') h.providers = [];
+      if (state === 'empty') readDefault.mockResolvedValue([]);
+      const sharp = (await import('sharp')).default;
+      const bytes = await sharp(resolve(__dirname, '../../../../renderer/assets/bot-presets/cindy.png')).resize(256, 256).jpeg({ quality: 80 }).toBuffer();
+      await expect(botRemoteManagement.invoke(context, {
+        collectionId: 'teammates', resourceRef: resource.ref, actionId: resource.actions![0].id,
+        client: { protocolVersion: 1, primitives: ['form'], locale: 'en' },
+        input: { name: 'Stale default', avatarImageBase64: bytes.toString('base64'), requestId: 'stale-default-intent-001' },
+      })).rejects.toThrow('Model route unavailable');
+      expect(h.sqlite!.prepare('SELECT id FROM bot_profiles').all()).toEqual(before);
+    } finally { readDefault.mockRestore(); }
+  });
+
   it('reconciles mobile creation after a lost receipt without bypassing invitation preparation', async () => {
     const { botRemoteManagement } = await import('../botRemoteManagement');
     const sharp = (await import('sharp')).default;
@@ -1103,7 +1208,10 @@ describe('Bot canonical Session lifecycle', () => {
     expect(preparing.blocks).toContainEqual(expect.objectContaining({ id: 'invitation', data: { stage: 'skills' } }));
     expect(preparing.links).toEqual([]);
     expect(readFileSync(resolveSafe(profile.avatar).absPath)).toEqual(bytes);
-    expect(await submit()).toEqual(first);
+    // Receipt recovery must still return the existing teammate after its provider disconnects.
+    h.providers[0]!.connected = false;
+    try { expect(await submit()).toEqual(first); }
+    finally { h.providers[0]!.connected = true; }
     // The host invitation worker owns progress; a reconnect cannot advance it.
     expect((await invoke('local-db:bots:get', botId)).invitation.stage).toBe('skills');
     h.sqlite!.prepare("UPDATE bot_profile_versions SET capabilities_json = json_set(capabilities_json, '$.invitation.stage', 'failed') WHERE bot_id = ?").run(botId);

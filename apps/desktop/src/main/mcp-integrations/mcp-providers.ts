@@ -1,3 +1,5 @@
+import { todoForCaller } from '../maker-ipc/botTodoAccess.js';
+import { TodoError, queryTodoItems, type TodoListQuery, type TodoPatch, type preflightTodoEvents } from '@cindy/maker-shared/teammate-todo';
 import { t } from '../i18n.js';
 import { executeTaskTags } from '../localDb/ipc/taskTags.js';
 import { getPluginMarketService } from '../plugin-market/service.js';
@@ -42,9 +44,10 @@ import { feishuIm, wechatIm } from '../im';
 import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
-import { checkAppUpdateForAgent } from '../updateService.js';
+import { createAgentAppUpdateCallbacks } from '../agent-app-update/index.js';
 import { getScheduler } from '../scheduler-host/index.js';
 import { stabilizeHookCommand } from '../scheduler-host/hook-script-generator.js';
+import { assertPreRunHookCommandSyntax } from '../scheduler-host/pre-run-hook.js';
 import { searchSessionsWithBotScope } from '../maker-host/session-search.js';
 import { readLspModeSettings } from '../maker-host/lsp-mode-store.js';
 import {
@@ -73,6 +76,7 @@ import {
 } from '../maker-ipc/botSkillService.js';
 import {
   addBotWorkbenchProjectForCaller,
+  captureBotCreatedTaskResponsibility,
   removeBotWorkbenchProjectForCaller,
   runBotWorkbenchTool,
   type BotWorkbenchSendDeps,
@@ -354,8 +358,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             return undefined;
           }
         },
-        stabilizeCommand: async ({ command, workingDir }) =>
-          stabilizeHookCommand(command, workingDir),
+        stabilizeCommand: async ({ command, workingDir }) => {
+          await assertPreRunHookCommandSyntax(command);
+          return stabilizeHookCommand(command, workingDir);
+        },
         install: async (input) => {
           const [{ installHookScript }, { getMaker }, { app }] = await Promise.all([
             import('../scheduler-host/hook-script-generator.js'),
@@ -468,11 +474,9 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // (LLM 调工具时) registerMakerIpc 早已执行完毕, holder 已 ready。
     xdtHelper: {
       runtimeCapabilities: deps.runtimeCapabilities,
-      appUpdate: {
-        isCurrentSession: (sessionId, sessionInstanceId) =>
-          deps.isCurrentLocalSessionInstance?.(sessionId, sessionInstanceId) === true,
-        check: checkAppUpdateForAgent,
-      },
+      // Install / auto-update requests become owner-only Host cards (see agent-app-update/).
+      appUpdate: createAgentAppUpdateCallbacks((sessionId, sessionInstanceId) =>
+        deps.isCurrentLocalSessionInstance?.(sessionId, sessionInstanceId) === true),
       logger: createLogger('mcp/cindy_helper'),
       grokLogin: {
         start: async (context) => {
@@ -687,7 +691,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             || model !== undefined
             || effort !== undefined
             || fast !== undefined;
-          return await svc.sendToSession({
+          const recordCreation = targetSessionId ? null : await captureBotCreatedTaskResponsibility(dispatcherSessionId);
+          const result = await svc.sendToSession({
             targetSessionId,
             message,
             dispatcherSessionId,
@@ -706,6 +711,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
                 }
               : {}),
           });
+          if (result.ok && result.wakeKind === 'created' && recordCreation) {
+            try { await recordCreation(result.targetSessionId); }
+            catch { return { ...result, responsibilityRecorded: false }; }
+          }
+          return result;
         } catch (err) {
           return { ok: false, errorCode: 'INTERNAL', message: err instanceof Error ? err.message : String(err) };
         }
@@ -901,6 +911,24 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
       // 停止走通用的 stop_session_turn。
       botWorkbench: {
+        todos: async (caller, operation, input) => {
+          try {
+            const access = await todoForCaller(caller);
+            if (operation === 'list') {
+              const all = await access.list();
+              const q = (input ?? {}) as TodoListQuery & {id?:string;key?:string};
+              if (q.id || q.key) {
+                const items = all.items.filter(t => q.id ? t.id === q.id : t.key === q.key);
+                return {ok:true,items,total:items.length};
+              }
+              return {ok:true,...queryTodoItems(all.items,q)};
+            }
+            if (operation === 'update') return {ok:true,todo:await access.patch(input as TodoPatch)};
+            if (operation === 'preflight') return {ok:true,events:await access.preflight(input as Parameters<typeof preflightTodoEvents>[1])};
+            return {ok:true,...await access.ingest(input as Parameters<typeof access.ingest>[0])};
+          } catch(error) { return {ok:false,errorCode:error instanceof TodoError ? error.code : 'INTERNAL',message:error instanceof Error?error.message:'INTERNAL'}; }
+        },
+        setResponsibility: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.setResponsibility(params)),
         get: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.get(params)),
         read: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.read(params)),
         set: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.set(params)),

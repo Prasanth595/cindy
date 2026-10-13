@@ -180,6 +180,9 @@ it('bounds actual receipt writes with long entry names while retaining retryable
 it('rejects a simultaneous normalized-name conflict, removes only the loser checkpoint, and accepts a renamed request', async () => {
   h.snapshot.items = [{ view: { id: 'env', name: 'Key', category: 'connections', selected: true }, env: { API_KEY: 'fixture-private-key' } }];
   const profiles = new Map<string, string>();
+  let creating = 0;
+  let bothCreating!: () => void;
+  const creationStarted = new Promise<void>(resolve => { bothCreating = resolve; });
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   vi.mocked(getBotRemoteResourceSource).mockImplementation(async id => {
@@ -187,6 +190,7 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
     return { canonicalSessionId: 'chat' } as never;
   });
   vi.mocked(createBotProfile).mockImplementation(async input => {
+    if (++creating === 2) bothCreating();
     await gate;
     const profile = input as { name: string; id: string };
     const name = profile.name.normalize('NFKC').trim().toLowerCase();
@@ -199,7 +203,9 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
   const selections = ['Ada', 'Ａｄａ'].map((name, index) => ({ requestId: `name-race-request-${index}`, previewId: preview.id, name, entryIds: ['env'], takeover: false }));
   let settled = false;
   const pending = Promise.allSettled(selections.map(selection => startCompanionImport(selection, 'fixture'))).then(results => { settled = true; return results; });
-  await vi.waitFor(() => expect(createBotProfile).toHaveBeenCalledTimes(2));
+  // Checkpoint IO may exceed waitFor's 1s budget on Windows; wait for the actual creation boundary.
+  await creationStarted;
+  expect(createBotProfile).toHaveBeenCalledTimes(2);
   // A durable checkpoint is not yet a created companion; do not acknowledge it.
   await new Promise(resolve => setTimeout(resolve, 60));
   expect(settled).toBe(false);
@@ -213,15 +219,18 @@ it('rejects a simultaneous normalized-name conflict, removes only the loser chec
   expect(h.secretValues.has(companionEnvironmentKey(botId))).toBe(false);
   expect(await h.store.read(h.root, botId, () => {})).toBeUndefined();
   const winner = selections[1 - rejectedIndex]!;
-  await vi.waitFor(async () => expect((await getCompanionImportResult(winner.requestId))?.status).toBe('complete'));
+  const winnerBotId = `import_${fingerprint(winner.requestId).slice(0, 24)}`;
+  const winnerResult = await withBotProfileLocks([winnerBotId], () => getCompanionImportResult(winner.requestId));
+  expect(winnerResult?.status).toBe('complete');
   expect(h.secretValues.size).toBe(2);
   const receiptText = await fs.readFile(path.join(h.root, 'companion-imports', `${rejected.requestId}.json`), 'utf8');
   expect(receiptText).not.toContain('fixture-private-key');
   expect(JSON.parse(receiptText).creationRejected).toBe('IMPORT_NAME_EXISTS');
   await expect(getCompanionImportResult(rejected.requestId)).rejects.toThrow('IMPORT_NAME_EXISTS');
   await expect(startCompanionImport({ ...rejected, previewId: 'expired-preview' }, 'other-controller')).rejects.toThrow('IMPORT_NAME_EXISTS');
-  await startCompanionImport({ ...rejected, name: 'Grace', requestId: 'name-race-renamed-request' }, 'fixture');
-  await vi.waitFor(async () => expect((await getCompanionImportResult('name-race-renamed-request'))?.status).toBe('complete'));
+  const renamed = await startCompanionImport({ ...rejected, name: 'Grace', requestId: 'name-race-renamed-request' }, 'fixture');
+  const renamedResult = await withBotProfileLocks([renamed.botId], () => getCompanionImportResult('name-race-renamed-request'));
+  expect(renamedResult?.status).toBe('complete');
   expect(profiles.size).toBe(2);
   expect(h.secretValues.size).toBe(4);
   expect(h.pause).not.toHaveBeenCalled();

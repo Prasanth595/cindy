@@ -12,6 +12,8 @@ export function renderHistoryView<T extends HistoryMessageSource, TItem>(options
   isLive?(message: T): boolean;
   /** Already displayed assistant identities in observation order, awaiting history. */
   pendingHandoff?: ReadonlySet<string>;
+  /** Durable rows newer than a stale snapshot (`HistoryViewHandoff` tail), awaiting history. */
+  staleTail?: ReadonlySet<string>;
   isLocalUser?(message: T): boolean;
   /** Ephemeral UI rows that never enter persisted history; retain their local position. */
   isLocalMessage?(message: T): boolean;
@@ -28,7 +30,10 @@ export function renderHistoryView<T extends HistoryMessageSource, TItem>(options
   const placeholders = new Set<string>();
   const references = new Map<string, HistoryWorkSummary>();
   const isPendingHandoff = (row: T) => row.role === 'assistant' && options.pendingHandoff?.has(row.clientId) === true;
-  const isLive = (row: T) => options.isLive?.(row) || isPendingHandoff(row);
+  const isLocal = (row: T) => (row.role === 'user' && options.isLocalUser?.(row) === true)
+    || options.isLocalMessage?.(row) === true;
+  const isStaleTail = (row: T) => options.staleTail?.has(row.clientId) === true && !isLocal(row);
+  const isLive = (row: T) => options.isLive?.(row) || isPendingHandoff(row) || isStaleTail(row);
   const live = new Map(options.liveMessages.filter(isLive).map((row) => [row.clientId, row]));
   const leaves = historyViewLeaves(snapshot.items);
   const sourceIds = new Set(leaves.flatMap((item) => item.type === 'messages' ? item.messages.map((row) => row.clientId) : []));
@@ -154,10 +159,13 @@ export function renderHistoryView<T extends HistoryMessageSource, TItem>(options
         if (summary.preview) view.setExpanded(summary.preview.key, !full && preview);
       }
     };
+    const lines = [...summaries].reverse().find((summary) => summary.lines)?.lines;
     return structure.rebuild(item, next, {
       owner: view, key: summaries.map((summary) => summary.key).join('|'), expanded,
       revision: summaries.map((summary) => summary.revision).join('|'),
       previewComplete: summaries.every((summary) => summary.preview?.firstMessageId === summary.firstMessageId),
+      ...(lines ? { lines } : {}),
+      awaitingDetails: states.some((state) => !state?.complete && !state?.messages.length),
       loading: states.some((state) => state?.loading), failed: states.some((state) => !!state?.error),
       setVisible,
       toggle: () => setVisible(!expanded, false),

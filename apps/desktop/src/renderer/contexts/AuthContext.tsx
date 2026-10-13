@@ -720,6 +720,11 @@ export function useOptionalAuthDeviceId(): string | null {
   return useContext(AuthContext)?.deviceId ?? null;
 }
 
+/** 当前登录的账号(昵称、头像)；不在 AuthProvider 内或未登录时为 null。只读展示用途，不抛错。 */
+export function useOptionalAuthUser(): User | null {
+  return useContext(AuthContext)?.user ?? null;
+}
+
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) {

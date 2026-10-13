@@ -129,6 +129,9 @@ import {
 import { SHARE_MESSAGE_ATTR, SHARE_SESSION_ATTR } from '@/lib/shareConversationImage';
 import { ShareMessageCheckbox } from './ShareMessageCheckbox';
 import { isShareableMessage, useShareSelectionActive } from './shareSelectionStore';
+import { parsePluginInstanceId, pluginStoragePart } from '../../../shared/pluginIdentity';
+import { isValidGhostId } from '../../../shared/ghost';
+import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 
 // perf-baseline: 大 session 切换 first-paint 性能基线,保留用于回归监测。
 // 历史:commit ffff3603 (render-window 首引入) 因 687 条 session first-paint
@@ -785,7 +788,9 @@ export function collectGhostCallsByUserTurn(
       m.toolInput &&
       typeof (m.toolInput as Record<string, unknown>).ghost_id === 'string'
     ) {
-      const gid = (m.toolInput as Record<string, unknown>).ghost_id as string;
+      const input = m.toolInput as Record<string, unknown>;
+      const gid = ghostCardInstanceId(input.ghost_id as string, input.namespace);
+      if (!gid) continue;
       const set = out.get(currentUserClientId) ?? new Set<string>();
       set.add(gid);
       out.set(currentUserClientId, set);
@@ -1449,9 +1454,10 @@ export function selectVisibleMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 /**
- * A Cindy Make card is appended as a local assistant system message, but it
- * represents a new command turn for the visible timeline. Treating it as a
- * boundary keeps artifacts from the preceding user turn before the card.
+ * Cindy Make and /review cards are appended as local assistant system messages,
+ * but each represents a new command turn for the visible timeline. Treating them
+ * as boundaries keeps the preceding turn's artifacts and change summary before
+ * the card instead of below it.
  */
 function isRenderTurnBoundary(message: ChatMessage): boolean {
   if (message.role === 'user') {
@@ -1459,8 +1465,21 @@ function isRenderTurnBoundary(message: ChatMessage): boolean {
   }
   return (
     message.role === 'assistant' &&
-    (message.systemCardType === 'cindy-make' || message.systemCardType === 'cindy-make-doctor')
+    (message.systemCardType === 'cindy-make' ||
+      message.systemCardType === 'cindy-make-doctor' ||
+      message.systemCardType === 'review')
   );
+}
+
+function ghostCardInstanceId(ghostId: string, namespace: unknown): string | null {
+  if (!isValidGhostId(ghostId)) {
+    const identity = parsePluginInstanceId(ghostId);
+    return identity && namespace === undefined ? pluginStoragePart(identity) : null;
+  }
+  if (namespace === null || namespace === undefined) return ghostId;
+  return typeof namespace === 'string' && isValidPluginNamespace(namespace)
+    ? pluginStoragePart({ namespace, ghostId })
+    : null;
 }
 
 export function buildRenderItems(
@@ -1608,30 +1627,66 @@ export function buildRenderItems(
   // Task session。不能只检查整窗「最新」计划：后面若已有可解析的新 session，
   // 较早的半截 Task 卡仍会漏出来。逐个 Task insertion 用其前缀复核，等 prepend
   // 补齐标题/早期 TaskCreate 后再由同一 stable key 插回。
+  let needsTaskHistoryValidation = false;
   if (opts?.historyWindowIncomplete === true) {
+    for (const insertion of planInsertAt.values()) {
+      if (insertion.source === 'task') {
+        needsTaskHistoryValidation = true;
+        break;
+      }
+    }
+  }
+  // Ordinary tool history and TodoWrite/update_plan need no Task prefix validation.
+  if (needsTaskHistoryValidation) {
+    // Build the indexes once. The old validation path rescanned the whole
+    // prefix and filtered the whole suffix for every Task insertion. A paged
+    // history window can contain many task rows, so keep message order while
+    // looking up only plan ids and their late results.
+    const planToolUseCountAtInsertion = new Map<number, number>();
+    const toolResultsByUseId = new Map<
+      string,
+      Array<{ index: number; message: ChatMessage }>
+    >();
+    const planToolUseIds: string[] = [];
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      const message = messages[messageIndex];
+      if (message.role === 'tool_result' && typeof message.toolUseId === 'string') {
+        const results = toolResultsByUseId.get(message.toolUseId) ?? [];
+        results.push({ index: messageIndex, message });
+        toolResultsByUseId.set(message.toolUseId, results);
+      }
+      if (
+        isAgentPlanToolName(message.toolName)
+        && typeof message.toolUseId === 'string'
+        && message.toolUseId.length > 0
+      ) {
+        planToolUseIds.push(message.toolUseId);
+      }
+      if (planInsertAt.has(messageIndex)) {
+        planToolUseCountAtInsertion.set(messageIndex, planToolUseIds.length);
+      }
+    }
+
     for (const [index, insertion] of planInsertAt) {
       if (insertion.source !== 'task') continue;
       const prefix = messages.slice(0, index + 1);
-      const prefixPlanToolUseIds = new Set(
-        prefix
-          .filter((message) => isAgentPlanToolName(message.toolName))
-          .map((message) => message.toolUseId)
-          .filter((toolUseId): toolUseId is string => Boolean(toolUseId)),
-      );
+      const prefixPlanToolUseIds = new Set<string>();
+      const planToolUseCount = planToolUseCountAtInsertion.get(index) ?? 0;
+      for (let planIndex = 0; planIndex < planToolUseCount; planIndex += 1) {
+        prefixPlanToolUseIds.add(planToolUseIds[planIndex]);
+      }
       // TaskList / TaskGet 的权威内容在后续 tool_result 行里。只切到工具行会把
       // 已完整的 snapshot 重新判成半截；保留当前前缀中计划调用的匹配结果，但
       // 不把后续计划事件带进来，避免改变「正在复核哪张 insertion」的语义。
-      const validationMessages = [
-        ...prefix,
-        ...messages
-          .slice(index + 1)
-          .filter(
-            (message) =>
-              message.role === 'tool_result' &&
-              typeof message.toolUseId === 'string' &&
-              prefixPlanToolUseIds.has(message.toolUseId),
-          ),
-      ];
+      const lateResults: Array<{ index: number; message: ChatMessage }> = [];
+      for (const toolUseId of prefixPlanToolUseIds) {
+        for (const result of toolResultsByUseId.get(toolUseId) ?? []) {
+          if (result.index > index) lateResults.push(result);
+        }
+      }
+      if (lateResults.length > 1) lateResults.sort((left, right) => left.index - right.index);
+      const validationMessages = prefix;
+      for (const result of lateResults) validationMessages.push(result.message);
       const stateAtInsertion = getLatestMessageTodoState(validationMessages, {
         taskHistoryMayBeIncomplete: true,
       });
@@ -2018,6 +2073,7 @@ export function buildRenderItems(
         if (!ghostCards || !isGhostCallToolName(toolName)) return;
         const inp = (msg.toolInput ?? null) as Record<string, unknown> | null;
         const ghostIdFromInput = typeof inp?.ghost_id === 'string' ? inp.ghost_id : '';
+        const candidateGhostId = ghostCardInstanceId(ghostIdFromInput, inp?.namespace);
         const toolFromInput = typeof inp?.tool === 'string' ? inp.tool : '';
         if (result !== undefined) {
           const cardId = extractGhostCardId(result);
@@ -2031,7 +2087,7 @@ export function buildRenderItems(
               type: 'ghost_card',
               key: `ghostcard-${msg.clientId}`,
               callId: cardId,
-              ghostId: ghostIdFromInput || entry.ghostId,
+              ghostId: entry.ghostId,
               tool: toolFromInput,
               toolCall: msg,
               settled: true,
@@ -2055,13 +2111,15 @@ export function buildRenderItems(
               typeof msg.toolUseId === 'string' &&
               lc.toolUseId === msg.toolUseId,
           ) ??
-          (ghostIdFromInput
+          (candidateGhostId
             ? ghostCards.liveCards.find(
                 (lc) =>
                   !claimedLiveCallIds.has(lc.callId) &&
                   !settledCardIds.has(lc.callId) &&
                   lc.toolUseId === null &&
-                  lc.ghostId === ghostIdFromInput,
+                  ((lc.logicalGhostId ?? lc.ghostId) === candidateGhostId ||
+                    (lc.logicalGhostId === undefined && inp?.namespace === undefined &&
+                      lc.ghostId === candidateGhostId)),
               )
             : undefined);
         if (!live) return;
@@ -2072,7 +2130,7 @@ export function buildRenderItems(
           type: 'ghost_card',
           key: `ghostcard-${msg.clientId}`,
           callId: live.callId,
-          ghostId: ghostIdFromInput || live.ghostId,
+          ghostId: live.ghostId,
           tool: toolFromInput,
           toolCall: msg,
           settled: false,
@@ -2095,9 +2153,18 @@ export function buildRenderItems(
           const anchor = extractAnchorCardId(result);
           const inp = (msg.toolInput ?? null) as Record<string, unknown> | null;
           const ghostIdFromInput = typeof inp?.ghost_id === 'string' ? inp.ghost_id : '';
+          const candidateGhostId = ghostCardInstanceId(ghostIdFromInput, inp?.namespace);
           const target = anchor ? ghostCardItemByCallId.get(anchor) : undefined;
-          const sameGhostTarget =
-            target && ghostIdFromInput && target.ghostId === ghostIdFromInput ? target : undefined;
+          const targetInput = target?.toolCall.toolInput as Record<string, unknown> | undefined;
+          const targetGhostId = typeof targetInput?.ghost_id === 'string'
+            ? ghostCardInstanceId(targetInput.ghost_id, targetInput.namespace)
+            : null;
+          const physicalOwnerMatches = target && (target.ghostId === ghostIdFromInput ||
+            ((inp?.namespace !== undefined || !isValidGhostId(ghostIdFromInput)) &&
+              ghostCardInstanceId(target.ghostId, undefined) === candidateGhostId));
+          const sameGhostTarget = target && candidateGhostId !== null && candidateGhostId === targetGhostId &&
+            inp?.namespace === targetInput?.namespace && physicalOwnerMatches
+            ? target : undefined;
           // 音频入卡令牌(audioInCard)= 意识的**待验证声明**:锚到的同意识卡
           // 确实 ready 且 html 真含对应 data-ghost-audio 插槽(播放器已由卡内
           // 受信桥渲染)才压掉基座音频卡,防同一首歌双播放器;验证不过(远程
@@ -3002,6 +3069,7 @@ export function MessageStream({
         streaming: isSessionStreaming,
         isLive: (row) => row.isStreaming === true,
         pendingHandoff: handoff?.pending,
+        staleTail: handoff?.tail,
         isLocalMessage: (row) => row.isLocalSystemCard === true,
         isLocalUser: (row) =>
           row.role === 'user' &&
@@ -6715,7 +6783,6 @@ const MessageItem = memo(function MessageItem({
           sharedAuthorMemberId={message.sharedAuthorMemberId}
           workingDir={workingDir}
           content={message.content}
-          sessionReferences={message.sessionReferences}
           quotesEncoded={message.quotesEncoded}
           agentReferences={message.agentReferences}
           pastedTextRanges={message.pastedTextRanges}

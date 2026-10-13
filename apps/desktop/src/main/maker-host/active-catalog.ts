@@ -1094,11 +1094,16 @@ function declaredPiModels(providerId: string, discovered: readonly CatalogModel[
     // A sibling Harness discovers membership, not Pi-specific thinking tiers.
     // Keep portable tiers as a fallback for unknown models; known models inherit
     // the Registry, and Codex-only labels cannot become Pi capabilities.
-    const { efforts: _efforts, defaultEffort: _defaultEffort, ...metadata } =
-      model.discoveredMetadata ?? catalogModelMetadata(model);
+    const metadata = { ...(model.discoveredMetadata ?? catalogModelMetadata(model)) };
+    delete metadata.efforts;
+    delete metadata.defaultEffort;
+    // Stored Codex runtime settings are not Pi user overrides. Reapplying them
+    // after projection would replace Pi's resolved tiers and defaults.
+    const discoveredModel = { ...model };
+    delete discoveredModel.userModelConfig;
     const efforts = model.efforts.filter(effort => PI_REASONING_EFFORTS.some(level => level === effort));
     byId.set(id, {
-      ...model, id, piApi, efforts,
+      ...discoveredModel, id, piApi, efforts,
       defaultEffort: efforts.length === 0 ? null
         : (clampEffortToSupported(model.defaultEffort, efforts) as Effort | null),
       discoveredMetadata: metadata,
@@ -1380,8 +1385,9 @@ function computeMerged(): Catalog {
             projected.models['claude-code'] ?? [],
           ),
           pi: alignOpenAiPiWithAccount(
-            declaredPiModels('openai', p.id === 'openai'
-              ? discoveredCodex : discoveredByProvider.get(p.id)?.codex ?? []),
+            // Restored native accounts keep their discovered members in models.codex.
+            // Use the same account snapshot as the root, before Codex-only overlays.
+            declaredPiModels('openai', accountCodex),
             accountCodex,
             (base ?? BUNDLED_CATALOG).modelRegistry,
           ),

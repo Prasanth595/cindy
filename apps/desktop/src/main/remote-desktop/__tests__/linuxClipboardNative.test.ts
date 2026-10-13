@@ -42,6 +42,26 @@ it('kills the new clipboard owner if the compositor locks during its handshake',
   );
   expect(kill).toHaveBeenCalledOnce();
 });
+it('lets a local copy write and read back without the remote lock probe', async () => {
+  // Older Hyprland omits solitaryBlockedBy, so the probe reports locked forever.
+  h.unlocked.mockResolvedValue(false);
+  const stdout = new EventEmitter();
+  const child = Object.assign(new EventEmitter(), {
+    stdout,
+    stderr: { resume: vi.fn() },
+    stdin: { on: vi.fn(), write: vi.fn(() => stdout.emit('data', Buffer.from('ready\n'))) },
+    kill: vi.fn(),
+  });
+  h.spawn.mockReturnValue(child);
+  await writeLinuxClipboard({ text: 'link' }, () => true, { checkLock: false });
+  h.exec.mockImplementation(async (_tool, args: string[]) => ({
+    stdout: Buffer.from(args.includes('--list-types') ? 'text/plain\n' : 'link'),
+  }));
+  expect((await readLinuxClipboardSnapshot(false, { checkLock: false })).content).toEqual({
+    text: 'link',
+  });
+  expect(h.unlocked).not.toHaveBeenCalled();
+});
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();

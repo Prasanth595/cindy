@@ -2000,8 +2000,9 @@ describe('CodexAgent permissions', () => {
         expect.objectContaining({ name: 'review_view_image' }),
       ]);
     } else {
-      expect(threadStart.config).not.toHaveProperty('project_doc_max_bytes');
       expect(threadStart).not.toHaveProperty('dynamicTools');
+      expect(threadStart.config).toHaveProperty('project_root_markers', []);
+      expect(threadStart.config).not.toHaveProperty('project_doc_max_bytes');
     }
     expect(threadStart.config).not.toHaveProperty(['windows.sandbox']);
     expect((threadStart.config as Record<string, unknown>)['skills.config']).toEqual([
@@ -4448,6 +4449,13 @@ describe('CodexAgent reference directories', () => {
       expect(host.request.mock.calls.filter(
         ([method]) => method === Method.ThreadStart,
       )).toHaveLength(2);
+      // 内层 host.request 的上限必须比外层 10s 接受期限活得久(#5772 review)：
+      // 两层同上限会让 AppServerClient 在同一时刻删掉 pending，晚到响应被丢弃，
+      // onLateResolve 的清理永远不会执行。本地会话 = 10s 接受期限 + 5min 晚到响应窗口。
+      const replacementCall = host.request.mock.calls.filter(
+        ([method]) => method === Method.ThreadStart,
+      )[1] as unknown as [string, unknown, { timeoutMs?: number }];
+      expect(replacementCall[2]).toMatchObject({ timeoutMs: 310_000 });
       await vi.advanceTimersByTimeAsync(10_000);
       await failure;
     } finally {
@@ -7224,7 +7232,7 @@ describe('CodexAgent send', () => {
     await handle.close();
   });
 
-  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2'])(
+  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2', 'meta/muse-wonder-1.0', 'muse-wonder-1.0'])(
     'passes minimal effort through to turn/start for %s',
     async (model) => {
       const agent = new CodexAgent(createDeps());
@@ -7339,7 +7347,7 @@ describe('CodexAgent send', () => {
     await handle.close();
   });
 
-  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2'])(
+  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2', 'meta/muse-wonder-1.0', 'muse-wonder-1.0'])(
     'passes minimal effort through runtime settings and turn/start for %s',
     async (model) => {
       const agent = new CodexAgent(createDeps());
@@ -24618,7 +24626,7 @@ describe('CodexAgent.forkSdkSession', () => {
     else await expect(result).rejects.toBeInstanceOf(AgentNotAuthenticatedError);
   });
 
-  it.each([false, true])('requests Cindy recovery before forking indexed history (lazy=%s)', async (lazy) => {
+  it.each(['indexed', 'lazy', 'legacy-agent-cipher'])('requests Cindy recovery before native forking (%s)', async (format) => {
     const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-indexed-fork-'));
     try {
       const agent = new CodexAgent(createDeps());
@@ -24626,9 +24634,13 @@ describe('CodexAgent.forkSdkSession', () => {
       const dir = path.join(codexHome, 'sessions', '2026', '09', '05');
       await fs.mkdir(dir, { recursive: true });
       const source = path.join(dir, 'rollout-source-thread-id.jsonl');
-      const original = JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
-        id: 'source-thread-id', ...(lazy ? { history_base: { thread_id: 'parent' } } : {}),
-      } }) + '\n';
+      const original = format === 'legacy-agent-cipher'
+        ? JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', content: [
+            { type: 'encrypted_content', encrypted_content: 'child-ciphertext' },
+          ] } }) + '\n'
+        : JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
+            id: 'source-thread-id', ...(format === 'lazy' ? { history_base: { thread_id: 'parent' } } : {}),
+          } }) + '\n';
       await fs.writeFile(source, original);
       const host = installFakeHost(agent);
       await expect(agent.forkSdkSession({
@@ -25046,7 +25058,13 @@ describe('CodexAgent rewind', () => {
     expect(methods).not.toContain(Method.ThreadFork);
     expect(methods).not.toContain(Method.ThreadTurnsList);
     expect(methods.filter((method) => method === Method.ThreadStart)).toHaveLength(2);
-    expect(host.request).toHaveBeenLastCalledWith(Method.ThreadStart, expect.objectContaining({ cwd: '/repo' }));
+    // 生命周期替换的内层请求带晚到响应窗口(10s 接受期限 + 5min，见
+    // PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS)，不是无选项的裸调用。
+    expect(host.request).toHaveBeenLastCalledWith(
+      Method.ThreadStart,
+      expect.objectContaining({ cwd: '/repo' }),
+      expect.objectContaining({ timeoutMs: 310_000 }),
+    );
     expect(host.subscribeThread).toHaveBeenLastCalledWith('fresh-thread-id', expect.any(Object));
     expect(await nextEvent(iterator)).toMatchObject({
       type: 'session_id',

@@ -11,6 +11,93 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 手机直连群的设置管理
+
+现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
+声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
+`expectedRevision`，Host 在调用服务前核验，群信息 PATCH 和归档继续携带该编辑版本给
+Chat Server。新增资源动作 `add-member` (`botId`) 只邀请一个本机可见伙伴，不替换成员名单；
+移出仍使用已有 `remove-member` 和 actor ID。旧手机忽略能力并保留原动作；新版手机遇到旧
+Host 显示更新提示。账号切换、关闭设置、断连或撤销设备使旧读取和未发出的操作失效。
+管理电脑按当前群 ID 精确读取，不以截断的群列表作为存在性门槛。普通内容刷新保留同一次
+设置页已核实的管理资格，实际发送前仍复核电脑身份和最新权限；新详情确认撤权或群不可见后禁用。
+Chat Server 返回的 `REVISION_CONFLICT` 保留为公开错误码，新手机显示冲突提示并保留草稿，
+旧客户端沿用未知错误码的通用失败提示，不自动重试写操作。
+复用原有 collection、channel、订阅、账号和群权限，不扩 IPC allowlist、relay、服务端
+schema、数据库或 Mobile 原生指纹。完整管理需要两端客户端更新。
+
+## 实时生成速度
+
+既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、
+`streaming`），由主机按 Pi `pi-token-speed` 扩展算法测得；仅用于显示，不参与费用、缓存或
+上下文计数。新客户端校验数值，非法即丢弃；旧主机省略时沿用原 usage 计数路径，旧客户端忽略
+新增字段。主机检测到挂起或时钟异常时，本轮后续帧不再携带该字段并标记
+`generationReliable: false`，客户端据此丢弃已保留的速度。无需服务端更新、新通道、权限或
+数据库 migration。
+
+## 任务列表提前同步聊天正文
+
+同账号控制端声明 `session-list-messages-v1` 后，`sessions` 订阅同时接收普通用户／助手
+已保存的完整正文、状态与删除事件，复用原有 channel。仅列表接收的 payload
+带 `listMessage: true`，不建立活跃控制意图，也不因正文到达自动拉取整段历史。工具正文、
+思考、附件及超过 200,000 字符的异常长消息仍按需读取；列表显示行数不变。
+共享任务访客和供应商分享不扩展订阅范围。旧控制端未声明能力时保持原来的路由。
+流式增量、SDK 收尾与在途正文补偿只走详情订阅；列表仍显示原活动简介，不缓存未完成前缀。
+列表离线补发按 `sessions` topic 回放，现有每设备队列上限为 2 MiB，容纳 200,000 字符
+正文最坏情况下的 JSON 转义体积；仍受 128 条／5 分钟限制，超预算或过期后由打开时的
+历史核对补齐，不承诺无期限离线预收。桌面预收正文在现有
+缓存写锁内合并并保留结构化历史，从未打开的任务同样计入现有内存回收预算。
+
+断档之后（App 冷启动、Mobile 断线重连后的列表重拉、Desktop 重连 bootstrap），控制端对
+最近活动的至多 5 个任务用现有 `messages:view` 读取最新一页，写入原有历史画面缓存；
+活动版本取 `updatedAt` 与轮次起止时间的较大值，运行中的轮次每次断档后都重读，已打开的
+任务由其自身视图读取。打开任务时若恢复的历史画面落后（来自磁盘，或视图离开期间保留），
+raw store 中晚于画面末尾的普通用户／助手行接在其后显示，直到最新页覆盖。仅控制端行为，
+不新增 channel、能力或主机改动。
+
+`messages:list` / `messages:view` 的 options 可选携带 `messageBodies: { version: 1, known }`，
+known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机在授权、净化之后返回
+`message-bodies-v1` 包装，只省略指纹吻合的正文，顺序、分页与消息元数据始终重新读取。
+共享 DeviceLinkClient 从本次请求固定的正文快照还原后再交给两端界面。缓存不命中或正文
+变更时仍发送全文；旧主机返回普通页面，新控制端兼容；旧控制端不请求此格式。
+传输去重仅保留有界内存，两端持久展示缓存继续使用原有账号隔离与删除屏障。
+不修改 relay、不新增权限、数据库 migration 或 Mobile 原生指纹。
+
+## invoke 结果传输编码（弱网减流量）
+
+控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
+能力就声明 `gzip: 1`；本机持有同一被控端、同一 channel 与 args 的上一份大结果时，带上它的
+内容标签。被控端照常执行 handler，只改写发出的 ok 结果：序列化后不小于 4 KiB 的结果附带
+`transfer.tag`（SHA-256）；标签与 `ifNoneMatch` 相同时回 `{ result: null, transfer: { tag,
+notModified: true } }`；否则在控制端声明可解且压缩确有收益时回 `{ result: null, transfer:
+{ tag, gzipBase64 } }`。共享 DeviceLinkClient 在交给调用方之前还原成普通结果，并只用发请求
+时固定的缓存快照还原，回包前被淘汰也不影响；标签对不上时返回错误，不返回旧数据。
+解压有输出上限（4M 字符，与传输层单条逻辑消息同量级）：解码器边解边计数，超过即中止并
+返回错误，不先整段展开；被控端对超过上限的结果不编码，仍走原有的超限处理。
+
+handler 每次都执行，`notModified` 只省略字节完全相同的结果，因此对所有 channel 语义不变，
+不需要逐 channel 登记。控制端缓存按设备、channel、args 键控，最多 32 条、约 8 MB，只在内存，
+随客户端 `stop()` 清空；共享任务与供应商分享等跨账号 peer 不使用该编码。旧被控端忽略
+`transfer` 回普通结果；旧控制端从不携带 `transfer`，被控端也就不会编码。Desktop（同时作为
+被控端与控制端）注入 zlib 与 SHA-256，Mobile 只注入 pako 解压（已有依赖，不改原生指纹）。
+relay 不解析隧道 payload，无服务端改动、数据库 migration 或部署顺序要求。实现见
+`packages/device-link/src/invokeTransfer.ts`，回归见同目录 `__tests__/invokeTransfer.test.ts`
+与 `client.test.ts`「invoke 结果传输编码」。
+
+## 群执行终态与错误展示
+
+发送前拒绝、SDK 错误、正常完成和宿主超时进入同一个执行收尾入口；首个终态及提交正文固定，
+同一执行／epoch／operationId 重发只取回回执，不重新执行模型，也不因迟到事件再次停止专线。
+主动停止沿既有服务器取消语义结束，不生成失败。
+
+Chat Server 新增只读 `/conversations/:roomId/execution-failures`：按成员和历史可见范围返回
+当前未删除源消息的完整失败状态及白名单类别。主群和 Thread 的 IPC 返回可选
+`executionFailures`，真实消息分页保持原义；各端合并消息页后复用 shared 投影生成提示。
+旧服务仅在路由 404 时回退读取最近 `/executions`，不声称覆盖旧服务未提供的执行；其它错误
+继续进入既有读取恢复。旧服务器仍接受原有 detail，新服务器仍兼容旧客户端的 `/executions`。
+设备互联由宿主投影成原有消息视图，旧手机无需理解新字段；旧宿主的历史通知继续显示。
+原始错误不跨群传输，无新增鉴权能力、数据库 migration、运维配置或 Mobile 原生改动。
+
 ## 支付宝已付下一期的升级拒绝
 
 升级报价和确认可返回 HTTP 409 `PLAN_CHANGE_RENEWAL_PREPAID`。Desktop Main 仅放行该
@@ -26,14 +113,24 @@
 ## Desktop 远程新建菜单
 
 同账号控制端通过新增只读 `ghosts:composer-list(workingDir?)` 异步取得执行主机的插件菜单。
-响应仅含名称、ID、指令、工具声明、图标、Skill 存在标记与目录过滤后的启用状态，不传安装路径、
-批准记录、配置或凭证。无项目时不传参数；共享任务访客不开放此通道。
+响应仅含名称、ID、实例键、namespace、指令、工具声明、图标、Skill 存在标记与目录过滤后的启用状态，
+不传安装路径、批准记录、配置或凭证。目录禁用按实例键匹配，不用裸 ID；旧主机可以不带实例键和 namespace。
+无项目时不传参数；共享任务访客不开放此通道。
 远程清单按序列化后的 UTF-8 字节限制为 1 MiB，为传输封装预留空间；保留所有插件的基础信息，
 先容纳工具声明、再容纳图标。超出剩余预算的可选字段整项省略，工具声明缺失时复用现有
 `ghost_list` 按需查询，图标缺失时显示通用图标。基础信息本身超限则明确失败，不截断插件列表；
 本机清单不受此远程预算影响。
 切换设备、目录或账号后丢弃旧响应；打开菜单、重连或点击重试时重读，不阻塞菜单展开。
 旧主机拒绝未知通道时显示读取失败与重试入口，不用控制端清单替代；插件入口需要执行主机支持此通道。
+
+Mobile 的 `+` 插件入口复用同一清单与发送期指令模板。列表随草稿末尾的 `$` 查询词展开，
+选择后把插件指令放到消息开头，保留正文与富文本引用；移除 `$` 触发词或清空草稿后收起。
+旧主机拒绝清单通道时，发送链保留原文，不能阻断 `$100` 等普通文本；权限、断连或清单校验错误仍上抛。
+排队编辑通过 `maker:input:update-content` 分别传递模型文本与原稿。旧主机只支持
+`maker:input:update-text` 时，普通文本仍可保存；需要插件展开的编辑保留草稿并提示不支持，
+不把机器指令写入用户原稿或历史。
+实现与回归见 `apps/mobile/src/session/composerPlugins.ts`、`apps/mobile/src/device-link/mobileMakerTransport.ts`
+及 `apps/mobile/src/__tests__/composerPluginTransport.test.ts`。
 
 计划模式复用 `maker:create-session` 的既有可选 `planMode` 参数；新主机创建任务记录时将显式值
 与任务元数据一次写入既有 `planModeEnabled` 字段，写入失败复用创建清理路径，不在创建后另行补写。
@@ -52,6 +149,38 @@ transport 与 device-link 的 core / review-input / mobile allowlist 均已登�
 该调用。自动继续复用既有 `CONTINUE_AFTER_ERROR_PROMPT` 与 `agentMeta.autoResume`，
 `autoResumeInfo.reason` 新值 `usage-limit-reset`，旧客户端按普通自动续跑行显示。
 Claude Code 终态 error 事件可带 `usageResetAt`（unix ms）。服务端无需改动。
+供应商组自动换电脑(2026-10-09，`docs/product-rules/provider-groups.md` §6.1)复用同一条续跑路径，
+`autoResumeInfo` 新增可选字段 `agentSwitch: { from, to, cause }`(cause 为 `usage-limit` / `auth` /
+`unavailable` / `overload`)，Desktop 与 Mobile 据此显示「{from} {原因}，已换到 {to} 继续」；字段缺失或
+不合法时照常显示 `usage-limit-reset` 的文案，旧客户端忽略该字段。P1 不改远程 Agent 协议：被分配到别的电脑的
+任务就是普通的远程 Agent 任务。分享的人这边的自动换电脑(P2c，2026-10-10)另加可选字段 `groupSwitch: { cause }`
+(不带电脑名称)，Desktop 与 Mobile 显示「已自动换一台电脑继续」；旧客户端忽略，显示「用量已恢复，已自动继续」。
+换电脑期间不报错(2026-10-10)：被控端判断供应商组会先试着换电脑时，输入投影里先不带这次 `error`(也不带
+`usageLimitWait`)，改带 `autoResumePending`，其中新增可选字段 `groupSwitchPending: { cause }`，次数字段为 0、
+`error` 只用于控制端认出随后的终态 event 是同一次失败的回声；新 Desktop 与 Mobile 据此显示「正在换一台电脑继续」，
+并且不论哪种 Agent 都不再用这次终态 event 点亮横幅。换成了投影直接进入续跑；没换成投影恢复带 `error`。旧客户端忽略该
+字段，按普通「重新连接中」显示(不带次数)；旧 Desktop 控制端对 Claude Code / Pi 仍会被终态 event 短暂点亮横幅，
+下一份投影即收回。只改投影内容，不新增 invoke 或推送通道，服务端无需改动。
+连不上先等它恢复(2026-10-11)：等原电脑恢复期间，`autoResumePending` 是一次普通的重连进度(`attempt` 1–5、
+`maxAttempts` 5、`sessionTotal` 0，不带 `groupSwitchPending`)，新旧端都显示「重新连接中 n/5」；发送前等的时候同样挂在
+还没派出的这一轮上(不带 `error`)。开始换电脑时回到上面的 `groupSwitchPending`。恢复后在原电脑续跑，续跑记录的
+`autoResumeInfo` 新增可选字段 `agentReconnect: { computer }`(读不到名称时为空串)，新 Desktop 与 Mobile 显示
+「已重新连上 {电脑}，继续运行」；旧客户端忽略该字段，显示「用量已恢复，已自动继续」(与 `agentSwitch` 相同)。
+同样只改投影与记录内容，服务端无需改动。
+换不换统一成一个判定(2026-10-11，`provider-group/failurePolicy.ts`)：`agentSwitch.cause` / `groupSwitch.cause` /
+`groupSwitchPending.cause` 新增取值 `failed`(那台出了别的问题，如 Agent 意外退出、服务报错且重试用尽)，新 Desktop 与 Mobile
+显示「{from} 出了问题，已换到 {to} 继续」；旧客户端不认识的原因整条忽略，活动行显示「用量已恢复，已自动继续」，进行中行按普通
+「重新连接中」显示。`provider-group:remote` 的 `cool` 仍只报那台账号的问题(`usage-limit` / `auth` / `overload`)，不变。
+本机远程 Agent 任务连续拉不到那台而结束时，终态 error 的 `reason` 由 `remote_agent_closed` 改为 `remote_agent_lost`(只在本机
+与它的控制端之间流转，用于判定「只是连接断了」；渲染端两者都按错误码给文案，旧端不受影响)。
+
+## 插件远程授权的实例身份
+
+远程授权中的 `ghostId` 绑定实际安装的物理 storage part，不使用裸逻辑 ID 替代企业实例。
+企业键 `_ns__<namespace>__<id>` 最长 167 字符；只对该合法键扩展校验，其他 OAuth
+事务、设备与启动 ID 仍限 128 字符。签名 transcript、v3 字段及频道不变，不能截断或
+增加 alias fallback。Desktop 与 Mobile 复用同一握手 parser；长企业键要求控制端也具备
+该校验能力，旧端的短键行为保持不变。
 
 ## Agent 跨设备历史发现与搜索
 
@@ -338,6 +467,32 @@ Mobile 的「仅查看」改为纯本地开关：只停止转发输入、关闭�
 raw history 降级。任务列表活动推送不变，当前轮的正文、工具卡和可见进度继续实时更新。
 没有新增 channel、relay 类型、数据库 schema 或 Mobile 原生依赖，云端无需改动。
 
+### 运行中工作组的单行活动与就地更新
+
+同账号控制端读取最新一页时可再带 `{ workLines: true }`。被控 Desktop 只为顶层、无嵌套、
+运行中的工作组摘要附加可选 `lines`：最多 5 行，用与两端相同的共享投影（Codex 拆行、
+重复读取去重）从完整记录算出，并从组尾向前有界地补读，直到凑足 5 个展示活动。每行只含
+工具名、按完整输入解析后再截短的展示描述、状态、是否失败，或思考开头的单行文字；不含
+工具结果、diff 与完整输入。每行和整窗都有严格的 UTF-8 字节上限，超出时逐级缩短文字与
+列表（列表保留条目数），最后只保留工具名。控制端据此显示运行中的最近 5 行，不再为预览
+读取 `work-details`。
+
+轻量读取为每行附带仅在主机内使用的正文戳（长度与末尾片段），参与工作组修订号，使后续
+全文覆盖、后台完成等原地改写也会改变修订号；该字段不进入线上内容。它是近似判据：长度
+与末尾 24 个字符都不变的原地改写检测不到；读取正文本已发生，额外成本只是逐行的少量计算。
+
+声明过 `workLines` 的控制端，折叠工作组的活动通知改为新推送 `maker:history-work-patch`
+`{ version: 1, sessionId, baseRevision, item }`：仅当它上次收到的最新一页里，除这一个运行中
+条目外的所有条目指纹都未变（指纹在库级写入计数后缀之前计算）时才发送，`baseRevision`
+是该条目上次送达的修订号。控制端只在条目存在、修订号与范围起点一致、且没有读取进行中时
+原地替换，其余情况退回原有的页面刷新；新分组、正文、卡片、清空或回退都继续走
+`maker:history-view-changed`。思考增量按与投影相同的空白归一化计算可见前缀，只在这一行
+还会变化时触发通知。
+
+旧控制端不带参数，收不到 `lines` 与新推送；旧主机忽略参数：新 Mobile 只显示卡头（与此前相同），
+新 Desktop 继续用原有 5 条明细预览。共享任务访客与供应商分享不启用这两项，读取与授权路径不变。
+没有新增 relay 类型、数据库 schema、权限或 Mobile 原生依赖，云端无需改动。
+
 现有 `maker:list-active` 的可选 `{ summary: true }` 响应在运行标记之外增加
 `activityPhase` / `activityAttention` 两个可选字段。被控端从现有会话活动投影提供这两个
 状态字段；活动服务已就绪但该会话不在活动账本中时，明确返回 `idle` / `false`，不下发活动正文。
@@ -398,6 +553,8 @@ Desktop 的任务行、置顶卡片与任务顶部通过既有 `maker:schedule:l
 截断时记录可选 `checkSucceeded: true`；错误、超时、取消和退避跳过不构成恢复。
 该标记只恢复此前的检查故障，不恢复 Agent 执行失败；旧脚本不输出、旧客户端不识别均不影响
 原有退出码语义。实现见 `scheduler-host/pre-run-hook.ts` 与 `scheduler-host/storage.ts`。
+macOS/Linux 上命令先经 `sh -n` 语法预检：shell 语法错误的退出码同为 2，不预检会被误记为
+跳过而让任务悄悄停摆。保存时直接拒绝（INVALID_PARAMS），已保存的旧命令在运行时按失败记录并提醒。
 
 ## 用量历史跨设备合并
 
@@ -526,13 +683,27 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   隧道每个任务一个随机令牌，只监听 127.0.0.1。
 - **Codex 依赖**：B 的 Codex 通过 app-server 的实验接口 `environment/add` + `environments` 把 A 注册为
   exec-server 执行环境，A 为每条连接起本机 `codex exec-server --listen stdio://`。该接口随 Codex 版本
-  可能变化，升级 Codex 时需回归 `remote-agent/__tests__/codexHosted.e2e.test.ts`。
-- **影子目录与配置同步**：`open` 载荷除项目说明文件外还带 `ancestorFiles`(项目上级目录里的
+  可能变化，升级 Codex 时需回归 `remote-agent/__tests__/codexHosted.e2e.test.ts`。A 的中继按方法语义
+  过本机闸门(`controller/execServerRelay.ts`)：`fs/readFile`、`fs/open` 的 read 模式与目录读取按读取，
+  `fs/open` 的 replace/write 模式按写入(后续 `fs/writeBlock` 只有句柄，权限必须在 open 时检查)，`fs/walk` 按
+  目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
+  升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
+- **影子目录与配置同步**：`open` 载荷除项目说明文件(含 `.claude/CLAUDE.md`、`.claude/rules`、
+  `.codex/skills`)外还带 `ancestorFiles`(项目上级目录里的
   `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` / `AGENTS.override.md`，按层级 `up`，最多 24 级)与
-  `personal`(A 的个人配置：Claude Code 的 `~/.claude/CLAUDE.md`、`skills/agents/commands`、`settings.json`
-  里的权限规则；Codex 的 `AGENTS(.override).md`；不含 hooks / env)。两者缺省按空处理。B 把影子目录按
+  `personal`(A 的个人配置：Claude Code 的 `~/.claude/CLAUDE.md`、`skills/agents/commands/rules`、`settings.json`
+  里的权限规则；Codex 的 `AGENTS(.override).md`；Codex / Pi 的个人 Skill 放在 `.agents/skills`、
+  `.codex/skills`；不含 hooks / env)。两者缺省按空处理。B 把影子目录按
   A 的真实路径逐级镜像在 `<runs>/workspaces/<控制端>/<任务>/fs/` 下，`open` 回包的 `mirrorRoot` 告诉 A
-  镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。
+  镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。A 收集这些文件时跟随
+  符号链接(与本机 Agent 加载一致，只防链接绕回上级目录与指向整个用户目录)，额度先给入口文件(SKILL.md、
+  子代理、命令、规则、提示词模板)再给附属文件；供应商分享的受邀者任务不把凭证类文件放进载荷
+  (`provider-sharing.md` §9 第 7 条)。
+  可选的 `importFiles`(2026-10-10 新增)：Claude Code 说明文件里 `@` 导入的文件，`base: workspace` 相对影子
+  目录(可带 `..`，B 只写在镜像根内)，`base: session` 相对会话目录(个人说明导入的 ~/.claude 下的文件，不进
+  镜像根)；A 把导入改写成在 B 上也能找到的相对路径。旧 B 不认识这个字段，导入照旧找不到；个人配置的新
+  子目录旧 B 同样丢弃，都不影响其它内容。受邀者的导入文件只收 Markdown / 纯文本，所有 Markdown 里指向
+  会话目录外的 `@` 引用一律断开。
 - **本机虚拟工作区**：A 在 open 前先调用 caps，只有 B 回包声明
   virtualWorkspace: true 才发送 open；旧 B 或未声明能力的 B 直接提示升级，不能静默降级到
   暴露 A 真实路径的合同。支持时，B 使用不含 A 真实目录名的固定短父级层级，继续承载最多 24
@@ -557,7 +728,7 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   这一行仍显示但开关不可用，并提示先开启远程控制(供应商分享入口也在这一行)。授权按账号存在 B 本地(`remote-provider-access-prefs.json`)，凭证与路由细节不出 B。
   `maker:provider:list` 每条供应商附带 `remoteInvocationEnabled: boolean`，**只作标记、不裁剪目录**：
   远程控制与 Mobile 仍看到全部供应商，忽略该字段即可。A 的远程 Agent 入口(模型选择器左侧栏、换模型、
-  协同 Worker、定时任务读的那台目录)只用值为 `true` 的供应商，缺少该字段按未开放。B 是最终裁决方：
+  协同 Worker(含 Worker 自己选的那台)、定时任务读的那台目录)只用值为 `true` 的供应商，缺少该字段按未开放。B 是最终裁决方：
   `open` 时把来源落到已开放的供应商上(A 没指定来源时只在已开放的里按默认规则挑)并以显式来源启动；
   `setModel` 显式换来源时同样核对；关掉后进行中的这一轮照常结束，下一次 `send` 被拒。拒绝统一回
   `REMOTE_AGENT_PROVIDER_NOT_ALLOWED`，A 按 `chat.remoteError` 提示去那台电脑打开开关或换模型。
@@ -576,7 +747,10 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   桌面远程控制 A 上的已建任务(2026-10-09)与手机同口径：A 投影的任务带 `agentDeviceId` 字段(含 null)才开放，
   控制端直接经 device-link 读第三台电脑的 `maker:provider:list`，A 自己的目录照远程控制列全部供应商，换位置同样
   带 `agentDeviceId`(null = A)，换后档位记在控制端为那台电脑单独记的一份(改回 A 时写 A 的镜像)。A 收到的分享与
-  控制端自己作为落点暂不在桌面控制端列出(控制端读不到那份目录)；Agent 正在这类位置上时维持原有的 A 目录列表。
+  控制端自己作为新的落点暂不在桌面控制端列出；Agent 正在控制端读不到目录的位置上时维持原有的 A 目录列表。
+  例外(2026-10-10)：Agent 当前 / 挂着的位置是分享(`share:<id>`)、且控制端自己的已收到列表里也有这条(分享按账号
+  授予，同账号电脑收到的是同一份)时，控制端经自己的分享通道读那份目录与 Agent 能力，模型按钮按分享显示，候选里
+  只并进这一条分享；不经 A、不新增 channel。控制端没收到时维持原样。
   实现见 `apps/desktop/src/renderer/lib/controlledTaskAgentLocation.ts`，回归见
   `controlledTaskRemoteAgentPanel.test.tsx` 与 `remoteAgentRelocationWiring.test.ts`。
   桌面远程控制下新建任务(建到 A 上，2026-10-09)同样开放：判据与手机新建相同(A 的 `maker:provider:list` 带
@@ -588,7 +762,21 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   Mobile 新建任务(2026-10-08)同样列出这些供应商与分享来的供应商，选中后 `maker:create-session` 带
   `agentDeviceId`(与桌面新建同一参数，A 已接受)；只有 A 的 `maker:provider:list` 带 `remoteInvocationEnabled`
   布尔标记时才提供(该标记与远程 Agent 同一版加入，旧 A 不列)。手机不按 A 的目录与登录校准这份选择，由运行 Agent
-  的那台在首条消息时核对；协同草稿与之互斥。
+  的那台在首条消息时核对；A 声明 `supportsOrcaWorkerAgentDevice` 时协同草稿与之不互斥(见下一条)，旧 A 仍互斥。
+- **协同 Worker 的 Agent 位置**(2026-10-10)：远程供应商与本机供应商一视同仁，每个 Worker 可以单独选 Agent 所在
+  电脑或分享，缺省跟 Lead。`maker:worker:create` 与 `maker:session:enable-orca`(首个 Worker)新增可选
+  `agentDeviceId: string | null`：不带 = 跟 Lead(旧控制端行为)，null = 任务所在电脑，string = 同账号电脑的设备 id
+  或 `share:<id>`。旧 A 会静默丢掉这个字段、把 Worker 建在 Lead 那里，所以 A 在 `maker:get-capabilities` 声明
+  `supportsOrcaWorkerAgentDevice: true` 后，控制端(桌面远控、Mobile)才在 Worker 的模型面板列远程供应商、才发这个
+  字段；这两个协议位是整台 A 的，控制端用 A 一定注册的 Claude Code 读(Worker 选的 Agent 可能只装在 Agent 所在
+  电脑上)。开启协同提交前再按能力核对一次，降级的 A 直接失败、不静默建错；控制端读不到 Lead 所在位置的目录时
+  (控制端自己、只有 A 收到的分享)维持 A 的目录、不发这个字段。A 在占槽与启动前读那台的目录，读不到回
+  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；与运行设备(`executionDeviceId`)同给、SSH Lead 回
+  `INVALID_PARAMS`。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
+  不在任务所在电脑时带值，旧端忽略即可。Lead 的 MCP 工具同步：`list_available_models` 可选 `agent_device_id` 并返回
+  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。不新增 channel，
+  allowlist 不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
+  `orcaTeam.test.ts` / `useOrcaWorkerForm.test.tsx`。
 - **账号余量**(2026-10-09)：这一轮消耗的是 Agent 所在那台(B)的账号，桌面底部用量 chip 与手机任务菜单都改读 B 的
   余量，不读任务所在电脑(本机或被控电脑)的同名账号。直接经 device-link 调 B 已有的 `maker:usage:*` 读取与推送
   (与模型选择器读 B 的余量同一份镜像)，不新增 channel；任务价值与上下文仍读任务所在电脑。远程控制的任务把 Agent
@@ -605,6 +793,9 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   (旧版分享者回 `CHANNEL_NOT_ALLOWED`，受邀者的模型列表读不到这个分享)，订阅与其他 channel 一律拒绝，撤权后迟到的结果改写为 `ACCESS_REVOKED`。受邀者的任务把 `sessions.agent_device_id`
   记成 `share:<shareId>`(不改 schema)，旧版本读到它按连不上的电脑处理。受邀者对端的 `open` 载荷按白名单复核
   (hooks / env / apiKeyHelper 剥离、越界 `@` 引用与 `!` 命令语法中和、不加载 B 的个人化与托管 Skill)，只能恢复自己建立的会话；
+  B 上受邀者会话的 Agent 自带工具按白名单开放(产品规则 §9 第 5 条，不改 wire)；受邀者电脑上的 `cindy_exec` 在任务的
+  Agent 位置是 `share:` 时为 Claude Code 追加 `WebFetch`(在受邀者电脑抓取，tools/list 追加项)：旧版受邀者不列，受邀者就没有
+  WebFetch；旧版分享者上它与自带 WebFetch 并存。两种组合都不报错，也不改 wire；
   remote-agent wire 本身不变。新错误码 `REMOTE_AGENT_SHARE_PAUSED` / `REMOTE_AGENT_SHARE_REMOVED` / `REMOTE_AGENT_SHARE_UNAVAILABLE`
   只在受邀者本机产生(分享者电脑回 `ACCESS_REVOKED`、relay 回 `REMOTE_DISABLED` 时改写成 `UNAVAILABLE`)；
   控制这台电脑的旧版手机没有对应文案，显示通用的发送失败提示。分享出去的 `maker:provider:list` 去掉分享者的账号身份
@@ -612,8 +803,322 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   分享者电脑、受邀者电脑与手机各过一遍。手机经同账号新 channel `maker:provider-share:received-catalogs`(进同账号 allowlist)
   读取被控电脑收到的分享及其目录；旧版电脑回 `CHANNEL_NOT_ALLOWED`，手机按没有分享处理。跨区域(P3)经服务端开关开放，
   受邀者用第二条 relay 连接(`ProviderShareGuest` 认证)，见契约 §6。
-- **暂不支持**：分叉、审查、移动项目、复制到其他电脑、导出 `.cshare`(Agent 会话记录在 B)，入口隐藏、
+- **暂不支持**：分叉、审查、复制到其他电脑、导出 `.cshare`(Agent 会话记录在 B)，入口隐藏、
   主进程拒绝。
+- **移动项目可用**：B 上的影子目录只按「控制端 + 任务 id」定址(虚拟工作区为必需能力)，与 A 的工作目录
+  无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
+
+## 协同远端 Worker：Worker 在另一台电脑运行
+
+与上一节方向相反：协同的 Lead 与团队留在 A，单个 Worker 的任务、目录、命令与文件都在 B(运行设备)。
+B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 0124，JSON 见
+`apps/desktop/src/shared/orcaRemoteWorker.ts`)记录派活电脑与 Lead；派活、停止与回报复用现有会话通道。
+方案与产品决策见 [`../orca-cross-device-worker-plan.md`](../orca-cross-device-worker-plan.md)。
+
+- **新增 channel**(`packages/device-link/src/orcaRemoteWorker.ts`，只进同账号 allowlist，不进共享任务清单)：
+  `maker:orca:remote-worker:caps`(能力探测，回 `{ version }`)、`…:open`(按 A 给定的任务 id 新建 Worker 任务，
+  幂等；超时 60s)、`…:release`(结束协同，任务与文件保留，幂等)。B 侧实现见
+  `apps/desktop/src/main/maker-ipc/orcaRemoteWorkerHost.ts`。
+- **幂等 open 的终态检查**：同来源、同 Lead 且未 release 的已有任务也必须仍为 `active`；
+  已归档／软删除时拒绝并返回既有 `PRECONDITION_FAILED`，不新建、不复活。A 保留未确认创建
+  收据，恢复仅解除未关联标记。该检查使用 B 的现有 status 列，不新增 wire 字段或改变版本；
+  旧 B 仍保留原行为，B 更新后生效。
+- **实际档位**：`open` 回包可选 `effort` 是 B 已保存的解析结果，同 ID 重试也从已有任务读取。
+  空字符串保留无档位状态；旧 B 不返回该字段时，A 保留原来的请求值降级规则。字段增量不改协议版本，
+  旧 A 忽略它，新 A 不向旧 B 要求新增请求字段。
+- **实际 Fast 状态**：`open` 回包可选 `fastMode` 是 B 已保存的布尔值，新建和同 ID 重试均取真实任务，
+  A 的代理任务和创建结果沿用它，显式 `false` 不被请求中的 `true` 覆盖。旧 B 缺省时，A 保留请求值的
+  降级规则；旧 A 忽略新增字段，版本与请求不变。完整状态一致性需要 A/B 均更新，服务端无需改动。
+  此字段不改变 B 的模型准入：当前显式开启不支持的 Fast 仍在创建前拒绝，不新增静默降级。
+- **来源身份**：派活电脑取 server 盖章的 `src`(`DeviceLinkInvokeContext.controllerDeviceId`)，不采信载荷自报；
+  非 device-link 调用与共享任务访客一律拒绝。`open` 指定的 `workingDir` 与 `maker:create-session` 同口径经
+  B 的目录守卫(`device-link/dispatch.ts` 的 `PATH_GUARDED_CHANNELS`)；不指定则由 B 分配任务目录。
+- **旧端降级**：旧版 B 没有这三个 channel，回 `CHANNEL_NOT_ALLOWED`；A 据此把该电脑显示为「需要更新」，
+  **不回退**到普通 `maker:create-session`(普通任务没有防嵌套与来源标记)。B 新、A 旧时 B 不受影响。
+- **可选运行设备**：`maker:orca:execution-devices`(只读)由 A 本机界面与控制端共用，返回
+  `{ devices: [{ deviceId, name, platform, supported }] }`；逐台探测 caps，旧版标 `supported:false`，
+  探测失败的不列出。共享任务访客拒绝。
+  Mobile 使用同一只读通道获取 A 视角的设备，模型与 Agent 从所选运行设备读取。
+  新手机连接旧 A 收到 `CHANNEL_NOT_ALLOWED` 时隐藏设备选择，原来的 A 本机 Worker 创建不变。
+  首个与追加 Worker 都沿用既有可选 `executionDeviceId` / `workingDir` 字段；「对话」不传目录，
+  「指定目录」传 B 上的绝对路径，由 B 校验；失败不回退 A。
+- **A 驱动 B 的其余通道**全部是已有同账号 channel：`maker:input:enqueue`(按 `clientId` 幂等，
+  `durableDelivery`)、`maker:input:get-projection`(投递回执)、`maker:list-active`、`local-db:sessions:get`、
+  `local-db:history:messages`、`maker:abort-session`；B 不需要知道「这是协同派活」，只认来源标签。
+- **恢复暂停**：B 的 `INPUT_ENQUEUE` 按已有自动消息来源判据处理 `origin.kind`，Orca 派活不解除
+  崩溃恢复后的队列暂停；普通手机／桌面用户输入仍可解除恢复暂停，用户 Stop 暂停不受影响。
+  不新增 wire 字段或改变版本，A 的既有派活载荷不变；旧 B 保持其原有行为，需更新 B 才有此修复。
+- **收尾限制**：当前 abort/release 不取消未消费的远端派活，结束协同后队列仍可能继续执行。
+  远控入队后的来源不足以可靠区分 Lead 派活与用户输入，本轮不通过清空队列规避；待专门设计
+  持久投递归属、取消回执与释放边界后修复，详见 `orca-team-architecture.md` 的已知限制。
+- **B 侧约束**：带标记的任务不能再开启协同(`assertLeadCollabProjectEnabled` 统一拒绝 Worker 与远端 Worker，
+  覆盖 IPC、远程与 Agent 工具入口)，不能复制到其他电脑(`task-migration/service.ts`)；侧栏照常显示，
+  任务头标注「来自 X 的协同」，结束后显示「协同已结束」。
+
+## 供应商组：同账号直连(P2a)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §4、§5、§6.1、§10。组所在电脑 O 把某个供应商建成组后，
+同账号另一台电脑 C 上选了 O 的这个供应商的新任务：C 问 O 该用哪台，再自己直接连到选中的组内电脑运行。
+
+- **新 invoke channel `provider-group:remote`**(`packages/device-link/src/providerGroup.ts`，进同账号 allowlist)，被控端
+  `dispatch.ts` 拦截执行，不落 ipcMain handler；供应商分享受邀者(不在 `PROVIDER_SHARE_CHANNELS`)与共享任务访客一律
+  `CHANNEL_NOT_ALLOWED`。请求 `{ action, ... }`，结构与校验在 `apps/desktop/src/shared/providerGroup.ts`(两端同一份)：
+  - `pick { sessionId, providerId, agentKind, model, exclude[] }` → `{ kind: 'member', member: { key, kind, agentDeviceId, providerId }, label }`
+    / `{ kind: 'unavailable' }` / `{ kind: 'none' }`(没有组或供应商没开放远程调用)。组员坐标是 O 视角(`local` = O 自己)，C 换算成
+    本机位置；选中即给那台记 30s 临时占用；
+  - `cool { providerId, memberKey, cause: 'usage-limit' | 'auth' | 'overload', resetAt? }` → O 冷却那台(`resetAt` 最多信 8 天)；
+    连不上不报，只由 C 自己避开(组内状态以 O 为准，C 那边的问题不记进组里，2026-10-11)。`exclude` 非空(C 这一轮试过
+    不行再来问)时 O 不用短时缓存、现读组内电脑的最新状态再选，请求格式不变；
+  - `leases { seq, entries: [{ sessionId, providerId, memberKey }] }` → 整体替换 C 正在运行的经组任务，`seq` 只增(C 按时间生成，
+    重启后仍增大)，乱序旧包丢弃，150s 不刷新作废；只用于分摊负载；
+  - `view { providerId, model? }` → 组设置与组员状态(`ProviderGroupView`)；省略 `model` 时只按组级状态返回，
+    发送前检查带上当前模型时，组所在电脑按该模型重新计算额度。带 `model` 的回包回显同一个 `model`，调用方只在回显一致时
+    使用模型级状态；旧组所在电脑忽略这个可选字段、没有回显时只沿用离线、不可用和组级冷却等不依赖模型的状态，
+    对可用或满载状态按模型额度未知处理，不会把旧端的组级可用状态误当成模型级状态。
+  - `session-group { sessionId }`(只读，2026-10-11)→ `{ group: { groupDeviceId, providerId } | null }`：发给**任务所在的电脑**
+    (不论它有没有组)，回答这个任务此刻归哪个组，坐标是那台视角(`groupDeviceId` 为 null = 那台自己建的组)。手机与桌面远程控制
+    的模型列表据此把归组的任务显示在组那一项下、在组那一项里选模型时留在此刻运行的那台(provider-groups.md §10)。不读写分配器、
+    负载与绑定。旧版本回 `CHANNEL_NOT_ALLOWED`(没有这个通道)或 `[INVALID_PARAMS] unknown provider group action`(有通道没有这个
+    动作)，控制端一律按没归组处理，即与改动前相同。
+  旧 O 回 `CHANNEL_NOT_ALLOWED`：`pick` 按 `none` 处理，任务照旧直接在 O 上运行。
+- **`maker:provider:list` 新增可选字段 `group`**：只对同账号调用方、只加在建了组且「允许被远程调用」的供应商上：
+  `{ strategy, autoSwitch, members: [{ key, kind, agentDeviceId, providerId, label?, paused }] }`(并发上限与权重不外发)。
+  组摘要列着组内电脑，受邀者与共享任务访客拿不到：分享投影里去掉，`scrubSharedProvider` 再兜一层(分享者电脑、受邀者电脑与
+  手机各过一遍)。旧控制端与手机不认识就忽略；新控制端据此在模型列表与设置页收起组员(只看在线电脑的目录)，新手机在模型列表
+  里同样收起(2026-10-11)。O 改组后经
+  `maker:provider:changed` 推送让同账号电脑重读目录。
+- **远程 Agent open 载荷新增可选 `groupAssigned: true`**(`remote-agent/wire.ts`)：任务由供应商组分配到这台(本机的组或另一台的组)，
+  这台直接运行、不再进入它自己的组(防转圈)。旧被控端解码时丢弃(它本来没有组)。
+- **本地数据**：C 上经另一台电脑的组分配的任务绑定存 `provider-group-remote-bindings.json`(按账号，与本机组的
+  `provider-group-bindings.json` 分开，降级后旧版本读不到它，不会误认成本机的同名组)。因组内电脑被移出或组被删除而
+  解除过绑定的任务按组记在 `provider-group-released.json`(按账号，2026-10-10)，老任务纳入组时据此跳过(provider-groups.md
+  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。组所在电脑的冷却按账号存 `provider-group-cooling.json`
+  (`{ cooling: { [providerId]: { [memberKey]: until } } }`，只存未到期的，2026-10-11)，重启后照样避开；旧版本不读它。
+  不改数据库与服务端。
+- 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
+  `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
+  `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
+
+## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
+再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+
+- **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
+  旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
+  旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
+- **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
+  订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
+  避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+- **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
+  分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
+  的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
+  或凭证访问。
+- 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
+  `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
+  `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
+
+## 供应商组：受邀者经组所在电脑中转(P2b)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §4「分享的人(中转)」、§8、§9。受邀者 G 用组所在电脑 O
+分享出去的供应商，而 O 把它建成了组：O 的远程 Agent 被控端按组选一台组内电脑 M，自己作为 M 的控制端中转。G 与 O 之间的
+`maker:remote-agent:v1` 协议完全不变(中转对 G 透明)；O 与 M 之间沿用同一协议，新增下面三项可选内容：
+
+- **open 载荷新增可选 `relay`**(`remote-agent/wire.ts`，`REMOTE_AGENT_RELAY_KEY_PATTERN`，16–64 位 `[A-Za-z0-9_-]`)：O 为受邀者取的
+  不透明键(按受邀者派生，不含分享与成员信息)。M 收到带 `relay` 的 open 一律按受邀者隔离运行(即使控制端是同账号的 O)：
+  受邀者目录、会话索引、续接校验与运行数按(控制端, relay)分开；同一控制端按受邀者各 16 个、合计 64 个任务。只有同账号
+  控制端的 `relay` 才各算一份运行数：受邀者控制端自己填的 `relay` 只把它的数据分开存放，运行数仍按这个受邀者合计 16 个，
+  不能借此放宽额度(分享来的 M 上 O 本身就是受邀者，O 替各受邀者中转的任务在那台合计 16 个)。O 同时带
+  `groupAssigned`，并把 `sessionId` 换成按(受邀者, 任务 id)派生的 id、`providerId` 换成 M 上的供应商。旧 M 丢弃这个字段，
+  所以 O 只把受邀者任务交给 caps 声明了 `guestRelay` 的同账号 M；分享来的 M 本来就把 O 当受邀者隔离，不要求这个能力。
+- **caps 新增可选 `guestRelay: true`**(`RemoteAgentCaps`)：被控端能按受邀者隔离运行(供应商级授权与受邀者出站边界都已接上)。
+- **新 op `forget { relay }`**(`parseRemoteAgentRequest`)：O 删除受邀者后请 M 清掉替它运行过的任务、受邀者目录与会话记录；
+  只作用于调用方自己的 relay。旧 M 回 `REMOTE_AGENT_INVALID`(它从没接过被中转的任务)。
+- O 不信任 G 带来的 `relay` / `groupAssigned`：受邀者的这两个字段只会让任务按普通受邀者在 O 本机隔离运行，不能借此逃出
+  受邀者隔离；O 的组路由只用 O 自己的组设置与记录。
+- `forget` 的通知名单从 O 发出 open 那一刻起记(含启动失败、还没有原生会话 id 的 M)；没通知到的 M 持久记在 O 的受邀者
+  会话索引(`forgetPending`)里，之后自动重发。open 的结果不明(超时、断链)时 O 先用同一个 runId 发 `close` 再换下一台；
+  这些都只用已有的 op。
+- 中转不解码消息与附件、不落盘(载荷原样按同一 callId 转给 M)；推帧按任务串行；M 报出的路径类错误(分享暂停、远程调用
+  关闭、连不上、太忙等)转给 G 时统一成 `REMOTE_AGENT_UNAVAILABLE`。
+- **控制端拉取器修正**(与本节同批，`remote-agent/controller/poller.ts`)：一个 poll 带回数据后，若有任务没被仍在途的 poll
+  覆盖就立刻再发一个。此前同一台电脑上已有空闲任务挂着长等待时，新打开的任务带回第一段数据后要等旧的长等待超时
+  (最长 10s)才能拿到 `started`。只影响控制端本地调度，不改 wire。
+- 不改 relay、服务器与数据库。实现：`remote-agent/host/runHost.ts`(中转与 M 端隔离)、`host/groupRelay.ts`、
+  `provider-group/guestRelay.ts`(选电脑)；回归见 `remote-agent/__tests__/groupRelay.test.ts`(三端同进程)、
+  `provider-group/__tests__/guestRelay.test.ts`、`remote-agent/__tests__/poll.test.ts`。
+
+## 供应商组：受邀者运行中换电脑(P2c)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §6.1「谁来执行换电脑 · 分享的人」。上一节的中转任务在组内
+电脑 M 上因那台本身的原因失败时，交接要用到对话记录，只能由受邀者 G 执行；组所在电脑 O 只负责告诉 G「需要换一台」并在
+G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M 之间不变：
+
+- **open 载荷新增可选 `acceptsGroupSwitch: true`**(`remote-agent/wire.ts`，只认 `true`)：G 声明认识下面的凭证状态。新 G 打开
+  远程 Agent 任务时一律声明；O 只在中转任务上使用。旧 O 丢弃这个字段。
+- **事件流里的凭证状态 `{ t: 'state', state: { providerGroupSwitch: <token> } }`**(`REMOTE_AGENT_GROUP_SWITCH_STATE_KEY`，
+  凭证格式同 `REMOTE_AGENT_RELAY_KEY_PATTERN`)：O 看到 M 转来的终态错误(或一轮进行中 M 的任务意外结束；组选中 O 本机、任务在
+  O 本机运行时同样适用)、按组口径判定是那台的问题、并确认组里还有能接的电脑后，**先**追加这条状态，**再**转出原来的错误；判定与选电脑期间 M 转来的后续内容按原顺序
+  暂存，不乱序。只发给声明了 `acceptsGroupSwitch` 的 G；旧 G 只看到原来的错误(行为同 P2b)。G 取走凭证、不并入任务状态
+  (`controller/startRemote.ts` `takeGroupSwitchState`)。O 丢弃 M 转来的同名状态，M 不能替 O 发凭证。
+- **open 载荷新增可选 `groupSwitchToken`**：G 自动交接(全量交接 + 全新原生会话)后重新打开时带回凭证。O 只认发给这个受邀者、
+  这个任务(按 O 侧的 `hostSessionId`)且未过期(10 分钟)的凭证，用一次即作废；有效时选电脑避开这一轮已经换下来的组内电脑，
+  无效时按普通新任务选。凭证只影响选哪台，不扩大任何权限；它与 `relay` / `groupAssigned` 一样不转给 M。
+- 同一轮每台组内电脑最多换一次(O 按(受邀者, 任务)记录)；那台上一轮正常结束或距上次换电脑超过 30 分钟算新的一轮。
+- **send 选项新增可选 `groupNewRound: true`**(`RemoteAgentWireSendOptions`，只认 `true`)：G 上的用户亲自接手(发消息、重试、
+  换模型)后、且这个任务收到过凭证时，下一次 `send` 带上它，O 据此清掉这个任务这一轮已经换下来的电脑，也算新的一轮。
+  O 读完即去掉，不交给 Agent、不转给 M；旧 O 丢弃这个字段(手动重试仍沿用旧的一轮，直到正常结束或 30 分钟)。它只影响
+  这个受邀者自己这个任务的换电脑记录，不扩大任何权限。组设置关掉了自动换电脑时 O 照常冷却出问题的那台，但不发凭证。
+- G 只在持有凭证时才换电脑：分享暂停、删除、撤权等来自 O 本身的错误没有凭证，照旧交回原有处理。
+- **续接回到原来那台、那台接不下时同样发凭证**(2026-10-11)：G 续接一个经组运行过的任务(带 `resumeSessionId`)，O 只能回到
+  当初那台(会话在那台上)；那台接不下、且按同一个判定是那台的问题时，O 在 `start-failed` **之前**追加同一条凭证状态。G 的
+  `startRemote` 在任务开始之前也会取走凭证(`takeGroupSwitchState`)；随后的打开失败由 G 的启动重试认领凭证
+  (`claimGuestStartSwitch`)，先交接(全量交接 + 全新原生会话)，再在同一个分享位置带凭证作为全新任务重新打开，只试这一次。没有新字段；旧 G 只看到原来的启动失败。组为受邀者的全新任务选中 O 本机、O 的 Agent 却没能
+  启动时，O 与组内电脑接不下一样在启动阶段换下一台(受邀者无感，旧 G 同样享受)。
+- 不改 relay、服务器与数据库。实现：`remote-agent/host/runHost.ts`(暂存与发凭证、校验凭证)、`host/groupRelay.ts`、
+  `provider-group/guestRelay.ts`(运行中失败的冷却)、`provider-group/guestSwitch.ts` 与 `provider-group/service.ts`(G 侧凭证与
+  自动交接)、`maker-ipc/sessionAgentSwitchHandler.ts`(仅内部可用的 `forceRelocation`)；回归见
+  `remote-agent/__tests__/groupRelay.test.ts`、`provider-group/__tests__/service.test.ts`、`guestSwitch.test.ts`。
+
+## 供应商分享：受邀者不看分享者的电脑名，组只给台数(2026-10-10)
+
+产品规则见 [`provider-sharing.md`](../product-rules/provider-sharing.md) §5.1、§6 与 [`provider-groups.md`](../product-rules/provider-groups.md)
+§8、§9.7、§10。受邀者只知道是谁分享的、分享的是哪个供应商；本节登记组台数，2026-10-12 增加的匿名状态见下一节。
+
+- **分享投影里的 `maker:provider:list` 新增可选 `groupSize`**(正整数，1–512)：分享者把这个供应商建了组、且仍「允许被远程调用」
+  时，`projectProviderListForShare` 按本机组设置填上(目录里原有的值一律先去掉)。`scrubSharedProvider` 在分享者电脑、受邀者电脑
+  与手机各过一遍，只留合理的整数(`readProviderShareGroupSize`，`packages/device-link/src/providerShareCatalog.ts`)。旧受邀者不认识
+  就忽略；旧分享者不带，新受邀者当作没有组。
+- **分享链接的 `deviceName` 填固定占位 `Cindy`**(`PROVIDER_SHARE_NEUTRAL_DEVICE_NAME`)：字段仍必填(服务端与旧版受邀者按必填非空
+  字符串处理)，只是不再上传分享者的电脑名。被控电脑转给手机的 `maker:provider-share:received-catalogs` 里的 `deviceName` 同样填
+  占位(服务端仍存着旧链接里的电脑名)。新版本界面一律不读这个字段；旧版受邀者会显示占位(新链接)或原来的电脑名(旧链接)。
+- **同账号的组摘要(`group`)里 `kind: 'share'` 的组员不再带 `label`**：旧版本加入时存的快照是分享者的电脑名。新控制端按自己收到的
+  分享(分享属于账号)显示分享者昵称；`provider-group:remote` 的 `view` 里这类组员的 `label` 改为分享者昵称，旧控制端照常显示它。
+- 换 Agent 位置的分隔条：目标是分享(`share:<id>`)时不写 `toAgentDeviceName`，显示成「已改到另一台电脑上运行」；
+  供应商组换电脑的活动记录里分享来的电脑写分享者昵称。
+- 不改 relay、服务器与数据库。实现：`device-link/dispatch.ts`(`projectProviderListForShare`)、`provider-group/remoteHandler.ts`
+  (`sharedProviderGroupSize`)、`provider-group/directory.ts`(`memberLabel`)、`device-link/providerShareRuntime.ts`；回归见
+  `device-link/__tests__/providerShareDispatch.test.ts`、`provider-group/__tests__/remoteHandler.test.ts`、`directory.test.ts`、
+  `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商分享：按需查看匿名组状态(2026-10-12)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §8、§9.7、§10。
+
+- 受邀者读现有 `maker:provider:list` 时可在 `args[0]` 加 `includeSharedGroupStatus: true`。只在分享详情使用；
+  普通目录读取不探测组员，避免组之间相互读取目录时递归。供应商始终取实际分享授权，不信任请求中指定的供应商。
+- 新分享者在这一条供应商上附加可选 `groupStatus`：长度与 `groupSize` 一致的状态数组，只允许
+  `available / busy / cooling / offline / paused / unavailable / needs-update / unknown`。序号由界面按数组位置生成，
+  不传组员名称、标识、来源、任务数或用量；不扩展 `provider-group:remote` 的受邀者权限。
+- 由实际受邀者分配器读取组状态并按同一能力条件检查能否接分享任务，状态与能力读取各有 3 秒等待上限；
+  超时／失败为未知，不改变分配与冷却。读取期间组设置或账号变化丢弃快照，分享撤销后不返回在途结果。
+  `scrubSharedProvider` 在各跳按白名单重建数组；不合法的单项替换为 `unknown`，长度不符则不带字段。
+- 匿名能力探测按当前账号运行期共用最多 4 个物理在途槽，同电脑跨刷新复用查询；等待超时不释放仍在途的槽，
+  未发出的排队查询 3 秒后取消。已结算的能力结果短存 15 秒，迟到结果可供下一次详情读取使用；不缓存组状态，
+  不跨账号复用或继续发出旧账号的排队查询，不改变底层 device-link 超时、重连或 wire 格式。
+- 兼容：旧分享者忽略查询选项，新受邀者显示未提供状态；旧受邀者不发选项、行为不变。手机沿用目录清洗但
+  本期不增加状态入口。无组的供应商不带状态，不改服务器、relay、数据库或既有 channel 白名单。
+- 实现：`provider-group/sharedStatus.ts`、`guestRelay.ts`、`device-link/dispatch.ts`、
+  `packages/device-link/src/providerShareCatalog.ts`；回归：`sharedStatus.test.ts`、`providerShareDispatch.test.ts`、
+  `providerShare.test.ts`、`SharedProviderGroupStatus.test.tsx`。
+
+## 同账号供应商组：版本与分享兼容提示(2026-10-12)
+
+- 同账号组详情的 view 请求可选带 includeGuestSupport: true，才按现有远程 Agent 能力查询核对能否接收分享任务。
+  普通状态与任务分配不增加能力探测，不修改实际分配、冷却或权限。单台查询最多等 3 秒，失败或超时为未知。
+- 能力读取器跟随当前账号的组 router 运行期，跨详情刷新、跨组按电脑复用在途查询与 15 秒短缓存，最多 4 个物理在途槽。
+  等待超时不释放仍在途的槽，未发出的排队查询到期取消；迟到结果供下一次详情读取使用，避免后续电脑反复排队超时。
+  不跨账号复用，不缓存忙闲等组状态，不改变底层 device-link 超时、重连或 wire 格式。回归见 `router.test.ts`。
+- 成员状态可选携带 appVersion（不超过 64 字符的应用版本）与 guestSupport（supported / needs-update / unknown）。
+  本机版本由应用提供，同账号设备版本复用设备目录；分享来源没有版本则省略。能力按真实声明判断，不按版本号猜测。
+- 新端白名单解析；旧组所在电脑忽略选项、未带字段时不推断版本或兼容状态，未知信息放在悬停说明里，旧控制端忽略新增字段。
+  成员信息仍只对同账号可读，受邀者匿名状态数组不携带这些字段。异步查询期间换账号或撤销远程调用权限后丢弃回包。
+  没有新 channel、服务器改动或数据库迁移。回归覆盖目录、组状态、同账号请求解析及本机和远程两处界面。
+
+## 供应商分享：受邀者自己的运行数(2026-10-10)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5「分享来的电脑」与
+[`provider-sharing.md`](../product-rules/provider-sharing.md) §7.4。受邀者把分享加进自己的供应商组时，组页面要显示这台在跑几个，
+包括本账号不经组直接用的任务。
+
+- **分享投影里的 `maker:provider:list` 新增可选 `guestRunning`**(非负整数，0–4096)：分享者电脑按调用方(同一分享、同一成员，
+  不分设备)统计此刻正在运行一轮的远程 Agent 任务，在 `projectProviderListForShare` 里填上(目录里原有的值一律先去掉)。
+  任务转给了组内电脑的按那台报来的状态算。只计调用方自己的任务，不含分享者本人(同账号控制端)与其他受邀者。
+  `scrubSharedProvider` 在分享者电脑、受邀者电脑与手机各过一遍，只留合理的整数(`readProviderShareGuestRunning`，
+  `packages/device-link/src/providerShareCatalog.ts`)。同账号目录不带这个字段。
+- 兼容：旧受邀者与手机不认识就忽略；旧分享者不带，新受邀者按经本组的计数显示(与之前一致)。被控端的远程 Agent 服务
+  没接上 `turnRunningControllers` 时同样不带。
+- 不改 relay、服务器与数据库，不新增 channel。实现：`remote-agent/host/runHost.ts`(`turnRunningControllers`)、
+  `device-link/dispatch.ts`(`providerShareGuestRunning`)、`provider-group/directory.ts`(`reportedRunning`)、
+  `provider-group/router.ts`(`memberRunning`)；回归见 `device-link/__tests__/providerShareDispatch.test.ts`、
+  `remote-agent/__tests__/guestHost.test.ts`、`provider-group/__tests__/directory.test.ts`、`router.test.ts`、
+  `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商组：同账号电脑上的运行数(2026-10-10)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5「本机与同账号电脑」。组所在电脑要显示组里每台
+这个供应商实际在跑几个任务，含那台自己用的、不经组的与替分享的人跑的。
+
+- **同账号电脑读的 `maker:provider:list` 新增可选 `runningTurns`**(非负整数，0–4096，`PROVIDER_RUNNING_TURNS_FIELD`，
+  `packages/device-link/src/providerGroup.ts`)：被控端在 `decorateProviderListWithGroups` 里给每个允许被远程调用的供应商
+  填上这台电脑上用它正在运行一轮的任务数(没在跑的为 0；结果里原有的值一律先去掉；读不到时整个目录都不带)。
+  计数(`provider-group/localLoad.ts`)= Agent 在本机运行的本机任务(按任务记录的来源，没记来源的按本机实际会用的来源；
+  Agent 在另一台电脑、分享来的电脑或 SSH 主机上的不算) + 远程 Agent 服务在本机运行的任务(`turnRunningProviders`，
+  转给组内另一台的不算)。只给同账号电脑：`scrubSharedProvider` 去掉这个字段，受邀者与手机转交的分享目录都不带。
+- 组所在电脑读本机的数直接现算，读同账号电脑的从目录取(`readProviderRunningTurns`，只认合理整数)；分享来的电脑仍只认
+  `guestRunning`，不认 `runningTurns`。
+- 兼容：旧电脑与手机不认识就忽略；旧被控端不带，新组所在电脑照旧只算经本组的。`decorateProviderList` 改为可异步，
+  只在本机内部接线，不影响 wire 形状。
+- 不改 relay、服务器与数据库，不新增 channel。实现：`remote-agent/host/runHost.ts`(`turnRunningProviders`)、
+  `provider-group/localLoad.ts`、`provider-group/remoteHandler.ts`、`provider-group/directory.ts`(`localRunning`)、
+  `maker-ipc/register.ts`(接线)；回归见 `provider-group/__tests__/localLoad.test.ts`、`remoteHandler.test.ts`、
+  `directory.test.ts`、`remote-agent/__tests__/guestHost.test.ts`、`device-link/__tests__/providerShareDispatch.test.ts`、
+  `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商组：同账号电脑报告经组的用量(2026-10-11)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §7。组所在电脑 O 的「用量」块里「自己」要等于全组的总和，
+同账号电脑 C 经 O 的组、直接连到组里别的电脑(不是 O 本身)运行的那部分 O 经手不到，由 C 报告。
+
+- **`provider-group:remote` 新增 `action: 'usage'`**(同一 channel、同一同账号 allowlist，受邀者与共享任务访客照旧
+  `CHANNEL_NOT_ALLOWED`)：`{ action: 'usage', seq, sinceDay: 'YYYY-MM-DD' | null, rows }` → `{}`。
+  - `rows` 每行是数组 `[day, providerId, memberKey, kind, model, turns, inputTokens, outputTokens, cacheReadTokens,
+    cacheCreateTokens, sdkCostUsd, lastAt]`，最多 3000 行；供应商与组内电脑都是 O 的坐标(`memberKey` 是 O 组里的稳定键)。
+    结构与校验在 `apps/desktop/src/shared/providerGroup.ts`(`parseProviderGroupRemoteRequest`、`providerGroupUsageRowsForWire`)。
+  - 语义是整体替换：O 删掉 C 报过的、`sinceDay`(含；null = 全部)起的行，再写入这一份；重复送同一份不多算。`seq` 只增
+    (C 以时间生成并以已持久化的上次序号为下限)，同一账号里乱序到达的旧份丢弃；换了账号之后到达的不收。
+  - O 丢掉 `memberKey === 'local'` 的行(分到 O 本身的那部分 O 自己记过)；不按此刻有没有组筛，组删了又建时整份报告
+    也不会抹掉那几个供应商的历史。
+  - C 侧：任务此刻所在电脑与供应商和绑定那台对得上才算经组(绑定没清掉的空档里不报)；每轮记进按账号的账本(`group` 行，
+    只用来报告，不算进 C 自己的供应商)，防抖 5s 报从那天起的一份；启动(账号确定)
+    后整份报一次补上次没送到的；送不到按 30s 起、最长 10 分钟退避重报，不截断单日或未报告的旧日期。
+- **超出单次 3000 行或 UTF-8 字节预算时用新动作 `usage-part` 分批传完整报告**：
+  - 请求 `{ action: 'usage-part', seq, sinceDay, offset, total, rows }`；每批仍最多 3000 行，整份最多 20000 行，
+    同时按实际 JSON 序列化后的 UTF-8 字节数切批（包含转义开销），请求预算取可靠消息/普通帧上限的较小值再预留 64 KiB 给 invoke 头；offset 按实际批次行数推进。
+    与按使用方账本的保留上限一致。回包 `{ seq, received, committed }`，`received` 是本批结束的行偏移。
+  - O 按账号、报告电脑隔离暂存，每台只留一份；从 offset 0 开始顺序收取，同一份的 seq、sinceDay 和 total 必须一致。
+    收齐后才整体替换并登记去重序号。缺批、乱序、暂存过期(10 分钟)或 O 重启都要求 C 从头重报，旧账本不变；
+    更新的整份报告可替换未完成的暂存，已提交的旧序号不会重复记账。
+  - C 每批发出前重查账号仍有效，回执不足或任一批失败保留重报意图，用新序号从原起始日重新报告；
+    故障只作用于这台组所在电脑的这份用量，不重建 link 或 relay，不影响任务及其它控制端。
+- **兼容**：
+  - 旧 O(认识 `provider-group:remote`、不认识 `usage`)回 `[INVALID_PARAMS] unknown provider group action`，更早的回
+    `CHANNEL_NOT_ALLOWED`：C 都按不支持处理，30 分钟后再试，不影响任务；这部分用量在 O 上缺，直到 O 更新。
+  - 旧 C 不报：O 上缺这部分，其余照旧。
+  - 认识 `usage` 但不认识 `usage-part` 的 O 拒绝新动作；C 按不支持处理并保留完整重报意图，30 分钟后再试，
+    不回退成部分 `usage` 报告。行数和字节数都在预算内才继续使用原动作。小报告无需双方同时更新，大报告在 O 更新后补报。
+  - `maker:provider:list`、relay、帧限制、服务器与数据库都不变。
+  - 降级：已发布的受邀者账本(`provider-share-usage.json`)行键与合计不变，各台组内电脑的分布放在行里的 `byMember`，旧版本
+    照常累计合计并原样写回，降级不丢用量(降级期间记的回来后算没区分电脑)。`byMember` 每行保留最多 512 个电脑键；
+    满容量后已有电脑继续累计，新电脑只加行合计、查询算没区分电脑；旧文件已超容量时保留前 512 个分布，其余仍计入总量。
+    写入、重启和再次落盘都不丢整行分布，回归见 `device-link/__tests__/providerShareUsageStore.test.ts`。按使用方的账本(`provider-usage-by-party.json`)
+    还没进正式版：从带这次改动的构建降到它之前的构建时，同一天同模型分在几台电脑的行会合成一行(只剩其中一台的数)，
+    `group` / `reported` 行也会被当成「我的其他电脑」，属于已知的降级损失。
+- 实现：`apps/desktop/src/main/provider-group/usageReporter.ts`、`usageReportRuntime.ts`、`remoteHandler.ts`(`usage`)、
+  `remoteClient.ts`(`usage` / `usage-part`)、`remoteRegistration.ts`，`apps/desktop/src/main/usage/providerPartyUsageStore.ts`
+  (`groupReport` / `replaceReported`)，`maker-ipc/sessionProviderPartyUsage.ts`(`groupUsageReportOf`)；回归见
+  `provider-group/__tests__/usageReporter.test.ts`、`remoteHandler.test.ts`、`usage/__tests__/providerPartyUsageStore.test.ts`、
+  `maker-ipc/__tests__/sessionProviderPartyUsage.test.ts`。
 
 ## 事实来源
 
@@ -925,6 +1430,7 @@ Mobile 对所有预创建恢复记录（含未收到创建回包的 `reserved`�
 | DeepSeek、Qwen、Kimi、GLM | Chat Completions   | Pi 本地目录对应 provider；不使用同名聚合商条目            |
 | 腾讯 HY                   | Chat Completions   | Cindy 原有 HY3 协议声明；Pi HY4 的协议记录交叉核对        |
 | Muse Spark                | OpenAI Responses   | Cindy 原有 Muse Spark 1.2 声明；Pi 同型号协议记录交叉核对 |
+| Muse Wonder               | OpenAI Responses   | Meta Model API 官方模型页，与 Muse Spark 同用 Responses   |
 
 新增家族规则仅匹配指定 provider 路由与命名空间，不能扩到任意 BYOM 或同名聚合商。
 精确条目可覆盖家族规则。当前本地维护的 Registry 条目均有显式协议声明；
@@ -1073,3 +1579,33 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
 去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
+
+## 伙伴创建时选择模型
+
+伙伴 `create` 表单块在 data 追加可选 `creationModelChain` 元数据，表示支持创建选模并给出默认首选。
+旧端忽略该元数据，不会在通用表单中显示 JSON。新 Mobile 看到它才显示现有选择器；
+显式选择时动作输入追加 `modelChain`（单条既有 BotModelRoute 的 JSON），省略即跟随伙伴默认。
+选择不改全局默认。
+主机复用设置页的模型可用性验证；旧手机省略字段照常创建，新手机连接旧主机保留原创建流程。
+丢失回执后的重试仍沿用原 requestId 和原模型选择，不覆盖已创建伙伴。
+无新增 channel、权限、数据库 migration、服务端改动或原生 fingerprint 变化。
+
+## 移动插件只读权限摘要
+
+plugin-capabilities.data 可选追加 permissions（title/description 字符串数组），仅由 Host 从
+PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 locale 使用 PC 文案插值。
+包含作者声明的 OAuth scope，不包含凭证、已存配置值或本机路径；不表示已授予运行权限。
+旧控制端忽略该字段，新手机遇到旧 Host 缺字段或格式不完整时明确未提供，不推断无权限。
+空数组仅表示 Host 明确投影的声明为空。工具、about 和 version 使用原字段。
+不增加 channel、allowlist、relay 帧、授权或协议版本，服务端无改动，Mobile 指纹不变。
+
+
+## 移动插件 Details 事实
+
+同一 plugin-capabilities.data 可选追加 details（key/title/value 数组），由本插件 InstalledGhost
+投影 PC 同源版本、作者、签名来源、标识、包含能力与面板声明。签名标签复用 shared ghostTrustLabelKey，
+不传签名文件、批准记录或密钥标识，不用作者自报推断官方。安装目录按用户明确要求单独只读投影本插件
+的 ghost.dir，仅走原同账号、当前 owner 的资源通道；不提供路径写入或文件操作，不扩 IPC 白名单。
+当前 PC 窗口的停靠位置不在此声明投影内，有面板只报告存在，无面板沿用 PC 文案。
+旧 Host 缺字段时新手机仅显示原有 Version 与资源 Identifier，说明其余数据未提供；旧控制端忽略新增字段。
+服务端、relay、协议版本及原生 fingerprint 均不变。

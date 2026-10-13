@@ -50,8 +50,19 @@ const registry = new Map<ImChannelName, ImOrchestrator>();
 
 // Background sends can be the first activity after restart: restore only output
 // routing from the saved channel identity, without creating/resuming a session.
-onChannelTurn(async (session, phase) => {
+onChannelTurn(async (session, phase, source) => {
   if (phase !== 'starting') return;
+  if (source === 'provider-wake') {
+    // No send precedes a harness wake-up: its first event fans out right after this synchronous
+    // call. Only output already wired for a channel can be marked in time; a cold route restored
+    // after the row query would relay from mid-turn, so it is not attempted. Same admission as
+    // below: a logged-out or replaced account, or a disconnected channel, relays nothing.
+    if (captureImAccountGeneration() === null) return;
+    for (const orchestrator of registry.values()) {
+      if (orchestrator.adapter.im.getStatus().kind === 'connected') orchestrator.turnRunner.noteChannelTurnSource(session, source);
+    }
+    return;
+  }
   const generation = captureImAccountGeneration();
   if (generation === null || ![...registry.values()].some((o) => o.adapter.im.getStatus().kind === 'connected')) return;
   const [row] = await getDbClient().drizzle.select().from(sessions)
@@ -69,7 +80,7 @@ onChannelTurn(async (session, phase) => {
   if (userId) orchestrator.turnRunner.attachSessionOutput(session, userId, {
     attached: binding !== null,
     scopeKey: binding?.scopeKey,
-  });
+  }, source);
 });
 
 /**

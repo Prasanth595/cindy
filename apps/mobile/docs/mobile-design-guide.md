@@ -12,6 +12,7 @@
 
 - **iOS 优先**,触控优先,跟随系统 light / dark 自动切换(`useColorScheme`)。
 - **灰度环境**:除品牌 teal(就绪态)、Heart Orange(运行/thinking 态)和已登记的 Beta 渠道红色状态徽标外,界面全是黑白之间的灰阶。不引入任何品牌蓝 / 绿 / 红等装饰色。
+  - 唯一的个性化例外:用户在设置里主动选择的「我的消息气泡颜色」,只染用户自己的消息气泡,默认仍是灰阶;规则见根规范 `DESIGN.md`「Personal message bubble colors」。
 - **圆角走四档阶梯**(与 `src/theme/tokens.ts` 的 `radius` 一致,守护测试拦截阶梯外值):`micro`(4,缩略图内 chip、勾选指示器等微元素)/ `control`(8,卡片内层控件)/ `container`(12,卡片 / 容器)/ `pill`(9999,交互元素)。**禁止**阶梯外中间值(0 / 3 / 6 / 28 等)与字面量圆角。根规范 `docs/design-rules/DESIGN.md` §5 的三档制约束的是桌面 surface;其「Mobile」节明确把 §15.13 / §16 之外的 mobile 布局细节委托给 `apps/mobile` 的实现,mobile 圆角阶梯以 `tokens.ts` 为准。
 - **默认零阴影**:层次靠背景色差 + 1px 边框。2026-09-27 用户明确要求的局部例外：首页主菜单抽屉（含伙伴入口）用右侧容器圆角与柔和投影，颜色走 homeDrawerShadow，外壳承载阴影、内层裁切内容；不扩展到页面卡片或任务列表侧栏，见 DESIGN.md §6。
 - **字重克制**:按角色用 400 / 500 / 600(见 §3「字重与字色按角色搭配」)。**UI chrome 无 700+**。唯一例外是根规范 `docs/design-rules/DESIGN.md` §3「排版豁免登记表」已登记的域——原生 Markdown strong(`src/session/MessageRenderer.tsx` 的 `markdownStrong` → `fontWeight.bold`)与登录品牌画布(`app/(auth)/login.tsx`、`src/components/LoginSkinControls.tsx`、`src/auth/loginSkinLayout.ts`)。这些是用户内容语义与品牌画布,不算 chrome;chrome 本身的上限仍是 600。
@@ -133,7 +134,7 @@
 - 代码、diff、媒体 hint 等「行高即盒高」的紧凑场景(`micro` / `bodySmall` 行高);
 - 长文阅读的 `bodyRelaxed`(24):登录副标题、伙伴记忆。
 
-另有一类**对齐例外**:文字要与相邻图标、按钮或行内正文对齐时,行高跟随被对齐对象(如行内引用 chip、任务标签、消息操作行的时间、生成中状态、伙伴记忆日期)。
+另有一类**对齐例外**:文字要与相邻图标、按钮或行内正文对齐时,行高跟随被对齐对象(如行内引用 chip、任务标签、消息操作行的时间、伙伴记忆日期)。
 
 **单行输入框(TextInput)不设行高**:iOS 上会让占位字与光标偏位。多行编辑区可以配标准行高。登录品牌画布按其登记例外处理。
 
@@ -262,6 +263,8 @@ iOS 新增与改造界面遵循 [iOS 原生界面规范](../../../docs/design-ru
   降透明度;两个伙伴同名时名字后加「· 电脑名」。首次读取慢时显示同几何的骨架行。
 - **聊天顶栏 `ChatIdentityHeader`**:私聊与群聊共用。返回 + 32 标记 + 标题 16/22 600 + 副标题 12/18
   三级色 + 设置;点身份区与设置打开同一份资料 / 设置。私聊副标题保留设备名,离线时前面加「离线 ·」。
+  伙伴 Todo 使用顶栏中的独立待办入口,只在宿主返回该能力链接时显示;复用44px玻璃按钮与原身份布局,
+  不替代设置,不影响群聊,不新增手机例行任务管理。
 - **卡片外壳**:`surfaceElevated` 底 + 1px `border` + `radius.container` + 内边距 16。眉题 13/18 medium 二级色,
   标题 16/22 medium,状态行 13/18 二级色;只有运行中(`statusAccent` 呼吸)与失败(`statusError`)带颜色。
 - **卡片按钮 `CompanionCardButton`**:高 38(hitSlop 补到 44)、pill、15/20 medium,**文字始终居中**;一行里等宽
