@@ -15,6 +15,7 @@ import {
   getCachedDeviceProviders,
   prefetchDeviceProviders,
   subscribeDeviceProviders,
+  type DeviceProvidersPayload,
 } from './useDeviceProviders';
 
 export interface DeviceProvidersSnapshot {
@@ -31,16 +32,27 @@ export function useDevicesProviders(
   const idsKey = deviceIds.join('\n');
   const [version, setVersion] = useState(0);
   const errorsRef = useRef(new Map<string, string>());
+  // Display only: the shared cache still invalidates immediately. Only catalog
+  // refreshes may retain rows; disconnect/revocation evictions and errors clear them.
+  const displayRef = useRef(new Map<string, DeviceProvidersPayload>());
 
   useEffect(() => {
+    const ids = idsKey ? idsKey.split('\n') : [];
+    for (const id of displayRef.current.keys()) {
+      if (!ids.includes(id)) displayRef.current.delete(id);
+    }
     if (!idsKey) return;
-    const ids = idsKey.split('\n');
     let cancelled = false;
     const bump = () => {
       if (!cancelled) setVersion((value) => value + 1);
     };
     const unsubscribes = ids.map((deviceId) =>
       subscribeDeviceProviders(deviceId, (event) => {
+        if (event.status === 'ready') displayRef.current.set(deviceId, event);
+        if (event.status === 'error'
+          || (event.status === 'loading' && !event.retainDisplaySnapshot)) {
+          displayRef.current.delete(deviceId);
+        }
         if (event.status === 'error') errorsRef.current.set(deviceId, event.error);
         else errorsRef.current.delete(deviceId);
         bump();
@@ -64,11 +76,13 @@ export function useDevicesProviders(
     if (!idsKey) return result;
     for (const deviceId of idsKey.split('\n')) {
       const cached = getCachedDeviceProviders(deviceId);
+      if (cached) displayRef.current.set(deviceId, cached);
+      const display = cached ?? displayRef.current.get(deviceId);
       const error = cached ? null : (errorsRef.current.get(deviceId) ?? null);
       result.set(deviceId, {
-        providers: cached?.providers ?? [],
-        ...(cached?.modelVisibilityOverrides !== undefined
-          ? { modelVisibilityOverrides: cached.modelVisibilityOverrides }
+        providers: display?.providers ?? [],
+        ...(display?.modelVisibilityOverrides !== undefined
+          ? { modelVisibilityOverrides: display.modelVisibilityOverrides }
           : {}),
         loading: !cached && error === null,
         error,
