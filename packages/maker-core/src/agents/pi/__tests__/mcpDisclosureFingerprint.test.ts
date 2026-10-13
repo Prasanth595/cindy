@@ -43,13 +43,20 @@ function loadGateway(options: {
   writeFails?: boolean;
   /** 磁盘上已有内容（用于多实例合并场景），优先于 stored。 */
   onDisk?: DisclosedFile | null;
+  /** 预先存在的锁文件持锁 pid；777 = 活进程，999 = 已退出进程。 */
+  lockOwner?: number;
 } = {}) {
   const writes: DisclosedFile[] = [];
   const renames: string[] = [];
   const warnings: string[] = [];
   const requests: unknown[] = [];
   const disk: { value: DisclosedFile | null } = { value: options.onDisk ?? options.stored ?? null };
-  let lockTaken = false;
+  const alivePids = new Set<number>([4242, 777]);
+  // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入。
+  // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入；null = 不存在。
+  const lockFile: { value: string | null } = { value: null };
+  if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
+  const externalWrite = (value: DisclosedFile) => { disk.value = value; };
 
   const code = ts.transpileModule(
     `${GATEWAY_SOURCE}\n(globalThis as any).CindyMcpGateway = CindyMcpGateway;`,
@@ -64,6 +71,13 @@ function loadGateway(options: {
         CINDY_PI_PERMISSION_FILE: '/runtime/perm-s1.json',
         CINDY_PI_SESSION_ID: 's1',
       },
+      kill: (pid: number, signal: number) => {
+        if (alivePids.has(pid)) {
+          if (signal !== 0) alivePids.delete(pid);
+          return;
+        }
+        throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+      },
     },
     path: {
       join: (...parts: string[]) => parts.join('/'),
@@ -71,29 +85,30 @@ function loadGateway(options: {
     },
     readFileSync: (file: string) => {
       if (file.endsWith('.lock')) {
-        if (lockTaken) throw Object.assign(new Error('locked'), { code: 'EEXIST' });
-        return '';
+        if (lockFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return lockFile.value;
       }
       if (disk.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
       return JSON.stringify(disk.value);
     },
     writeFileSync: (file: string, body: string) => {
       if (options.writeFails) throw Object.assign(new Error('denied'), { code: 'EACCES' });
-      if (file.endsWith('.tmp')) {
-        disk.value = JSON.parse(body) as DisclosedFile;
-        writes.push(disk.value);
-        return;
-      }
       if (file.endsWith('.lock')) {
-        lockTaken = true;
+        lockFile.value = body; // 记录持锁 pid
         return;
       }
       disk.value = JSON.parse(body) as DisclosedFile;
       writes.push(disk.value);
     },
     renameSync: (from: string, to: string) => { renames.push(`${from} -> ${to}`); },
-    rmSync: () => { lockTaken = false; },
-    openSync: () => 7,
+    rmSync: (file: string) => { if (file.endsWith('.lock')) lockFile.value = null; },
+    openSync: (file: string, flags: string) => {
+      if (flags === 'wx' && lockFile.value !== null) {
+        throw Object.assign(new Error('locked'), { code: 'EEXIST' });
+      }
+      if (flags === 'wx') lockFile.value = '';
+      return 7;
+    },
     closeSync: () => undefined,
     createHash,
     fetch: async (_url: string, init: { body: string } & Record<string, unknown>) => {
@@ -139,6 +154,7 @@ function loadGateway(options: {
   return {
     gateway,
     httpClient,
+    externalWrite,
     writes,
     renames,
     warnings,
@@ -206,19 +222,38 @@ describe('MCP gateway schema disclosure', () => {
     expect(disk.value?.entries['cindy_orca\u0000send_to_worker']).toBe(fingerprint(TOOL_CHANGED));
   });
 
-  it('merges another instance record instead of overwriting it', async () => {
-    const otherKey = 'cindy_other\u0000other_tool';
+  it('merges a record another instance wrote after startup instead of overwriting it', async () => {
+    // 关键：另一实例的写入发生在本实例**构造之后**，本实例内存里没有这条记录，
+    // 因此只有落盘时的读-合并才能保住它（删掉合并循环这条测试就会红）。
+    const { call, disk, renames, externalWrite } = loadGateway();
+    const otherKey = 'cindy_other other_tool';
     const otherFingerprint = fingerprint({ name: 'other_tool', description: '别的工具' });
-    const onDisk: DisclosedFile = { version: 1, entries: { [otherKey]: otherFingerprint } };
-    const { call, disk, renames } = loadGateway({ onDisk });
+    externalWrite({ version: 1, entries: { [otherKey]: otherFingerprint } });
 
     await call();
 
     expect(disk.value?.entries[otherKey]).toBe(otherFingerprint);
-    expect(disk.value?.entries['cindy_orca\u0000send_to_worker']).toBe(fingerprint(TOOL));
+    expect(disk.value?.entries['cindy_orca send_to_worker']).toBe(fingerprint(TOOL));
     // 原子替换：先写 tmp 再 rename
     expect(renames).toHaveLength(1);
     expect(renames[0]).toContain('.tmp');
+  });
+
+  it('recovers a lock left behind by a crashed instance and persists', async () => {
+    // 持锁 pid 999 已退出 → 锁必须被回收，本进程仍能落盘。
+    const { call, disk } = loadGateway({ lockOwner: 999 });
+    await call();
+    expect(disk.value?.entries['cindy_orca send_to_worker']).toBe(fingerprint(TOOL));
+  });
+
+  it('skips persisting while another live instance holds the lock, without breaking the gate', async () => {
+    const { gateway, call, requests, disk } = loadGateway({ lockOwner: 777 });
+    await call();
+    expect(requests).toHaveLength(1);
+    expect(disk.value).toBeNull();
+    // 本进程内存里的披露已生效
+    expect((gateway as unknown as { isSchemaDisclosed(c: unknown): boolean })
+      .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
   });
 
   it('treats a missing or corrupt disclosure file as undisclosed and still executes', async () => {
