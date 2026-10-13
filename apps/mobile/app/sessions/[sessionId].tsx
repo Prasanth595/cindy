@@ -6320,19 +6320,20 @@ export default function SessionScreen() {
       else if (options.draftOverride !== undefined) setComposerDraft(options.draftOverride);
       return;
     }
-    // 需要远端会话的命令在会话建成前必须挡住(review P1)。
+    // 需要远端会话的命令在会话建成且可连接、身份已核对后执行。
     //
     // 命令走的是下方「豁免 outbox」的原路径:/context 直接向被控端取用量、/learn 直接
     // 打蒸馏管线。合成行此刻在被控端还不存在,执行的唯一结果是把草稿消费掉、再糊一张
     // 错误卡。排队也不成立——outbox 的派发动作是「enqueue 一条消息」,命令原样入队
     // agent 只会当普通文本忽略。所以挡住 + 明说:草稿此刻还没被乐观清空(清空在下面
-    // 几行),原文留在输入框,几秒后重试即可。纯本地卡不受影响(判据见
+    // 几行),原文留在输入框,连接恢复且任务就绪后可重试。纯本地卡不受影响(判据见
     // commandNeedsRemoteSession)。
     if (
       commandNeedsRemoteSession(earlyLocalCommand, earlyDesktopCommand)
-      && isRemoteSessionMissing(readSessionRowNow())
+      && (isRemoteSessionMissing(readSessionRowNow()) || connectionDispatchBlockedAtSend || !companionEntry.ready)
     ) {
-      setError(t('session.screen.commandWaitsForSession'));
+      setError(t(isRemoteSessionMissing(readSessionRowNow())
+        ? 'session.screen.commandWaitsForSession' : 'session.screen.sessionNotSyncedRetry'));
       sendInFlightRef.current = false;
       setSending(false);
       return;

@@ -51,11 +51,17 @@ export function useTeammateRoster(enabled = true) {
     const { value: snapshot } = await startBoundedStartupRead(readRemoteResourceSnapshot(user?.id ?? ''), { home: [], items: {}, read: {} }).initial;
     if (!current()) return;
     let collections: RemoteHomeCollection[] = lastCollections.current.binding === binding ? lastCollections.current.home : snapshot.home;
-    if (lastCollections.current.binding !== binding && !collections.some(collection => collection.id === TEAMMATE_COLLECTION_ID)) {
+    if (lastCollections.current.binding !== binding) {
       const cachedItems = snapshot.items[TEAMMATE_COLLECTION_ID]?.length ? snapshot.items[TEAMMATE_COLLECTION_ID]
         : readRemoteCollectionCache(binding, TEAMMATE_COLLECTION_ID);
-      const hosts = new Map(cachedItems.map(row => [row.host.deviceId, row.host]));
-      if (hosts.size) collections = [...collections, { id: TEAMMATE_COLLECTION_ID, resourceKind: 'bot', placement: 'home-scope', title: '', targets: [...hosts.values()] }];
+      const previous = collections.find(collection => collection.id === TEAMMATE_COLLECTION_ID && collection.resourceKind === 'bot');
+      // Home capabilities and roster rows are saved independently. Until the
+      // directory/manifest answers, both caches are navigation hints.
+      const hosts = new Map([...(previous?.targets ?? []), ...cachedItems.map(row => row.host)]
+        .map(host => [host.deviceId, host]));
+      if (hosts.size) collections = previous
+        ? collections.map(collection => collection === previous ? { ...collection, targets: [...hosts.values()] } : collection)
+        : [...collections, { id: TEAMMATE_COLLECTION_ID, resourceKind: 'bot', placement: 'home-scope', title: '', targets: [...hosts.values()] }];
     }
     const publish = (home: RemoteHomeCollection[], loading: boolean) => {
       if (!current()) return;

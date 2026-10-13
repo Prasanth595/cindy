@@ -5,6 +5,8 @@ import ts from 'typescript';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { commandNeedsRemoteSession, parseMobileLocalSystemCommand } from '@/session/systemCard';
+import { parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
 
 const h = vi.hoisted(() => ({
   get: vi.fn(),
@@ -363,4 +365,33 @@ it.each(['ACCESS_REVOKED', 'REMOTE_DISABLED', 'NOT_FOUND'])('closes local queuin
   await render(); expect(result.canCompose).toBe(false); expect(result.ready).toBe(false);
   await act(async () => vi.advanceTimersByTimeAsync(60000));
   expect(h.get).toHaveBeenCalledTimes(1);
+});
+
+it.each(['/context', '/learn keep this', '/help', 'keep this message'])('preserves offline command drafts without blocking local text: %s', draft => {
+  let guard: ts.IfStatement | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isIfStatement(node) && node.expression.getText(screen).includes('commandNeedsRemoteSession(')) guard = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(screen);
+  expect(guard).toBeDefined();
+  const error = vi.fn();
+  const consume = vi.fn();
+  const run = new Function('args', `
+    const { earlyLocalCommand, earlyDesktopCommand, commandNeedsRemoteSession, connectionDispatchBlockedAtSend,
+      companionEntry, setError, consume } = args;
+    const readSessionRowNow = () => ({ id: 'existing' });
+    const isRemoteSessionMissing = () => false;
+    const t = key => key, sendInFlightRef = { current: true }, setSending = () => {};
+    ${guard!.getText(screen)}
+    consume();
+  `);
+  for (const [ready, blocked] of [[false, false], [true, true]]) {
+    error.mockClear(); consume.mockClear();
+    run({ earlyLocalCommand: parseMobileLocalSystemCommand(draft), earlyDesktopCommand: parseMobileDesktopCommand(draft),
+      commandNeedsRemoteSession, connectionDispatchBlockedAtSend: blocked, companionEntry: { ready }, setError: error, consume });
+    const remote = draft.startsWith('/context') || draft.startsWith('/learn');
+    expect(consume).toHaveBeenCalledTimes(remote ? 0 : 1);
+    expect(error).toHaveBeenCalledTimes(remote ? 1 : 0);
+  }
 });

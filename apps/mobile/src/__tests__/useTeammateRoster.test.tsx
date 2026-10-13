@@ -194,3 +194,25 @@ it('retains in-memory teammates if the disk capability read stalls', async () =>
   expect(result.items).toEqual([cached]);
   expect(result.loading).toBe(false);
 });
+
+it('keeps every cached roster host in the list targets while a partial home manifest catches up', async () => {
+  const hosts = ['old', 'new'].map(deviceId => ({ deviceId, deviceName: deviceId }));
+  const rows = hosts.map(host => ({ key: host.deviceId, host, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: host.deviceId }, revision: '1', display: { title: host.deviceId }, links: [],
+  } }));
+  h.snapshot.mockResolvedValue({ home: [{ id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', targets: [hosts[0]] }],
+    items: { teammates: rows }, read: {} });
+  h.list.items = rows;
+  let finish!: (value: unknown) => void;
+  h.link.invoke.mockImplementation(async device => device === 'old'
+    ? { protocolVersion: 1, collections: [{ id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope' }] }
+    : new Promise(resolve => { finish = resolve; }));
+  await render();
+  // The real list reader may persist a successful old-host shard now. It must
+  // still receive the new host as a target so it cannot prune its cached rows.
+  expect(result.targets.map(host => host.deviceId)).toEqual(['old', 'new']);
+  expect(result.items).toEqual(rows);
+  await act(async () => finish({ protocolVersion: 1, collections: [] }));
+  expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
+  expect(result.items).toEqual([rows[0]]);
+});
