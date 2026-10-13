@@ -280,4 +280,41 @@ describe('sendToSessionLock', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(hasSendToSessionLock('s-bg')).toBe(false);
   });
+
+  it('same-chain reentry still passes when another acquisition is queued behind the holder', async () => {
+    // sendToSessionLocks 存的是队尾：持锁期间到达的另一个请求会立即把自己的
+    // 条目装成队尾。归属判定不能读锁表，否则持锁者的嵌套调用会被排到这个
+    // 等待者之后，重新变成自锁（外层等嵌套、等待者等外层 → 300s bail）。
+    let innerRan = false;
+    let queuedAcquired = false;
+    let releaseQueued!: () => void;
+    const queuedHolding = new Promise<void>((resolve) => {
+      releaseQueued = resolve;
+    });
+    let queuedDone!: Promise<void>;
+
+    await withSendToSessionLock('s-queue', async () => {
+      // 另一个请求（lease 形态，不参与重入放行）在持锁期间开始排队。
+      queuedDone = (async () => {
+        const release = await acquireSendToSessionLock('s-queue');
+        queuedAcquired = true;
+        await queuedHolding;
+        release();
+      })();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queuedAcquired).toBe(false);
+
+      // 持锁者的同链嵌套必须立即执行，不能排到已排队的请求之后。
+      await withSendToSessionLock('s-queue', async () => {
+        innerRan = true;
+      });
+      expect(innerRan).toBe(true);
+    });
+
+    // 外层释放后，排队请求才取得锁。
+    releaseQueued();
+    await queuedDone;
+    expect(innerRan).toBe(true);
+    expect(queuedAcquired).toBe(true);
+  });
 });

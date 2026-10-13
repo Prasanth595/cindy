@@ -3,14 +3,14 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const log = createLogger('maker-ipc:send-to-session-lock');
 
-// 当前异步链已持有的锁键记录。ALS 沿 await/回调自动传播，用于识别同链重入：
+// 当前异步链已持有的锁记录。ALS 沿 await/回调自动传播，用于识别同链重入：
 // 锁临界区内部再触发一次取同把锁的调用（如 orca 派发排水队列时
 // drain → sendToAgentAccepted）若照常排队，会等自己释放 = 自锁到 300s bail。
-// 记录绑定到实际安装的锁条目：未 await 的后台任务会继承 ALS 上下文，但外层
-// 释放（或条目被 bail 结算）后记录即失效，它必须重新排队而不是绕过新持有者。
+// 记录随临界区生命周期失效：未 await 的后台任务会继承 ALS 上下文，但外层
+// 释放（或条目被 bail 结算）后 active=false，它必须重新排队而不是绕过新持有者。
 interface HeldLockRecord {
-  /** 本链安装的锁条目；与锁表当前值不一致即已失效。 */
-  entry: Promise<unknown> | undefined;
+  /** 本次获取实际安装的锁条目；仅用于在条目结算时标记失效，不用于判断归属。 */
+  entry: Promise<unknown>;
   active: boolean;
 }
 
@@ -111,6 +111,10 @@ export function hasSendToSessionLock(sessionId: string): boolean {
  * Install `run` as the session's current lock entry and return a promise that
  * mirrors `run`'s real settlement for the caller. The stored map entry settles
  * when `run` settles OR when the bail timeout fires, whichever comes first.
+ *
+ * Returns the **entry** this call installed (not the map tail): a later waiter's
+ * `install` overwrites the map immediately, so ownership checks must use the
+ * entry captured here instead of re-reading `sendToSessionLocks`.
  */
 function installSendToSessionLockEntry(
   sessionId: string,
@@ -170,7 +174,7 @@ function installSendToSessionLockEntry(
     }
   });
   sendToSessionLocks.set(sessionId, entry);
-  return run;
+  return entry;
 }
 
 /**
@@ -182,11 +186,12 @@ function installSendToSessionLockEntry(
  * a watchdog fires, so callers can identify the current await without logging
  * task content. Keep the getter alive until release, including lease handoffs.
  */
-export async function acquireSendToSessionLock(
+/** Lease form plus the entry this acquisition actually installed. */
+async function acquireSendToSessionLockEntry(
   sessionId: string,
   restartToken?: symbol,
   getStage?: () => string | undefined,
-): Promise<() => void> {
+): Promise<{ release: () => void; entry: Promise<unknown> }> {
   assertSessionNotRestarting(sessionId, restartToken);
   const previous = sendToSessionLocks.get(sessionId);
   const waitPrevious = previous ? previous.catch(() => undefined) : Promise.resolve();
@@ -195,7 +200,7 @@ export async function acquireSendToSessionLock(
     releaseGate = resolve;
   });
   const run = waitPrevious.then(() => gate);
-  installSendToSessionLockEntry(sessionId, run, getStage);
+  const entry = installSendToSessionLockEntry(sessionId, run, getStage);
   try {
     await waitForSendToSessionLock(sessionId, previous, restartToken);
   } catch (error) {
@@ -204,11 +209,23 @@ export async function acquireSendToSessionLock(
     throw error;
   }
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    releaseGate();
+  return {
+    entry,
+    release: () => {
+      if (released) return;
+      released = true;
+      releaseGate();
+    },
   };
+}
+
+export async function acquireSendToSessionLock(
+  sessionId: string,
+  restartToken?: symbol,
+  getStage?: () => string | undefined,
+): Promise<() => void> {
+  const { release } = await acquireSendToSessionLockEntry(sessionId, restartToken, getStage);
+  return release;
 }
 
 /** Serialize every local send / runtime release / route mutation for one session. */
@@ -219,22 +236,20 @@ export async function withSendToSessionLock<T>(
 ): Promise<T> {
   // 同异步链重入直接放行：同一条链是天然串行的，与自身不存在竞争；
   // 不放行则嵌套获取会等自己持有的条目结算，自锁到 bail。跨链互斥不变。
-  // 仅当本链的持锁记录仍有效（未释放/未结算，且锁表仍指向本条目）时放行；
-  // 继承上下文的后台任务在锁已易主后落到下方正常排队。
+  // 归属只看「本链临界区是否仍在进行」：外层 finally / 条目结算（含 300s
+  // bail 强制结算）都把记录置为失效，继承上下文的后台任务因此落回正常排队。
+  // 不能用 `sendToSessionLocks.get(sessionId)` 判断归属——那是队尾，后来的
+  // 等待者一排队就会换掉它（会让持锁者的嵌套调用排到等待者后面，又成自锁）。
   const held = heldLockKeys.getStore()?.get(sessionId);
-  if (held?.active && held.entry !== undefined && sendToSessionLocks.get(sessionId) === held.entry) {
-    return task();
-  }
-  const release = await acquireSendToSessionLock(sessionId, undefined, getStage);
-  const record: HeldLockRecord = { entry: sendToSessionLocks.get(sessionId), active: true };
-  if (record.entry) {
-    // 条目结算（含 300s bail 强制结算）即视为不再持有。
-    void record.entry.then(() => {
-      record.active = false;
-    }, () => {
-      record.active = false;
-    });
-  }
+  if (held?.active) return task();
+  const { release, entry } = await acquireSendToSessionLockEntry(sessionId, undefined, getStage);
+  const record: HeldLockRecord = { entry, active: true };
+  // 条目结算（含 bail 强制结算）即视为不再持有：此时嵌套调用必须重新排队。
+  void entry.then(() => {
+    record.active = false;
+  }, () => {
+    record.active = false;
+  });
   const nextHeld = new Map(heldLockKeys.getStore() ?? []);
   nextHeld.set(sessionId, record);
   try {
