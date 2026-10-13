@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   auth: { user: { id: 'owner' }, accountGeneration: 1 }, revoked: new Set<string>(),
+  snapshot: vi.fn(),
   translation: { t: (key: string) => key, i18n: { language: 'en' } },
   link: { status: 'online', connectionEpoch: 1, presenceVersion: 1, invoke: vi.fn(), openLink: vi.fn(), readDeviceList: vi.fn() },
   list: { items: [] as import('@/device-link/remoteResources').HostedRemoteCollectionItem[], loading: false, refreshing: false, error: null, isOnline: vi.fn(() => true), refresh: vi.fn() },
@@ -17,7 +18,7 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => h.link 
 vi.mock('@/device-link/devices', () => ({ toDeviceListItems: (devices: unknown) => devices }));
 vi.mock('@/device-link/revokedDevicesStore', () => ({ useRevokedDevices: () => h.revoked }));
 vi.mock('@/device-link/remoteStatus', async () => ({ ...await vi.importActual<typeof import('@/device-link/remoteStatus')>('@/device-link/remoteStatus'), formatRemoteError: String }));
-vi.mock('@/device-link/remoteResourceCache', () => ({ cacheRemoteResourceHome: vi.fn(), readRemoteResourceSnapshot: async () => ({ home: [], items: {}, read: {} }) }));
+vi.mock('@/device-link/remoteResourceCache', () => ({ cacheRemoteResourceHome: vi.fn(), readRemoteResourceSnapshot: h.snapshot }));
 vi.mock('@/session/useRemoteResourceList', () => ({ useRemoteResourceList: () => h.list }));
 import { useTeammateRoster } from '@/session/useTeammateRoster';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -28,10 +29,11 @@ async function render() { root ??= createRoot(document.createElement('div')); aw
 beforeEach(() => {
   vi.clearAllMocks(); h.list.items = []; h.revoked.clear(); h.link.openLink.mockResolvedValue(undefined); h.link.status = 'online'; h.link.connectionEpoch = 1; h.auth.accountGeneration = 1;
   h.list.isOnline.mockReturnValue(true);
+  h.snapshot.mockResolvedValue({ home: [], items: {}, read: {} });
   h.link.readDeviceList.mockResolvedValue({ devices: ['old', 'new'].map(deviceId => ({ device: { deviceId, name: deviceId }, canOpen: true, state: 'online' })) });
   h.link.invoke.mockImplementation(async (deviceId) => ({ protocolVersion: 1, collections: [{ id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', ...(deviceId === 'new' ? { actions: [{ id: 'open-create', label: 'Create' }] } : {}) }] }));
 });
-afterEach(() => { act(() => root?.unmount()); root = undefined; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); });
 it('offers only real online hosts advertising create, including a host with an empty roster', async () => {
   await render();
   expect(result.targets.map(host => host.deviceId)).toEqual(['old', 'new']);
@@ -83,6 +85,7 @@ it('shows cached teammates while host discovery is pending, then removes revoked
     ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
   } }];
   h.link.readDeviceList.mockReturnValue(new Promise(() => {}));
+  h.snapshot.mockResolvedValue({ home: [], items: { teammates: h.list.items }, read: {} });
   h.list.isOnline.mockReturnValue(false);
   await render();
   expect(result.items).toHaveLength(1); expect(result.loading).toBe(false);
@@ -120,4 +123,74 @@ it('publishes a discovered teammate host without waiting for an unrelated manife
   await act(async () => finish({ protocolVersion: 1, collections: [] }));
   expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
   expect(result.authoritative).toBe(true);
+});
+
+it('retries only failed manifests while preserving healthy capabilities and stable list targets', async () => {
+  vi.useFakeTimers();
+  h.link.invoke.mockImplementation(async device => {
+    if (device === 'new') throw new Error('INVOKE_TIMEOUT');
+    return { protocolVersion: 1, collections: [
+      { id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', actions: [{ id: 'open-create', label: 'Create' }] },
+      { id: 'bot-groups', title: 'Groups', resourceKind: 'bot-group' },
+    ] };
+  });
+  await render();
+  await act(async () => vi.advanceTimersByTimeAsync(7750));
+  const stableTargets = result.targets;
+  expect(h.link.openLink.mock.calls.filter(([device]) => device === 'old')).toHaveLength(1);
+  const before = h.link.openLink.mock.calls.length;
+  h.link.invoke.mockImplementation(async device => device === 'new'
+    ? { protocolVersion: 1, collections: [] }
+    : { protocolVersion: 1, collections: [
+      { id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', actions: [{ id: 'open-create', label: 'Create' }] },
+      { id: 'bot-groups', title: 'Groups', resourceKind: 'bot-group' },
+    ] });
+  await act(async () => vi.advanceTimersByTimeAsync(900));
+  expect(h.link.openLink.mock.calls.slice(before)).toEqual([['new']]);
+  expect(result.targets).toBe(stableTargets);
+  expect(h.link.openLink.mock.calls.filter(([device]) => device === 'old')).toHaveLength(1);
+  expect(result.createTargets.map(host => host.deviceId)).toEqual(['old']);
+  expect(result.groupTargets.map(host => host.deviceId)).toEqual(['old']);
+  const recovered = h.link.openLink.mock.calls.length;
+  await act(async () => vi.advanceTimersByTimeAsync(60000));
+  expect(h.link.openLink).toHaveBeenCalledTimes(recovered);
+});
+
+it('does not restore a removed capability from cached rows on a sibling retry', async () => {
+  vi.useFakeTimers();
+  const cached = { key: 'old:bot', host: { deviceId: 'old', deviceName: 'Old' }, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
+  } };
+  h.snapshot.mockResolvedValue({ home: [], items: { teammates: [cached] }, read: {} });
+  h.list.items = [cached];
+  h.link.invoke.mockImplementation(async device => {
+    if (device === 'new') throw new Error('INVOKE_TIMEOUT');
+    return { protocolVersion: 1, collections: [] };
+  });
+  await render();
+  await act(async () => vi.advanceTimersByTimeAsync(7750));
+  expect(result.targets).toEqual([]); expect(result.items).toEqual([]);
+  const before = h.link.openLink.mock.calls.length;
+  h.link.invoke.mockResolvedValue({ protocolVersion: 1, collections: [] });
+  await act(async () => vi.advanceTimersByTimeAsync(900));
+  expect(h.link.openLink.mock.calls.slice(before)).toEqual([['new']]);
+  expect(result.targets).toEqual([]); expect(result.items).toEqual([]);
+});
+
+it('retains in-memory teammates if the disk capability read stalls', async () => {
+  vi.useFakeTimers();
+  const { readRemoteCollectionCache, writeRemoteCollectionCache } = await import('@/device-link/remoteResourceAvailability');
+  const cached = { key: 'old:bot', host: { deviceId: 'old', deviceName: 'Old' }, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
+  } };
+  readRemoteCollectionCache('owner:1', 'teammates');
+  writeRemoteCollectionCache('owner:1', 'teammates', [cached]);
+  h.list.items = [cached];
+  h.snapshot.mockReturnValue(new Promise(() => {}));
+  h.link.readDeviceList.mockReturnValue(new Promise(() => {}));
+  await render();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
+  expect(result.items).toEqual([cached]);
+  expect(result.loading).toBe(false);
 });

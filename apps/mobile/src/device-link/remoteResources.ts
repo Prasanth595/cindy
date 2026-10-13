@@ -332,7 +332,9 @@ export async function discoverRemoteHomeCollections(
     onProgress?.(merge(discovered));
     return { target, manifest };
   }));
-  if (targets.length > 0 && !discovered.some(entry => entry.manifest?.collections.length)) {
+  const hasManifestReply = settled.some((result, index) => result.status === 'fulfilled'
+    && result.value.manifest !== null && !targets[index].offline);
+  if (targets.length > 0 && !hasManifestReply && !discovered.some(entry => entry.manifest?.collections.length)) {
     const failure = settled.find((result) => result.status === 'rejected');
     if (failure && failure.status === 'rejected') throw failure.reason;
   }

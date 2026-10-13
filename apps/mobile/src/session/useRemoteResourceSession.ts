@@ -39,7 +39,9 @@ export function useRemoteResourceSession(deviceId: string, deviceName: string, s
   const cached = readRemoteCollectionCache(`${user?.id ?? ''}:${accountGeneration}`, collectionId)
     .find(row => row.host.deviceId === deviceId && row.item.ref.id === resourceId && row.item.ref.kind === resourceKind)?.item;
   const resource = display?.identity === identity ? display.resource : cached ?? null;
-  const stage = (resource?.blocks?.find(block => block.id === 'invitation' && block.primitive === 'status')?.data as { stage?: string } | undefined)?.stage;
+  const stage = (display?.identity === identity
+    ? display.resource.blocks?.find(block => block.id === 'invitation' && block.primitive === 'status')?.data as { stage?: string } | undefined
+    : undefined)?.stage;
   const cachedTarget = resource?.links.find(link => link.rel === 'conversation')?.target;
   // Local editing and durable queuing do not confer permission to dispatch.
   const canCompose = !required || (!!resource && cachedTarget?.kind === 'session' && cachedTarget.sessionId === sessionId
