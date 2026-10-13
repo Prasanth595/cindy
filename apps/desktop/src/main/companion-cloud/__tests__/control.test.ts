@@ -400,6 +400,25 @@ describe('installation guard', () => {
     expect(mine.calls.filter(call => call.method === 'PATCH')).toEqual([expect.objectContaining({ data: expect.objectContaining({ disabled: true }) })]);
   });
 
+  it('claims a companion just handed here before retiring it, and leaves it to the installation that won', async () => {
+    const handed = guarded({ installationId: 'install-x', deviceId: 'laptop' });
+    await handed.runtime.retire('bot_mia');
+    const order = handed.calls.map(call => call.method === 'POST' ? `POST ${(call.data as { key?: string }).key}` : `${call.method} ${call.route}`);
+    expect(order.indexOf('POST companion.install.v1')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('POST companion.install.v1')).toBeLessThan(order.indexOf('PATCH /actors/actor-1'));
+
+    // The other Cindy on this computer claimed it first: deleting here never disables it.
+    const lost = setup({ home: 'desk', installationId: 'install-a', handler: (route, method) => {
+      if (route === '/preferences' && method === 'GET') return [{ key: 'companion.profile.v1', value: MIA, revision: 1 },
+        { key: 'companion.install.v1', value: { installationId: 'install-x', deviceId: 'laptop' }, revision: 1 }];
+      if (route === '/preferences') throw rejection(409, 'REVISION_CONFLICT', { revision: 2 });
+      return {};
+    } });
+    await lost.runtime.retire('bot_mia');
+    expect(lost.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(lost.state.bot('bot_mia')?.retirePending).toBeUndefined();
+  });
+
   it('claims an unclaimed companion for this installation and then syncs it', async () => {
     const t = guarded(null);
     t.runtime.reconcile([{ id: 'bot_mia', status: 'active' }]);

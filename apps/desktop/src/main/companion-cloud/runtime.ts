@@ -313,9 +313,10 @@ export function startCompanionCloud(input: {
   /** Retire only from the installation that may run it: another Cindy on this computer may own it. */
   async function retireOwned(actor: CompanionRuntimeActor) {
     let owner = installOwner(actor.externalId);
-    // Still unknown (pending, or the check failed): resolve it first; a failure retries later.
-    if (owner === undefined || owner === 'pending') owner = await claimInstall(actor, 'check');
-    if (owner === 'other') {
+    // Not confirmed yet (pending, failed, or just handed here): claim it the way the automatic
+    // take-over does, so only one installation on this computer can win; a failure retries later.
+    if (owner !== 'mine' && owner !== 'other') owner = await claimInstall(actor, 'handed');
+    if (owner !== 'mine') {
       state.update(actor.externalId, actor.id, entry => { delete entry.retirePending; });
       return;
     }
