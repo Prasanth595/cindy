@@ -581,6 +581,8 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
   // 自愈成功时那一轮的 turn 身份：同身份再次到达 = 同一轮的重复终态投递（丢弃）；
   // 新身份 = 重放后的新一轮失败（必须 surface，不能静默吞掉）。
   const healedCompatTurns = new Map<string, { instanceId?: string; generation?: number }>();
+  /** runtime 已经用「已学覆盖」重建过的会话：再失败也不再自动重建，交常规错误面。 */
+  const rebuiltWithLearnedCompat = new Set<string>();
 
   const runRecover = async (
     sessionId: string,
@@ -646,8 +648,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         ) {
           return true;
         }
-        // 已学过（包括用户在别处已修好）→ 不再自动重试，交常规错误面。
-        if (deps.readPiNativeCompatOverride?.(providerId, modelId)) {
+        const learnedBefore = deps.readPiNativeCompatOverride?.(providerId, modelId) ?? false;
+        // 磁盘上已学过（别的会话先学到、或用户在别处修好）时，还要区分「已学过」和
+        // 「当前 runtime 已应用」：启动时 models.json 里没有该覆盖的旧 runtime 仍然会一直
+        // 400，普通发送不会刷新模型配置，所以这里要允许它应用覆盖并重建一次。已经用覆盖
+        // 重建过的 runtime 再收到同一类 400 说明覆盖没解决问题，直接交常规错误面，绝不
+        // 反复 close/重放。
+        if (learnedBefore && rebuiltWithLearnedCompat.has(sessionId)) {
           return false;
         }
         // 外部派单方（Orca / scheduler / IM / ghost setup）拥有自己的重试语义：不能代它
@@ -659,8 +666,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         // 请求会命中闩锁直接放弃，永久停在旧 models.json 上反复 400。
         if (live) await deps.closeSession(sessionId);
         signal?.throwIfAborted();
-        const learned = await deps.recordPiNativeCompatOverride(providerId, modelId, compat);
+        const learned =
+          learnedBefore || (await deps.recordPiNativeCompatOverride(providerId, modelId, compat));
         signal?.throwIfAborted();
+        if (learned) {
+          // 关掉之后，该会话下一次发送／重放就会用带覆盖的 models.json 重建 runtime。
+          rebuiltWithLearnedCompat.add(sessionId);
+        }
         if (!learned) {
           // 没学到就不重放：否则闩锁永远为假，同一个 400 会被无上限重放。
           deps.log.warn('pi provider compat was not persisted; leaving the error to surface', {

@@ -1173,18 +1173,59 @@ describe('createContextOverflowRollover', () => {
       expect(deps.replayUserMessage).not.toHaveBeenCalled();
     });
 
-    it('does not retry a provider/model that already learned the fix', async () => {
-      const deps = makePiDeps([msg('user', '再跑一遍', 'u2', 1)]);
+    it('applies an already-learned override to a runtime that never had it', async () => {
+      // 同一 provider/model 的另一个会话先学到并重建；本会话启动时的 models.json 还没
+      // 有该覆盖，普通发送也不会刷新模型配置 —— 这里必须让它应用覆盖并重建一次。
+      const deps = makePiDeps([
+        msg('user', '继续修这个 bug', 'u1', 1),
+        msg('assistant', '改完了，正在跑测试', 'a1', 2),
+        msg('user', '再跑一遍', 'u2', 3),
+      ]);
       deps.readPiNativeCompatOverride.mockReturnValue({ supportsLongCacheRetention: false });
       const rollover = createContextOverflowRollover(deps);
       rollover.claim('s1');
 
       await expect(
         rollover.tryRecover('s1', { reason: 'unsupported-request-option', message: rejection }),
-      ).resolves.toBe(false);
+      ).resolves.toBe(true);
+
       expect(deps.recordPiNativeCompatOverride).not.toHaveBeenCalled();
-      expect(deps.replayUserMessage).not.toHaveBeenCalled();
-      expect(deps.onRebuilt).not.toHaveBeenCalled();
+      expect(deps.closeSession).toHaveBeenCalledWith('s1');
+      expect(deps.replayUserMessage).toHaveBeenCalledWith(
+        's1',
+        '再跑一遍',
+        undefined,
+        expect.objectContaining({ continueFromHistory: true, sourceUserClientId: 'u2' }),
+      );
+      expect(deps.onRebuilt).toHaveBeenCalledWith('s1');
+    });
+
+    it('does not rebuild a runtime that already rebuilt with the learned fix', async () => {
+      const deps = makePiDeps([
+        msg('user', '继续修这个 bug', 'u1', 1),
+        msg('assistant', '改完了，正在跑测试', 'a1', 2),
+        msg('user', '再跑一遍', 'u2', 3),
+      ]);
+      deps.readPiNativeCompatOverride.mockReturnValue({ supportsLongCacheRetention: false });
+      const rollover = createContextOverflowRollover(deps);
+      rollover.claim('s1');
+      const failure = { reason: 'unsupported-request-option', message: rejection };
+
+      // 第一次：旧 runtime 应用磁盘上的覆盖并重建、重放。
+      await expect(
+        rollover.tryRecover('s1', failure, { instanceId: 'i1', generation: 1 }),
+      ).resolves.toBe(true);
+      expect(deps.closeSession).toHaveBeenCalledTimes(1);
+      expect(deps.replayUserMessage).toHaveBeenCalledTimes(1);
+
+      // 重建后的新一轮仍然收到同一类 400：覆盖没解决问题，直接交常规错误面，
+      // 绝不再次 close/重放（否则同一条 400 会无限重建）。
+      await expect(
+        rollover.tryRecover('s1', failure, { instanceId: 'i2', generation: 2 }),
+      ).resolves.toBe(false);
+      expect(deps.closeSession).toHaveBeenCalledTimes(1);
+      expect(deps.replayUserMessage).toHaveBeenCalledTimes(1);
+      expect(deps.onRebuilt).toHaveBeenCalledTimes(1);
     });
 
     it('learns the fix but does not replay when the plan cannot replay', async () => {
