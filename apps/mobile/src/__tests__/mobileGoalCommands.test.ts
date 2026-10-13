@@ -83,7 +83,7 @@ function existingHarness(args = 'target') {
     maker: { goal: { set: vi.fn(async () => {}), clear: vi.fn(async () => {}), getStatus: vi.fn(async () => ({ status: 'active', objective: 'target' })) } },
     remoteSessionStore: { setGoalStatus: vi.fn(), acquireSessionMessageWork: vi.fn(() => ({ release })), getSessionDeviceId: () => 'host' }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
     setGoalRestore: vi.fn(), router: { setParams: vi.fn() }, composerDocumentRef: { current: initial },
-    params: {}, readRouteParam: () => null,
+    readRouteParam: () => null,
     composerDocumentsEqual: (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b),
     applyComposerDocument: vi.fn(), normalizeComposerDocument, humanizeRemoteError,
     composerDraftHydrated: true, voiceState: 'idle', slashCommandsRef: { current: [] }, queueEditingRef: { current: null },
