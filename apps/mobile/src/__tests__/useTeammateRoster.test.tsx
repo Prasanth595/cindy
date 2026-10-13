@@ -8,14 +8,15 @@ const h = vi.hoisted(() => ({
   link: { status: 'online', connectionEpoch: 1, presenceVersion: 1, invoke: vi.fn(), openLink: vi.fn(), readDeviceList: vi.fn() },
   list: { items: [] as import('@/device-link/remoteResources').HostedRemoteCollectionItem[], loading: false, refreshing: false, error: null, isOnline: vi.fn(() => true), refresh: vi.fn() },
 }));
-vi.mock('react-native', () => ({ AppState: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock('react-native', () => ({ AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } }));
 vi.mock('expo-router', async () => { const { useEffect } = await import('react'); return { useFocusEffect: (effect: any) => useEffect(effect, [effect]) }; });
+vi.mock('@/i18n', () => ({ i18n: { t: (key: string) => key } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => h.translation }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => h.auth }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => h.link }));
 vi.mock('@/device-link/devices', () => ({ toDeviceListItems: (devices: unknown) => devices }));
 vi.mock('@/device-link/revokedDevicesStore', () => ({ useRevokedDevices: () => h.revoked }));
-vi.mock('@/device-link/remoteStatus', () => ({ formatRemoteError: String }));
+vi.mock('@/device-link/remoteStatus', async () => ({ ...await vi.importActual<typeof import('@/device-link/remoteStatus')>('@/device-link/remoteStatus'), formatRemoteError: String }));
 vi.mock('@/device-link/remoteResourceCache', () => ({ cacheRemoteResourceHome: vi.fn(), readRemoteResourceSnapshot: async () => ({ home: [], items: {}, read: {} }) }));
 vi.mock('@/session/useRemoteResourceList', () => ({ useRemoteResourceList: () => h.list }));
 import { useTeammateRoster } from '@/session/useTeammateRoster';
@@ -52,6 +53,22 @@ it('drops old account discovery replies', async () => {
   expect(result.targets).toEqual([]); expect(result.createTargets).toEqual([]);
 });
 
+it('clears prior-account create and group capabilities before the new directory answers', async () => {
+  h.link.invoke.mockResolvedValue({ protocolVersion: 1, collections: [
+    { id: 'teammates', title: 'Teammates', resourceKind: 'bot', placement: 'home-scope', actions: [{ id: 'open-create', label: 'Create' }] },
+    { id: 'bot-groups', title: 'Groups', resourceKind: 'bot-group' },
+  ] });
+  await render();
+  expect(result.createTargets).not.toEqual([]);
+  expect(result.groupTargets).not.toEqual([]);
+  h.auth.accountGeneration++;
+  h.link.readDeviceList.mockReturnValue(new Promise(() => {}));
+  await render();
+  expect(result.createTargets).toEqual([]);
+  expect(result.groupTargets).toEqual([]);
+  expect(result.targets).toEqual([]);
+});
+
 it('does not request the manifest until the host link is established', async () => {
   const release: Array<() => void> = [];
   h.link.openLink.mockImplementation(() => new Promise<void>(resolve => release.push(resolve)));
@@ -66,6 +83,7 @@ it('shows cached teammates while host discovery is pending, then removes revoked
     ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', display: { title: 'Cached' }, links: [],
   } }];
   h.link.readDeviceList.mockReturnValue(new Promise(() => {}));
+  h.list.isOnline.mockReturnValue(false);
   await render();
   expect(result.items).toHaveLength(1); expect(result.loading).toBe(false);
   expect(result.authoritative).toBe(false); expect(result.isOnline(h.list.items[0].host)).toBe(false);
@@ -89,4 +107,17 @@ it('exposes only computers whose manifest advertises group chats, keeping them t
   h.link.invoke.mockImplementation(async () => manifest(false));
   h.link.connectionEpoch++; await render();
   expect(result.groupTargets).toEqual([]);
+});
+
+it('publishes a discovered teammate host without waiting for an unrelated manifest', async () => {
+  let finish!: (value: unknown) => void;
+  h.link.invoke.mockImplementation(async device => device === 'old'
+    ? { protocolVersion: 1, collections: [{ id: 'teammates', resourceKind: 'bot', title: 'Teammates', placement: 'home-scope' }] }
+    : new Promise(resolve => { finish = resolve; }));
+  await render();
+  expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
+  expect(result.authoritative).toBe(false);
+  await act(async () => finish({ protocolVersion: 1, collections: [] }));
+  expect(result.targets.map(host => host.deviceId)).toEqual(['old']);
+  expect(result.authoritative).toBe(true);
 });

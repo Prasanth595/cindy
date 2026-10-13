@@ -15,6 +15,7 @@
     "openForkOrigin": "Open fork source message",
     "viewForkOrigin": "View fork source",
     "emptyMessages": "No messages yet",
+    "historyNotCached": "No history cached on this phone. Connect to the computer to sync.",
     "syncing": "Syncing",
     "copyLinkHint": "Tap to copy message link",
     "sentTime": "Sent at {{time}}",

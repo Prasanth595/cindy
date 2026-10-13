@@ -15,8 +15,9 @@ const h = vi.hoisted(() => ({
   store: { getSessionDeviceId: vi.fn(), upsertDeviceSession: vi.fn() },
   router: { replace: vi.fn(), setParams: vi.fn() },
   auth: { user: { id: 'owner' }, accountGeneration: 1 },
-  link: { invoke: vi.fn(), connectionEpoch: 1, status: 'online', onRemoteResourceChanged: vi.fn(() => () => {}), subscribe: vi.fn(), unsubscribe: vi.fn() },
+  link: { openLink: vi.fn(), invoke: vi.fn(), connectionEpoch: 1, status: 'online', onRemoteResourceChanged: vi.fn(() => () => {}), subscribe: vi.fn(), unsubscribe: vi.fn() },
 }));
+vi.mock('@/i18n', () => ({ i18n: { t: (key: string) => key } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: h.t, i18n: { language: h.language } }) }));
 vi.mock('react-native', () => ({ AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } }));
 vi.mock('expo-router', async () => {
@@ -30,7 +31,7 @@ vi.mock('expo-router', async () => {
 });
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => h.auth }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => h.link }));
-vi.mock('@/device-link/remoteStatus', () => ({ formatRemoteError: String }));
+vi.mock('@/device-link/remoteStatus', async () => ({ ...await vi.importActual<typeof import('@/device-link/remoteStatus')>('@/device-link/remoteStatus'), formatRemoteError: String }));
 vi.mock('@/device-link/remoteResources', () => ({ getRemoteResource: h.get }));
 vi.mock('@/device-link/remoteResourceCache', () => ({ markRemoteResourceRead: h.markRead }));
 vi.mock('@/device-link/focusedTopicSubscription', () => ({ startFocusedTopicSubscription: () => () => {} }));
@@ -74,8 +75,8 @@ async function render(canMarkRead = false) {
   // A viewport receipt is separate from loading/entering the chat.
   result.markReadThrough(200);
 }
-beforeEach(() => { vi.clearAllMocks(); h.openSearch = ''; h.auth.accountGeneration = 1; h.metadataVerified = true; h.focused = true; h.language = "en"; h.resourceId = 'bot-1'; h.sessionId = 'task-1'; h.link.status = 'online'; h.link.connectionEpoch = 1; h.store.getSessionDeviceId.mockReturnValue(undefined); });
-afterEach(() => { act(() => root?.unmount()); root = undefined; });
+beforeEach(() => { vi.clearAllMocks(); h.link.openLink.mockResolvedValue(undefined); h.openSearch = ''; h.auth.accountGeneration = 1; h.metadataVerified = true; h.focused = true; h.language = "en"; h.resourceId = 'bot-1'; h.sessionId = 'task-1'; h.link.status = 'online'; h.link.connectionEpoch = 1; h.store.getSessionDeviceId.mockReturnValue(undefined); });
+afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); });
 
 describe('companion task visibility refresh', () => {
   it('does not acknowledge on entry and never acknowledges beyond the rendered tail', async () => {
@@ -187,9 +188,11 @@ it('does not refetch the profile when history becomes readable', async () => {
   await render(false); await render(true);
   expect(h.get).toHaveBeenCalledTimes(1);
 });
-it('keeps a cached chat unavailable on a transient lookup error and retries in place', async () => {
-  h.get.mockRejectedValueOnce(new Error('NOT_CONNECTED'));
+it('keeps dispatch unavailable on a transient lookup error and retries in place', async () => {
+  vi.useFakeTimers();
+  h.get.mockRejectedValue(new Error('NOT_CONNECTED'));
   await render(true);
+  await act(async () => vi.advanceTimersByTimeAsync(7750));
   expect(result.ready).toBe(false); expect(result.error).toContain('NOT_CONNECTED');
   h.get.mockResolvedValue({ links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'task-1' } }], display: { title: 'Teammate' } });
   await act(async () => result.retry());
@@ -243,7 +246,7 @@ it('drops a late response when switching companions and fences a disconnected/re
   await render(true); expect(result.ready).toBe(false);
 });
 
-it.each([false, true])('wires entry readiness=%s to production composer, realtime controls and outbox gates', ready => {
+it.each([false, true])('keeps local composing available while dispatch readiness=%s', ready => {
   const expressions = new Map<string, string>();
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && node.initializer) expressions.set(node.name.getText(screen), node.initializer.getText(screen));
@@ -253,12 +256,12 @@ it.each([false, true])('wires entry readiness=%s to production composer, realtim
   const names = ['canUseComposer', 'remoteRealtimeControlsUnavailable', 'outboxConnectionState'];
   const code = names.map(name => `const ${name} = ${expressions.get(name)};`).join('\n');
   const gates = new Function('ready', `
-    const companionEntry = { ready }, sessionOperationLayout = { canUseComposer: true }, sessionResourceCards = { blocked: false };
+    const companionEntry = { ready, canCompose: true }, sessionOperationLayout = { canUseComposer: true }, sessionResourceCards = { blocked: false };
     const status = 'online', targetAvailableForDispatch = true, isDeviceUnresponsive = false, outboxRecoverySyncHeld = false, loading = false;
     ${code}
     return { canUseComposer, remoteRealtimeControlsUnavailable, outboxConnectionState };
   `)(ready);
-  expect(gates.canUseComposer).toBe(ready);
+  expect(gates.canUseComposer).toBe(true);
   expect(gates.remoteRealtimeControlsUnavailable).toBe(!ready);
   expect(gates.outboxConnectionState.autoRecoveringError).toBe(!ready);
 });
@@ -333,4 +336,31 @@ it('still leaves failed invitation history when the host revokes the resource', 
   await render();
   expect(result.ready).toBe(false);
   expect(h.router.replace).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/resources/[collectionId]/[resourceId]' }));
+});
+
+it('keeps local editing and durable queuing available offline, and reopens only the target on recovery', async () => {
+  const { readRemoteCollectionCache, writeRemoteCollectionCache } = await import('@/device-link/remoteResourceAvailability');
+  readRemoteCollectionCache('owner:1', 'teammates');
+  writeRemoteCollectionCache('owner:1', 'teammates', [{ key: 'offline', host: { deviceId: 'mac', deviceName: 'My Mac' }, item: {
+    ref: { collectionId: 'teammates', kind: 'bot', id: 'bot-1' }, revision: 'cached', display: { title: 'Cached teammate' },
+    links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'task-1' } }],
+  } }]);
+  h.link.status = 'offline'; await render();
+  expect(container.textContent).toBe('Cached teammate');
+  expect(result.canCompose).toBe(true); expect(result.ready).toBe(false);
+  expect(h.get).not.toHaveBeenCalled(); expect(h.link.openLink).not.toHaveBeenCalled();
+  h.link.status = 'online'; h.link.connectionEpoch++;
+  h.get.mockResolvedValue({ display: { title: 'Recovered teammate' }, links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'task-1' } }] });
+  await render();
+  expect(h.link.openLink).toHaveBeenCalledExactlyOnceWith('mac');
+  expect(result.ready).toBe(true); expect(container.textContent).toBe('Recovered teammate');
+  // No mutation or automatic read receipt merely for opening and reconnecting.
+  expect(h.link.invoke).not.toHaveBeenCalled(); expect(h.markRead).not.toHaveBeenCalled();
+});
+
+it.each(['ACCESS_REVOKED', 'REMOTE_DISABLED', 'NOT_FOUND'])('closes local queuing and dispatch on explicit rejection %s without retrying', async code => {
+  vi.useFakeTimers(); h.get.mockRejectedValue(Object.assign(new Error(code), { code }));
+  await render(); expect(result.canCompose).toBe(false); expect(result.ready).toBe(false);
+  await act(async () => vi.advanceTimersByTimeAsync(60000));
+  expect(h.get).toHaveBeenCalledTimes(1);
 });

@@ -15,6 +15,7 @@
     "openForkOrigin": "分岐元メッセージを開く",
     "viewForkOrigin": "分岐元を表示",
     "emptyMessages": "メッセージはありません",
+    "historyNotCached": "この端末に履歴がありません。コンピューターに接続すると同期します。",
     "syncing": "同期中",
     "copyLinkHint": "タップしてメッセージリンクをコピー",
     "sentTime": "送信時刻 {{time}}",
