@@ -113,6 +113,19 @@ describe('Chat Server cloud companions', () => {
     expect(calls('/executions/claim').length).toBeGreaterThan(1);
   });
 
+  it('drops the previous owner\'s companion homes as soon as the service is touched after an account switch', async () => {
+    service.dispose();
+    let owner = 'a';
+    deps = { ...deps, captureOwnerScope: () => owner, isOwnerScopeCurrent: (scope: unknown) => scope === owner } as unknown as BotGroupChatServiceDeps;
+    service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    claimed = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(host.homes.snapshot().actors).toHaveLength(1);
+    owner = 'b';
+    void service.chatServer;
+    expect(host.homes.snapshot().actors).toEqual([]);
+  });
+
   it('claims nothing while the home could not be registered yet', async () => {
     claimed = true;
     patch = () => ({ status: 503, body: { error: { code: 'UNAVAILABLE' } } });

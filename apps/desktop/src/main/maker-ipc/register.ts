@@ -11974,9 +11974,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.startPlan(input) : botGroupNotReady;
   });
+  // Settle a pending account / endpoint switch first: the lazy Chat Server wrapper rebinds (and
+  // resets the companion registry) only when touched, so nothing here serves the previous owner.
+  const currentCompanionHomes = () => { void botGroupChatServiceHolder?.chatServer; return companionHomes; };
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_STATE, async (event) => {
     assertTrustedAppRendererEvent(event);
-    return companionCloudView(companionHomes.snapshot(), listCompanionDevices);
+    return companionCloudView(currentCompanionHomes().snapshot(), listCompanionDevices);
   });
   const companionBotId = (value: unknown) => {
     if (typeof value !== 'string' || !value.trim() || value.length > 200) throwIpcError('INVALID_PARAMS', 'botId required');
@@ -11986,12 +11989,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TAKE_OVER, async (event, botId: unknown) => {
     assertTrustedAppRendererEvent(event);
     const id = companionBotId(botId);
+    currentCompanionHomes();
     return activeCompanionCloud()?.takeOver(id) ?? companionNotEnabled;
   });
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSFER, async (event, botId: unknown, targetDeviceId: unknown) => {
     assertTrustedAppRendererEvent(event);
     const id = companionBotId(botId);
     if (typeof targetDeviceId !== 'string' || !targetDeviceId || targetDeviceId.length > 200) throwIpcError('INVALID_PARAMS', 'targetDeviceId required');
+    currentCompanionHomes();
     return activeCompanionCloud()?.transfer(id, targetDeviceId) ?? companionNotEnabled;
   });
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSCRIPT, async (event, botId: unknown, before: unknown) => {
