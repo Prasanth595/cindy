@@ -6485,15 +6485,15 @@ assertRouteCurrent();
           : {}),
         ...(reviewMode
           ? {
-              // Reviewer context comes only from Cindy's structured evidence
-              // and explicitly granted read paths. Native project-doc discovery
-              // may walk above the workspace, where the read-only sandbox must
-              // deny access, and fail thread startup before review begins.
-              project_doc_max_bytes: 0,
+              // Keep project instructions inside the approved Review root.
+              // An empty marker list stops Codex from walking above cwd while
+              // still loading an AGENTS.md located in cwd itself.
+              ...(process.platform === 'win32' ? {} : { project_root_markers: [] }),
               // Windows native sandboxes cannot enforce this split read scope.
               // Keep the deny policy, and route evidence reads through the host.
               // Native AGENTS discovery also invokes that incompatible sandbox.
               ...(process.platform === 'win32' ? {
+                project_doc_max_bytes: 0,
                 'features.shell_tool': false,
                 'features.unified_exec': false,
                 'features.shell_snapshot': false,

@@ -2001,8 +2001,9 @@ describe('CodexAgent permissions', () => {
       ]);
     } else {
       expect(threadStart).not.toHaveProperty('dynamicTools');
+      expect(threadStart.config).toHaveProperty('project_root_markers', []);
+      expect(threadStart.config).not.toHaveProperty('project_doc_max_bytes');
     }
-    expect(threadStart.config).toHaveProperty('project_doc_max_bytes', 0);
     expect(threadStart.config).not.toHaveProperty(['windows.sandbox']);
     expect((threadStart.config as Record<string, unknown>)['skills.config']).toEqual([
       {
