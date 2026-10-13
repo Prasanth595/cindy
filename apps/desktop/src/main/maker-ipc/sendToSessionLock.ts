@@ -1,6 +1,12 @@
 import { createLogger } from '../logger.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const log = createLogger('maker-ipc:send-to-session-lock');
+
+// 当前异步链已持有的锁键集合。ALS 沿 await/回调自动传播，用于识别同链重入：
+// 锁临界区内部再触发一次取同把锁的调用（如 orca 派发排水队列时
+// drain → sendToAgentAccepted）若照常排队，会等自己释放 = 自锁到 300s bail。
+const heldLockKeys = new AsyncLocalStorage<ReadonlySet<string>>();
 
 /**
  * Per-session send/route serialization. Every local send path (maker:send,
@@ -203,9 +209,14 @@ export async function withSendToSessionLock<T>(
   task: () => Promise<T>,
   getStage?: () => string | undefined,
 ): Promise<T> {
+  // 同异步链重入直接放行：同一条链是天然串行的，与自身不存在竞争；
+  // 不放行则嵌套获取会等自己持有的条目结算，自锁到 bail。跨链互斥不变。
+  if (heldLockKeys.getStore()?.has(sessionId)) return task();
   const release = await acquireSendToSessionLock(sessionId, undefined, getStage);
+  const nextHeld = new Set(heldLockKeys.getStore() ?? []);
+  nextHeld.add(sessionId);
   try {
-    return await task();
+    return await heldLockKeys.run(nextHeld, task);
   } finally {
     release();
   }
