@@ -5357,9 +5357,11 @@ export function NewMakerDraftRoute() {
       const ghost = suggestion.pluginId
         ? usableSuggestionGhosts.get(suggestion.pluginId)
         : undefined;
-      return ghost ? pluginSuggestionComposerText(suggestion.prompt, ghost, t, [...usableSuggestionGhosts.values()]) : suggestion.prompt;
+      // 同名判定用完整安装清单(含停用实例):填入后再启用同名插件,已插入的
+      // 指令仍能精确命中;能否选择仍只看 usableSuggestionGhosts。
+      return ghost ? pluginSuggestionComposerText(suggestion.prompt, ghost, t, installedGhosts) : suggestion.prompt;
     },
-    [t, usableSuggestionGhosts],
+    [installedGhosts, t, usableSuggestionGhosts],
   );
   const handleSuggestionPreview = useCallback(
     (suggestion: HomeTaskSuggestion | null) =>
@@ -5462,7 +5464,7 @@ export function NewMakerDraftRoute() {
         // 填进输入框而不是直接发送;ChatInput 发送时会自己展开 $command。无指令插件发送时
         // 识别不出所用插件,所以选中插件建议并成功填入即记一次最近使用(有指令的插件发送时
         // 还会再记一次,只刷新时间,不影响排序语义)。
-        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t, usableGhosts))) {
+        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t, installedGhosts))) {
           void window.electronAPI.ghosts.markUsed(installedGhostStoragePart(ghost)).catch(() => undefined);
         }
       } catch {

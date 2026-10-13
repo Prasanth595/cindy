@@ -31,6 +31,7 @@ import {
   parseGhostCommandToken,
 } from '@/cindy-brain/ghostCommand';
 import type { GhostCommandSource } from '../../../shared/ghostComposer';
+import { listGhostsByCommand } from '../../../shared/pluginIdentity';
 
 const PLUGIN_KEY = new PluginKey<GhostCommandPluginState>('ghostCommandDecoration');
 const META_KEY = 'ghostCommandDecoration';
@@ -66,7 +67,15 @@ export interface GhostCommandMatch {
 export function findGhostCommandMatch(
   doc: PMNode,
   ghosts: GhostCommandSource[],
-  options: { includeDisabled?: boolean } = {},
+  options: {
+    includeDisabled?: boolean;
+    /**
+     * 仅供放置替换使用:裸指令词同时命中多个实例(唯一时插入的裸 `$draw`,之后又装了
+     * 同名实例)仍识别为消息头指令,好让新选择替换它而不是叠在前面。胶囊与发送期
+     * 判定不传此项,歧义时照旧不亮、不展开。
+     */
+    ambiguousBareToken?: boolean;
+  } = {},
 ): GhostCommandMatch | null {
   if (ghosts.length === 0) return null;
   let paraPos = 0;
@@ -104,9 +113,12 @@ export function findGhostCommandMatch(
             const next = ci + 1 < para.childCount ? para.child(ci + 1) : null;
             if (next && next.type.name !== 'hardBreak') return null;
           }
-          const ghost = options.includeDisabled
+          const ghost = (options.includeDisabled
             ? findGhostByCommandIncludingDisabled(ghosts, token.word, token.namespace)
-            : findGhostByCommand(ghosts, token.word, token.namespace);
+            : findGhostByCommand(ghosts, token.word, token.namespace))
+            ?? (options.ambiguousBareToken && token.namespace === null
+              ? listGhostsByCommand(ghosts, token.word, !options.includeDisabled)[0]
+              : undefined);
           if (!ghost) return null;
           return { from: childPos + i, to: childPos + after, ghost };
         }
