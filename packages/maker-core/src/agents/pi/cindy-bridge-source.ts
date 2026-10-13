@@ -2868,6 +2868,49 @@ function mcpGatewayKey(serverName: string, toolName: string): string {
   return serverName + '\u0000' + toolName;
 }
 
+/**
+ * 取披露文件写入锁（独占创建，跨进程可见），拿不到时返回 undefined 让调用方跳过落盘。
+ *
+ * 锁文件里记持锁进程 pid：持锁进程异常退出后锁会残留，若不回收，这个会话就永远写不进
+ * 披露记录（下次启动又重新自愈一遍、反复输出审计日志）。因此遇到已存在的锁时，只有
+ * 确认持锁进程已不存在才回收重建；进程还活着、pid 读不出来或与自己相同就不猜，宁可
+ * 跳过这一次落盘——本进程内存里的披露仍然有效。
+ */
+function acquireDisclosureLock(lockPath: string): number | undefined {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(lockPath, 'wx', 0o600);
+      try { writeFileSync(lockPath, String(process.pid)); } catch { /* pid 写不进去时只当普通锁 */ }
+      return fd;
+    } catch {
+      if (attempt === 1) return undefined;
+      const owner = readLockOwner(lockPath);
+      if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return undefined;
+      try { rmSync(lockPath, { force: true }); } catch { return undefined; }
+    }
+  }
+  return undefined;
+}
+
+function readLockOwner(lockPath: string): number | undefined {
+  try {
+    const pid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM = 进程存在但不属于当前用户，仍算活着；其余（ESRCH 等）视为已退出。
+    return (error as { code?: string }).code === 'EPERM';
+  }
+}
+
 function recordInput(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -2951,12 +2994,7 @@ class CindyMcpGateway {
     const temp = file + '.' + process.pid + '.tmp';
     try {
       const lockPath = file + '.lock';
-      let lockFd: number | undefined;
-      try {
-        lockFd = openSync(lockPath, 'wx', 0o600);
-      } catch {
-        lockFd = undefined; // 另一个实例正在写：不争，退化为跳过落盘。
-      }
+      const lockFd = acquireDisclosureLock(lockPath);
       if (lockFd === undefined) return;
       try {
         const merged = new Map<string, string>(this.disclosedSchemas);
@@ -2978,7 +3016,7 @@ class CindyMcpGateway {
         renameSync(temp, file);
       } finally {
         try { closeSync(lockFd); } catch { /* 关闭失败不影响已落盘结果 */ }
-        try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写覆盖 */ }
+        try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写入回收 */ }
       }
     } catch {
       // 落盘失败只影响下次启动的体验，不影响本次门与自愈。
