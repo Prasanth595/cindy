@@ -38,6 +38,8 @@ export const INPUT_HANDOFF_PICTURE_MAX_BYTES = 330_000;
 export const INPUT_HANDOFF_PICTURE_MAX_SIDE = 4096;
 /** Control id of the text box shown under a screenshot when the window has a focused text field. */
 export const INPUT_HANDOFF_PICTURE_TEXT_ID = "typed";
+/** Longest QR content carried to an owner device. */
+export const INPUT_HANDOFF_QR_TEXT_MAX_CHARS = 2048;
 
 export type InputHandoffContentType =
   | "text"
@@ -55,8 +57,12 @@ export interface InputHandoffOption {
   label: string;
 }
 
+/**
+ * What the owner is asked for: only the fields they type into, plus what the
+ * page says is wrong with them. Buttons, pick lists and boxes stay with the
+ * agent, so they never reach an owner device.
+ */
 export type InputHandoffControl =
-  | { id: string; kind: "button"; label: string; primary?: true; link?: true }
   | {
       id: string;
       kind: "text";
@@ -69,15 +75,7 @@ export type InputHandoffControl =
       /** Combo boxes: options the owner may pick instead of typing. */
       suggestions?: InputHandoffOption[];
     }
-  | {
-      id: string;
-      kind: "choice";
-      label: string;
-      options: InputHandoffOption[];
-      selected?: string;
-    }
-  | { id: string; kind: "toggle"; label: string; checked: boolean }
-  | { id: string; kind: "note"; text: string; tone: "heading" | "error" | "info" };
+  | { id: string; kind: "note"; text: string; tone: "error" };
 
 export type InputHandoffPhase =
   | "reading"
@@ -107,7 +105,11 @@ export type InputHandoffFailure =
   /** The page or window changed between the owner answering and the secret being typed; nothing was filled. */
   | "origin_changed"
   /** This step could not be shown as a screenshot (no screen-recording permission, or the window is hidden). */
-  | "picture_unavailable";
+  | "picture_unavailable"
+  /** The screen has only buttons or options: nothing for the owner to type, so the agent handles it. */
+  | "nothing_to_fill"
+  /** The computer's screen is locked: nothing is read or typed until the owner unlocks it. */
+  | "screen_locked";
 
 export interface InputHandoffSource {
   /** Application name as reported by the operating system. */
@@ -175,6 +177,32 @@ export interface InputHandoffSnapshot {
    * device; nothing is typed into the window.
    */
   deviceCode?: InputHandoffDeviceCode;
+  /**
+   * The step is a QR code to scan (scan-to-sign-in). `scan`: the code is on
+   * screen; it is also a picture step, and its picture is the code itself,
+   * with what the code says. `scanned`: the code went away and the Host is
+   * waiting for the sign-in to finish (for example a confirmation on the
+   * owner's phone). The code's content never travels in a snapshot.
+   */
+  qr?: "scan" | "scanned";
+}
+
+/**
+ * What a QR code on the target says. `url` is present when the content is a
+ * link the owner may open on their device; clients re-check with
+ * {@link inputHandoffQrLink} before offering to open it.
+ */
+export interface InputHandoffQr {
+  text: string;
+  url?: string;
+}
+
+/** A QR code's content as a link to open on an owner device. */
+export interface InputHandoffQrLink {
+  url: string;
+  /** Web links: the host. App links (`weixin://…`): the scheme. Shown so the owner sees where it goes. */
+  site: string;
+  web: boolean;
 }
 
 export interface InputHandoffDeviceCode {
@@ -192,16 +220,16 @@ export interface InputHandoffPicture {
   height: number;
   /** Base64 JPEG. */
   data: string;
+  /** QR steps: the picture is the code, and this is what it says. */
+  qr?: InputHandoffQr;
 }
 
-export type InputHandoffValues = Record<string, string | boolean>;
+export type InputHandoffValues = Record<string, string>;
 
 export type InputHandoffAction =
-  /** Apply values, then press the given button/link. */
-  | { kind: "press"; controlId: string }
-  /** Apply values, then confirm the last edited field (Return). */
+  /** Type the values, then confirm the step as the owner would: the page's main button, else Return. */
   | { kind: "submit" }
-  /** Apply values only. */
+  /** Screenshot steps: type into the focused field without pressing Return. */
   | { kind: "fill" }
   /** Screenshot steps: click at this point, as fractions (0–1) of the picture's width and height. */
   | { kind: "tap"; x: number; y: number };
@@ -217,10 +245,9 @@ export type InputHandoffDecision = {
   kind: "input_handoff";
   /**
    * claim: answer on this device (take over from another one).
-   * decline: refuse, and do not ask again in this task.
    * picture: show this step as a screenshot instead of a form; refresh goes back to the form.
    */
-  action: "done" | "cancel" | "stay" | "refresh" | "claim" | "decline" | "picture";
+  action: "done" | "cancel" | "stay" | "refresh" | "claim" | "picture";
   expectedRevision: number;
 };
 
@@ -234,6 +261,8 @@ export interface InputHandoffPresentation {
   controls: Array<{ id: string; kind: string; label: string }>;
   /** The owner answers on a screenshot of this step. */
   picture: boolean;
+  /** The screenshot is a QR code to scan; its content travels with the sealed picture. */
+  qr: boolean;
 }
 
 export interface InputHandoffOffer {
@@ -305,6 +334,55 @@ export function isInputHandoffDeviceCode(raw: unknown): raw is InputHandoffDevic
   return url.protocol === "https:" && !url.username && !url.password && url.origin === v.origin;
 }
 
+const qrText = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= INPUT_HANDOFF_QR_TEXT_MAX_CHARS &&
+  !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value);
+
+/**
+ * Content a phone camera would never open: script, inline data, local files
+ * and browser internals. Everything else that is a link (http, https, an app
+ * link such as `weixin://`) opens like a scanned code would.
+ */
+const QR_BLOCKED_SCHEMES = new Set(["javascript", "vbscript", "data", "file", "blob", "about", "filesystem"]);
+
+function qrLinkOf(text: string): InputHandoffQrLink | null {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1]?.toLowerCase();
+  if (!scheme || QR_BLOCKED_SCHEMES.has(scheme)) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password) return null;
+  if (scheme === "http" || scheme === "https") return url.host ? { url: text, site: url.host, web: true } : null;
+  // App links are `scheme://…`; `WIFI:…`, `tel:…` or a vCard are content, not something to open.
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? { url: text, site: scheme, web: false } : null;
+}
+
+/** What a QR code says, as handed to the owner; null when it cannot be shown. */
+export function inputHandoffQrContent(text: string): InputHandoffQr | null {
+  const clean = text.trim();
+  if (!qrText(clean)) return null;
+  return qrLinkOf(clean) ? { text: clean, url: clean } : { text: clean };
+}
+
+/** The link a QR code may be opened as on an owner device: its own content, when that is an openable link. */
+export function inputHandoffQrLink(qr: InputHandoffQr): InputHandoffQrLink | null {
+  if (qr.url === undefined || qr.url !== qr.text) return null;
+  return qrLinkOf(qr.url);
+}
+
+export function parseInputHandoffQr(raw: unknown): InputHandoffQr {
+  const v = object(raw);
+  if (!keysWithin(v, ["text"], ["url"]) || !qrText(v.text)) throw fail();
+  if (v.url === undefined) return { text: v.text };
+  if (typeof v.url !== "string" || !inputHandoffQrLink({ text: v.text, url: v.url })) throw fail();
+  return { text: v.text, url: v.url };
+}
+
 export function inputHandoffPresentation(snapshot: InputHandoffSnapshot): InputHandoffPresentation {
   return {
     requestId: snapshot.requestId,
@@ -330,6 +408,7 @@ export function inputHandoffPresentation(snapshot: InputHandoffSnapshot): InputH
         ),
       })),
     picture: snapshot.picture === true,
+    qr: snapshot.picture === true && snapshot.qr === "scan",
   };
 }
 
@@ -338,7 +417,7 @@ export function parseInputHandoffPicture(raw: unknown): InputHandoffPicture {
   const side = (n: unknown) =>
     Number.isSafeInteger(n) && (n as number) > 0 && (n as number) <= INPUT_HANDOFF_PICTURE_MAX_SIDE;
   if (
-    !keysWithin(v, ["mime", "width", "height", "data"]) ||
+    !keysWithin(v, ["mime", "width", "height", "data"], ["qr"]) ||
     v.mime !== "image/jpeg" ||
     !side(v.width) ||
     !side(v.height) ||
@@ -348,7 +427,13 @@ export function parseInputHandoffPicture(raw: unknown): InputHandoffPicture {
     !/^[A-Za-z0-9+/]+={0,2}$/.test(v.data)
   )
     throw fail();
-  return { mime: "image/jpeg", width: v.width as number, height: v.height as number, data: v.data };
+  return {
+    mime: "image/jpeg",
+    width: v.width as number,
+    height: v.height as number,
+    data: v.data,
+    ...(v.qr !== undefined ? { qr: parseInputHandoffQr(v.qr) } : {}),
+  };
 }
 
 function parseSource(raw: unknown): InputHandoffSource {
@@ -375,8 +460,10 @@ function parseSource(raw: unknown): InputHandoffSource {
 export function parseInputHandoffPresentation(raw: unknown): InputHandoffPresentation {
   const v = object(raw);
   if (
-    !keysWithin(v, ["requestId", "revision", "purpose", "source", "command", "controls", "picture"]) ||
+    !keysWithin(v, ["requestId", "revision", "purpose", "source", "command", "controls", "picture", "qr"]) ||
     typeof v.picture !== "boolean" ||
+    typeof v.qr !== "boolean" ||
+    (v.qr && !v.picture) ||
     typeof v.requestId !== "string" ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(v.requestId) ||
     !Number.isSafeInteger(v.revision) ||
@@ -393,7 +480,7 @@ export function parseInputHandoffPresentation(raw: unknown): InputHandoffPresent
     if (
       !keysWithin(control, ["id", "kind", "label"]) ||
       !controlId(control.id) ||
-      !["button", "text", "choice", "toggle"].includes(String(control.kind)) ||
+      control.kind !== "text" ||
       !label(control.label, true)
     )
       throw fail();
@@ -407,6 +494,7 @@ export function parseInputHandoffPresentation(raw: unknown): InputHandoffPresent
     command: v.command as string | null,
     controls,
     picture: v.picture as boolean,
+    qr: v.qr as boolean,
   };
 }
 
@@ -421,11 +509,14 @@ export function parseInputHandoffOffer(raw: unknown): InputHandoffOffer {
     throw fail();
   const presentation = parseInputHandoffPresentation(v.presentation);
   if (presentation.picture !== (v.picture !== undefined)) throw fail();
+  const picture = v.picture !== undefined ? parseInputHandoffPicture(v.picture) : undefined;
+  // A QR step's picture always says what the code is; any other picture never does.
+  if (picture && presentation.qr !== (picture.qr !== undefined)) throw fail();
   return {
     kind: "input-entry",
     state: v.state,
     presentation,
-    ...(v.picture !== undefined ? { picture: parseInputHandoffPicture(v.picture) } : {}),
+    ...(picture ? { picture } : {}),
   };
 }
 
@@ -448,15 +539,12 @@ export function parseInputHandoffSubmission(raw: unknown): InputHandoffSubmissio
   let total = 0;
   for (const [id, value] of entries) {
     if (!controlId(id)) throw fail();
-    values[id] = typeof value === "boolean" ? value : parseInputHandoffValue(value);
-    if (typeof value === "string" && (total += value.length) > INPUT_HANDOFF_TOTAL_VALUE_MAX_CHARS)
-      throw fail();
+    values[id] = parseInputHandoffValue(value);
+    if ((total += values[id].length) > INPUT_HANDOFF_TOTAL_VALUE_MAX_CHARS) throw fail();
   }
   const action = object(v.action);
   let parsed: InputHandoffAction;
-  if (action.kind === "press" && keysWithin(action, ["kind", "controlId"]) && controlId(action.controlId))
-    parsed = { kind: "press", controlId: action.controlId };
-  else if ((action.kind === "submit" || action.kind === "fill") && keysWithin(action, ["kind"]))
+  if ((action.kind === "submit" || action.kind === "fill") && keysWithin(action, ["kind"]))
     parsed = { kind: action.kind };
   else if (action.kind === "tap" && keysWithin(action, ["kind", "x", "y"]) && fraction(action.x) && fraction(action.y))
     parsed = { kind: "tap", x: action.x, y: action.y };
@@ -482,7 +570,7 @@ export function parseInputHandoffDecision(raw: unknown): InputHandoffDecision | 
   if (
     !keysWithin(v, ["kind", "action", "expectedRevision"]) ||
     v.kind !== "input_handoff" ||
-    !["done", "cancel", "stay", "refresh", "claim", "decline", "picture"].includes(String(v.action)) ||
+    !["done", "cancel", "stay", "refresh", "claim", "picture"].includes(String(v.action)) ||
     !Number.isSafeInteger(v.expectedRevision) ||
     (v.expectedRevision as number) < 0
   )
@@ -503,24 +591,9 @@ export function validateInputHandoffSubmissionForStep(
   // A tap is only meaningful on a screenshot, and carries nothing else.
   if (submission.action.kind === "tap")
     return snapshot.picture === true && Object.keys(submission.values).length === 0;
-  const byId = new Map(snapshot.controls.map((control) => [control.id, control]));
-  for (const [id, value] of Object.entries(submission.values)) {
-    const control = byId.get(id);
-    if (!control) return false;
-    if (control.kind === "text" && typeof value !== "string") return false;
-    if (control.kind === "toggle" && typeof value !== "boolean") return false;
-    if (
-      control.kind === "choice" &&
-      (typeof value !== "string" || !control.options.some((option) => option.id === value))
-    )
-      return false;
-    if (control.kind === "button" || control.kind === "note") return false;
-  }
-  if (submission.action.kind === "press") {
-    const target = byId.get(submission.action.controlId);
-    if (!target || target.kind !== "button") return false;
-  }
-  return true;
+  if (submission.action.kind === "fill" && snapshot.picture !== true) return false;
+  const fields = new Set(snapshot.controls.filter((control) => control.kind === "text").map((control) => control.id));
+  return Object.entries(submission.values).every(([id, value]) => fields.has(id) && typeof value === "string");
 }
 
 /** True when a remote client must not run this snapshot's actions. */
@@ -549,15 +622,10 @@ export function inputHandoffHeldElsewhere(
  * handoff); any different screen gets a new key and a clean draft.
  */
 export function inputHandoffStepKey(
-  snapshot: Pick<InputHandoffSnapshot, "requestId" | "stepNumber" | "controls" | "picture">,
+  snapshot: Pick<InputHandoffSnapshot, "requestId" | "stepNumber" | "controls" | "picture" | "qr">,
 ): string {
-  const shape = (snapshot.picture ? "p|" : "") + snapshot.controls
-    .map((c) => {
-      if (c.kind === "note") return `n:${c.id}`;
-      if (c.kind === "choice") return `c:${c.id}:${c.label}:${c.options.map((o) => o.id).join(",")}`;
-      if (c.kind === "text") return `t:${c.id}:${c.label}:${c.contentType ?? ""}`;
-      return `${c.kind[0]}:${c.id}:${c.label}`;
-    })
+  const shape = (snapshot.picture ? "p|" : "") + (snapshot.qr ? `q:${snapshot.qr}|` : "") + snapshot.controls
+    .map((c) => (c.kind === "note" ? `n:${c.id}` : `t:${c.id}:${c.label}:${c.contentType}`))
     .join("|");
   let hash = 5381;
   for (let i = 0; i < shape.length; i++) hash = ((hash << 5) + hash + shape.charCodeAt(i)) | 0;

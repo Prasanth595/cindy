@@ -1,9 +1,10 @@
 /**
  * A 代输入 step answered on a screenshot of the target window: the owner taps
- * a spot, and may type into the field that has focus there. The picture lives
- * only in this component's state for the current revision; it comes from Main
- * on the executing computer or from the sealed offer for a task on another
- * computer, and is dropped as soon as the step changes.
+ * a spot, and may type into the field that has focus there. It is mounted only
+ * while the owner has the dialog open, so the picture is fetched only when
+ * asked for. It lives only in this component's state for the current revision;
+ * it comes from Main on the executing computer or from the sealed offer for a
+ * task on another computer, and is dropped as soon as the step changes.
  */
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
@@ -21,22 +22,11 @@ import { Spinner } from '@/components/ui/spinner';
 import { openInputHandoffPicture, type InputHandoffPictureSession } from '@/lib/makerTransport';
 import { InputHandoffTextField } from './InputHandoffStepForm';
 
-/** Requests whose owner opened a picture on this device; later steps open by themselves. Ids only. */
-const openedHere = new Set<string>();
-
-/** The owner asked for the picture on this device: show it without another click. */
-export function rememberInputHandoffPictureOpened(requestId: string): void {
-  if (openedHere.size > 64) openedHere.clear();
-  openedHere.add(requestId);
-}
-
-type Decision = 'done' | 'cancel' | 'refresh' | 'decline';
+type Decision = 'done' | 'refresh';
 
 export interface InputHandoffPictureStepProps {
   sessionId: string;
   snapshot: InputHandoffSnapshot;
-  /** The task runs on another computer: the picture is fetched only when the owner asks. */
-  remote: boolean;
   busy: boolean;
   inputBlocked: boolean;
   onDecide: (action: Decision) => void;
@@ -46,7 +36,6 @@ export interface InputHandoffPictureStepProps {
 export function InputHandoffPictureStep({
   sessionId,
   snapshot,
-  remote,
   busy,
   inputBlocked,
   onDecide,
@@ -57,6 +46,7 @@ export function InputHandoffPictureStep({
   const [sending, setSending] = useState(false);
   const [typed, setTyped] = useState('');
   const opened = useRef<InputHandoffPictureSession | null>(null);
+  const alive = useRef(true);
   const [src, setSrc] = useState<string | null>(null);
   const image = useRef<HTMLImageElement>(null);
   const field = snapshot.controls.find(
@@ -70,6 +60,11 @@ export function InputHandoffPictureStep({
     onError(null);
     try {
       const session = await openInputHandoffPicture(sessionId, inputHandoffPresentation(snapshot));
+      // Closed while it loaded: end the exchange instead of leaving it open on the computer.
+      if (!alive.current) {
+        session.close();
+        return;
+      }
       opened.current = session;
       setSrc(`data:${session.picture.mime};base64,${session.picture.data}`);
       setState('shown');
@@ -80,13 +75,22 @@ export function InputHandoffPictureStep({
 
   // Each revision is one picture: open it once, and close the exchange when the step changes.
   useEffect(() => {
-    if (!inputBlocked && (!remote || openedHere.has(snapshot.requestId))) void load();
+    alive.current = true;
+    if (!inputBlocked) void load();
     return () => {
+      alive.current = false;
       opened.current?.close();
       opened.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mounted once per revision by the card
   }, []);
+
+  // Each exchange answers once: after a failed answer, open a fresh one so the picture works again.
+  const retry = (message: string) => {
+    if (!alive.current) return;
+    void load();
+    onError(message);
+  };
 
   const answer = async (action: InputHandoffAction, values: Record<string, string> = {}) => {
     const session = opened.current;
@@ -96,10 +100,10 @@ export function InputHandoffPictureStep({
     onError(null);
     try {
       const result = await session.answer({ expectedRevision: snapshot.revision, values, action });
-      if (!result.accepted) onError(t('inputHandoff.error.stale'));
-      else setTyped('');
+      if (result.accepted) setTyped('');
+      else retry(t('inputHandoff.error.stale'));
     } catch {
-      onError(t('inputHandoff.error.submit'));
+      retry(t('inputHandoff.error.submit'));
     } finally {
       setSending(false);
     }
@@ -129,9 +133,6 @@ export function InputHandoffPictureStep({
 
   return (
     <div>
-      {inputBlocked && (
-        <p className="mb-3 text-12 text-[var(--text-secondary)]">{t('inputHandoff.remoteUnavailable')}</p>
-      )}
       {state === 'shown' && src ? (
         <>
           <p className="mb-2 text-12 text-[var(--text-tertiary)]">{t('inputHandoff.picture.hint')}</p>
@@ -158,25 +159,14 @@ export function InputHandoffPictureStep({
           <Spinner size={14} />
           {t('inputHandoff.picture.loading')}
         </p>
-      ) : (
+      ) : state === 'failed' ? (
         <div className="flex flex-col items-start gap-2">
-          <p className="text-13 text-[var(--text-secondary)]">
-            {state === 'failed' ? t('inputHandoff.picture.error') : t('inputHandoff.picture.openHint')}
-          </p>
-          <Button
-            type="button"
-            size="sm"
-            variant="primary"
-            disabled={busy || inputBlocked}
-            onClick={() => {
-              rememberInputHandoffPictureOpened(snapshot.requestId);
-              void load();
-            }}
-          >
+          <p className="text-13 text-[var(--text-secondary)]">{t('inputHandoff.picture.error')}</p>
+          <Button type="button" size="sm" variant="secondary" disabled={busy || inputBlocked} onClick={() => void load()}>
             {t('inputHandoff.picture.open')}
           </Button>
         </div>
-      )}
+      ) : null}
       {field && state === 'shown' && (
         <form className="mt-3" onSubmit={onFormSubmit} autoComplete="on" noValidate>
           <InputHandoffTextField
@@ -195,13 +185,7 @@ export function InputHandoffPictureStep({
           </div>
         </form>
       )}
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border-default)] pt-3">
-        <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('cancel')}>
-          {t('inputHandoff.action.cancel')}
-        </Button>
-        <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('decline')}>
-          {t('inputHandoff.action.decline')}
-        </Button>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('refresh')}>
           {t('inputHandoff.action.backToForm')}
         </Button>

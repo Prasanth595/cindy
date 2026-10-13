@@ -20,10 +20,9 @@ describe('terminal prompt card', () => {
       .toEqual({ app: 'git', origin: 'http://git.example', warning: 'insecure' });
   });
 
-  it('offers literal yes / no for an unknown ssh host key', () => {
+  it('asks for a typed yes / no for an unknown ssh host key', () => {
     const step = buildTerminalPromptStep('Are you sure you want to continue connecting (yes/no/[fingerprint])?', 'ssh');
-    expect(step.controls.map((c) => c.kind === 'button' && c.label)).toEqual(['yes', 'no']);
-    expect(step.fieldId).toBeUndefined();
+    expect(step.controls).toEqual([expect.objectContaining({ kind: 'text', contentType: 'text', placeholder: 'yes / no' })]);
   });
 });
 
@@ -73,13 +72,12 @@ describe('terminal prompt handoff', () => {
     expect(h.continued).toEqual([]);
   });
 
-  it('fails the program when the owner cancels, and declining stops later prompts', async () => {
+  it('fails the program when the owner cancels', async () => {
     const h = harness();
     h.ask();
     await vi.waitFor(() => expect(h.latest()?.phase).toBe('ready'));
-    h.service.resolve(h.latest().requestId, { kind: 'input_handoff', action: 'decline', expectedRevision: h.latest().revision });
+    h.service.resolve(h.latest().requestId, { kind: 'input_handoff', action: 'cancel', expectedRevision: h.latest().revision });
     await vi.waitFor(() => expect(h.answers).toEqual([null]));
-    expect(h.ask()).toMatchObject({ ok: false, errorCode: 'DECLINED' });
   });
 
   it('ends quietly when the program stops waiting', async () => {

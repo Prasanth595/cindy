@@ -144,7 +144,7 @@ describe('代输入 screenshot steps', () => {
 
     expect(await session.decide({ kind: 'input_handoff', action: 'refresh', expectedRevision: latest().revision })).toBe(true);
     expect(latest().picture).toBeUndefined();
-    expect(latest().controls.some((control) => control.kind === 'button')).toBe(true);
+    expect(latest().controls.some((control) => control.kind === 'text' && control.label === 'Nickname')).toBe(true);
   });
 
   it('reports a covered or moved window instead of tapping something else', async () => {
@@ -156,15 +156,11 @@ describe('代输入 screenshot steps', () => {
     expect(desktop.stage()).toBe('canvas');
   });
 
-  it('fails clearly when the window cannot be photographed', async () => {
-    const { session, finished, latest } = harness(canvasDesktop({ capture: false }).driver);
+  it('fails clearly when the window can be neither read nor photographed', async () => {
+    const { session, finished, published } = harness(canvasDesktop({ capture: false }).driver);
     await session.start();
-    // Nothing to fill and no picture: the readable notes are still shown, with no picture.
-    expect(latest().picture).toBeUndefined();
-    expect(finished).toHaveLength(0);
-    expect(await session.decide({ kind: 'input_handoff', action: 'picture', expectedRevision: latest().revision })).toBe(true);
-    expect(latest()).toMatchObject({ failure: 'picture_unavailable' });
-    expect(latest().picture).toBeUndefined();
+    expect(finished[0]).toMatchObject({ status: 'failed', failure: 'unreadable' });
+    expect(published.some((snapshot) => snapshot.picture)).toBe(false);
   });
 });
 

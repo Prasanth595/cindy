@@ -27,66 +27,91 @@ function harness(driver: HandoffDriver, extra: Partial<ConstructorParameters<typ
   return { session, published, finished, latest };
 }
 
+const field = (step: InputHandoffSnapshot) => step.controls.find((control) => control.kind === 'text')!;
+
 describe('InputHandoffSession', () => {
-  it('walks an unknown multi-step flow across apps and finishes on its own', async () => {
+  it('asks only for the fields to type, confirms with the page button and follows the flow across apps', async () => {
     const desktop = fakeDesktop();
     const { session, finished, latest } = harness(desktop.driver);
     await session.start();
     let step = latest();
     expect(step.phase).toBe('ready');
-    const choice = step.controls.find((control) => control.kind === 'choice')!;
-    const next = step.controls.find((control) => control.kind === 'button')!;
-    expect(await session.submit({ expectedRevision: step.revision, values: { [choice.id]: 'o1' }, action: { kind: 'press', controlId: next.id } })).toBe(true);
+    // Only the field: the page's Next button is Cindy's to press.
+    expect(step.controls).toEqual([{ id: expect.any(String), kind: 'text', label: 'Email', contentType: 'email' }]);
+    expect(await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'owner@example.test' }, action: { kind: 'submit' } })).toBe(true);
+    expect(desktop.acts.map((act) => act.kind)).toEqual(['text', 'press']);
 
     step = latest();
     expect(step.stepNumber).toBe(2);
-    const org = step.controls.find((control) => control.kind === 'text')!;
-    const go = step.controls.find((control) => control.kind === 'button')!;
-    await session.submit({ expectedRevision: step.revision, values: { [org.id]: 'acme' }, action: { kind: 'press', controlId: go.id } });
-
-    step = latest();
     expect(step.source).toMatchObject({ app: 'Google Chrome', origin: 'https://auth.example.com' });
-    const authorize = step.controls.find((control) => control.kind === 'button' && control.label === 'Authorize')!;
-    expect(authorize).toMatchObject({ primary: true });
-    await session.submit({ expectedRevision: step.revision, values: {}, action: { kind: 'press', controlId: authorize.id } });
+    expect(step.controls.map((control) => control.kind)).toEqual(['text']);
+    await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'synthetic-secret' }, action: { kind: 'submit' } });
 
+    // The consent page has only buttons: nothing left for the owner, so it is handed back.
     expect(latest().phase).toBe('finishing');
     await vi.waitFor(() => expect(finished).toHaveLength(1));
-    expect(finished[0]).toMatchObject({ status: 'succeeded', reason: 'detected', steps: 3, finalApp: 'Example' });
+    expect(finished[0]).toMatchObject({ status: 'succeeded', reason: 'detected', steps: 2, finalApp: 'Google Chrome' });
+    expect(desktop.stage()).toBe('consent');
     expect(latest()).toMatchObject({ phase: 'succeeded', terminal: true });
-    expect(desktop.acts.find((act) => act.kind === 'text')?.value).toBe('acme');
-    expect(JSON.stringify(finished)).not.toContain('acme');
-    expect(JSON.stringify(latest())).not.toContain('acme');
+    expect(JSON.stringify([finished, latest()])).not.toMatch(/owner@example|synthetic-secret/);
+  });
+
+  it('ends at once when the screen has nothing to type', async () => {
+    const desktop = fakeDesktop({ start: 'choose' });
+    const { session, finished, published } = harness(desktop.driver);
+    await session.start();
+    expect(finished[0]).toMatchObject({ status: 'cancelled', reason: 'detected', failure: 'nothing_to_fill', steps: 0 });
+    // The radio buttons and Continue never reached the owner.
+    expect(published.every((snapshot) => snapshot.controls.length === 0)).toBe(true);
+    expect(desktop.acts).toEqual([]);
+  });
+
+  it('presses Return in the last field when the page has no main button', async () => {
+    const desktop = fakeDesktop();
+    const driver: HandoffDriver = {
+      ...desktop.driver,
+      snapshot: async (pid, window) => {
+        const raw = await desktop.driver.snapshot(pid, window);
+        return 'nodes' in raw ? { ...raw, nodes: raw.nodes.filter((n) => n.role !== 'AXButton') } : raw;
+      },
+    };
+    const { session, latest } = harness(driver);
+    await session.start();
+    const step = latest();
+    await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'owner@example.test' }, action: { kind: 'submit' } });
+    expect(desktop.acts.map((act) => [act.kind, act.value === 'return' ? 'return' : undefined])).toEqual([['text', undefined], ['key', 'return']]);
   });
 
   it('rejects stale or foreign submissions', async () => {
     const { session, latest } = harness(fakeDesktop().driver);
     await session.start();
     const step = latest();
-    const button = step.controls.find((control) => control.kind === 'button')!;
-    expect(await session.submit({ expectedRevision: step.revision - 1, values: {}, action: { kind: 'press', controlId: button.id } })).toBe(false);
-    expect(await session.submit({ expectedRevision: step.revision, values: { nope: 'x' }, action: { kind: 'press', controlId: button.id } })).toBe(false);
-    expect(await session.submit({ expectedRevision: step.revision, values: {}, action: { kind: 'press', controlId: 'c999' } })).toBe(false);
+    const submit = { kind: 'submit' } as const;
+    expect(await session.submit({ expectedRevision: step.revision - 1, values: {}, action: submit })).toBe(false);
+    expect(await session.submit({ expectedRevision: step.revision, values: { nope: 'x' }, action: submit })).toBe(false);
+    // Typing without confirming belongs to screenshot steps only.
+    expect(await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'x' }, action: { kind: 'fill' } })).toBe(false);
   });
 
   it('lets the owner stay, hand back or cancel', async () => {
-    const desktop = fakeDesktop();
-    const { session, finished, latest } = harness(desktop.driver, { finishingDelayMs: 60_000 });
+    const desktop = fakeDesktop({ start: 'password' });
+    const { session, finished, latest } = harness(desktop.driver, { finishingDelayMs: 60_000, target: { app: 'Google Chrome' } });
     await session.start();
-    // Jump to the end state to test the countdown controls.
-    const choose = latest();
-    const button = choose.controls.find((control) => control.kind === 'button')!;
-    await session.submit({ expectedRevision: choose.revision, values: {}, action: { kind: 'press', controlId: button.id } });
-    const org = latest();
-    await session.submit({ expectedRevision: org.revision, values: {}, action: { kind: 'press', controlId: org.controls.find((c) => c.kind === 'button')!.id } });
-    const consent = latest();
-    await session.submit({ expectedRevision: consent.revision, values: {}, action: { kind: 'press', controlId: consent.controls.find((c) => c.kind === 'button' && c.label === 'Authorize')!.id } });
+    const step = latest();
+    await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'synthetic-secret' }, action: { kind: 'submit' } });
     expect(latest().phase).toBe('finishing');
     expect(await session.decide({ kind: 'input_handoff', action: 'stay', expectedRevision: latest().revision })).toBe(true);
-    expect(latest().phase).toBe('ready');
+    expect(latest()).toMatchObject({ phase: 'ready', controls: [] });
     expect(await session.decide({ kind: 'input_handoff', action: 'done', expectedRevision: latest().revision })).toBe(true);
     expect(finished[0]).toMatchObject({ status: 'succeeded', reason: 'owner' });
     expect(await session.decide({ kind: 'input_handoff', action: 'cancel', expectedRevision: latest().revision })).toBe(false);
+  });
+
+  it('hands back once only a search box is left', async () => {
+    const desktop = fakeDesktop({ start: 'done' });
+    const { session, finished } = harness(desktop.driver);
+    await session.start();
+    expect(finished[0]).toMatchObject({ failure: 'nothing_to_fill' });
   });
 
   it('fails clearly without accessibility permission or target', async () => {

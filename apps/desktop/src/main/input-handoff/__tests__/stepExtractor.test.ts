@@ -53,9 +53,11 @@ describe('extractStep', () => {
     expect(step.hasSecure).toBe(true);
     expect(step.bindings.get(password.id)).toEqual({ kind: 'text', ref: '2.3', fp: expect.any(String), secure: true });
     expect(JSON.stringify(step.controls)).not.toContain('Address and search bar');
+    // The owner sees only the fields to type.
+    expect(step.shown.map((control) => control.kind === 'text' && control.label)).toEqual(['Email', 'Password']);
   });
 
-  it('maps a native app choice screen with radios, pop-ups and toggles', () => {
+  it('reads a native app choice screen but shows the owner nothing on it', () => {
     const step = extractStep(snapshot([
       node('0', 'AXButton', { subrole: 'AXCloseButton', desc: 'close' }),
       node('1', 'AXRadioGroup', { desc: 'Login method' }),
@@ -71,9 +73,9 @@ describe('extractStep', () => {
     expect(method).toMatchObject({ label: 'Login method', selected: 'o0', options: [{ id: 'o0', label: 'Personal' }, { id: 'o1', label: 'Enterprise SSO' }] });
     expect(region).toMatchObject({ label: 'Region', selected: 'o0' });
     expect(remember).toMatchObject({ checked: false });
-    const radio = step.bindings.get(method.id);
-    expect(radio?.kind).toBe('radio');
-    expect(radio?.kind === 'radio' && radio.options.get('o1')?.ref).toBe('1.1');
+    // Options and buttons are the agent's: no field means nothing for the owner.
+    expect(step.shown).toEqual([]);
+    expect(step.bindings.get(method.id)).toBeUndefined();
   });
 
   it('ignores hidden nodes and app content web areas keep no origin', () => {
@@ -113,6 +115,7 @@ describe('extractStep', () => {
       node('1', 'AXTextField', { secure: true, title: 'Password' }),
     ], { bundleId: 'x' }));
     expect(step.controls[0]).toMatchObject({ kind: 'note', tone: 'error', text: 'Wrong password' });
+    expect(step.shown.map((control) => control.kind)).toEqual(['note', 'text']);
   });
 });
 

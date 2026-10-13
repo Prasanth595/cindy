@@ -24,12 +24,11 @@ export type TerminalProgram = 'sudo' | 'ssh' | 'ssh-add' | 'git';
 export interface TerminalPromptStep {
   purpose: string;
   source: InputHandoffSource;
-  controls: InputHandoffControl[];
-  /** Field the owner types into; absent for yes/no confirmations. */
-  fieldId?: string;
-  /** Button id → literal answer written back to the program. */
-  answers: Map<string, string>;
+  /** One field; whatever the owner types goes back to the program as the answer. */
+  controls: [Extract<InputHandoffControl, { kind: 'text' }>];
 }
+
+const FIELD_ID = 'answer';
 
 const PROMPT_MAX = 300;
 const URL_IN_PROMPT = /\bhttps?:\/\/[^\s'"]+/i;
@@ -52,24 +51,18 @@ export function buildTerminalPromptStep(rawPrompt: string, program: TerminalProg
     ...(origin ? { origin } : {}),
     ...(warning ? { warning } : {}),
   };
-  // ssh asks to trust an unknown host key with a literal yes/no answer.
-  if (/\(yes\/no(\/\[fingerprint\])?\)\??\s*$/i.test(prompt)) {
-    return {
-      purpose: prompt,
-      source,
-      controls: [
-        { id: 'yes', kind: 'button', label: 'yes', primary: true },
-        { id: 'no', kind: 'button', label: 'no' },
-      ],
-      answers: new Map([['yes', 'yes'], ['no', 'no']]),
-    };
-  }
+  // ssh asks to trust an unknown host key with a typed yes/no (or the fingerprint); it is not a secret.
+  const confirm = /\(yes\/no(\/\[fingerprint\])?\)\??\s*$/i.test(prompt);
   return {
     purpose: prompt,
     source,
-    controls: [{ id: 'answer', kind: 'text', label: '', contentType: contentTypeFor(prompt, program) }],
-    fieldId: 'answer',
-    answers: new Map(),
+    controls: [{
+      id: FIELD_ID,
+      kind: 'text',
+      label: '',
+      contentType: confirm ? 'text' : contentTypeFor(prompt, program),
+      ...(confirm ? { placeholder: 'yes / no' } : {}),
+    }],
   };
 }
 
@@ -93,6 +86,7 @@ function sameHolder(a: InputHandoffHolder, b: InputHandoffHolder): boolean {
 
 export class TerminalPromptSession {
   private revision = 0;
+  private unheldClaimFrom: number | null = null;
   private phase: InputHandoffPhase = 'ready';
   private holder: InputHandoffHolder | undefined;
   private answeredOn: InputHandoffHolder | undefined;
@@ -130,7 +124,12 @@ export class TerminalPromptSession {
   }
 
   isActionable(revision: number): boolean {
-    return !this.ended && this.phase === 'ready' && revision === this.revision;
+    return !this.ended && this.phase === 'ready' && this.acceptsRevision(revision);
+  }
+
+  /** The current revision, or the one just before this screen was taken while nobody held it (see `decide`). */
+  private acceptsRevision(revision: number): boolean {
+    return revision === this.revision || (this.unheldClaimFrom !== null && revision === this.unheldClaimFrom && this.revision === revision + 1);
   }
 
   async start(): Promise<void> {
@@ -141,18 +140,13 @@ export class TerminalPromptSession {
 
   async submit(submission: InputHandoffSubmission, actor?: InputHandoffHolder): Promise<boolean> {
     if (!this.isActionable(submission.expectedRevision)) return false;
-    if (!validateInputHandoffSubmissionForStep(this.snapshot(), submission)) return false;
+    // The revision before a quiet claim is good only for the device that claimed.
+    if (submission.expectedRevision !== this.revision && !(actor && this.holder && sameHolder(actor, this.holder))) return false;
+    if (!validateInputHandoffSubmissionForStep({ ...this.snapshot(), revision: submission.expectedRevision }, submission)) return false;
     let value: string | undefined;
     try {
-      if (this.step.fieldId) {
-        const typed = submission.values[this.step.fieldId];
-        if (typeof typed !== 'string' || submission.action.kind === 'press') return false;
-        value = typed;
-      } else {
-        if (submission.action.kind !== 'press') return false;
-        value = this.step.answers.get(submission.action.controlId);
-      }
-      if (value === undefined) return false;
+      value = submission.values[FIELD_ID];
+      if (typeof value !== 'string' || submission.action.kind !== 'submit') return false;
       this.answeredOn = actor ?? { local: true };
       this.deliver(value);
     } finally {
@@ -170,15 +164,15 @@ export class TerminalPromptSession {
       case 'done':
         this.end('cancelled', 'cancelled');
         return true;
-      case 'decline':
-        this.end('cancelled', 'declined');
-        return true;
-      case 'claim':
+      case 'claim': {
         if (!actor) return false;
         if (this.holder && sameHolder(this.holder, actor)) return true;
+        const unheld = this.holder ? null : this.revision;
         this.holder = actor;
         this.publish(this.phase);
+        this.unheldClaimFrom = unheld;
         return true;
+      }
       case 'refresh':
         this.publish(this.phase);
         return true;

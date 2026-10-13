@@ -351,12 +351,15 @@ function InteractionPanelContent({
   }
   return (
     <View style={[styles.root, fillAvailableHeight && styles.rootFill, rootLayoutStyle]} testID="interaction.panel">
-      <PendingTaskHeader
-        onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
-        onSelectRequest={setActiveRequestId}
-        presentation={activeQueuePresentation}
-        touchLayout={touchLayout}
-      />
+      {/* 代输入条自带用途与位置,单独一条时不再叠一层队列头。 */}
+      {kind === 'input_handoff' && activeQueuePresentation.totalCount <= 1 ? null : (
+        <PendingTaskHeader
+          onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
+          onSelectRequest={setActiveRequestId}
+          presentation={activeQueuePresentation}
+          touchLayout={touchLayout}
+        />
+      )}
       <InteractionItem
         key={readRequestId(activeInteraction) ?? `${interactionKind(activeInteraction)}-${JSON.stringify(activeInteraction.request)}`}
         deviceId={deviceId}

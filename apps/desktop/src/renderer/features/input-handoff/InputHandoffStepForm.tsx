@@ -1,10 +1,14 @@
 /**
- * One 代输入 step as standard form controls, in screen order. The draft lives
- * only here; the parent remounts this form for every new revision, and a
- * successful submit clears it immediately.
+ * One 代输入 step: only the fields the owner types into, in screen order, plus
+ * what the page says is wrong with them. Return moves to the next field and,
+ * on the last one, hands the answer over (the dialog's Continue does the
+ * same); Cindy then confirms on the page itself. The draft lives only here;
+ * the parent remounts this form for every new screen, and a successful submit
+ * clears it immediately.
  */
 
 import { useRef, useState, type FormEvent } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -13,48 +17,42 @@ import type {
   InputHandoffSnapshot,
   InputHandoffValues,
 } from '@cindy/device-link';
-import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Input, Textarea } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { cn } from '@/lib/utils';
 import {
   autoCompleteFor,
-  initialDraft,
   inputModeFor,
   inputTypeFor,
-  interactiveControls,
+  textFields,
+  type InputHandoffTextControl,
 } from './inputHandoffModel';
 
-/** Decisions the step footer can send; `picture` switches this step to its screenshot. */
-export type InputHandoffStepDecision = 'done' | 'cancel' | 'refresh' | 'decline' | 'picture';
-
-type ButtonControl = Extract<InputHandoffControl, { kind: 'button' }>;
-type TextControl = Extract<InputHandoffControl, { kind: 'text' }>;
-
 export interface InputHandoffStepFormProps {
+  /** The dialog's Continue button submits this form by id. */
+  formId: string;
   snapshot: InputHandoffSnapshot;
   busy: boolean;
   inputBlocked: boolean;
-  onDecide: (action: InputHandoffStepDecision) => void;
   onSubmit: (draft: InputHandoffValues, action: InputHandoffAction) => Promise<boolean>;
   /** First edit on this screen: this device starts handling the handoff. */
   onStart?: () => void;
 }
 
+const FIELD_ATTR = 'data-input-handoff-field';
+/** Marks the dialog's Continue button: it answers from any field, Return only from the last one. */
+export const CONTINUE_ATTR = 'data-input-handoff-continue';
+
 export function InputHandoffStepForm({
+  formId,
   snapshot,
   busy,
   inputBlocked,
-  onDecide,
   onSubmit,
   onStart,
 }: InputHandoffStepFormProps) {
-  const { t } = useTranslation();
-  const [draft, setDraft] = useState<InputHandoffValues>(() => initialDraft(snapshot));
+  const [draft, setDraft] = useState<InputHandoffValues>({});
   const started = useRef(false);
-  const set = (id: string, value: string | boolean) => {
+  const set = (id: string, value: string) => {
     if (!started.current) {
       started.current = true;
       onStart?.();
@@ -62,183 +60,52 @@ export function InputHandoffStepForm({
     setDraft((d) => ({ ...d, [id]: value }));
   };
   const disabled = busy || inputBlocked;
+  const fields = textFields(snapshot);
+  const lastField = fields.at(-1)?.id;
 
-  const interactive = interactiveControls(snapshot);
-  const buttons = interactive.filter((c): c is ButtonControl => c.kind === 'button');
-  const fields = interactive.filter((c) => c.kind !== 'button');
-  const primary = buttons.find((b) => b.primary);
-  // A terminal prompt (sudo / ssh / git) is one answer to one program: no
-  // screen to re-read, fill without confirming, or hand back.
-  const terminal = Boolean(snapshot.command);
-
-  const run = async (action: InputHandoffAction) => {
-    if (disabled) return;
-    // Drop the typed values from memory as soon as the Host has them.
-    if (await onSubmit(draft, action)) setDraft({});
-  };
-
-  const onFormSubmit = (event: FormEvent) => {
+  const onFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (primary) void run({ kind: 'press', controlId: primary.id });
-    else if (fields.length > 0) void run({ kind: 'submit' });
+    // Return in an earlier field moves on, like a sign-in form; only the last one (or Continue) answers.
+    const inputs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(`[${FIELD_ATTR}]`));
+    const at = inputs.indexOf(document.activeElement as HTMLElement);
+    const continued = (event.nativeEvent as SubmitEvent).submitter?.hasAttribute(CONTINUE_ATTR) === true;
+    if (!continued && at >= 0 && at < inputs.length - 1) {
+      inputs[at + 1].focus();
+      return;
+    }
+    if (disabled || fields.length === 0) return;
+    // Drop the typed values from memory as soon as the Host has them.
+    if (await onSubmit(draft, { kind: 'submit' })) setDraft({});
   };
 
   return (
-    <form onSubmit={onFormSubmit} autoComplete="on" noValidate>
-      {inputBlocked && (
-        <p className="mb-3 text-12 text-[var(--text-secondary)]">{t('inputHandoff.remoteUnavailable')}</p>
-      )}
+    <form id={formId} onSubmit={(event) => void onFormSubmit(event)} autoComplete="on" noValidate>
       <div className="flex flex-col gap-3">
-        {snapshot.controls.map((control) => {
-          switch (control.kind) {
-            case 'note':
-              return <StepNote key={control.id} control={control} />;
-            case 'text':
-              return (
-                <InputHandoffTextField
-                  key={control.id}
-                  control={control}
-                  value={typeof draft[control.id] === 'string' ? (draft[control.id] as string) : ''}
-                  disabled={disabled}
-                  onChange={(v) => set(control.id, v)}
-                />
-              );
-            case 'choice':
-              return (
-                <FormField key={control.id} label={control.label || t('inputHandoff.unnamedChoice')}>
-                  {(field) => (
-                    <Select
-                      id={field.id}
-                      label={control.label || t('inputHandoff.unnamedChoice')}
-                      value={typeof draft[control.id] === 'string' ? (draft[control.id] as string) : ''}
-                      options={control.options.map((o) => ({ value: o.id, label: o.label }))}
-                      disabled={disabled}
-                      onValueChange={(v) => set(control.id, v)}
-                    />
-                  )}
-                </FormField>
-              );
-            case 'toggle':
-              return (
-                <label key={control.id} className="flex items-center justify-between gap-3 text-13">
-                  <span className="min-w-0 [overflow-wrap:anywhere]">{control.label}</span>
-                  <Switch
-                    checked={draft[control.id] === true}
-                    disabled={disabled}
-                    aria-label={control.label}
-                    onCheckedChange={(v) => set(control.id, v === true)}
-                  />
-                </label>
-              );
-            default:
-              return null;
-          }
-        })}
+        {snapshot.controls.map((control) =>
+          control.kind === 'note' ? (
+            <StepNote key={control.id} control={control} />
+          ) : (
+            <InputHandoffTextField
+              key={control.id}
+              control={control}
+              value={draft[control.id] ?? ''}
+              disabled={disabled}
+              last={control.id === lastField}
+              autoFocus={control.id === fields[0]?.id}
+              onChange={(v) => set(control.id, v)}
+            />
+          ),
+        )}
       </div>
-      {interactive.length === 0 && (
-        <p className="text-13 text-[var(--text-secondary)]">{t('inputHandoff.nothingToFill')}</p>
-      )}
-      {buttons.length > 0 && (
-        <div className="mt-4 flex flex-col gap-2">
-          {!terminal && <p className="text-12 text-[var(--text-tertiary)]">{t('inputHandoff.screenActions')}</p>}
-          <div className="flex flex-wrap gap-2">
-            {buttons.map((button) => (
-              <Button
-                key={button.id}
-                type="button"
-                size="sm"
-                variant={button.primary ? 'primary' : 'secondary'}
-                tone={button.link ? 'quiet' : 'default'}
-                disabled={disabled}
-                className="max-w-full"
-                onClick={() => void run({ kind: 'press', controlId: button.id })}
-              >
-                <span className="truncate">{button.label || t('inputHandoff.unnamedButton')}</span>
-              </Button>
-            ))}
-          </div>
-        </div>
-      )}
-      <StepFooter
-        busy={busy}
-        disabled={disabled}
-        terminal={terminal}
-        showFill={buttons.length === 0 && fields.length > 0}
-        onDecide={onDecide}
-        onFill={() => void run({ kind: 'fill' })}
-      />
+      {/* Return submits the form; this button stays out of sight and out of the tab order. */}
+      <button type="submit" className="sr-only" tabIndex={-1} aria-hidden disabled={disabled} />
     </form>
-  );
-}
-
-function StepFooter({
-  busy,
-  disabled,
-  terminal,
-  showFill,
-  onDecide,
-  onFill,
-}: {
-  busy: boolean;
-  disabled: boolean;
-  terminal: boolean;
-  showFill: boolean;
-  onDecide: (action: InputHandoffStepDecision) => void;
-  onFill: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border-default)] pt-3">
-      <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('cancel')}>
-        {t('inputHandoff.action.cancel')}
-      </Button>
-      <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('decline')}>
-        {t('inputHandoff.action.decline')}
-      </Button>
-      {!terminal && (
-        <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('refresh')}>
-          {t('inputHandoff.action.refresh')}
-        </Button>
-      )}
-      {!terminal && (
-        <Button type="button" size="sm" variant="secondary" tone="quiet" disabled={busy} onClick={() => onDecide('picture')}>
-          {t('inputHandoff.action.picture')}
-        </Button>
-      )}
-      <div className="ml-auto flex flex-wrap gap-2">
-        {!terminal && (
-          <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => onDecide('done')}>
-            {t('inputHandoff.action.done')}
-          </Button>
-        )}
-        {showFill && (
-          <>
-            {!terminal && (
-              <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={onFill}>
-                {t('inputHandoff.action.fill')}
-              </Button>
-            )}
-            <Button type="submit" size="sm" variant="primary" disabled={disabled}>
-              {t('inputHandoff.action.submit')}
-            </Button>
-          </>
-        )}
-      </div>
-    </div>
   );
 }
 
 function StepNote({ control }: { control: Extract<InputHandoffControl, { kind: 'note' }> }) {
   return (
-    <p
-      role={control.tone === 'error' ? 'alert' : undefined}
-      className={cn(
-        '[overflow-wrap:anywhere]',
-        control.tone === 'heading' && 'text-14 font-semibold text-[var(--text-primary)]',
-        control.tone === 'error' && 'text-13 text-[var(--error-fg)]',
-        control.tone === 'info' && 'text-13 text-[var(--text-secondary)]',
-      )}
-    >
+    <p role="alert" className="text-13 text-[var(--error-fg)] [overflow-wrap:anywhere]">
       {control.text}
     </p>
   );
@@ -249,14 +116,22 @@ export function InputHandoffTextField({
   control,
   value,
   disabled,
+  last = true,
+  autoFocus,
   onChange,
 }: {
-  control: TextControl;
+  control: InputHandoffTextControl;
   value: string;
   disabled: boolean;
+  /** Return on this field hands the answer over (otherwise it moves to the next field). */
+  last?: boolean;
+  autoFocus?: boolean;
   onChange: (value: string) => void;
 }) {
   const { t } = useTranslation();
+  // The eye only swaps the field kind; the autofill hint stays, so password managers still fill it.
+  const [revealed, setRevealed] = useState(false);
+  const password = control.contentType === 'password';
   const label = control.label || t(
     control.contentType === 'password' ? 'inputHandoff.passwordField'
       : control.contentType === 'one-time-code' ? 'inputHandoff.codeField'
@@ -271,6 +146,14 @@ export function InputHandoffTextField({
           <Textarea
             id={field.id}
             aria-describedby={field['aria-describedby']}
+            data-input-handoff-field=""
+            // Return moves on like in a one-line field; Shift + Return adds a line.
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
             value={value}
             placeholder={control.placeholder}
             disabled={disabled}
@@ -279,15 +162,18 @@ export function InputHandoffTextField({
           />
         ) : (
           <>
-            {/* Standard platform field: no custom reveal, autofill hints intact. */}
+            {/* Standard platform field with its autofill hints; the eye never turns them off. */}
             <Input
               id={field.id}
               aria-describedby={field['aria-describedby']}
+              data-input-handoff-field=""
               size="md"
-              type={inputTypeFor(control)}
+              type={password && revealed ? 'text' : inputTypeFor(control)}
+              autoFocus={autoFocus}
               name={control.contentType === 'text' ? control.id : control.contentType}
               autoComplete={autoCompleteFor(control)}
               inputMode={inputModeFor(control)}
+              enterKeyHint={last ? 'go' : 'next'}
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
@@ -296,6 +182,20 @@ export function InputHandoffTextField({
               placeholder={control.placeholder}
               disabled={disabled}
               onChange={onChange}
+              trailing={
+                password ? (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    aria-pressed={revealed}
+                    aria-label={t(revealed ? 'inputHandoff.action.hidePassword' : 'inputHandoff.action.showPassword')}
+                    onClick={() => setRevealed((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full text-[var(--text-tertiary)] transition-colors enabled:hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-60"
+                  >
+                    {revealed ? <EyeOff size={15} aria-hidden /> : <Eye size={15} aria-hidden />}
+                  </button>
+                ) : undefined
+              }
             />
             {listId && (
               <datalist id={listId}>

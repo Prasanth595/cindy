@@ -1,7 +1,8 @@
-import type {
-  InputHandoffControl,
-  InputHandoffSnapshot,
-  InputHandoffValues,
+import {
+  isInputHandoffDeviceCode,
+  type InputHandoffControl,
+  type InputHandoffSnapshot,
+  type InputHandoffValues,
 } from '@cindy/device-link';
 
 /**
@@ -45,47 +46,28 @@ export function isInputHandoffAwaitingOwner(snapshot: InputHandoffSnapshot | nul
   return !!snapshot && snapshot.terminal !== true;
 }
 
-export type InputHandoffInteractive = Exclude<InputHandoffControl, { kind: 'note' }>;
+export type InputHandoffTextControl = Extract<InputHandoffControl, { kind: 'text' }>;
 
-export function interactiveControls(snapshot: InputHandoffSnapshot): InputHandoffInteractive[] {
-  return snapshot.controls.filter(
-    (control): control is InputHandoffInteractive => control.kind !== 'note',
-  );
+/** The fields the owner types into, in screen order. */
+export function textFields(snapshot: InputHandoffSnapshot): InputHandoffTextControl[] {
+  return snapshot.controls.filter((control): control is InputHandoffTextControl => control.kind === 'text');
 }
 
-/**
- * Initial draft for a step: choices start at the screen's current selection
- * and toggles at their current state. Text starts empty — current text is
- * never sent to the card.
- */
-export function initialDraft(snapshot: InputHandoffSnapshot): InputHandoffValues {
-  const draft: InputHandoffValues = {};
-  for (const control of snapshot.controls) {
-    if (control.kind === 'choice' && control.selected) draft[control.id] = control.selected;
-    if (control.kind === 'toggle') draft[control.id] = control.checked;
-  }
-  return draft;
-}
-
-/** Only values the owner actually changed are applied to the screen. */
+/** Only fields the owner typed into are applied; text already on the screen stays. */
 export function changedValues(
   snapshot: InputHandoffSnapshot,
   draft: InputHandoffValues,
 ): InputHandoffValues {
-  const initial = initialDraft(snapshot);
   const out: InputHandoffValues = {};
-  for (const control of interactiveControls(snapshot)) {
+  for (const control of textFields(snapshot)) {
     const value = draft[control.id];
-    if (value === undefined) continue;
-    if (control.kind === 'text' && value === '') continue;
-    if (control.kind !== 'text' && value === initial[control.id]) continue;
-    out[control.id] = value;
+    if (value) out[control.id] = value;
   }
   return out;
 }
 
 /** Standard platform autofill hints so password managers recognize the field. */
-export function autoCompleteFor(control: Extract<InputHandoffControl, { kind: 'text' }>): string {
+export function autoCompleteFor(control: InputHandoffTextControl): string {
   switch (control.contentType) {
     case 'password':
       return 'current-password';
@@ -104,7 +86,7 @@ export function autoCompleteFor(control: Extract<InputHandoffControl, { kind: 't
   }
 }
 
-export function inputTypeFor(control: Extract<InputHandoffControl, { kind: 'text' }>): string {
+export function inputTypeFor(control: InputHandoffTextControl): string {
   switch (control.contentType) {
     case 'password':
       return 'password';
@@ -122,7 +104,7 @@ export function inputTypeFor(control: Extract<InputHandoffControl, { kind: 'text
 }
 
 export function inputModeFor(
-  control: Extract<InputHandoffControl, { kind: 'text' }>,
+  control: InputHandoffTextControl,
 ): 'numeric' | 'email' | 'tel' | 'url' | 'text' {
   switch (control.contentType) {
     case 'one-time-code':
@@ -137,4 +119,31 @@ export function inputModeFor(
     default:
       return 'text';
   }
+}
+
+/** Where the value goes, as the owner checks it: a secure site's host (with a lock), otherwise the origin or app. */
+export function inputHandoffPlace(source: InputHandoffSnapshot['source']): { label: string; secure: boolean } {
+  const origin = source.origin;
+  if (!origin) return { label: source.app, secure: false };
+  if (origin.startsWith('https://') && !source.warning) return { label: origin.slice('https://'.length), secure: true };
+  return { label: origin, secure: false };
+}
+
+export type InputHandoffPlaceKind = 'web' | 'terminal' | 'app';
+
+export const inputHandoffPlaceKind = (snapshot: InputHandoffSnapshot): InputHandoffPlaceKind =>
+  snapshot.command ? 'terminal' : snapshot.source.origin ? 'web' : 'app';
+
+/** The dialog opens only on a screen with something for the owner: fields, a picture, a QR code or a sign-in code. */
+export function inputHandoffDialogHasContent(snapshot: InputHandoffSnapshot, heldElsewhere: boolean): boolean {
+  if (snapshot.terminal || snapshot.phase !== 'ready' || heldElsewhere) return false;
+  return Boolean(snapshot.picture) || isInputHandoffDeviceCode(snapshot.deviceCode) || textFields(snapshot).length > 0;
+}
+
+/** What the dialog asks for: typing, a QR code to scan, a sign-in code to use elsewhere, or a picture of the screen. */
+export function inputHandoffDialogMode(snapshot: InputHandoffSnapshot): 'qr' | 'picture' | 'code' | 'fields' {
+  if (snapshot.picture && snapshot.qr === 'scan') return 'qr';
+  if (snapshot.picture) return 'picture';
+  if (isInputHandoffDeviceCode(snapshot.deviceCode) && textFields(snapshot).length === 0) return 'code';
+  return 'fields';
 }

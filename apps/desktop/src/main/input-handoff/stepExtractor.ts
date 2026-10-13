@@ -7,7 +7,7 @@ import {
   type InputHandoffDeviceCode,
   type InputHandoffSource,
 } from '@cindy/device-link';
-import type { ControlBinding, NativeAxNode, NativeAxSnapshot } from './types.js';
+import type { ControlBinding, NativeAxNode, NativeAxSnapshot, ScreenControl } from './types.js';
 import { classifyOrigin, isBrowserBundle } from './originPolicy.js';
 import { findDeviceCode } from './deviceCode.js';
 
@@ -20,14 +20,19 @@ import { findDeviceCode } from './deviceCode.js';
  */
 
 export interface ExtractedStep {
-  controls: InputHandoffControl[];
+  /** Everything readable on the step; the Host keeps it to act and to detect changes. */
+  controls: ScreenControl[];
+  /**
+   * What the owner is asked for: the text fields to type into and any error
+   * about them. Empty when the step has nothing to type; buttons, pick lists,
+   * boxes, headings and links stay with the agent.
+   */
+  shown: InputHandoffControl[];
   bindings: Map<string, ControlBinding>;
   source: InputHandoffSource;
   /** Stable when the visible structure is unchanged; used for settle and change detection. */
   signature: string;
-  hasInputs: boolean;
   hasSecure: boolean;
-  hasPrimary: boolean;
   /** Full page URL of the scoped web content, for completion hints only. */
   url?: string;
   /** All visible text, for completion hints only. Never shown to the agent. */
@@ -126,7 +131,7 @@ export function contentTypeFor(node: NativeAxNode, label: string): InputHandoffC
   return 'text';
 }
 
-function signatureOf(source: InputHandoffSource, controls: InputHandoffControl[]): string {
+function signatureOf(source: InputHandoffSource, controls: ScreenControl[]): string {
   return JSON.stringify([
     source.app,
     source.window ?? '',
@@ -170,12 +175,14 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
     if (node.role === 'AXStaticText') textNodes.push({ node, index });
   });
 
-  const controls: InputHandoffControl[] = [];
+  const controls: ScreenControl[] = [];
   const bindings = new Map<string, ControlBinding>();
   const usedLabels = new Set<string>();
   const radioGroups = new Map<string, { label: string; members: NativeAxNode[] }>();
   let next = 0;
   const id = () => `c${next++}`;
+  /** Where each control sits in the tree, to place explanatory lines in reading order. */
+  const refs = new Map<string, string>();
   let hasSecure = false;
   let lastTextControl: Extract<InputHandoffControl, { kind: 'text' }> | undefined;
 
@@ -215,8 +222,10 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
       controls.push(control);
       lastTextControl = control;
       bindings.set(controlId, { kind: 'text', ref: node.ref, fp: node.fp, secure: !!node.secure });
+      refs.set(controlId, node.ref);
       return;
     }
+    // Pop-ups, boxes and radios are the agent's to operate; they are read only to tell steps apart.
     if (node.role === 'AXPopUpButton' && (node.options?.length || node.value)) {
       const label = ownLabel(node) ?? nearbyLabel(node, textNodes, index) ?? '';
       const options = (node.options ?? []).slice(0, INPUT_HANDOFF_MAX_OPTIONS).map((option, i) => ({
@@ -226,13 +235,7 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
       const controlId = id();
       const selected = options.find((option) => option.label === node.value)?.id;
       controls.push({ id: controlId, kind: 'choice', label, options, ...(selected ? { selected } : {}) });
-      bindings.set(controlId, {
-        kind: 'popup',
-        ref: node.ref,
-        fp: node.fp,
-        optionLabels: new Map(options.map((option, i) => [option.id, (node.options ?? [])[i]])),
-        ...(options.length === 0 ? { needsOptions: true } : {}),
-      });
+      refs.set(controlId, node.ref);
       return;
     }
     if (node.role === 'AXCheckBox') {
@@ -240,7 +243,7 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
       if (!label) return;
       const controlId = id();
       controls.push({ id: controlId, kind: 'toggle', label, checked: !!node.checked });
-      bindings.set(controlId, { kind: 'toggle', ref: node.ref, fp: node.fp, checked: !!node.checked });
+      refs.set(controlId, node.ref);
       return;
     }
     if (node.role === 'AXRadioButton') {
@@ -268,6 +271,7 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
         ...(node.role === 'AXLink' ? { link: true as const } : {}),
       });
       bindings.set(controlId, { kind: 'press', ref: node.ref, fp: node.fp });
+      refs.set(controlId, node.ref);
       return;
     }
     if (node.role === 'AXHeading') {
@@ -287,15 +291,11 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
     if (control.kind !== 'choice' || !control.id.startsWith('radio:')) continue;
     const group = radioGroups.get(control.id.slice('radio:'.length))!;
     const controlId = id();
-    const options = new Map<string, { ref: string; fp: string }>();
     const shown = group.members
       .map((member) => ({ member, label: buttonLabel(member) }))
       .filter((entry): entry is { member: NativeAxNode; label: string } => !!entry.label)
       .slice(0, INPUT_HANDOFF_MAX_OPTIONS)
-      .map((entry, index) => {
-        options.set(`o${index}`, { ref: entry.member.ref, fp: entry.member.fp });
-        return { id: `o${index}`, label: entry.label, checked: !!entry.member.checked };
-      });
+      .map((entry, index) => ({ id: `o${index}`, label: entry.label, checked: !!entry.member.checked }));
     if (shown.length === 0) {
       controls.splice(i--, 1);
       continue;
@@ -308,10 +308,10 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
       options: shown.map(({ id: optionId, label }) => ({ id: optionId, label })),
       ...(selected ? { selected } : {}),
     };
-    bindings.set(controlId, { kind: 'radio', options });
+    refs.set(controlId, group.members[0].ref);
   }
 
-  // Short pages: keep a few explanatory lines that are not field labels.
+  // Short pages: a few explanatory lines that are not field labels, so a changed message counts as a new step.
   const interactive = controls.filter((control) => control.kind !== 'note').length;
   if (interactive <= 12 && textNodes.length <= 24) {
     let added = 0;
@@ -321,7 +321,7 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
       if (!text || text.length < 4 || usedLabels.has(text)) continue;
       if (controls.some((control) => control.kind !== 'note' && control.label === text)) continue;
       // Insert before the first control that comes after this text in document order.
-      const position = controlIndexAfter(inScope, controls, bindings, index);
+      const position = controlIndexAfter(inScope, controls, refs, index);
       controls.splice(position, 0, { id: id(), kind: 'note', tone: 'info', text });
       added++;
     }
@@ -334,7 +334,7 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
   const primary = controls.findIndex(
     (control, i) => control.kind === 'button' && !control.link && i > lastInput && PRIMARY_LABEL.test(control.label),
   );
-  if (primary >= 0) (controls[primary] as Extract<InputHandoffControl, { kind: 'button' }>).primary = true;
+  if (primary >= 0) (controls[primary] as Extract<ScreenControl, { kind: 'button' }>).primary = true;
 
   const capped = capControls(controls, bindings);
   const source: InputHandoffSource = {
@@ -356,29 +356,39 @@ export function extractStep(snapshot: NativeAxSnapshot): ExtractedStep {
   const deviceCode = findDeviceCode(inScope, capped.some((control) => control.kind === 'text'));
   return {
     controls: capped,
+    shown: deviceCode ? [] : ownerControls(capped),
     bindings,
     source,
     signature: signatureOf(source, capped),
-    hasInputs: capped.some((control) => control.kind === 'text' || control.kind === 'choice' || control.kind === 'toggle'),
     hasSecure,
-    hasPrimary: capped.some((control) => control.kind === 'button' && control.primary),
     ...(topWeb?.url ? { url: topWeb.url } : {}),
     texts,
     ...(deviceCode ? { deviceCode } : {}),
   };
 }
 
+/**
+ * Only what needs the owner: the text fields to type into, plus any error the
+ * page shows about them. Buttons, pick lists and boxes stay with the agent, so
+ * a step without a text field asks the owner for nothing.
+ */
+function ownerControls(controls: ScreenControl[]): InputHandoffControl[] {
+  const shown = (control: ScreenControl): control is InputHandoffControl =>
+    (control.kind === 'text' && control.contentType !== 'search') || (control.kind === 'note' && control.tone === 'error');
+  // A search box alone (a page after sign-in) is not something the owner was asked for.
+  if (!controls.some((control) => control.kind === 'text' && control.contentType !== 'search')) return [];
+  return controls.filter(shown);
+}
+
 function controlIndexAfter(
   nodes: NativeAxNode[],
-  controls: InputHandoffControl[],
-  bindings: Map<string, ControlBinding>,
+  controls: ScreenControl[],
+  refs: Map<string, string>,
   nodeIndex: number,
 ): number {
   const order = new Map(nodes.map((node, index) => [node.ref, index]));
   for (let i = 0; i < controls.length; i++) {
-    const binding = bindings.get(controls[i].id);
-    const ref = binding && binding.kind !== 'radio' ? binding.ref
-      : binding?.kind === 'radio' ? [...binding.options.values()][0]?.ref : undefined;
+    const ref = refs.get(controls[i].id);
     if (ref !== undefined && (order.get(ref) ?? -1) > nodeIndex) return i;
   }
   return controls.length;
@@ -386,11 +396,11 @@ function controlIndexAfter(
 
 /** Keep inputs and primary actions when a screen is crowded; links go first. */
 function capControls(
-  controls: InputHandoffControl[],
+  controls: ScreenControl[],
   bindings: Map<string, ControlBinding>,
-): InputHandoffControl[] {
+): ScreenControl[] {
   if (controls.length <= INPUT_HANDOFF_MAX_CONTROLS) return controls;
-  const rank = (control: InputHandoffControl) =>
+  const rank = (control: ScreenControl) =>
     control.kind === 'text' || control.kind === 'choice' ? 0
       : control.kind === 'button' && control.primary ? 0
         : control.kind === 'note' && control.tone !== 'info' ? 1

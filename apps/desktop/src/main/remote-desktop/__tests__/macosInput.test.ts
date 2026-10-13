@@ -27,6 +27,7 @@ it.skipIf(process.platform !== 'darwin')(
       expect(stdout.trim().split('\n')).toEqual([
         'native keyboard flags passed',
         'native window confinement passed',
+        'native qr detection passed',
       ]);
     } finally {
       await rm(directory, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import {
   resolveDesktopInputBinary,
 } from '../remote-desktop/inputHost.js';
 import type {
+  FoundQr,
   NativeActRequest,
   NativeActResult,
   NativeAxSnapshot,
@@ -14,7 +15,7 @@ import type {
   WindowCapture,
   WindowCaptureError,
 } from './types.js';
-import { captureWindowArea } from './windowCapture.js';
+import { captureWindowArea, captureWindowQr, type DetectedQr } from './windowCapture.js';
 
 const exec = promisify(execFile);
 
@@ -31,6 +32,12 @@ export interface HandoffDriver {
   capture?(target: { pid: number; window: NativeWindowRef }): Promise<WindowCapture | { error: WindowCaptureError }>;
   focusedField?(pid: number): Promise<{ editable: boolean; secure: boolean }>;
   pointer?(request: PointerRequest): Promise<NativeActResult>;
+  /**
+   * Scan-to-sign-in: the QR code in the window, cut out of it, or null when it
+   * shows none. With `frame` the window is photographed where it is, without
+   * bringing it forward (watching a code already shown); otherwise it is raised first.
+   */
+  qr?(target: { pid: number; window: NativeWindowRef }, frame: number[] | null): Promise<FoundQr | null | { error: WindowCaptureError }>;
   /** Bring the window to the front; its frame and window-server id, for a live view of just that window. */
   raise?(target: { pid: number; window: NativeWindowRef }): Promise<{ frame: number[]; windowId: number } | { error: WindowCaptureError }>;
 }
@@ -43,7 +50,9 @@ export interface HandoffDriver {
 async function runHelper(request: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
   const binary = await resolveDesktopInputBinary();
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, ['--handoff'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    // All three descriptors must be pipes: the helper authenticates its caller on each of them.
+    const child = spawn(binary, ['--handoff'], { stdio: 'pipe' });
+    child.stderr.resume();
     let output = '';
     let settled = false;
     const timer = setTimeout(() => {
@@ -67,6 +76,7 @@ async function runHelper(request: Record<string, unknown>, timeoutMs: number): P
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      child.stdin.destroy();
       if (settled) return;
       settled = true;
       const line = output.trim();
@@ -78,8 +88,59 @@ async function runHelper(request: Record<string, unknown>, timeoutMs: number): P
         resolve({ error: code === 0 ? 'invalid' : 'unavailable' });
       }
     });
-    child.stdin.end(`${JSON.stringify(request)}\n`);
+    // Stdin stays open until the helper exits: it checks who launched it on each descriptor,
+    // and a closed one fails that check. The request ends at its newline.
+    child.stdin.on('error', () => undefined);
+    child.stdin.write(`${JSON.stringify(request)}\n`);
   });
+}
+
+/**
+ * QR codes in one photographed window; null when the helper could not look (not "no code").
+ * The picture travels on a pipe only; the reply carries no pixels.
+ */
+async function detectQr(jpeg: Buffer): Promise<DetectedQr[] | null> {
+  const binary = await resolveDesktopInputBinary();
+  const reply = await new Promise<string>((resolve, reject) => {
+    const child = spawn(binary, ['--handoff-qr'], { stdio: 'pipe' });
+    child.stderr.resume();
+    let output = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk;
+      if (output.length > 64_000) child.kill('SIGKILL');
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      child.stdin.destroy();
+      resolve(output.trim());
+    });
+    // Its length first, then the picture; stdin stays open (see runHelper).
+    child.stdin.on('error', () => undefined);
+    child.stdin.write(`${jpeg.length}\n`);
+    child.stdin.write(jpeg);
+  });
+  let parsed: { codes?: unknown };
+  try {
+    parsed = JSON.parse(reply) as { codes?: unknown };
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed.codes)) return null;
+  const codes: DetectedQr[] = [];
+  for (const code of parsed.codes) {
+    const entry = code as Partial<DetectedQr>;
+    // Vision may place a code touching the edge slightly outside the picture.
+    if (typeof entry?.text !== 'string' || !Array.isArray(entry.box) || entry.box.length !== 4 ||
+      !entry.box.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= -0.05 && n <= 1.05)) continue;
+    codes.push({ text: entry.text, box: entry.box.map((n) => Math.min(1, Math.max(0, n))) });
+  }
+  return codes;
 }
 
 /**
@@ -144,6 +205,15 @@ export function createMacHandoffDriver(): HandoffDriver {
     async capture(target) {
       const raised = await raiseWindow(target);
       return 'error' in raised ? raised : captureWindowArea(raised.frame);
+    },
+    async qr(target, frame) {
+      let area = frame;
+      if (!area) {
+        const raised = await raiseWindow(target);
+        if ('error' in raised) return raised;
+        area = raised.frame;
+      }
+      return captureWindowQr(area, detectQr);
     },
     async raise(target) {
       const raised = await raiseWindow(target);

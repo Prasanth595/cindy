@@ -249,10 +249,6 @@
     "inlineFormActionGeneric": "在电脑端填写一项配置"
   },
   "inputHandoff": {
-    "title": "代输入",
-    "requester": "来自 {{name}}",
-    "step": "第 {{count}} 步",
-    "command": "命令",
     "originWarning": {
       "insecure": "这个页面没有使用安全连接，输入的内容可能被他人读取。",
       "ip-address": "这个页面使用 IP 地址而不是域名，请确认它是你预期的网站。",
@@ -281,7 +277,9 @@
       "timeout": "等待时间过长，代输入已结束。",
       "unsupported": "这台电脑暂不支持代输入。",
       "origin_changed": "填写前页面已变化，什么都没有填入。请确认现在的页面后再填写。",
-      "picture_unavailable": "没能显示这一步的画面。请在系统设置中允许 Cindy 录制屏幕，并确认窗口没有被最小化。"
+      "picture_unavailable": "没能显示这一步的画面。请在系统设置中允许 Cindy 录制屏幕，并确认窗口没有被最小化。",
+      "screen_locked": "这台电脑的屏幕已锁定。请先解锁，再让 Agent 重试。",
+      "nothing_to_fill": "这个界面没有需要你输入的内容，已交还给 Agent 继续。"
     },
     "phase": {
       "reading": "正在读取界面…",
@@ -293,23 +291,22 @@
       "stay": "还没完成",
       "done": "交还给 Agent",
       "cancel": "取消代输入",
-      "refresh": "重新读取",
-      "fill": "仅填入",
-      "submit": "填入并确认",
       "claim": "改在这里处理",
-      "decline": "拒绝，本任务不再询问",
       "picture": "看画面",
       "backToForm": "回到表单",
-      "liveView": "实时画面"
+      "liveView": "实时画面",
+      "fill": "填写",
+      "skip": "跳过",
+      "continue": "继续",
+      "close": "取消",
+      "showPassword": "显示密码",
+      "hidePassword": "隐藏密码",
+      "scan": "扫码"
     },
     "remoteUnavailable": "这台电脑不能从远程接收输入。请在宿主电脑上完成这一步，再交还给 Agent。",
-    "unnamedChoice": "选项",
-    "unnamedButton": "未命名按钮",
     "unnamedField": "输入框",
     "passwordField": "密码",
     "codeField": "验证码",
-    "nothingToFill": "这一步没有可代填的内容。请在宿主电脑上完成后交还给 Agent，或者重新读取。",
-    "screenActions": "界面上的按钮（会先填入上面的内容）",
     "filledHint": "已有内容；留空则保持不变。",
     "record": {
       "doneOn_one": "主人在 {{device}} 完成了 {{count}} 步输入",
@@ -321,7 +318,7 @@
       "doneElsewhere_one": "主人在另一台设备上完成了 {{count}} 步输入",
       "doneElsewhere_other": "主人在另一台设备上完成了 {{count}} 步输入",
       "done": "代输入已完成",
-      "declined": "主人拒绝了代输入，本任务不再询问",
+      "nothingToFill": "无需输入，已交还给 Agent",
       "cancelled": "代输入已取消",
       "expired": "代输入已超时",
       "failed": "代输入未完成"
@@ -353,6 +350,25 @@
       "open": "在本设备打开",
       "openFailed": "无法打开链接",
       "then": "在打开的页面输入代码并完成登录，然后点「交还给 Agent」。"
+    },
+    "sheetNote": "只会填进电脑上的这一处，不会交给 Agent，也不会保存。",
+    "nothingLeft": "这里没有需要你填写的了。",
+    "qr": {
+      "open": "在本机打开 {{site}}",
+      "openApp": "在本机打开 {{site}} 链接",
+      "share": "存图或分享",
+      "copyLink": "复制链接",
+      "copyText": "复制内容",
+      "copied": "已复制。",
+      "copyFailed": "没能复制，请重试。",
+      "openFailed": "这台设备打不开这个链接。可以存图后在 App 的「扫一扫」里从相册识别。",
+      "shareFailed": "没能打开分享，请重试。",
+      "hintLink": "在本机打开会唤起对应的 App 完成登录；也可以存图后在 App 的「扫一扫」里从相册识别。登录后会自动继续。",
+      "hint": "存图后在 App 的「扫一扫」里从相册识别，或用另一台设备扫这个码。登录后会自动继续。",
+      "alt": "电脑上的二维码。点按会点在电脑上的这个码上。",
+      "loading": "正在获取二维码…",
+      "failed": "没能取得二维码，点按重试。",
+      "scanned": "已扫码，等你在手机上确认。确认后会自动继续。"
     }
   },
   "presentation": {

@@ -74,3 +74,20 @@ do {
   keys = []
 }
 print("native window confinement passed")
+
+// 代输入 scan-to-sign-in: a code drawn into a larger picture is found, with its content and place.
+do {
+  let filter = CIFilter(name: "CIQRCodeGenerator")!
+  filter.setValue("https://login.example.com/qr?token=abc".data(using: .utf8), forKey: "inputMessage")
+  let code = filter.outputImage!.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+  let canvas = CIImage(color: .white).cropped(to: CGRect(x: 0, y: 0, width: 1200, height: 800))
+  let placed = code.transformed(by: CGAffineTransform(translationX: 700, y: 300)).composited(over: canvas)
+  let rep = NSBitmapImageRep(ciImage: placed)
+  let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])!
+  let codes = handoffDetectQr(jpeg)
+  precondition(codes.count == 1 && codes[0]["text"] as? String == "https://login.example.com/qr?token=abc", "The code says what it was made with")
+  let box = codes[0]["box"] as! [Double]
+  precondition(box[0] > 0.55 && box[0] < 0.65 && box[1] > 0.2 && box[1] < 0.36, "Top-left origin, as fractions")
+  precondition(handoffDetectQr(Data([1, 2, 3])).isEmpty, "Not a picture, no codes")
+}
+print("native qr detection passed")

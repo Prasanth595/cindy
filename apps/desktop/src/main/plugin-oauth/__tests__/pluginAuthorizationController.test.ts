@@ -211,6 +211,7 @@ describe("代输入 screenshot step on the phone", () => {
     command: null,
     controls: [],
     picture: true,
+    qr: false,
   };
   const inputAction = { requestId: "card", actionId: "step", expectedRevision: 0 };
   function pictureHost() {

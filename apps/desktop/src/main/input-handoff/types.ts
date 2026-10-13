@@ -1,7 +1,21 @@
+import type { InputHandoffControl, InputHandoffOption } from '@cindy/device-link';
+
 /**
  * Host-side shapes for 代输入. Native nodes come from the macOS AX helper
  * (`macos-input.swift --handoff`); they never contain text-field values.
  */
+
+/**
+ * Everything the Host reads on a step. Only text fields and their errors are
+ * ever shown to the owner; the rest tells steps apart and finds the page's
+ * main button.
+ */
+export type ScreenControl =
+  | InputHandoffControl
+  | { id: string; kind: 'button'; label: string; primary?: true; link?: true }
+  | { id: string; kind: 'choice'; label: string; options: InputHandoffOption[]; selected?: string }
+  | { id: string; kind: 'toggle'; label: string; checked: boolean }
+  | { id: string; kind: 'note'; text: string; tone: 'heading' | 'info' };
 
 export interface NativeAxNode {
   ref: string;
@@ -57,7 +71,7 @@ export interface NativeWindowList {
   }>;
 }
 
-export type NativeActKind = 'press' | 'text' | 'pick' | 'options' | 'key';
+export type NativeActKind = 'press' | 'text' | 'key';
 
 export interface NativeActRequest {
   pid: number;
@@ -65,21 +79,21 @@ export interface NativeActRequest {
   ref: string;
   fp: string;
   kind: NativeActKind;
-  /** Owner value for `text` / option label for `pick` / key name for `key`. Sent on stdin only. */
+  /** Owner value for `text` / key name for `key`. Sent on stdin only. */
   value?: string;
 }
 
 export type NativeActResult =
-  | { ok: true; method?: string; unverified?: boolean; options?: string[] }
+  | { ok: true; method?: string; unverified?: boolean }
   | { ok?: false; error: string };
 
-/** Where a card control acts on the target. Kept in Main only; never projected. */
+/**
+ * Where the Host acts on the target: the owner's text fields, and the page's
+ * main button it presses to confirm. Kept in Main only; never projected.
+ */
 export type ControlBinding =
   | { kind: 'press'; ref: string; fp: string }
-  | { kind: 'text'; ref: string; fp: string; secure: boolean }
-  | { kind: 'toggle'; ref: string; fp: string; checked: boolean }
-  | { kind: 'popup'; ref: string; fp: string; optionLabels: Map<string, string>; needsOptions?: boolean }
-  | { kind: 'radio'; options: Map<string, { ref: string; fp: string }> };
+  | { kind: 'text'; ref: string; fp: string; secure: boolean };
 
 /** One step photographed for the owner. In memory only; never written to disk. */
 export interface WindowCapture {
@@ -93,6 +107,12 @@ export interface WindowCapture {
 }
 
 export type WindowCaptureError = 'permission' | 'unavailable' | 'target_gone';
+
+/** A QR code in the target window: the code cut out of it, and what it says. In memory only. */
+export interface FoundQr {
+  capture: WindowCapture;
+  text: string;
+}
 
 /** Owner input on a screenshot step. Values travel on stdin only. */
 export type PointerRequest =

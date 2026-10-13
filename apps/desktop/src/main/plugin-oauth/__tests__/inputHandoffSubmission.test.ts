@@ -91,14 +91,14 @@ async function harness(remoteInput = true, pictures = false) {
   expect(started.ok).toBe(true);
   const latest = () => snapshots[snapshots.length - 1];
   await vi.waitFor(() => expect(latest()?.phase).toBe('ready'));
-  const submit = (snapshot: InputHandoffSnapshot, values: Record<string, string | boolean>, controlId: string) =>
+  const submit = (snapshot: InputHandoffSnapshot, values: Record<string, string>) =>
     handleSubmitInputHandoff(deps, {
       deviceId: 'cloud-device',
       ghostId: INPUT_HANDOFF_GHOST_ID,
       requestId: snapshot.requestId,
       actionId: INPUT_HANDOFF_ACTION_ID,
       expectedRevision: snapshot.revision,
-      submission: { expectedRevision: snapshot.revision, values, action: { kind: 'press', controlId } },
+      submission: { expectedRevision: snapshot.revision, values, action: { kind: 'submit' } },
       presentation: inputHandoffPresentation(snapshot),
     });
   return { desktop, service, deps, latest, submit, wire, continued };
@@ -109,30 +109,29 @@ describe('代输入 over the signed per-step exchange', () => {
     const h = await harness();
     let step = h.latest();
     expect(step.remoteInput).toBe(true);
-    const choice = step.controls.find((c) => c.kind === 'choice')!;
-    const next = step.controls.find((c) => c.kind === 'button')!;
-    await expect(h.submit(step, { [choice.id]: 'o1' }, next.id)).resolves.toEqual({ accepted: true });
+    const email = step.controls.find((c) => c.kind === 'text')!;
+    await expect(h.submit(step, { [email.id]: 'owner@example.test' })).resolves.toEqual({ accepted: true });
     await vi.waitFor(() => expect(h.latest().stepNumber).toBe(2));
 
     step = h.latest();
-    const org = step.controls.find((c) => c.kind === 'text')!;
-    const go = step.controls.find((c) => c.kind === 'button')!;
-    await expect(h.submit(step, { [org.id]: 'synthetic-org-code' }, go.id)).resolves.toEqual({ accepted: true });
-    expect(h.desktop.acts.find((act) => act.kind === 'text')?.value).toBe('synthetic-org-code');
-    // Only sealed boxes cross the wire; the value never appears in plain payloads.
-    expect(JSON.stringify(h.wire)).not.toContain('synthetic-org-code');
-    await vi.waitFor(() => expect(h.latest().source.app).toBe('Google Chrome'));
+    expect(step.source.app).toBe('Google Chrome');
+    const password = step.controls.find((c) => c.kind === 'text')!;
+    await expect(h.submit(step, { [password.id]: 'synthetic-secret' })).resolves.toEqual({ accepted: true });
+    expect(h.desktop.acts.filter((act) => act.kind === 'text').map((act) => act.value)).toEqual(['owner@example.test', 'synthetic-secret']);
+    // Only sealed boxes cross the wire; the values never appear in plain payloads.
+    expect(JSON.stringify(h.wire)).not.toMatch(/owner@example|synthetic-secret/);
+    await vi.waitFor(() => expect(h.desktop.stage()).toBe('consent'));
   });
 
   it('refuses an answer for a screen that has already moved on', async () => {
     const h = await harness();
     const first = h.latest();
-    const choice = first.controls.find((c) => c.kind === 'choice')!;
-    const next = first.controls.find((c) => c.kind === 'button')!;
-    await h.submit(first, { [choice.id]: 'o1' }, next.id);
+    const email = first.controls.find((c) => c.kind === 'text')!;
+    await h.submit(first, { [email.id]: 'owner@example.test' });
     await vi.waitFor(() => expect(h.latest().stepNumber).toBe(2));
-    await expect(h.submit(first, { [choice.id]: 'o0' }, next.id)).rejects.toThrow();
-    expect(h.desktop.stage()).toBe('org');
+    await expect(h.submit(first, { [email.id]: 'someone-else@example.test' })).rejects.toThrow();
+    expect(h.desktop.stage()).toBe('password');
+    expect(h.desktop.acts.filter((act) => act.kind === 'text')).toHaveLength(1);
   });
 });
 
@@ -159,7 +158,7 @@ describe('代输入 screenshot step from another computer', () => {
     const step = h.latest();
     expect(JSON.stringify(step)).not.toContain('picture-of');
     const opened = await handleOpenInputHandoffPicture(h.deps, target(step), 7);
-    expect(Buffer.from(opened.picture.data, 'base64').toString()).toBe('picture-of-choose');
+    expect(Buffer.from(opened.picture.data, 'base64').toString()).toBe('picture-of-account');
     expect(JSON.stringify(h.wire)).not.toContain(opened.picture.data);
 
     // Only the window that opened it can answer.
@@ -167,7 +166,7 @@ describe('代输入 screenshot step from another computer', () => {
     await expect(handleAnswerInputHandoffPicture({ token: opened.token, submission: tap }, 8)).resolves.toEqual({ accepted: false });
     await expect(handleAnswerInputHandoffPicture({ token: opened.token, submission: tap }, 7)).resolves.toEqual({ accepted: true });
     expect(h.desktop.pointers[0]).toMatchObject({ kind: 'tap', point: [720, 540] });
-    await vi.waitFor(() => expect(h.desktop.stage()).toBe('org'));
+    await vi.waitFor(() => expect(h.desktop.stage()).toBe('password'));
     // A used exchange cannot be answered twice.
     await expect(handleAnswerInputHandoffPicture({ token: opened.token, submission: tap }, 7)).resolves.toEqual({ accepted: false });
   });

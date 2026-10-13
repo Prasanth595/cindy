@@ -5,33 +5,48 @@ const node = (ref: string, role: string, extra: Partial<NativeAxNode> = {}): Nat
   ref, role, depth: 1, fp: `${role}|${extra.title ?? ''}`, enabled: true, frame: [10, 10, 100, 20], ...extra,
 });
 
-type Stage = 'choose' | 'org' | 'browser' | 'done';
+export type FakeStage = 'choose' | 'account' | 'password' | 'consent' | 'done';
 
-/** A generic multi-step flow: choose → type → browser consent → back in the app. */
-export function fakeDesktop(options: { pictures?: boolean; live?: boolean } = {}) {
-  let stage: Stage = 'choose';
+/**
+ * A generic sign-in: pick a method (buttons only) → account name in the app →
+ * password on the browser's sign-in page → consent (buttons only) → back in the app.
+ * Only the account and password steps have anything for the owner to type.
+ */
+export function fakeDesktop(options: { pictures?: boolean; live?: boolean; start?: FakeStage } = {}) {
+  let stage: FakeStage = options.start ?? 'account';
   const acts: NativeActRequest[] = [];
   const pointers: PointerRequest[] = [];
   const raised: number[] = [];
   const app = { pid: 10, app: 'Example', bundleId: 'com.example.app' };
   const browser = { pid: 20, app: 'Google Chrome', bundleId: 'com.google.Chrome' };
+  const inBrowser = () => stage === 'password' || stage === 'consent';
   const windows = (): NativeWindowList => ({
-    frontmost: stage === 'browser' ? 20 : 10,
+    frontmost: inBrowser() ? 20 : 10,
     apps: [
       { ...app, windows: [{ index: 0, title: stage === 'done' ? 'Example' : 'Sign in', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
-      { ...browser, windows: [{ index: 0, title: 'Authorize', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
+      { ...browser, windows: [{ index: 0, title: 'Sign in - Example', frame: [0, 0, 800, 600], focused: true, minimized: false }] },
       { pid: 1, app: 'Cindy', bundleId: 'host', windows: [{ index: 0, title: 'Cindy', frame: [0, 0, 1, 1], focused: true, minimized: false }] },
     ],
   });
   const snapshot = (pid: number): NativeAxSnapshot => {
     const base = { pid, frontmost: true, window: { index: 0, title: '', frame: [0, 0, 800, 600] } };
     if (pid === 20) {
-      return { ...base, ...browser, window: { ...base.window, title: 'Authorize' }, nodes: stage === 'browser' ? [
-        node('0', 'AXWebArea', { url: 'https://auth.example.com/consent', frame: [0, 0, 800, 600] }),
-        node('0.0', 'AXHeading', { title: 'Allow Example to access your account?' }),
-        node('0.1', 'AXButton', { title: 'Authorize' }),
-        node('0.2', 'AXButton', { title: 'Cancel' }),
-      ] : [node('0', 'AXWebArea', { url: 'https://auth.example.com/ok', frame: [0, 0, 800, 600] }), node('0.0', 'AXStaticText', { value: 'You can close this tab' })] };
+      const page = (url: string, nodes: NativeAxNode[]) => [node('0', 'AXWebArea', { url, frame: [0, 0, 800, 600] }), ...nodes];
+      const nodes = stage === 'password'
+        ? page('https://auth.example.com/login', [
+          node('0.0', 'AXHeading', { title: 'Enter your password' }),
+          node('0.1', 'AXTextField', { title: 'Password', secure: true }),
+          node('0.2', 'AXButton', { title: 'Sign in' }),
+          node('0.3', 'AXLink', { title: 'Forgot password?' }),
+        ])
+        : stage === 'consent'
+          ? page('https://auth.example.com/consent', [
+            node('0.0', 'AXHeading', { title: 'Allow Example to access your account?' }),
+            node('0.1', 'AXButton', { title: 'Authorize' }),
+            node('0.2', 'AXButton', { title: 'Cancel' }),
+          ])
+          : page('https://auth.example.com/ok', [node('0.0', 'AXStaticText', { value: 'You can close this tab' })]);
+      return { ...base, ...browser, window: { ...base.window, title: 'Sign in - Example' }, nodes };
     }
     if (stage === 'choose') return { ...base, ...app, window: { ...base.window, title: 'Sign in' }, nodes: [
       node('0', 'AXRadioGroup', { desc: 'Sign-in method' }),
@@ -39,13 +54,14 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean } = {}
       node('0.1', 'AXRadioButton', { title: 'Enterprise', checked: false }),
       node('1', 'AXButton', { title: 'Continue' }),
     ] };
-    if (stage === 'org') return { ...base, ...app, window: { ...base.window, title: 'Sign in' }, nodes: [
-      node('0', 'AXTextField', { title: 'Organization code' }),
+    if (stage === 'account' || inBrowser()) return { ...base, ...app, window: { ...base.window, title: 'Sign in' }, nodes: [
+      node('0', 'AXTextField', { title: 'Email' }),
       node('1', 'AXButton', { title: 'Next' }),
     ] };
     return { ...base, ...app, window: { ...base.window, title: 'Example' }, nodes: [
       node('0', 'AXButton', { title: 'New task' }),
       node('1', 'AXButton', { title: 'Settings' }),
+      node('2', 'AXTextField', { title: 'Search', subrole: 'AXSearchField' }),
     ] };
   };
   const driver: HandoffDriver = {
@@ -56,9 +72,11 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean } = {}
     commandLine: async () => '',
     act: async (request) => {
       acts.push(request);
-      if (stage === 'choose' && request.kind === 'press' && request.ref === '1') stage = 'org';
-      else if (stage === 'org' && request.kind === 'press' && request.ref === '1') stage = 'browser';
-      else if (stage === 'browser' && request.kind === 'press' && request.ref === '0.1') stage = 'done';
+      const press = request.kind === 'press';
+      if (stage === 'choose' && press && request.ref === '1') stage = 'account';
+      else if (stage === 'account' && press && request.ref === '1') stage = 'password';
+      else if (stage === 'password' && press && request.ref === '0.2') stage = 'consent';
+      else if (stage === 'consent' && press && request.ref === '0.1') stage = 'done';
       return { ok: true };
     },
     ...(options.pictures
@@ -68,10 +86,13 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean } = {}
             return { jpeg: Buffer.from(`picture-of-${stage}`), width: 800, height: 600, area: frame, windowFrame: frame };
           },
           focusedField: async () => ({ editable: false, secure: false }),
-          // A tap on "Continue" (bottom right of the picture) moves on like pressing it.
+          // A tap on the main button (bottom right of the picture) moves on like pressing it.
           pointer: async (request: PointerRequest) => {
             pointers.push(request);
-            if (stage === 'choose' && request.kind === 'tap' && request.point[0] > 400) stage = 'org';
+            if (request.kind === 'tap' && request.point[0] > 400) {
+              if (stage === 'choose') stage = 'account';
+              else if (stage === 'account') stage = 'password';
+            }
             return { ok: true as const };
           },
         }
@@ -91,8 +112,8 @@ export function fakeDesktop(options: { pictures?: boolean; live?: boolean } = {}
     pointers,
     raised,
     stage: () => stage,
-    /** The owner finished the step in the live view, outside the card. */
-    advanceOutside: (next: Stage) => {
+    /** The owner (in the live view) or the agent moved the screen on, outside the card. */
+    advanceOutside: (next: FakeStage) => {
       stage = next;
     },
   };

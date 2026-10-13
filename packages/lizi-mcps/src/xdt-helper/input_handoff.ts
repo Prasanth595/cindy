@@ -4,10 +4,11 @@ import type { LiziMcpSessionContext } from '../types.js';
 import { errorPayload, okPayload } from './_payload.js';
 
 /**
- * 代输入 (input handoff): the agent hands one on-screen step it cannot or
- * must not complete (sign-in, password, verification code, consent, an
- * unknown choice) to the owner. The owner finishes it from any of their
- * devices; values go straight to the host and are never returned here.
+ * 代输入 (input handoff): the agent hands the fields on screen that only the
+ * owner can type (sign-in name, password, verification code, text it cannot
+ * know) to the owner. The owner types them from any of their devices; values
+ * go straight to the host and are never returned here. A sign-in QR code is
+ * handed to the owner to scan. Buttons and options stay with the agent.
  */
 
 export interface InputHandoffToolRequest {
@@ -27,9 +28,12 @@ export interface InputHandoffCallbacks {
 }
 
 const DESCRIPTION =
-  'Hand an on-screen step on this computer to the owner when it needs their input or decision: '
-  + 'a sign-in form, password, verification code, OAuth or browser consent page, or a choice/text you cannot know. '
-  + 'Cindy shows the owner a card on their phone or another computer; it follows multi-step flows across windows and browsers by itself. '
+  'Ask the owner to type what only they can into fields on this computer\'s screen: '
+  + 'a sign-in name, password, verification code, or other text you cannot know. '
+  + 'Cindy shows the owner just those fields on their phone or another computer, types the answer in and confirms with the page\'s own main button; '
+  + 'it follows the flow across windows and browsers while fields keep appearing. '
+  + 'A sign-in QR code on screen is handed to the owner to scan, and the task continues once they are signed in. '
+  + 'Buttons, options and consent pages are yours to handle: a screen with neither a field to type nor a sign-in QR code ends at once with failure nothing_to_fill. '
   + 'Do not type, click or read secrets in that window yourself while it is pending. '
   + 'Returns a pending receipt; a hidden "[Input handoff ended]" message continues this task later. '
   + 'Values the owner enters are never shared with you. One pending handoff per task. '

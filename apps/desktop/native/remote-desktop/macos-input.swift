@@ -4,6 +4,7 @@ import AppKit
 import IOKit.graphics
 import Security
 import Darwin
+import Vision
 
 #if !DESKTOP_INPUT_TEST
 // This guard precedes every entrypoint, including selection and permission UI.
@@ -646,37 +647,6 @@ func handoffAct(_ request: [String: Any]) -> [String: Any] {
     }
     return (handoffAttr(element, kAXValueAttribute) as? String) == value
       ? ["ok": true, "method": "typed"] : ["ok": true, "method": "typed", "unverified": true]
-  case "pick":
-    guard let option = request["value"] as? String, option.count <= 300 else { return ["error": "invalid"] }
-    if AXUIElementPerformAction(element, kAXPressAction as CFString) != .success,
-      AXUIElementPerformAction(element, kAXShowMenuAction as CFString) != .success {
-      guard let frame = handoffFrame(element) else { return ["error": "action_failed"] }
-      handoffClick(frame)
-    }
-    usleep(250000)
-    if let item = handoffFindMenuItem(app, element, option) {
-      if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success { return ["ok": true] }
-      if let frame = handoffFrame(item) { handoffClick(frame); return ["ok": true] }
-    }
-    // Native selects accept type-to-select while open.
-    handoffType(option)
-    usleep(120000)
-    handoffKey(36)
-    usleep(150000)
-    let selected = handoffString(element, kAXValueAttribute) ?? handoffString(element, kAXTitleAttribute)
-    if selected == option { return ["ok": true] }
-    handoffKey(53)
-    return ["error": "option_missing"]
-  case "options":
-    let exposed = handoffMenuItems(element, limit: 200)
-    if !exposed.isEmpty { return ["ok": true, "options": exposed] }
-    if AXUIElementPerformAction(element, kAXPressAction as CFString) != .success,
-      AXUIElementPerformAction(element, kAXShowMenuAction as CFString) != .success { return ["error": "action_failed"] }
-    usleep(250000)
-    var items: [String] = []
-    if let menu = handoffOpenMenu(app, element) { items = handoffMenuItems(menu, limit: 200) }
-    handoffKey(53)
-    return items.isEmpty ? ["error": "option_missing"] : ["ok": true, "options": items]
   case "key":
     guard let name = request["value"] as? String, let code: CGKeyCode = ["return": 36, "escape": 53, "tab": 48][name]
     else { return ["error": "invalid"] }
@@ -686,29 +656,6 @@ func handoffAct(_ request: [String: Any]) -> [String: Any] {
   default:
     return ["error": "invalid"]
   }
-}
-func handoffOpenMenu(_ app: AXUIElement, _ element: AXUIElement) -> AXUIElement? {
-  for child in handoffChildren(element) where handoffString(child, kAXRoleAttribute) == "AXMenu" { return child }
-  // Context and pop-up menus are separate top-level children of the application.
-  var stack: [(AXUIElement, Int)] = handoffChildren(app).map { ($0, 0) }
-  while case let (current, depth)? = stack.popLast() {
-    let role = handoffString(current, kAXRoleAttribute)
-    if role == "AXMenu" || role == "AXList" && depth > 0 { return current }
-    if role == "AXMenuBar" { continue }
-    if depth < 4 { stack.append(contentsOf: handoffChildren(current).map { ($0, depth + 1) }) }
-  }
-  return nil
-}
-func handoffFindMenuItem(_ app: AXUIElement, _ element: AXUIElement, _ option: String) -> AXUIElement? {
-  guard let menu = handoffOpenMenu(app, element) else { return nil }
-  var stack: [(AXUIElement, Int)] = handoffChildren(menu).map { ($0, 0) }
-  while case let (current, depth)? = stack.popLast() {
-    let role = handoffString(current, kAXRoleAttribute)
-    if role == "AXMenuItem" || role == "AXListItem" || role == "AXStaticText",
-      (handoffString(current, kAXTitleAttribute) ?? handoffString(current, kAXValueAttribute)) == option { return current }
-    if depth < 3 { stack.append(contentsOf: handoffChildren(current).map { ($0, depth + 1) }) }
-  }
-  return nil
 }
 // ── Screenshot steps: a step the owner answers on a picture of the window ──
 let handoffEditableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
@@ -814,9 +761,55 @@ func handoffRespond(_ value: [String: Any]) -> Never {
   print(json); fflush(stdout); exit(0)
 }
 
+/// 代输入 scan-to-sign-in: the QR codes in one photographed window, with what
+/// each says and where it sits (fractions of the picture, top-left origin).
+/// The picture arrives in memory and is never written anywhere.
+func handoffDetectQr(_ data: Data) -> [[String: Any]] {
+  guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+    let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [] }
+  let request = VNDetectBarcodesRequest()
+  request.symbologies = [.qr]
+  guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil else { return [] }
+  var found: [[String: Any]] = []
+  var seen = Set<String>()
+  for case let code as VNBarcodeObservation in request.results ?? [] {
+    guard let text = code.payloadStringValue, !text.isEmpty, text.utf16.count <= 2048, seen.insert(text).inserted else { continue }
+    let box = code.boundingBox
+    found.append(["text": text, "box": [Double(box.minX), Double(1 - box.maxY), Double(box.width), Double(box.height)]])
+    if found.count >= 8 { break }
+  }
+  return found
+}
+
 #if !DESKTOP_INPUT_TEST
 if CommandLine.arguments.contains("--check") {
   print(AXIsProcessTrusted() ? "ready" : "permission"); exit(0)
+}
+if CommandLine.arguments == [CommandLine.arguments[0], "--handoff-qr"] {
+  // One photographed window (JPEG) on stdin: its byte length on a line, then the bytes. Main keeps
+  // stdin open (closing it would fail the caller check), so the length marks the end. The reply says
+  // only what QR codes it shows.
+  let limit = 24 << 20
+  var header: [UInt8] = []
+  while header.count <= 12 {
+    var byte: UInt8 = 0
+    guard read(STDIN_FILENO, &byte, 1) == 1 else { break }
+    if byte == 10 { break }
+    header.append(byte)
+  }
+  guard let length = Int(String(decoding: header, as: UTF8.self)), length > 0, length <= limit else {
+    handoffRespond(["error": "invalid"])
+  }
+  var data = Data()
+  var chunk = [UInt8](repeating: 0, count: 65536)
+  while data.count < length {
+    let count = read(STDIN_FILENO, &chunk, min(chunk.count, length - data.count))
+    if count <= 0 { break }
+    data.append(chunk, count: count)
+  }
+  guard data.count == length, let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+    !(session["CGSSessionScreenIsLocked"] as? Bool ?? false) else { handoffRespond(["error": "unavailable"]) }
+  handoffRespond(["codes": handoffDetectQr(data)])
 }
 if CommandLine.arguments.contains("--lock-state") {
   guard let state = CGSessionCopyCurrentDictionary() as? [String: Any],
@@ -860,9 +853,10 @@ if CommandLine.arguments == [CommandLine.arguments[0], "--handoff"] {
     bytes.append(byte)
   }
   guard bytes.count <= 65536, let request = try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any],
-    let session = CGSessionCopyCurrentDictionary() as? [String: Any],
-    !(session["CGSSessionScreenIsLocked"] as? Bool ?? false) else { handoffRespond(["error": "unavailable"]) }
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { handoffRespond(["error": "unavailable"]) }
   bytes.withUnsafeMutableBufferPointer { buffer in for i in buffer.indices { buffer[i] = 0 } }
+  // A locked screen is never read or typed into; the owner unlocks the computer first.
+  if session["CGSSessionScreenIsLocked"] as? Bool ?? false { handoffRespond(["error": "locked"]) }
   switch request["op"] as? String {
   case "windows": handoffRespond(handoffWindowList())
   case "snapshot": handoffRespond(handoffSnapshot(request))

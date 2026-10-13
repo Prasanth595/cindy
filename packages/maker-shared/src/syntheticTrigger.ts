@@ -97,7 +97,8 @@ export const INPUT_HANDOFF_ENDED_PREFIX = '[Input handoff ended]';
 
 export interface InputHandoffEndRecord {
   status: 'succeeded' | 'cancelled' | 'failed' | 'expired';
-  declined: boolean;
+  /** The screen had nothing for the owner to type; the agent carried on by itself. */
+  nothingToFill: boolean;
   steps: number;
   origin?: string;
   app?: string;
@@ -134,7 +135,7 @@ export function parseInputHandoffEndRecord(content: string): InputHandoffEndReco
   const answeredName = answered ? undefined : readQuoted(facts, 'answered_on');
   return {
     status: status as InputHandoffEndRecord['status'],
-    declined: / ended_by=declined\b/.test(facts),
+    nothingToFill: / failure=nothing_to_fill\b/.test(facts),
     steps,
     ...(origin ? { origin: origin.slice(0, 300) } : {}),
     ...(app ? { app } : {}),
@@ -147,7 +148,7 @@ export function parseInputHandoffEndRecord(content: string): InputHandoffEndReco
 }
 
 export type InputHandoffRecordKey =
-  | 'declined' | 'cancelled' | 'expired' | 'failed' | 'done'
+  | 'nothingToFill' | 'cancelled' | 'expired' | 'failed' | 'done'
   | 'doneOn' | 'doneHost' | 'donePhone' | 'doneElsewhere';
 
 /** Locale key + params for the record line; both clients translate under their own `…record.<key>`. */
@@ -155,7 +156,7 @@ export function inputHandoffRecordMessage(record: InputHandoffEndRecord): {
   key: InputHandoffRecordKey;
   params?: { count: number; device?: string };
 } {
-  if (record.declined) return { key: 'declined' };
+  if (record.nothingToFill) return { key: 'nothingToFill' };
   if (record.status !== 'succeeded') return { key: record.status };
   const count = record.steps;
   const on = record.answeredOn;

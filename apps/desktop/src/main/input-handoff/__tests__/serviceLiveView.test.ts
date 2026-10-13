@@ -66,11 +66,11 @@ describe('代输入 live view of the window', () => {
   it('catches the card up after the owner works in the live view, and stops once the request ends', async () => {
     const h = harness();
     const requestId = await startReady(h);
-    // In the live view the owner picked an option and continued; the card still shows the old step.
-    h.desktop.advanceOutside('org');
+    // In the live view the owner typed the account name and continued; the card still shows the old step.
+    h.desktop.advanceOutside('password');
     h.service.liveViewEnded(requestId);
     await vi.waitFor(() =>
-      expect(h.latest().controls.some((c) => 'label' in c && c.label === 'Organization code')).toBe(true),
+      expect(h.latest().controls.some((c) => 'label' in c && c.label === 'Password')).toBe(true),
     );
     expect(
       h.service.resolve(requestId, { kind: 'input_handoff', action: 'cancel', expectedRevision: h.latest().revision }),

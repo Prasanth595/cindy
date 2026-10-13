@@ -8,9 +8,8 @@ const node = (ref: string, role: string, extra: Partial<NativeAxNode> = {}): Nat
   ref, role, depth: 1, fp: `${role}|${extra.title ?? extra.value ?? ''}`, enabled: true, frame: [10, 10, 100, 20], ...extra,
 });
 
-/** A CLI-style app: pick "sign in with a code", then it shows the code and waits. */
+/** A CLI-style app the agent already moved to "sign in with a code": it shows the code and waits. */
 function codeApp() {
-  let stage: 'choose' | 'code' = 'choose';
   const app = { pid: 10, app: 'Example', bundleId: 'com.example.app' };
   const driver: HandoffDriver = {
     permission: async () => 'granted',
@@ -23,15 +22,13 @@ function codeApp() {
       ...app,
       frontmost: true,
       window: { index: 0, title: 'Sign in', frame: [0, 0, 800, 600] },
-      nodes: stage === 'choose'
-        ? [node('0', 'AXButton', { title: 'Sign in with a code' })]
-        : [node('0', 'AXStaticText', { value: 'Open github.com/login/device and enter WDJB-MJHT' })],
+      nodes: [
+        node('0', 'AXStaticText', { value: 'Open github.com/login/device and enter WDJB-MJHT' }),
+        node('1', 'AXButton', { title: 'Cancel' }),
+      ],
     }),
     commandLine: async () => '',
-    act: async (request) => {
-      if (request.kind === 'press') stage = 'code';
-      return { ok: true };
-    },
+    act: async () => ({ ok: true }),
   };
   return driver;
 }
@@ -57,12 +54,8 @@ describe('device-code sign-in in a 代输入 session', () => {
     });
     const latest = () => published[published.length - 1];
     await session.start();
-    const first = latest();
-    expect(first.deviceCode).toBeUndefined();
-    const press = first.controls.find((control) => control.kind === 'button')!;
-    await session.submit({ expectedRevision: first.revision, values: {}, action: { kind: 'press', controlId: press.id } });
 
-    // Nothing to fill or confirm, yet the code still has to be used: no countdown.
+    // Nothing to type, yet the code still has to be used elsewhere: the card shows it and waits.
     const code = latest();
     expect(code.phase).toBe('ready');
     expect(code.deviceCode).toEqual({ code: 'WDJB-MJHT', url: 'https://github.com/login/device', origin: 'https://github.com' });
@@ -72,5 +65,31 @@ describe('device-code sign-in in a 代输入 session', () => {
     expect(await session.decide({ kind: 'input_handoff', action: 'done', expectedRevision: code.revision })).toBe(true);
     expect(finished[0]).toMatchObject({ status: 'succeeded', reason: 'owner' });
     expect(latest().deviceCode).toBeUndefined();
+  });
+});
+
+describe('a locked computer in a 代输入 session', () => {
+  it('ends with screen_locked instead of blaming the window', async () => {
+    const finished: HandoffResult[] = [];
+    const driver: HandoffDriver = {
+      ...codeApp(),
+      windows: async () => {
+        throw new Error('locked');
+      },
+    };
+    const session = new InputHandoffSession({
+      requestId: 'req2',
+      purpose: 'Sign in to Example',
+      target: { app: 'Example' },
+      timeoutMs: 600_000,
+      hostPid: 1,
+      remoteInput: true,
+      driver,
+      publish: () => undefined,
+      finish: (result) => finished.push(result),
+      finishingDelayMs: 5,
+    });
+    await session.start();
+    expect(finished[0]).toMatchObject({ status: 'failed', failure: 'screen_locked' });
   });
 });

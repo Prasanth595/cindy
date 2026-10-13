@@ -37,7 +37,7 @@ export interface InputHandoffStartRequest {
   timeoutMinutes?: number;
 }
 
-export type InputHandoffStartError = 'HANDOFF_ACTIVE' | 'UNSUPPORTED' | 'DECLINED' | 'RATE_LIMITED';
+export type InputHandoffStartError = 'HANDOFF_ACTIVE' | 'UNSUPPORTED' | 'RATE_LIMITED';
 
 /** A password prompt from a verified terminal program in the task's shell. */
 export interface TerminalPromptRequest {
@@ -89,6 +89,8 @@ interface Entry {
   sessionId: string;
   session: HandoffRun;
   snapshot: InputHandoffSnapshot | null;
+  /** The card has been shown. Until the first screen is read there may be nothing for the owner at all. */
+  shown: boolean;
   /**
    * No continuation is sent: the task closed, or the agent is still inside the
    * command that asked (terminal prompts) and simply sees it finish.
@@ -124,12 +126,14 @@ export function buildInputHandoffContinuation(result: HandoffResult): string {
     ...(result.finalOrigin ? [`origin=${result.finalOrigin}`] : []),
     ...(result.answeredOn ? [`answered_on=${answeredOnFact(result.answeredOn)}`] : []),
   ].join(' ');
-  const next = result.reason === 'declined'
-    ? 'The owner declined and asked not to be asked again in this task. Do not request input handoff again in this task; continue another way or tell the owner what is still blocked.'
+  const next = result.failure === 'nothing_to_fill'
+    ? 'The screen has no field for the owner to type into. Press its buttons or pick its options yourself; request input handoff again only when a field appears that needs the owner.'
     : result.status === 'succeeded'
-    ? 'The owner finished the step on the computer. Check the current screen yourself before continuing; values they entered were not shared with you.'
+    ? 'The owner\'s fields were typed in and confirmed. Check the current screen yourself and handle any buttons or options left; values they entered were not shared with you.'
     : result.failure === 'permission'
       ? 'Cindy lacks macOS Accessibility permission for input handoff. Ask the owner to allow it on this computer, or continue another way.'
+    : result.failure === 'screen_locked'
+      ? 'This computer\'s screen is locked, so nothing was read or typed. Ask the owner to unlock it; request input handoff again only after they say it is unlocked.'
       : 'The handoff did not complete. Do not retry it automatically; tell the owner what is still needed or continue another way.';
   return `${INPUT_HANDOFF_ENDED_PREFIX} ${facts}. ${next}`;
 }
@@ -142,8 +146,6 @@ function answeredOnFact(holder: InputHandoffHolder): string {
 
 export class InputHandoffService {
   private readonly entries = new Map<string, Entry>();
-  /** Tasks whose owner said "do not ask again"; process-lifetime. */
-  private readonly declined = new Set<string>();
   private readonly recentStarts = new Map<string, number[]>();
 
   constructor(private readonly deps: InputHandoffServiceDeps) {}
@@ -200,8 +202,6 @@ export class InputHandoffService {
   }
 
   private admit(sessionId: string): Extract<StartResult, { ok: false }> | null {
-    if (this.declined.has(sessionId))
-      return { ok: false, errorCode: 'DECLINED', message: 'The owner declined input handoff for this task. Do not ask again; continue another way.' };
     const now = this.now();
     const recent = (this.recentStarts.get(sessionId) ?? []).filter((at) => now - at < INPUT_HANDOFF_RATE_WINDOW_MS);
     this.recentStarts.set(sessionId, recent);
@@ -217,7 +217,7 @@ export class InputHandoffService {
   private launch(sessionId: string, silent: boolean, create: (requestId: string, entry: Entry) => HandoffRun): StartResult {
     this.recentStarts.get(sessionId)?.push(this.now());
     const requestId = randomUUID();
-    const entry: Entry = { sessionId, session: null as unknown as HandoffRun, snapshot: null, silent };
+    const entry: Entry = { sessionId, session: null as unknown as HandoffRun, snapshot: null, shown: false, silent };
     entry.session = create(requestId, entry);
     this.entries.set(requestId, entry);
     this.deps.logger?.info?.('input handoff started', { sessionId, requestId, ...(silent ? { kind: 'terminal' } : {}) });
@@ -233,7 +233,8 @@ export class InputHandoffService {
   actionable(requestId: string, revision: number): InputHandoffSnapshot | null {
     const entry = this.entries.get(requestId);
     if (!entry?.snapshot || !entry.session.isActionable(revision)) return null;
-    return entry.snapshot;
+    // A quiet claim may have moved the revision on; the answer stays bound to the one it was typed against.
+    return entry.snapshot.revision === revision ? entry.snapshot : { ...entry.snapshot, revision };
   }
 
   /**
@@ -293,7 +294,8 @@ export class InputHandoffService {
 
   pendingSnapshots(sessionId?: string): Array<{ sessionId: string; request: InputHandoffSnapshot }> {
     return [...this.entries.values()]
-      .filter((entry) => entry.snapshot && !entry.snapshot.terminal && (sessionId === undefined || entry.sessionId === sessionId))
+      .filter((entry) => entry.shown && entry.snapshot && !entry.snapshot.terminal
+        && (sessionId === undefined || entry.sessionId === sessionId))
       .map((entry) => ({ sessionId: entry.sessionId, request: entry.snapshot! }));
   }
 
@@ -327,8 +329,11 @@ export class InputHandoffService {
   }
 
   private publish(entry: Entry, snapshot: InputHandoffSnapshot): void {
-    const first = entry.snapshot === null;
     entry.snapshot = snapshot;
+    // Nothing reaches the owner before the first screen is read: a screen with nothing
+    // to type ends unseen, leaving only the record line in the task.
+    if (!entry.shown && (snapshot.phase === 'reading' || snapshot.terminal)) return;
+    entry.shown = true;
     try {
       this.deps.broadcast(MAKER_PUSH.INTERACTION_REQUEST, { sessionId: entry.sessionId, request: snapshot });
     } catch (error) {
@@ -337,7 +342,7 @@ export class InputHandoffService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    if ((first || snapshot.phase === 'ready') && !snapshot.terminal) this.deps.notifyOwner?.(entry.sessionId, snapshot);
+    if (snapshot.phase === 'ready' && !snapshot.terminal) this.deps.notifyOwner?.(entry.sessionId, snapshot);
   }
 
   private finish(entry: Entry, result: HandoffResult): void {
@@ -350,7 +355,6 @@ export class InputHandoffService {
       steps: result.steps,
       ...(result.failure ? { failure: result.failure } : {}),
     });
-    if (result.reason === 'declined') this.declined.add(entry.sessionId);
     const retention = setTimeout(() => {
       this.entries.delete(requestId);
       try {

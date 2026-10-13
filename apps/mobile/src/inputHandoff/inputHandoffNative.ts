@@ -4,7 +4,16 @@ import type {
   InputHandoffSnapshot,
   InputHandoffValues,
 } from "@cindy/device-link";
-import type { TextInputProps } from "react-native";
+import { isInputHandoffDeviceCode } from "@cindy/device-link";
+import { Platform, type TextInputProps } from "react-native";
+
+/**
+ * Return moves field to field and answers on the last one. The iOS number
+ * and phone pads have no Return key, so iOS uses the numeric keyboard that
+ * keeps one.
+ */
+const numericKeyboard = (pad: "number-pad" | "phone-pad"): TextInputProps["keyboardType"] =>
+  Platform.OS === "ios" ? "numbers-and-punctuation" : pad;
 
 /**
  * Standard platform hints per field so iOS AutoFill / Android Autofill and
@@ -28,7 +37,7 @@ export function nativeTextInputProps(
       return {
         textContentType: "oneTimeCode",
         autoComplete: "sms-otp",
-        keyboardType: "number-pad",
+        keyboardType: numericKeyboard("number-pad"),
       };
     case "username":
       return { textContentType: "username", autoComplete: "username" };
@@ -42,48 +51,87 @@ export function nativeTextInputProps(
       return {
         textContentType: "telephoneNumber",
         autoComplete: "tel",
-        keyboardType: "phone-pad",
+        keyboardType: numericKeyboard("phone-pad"),
       };
     case "url":
       return { textContentType: "URL", autoComplete: "url", keyboardType: "url" };
     case "number":
-      return { textContentType: "none", autoComplete: "off", keyboardType: "number-pad" };
+      return { textContentType: "none", autoComplete: "off", keyboardType: numericKeyboard("number-pad") };
     default:
       return { textContentType: "none", autoComplete: "off" };
   }
 }
 
-type Interactive = Exclude<InputHandoffControl, { kind: "note" }>;
+export type InputHandoffTextControl = Extract<InputHandoffControl, { kind: "text" }>;
 
-const interactive = (snapshot: InputHandoffSnapshot): Interactive[] =>
-  snapshot.controls.filter((c): c is Interactive => c.kind !== "note");
+/** The fields the owner types into, in screen order. */
+export const inputHandoffTextFields = (snapshot: InputHandoffSnapshot): InputHandoffTextControl[] =>
+  snapshot.controls.filter((c): c is InputHandoffTextControl => c.kind === "text");
 
-/** Choices start at the screen's selection, toggles at their state; text empty. */
-export function initialInputHandoffDraft(
-  snapshot: InputHandoffSnapshot,
-): InputHandoffValues {
-  const draft: InputHandoffValues = {};
-  for (const control of snapshot.controls) {
-    if (control.kind === "choice" && control.selected)
-      draft[control.id] = control.selected;
-    if (control.kind === "toggle") draft[control.id] = control.checked;
+/**
+ * The same hints for the SwiftUI fields of the iOS sheet (system AutoFill,
+ * Passwords and 1Password read the content type).
+ */
+export function swiftFieldTraits(contentType: InputHandoffContentType): {
+  textContentType?: "username" | "password" | "oneTimeCode" | "emailAddress" | "telephoneNumber" | "URL";
+  keyboardType: "default" | "email-address" | "numbers-and-punctuation" | "url";
+} {
+  switch (contentType) {
+    case "password":
+      return { textContentType: "password", keyboardType: "default" };
+    case "one-time-code":
+      return { textContentType: "oneTimeCode", keyboardType: "numbers-and-punctuation" };
+    case "username":
+      return { textContentType: "username", keyboardType: "default" };
+    case "email":
+      return { textContentType: "emailAddress", keyboardType: "email-address" };
+    case "tel":
+      return { textContentType: "telephoneNumber", keyboardType: "numbers-and-punctuation" };
+    case "url":
+      return { textContentType: "URL", keyboardType: "url" };
+    case "number":
+      return { keyboardType: "numbers-and-punctuation" };
+    default:
+      return { keyboardType: "default" };
   }
-  return draft;
 }
 
-/** Only values the owner changed are applied to the screen. */
+/**
+ * Where the fields are, as the owner reads it: just the site for a plain
+ * https page (with a lock), the full origin when something about it needs a
+ * second look, otherwise the app.
+ */
+export function inputHandoffPlace(source: InputHandoffSnapshot["source"]): { label: string; secure: boolean } {
+  const origin = source.origin;
+  if (!origin) return { label: source.app, secure: false };
+  if (origin.startsWith("https://") && !source.warning) return { label: origin.slice("https://".length), secure: true };
+  return { label: origin, secure: false };
+}
+
+export type InputHandoffPlaceKind = "web" | "terminal" | "app";
+
+export const inputHandoffPlaceKind = (snapshot: InputHandoffSnapshot): InputHandoffPlaceKind =>
+  snapshot.command ? "terminal" : snapshot.source.origin ? "web" : "app";
+
+/** The sheet opens only on a screen with something for the owner: fields, a picture or a sign-in code. */
+export function inputHandoffSheetHasContent(snapshot: InputHandoffSnapshot, heldElsewhere: boolean): boolean {
+  if (snapshot.terminal || snapshot.phase !== "ready" || heldElsewhere) return false;
+  return (
+    Boolean(snapshot.picture) ||
+    isInputHandoffDeviceCode(snapshot.deviceCode) ||
+    inputHandoffTextFields(snapshot).length > 0
+  );
+}
+
+/** Only fields the owner typed into are applied; text already on the screen stays. */
 export function changedInputHandoffValues(
   snapshot: InputHandoffSnapshot,
   draft: InputHandoffValues,
 ): InputHandoffValues {
-  const initial = initialInputHandoffDraft(snapshot);
   const out: InputHandoffValues = {};
-  for (const control of interactive(snapshot)) {
+  for (const control of inputHandoffTextFields(snapshot)) {
     const value = draft[control.id];
-    if (value === undefined) continue;
-    if (control.kind === "text" && value === "") continue;
-    if (control.kind !== "text" && value === initial[control.id]) continue;
-    out[control.id] = value;
+    if (value) out[control.id] = value;
   }
   return out;
 }

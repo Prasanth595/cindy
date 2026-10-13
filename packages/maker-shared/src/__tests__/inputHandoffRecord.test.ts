@@ -16,7 +16,7 @@ describe('代输入 record line', () => {
     );
     expect(record).toEqual({
       status: 'succeeded',
-      declined: false,
+      nothingToFill: false,
       steps: 2,
       origin: 'https://login.example.test/sso',
       app: 'Example App',
@@ -31,7 +31,7 @@ describe('代输入 record line', () => {
     expect(msg('status=succeeded steps=3 answered_on=phone')).toEqual({ key: 'donePhone', params: { count: 3 } });
     expect(msg('status=succeeded steps=1 answered_on=another_device')).toEqual({ key: 'doneElsewhere', params: { count: 1 } });
     expect(msg('status=succeeded steps=0').key).toBe('done');
-    expect(msg('status=cancelled steps=0 ended_by=declined').key).toBe('declined');
+    expect(msg('status=cancelled steps=0 ended_by=detected failure=nothing_to_fill').key).toBe('nothingToFill');
     expect(msg('status=cancelled steps=1').key).toBe('cancelled');
     expect(msg('status=expired steps=0').key).toBe('expired');
     expect(msg('status=failed steps=0').key).toBe('failed');

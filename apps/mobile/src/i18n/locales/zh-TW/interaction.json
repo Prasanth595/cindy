@@ -249,10 +249,6 @@
     "inlineFormActionGeneric": "在電腦端填寫一項配置"
   },
   "inputHandoff": {
-    "title": "代輸入",
-    "requester": "來自 {{name}}",
-    "step": "第 {{count}} 步",
-    "command": "指令",
     "originWarning": {
       "insecure": "這個頁面沒有使用安全連線，輸入的內容可能被他人讀取。",
       "ip-address": "這個頁面使用 IP 位址而不是網域名稱，請確認它是你預期的網站。",
@@ -281,7 +277,9 @@
       "timeout": "等待時間過長，代輸入已結束。",
       "unsupported": "這台電腦暫不支援代輸入。",
       "origin_changed": "填寫前頁面已變化，什麼都沒有填入。請確認現在的頁面後再填寫。",
-      "picture_unavailable": "無法顯示這一步的畫面。請在系統設定中允許 Cindy 錄製螢幕，並確認視窗沒有被縮到最小。"
+      "picture_unavailable": "無法顯示這一步的畫面。請在系統設定中允許 Cindy 錄製螢幕，並確認視窗沒有被縮到最小。",
+      "screen_locked": "這台電腦的螢幕已鎖定。請先解鎖，再讓 Agent 重試。",
+      "nothing_to_fill": "這個介面沒有需要你輸入的內容，已交還給 Agent 繼續。"
     },
     "phase": {
       "reading": "正在讀取介面…",
@@ -293,23 +291,22 @@
       "stay": "還沒完成",
       "done": "交還給 Agent",
       "cancel": "取消代輸入",
-      "refresh": "重新讀取",
-      "fill": "僅填入",
-      "submit": "填入並確認",
       "claim": "改在這裡處理",
-      "decline": "拒絕，本任務不再詢問",
       "picture": "看畫面",
       "backToForm": "回到表單",
-      "liveView": "即時畫面"
+      "liveView": "即時畫面",
+      "fill": "填寫",
+      "skip": "略過",
+      "continue": "繼續",
+      "close": "取消",
+      "showPassword": "顯示密碼",
+      "hidePassword": "隱藏密碼",
+      "scan": "掃碼"
     },
     "remoteUnavailable": "這台電腦無法從遠端接收輸入。請在主機電腦上完成這一步，再交還給 Agent。",
-    "unnamedChoice": "選項",
-    "unnamedButton": "未命名按鈕",
     "unnamedField": "輸入框",
     "passwordField": "密碼",
     "codeField": "驗證碼",
-    "nothingToFill": "這一步沒有可代填的內容。請在主機電腦上完成後交還給 Agent，或者重新讀取。",
-    "screenActions": "介面上的按鈕（會先填入上面的內容）",
     "filledHint": "已有內容；留空則保持不變。",
     "record": {
       "doneOn_one": "主人在 {{device}} 完成了 {{count}} 步輸入",
@@ -321,7 +318,7 @@
       "doneElsewhere_one": "主人在另一台裝置上完成了 {{count}} 步輸入",
       "doneElsewhere_other": "主人在另一台裝置上完成了 {{count}} 步輸入",
       "done": "代輸入已完成",
-      "declined": "主人拒絕了代輸入，本任務不再詢問",
+      "nothingToFill": "無需輸入，已交還給 Agent",
       "cancelled": "代輸入已取消",
       "expired": "代輸入已逾時",
       "failed": "代輸入未完成"
@@ -353,6 +350,25 @@
       "open": "在本裝置開啟",
       "openFailed": "無法開啟連結",
       "then": "在開啟的頁面輸入代碼並完成登入，然後點「交還給 Agent」。"
+    },
+    "sheetNote": "只會填進電腦上的這一處，不會交給 Agent，也不會儲存。",
+    "nothingLeft": "這裡沒有需要你填寫的了。",
+    "qr": {
+      "open": "在本機打開 {{site}}",
+      "openApp": "在本機打開 {{site}} 連結",
+      "share": "存圖或分享",
+      "copyLink": "複製連結",
+      "copyText": "複製內容",
+      "copied": "已複製。",
+      "copyFailed": "無法複製，請重試。",
+      "openFailed": "這台裝置打不開這個連結。可以存圖後在 App 的「掃一掃」裡從相簿辨識。",
+      "shareFailed": "無法打開分享，請重試。",
+      "hintLink": "在本機打開會喚起對應的 App 完成登入；也可以存圖後在 App 的「掃一掃」裡從相簿辨識。登入後會自動繼續。",
+      "hint": "存圖後在 App 的「掃一掃」裡從相簿辨識，或用另一台裝置掃這個碼。登入後會自動繼續。",
+      "alt": "電腦上的 QR 碼。點按會點在電腦上的這個碼上。",
+      "loading": "正在取得 QR 碼…",
+      "failed": "無法取得 QR 碼，點按重試。",
+      "scanned": "已掃碼，等你在手機上確認。確認後會自動繼續。"
     }
   },
   "presentation": {

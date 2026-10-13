@@ -37,7 +37,7 @@ export function rememberInputHandoffPictureOpened(requestId: string): void {
   openedHere.add(requestId);
 }
 
-type Decision = "done" | "cancel" | "refresh" | "decline";
+type Decision = "done" | "cancel" | "refresh";
 
 export function InputHandoffPictureStep({
   snapshot,
@@ -214,7 +214,6 @@ export function InputHandoffPictureStep({
         cancelAction={{ label: t("interaction.inputHandoff.action.cancel"), disabled: busy, onPress: () => onDecide("cancel") }}
         secondaryActions={[
           { label: t("interaction.inputHandoff.action.backToForm"), disabled: busy, tone: "secondary", onPress: () => onDecide("refresh") },
-          { label: t("interaction.inputHandoff.action.decline"), disabled: busy, tone: "secondary", onPress: () => onDecide("decline") },
           { label: t("interaction.inputHandoff.action.done"), disabled: busy, tone: "secondary", onPress: () => onDecide("done") },
         ]}
         primaryActions={

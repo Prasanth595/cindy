@@ -57,13 +57,39 @@ const shot = (overrides: Partial<InputHandoffSnapshot> = {}): InputHandoffSnapsh
   ...overrides,
 });
 
+const fill = () => fireEvent.click(screen.getByRole('button', { name: 'inputHandoff.action.fill' }));
+
 describe('InputHandoffCard screenshot step', () => {
   beforeEach(() => {
     nextRequest++;
   });
 
-  it('shows the picture right away on the executing computer and sends a tap as a fraction', async () => {
+  it('opens a fresh picture after a tap that did not go through, so the next tap works', async () => {
+    mocks.answer.mockResolvedValueOnce({ accepted: false });
     render(<InputHandoffCard sessionId="s1" snapshot={shot()} />);
+    fill();
+    fireEvent.click(await screen.findByRole('button', { name: 'inputHandoff.picture.alt' }), { clientX: 110, clientY: 245 });
+    await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('inputHandoff.error.stale')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'inputHandoff.picture.alt' }), { clientX: 110, clientY: 245 });
+    await waitFor(() => expect(mocks.answer).toHaveBeenCalledTimes(2));
+  });
+
+  it('closes a picture that arrives after the dialog was closed', async () => {
+    let arrive: (value: unknown) => void = () => undefined;
+    mocks.open.mockImplementationOnce(() => new Promise((resolve) => { arrive = resolve; }));
+    const view = render(<InputHandoffCard sessionId="s1" snapshot={shot()} />);
+    fill();
+    await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(1));
+    view.unmount();
+    arrive({ picture: { mime: 'image/jpeg', width: 800, height: 600, data: 'AAAA' }, answer: mocks.answer, close: mocks.close });
+    await waitFor(() => expect(mocks.close).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows the picture once the owner opens the step, and sends a tap as a fraction', async () => {
+    render(<InputHandoffCard sessionId="s1" snapshot={shot()} />);
+    expect(mocks.open).not.toHaveBeenCalled();
+    fill();
     const image = await screen.findByRole('button', { name: 'inputHandoff.picture.alt' });
     expect(mocks.open).toHaveBeenCalledWith('s1', expect.objectContaining({ picture: true, revision: 4 }));
     fireEvent.click(image, { clientX: 110, clientY: 245 });
@@ -76,10 +102,10 @@ describe('InputHandoffCard screenshot step', () => {
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
 
-  it('asks before fetching the picture for a task on another computer', async () => {
+  it('fetches nothing for a task on another computer until the owner opens the step', async () => {
     render(<InputHandoffCard sessionId="s1" snapshot={shot()} remote />);
     expect(mocks.open).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'inputHandoff.picture.open' }));
+    fill();
     await screen.findByRole('button', { name: 'inputHandoff.picture.alt' });
     expect(mocks.open).toHaveBeenCalledTimes(1);
   });
@@ -87,6 +113,7 @@ describe('InputHandoffCard screenshot step', () => {
   it('types into the focused field with the platform password field', async () => {
     const snapshot = shot({ controls: [{ id: 'typed', kind: 'text', label: '', contentType: 'password' }] });
     render(<InputHandoffCard sessionId="s1" snapshot={snapshot} />);
+    fill();
     const field = (await screen.findByLabelText('inputHandoff.passwordField')) as HTMLInputElement;
     expect(field.type).toBe('password');
     fireEvent.change(field, { target: { value: 'synthetic-pass' } });
@@ -101,7 +128,7 @@ describe('InputHandoffCard screenshot step', () => {
 
   it('closes the exchange when the step moves on and opens the next one by itself', async () => {
     const { rerender } = render(<InputHandoffCard sessionId="s1" snapshot={shot()} remote />);
-    fireEvent.click(screen.getByRole('button', { name: 'inputHandoff.picture.open' }));
+    fill();
     await screen.findByRole('button', { name: 'inputHandoff.picture.alt' });
     rerender(<InputHandoffCard sessionId="s1" snapshot={shot({ revision: 6 })} remote />);
     expect(mocks.close).toHaveBeenCalledTimes(1);
@@ -111,7 +138,8 @@ describe('InputHandoffCard screenshot step', () => {
 
   it('goes back to the form with a value-less decision', async () => {
     render(<InputHandoffCard sessionId="s1" snapshot={shot()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'inputHandoff.action.backToForm' }));
+    fill();
+    fireEvent.click(await screen.findByRole('button', { name: 'inputHandoff.action.backToForm' }));
     await waitFor(() => expect(mocks.resolve).toHaveBeenCalledWith(expect.any(String), {
       kind: 'input_handoff',
       action: 'refresh',
@@ -122,9 +150,10 @@ describe('InputHandoffCard screenshot step', () => {
   it('offers the picture from a form step', async () => {
     const form = shot({
       picture: undefined,
-      controls: [{ id: 'c0', kind: 'button', label: 'Continue', primary: true }],
+      controls: [{ id: 'c0', kind: 'text', label: 'Nickname', contentType: 'text' }],
     });
     render(<InputHandoffCard sessionId="s1" snapshot={form} />);
+    fill();
     fireEvent.click(screen.getByRole('button', { name: 'inputHandoff.action.picture' }));
     await waitFor(() => expect(mocks.resolve).toHaveBeenCalledWith(form.requestId, {
       kind: 'input_handoff',

@@ -7,16 +7,20 @@ import {
   type InputHandoffHolder,
   type InputHandoffPhase,
   type InputHandoffPicture,
+  type InputHandoffQr,
   type InputHandoffSnapshot,
   type InputHandoffSource,
   type InputHandoffSubmission,
 } from '@cindy/device-link';
 import { HumanDesktopInput } from '../remote-desktop/inputOwnership.js';
 import type { HandoffDriver } from './macDriver.js';
+import { qrContent } from './qrCode.js';
 import { extractStep, type ExtractedStep } from './stepExtractor.js';
 import type {
   ControlBinding,
+  FoundQr,
   HandoffTarget,
+  NativeActKind,
   NativeActResult,
   NativeAxSnapshot,
   NativeWindowList,
@@ -27,14 +31,30 @@ import type {
 interface PictureStep extends WindowCapture {
   /** A text field had focus when photographed; the card shows one box for it. */
   field?: 'text' | 'password';
+  /** Scan-to-sign-in: the picture is a QR code cut out of the window, and this is what it says. */
+  qr?: InputHandoffQr;
+}
+
+/** How often a QR code on screen is looked at again, to follow a refresh or see that it was scanned. */
+const QR_WATCH_MS = 2000;
+
+/** Where the flow stood when its QR code was first shown; leaving it means the scan went through. */
+interface QrBaseline {
+  pid: number;
+  windowIndex: number;
+  windowTitle: string;
+  url?: string;
 }
 
 /**
- * Something on the step the owner can act on, beyond headings and messages.
- * A sign-in code to copy counts too: the owner acts on it on their own device.
+ * Something on the step the owner is asked for: a field to type into, or a
+ * sign-in code to use on their own device.
  */
 const actionable = (step: ExtractedStep) =>
-  !!step.deviceCode || step.controls.some((control) => control.kind !== 'note');
+  !!step.deviceCode || step.shown.some((control) => control.kind === 'text');
+
+/** The window's structure can be read (it has controls), whether or not any are for the owner. */
+const readable = (step: ExtractedStep) => step.controls.some((control) => control.kind !== 'note');
 
 export interface HandoffTargetSpec {
   app?: string;
@@ -48,7 +68,7 @@ export interface HandoffCompletionHints {
   urlContains?: string;
 }
 
-export type HandoffEndReason = 'owner' | 'detected' | 'cancelled' | 'declined' | 'timeout' | 'failure' | 'session_closed';
+export type HandoffEndReason = 'owner' | 'detected' | 'cancelled' | 'timeout' | 'failure' | 'session_closed';
 
 export interface HandoffResult {
   status: 'succeeded' | 'cancelled' | 'failed' | 'expired';
@@ -135,6 +155,7 @@ const AUTOMATION_FLAGS = /--(remote-debugging-(port|pipe)|enable-automation|head
  */
 export class InputHandoffSession {
   private revision = 0;
+  private unheldClaimFrom: number | null = null;
   private phase: InputHandoffPhase = 'reading';
   private failure: InputHandoffFailure | undefined;
   private target: HandoffTarget | null = null;
@@ -154,6 +175,11 @@ export class InputHandoffSession {
   private picture: PictureStep | null = null;
   /** The owner chose the screenshot for this flow; stays until they go back to the form. */
   private pictureChosen = false;
+  /** Scan-to-sign-in: a code is on screen (`scan`), or it went away and the sign-in is finishing (`scanned`). */
+  private qrState: 'scan' | 'scanned' | null = null;
+  private qrBaseline: QrBaseline | null = null;
+  private qrTimer: ReturnType<typeof setTimeout> | undefined;
+  private qrChecking = false;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -170,12 +196,15 @@ export class InputHandoffSession {
     const step = this.step;
     const picture = this.picture && this.phase === 'ready' ? this.picture : null;
     const controls: InputHandoffControl[] = picture
-      ? picture.field
+      ? picture.field && !picture.qr
         ? [{ id: INPUT_HANDOFF_PICTURE_TEXT_ID, kind: 'text', label: '', contentType: picture.field }]
         : []
-      : this.phase === 'ready' || this.phase === 'finishing'
-        ? step?.controls ?? []
-        : [];
+      : this.qrState === 'scanned'
+        ? []
+        : this.phase === 'ready' || this.phase === 'finishing'
+          ? step?.shown ?? []
+          : [];
+    const qr = this.phase !== 'ready' ? null : picture?.qr ? 'scan' : this.qrState === 'scanned' ? 'scanned' : null;
     return {
       kind: 'input_handoff',
       requestId: this.options.requestId,
@@ -195,7 +224,8 @@ export class InputHandoffSession {
       ...(this.ended ? { terminal: true as const } : {}),
       ...(picture ? { picture: true as const } : {}),
       ...(this.liveViewOffered() ? { liveView: true as const } : {}),
-      ...(!picture && this.phase === 'ready' && step?.deviceCode ? { deviceCode: { ...step.deviceCode } } : {}),
+      ...(!picture && !qr && this.phase === 'ready' && step?.deviceCode ? { deviceCode: { ...step.deviceCode } } : {}),
+      ...(qr ? { qr } : {}),
     };
   }
 
@@ -233,11 +263,22 @@ export class InputHandoffSession {
   pictureFor(revision: number): InputHandoffPicture | null {
     const picture = this.picture;
     if (!picture || !this.isActionable(revision)) return null;
-    return { mime: 'image/jpeg', width: picture.width, height: picture.height, data: picture.jpeg.toString('base64') };
+    return {
+      mime: 'image/jpeg',
+      width: picture.width,
+      height: picture.height,
+      data: picture.jpeg.toString('base64'),
+      ...(picture.qr ? { qr: { ...picture.qr } } : {}),
+    };
   }
 
   isActionable(revision: number): boolean {
-    return !this.ended && !this.busy && this.phase === 'ready' && revision === this.revision;
+    return !this.ended && !this.busy && this.phase === 'ready' && this.acceptsRevision(revision);
+  }
+
+  /** The current revision, or the one just before this screen was taken while nobody held it (see `decide`). */
+  private acceptsRevision(revision: number): boolean {
+    return revision === this.revision || (this.unheldClaimFrom !== null && revision === this.unheldClaimFrom && this.revision === revision + 1);
   }
 
   async start(): Promise<void> {
@@ -265,26 +306,36 @@ export class InputHandoffSession {
         this.present(step);
         return;
       }
-      // Nothing to fill in the window's structure (canvas, self-drawn UI): answer on a picture of it.
+      // Nothing to type, but a QR code to scan (scan-to-sign-in, in any app or page).
       this.step = step;
+      if (await this.showQr()) {
+        this.publish('ready');
+        return;
+      }
+      // A readable screen without a field to type into ends at once: its buttons and options are the agent's.
+      if (step && readable(step)) {
+        this.present(step);
+        return;
+      }
+      // Nothing readable in the window's structure (canvas, self-drawn UI): answer on a picture of it.
       if (await this.showPicture()) {
         this.publish('ready');
         return;
       }
-      if (!step) {
-        this.end('failed', 'failure', 'unreadable');
-        return;
-      }
-      this.present(step);
-    } catch {
+      // Neither its structure nor a picture of it can reach the owner.
       this.end('failed', 'failure', 'unreadable');
+    } catch (error) {
+      // A locked screen is not read at all: say so, rather than blame the window.
+      this.end('failed', 'failure', error instanceof Error && error.message === 'locked' ? 'screen_locked' : 'unreadable');
     }
   }
 
   /** Owner values. Returns false when the step is no longer the one the owner answered. */
   async submit(submission: InputHandoffSubmission, actor?: InputHandoffHolder): Promise<boolean> {
     if (!this.isActionable(submission.expectedRevision)) return false;
-    if (!validateInputHandoffSubmissionForStep(this.snapshot(), submission)) return false;
+    // The revision before a quiet claim is good only for the device that claimed.
+    if (submission.expectedRevision !== this.revision && !(actor && this.holder && sameHolder(actor, this.holder))) return false;
+    if (!validateInputHandoffSubmissionForStep({ ...this.snapshot(), revision: submission.expectedRevision }, submission)) return false;
     if (this.picture) return this.submitPicture(this.picture, submission, actor);
     const current = this.step;
     if (!current) return false;
@@ -316,6 +367,19 @@ export class InputHandoffSession {
       }
       if (outcome !== 'origin_changed') this.stepNumber++;
       if (!ok) this.failure = outcome === 'origin_changed' ? 'origin_changed' : 'action_failed';
+      if (outcome === 'origin_changed' && !actionable(next)) {
+        // The page changed under the owner and now asks for nothing: say what happened, not "nothing to fill".
+        this.end('failed', 'failure', 'origin_changed');
+        return true;
+      }
+      // After a password, the next screen may ask to scan a code (a second factor).
+      if (ok && !actionable(next) && !this.hintsMet(next)) {
+        this.step = next;
+        if (await this.showQr()) {
+          this.publish('ready');
+          return true;
+        }
+      }
       this.present(next, !ok);
     } catch {
       // The next screen cannot be read as a form: show it as a picture instead.
@@ -334,17 +398,17 @@ export class InputHandoffSession {
       this.end('cancelled', 'cancelled');
       return true;
     }
-    if (decision.action === 'decline') {
-      this.end('cancelled', 'declined');
-      return true;
-    }
     if (decision.action === 'claim') {
       if (!actor || this.busy) return false;
       if (this.holder && sameHolder(this.holder, actor)) return true;
       // Taking over bumps the revision, so an answer already in flight from the
-      // previous holder is rejected as stale instead of racing this device.
+      // previous holder is rejected as stale instead of racing this device. Taking
+      // a screen nobody held keeps the answer it was typed against valid (a
+      // password manager can fill and submit before the claim comes back).
+      const unheld = this.holder ? null : this.revision;
       this.holder = actor;
       this.publish(this.phase);
+      this.unheldClaimFrom = unheld;
       return true;
     }
     if (this.busy) return false;
@@ -362,9 +426,11 @@ export class InputHandoffSession {
     if (decision.action === 'picture') {
       // The card's form does not match what the owner needs to see (a captcha image, a slider…).
       if (this.phase !== 'ready') return false;
-      if (this.picture) return true;
+      if (this.picture && !this.picture.qr) return true;
       this.busy = true;
       try {
+        // On a QR step this shows the whole window instead of just the code.
+        this.stopQr();
         this.pictureChosen = true;
         if (await this.showPicture()) this.failure = undefined;
         else {
@@ -389,12 +455,22 @@ export class InputHandoffSession {
       }
       if (follow) await this.useTarget(follow);
       const step = await this.read().catch(() => null);
-      if (step && (actionable(step) || !this.picture)) {
+      if (step && actionable(step)) {
         this.failure = undefined;
         this.present(step, true);
         return true;
       }
       this.step = step;
+      if (await this.showQr()) {
+        this.failure = undefined;
+        this.publish('ready');
+        return true;
+      }
+      if (step && !this.picture) {
+        this.failure = undefined;
+        this.present(step, true);
+        return true;
+      }
       if (await this.showPicture()) this.failure = undefined;
       else {
         this.dropPicture();
@@ -420,8 +496,14 @@ export class InputHandoffSession {
   }
 
   private present(step: ExtractedStep, suppressAutoFinish = false): void {
+    this.stopQr();
     this.dropPicture();
     this.step = step;
+    if (this.submissions === 0 && !actionable(step)) {
+      // Nothing was asked of the owner yet and there is nothing to type: hand the screen back to the agent.
+      this.end('cancelled', 'detected', 'nothing_to_fill');
+      return;
+    }
     if (this.stepNumber === 0) this.stepNumber = 1;
     if (!suppressAutoFinish && this.shouldFinish(step)) {
       this.finishingUntil = this.now() + (this.options.finishingDelayMs ?? 3000);
@@ -435,15 +517,20 @@ export class InputHandoffSession {
     this.publish('ready');
   }
 
-  private shouldFinish(step: ExtractedStep): boolean {
-    if (this.stayedOn !== undefined && this.stayedOn === step.signature) return false;
+  /** The agent said what the end looks like, and this screen shows it. */
+  private hintsMet(step: ExtractedStep): boolean {
     const hints = this.options.completeWhen;
     if (hints?.textAppears && step.texts.some((text) => text.includes(hints.textAppears!))) return true;
-    if (hints?.urlContains && step.url?.includes(hints.urlContains)) return true;
+    return !!hints?.urlContains && !!step.url?.includes(hints.urlContains);
+  }
+
+  private shouldFinish(step: ExtractedStep): boolean {
+    if (this.stayedOn !== undefined && this.stayedOn === step.signature) return false;
+    if (this.hintsMet(step)) return true;
     // A sign-in code is still waiting to be used on the owner's device; they say when they are done.
     if (step.deviceCode) return false;
-    // Generic end: after the owner acted, nothing is left to fill or confirm.
-    return this.submissions > 0 && !step.hasInputs && !step.hasPrimary;
+    // Generic end: after the owner answered, nothing is left to type. Buttons from here on are the agent's.
+    return this.submissions > 0 && !actionable(step);
   }
 
   /** What the card says it shows: the page when it can be read, otherwise the window. */
@@ -461,6 +548,7 @@ export class InputHandoffSession {
     const shot = await withDesktopTurn(() => driver.capture!(target)).catch(() => null);
     if (!shot || 'error' in shot) return false;
     const focus = await driver.focusedField?.(target.pid).catch(() => null);
+    this.stopQr();
     this.dropPicture();
     this.picture = { ...shot, ...(focus?.editable ? { field: focus.secure ? 'password' : 'text' } : {}) };
     if (this.stepNumber === 0) this.stepNumber = 1;
@@ -470,6 +558,185 @@ export class InputHandoffSession {
   private dropPicture(): void {
     this.picture?.jpeg.fill(0);
     this.picture = null;
+  }
+
+  /**
+   * Scan-to-sign-in: looks for a QR code in the target window and, when there
+   * is one, makes it this step. Works on any app or page; nothing product-specific.
+   */
+  private async showQr(): Promise<boolean> {
+    const driver = this.options.driver;
+    const target = this.target;
+    if (!target || !driver.qr || this.pictureChosen) return false;
+    const found = await withDesktopTurn(() => driver.qr!(target, null)).catch(() => null);
+    if (!found || 'error' in found) return false;
+    const qr = qrContent(found.text);
+    if (!qr || this.ended) {
+      found.capture.jpeg.fill(0);
+      return false;
+    }
+    this.dropPicture();
+    this.picture = { ...found.capture, qr };
+    this.qrState = 'scan';
+    const current = this.target ?? target;
+    this.qrBaseline = {
+      pid: current.pid,
+      windowIndex: current.window.index,
+      windowTitle: current.window.title,
+      ...(this.step?.url ? { url: this.step.url } : {}),
+    };
+    if (this.stepNumber === 0) this.stepNumber = 1;
+    this.watchQr();
+    return true;
+  }
+
+  private stopQr(): void {
+    if (this.qrTimer) clearTimeout(this.qrTimer);
+    this.qrTimer = undefined;
+    this.qrState = null;
+    this.qrBaseline = null;
+  }
+
+  private watchQr(): void {
+    if (this.qrTimer) clearTimeout(this.qrTimer);
+    const tick = async () => {
+      this.qrTimer = undefined;
+      if (this.ended || !this.qrState) return;
+      await this.checkQr().catch(() => undefined);
+      if (!this.ended && this.qrState && !this.qrTimer) {
+        this.qrTimer = setTimeout(() => void tick(), QR_WATCH_MS);
+        this.qrTimer.unref?.();
+      }
+    };
+    this.qrTimer = setTimeout(() => void tick(), QR_WATCH_MS);
+    this.qrTimer.unref?.();
+  }
+
+  /**
+   * Looks at the window again while its code waits to be scanned: a new code
+   * (refreshed or expired) replaces the old one; a code that went away means
+   * it was scanned, and leaving the page (a new window, address or title)
+   * means the sign-in went through. Anything the owner did meanwhile wins:
+   * a look that raced it is dropped.
+   */
+  private async checkQr(): Promise<void> {
+    const driver = this.options.driver;
+    const target = this.target;
+    if (!target || !driver.qr || this.busy || this.phase !== 'ready' || this.qrChecking) return;
+    const revision = this.revision;
+    const current = () => !this.ended && !this.busy && this.revision === revision && this.qrState !== null;
+    this.qrChecking = true;
+    try {
+      const windows = await driver.windows().catch(() => null);
+      if (!windows || !current()) return;
+      const mine = windows.apps.find((entry) => entry.pid === target.pid);
+      const window = mine?.windows.find((w) => w.index === target.window.index && w.title === target.window.title)
+        ?? mine?.windows.find((w) => w.title === target.window.title);
+      const otherFocused = windows.frontmost === target.pid && mine?.windows.some((w) => w.focused && !w.minimized && w !== window);
+      if (!window || otherFocused) {
+        // The window closed, changed its title, or a new one of the same app took over. Whatever
+        // other app happens to be in front is not followed: it says nothing about this sign-in.
+        const follow = this.followTarget({ ...windows, frontmost: target.pid }, null);
+        if (follow === 'ended') {
+          this.submissions++;
+          this.end('succeeded', 'detected');
+          return;
+        }
+        if (!follow) return;
+        // Nothing changes until the look is known to be current: an owner tap meanwhile keeps its window.
+        const agentControlled = follow.pid === target.pid
+          ? this.agentControlled
+          : AUTOMATION_FLAGS.test(await driver.commandLine(follow.pid).catch(() => ''));
+        if (!current()) return;
+        // A title that changed while the code still shows (a counter, a tab badge) is not a sign-in.
+        const frame = windows.apps.find((entry) => entry.pid === follow.pid)?.windows
+          .find((w) => w.index === follow.window.index && w.title === follow.window.title)?.frame;
+        const still = frame && frame.length === 4 ? await driver.qr(follow, frame).catch(() => null) : null;
+        if (!current()) {
+          if (still && !('error' in still)) still.capture.jpeg.fill(0);
+          return;
+        }
+        this.target = follow;
+        this.agentControlled = agentControlled;
+        const stillQr = still && !('error' in still) ? qrContent(still.text) : null;
+        if (still && !('error' in still) && stillQr) {
+          this.showFoundQr(still, stillQr);
+          return;
+        }
+        if (still && !('error' in still)) still.capture.jpeg.fill(0);
+        await this.qrLeft(true, current);
+        return;
+      }
+      // Another app in front (or the window minimized) hides the code: no conclusion from what cannot be seen.
+      if (window.minimized || windows.frontmost !== target.pid || !window.focused) return;
+      // A look that failed says nothing about the code: keep waiting.
+      const found = await driver.qr(target, window.frame).catch(() => ({ error: 'unavailable' as const }));
+      if (!current()) {
+        if (found && !('error' in found)) found.capture.jpeg.fill(0);
+        return;
+      }
+      if (found && 'error' in found) return;
+      const qr = found ? qrContent(found.text) : null;
+      if (found && qr) {
+        if (this.qrState === 'scan' && this.picture?.qr?.text === qr.text) {
+          found.capture.jpeg.fill(0);
+          return;
+        }
+        // A new code, or the code came back (expired, or the scan was cancelled on the phone).
+        this.showFoundQr(found, qr);
+        return;
+      }
+      found?.capture.jpeg.fill(0);
+      await this.qrLeft(false, current);
+    } finally {
+      this.qrChecking = false;
+    }
+  }
+
+  /** Shows a code found while waiting, in the window now followed. */
+  private showFoundQr(found: FoundQr, qr: InputHandoffQr): void {
+    this.dropPicture();
+    this.picture = { ...found.capture, qr };
+    this.qrState = 'scan';
+    this.failure = undefined;
+    const target = this.target;
+    if (target && this.qrBaseline) {
+      this.qrBaseline = { ...this.qrBaseline, pid: target.pid, windowIndex: target.window.index, windowTitle: target.window.title };
+    }
+    this.publish('ready');
+  }
+
+  /** The code is no longer on screen; `moved` when the flow went to another window. */
+  private async qrLeft(moved: boolean, current: () => boolean): Promise<void> {
+    const step = await this.read().catch(() => null);
+    if (!current()) return;
+    const baseline = this.qrBaseline;
+    if (step && actionable(step)) {
+      // Something to type next (for example a code sent after the scan).
+      this.submissions++;
+      this.stepNumber++;
+      this.present(step);
+      return;
+    }
+    const navigated = moved || (!!step && !!baseline?.url && !!step.url && step.url !== baseline.url) ||
+      (!!step && this.hintsMet(step));
+    if (navigated) {
+      // The page moved on: the scan went through. Hand back after the usual countdown.
+      this.submissions++;
+      this.stepNumber++;
+      if (step) {
+        this.present(step);
+        return;
+      }
+      this.end('succeeded', 'detected');
+      return;
+    }
+    if (this.qrState === 'scanned') return;
+    // Still the same page without its code: scanned, and waiting (for example a confirmation on the phone).
+    this.dropPicture();
+    if (step) this.step = step;
+    this.qrState = 'scanned';
+    this.publish('ready');
   }
 
   /** One tap, or typing into the focused field, on a screenshot step; then show what came next. */
@@ -511,7 +778,7 @@ export class InputHandoffSession {
       if (this.ended) return true;
       const step = await this.read().catch(() => null);
       if (step && actionable(step) && !this.pictureChosen) {
-        // The screen can be read again: back to the card.
+        // The screen can be read again and asks for typing: back to the card.
         this.stepNumber++;
         this.failure = failure;
         this.present(step, failure !== undefined);
@@ -519,6 +786,19 @@ export class InputHandoffSession {
       }
       this.step = step;
       this.failure = failure;
+      // A code to scan is (still) there, for example after tapping an expired one to refresh it.
+      if (await this.showQr()) {
+        this.publish('ready');
+        return true;
+      }
+      if (step && readable(step) && !this.pictureChosen) {
+        // Done when nothing is left to type.
+        this.stepNumber++;
+        this.present(step, failure !== undefined);
+        return true;
+      }
+      // No code any more: stop watching for one while the window is shown as a picture.
+      this.stopQr();
       if (!(await this.showPicture())) {
         this.dropPicture();
         this.failure = 'picture_unavailable';
@@ -546,7 +826,7 @@ export class InputHandoffSession {
     } else {
       const typed = submission.values[INPUT_HANDOFF_PICTURE_TEXT_ID];
       const value = typeof typed === 'string' ? typed : '';
-      if (!picture.field || action.kind === 'press' || (action.kind === 'fill' && !value)) return false;
+      if (!picture.field || (action.kind === 'fill' && !value)) return false;
       const secure = picture.field === 'password';
       result = await driver.pointer({ kind: 'type', ...base, value, submit: action.kind === 'submit', secure });
       if ('ok' in result && result.ok && secure && value && this.agentControlled) {
@@ -567,6 +847,7 @@ export class InputHandoffSession {
     if (this.ended) return;
     this.ended = true;
     this.clearFinishing();
+    this.stopQr();
     this.dropPicture();
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     this.failure = failure;
@@ -617,34 +898,10 @@ export class InputHandoffSession {
     const raw = await this.options.driver.snapshot(this.target.pid, this.target.window);
     if ('error' in raw) return null;
     this.target = { ...this.target, window: { index: raw.window.index, title: raw.window.title } };
-    const step = extractStep(raw as NativeAxSnapshot);
-    await this.loadMissingOptions(step);
-    return step;
+    return extractStep(raw as NativeAxSnapshot);
   }
 
-  /** Pop-ups that do not expose their items are opened briefly to read them. */
-  private async loadMissingOptions(step: ExtractedStep): Promise<void> {
-    let probed = 0;
-    for (const control of step.controls) {
-      if (control.kind !== 'choice' || probed >= 4) continue;
-      const binding = step.bindings.get(control.id);
-      if (binding?.kind !== 'popup' || !binding.needsOptions || !this.target) continue;
-      probed++;
-      const result = await withDesktopTurn(() => this.options.driver.act({
-        pid: this.target!.pid,
-        window: this.target!.window,
-        ref: binding.ref,
-        fp: binding.fp,
-        kind: 'options',
-      })).catch(() => null);
-      if (!result || !('ok' in result) || !result.ok || !result.options?.length) continue;
-      control.options = result.options.slice(0, 200).map((label, index) => ({ id: `o${index}`, label: label.slice(0, 300) }));
-      binding.optionLabels = new Map(control.options.map((option, index) => [option.id, result.options![index]]));
-      delete binding.needsOptions;
-    }
-  }
-
-  private async act(binding: ControlBinding & { ref: string; fp: string }, kind: 'press' | 'text' | 'pick' | 'key', value?: string): Promise<boolean> {
+  private async act(binding: ControlBinding, kind: NativeActKind, value?: string): Promise<boolean> {
     if (!this.target) return false;
     const request = { pid: this.target.pid, window: this.target.window, ref: binding.ref, fp: binding.fp, kind, ...(value !== undefined ? { value } : {}) };
     let result: NativeActResult = await this.options.driver.act(request);
@@ -657,6 +914,15 @@ export class InputHandoffSession {
       result = await this.options.driver.act({ ...request, ref: matches[0].ref, window: { index: fresh.window.index, title: fresh.window.title } });
     }
     return 'ok' in result && result.ok === true;
+  }
+
+  /** Some forms enable their button only after input events settle. */
+  private async pressSettled(binding: ControlBinding & { kind: 'press' }): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await this.act(binding, 'press')) return true;
+      await this.sleep(300);
+    }
+    return false;
   }
 
   /** The page a secret is about to go into is still the one the owner was shown. */
@@ -676,54 +942,27 @@ export class InputHandoffSession {
       return binding?.kind === 'text' && binding.secure && typeof submission.values[control.id] === 'string';
     });
     if (carriesSecret && !(await this.sameSurface(step))) return 'origin_changed';
-    for (const control of step.controls) {
+    for (const control of step.shown) {
       if (!Object.hasOwn(submission.values, control.id)) continue;
       const value = submission.values[control.id];
       const binding = step.bindings.get(control.id);
-      if (!binding) return false;
-      if (binding.kind === 'text' && typeof value === 'string') {
-        if (!(await this.act(binding, 'text', value))) return false;
-        if (binding.secure && !secretEntered) {
-          secretEntered = true;
-          if (this.agentControlled && this.target) {
-            this.options.onSecretEntered?.({ pid: this.target.pid, ...(step.url ? { url: step.url } : {}) });
-          }
+      if (binding?.kind !== 'text' || typeof value !== 'string') return false;
+      if (!(await this.act(binding, 'text', value))) return false;
+      if (binding.secure && !secretEntered) {
+        secretEntered = true;
+        if (this.agentControlled && this.target) {
+          this.options.onSecretEntered?.({ pid: this.target.pid, ...(step.url ? { url: step.url } : {}) });
         }
-        lastText = binding;
-      } else if (binding.kind === 'popup' && typeof value === 'string') {
-        const label = binding.optionLabels.get(value);
-        if (label === undefined) return false;
-        if (control.kind === 'choice' && control.selected === value) continue;
-        if (!(await this.act(binding, 'pick', label))) return false;
-      } else if (binding.kind === 'radio' && typeof value === 'string') {
-        const option = binding.options.get(value);
-        if (!option) return false;
-        if (control.kind === 'choice' && control.selected === value) continue;
-        if (!(await this.act({ kind: 'press', ...option }, 'press'))) return false;
-      } else if (binding.kind === 'toggle' && typeof value === 'boolean') {
-        if (value !== binding.checked && !(await this.act(binding, 'press'))) return false;
-      } else {
-        return false;
       }
+      lastText = binding;
       await this.sleep(60);
     }
-    const action = submission.action;
-    if (action.kind === 'press') {
-      const binding = step.bindings.get(action.controlId);
-      if (binding?.kind !== 'press') return false;
-      // Some forms enable their button only after input events settle.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (await this.act(binding, 'press')) return true;
-        await this.sleep(300);
-      }
-      return false;
-    }
-    if (action.kind === 'submit') {
-      const field = lastText ?? [...step.bindings.values()].find((b): b is ControlBinding & { kind: 'text' } => b.kind === 'text');
-      if (!field) return false;
-      return this.act(field, 'key', 'return');
-    }
-    return true;
+    // The owner only typed; confirm with the page's own main button, as they would, else Return.
+    const primary = step.controls.find((control) => control.kind === 'button' && control.primary);
+    const button = primary && step.bindings.get(primary.id);
+    if (button?.kind === 'press') return this.pressSettled(button);
+    const field = lastText ?? [...step.bindings.values()].find((b): b is ControlBinding & { kind: 'text' } => b.kind === 'text');
+    return !!field && this.act(field, 'key', 'return');
   }
 
   /**

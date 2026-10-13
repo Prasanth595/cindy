@@ -1,18 +1,19 @@
 /**
  * InputHandoffCard (代输入)
  * ---------------------------------------------------------------------------
- * The Host reads one screen of the target UI and shows it here as standard
- * fields. Values the owner types stay in this component's local state and
- * leave only through makerTransport.submitInputHandoff — never the store, the
- * transcript or the model. Each new screen remounts the form, so a stale
- * draft can never be applied to a different screen.
+ * A strip above the composer says where the computer needs the owner; 填写
+ * (or 扫码) opens the dialog with just what the owner fills in. The Host reads
+ * one screen of the target UI and shows it as standard fields. Values the
+ * owner types stay in the form's local state and leave only through
+ * makerTransport.submitInputHandoff — never the store, the transcript or the
+ * model. Each new screen remounts the form, so a stale draft can never be
+ * applied to a different screen.
  *
  * Password fields are plain `type="password"` + `autocomplete` hints so the
  * platform password manager (1Password, Passwords) can fill them.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, KeyRound, MonitorPlay } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -33,13 +34,17 @@ import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDev
 import { toast } from '@/lib/toast';
 import { makerApiForSticky, submitInputHandoff } from '@/lib/makerTransport';
 import { cn } from '@/lib/utils';
-import {
-  InputHandoffPictureStep,
-  rememberInputHandoffPictureOpened,
-} from './InputHandoffPictureStep';
 import { InputHandoffDeviceCode } from './InputHandoffDeviceCode';
-import { InputHandoffStepForm } from './InputHandoffStepForm';
-import { changedValues } from './inputHandoffModel';
+import { InputHandoffDialog, InputHandoffPlace, inputHandoffIcon } from './InputHandoffDialog';
+import { InputHandoffPictureStep } from './InputHandoffPictureStep';
+import { InputHandoffQrStep } from './InputHandoffQrStep';
+import { CONTINUE_ATTR, InputHandoffStepForm } from './InputHandoffStepForm';
+import {
+  changedValues,
+  inputHandoffDialogHasContent,
+  inputHandoffDialogMode,
+  inputHandoffPlace,
+} from './inputHandoffModel';
 
 export interface InputHandoffCardProps {
   sessionId: string;
@@ -48,12 +53,21 @@ export interface InputHandoffCardProps {
   remote?: boolean;
 }
 
-type Decision = 'done' | 'cancel' | 'stay' | 'refresh' | 'claim' | 'decline' | 'picture';
+type Decision = 'done' | 'cancel' | 'stay' | 'refresh' | 'claim' | 'picture';
+
+interface StripAction {
+  label: string;
+  primary?: boolean;
+  onClick: () => void;
+}
 
 export function InputHandoffCard({ sessionId, snapshot, remote }: InputHandoffCardProps) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Stays wanted across steps: after Continue the dialog hides while the
+  // computer types and comes back by itself for the next screen to fill.
+  const [dialogWanted, setDialogWanted] = useState(false);
 
   // A new screen clears any message about the previous one.
   const stepKey = inputHandoffStepKey(snapshot);
@@ -61,10 +75,12 @@ export function InputHandoffCard({ sessionId, snapshot, remote }: InputHandoffCa
     setError(null);
     setBusy(false);
   }, [stepKey]);
+  useEffect(() => {
+    if (snapshot.terminal) setDialogWanted(false);
+  }, [snapshot.terminal]);
 
   const decide = useCallback(
     async (action: Decision) => {
-      if (action === 'picture') rememberInputHandoffPictureOpened(snapshot.requestId);
       setBusy(true);
       setError(null);
       try {
@@ -127,242 +143,289 @@ export function InputHandoffCard({ sessionId, snapshot, remote }: InputHandoffCa
     snapshot,
     remote === true ? { deviceId: selfDeviceId } : { local: true },
   );
+  const liveView = liveViewDevice(sessionId, snapshot);
+  const dialogContent = inputHandoffDialogHasContent(snapshot, heldElsewhere);
+  const qrScan = snapshot.qr === 'scan' && snapshot.picture === true;
 
+  const skip: StripAction = { label: t('inputHandoff.action.skip'), onClick: () => void decide('cancel') };
+  const handBack: StripAction = {
+    label: t('inputHandoff.action.done'),
+    primary: true,
+    onClick: () => void decide('done'),
+  };
+  let status: ReactNode = null;
+  let spinner = false;
+  let actions: StripAction[] = [];
+  if (snapshot.terminal) {
+    status = t(
+      (snapshot.phase === 'failed' || snapshot.failure === 'nothing_to_fill') && snapshot.failure
+        ? `inputHandoff.failure.${snapshot.failure}`
+        : `inputHandoff.terminal.${snapshot.phase}`,
+    );
+  } else if (snapshot.phase === 'ready' && heldElsewhere) {
+    status = t('inputHandoff.holder.elsewhere', { device: holderLabel(snapshot, t) });
+    actions = [
+      skip,
+      {
+        label: t('inputHandoff.action.claim'),
+        primary: true,
+        onClick: () => {
+          setDialogWanted(true);
+          void decide('claim');
+        },
+      },
+    ];
+  } else if (snapshot.phase === 'ready' && snapshot.qr === 'scanned') {
+    // The code was scanned; the sign-in finishes on the phone that scanned it.
+    spinner = true;
+    status = t('inputHandoff.qr.scanned');
+    actions = [skip, handBack];
+  } else if (snapshot.phase === 'ready' && dialogContent) {
+    actions = [
+      skip,
+      {
+        label: t(qrScan ? 'inputHandoff.action.scan' : 'inputHandoff.action.fill'),
+        primary: true,
+        onClick: () => setDialogWanted(true),
+      },
+    ];
+  } else if (snapshot.phase === 'ready') {
+    // Nothing left to type here (the owner stayed on, or an action did not take).
+    status = snapshot.failure ? t(`inputHandoff.failure.${snapshot.failure}`) : t('inputHandoff.nothingLeft');
+    actions = [skip, handBack];
+  } else if (snapshot.phase === 'finishing') {
+    status = <FinishingCountdown until={snapshot.finishingUntil} />;
+    actions = [{ label: t('inputHandoff.action.stay'), onClick: () => void decide('stay') }, handBack];
+  } else {
+    spinner = true;
+    status = t(snapshot.phase === 'working' ? 'inputHandoff.phase.working' : 'inputHandoff.phase.reading');
+    actions = [skip];
+  }
+
+  const place = inputHandoffPlace(snapshot.source);
+  const Icon = inputHandoffIcon(snapshot);
+  const dialogOpen = dialogWanted && dialogContent;
   return (
     <section
-      aria-label={t('inputHandoff.title')}
+      aria-label={snapshot.purpose}
+      data-testid="input-handoff-strip"
       className={cn(
-        'w-full max-w-[914px] rounded-[12px] border p-4',
+        'w-full max-w-[914px] rounded-[12px] border px-3 py-2.5',
         'border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)]',
       )}
     >
-      <InputHandoffHeader snapshot={snapshot} />
-      <InputHandoffSourceRow snapshot={snapshot} />
-      <div className="mt-4">
-        <InputHandoffBody
-          sessionId={sessionId}
-          remote={remote === true}
-          onError={setError}
-          snapshot={snapshot}
-          busy={busy}
-          inputBlocked={inputBlocked}
-          heldElsewhere={heldElsewhere}
-          onDecide={decide}
-          onSubmit={submit}
-          onStart={claimQuietly}
-        />
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-[8px] bg-[var(--surface-chip)] text-[var(--text-primary)]">
+          <Icon size={18} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-14 font-medium leading-snug">{snapshot.purpose}</p>
+          <InputHandoffPlace label={place.label} secure={place.secure} />
+        </div>
+        {actions.length > 0 && (
+          <div className="flex shrink-0 items-center gap-2">
+            {actions.map((action) => (
+              <Button
+                key={action.label}
+                size="sm"
+                variant={action.primary ? 'primary' : 'secondary'}
+                tone={action.primary ? 'default' : 'quiet'}
+                disabled={busy}
+                onClick={action.onClick}
+              >
+                {action.label}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
-      {error && (
-        <p role="alert" className="mt-3 text-12 text-[var(--error-fg)]">
+      {status && (
+        <div className="mt-2 flex items-center gap-2 pl-12 text-13 text-[var(--text-secondary)]" role="status">
+          {spinner && <Spinner size={14} />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">{status}</span>
+        </div>
+      )}
+      {error && !dialogOpen && (
+        <p role="alert" className="mt-2 pl-12 text-12 text-[var(--error-fg)]">
           {error}
         </p>
       )}
-      <InputHandoffLiveView sessionId={sessionId} snapshot={snapshot} />
+      {liveView && !dialogContent && (
+        <div className="mt-1 pl-12">
+          <LiveViewLink deviceId={liveView} requestId={snapshot.requestId} />
+        </div>
+      )}
+      {dialogContent && (
+        <InputHandoffStepDialog
+          open={dialogOpen}
+          sessionId={sessionId}
+          snapshot={snapshot}
+          busy={busy}
+          inputBlocked={inputBlocked}
+          error={error}
+          liveView={liveView}
+          onError={setError}
+          onDecide={(action) => void decide(action)}
+          onSubmit={submit}
+          onStart={claimQuietly}
+          onClose={() => setDialogWanted(false)}
+        />
+      )}
     </section>
   );
 }
 
-function InputHandoffHeader({ snapshot }: { snapshot: InputHandoffSnapshot }) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex min-w-0 items-start gap-2">
-        <KeyRound size={16} className="mt-0.5 shrink-0 text-[var(--text-secondary)]" aria-hidden />
-        <div className="min-w-0">
-          <p className="text-15 font-semibold leading-tight">{t('inputHandoff.title')}</p>
-          <p className="mt-1 text-13 leading-relaxed text-[var(--text-secondary)] [overflow-wrap:anywhere]">
-            {snapshot.purpose}
-          </p>
-          {snapshot.note && (
-            <p className="mt-1 text-13 leading-relaxed text-[var(--text-secondary)] [overflow-wrap:anywhere]">
-              {t('inputHandoff.agentNote', { note: snapshot.note })}
-            </p>
-          )}
-          {snapshot.requester && (
-            <p className="mt-0.5 text-12 text-[var(--text-tertiary)] [overflow-wrap:anywhere]">
-              {t('inputHandoff.requester', { name: snapshot.requester })}
-            </p>
-          )}
-        </div>
-      </div>
-      {!snapshot.terminal && (
-        <span className="shrink-0 rounded-[6px] border border-[var(--border-default)] px-2 py-1 text-12 font-medium text-[var(--text-secondary)]">
-          {t('inputHandoff.step', { count: snapshot.stepNumber })}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function InputHandoffSourceRow({ snapshot }: { snapshot: InputHandoffSnapshot }) {
-  const { t } = useTranslation();
-  const { source } = snapshot;
-  const where = [source.app, source.window].filter(Boolean).join(' · ');
-  return (
-    <div className="mt-3 space-y-1.5 text-12">
-      <p className="text-[var(--text-tertiary)] [overflow-wrap:anywhere]">
-        {where}
-        {source.origin && (
-          <span className="ml-1.5 font-mono text-[var(--text-secondary)]">{source.origin}</span>
-        )}
-      </p>
-      {snapshot.command && (
-        <p className="text-[var(--text-tertiary)] [overflow-wrap:anywhere]">
-          {t('inputHandoff.command')}{' '}
-          <span className="font-mono text-[var(--text-secondary)]">{snapshot.command}</span>
-        </p>
-      )}
-      {source.warning && <Warning text={t(`inputHandoff.originWarning.${source.warning}`)} />}
-      {snapshot.agentControlled && <Warning text={t('inputHandoff.agentControlled')} />}
-    </div>
-  );
-}
-
-function Warning({ text }: { text: string }) {
-  return (
-    <p className="flex items-start gap-1.5 rounded-[8px] bg-[var(--warning-bg-soft)] px-2.5 py-1.5 text-[var(--text-primary)]">
-      <AlertTriangle size={14} className="mt-px shrink-0 text-[var(--warning-fg)]" aria-hidden />
-      <span>{text}</span>
-    </p>
-  );
-}
-
-interface BodyProps {
-  sessionId: string;
-  remote: boolean;
-  onError: (message: string | null) => void;
-  snapshot: InputHandoffSnapshot;
-  busy: boolean;
-  inputBlocked: boolean;
-  heldElsewhere: boolean;
-  onDecide: (action: Decision) => void;
-  onSubmit: (draft: InputHandoffValues, action: InputHandoffAction) => Promise<boolean>;
-  onStart: () => void;
-}
-
-function InputHandoffBody({
+function InputHandoffStepDialog({
+  open,
   sessionId,
-  remote,
-  onError,
   snapshot,
   busy,
   inputBlocked,
-  heldElsewhere,
+  error,
+  liveView,
+  onError,
   onDecide,
   onSubmit,
   onStart,
-}: BodyProps) {
+  onClose,
+}: {
+  open: boolean;
+  sessionId: string;
+  snapshot: InputHandoffSnapshot;
+  busy: boolean;
+  inputBlocked: boolean;
+  error: string | null;
+  /** The computer running the task, when it offers a live view of the window. */
+  liveView: string | null;
+  onError: (message: string | null) => void;
+  onDecide: (action: Decision) => void;
+  onSubmit: (draft: InputHandoffValues, action: InputHandoffAction) => Promise<boolean>;
+  onStart: () => void;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
-  if (snapshot.terminal) {
-    const key =
-      snapshot.phase === 'failed' && snapshot.failure
-        ? `inputHandoff.failure.${snapshot.failure}`
-        : `inputHandoff.terminal.${snapshot.phase}`;
-    return <p className="text-13 text-[var(--text-secondary)]">{t(key)}</p>;
-  }
-  const failure = snapshot.failure ? (
-    <p role="alert" className="mb-3 text-12 text-[var(--error-fg)]">
-      {t(`inputHandoff.failure.${snapshot.failure}`)}
-    </p>
-  ) : null;
-  if (snapshot.phase === 'ready' && heldElsewhere) {
-    return (
-      <>
-        <p className="text-13 text-[var(--text-secondary)]" role="status">
-          {t('inputHandoff.holder.elsewhere', { device: holderLabel(snapshot, t) })}
-        </p>
-        <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            tone="quiet"
-            disabled={busy}
-            onClick={() => onDecide('cancel')}
-          >
-            {t('inputHandoff.action.cancel')}
-          </Button>
-          <Button variant="primary" size="sm" disabled={busy} onClick={() => onDecide('claim')}>
-            {t('inputHandoff.action.claim')}
-          </Button>
-        </div>
-      </>
+  const mode = inputHandoffDialogMode(snapshot);
+  const formId = `input-handoff-${snapshot.requestId}`;
+  // One picture or code per revision: remount so it is fetched afresh, and never claim
+  // quietly there (that bumps the revision).
+  const revisionKey = `${snapshot.requestId}:${snapshot.revision}`;
+  let body: ReactNode;
+  let footer: ReactNode = null;
+  if (mode === 'qr') {
+    body = (
+      <InputHandoffQrStep
+        key={revisionKey}
+        sessionId={sessionId}
+        snapshot={snapshot}
+        busy={busy}
+        inputBlocked={inputBlocked}
+        onError={onError}
+      />
     );
-  }
-  if (snapshot.phase === 'ready' && snapshot.picture) {
-    // A screenshot belongs to exactly one revision: never claim quietly here
-    // (that bumps the revision), and remount so the picture is fetched afresh.
-    return (
-      <>
-        {failure}
-        <InputHandoffPictureStep
-          key={`${snapshot.requestId}:${snapshot.revision}`}
-          sessionId={sessionId}
-          snapshot={snapshot}
-          remote={remote}
-          busy={busy}
-          inputBlocked={inputBlocked}
-          onDecide={onDecide}
-          onError={onError}
-        />
-      </>
+  } else if (mode === 'picture') {
+    body = (
+      <InputHandoffPictureStep
+        key={revisionKey}
+        sessionId={sessionId}
+        snapshot={snapshot}
+        busy={busy}
+        inputBlocked={inputBlocked}
+        onDecide={onDecide}
+        onError={onError}
+      />
     );
-  }
-  if (snapshot.phase === 'ready') {
-    return (
+  } else {
+    body = (
       <>
-        {failure}
         <InputHandoffDeviceCode snapshot={snapshot} />
-        <InputHandoffStepForm
-          key={inputHandoffStepKey(snapshot)}
-          snapshot={snapshot}
-          busy={busy}
-          inputBlocked={inputBlocked}
-          onDecide={onDecide}
-          onSubmit={onSubmit}
-          onStart={onStart}
-        />
+        {mode === 'fields' && (
+          <InputHandoffStepForm
+            key={inputHandoffStepKey(snapshot)}
+            formId={formId}
+            snapshot={snapshot}
+            busy={busy}
+            inputBlocked={inputBlocked}
+            onSubmit={onSubmit}
+            onStart={onStart}
+          />
+        )}
       </>
     );
-  }
-  if (snapshot.phase === 'finishing') {
-    return (
-      <>
-        {failure}
-        <FinishingCountdown until={snapshot.finishingUntil} />
-        <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button variant="secondary" size="sm" disabled={busy} onClick={() => onDecide('stay')}>
-            {t('inputHandoff.action.stay')}
-          </Button>
-          <Button variant="primary" size="sm" disabled={busy} onClick={() => onDecide('done')}>
+    footer = (
+      <div className="flex flex-col gap-2">
+        <p className="text-center text-12 leading-relaxed text-[var(--text-tertiary)]">
+          {t('inputHandoff.dialogNote')}
+        </p>
+        {mode === 'code' ? (
+          <Button size="lg" variant="cta" palette="confirmation" disabled={busy} onClick={() => onDecide('done')}>
             {t('inputHandoff.action.done')}
           </Button>
-        </div>
-      </>
-    );
-  }
-  return (
-    <>
-      {failure}
-      <p className="flex items-center gap-2 text-13 text-[var(--text-secondary)]" role="status">
-        <Spinner size={14} />
-        {t(
-          snapshot.phase === 'working'
-            ? 'inputHandoff.phase.working'
-            : 'inputHandoff.phase.reading',
+        ) : (
+          <Button
+            type="submit"
+            form={formId}
+            size="lg"
+            variant="cta"
+            palette="confirmation"
+            loading={busy}
+            disabled={busy || inputBlocked}
+            {...{ [CONTINUE_ATTR]: '' }}
+          >
+            {t('inputHandoff.action.continue')}
+          </Button>
         )}
-      </p>
-      <div className="mt-3 flex justify-end">
-        <Button
-          variant="secondary"
-          size="sm"
-          tone="quiet"
-          disabled={busy}
-          onClick={() => onDecide('cancel')}
-        >
-          {t('inputHandoff.action.cancel')}
+        <Button size="lg" variant="secondary" palette="confirmation" onClick={onClose}>
+          {t('inputHandoff.action.close')}
         </Button>
       </div>
-    </>
+    );
+  }
+  // A terminal prompt has no screen to look at; a picture step already is one, except a QR code cut out of it.
+  const canPicture = !snapshot.command && mode !== 'picture';
+  const links =
+    canPicture || liveView ? (
+      <>
+        {canPicture && (
+          <QuietLink disabled={busy} onClick={() => onDecide('picture')}>
+            {t('inputHandoff.action.picture')}
+          </QuietLink>
+        )}
+        {liveView && <LiveViewLink deviceId={liveView} requestId={snapshot.requestId} />}
+      </>
+    ) : null;
+  return (
+    <InputHandoffDialog
+      open={open}
+      snapshot={snapshot}
+      inputBlocked={inputBlocked}
+      error={error}
+      footer={footer}
+      links={links}
+      onClose={onClose}
+    >
+      {body}
+    </InputHandoffDialog>
+  );
+}
+
+function QuietLink({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="min-h-8 text-12 text-[var(--text-tertiary)] transition-colors enabled:hover:text-[var(--text-secondary)] disabled:opacity-60"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -371,19 +434,12 @@ function InputHandoffBody({
  * there). Navigation only: the host picks the window from the request id and
  * keeps input inside it; this device never names a window.
  */
-function InputHandoffLiveView({
-  sessionId,
-  snapshot,
-}: {
-  sessionId: string;
-  snapshot: InputHandoffSnapshot;
-}) {
+function liveViewDevice(sessionId: string, snapshot: InputHandoffSnapshot): string | null {
   const deviceId = getStickySessionDeviceId(sessionId);
-  if (!deviceId || !snapshot.liveView || snapshot.terminal) return null;
-  return <LiveViewButton deviceId={deviceId} requestId={snapshot.requestId} />;
+  return deviceId && snapshot.liveView && !snapshot.terminal ? deviceId : null;
 }
 
-function LiveViewButton({ deviceId, requestId }: { deviceId: string; requestId: string }) {
+function LiveViewLink({ deviceId, requestId }: { deviceId: string; requestId: string }) {
   const { t } = useTranslation();
   const devices = useDeviceLinkDeviceList();
   const [opening, setOpening] = useState(false);
@@ -396,31 +452,20 @@ function LiveViewButton({ deviceId, requestId }: { deviceId: string; requestId: 
   );
   const name = devices?.find((device) => device.deviceId === deviceId)?.name || deviceId;
   return (
-    <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--border-default)] pt-3">
-      <p className="min-w-0 text-12 leading-relaxed text-[var(--text-tertiary)]">
-        {t('inputHandoff.liveViewHint')}
-      </p>
-      <Button
-        variant="secondary"
-        size="sm"
-        tone="quiet"
-        className="shrink-0"
-        loading={opening}
-        disabled={opening}
-        onClick={() => {
-          setOpening(true);
-          void window.electronAPI
-            .openRemoteDesktop({ deviceId, name, handoff: requestId })
-            .catch(() => toast.error(t('remoteDesktop.connectionError')))
-            .finally(() => {
-              if (mounted.current) setOpening(false);
-            });
-        }}
-      >
-        <MonitorPlay size={14} aria-hidden />
-        {t('inputHandoff.action.liveView')}
-      </Button>
-    </div>
+    <QuietLink
+      disabled={opening}
+      onClick={() => {
+        setOpening(true);
+        void window.electronAPI
+          .openRemoteDesktop({ deviceId, name, handoff: requestId })
+          .catch(() => toast.error(t('remoteDesktop.connectionError')))
+          .finally(() => {
+            if (mounted.current) setOpening(false);
+          });
+      }}
+    >
+      {t('inputHandoff.action.liveView')}
+    </QuietLink>
   );
 }
 
@@ -443,10 +488,10 @@ function FinishingCountdown({ until }: { until?: number }) {
   }, [until]);
   const seconds = until ? Math.max(0, Math.ceil((until - now) / 1000)) : 0;
   return (
-    <p className="text-13 text-[var(--text-secondary)]" role="status">
+    <>
       {until
         ? t('inputHandoff.phase.finishing', { count: seconds })
         : t('inputHandoff.phase.finishingNow')}
-    </p>
+    </>
   );
 }

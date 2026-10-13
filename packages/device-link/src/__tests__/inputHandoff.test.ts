@@ -10,13 +10,16 @@ import {
   parseInputHandoffOffer,
   parseInputHandoffPicture,
   parseInputHandoffPresentation,
+  parseInputHandoffQr,
   parseInputHandoffSubmission,
+  inputHandoffQrContent,
+  inputHandoffQrLink,
   validateInputHandoffSubmissionForStep,
 } from '../inputHandoff.js';
 
 const controls: InputHandoffSnapshot['controls'] = [
   { id: 'c0', kind: 'text', label: 'Email', contentType: 'email' },
-  { id: 'c1', kind: 'button', label: 'Next', primary: true },
+  { id: 'c1', kind: 'note', tone: 'error', text: 'Enter a valid email' },
 ];
 
 describe('代输入 holder', () => {
@@ -38,15 +41,14 @@ describe('代输入 holder', () => {
     expect(inputHandoffHeldElsewhere(onHost, { deviceId: 'phone-1' })).toBe(true);
   });
 
-  it('accepts take-over and decline as value-less decisions', () => {
-    for (const action of ['claim', 'decline'] as const) {
-      expect(parseInputHandoffDecision({ kind: 'input_handoff', action, expectedRevision: 3 })).toEqual({
-        kind: 'input_handoff',
-        action,
-        expectedRevision: 3,
-      });
-    }
+  it('accepts take-over as a value-less decision', () => {
+    expect(parseInputHandoffDecision({ kind: 'input_handoff', action: 'claim', expectedRevision: 3 })).toEqual({
+      kind: 'input_handoff',
+      action: 'claim',
+      expectedRevision: 3,
+    });
     expect(parseInputHandoffDecision({ kind: 'input_handoff', action: 'steal', expectedRevision: 3 })).toBeNull();
+    expect(parseInputHandoffDecision({ kind: 'input_handoff', action: 'decline', expectedRevision: 3 })).toBeNull();
   });
 });
 
@@ -81,6 +83,7 @@ describe('代输入 screenshot step', () => {
     command: null,
     controls: [{ id: 'typed', kind: 'text', label: '' }],
     picture: true,
+    qr: false,
   };
   const state = 'a'.repeat(43);
 
@@ -149,7 +152,94 @@ describe('代输入 screenshot step', () => {
     ).toBe(true);
   });
 
+  it('carries only typed text, confirmed by the page itself', () => {
+    const form = { revision: 4, controls };
+    const submit = { kind: 'submit' } as const;
+    expect(validateInputHandoffSubmissionForStep(form, { expectedRevision: 4, values: { c0: 'a@example.test' }, action: submit })).toBe(true);
+    // The error note is not a field.
+    expect(validateInputHandoffSubmissionForStep(form, { expectedRevision: 4, values: { c1: 'x' }, action: submit })).toBe(false);
+    // Typing without confirming is for screenshot steps only.
+    expect(validateInputHandoffSubmissionForStep(form, { expectedRevision: 4, values: { c0: 'x' }, action: { kind: 'fill' } })).toBe(false);
+    for (const bad of [
+      { expectedRevision: 4, values: { c0: true }, action: submit },
+      { expectedRevision: 4, values: {}, action: { kind: 'press', controlId: 'c1' } },
+    ])
+      expect(() => parseInputHandoffSubmission(bad)).toThrow();
+    // Page buttons and options never reach another device.
+    expect(() => parseInputHandoffPresentation({
+      requestId: 'req1', revision: 4, purpose: 'Sign in', source: { app: 'Chrome' }, command: null, picture: false, qr: false,
+      controls: [{ id: 'b0', kind: 'button', label: 'Next' }],
+    })).toThrow();
+  });
+
   it('accepts asking for the picture as a value-less decision', () => {
     expect(parseInputHandoffDecision({ kind: 'input_handoff', action: 'picture', expectedRevision: 2 })?.action).toBe('picture');
+  });
+});
+
+describe('代输入 QR step', () => {
+  const state = 'a'.repeat(43);
+  const snapshot = {
+    kind: 'input_handoff',
+    requestId: 'req1',
+    revision: 5,
+    phase: 'ready',
+    purpose: 'Sign in',
+    source: { app: 'WeChat' },
+    stepNumber: 1,
+    controls: [],
+    picture: true,
+    qr: 'scan',
+  } as InputHandoffSnapshot;
+  const link = 'https://login.example.com/qr?token=abc';
+  const picture = {
+    mime: 'image/jpeg', width: 400, height: 400, data: 'AAAA',
+    qr: { text: link, url: link },
+  };
+
+  it('says in the presentation that the picture is a code, and only for a code on screen', () => {
+    expect(inputHandoffPresentation(snapshot).qr).toBe(true);
+    expect(inputHandoffPresentation({ ...snapshot, qr: 'scanned', picture: undefined }).qr).toBe(false);
+    expect(() => parseInputHandoffPresentation({ ...inputHandoffPresentation(snapshot), picture: false })).toThrow();
+  });
+
+  it('carries what the code says inside the sealed picture, and nowhere else', () => {
+    const presentation = inputHandoffPresentation(snapshot);
+    expect(parseInputHandoffOffer({ kind: 'input-entry', state, presentation, picture }).picture?.qr).toEqual(picture.qr);
+    // A code step without its content, or a plain screenshot that claims one, is refused.
+    const { qr: _qr, ...plain } = picture;
+    expect(() => parseInputHandoffOffer({ kind: 'input-entry', state, presentation, picture: plain })).toThrow();
+    expect(() => parseInputHandoffOffer({
+      kind: 'input-entry', state, presentation: { ...presentation, qr: false }, picture,
+    })).toThrow();
+  });
+
+  it('opens what a phone camera would open: web links and app links, nothing that runs or reads locally', () => {
+    expect(inputHandoffQrLink(picture.qr)).toEqual({ url: link, site: 'login.example.com', web: true });
+    // Some codes are a plain http page that hands over to an app; app links open the app directly.
+    expect(inputHandoffQrContent(' http://192.168.1.2:8080/pair?t=1 ')).toEqual({ text: 'http://192.168.1.2:8080/pair?t=1', url: 'http://192.168.1.2:8080/pair?t=1' });
+    expect(inputHandoffQrLink({ text: 'weixin://dl/login?t=1', url: 'weixin://dl/login?t=1' })).toEqual({ url: 'weixin://dl/login?t=1', site: 'weixin', web: false });
+    expect(inputHandoffQrContent('alipays://platformapi/startapp?appId=1')?.url).toBe('alipays://platformapi/startapp?appId=1');
+    for (const text of ['WIFI:S:home;T:WPA;P:secret;;', 'tel:10086', 'javascript://x%0Aalert(1)', 'data://text/html,x', 'file:///etc/hosts', 'https://u:p@login.example.com/', 'just words'])
+      expect(inputHandoffQrContent(text)).toEqual({ text });
+    expect(inputHandoffQrContent('')).toBeNull();
+    expect(inputHandoffQrContent('a\u0007b')).toBeNull();
+    expect(inputHandoffQrContent('x'.repeat(2049))).toBeNull();
+    expect(parseInputHandoffQr({ text: 'WIFI:S:home;T:WPA;P:secret;;' })).toEqual({ text: 'WIFI:S:home;T:WPA;P:secret;;' });
+    for (const bad of [
+      { text: 'shown text', url: link },
+      { text: 'javascript://x%0Aalert(1)', url: 'javascript://x%0Aalert(1)' },
+      { text: 'https://u:p@login.example.com/', url: 'https://u:p@login.example.com/' },
+      { text: link, url: link, origin: 'https://login.example.com' },
+      { text: '' },
+      { text: 'a\u0000b' },
+      { text: 'x'.repeat(2049) },
+      { text: link, extra: 1 },
+    ])
+      expect(() => parseInputHandoffQr(bad)).toThrow();
+  });
+
+  it('gives a new key when the code was scanned, so the scanned state is a new screen', () => {
+    expect(inputHandoffStepKey(snapshot)).not.toBe(inputHandoffStepKey({ ...snapshot, qr: 'scanned', picture: undefined }));
   });
 });
