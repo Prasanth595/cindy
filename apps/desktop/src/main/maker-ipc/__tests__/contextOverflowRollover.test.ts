@@ -1228,6 +1228,46 @@ describe('createContextOverflowRollover', () => {
       expect(deps.onRebuilt).toHaveBeenCalledTimes(1);
     });
 
+    it('does not let one model rebuild block self-heal after a model switch', async () => {
+      const row = {
+        status: 'active',
+        source: 'desktop',
+        agentKind: 'pi',
+        remoteHostId: null,
+        clearedAt: null,
+        sdkSessionId: '/tmp/glm.jsonl',
+        contextTokens: 0,
+        contextWindow: 1_000_000,
+        model: 'glm-5.3-flash',
+        providerId: 'opencode-go',
+      };
+      const deps = makePiDeps([
+        msg('user', '继续修这个 bug', 'u1', 1),
+        msg('assistant', '改完了，正在跑测试', 'a1', 2),
+        msg('user', '再跑一遍', 'u2', 3),
+      ]);
+      deps.getSessionRow.mockResolvedValue(row);
+      // 两个 pair 的覆盖都已被学到（另一个会话先学到的），唯一差别是本会话的重建历史。
+      deps.readPiNativeCompatOverride.mockReturnValue({ supportsLongCacheRetention: false });
+      const rollover = createContextOverflowRollover(deps);
+      rollover.claim('s1');
+      const failure = { reason: 'unsupported-request-option', message: rejection };
+
+      await expect(
+        rollover.tryRecover('s1', failure, { instanceId: 'i1', generation: 1 }),
+      ).resolves.toBe(true);
+      expect(deps.closeSession).toHaveBeenCalledTimes(1);
+
+      // 用户切到同 provider 的另一个模型：它的覆盖是别的会话后来学到的，本会话的
+      // runtime 还没应用过 —— 不能被 glm 那次重建的记录挡住。
+      row.model = 'other-model';
+      await expect(
+        rollover.tryRecover('s1', failure, { instanceId: 'i2', generation: 2 }),
+      ).resolves.toBe(true);
+      expect(deps.closeSession).toHaveBeenCalledTimes(2);
+      expect(deps.replayUserMessage).toHaveBeenCalledTimes(2);
+    });
+
     it('learns the fix but does not replay when the plan cannot replay', async () => {
       // 零产出守卫（无用户消息/已有副作用）不阻止学习：关掉旧 runtime 并把修正落盘，
       // 下一次发送重建时就生效。

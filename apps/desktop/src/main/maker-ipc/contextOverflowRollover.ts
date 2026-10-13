@@ -581,7 +581,10 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
   // 自愈成功时那一轮的 turn 身份：同身份再次到达 = 同一轮的重复终态投递（丢弃）；
   // 新身份 = 重放后的新一轮失败（必须 surface，不能静默吞掉）。
   const healedCompatTurns = new Map<string, { instanceId?: string; generation?: number }>();
-  /** runtime 已经用「已学覆盖」重建过的会话：再失败也不再自动重建，交常规错误面。 */
+  /**
+   *  (会话, provider, model) 已经用「已学覆盖」重建过：再失败就不再自动重建，交常规
+   *  错误面。必须带上 pair：同一会话换模型后，旧模型的记录不能挡住新模型的自愈。
+   */
   const rebuiltWithLearnedCompat = new Set<string>();
 
   const runRecover = async (
@@ -649,12 +652,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
           return true;
         }
         const learnedBefore = deps.readPiNativeCompatOverride?.(providerId, modelId) ?? false;
+        const rebuiltKey = `${sessionId}\u0000${providerId}\u0000${modelId}`;
         // 磁盘上已学过（别的会话先学到、或用户在别处修好）时，还要区分「已学过」和
         // 「当前 runtime 已应用」：启动时 models.json 里没有该覆盖的旧 runtime 仍然会一直
         // 400，普通发送不会刷新模型配置，所以这里要允许它应用覆盖并重建一次。已经用覆盖
         // 重建过的 runtime 再收到同一类 400 说明覆盖没解决问题，直接交常规错误面，绝不
-        // 反复 close/重放。
-        if (learnedBefore && rebuiltWithLearnedCompat.has(sessionId)) {
+        // 反复 close/重放。判据按 pair 记：换过模型的会话不能被旧模型的记录挡住。
+        if (learnedBefore && rebuiltWithLearnedCompat.has(rebuiltKey)) {
           return false;
         }
         // 外部派单方（Orca / scheduler / IM / ghost setup）拥有自己的重试语义：不能代它
@@ -671,7 +675,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         signal?.throwIfAborted();
         if (learned) {
           // 关掉之后，该会话下一次发送／重放就会用带覆盖的 models.json 重建 runtime。
-          rebuiltWithLearnedCompat.add(sessionId);
+          rebuiltWithLearnedCompat.add(rebuiltKey);
         }
         if (!learned) {
           // 没学到就不重放：否则闩锁永远为假，同一个 400 会被无上限重放。
