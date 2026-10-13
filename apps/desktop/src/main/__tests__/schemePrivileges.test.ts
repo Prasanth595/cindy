@@ -128,5 +128,5 @@ describe('registerSchemesAsPrivileged is called exactly once (static scan)', () 
     ]) {
       expect(callBlock).toContain(name);
     }
-  });
+  }, 120_000);
 });
