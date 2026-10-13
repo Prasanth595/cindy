@@ -1,4 +1,5 @@
-import { desktopCapturer, screen, systemPreferences, type NativeImage } from 'electron';
+import { nativeImage, screen, systemPreferences, type NativeImage } from 'electron';
+import { photographMacWindow } from '../remote-desktop/nativeCapture.js';
 import { INPUT_HANDOFF_PICTURE_MAX_BYTES } from '@cindy/device-link';
 import type { FoundQr, WindowCapture, WindowCaptureError } from './types.js';
 
@@ -11,36 +12,6 @@ interface Rect {
   y: number;
   width: number;
   height: number;
-}
-
-/**
- * The part of a window (screen points, top-left origin) that is on a display,
- * and where that part sits in the display's photo (pixels).
- */
-export function windowCrop(
-  frame: number[],
-  display: Rect,
-  photo: { width: number; height: number },
-): { area: number[]; pixels: Rect } | null {
-  const [x, y, w, h] = frame;
-  const left = Math.max(x, display.x);
-  const top = Math.max(y, display.y);
-  const right = Math.min(x + w, display.x + display.width);
-  const bottom = Math.min(y + h, display.y + display.height);
-  if (right - left < 8 || bottom - top < 8) return null;
-  const sx = photo.width / display.width;
-  const sy = photo.height / display.height;
-  const px = Math.max(0, Math.round((left - display.x) * sx));
-  const py = Math.max(0, Math.round((top - display.y) * sy));
-  return {
-    area: [left, top, right - left, bottom - top],
-    pixels: {
-      x: px,
-      y: py,
-      width: Math.min(photo.width - px, Math.round((right - left) * sx)),
-      height: Math.min(photo.height - py, Math.round((bottom - top) * sy)),
-    },
-  };
 }
 
 /** Largest JPEG that fits the offer budget, shrinking the picture only when quality alone is not enough. */
@@ -68,41 +39,33 @@ export function fitJpeg(image: NativeImage): { jpeg: Buffer; width: number; heig
 }
 
 /**
- * Photographs one window from its display, in memory. The full-display photo
- * is cropped immediately and dropped; nothing is written to disk.
+ * Photographs one window by its window-server id, in memory: its own pixels,
+ * never whatever covers it, and never the rest of the display. Nothing is
+ * written to disk.
  */
 async function photographWindow(
   frame: number[],
+  windowId: number,
 ): Promise<{ image: NativeImage; area: number[] } | { error: WindowCaptureError }> {
   if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted')
     return { error: 'permission' };
   const [x, y, w, h] = frame;
+  if (!(w >= 8 && h >= 8)) return { error: 'unavailable' };
   const display = screen.getDisplayMatching({ x, y, width: w, height: h });
-  const scale = Math.min(display.scaleFactor || 1, 2);
-  let sources: Electron.DesktopCapturerSource[];
-  try {
-    sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: {
-        width: Math.round(display.bounds.width * scale),
-        height: Math.round(display.bounds.height * scale),
-      },
-      fetchWindowIcons: false,
-    });
-  } catch {
-    return { error: 'unavailable' };
-  }
-  const photo = sources.find((source) => source.display_id === String(display.id))?.thumbnail;
-  if (!photo || photo.isEmpty()) return { error: 'unavailable' };
-  const crop = windowCrop(frame, display.bounds, photo.getSize());
-  if (!crop) return { error: 'unavailable' };
-  return { image: photo.crop(crop.pixels), area: crop.area };
+  const jpeg = await photographMacWindow(String(display.id), windowId).catch(() => null);
+  if (!jpeg) return { error: 'unavailable' };
+  const image = nativeImage.createFromBuffer(jpeg);
+  jpeg.fill(0);
+  if (image.isEmpty()) return { error: 'unavailable' };
+  // The picture fills the whole window, so a point in it is the same fraction of the window.
+  return { image, area: [...frame] };
 }
 
 export async function captureWindowArea(
   frame: number[],
+  windowId: number,
 ): Promise<WindowCapture | { error: WindowCaptureError }> {
-  const shot = await photographWindow(frame);
+  const shot = await photographWindow(frame, windowId);
   if ('error' in shot) return shot;
   const fitted = fitJpeg(shot.image);
   if (!fitted) return { error: 'unavailable' };
@@ -150,9 +113,10 @@ export function pickQr(codes: DetectedQr[]): DetectedQr | null {
  */
 export async function captureWindowQr(
   frame: number[],
+  windowId: number,
   detect: (jpeg: Buffer) => Promise<DetectedQr[] | null>,
 ): Promise<FoundQr | null | { error: WindowCaptureError }> {
-  const shot = await photographWindow(frame);
+  const shot = await photographWindow(frame, windowId);
   if ('error' in shot) return shot;
   const scan = shot.image.toJPEG(90);
   let codes: DetectedQr[] | null;

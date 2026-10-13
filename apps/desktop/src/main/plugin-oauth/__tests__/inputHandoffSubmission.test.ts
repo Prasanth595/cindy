@@ -123,6 +123,24 @@ describe('代输入 over the signed per-step exchange', () => {
     await vi.waitFor(() => expect(h.desktop.stage()).toBe('consent'));
   });
 
+  it('reports success for a terminal password that ended the handoff when it was typed', async () => {
+    const h = await harness();
+    const answers: Array<string | null> = [];
+    const asked = h.service.startTerminalPrompt({
+      sessionId: 'other-task',
+      prompt: '[sudo] password for someone:',
+      program: 'sudo',
+      command: 'sudo -A true',
+      answer: (value) => answers.push(value),
+    });
+    expect(asked.ok).toBe(true);
+    await vi.waitFor(() => expect(h.latest()).toMatchObject({ source: { app: 'sudo' }, phase: 'ready' }));
+    const prompt = h.latest();
+    await expect(h.submit(prompt, { answer: 'synthetic-pass' })).resolves.toEqual({ accepted: true });
+    expect(answers).toEqual(['synthetic-pass']);
+    expect(JSON.stringify(h.wire)).not.toContain('synthetic-pass');
+  });
+
   it('refuses an answer for a screen that has already moved on', async () => {
     const h = await harness();
     const first = h.latest();

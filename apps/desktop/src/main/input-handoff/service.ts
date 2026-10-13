@@ -96,6 +96,8 @@ interface Entry {
    * command that asked (terminal prompts) and simply sees it finish.
    */
   silent: boolean;
+  /** How it ended; kept for the short retention so a remote answer that finished it can report success. */
+  result?: HandoffResult;
 }
 
 type StartResult =
@@ -265,6 +267,11 @@ export class InputHandoffService {
     return !!entry?.snapshot && !entry.snapshot.terminal;
   }
 
+  /** The handoff ended because it was done (not cancelled, timed out or failed). */
+  succeeded(requestId: string): boolean {
+    return this.entries.get(requestId)?.result?.status === 'succeeded';
+  }
+
   /** Values path. Callers: trusted Desktop IPC and the signed v3 exchange only. */
   async submit(requestId: string, raw: unknown, actor: InputHandoffHolder = { local: true }): Promise<boolean> {
     const entry = this.entries.get(requestId);
@@ -347,6 +354,7 @@ export class InputHandoffService {
 
   private finish(entry: Entry, result: HandoffResult): void {
     const requestId = entry.session.requestId;
+    entry.result = result;
     this.deps.logger?.info?.('input handoff ended', {
       sessionId: entry.sessionId,
       requestId,

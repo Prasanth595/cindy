@@ -160,6 +160,17 @@ export async function isSecureInputTarget(target: { pid: number; point?: { x: nu
   }
 }
 
+function captureError(error: unknown): WindowCaptureError {
+  return error === 'target_gone' || error === 'permission' || error === 'locked' ? error : 'unavailable';
+}
+
+/** The window-server id of the window at this frame, left where it is (watching a code already shown). */
+async function windowIdAt(pid: number, frame: number[]): Promise<number | { error: WindowCaptureError }> {
+  const found = (await runHelper({ op: 'windowid', pid, frame }, 3000)) as { windowId?: unknown; error?: string };
+  const id = found.windowId;
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 && id <= 0xffff_ffff ? id : { error: captureError(found.error) };
+}
+
 async function raiseWindow(target: { pid: number; window: NativeWindowRef }): Promise<
   { frame: number[]; windowId?: number } | { error: WindowCaptureError }
 > {
@@ -170,7 +181,7 @@ async function raiseWindow(target: { pid: number; window: NativeWindowRef }): Pr
   };
   const frame = raised.frame;
   if (!Array.isArray(frame) || frame.length !== 4 || !frame.every((n) => typeof n === 'number' && Number.isFinite(n)))
-    return { error: raised.error === 'target_gone' ? 'target_gone' : raised.error === 'permission' ? 'permission' : 'unavailable' };
+    return { error: captureError(raised.error) };
   const windowId = raised.windowId;
   return {
     frame: frame as number[],
@@ -204,16 +215,18 @@ export function createMacHandoffDriver(): HandoffDriver {
     },
     async capture(target) {
       const raised = await raiseWindow(target);
-      return 'error' in raised ? raised : captureWindowArea(raised.frame);
+      if ('error' in raised) return raised;
+      // Only the window's own pixels: without its id there is no picture.
+      return raised.windowId ? captureWindowArea(raised.frame, raised.windowId) : { error: 'unavailable' };
     },
     async qr(target, frame) {
-      let area = frame;
-      if (!area) {
-        const raised = await raiseWindow(target);
-        if ('error' in raised) return raised;
-        area = raised.frame;
+      if (frame) {
+        const id = await windowIdAt(target.pid, frame);
+        return typeof id === 'number' ? captureWindowQr(frame, id, detectQr) : id;
       }
-      return captureWindowQr(area, detectQr);
+      const raised = await raiseWindow(target);
+      if ('error' in raised) return raised;
+      return raised.windowId ? captureWindowQr(raised.frame, raised.windowId, detectQr) : { error: 'unavailable' };
     },
     async raise(target) {
       const raised = await raiseWindow(target);

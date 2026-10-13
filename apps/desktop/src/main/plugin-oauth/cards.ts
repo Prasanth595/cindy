@@ -68,9 +68,11 @@ export function initializePluginOauthCards(deps: {
     if (!snapshot) return null;
     const binding: OauthCardBinding = {
       ghostId: INPUT_HANDOFF_GHOST_ID,
-      // A newer step is rejected by the revision check on submit; the exchange
-      // itself stays valid until the handoff ends so it can report success.
-      current: () => service.isCurrent(action.requestId),
+      // A newer step is rejected by the revision check on submit. The exchange
+      // stays valid while the handoff runs, and after an answer that completed
+      // it (a terminal password, a last sign-in step) so it can report success;
+      // a cancelled, timed-out or failed handoff is no longer current.
+      current: () => service.isCurrent(action.requestId) || service.succeeded(action.requestId),
     };
     return { service, snapshot, binding };
   };

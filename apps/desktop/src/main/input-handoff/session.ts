@@ -186,6 +186,33 @@ export class InputHandoffSession {
   constructor(private readonly options: HandoffSessionOptions) {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? realSleep;
+    this.options = { ...options, driver: this.watchLock(options.driver) };
+  }
+
+  /**
+   * A screen that locks while the card is open ends the handoff as
+   * screen_locked, whichever read, action or wait noticed it first.
+   */
+  private watchLock(driver: HandoffDriver): HandoffDriver {
+    const locked = () => {
+      if (!this.ended) this.end('failed', 'failure', 'screen_locked');
+    };
+    return new Proxy(driver, {
+      get: (target, property, receiver) => {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          try {
+            const result: unknown = await value.apply(target, args);
+            if (result && typeof result === 'object' && (result as { error?: unknown }).error === 'locked') locked();
+            return result;
+          } catch (error) {
+            if (error instanceof Error && error.message === 'locked') locked();
+            throw error;
+          }
+        };
+      },
+    });
   }
 
   get requestId(): string {
@@ -816,7 +843,7 @@ export class InputHandoffSession {
   ): Promise<boolean | 'origin_changed'> {
     const driver = this.options.driver;
     const target = this.target;
-    if (!target || !driver.pointer) return false;
+    if (this.ended || !target || !driver.pointer) return false;
     const base = { pid: target.pid, window: target.window, windowFrame: picture.windowFrame };
     const action = submission.action;
     let result: NativeActResult;
@@ -902,7 +929,8 @@ export class InputHandoffSession {
   }
 
   private async act(binding: ControlBinding, kind: NativeActKind, value?: string): Promise<boolean> {
-    if (!this.target) return false;
+    // Checked before every fill and press: an ended request never touches the window again.
+    if (this.ended || !this.target) return false;
     const request = { pid: this.target.pid, window: this.target.window, ref: binding.ref, fp: binding.fp, kind, ...(value !== undefined ? { value } : {}) };
     let result: NativeActResult = await this.options.driver.act(request);
     if (!('ok' in result && result.ok) && 'error' in result && result.error === 'stale') {
@@ -910,7 +938,7 @@ export class InputHandoffSession {
       const fresh = await this.options.driver.snapshot(this.target.pid, this.target.window);
       if ('error' in fresh) return false;
       const matches = fresh.nodes.filter((node) => node.fp === binding.fp);
-      if (matches.length !== 1) return false;
+      if (matches.length !== 1 || this.ended) return false;
       result = await this.options.driver.act({ ...request, ref: matches[0].ref, window: { index: fresh.window.index, title: fresh.window.title } });
     }
     return 'ok' in result && result.ok === true;
@@ -934,6 +962,8 @@ export class InputHandoffSession {
   }
 
   private async perform(step: ExtractedStep, submission: InputHandoffSubmission): Promise<boolean | 'origin_changed'> {
+    // Waiting for the desktop may outlast the request (cancelled, timed out, task closed): then nothing is typed.
+    if (this.ended) return false;
     let lastText: (ControlBinding & { kind: 'text' }) | undefined;
     let secretEntered = false;
     // Secrets are bound to the page the owner saw: re-check it before typing anything in this step.

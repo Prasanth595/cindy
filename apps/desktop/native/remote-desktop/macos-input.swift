@@ -212,6 +212,18 @@ func confineFocusedPid() -> Int32? {
   var pid: Int32 = 0
   return AXUIElementGetPid(app, &pid) == .success ? pid : nil
 }
+/**
+ * Keys go to the focused window of the focused app. Only the confined window
+ * itself may take them: another window of the same app (another browser
+ * window) is refused, whatever the live view shows.
+ */
+func confineFocusedWindow(_ c: HandoffConfine) -> Bool {
+  guard confineFocusedPid() == c.pid, let bounds = confineFrame(c) else { return false }
+  let app = AXUIElementCreateApplication(c.pid)
+  AXUIElementSetMessagingTimeout(app, 0.3)
+  guard let window = handoffElement(handoffAttr(app, kAXFocusedWindowAttribute)), let frame = handoffFrame(window) else { return false }
+  return handoffSameFrame(frame, [Double(bounds.minX), Double(bounds.minY), Double(bounds.width), Double(bounds.height)])
+}
 let confineSystemKeys: Set<String> = ["Tab", "Space", "Backquote", "Escape", "ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp"]
 func confined(_ event: [String: Any], _ c: HandoffConfine) -> [String: Any]? {
   switch event["kind"] as? String {
@@ -233,9 +245,9 @@ func confined(_ event: [String: Any], _ c: HandoffConfine) -> [String: Any]? {
     if code.hasPrefix("F"), code.count <= 3, Int(code.dropFirst()) != nil { return nil }
     let command = keys.contains(55), control = keys.contains(59)
     if (command || control) && confineSystemKeys.contains(code) || command && control { return nil }
-    return confineFocusedPid() == c.pid ? event : nil
+    return confineFocusedWindow(c) ? event : nil
   case "text":
-    return confineFocusedPid() == c.pid ? event : nil
+    return confineFocusedWindow(c) ? event : nil
   case "scroll":
     guard let frame = confineFrame(c), frame.contains(location), handoffOwnsPoint(c.pid, location) else { return nil }
     return event
@@ -744,6 +756,13 @@ func handoffWindowID(_ pid: Int32, _ frame: [Double]) -> CGWindowID? {
   }
   return nil
 }
+/** The window-server id of the app's window at this frame, without bringing it forward (watching a code). */
+func handoffWindowIDFor(_ request: [String: Any]) -> [String: Any] {
+  guard let pid = handoffPid(request), NSRunningApplication(processIdentifier: pid) != nil,
+    let frame = request["frame"] as? [Double], frame.count == 4, frame.allSatisfy({ $0.isFinite }) else { return ["error": "target_gone"] }
+  guard let id = handoffWindowID(pid, frame) else { return ["error": "target_gone"] }
+  return ["windowId": Int(id)]
+}
 /** Whether the app's focused element takes typing, and whether it is a password field. Roles only. */
 func handoffFocusedField(_ request: [String: Any]) -> [String: Any] {
   guard let pid = handoffPid(request), NSRunningApplication(processIdentifier: pid) != nil else { return ["error": "target_gone"] }
@@ -911,6 +930,7 @@ if CommandLine.arguments == [CommandLine.arguments[0], "--handoff"] {
   case "act": handoffRespond(handoffAct(request))
   case "secure": handoffRespond(handoffSecureTarget(request))
   case "raise": handoffRespond(handoffRaise(request))
+  case "windowid": handoffRespond(handoffWindowIDFor(request))
   case "focused": handoffRespond(handoffFocusedField(request))
   case "pointer": handoffRespond(handoffPointer(request))
   default: handoffRespond(["error": "invalid"])

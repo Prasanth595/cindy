@@ -106,7 +106,8 @@ export interface WindowCapture {
   windowFrame: number[];
 }
 
-export type WindowCaptureError = 'permission' | 'unavailable' | 'target_gone';
+/** `locked`: the screen is locked; nothing was photographed. */
+export type WindowCaptureError = 'permission' | 'unavailable' | 'target_gone' | 'locked';
 
 /** A QR code in the target window: the code cut out of it, and what it says. In memory only. */
 export interface FoundQr {

@@ -1,11 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { InputHandoffSnapshot } from '@cindy/device-link';
 import { InputHandoffSession, type HandoffResult } from '../session.js';
 import type { HandoffDriver } from '../macDriver.js';
 import type { NativeAxNode, NativeAxSnapshot, PointerRequest } from '../types.js';
 
-vi.mock('electron', () => ({ desktopCapturer: {}, screen: {}, systemPreferences: {} }));
-const { windowCrop } = await import('../windowCapture.js');
 
 const node = (ref: string, role: string, extra: Partial<NativeAxNode> = {}): NativeAxNode => ({
   ref, role, depth: 1, fp: `${role}|${extra.title ?? ''}`, enabled: true, frame: [150, 100, 100, 20], ...extra,
@@ -161,32 +159,5 @@ describe('代输入 screenshot steps', () => {
     await session.start();
     expect(finished[0]).toMatchObject({ status: 'failed', failure: 'unreadable' });
     expect(published.some((snapshot) => snapshot.picture)).toBe(false);
-  });
-});
-
-describe('windowCrop', () => {
-  const display = { x: 0, y: 0, width: 1440, height: 900 };
-  const photo = { width: 2880, height: 1800 };
-
-  it('maps the window into the display photo', () => {
-    expect(windowCrop([100, 50, 800, 600], display, photo)).toEqual({
-      area: [100, 50, 800, 600],
-      pixels: { x: 200, y: 100, width: 1600, height: 1200 },
-    });
-  });
-
-  it('keeps only the part on the display', () => {
-    expect(windowCrop([1000, 600, 800, 600], display, photo)).toEqual({
-      area: [1000, 600, 440, 300],
-      pixels: { x: 2000, y: 1200, width: 880, height: 600 },
-    });
-    // A secondary display left of the primary one.
-    expect(windowCrop([-1200, 100, 400, 300], { x: -1440, y: 0, width: 1440, height: 900 }, { width: 1440, height: 900 }))
-      .toEqual({ area: [-1200, 100, 400, 300], pixels: { x: 240, y: 100, width: 400, height: 300 } });
-  });
-
-  it('refuses a window that is not really on this display', () => {
-    expect(windowCrop([1436, 0, 800, 600], display, photo)).toBeNull();
-    expect(windowCrop([2000, 0, 800, 600], display, photo)).toBeNull();
   });
 });

@@ -73,6 +73,61 @@ describe('InputHandoffSession', () => {
     expect(latest().controls.map((control) => control.kind)).toEqual(['text']);
   });
 
+  it('never types for a request that ended while it waited for the desktop', async () => {
+    // The first handoff holds the desktop; the second queues behind it and is cancelled meanwhile.
+    const first = fakeDesktop();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const act = first.driver.act;
+    first.driver.act = async (request) => {
+      await held;
+      return act(request);
+    };
+    const a = harness(first.driver);
+    const second = fakeDesktop();
+    const b = harness(second.driver, { requestId: 'req2' });
+    await a.session.start();
+    await b.session.start();
+    const stepA = a.latest();
+    const stepB = b.latest();
+    const runningA = a.session.submit({ expectedRevision: stepA.revision, values: { [field(stepA).id]: 'owner@example.test' }, action: { kind: 'submit' } });
+    const values = { [field(stepB).id]: 'other@example.test' };
+    const queuedB = b.session.submit({ expectedRevision: stepB.revision, values, action: { kind: 'submit' } });
+    await vi.waitFor(() => expect(b.latest().phase).toBe('working'));
+    b.session.cancel();
+    release();
+    await Promise.all([runningA, queuedB]);
+    expect(second.acts).toEqual([]);
+    expect(b.finished[0]).toMatchObject({ status: 'cancelled' });
+    // The values of the ended request are dropped, not kept for later.
+    expect(values).toEqual({});
+  });
+
+  it('ends as screen_locked when the screen locks after the card opened', async () => {
+    const desktop = fakeDesktop();
+    const { session, finished, latest } = harness(desktop.driver);
+    await session.start();
+    const step = latest();
+    const act = desktop.driver.act;
+    let locked = false;
+    desktop.driver.act = async (request) => {
+      const result = await act(request);
+      if (request.kind === 'press') locked = true;
+      return result;
+    };
+    const windows = desktop.driver.windows;
+    desktop.driver.windows = async () => {
+      if (locked) throw new Error('locked');
+      return windows();
+    };
+    const snapshot = desktop.driver.snapshot;
+    desktop.driver.snapshot = async (pid, window) => (locked ? { error: 'locked' } : snapshot(pid, window));
+    await session.submit({ expectedRevision: step.revision, values: { [field(step).id]: 'owner@example.test' }, action: { kind: 'submit' } });
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ status: 'failed', failure: 'screen_locked' });
+    expect(latest()).toMatchObject({ terminal: true });
+  });
+
   it('ends at once when the screen has nothing to type', async () => {
     const desktop = fakeDesktop({ start: 'choose' });
     const { session, finished, published } = harness(desktop.driver);

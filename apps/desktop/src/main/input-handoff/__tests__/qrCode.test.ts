@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { qrContent } from '../qrCode.js';
 
-vi.mock('electron', () => ({ desktopCapturer: {}, screen: {}, systemPreferences: {} }));
+vi.mock('electron', () => ({ app: {}, nativeImage: {}, screen: {}, systemPreferences: {} }));
 const { pickQr, qrCrop } = await import('../windowCapture.js');
 
 describe('代输入 QR code', () => {
