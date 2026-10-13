@@ -26,12 +26,16 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
     const server = createServer(async (req, res) => {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      const request = JSON.parse(Buffer.concat(chunks).toString());
+      requests.push(request);
+      const reviewResult = JSON.stringify(request).includes(reviewEvidence)
+        ? 'P2 fixture finding: structured review evidence reached the model'
+        : 'fixture failure: structured review evidence missing';
       res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' });
       const events = [
         { type: 'response.created', response: { id: 'response-fixture' } },
         { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'message-fixture',
-          content: [{ type: 'output_text', text: 'fixture complete' }] } },
+          content: [{ type: 'output_text', text: reviewResult }] } },
         { type: 'response.completed', response: { id: 'response-fixture',
           usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
       ];
@@ -79,8 +83,10 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
         model: 'fixture-model', workingDir, reviewMode: true,
         makerMemoryEnabled: false,
       });
+      const receivedEvents: unknown[] = [];
       const events = (async () => {
         for await (const event of handle.events()) {
+          receivedEvents.push(event);
           if (event.type === 'error') throw new Error(JSON.stringify(event));
           if (event.type === 'done') return;
         }
@@ -91,6 +97,9 @@ describe.skipIf(!binaryPath || process.platform !== 'darwin')('macOS Codex Revie
       const requestPayload = JSON.stringify(requests);
       expect(requestPayload).toContain(reviewEvidence);
       expect(requestPayload).not.toContain(projectRule);
+      expect(JSON.stringify(receivedEvents)).toContain(
+        'P2 fixture finding: structured review evidence reached the model',
+      );
       await handle.close();
     } finally {
       try {
