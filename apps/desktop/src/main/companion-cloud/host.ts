@@ -2,12 +2,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { app, net } from 'electron';
+import { app } from 'electron';
 import { and, asc, desc, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { portableBotAvatarOrFallback, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
+import { fetchPublicImageBytes } from '../im/publicImageFetch.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { createBotProfile, getBotMemoryService, setBotProfileAvatar, updateBotProfile } from '../localDb/ipc/bots.js';
 import { decodeBotAvatarImage } from '../localDb/ipc/botAvatarSelection.js';
@@ -73,14 +74,15 @@ async function readSkillContent(botId: string, slug: string): Promise<string | n
 
 const AVATAR_FETCH_TIMEOUT_MS = 15_000;
 
-/** The actor's public avatar (https) as bounded image bytes for the normal creation path. */
+/**
+ * The actor's public avatar (https) as bounded image bytes for the normal creation path. Cloud
+ * data is untrusted: the shared guarded download checks every hop against private networks and
+ * stops reading at the size limit.
+ */
 async function fetchAvatarBase64(url: string, signal?: AbortSignal): Promise<string | null> {
   try {
-    const timeout = AbortSignal.timeout(AVATAR_FETCH_TIMEOUT_MS);
-    const response = await net.fetch(url, { redirect: 'error', signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
-    if (!response.ok) return null;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    return buffer.length > 0 && buffer.length <= BOT_AVATAR_MAX_BYTES ? buffer.toString('base64') : null;
+    const { buffer } = await fetchPublicImageBytes(url, BOT_AVATAR_MAX_BYTES, undefined, { signal, timeoutMs: AVATAR_FETCH_TIMEOUT_MS });
+    return Buffer.from(buffer).toString('base64');
   } catch {
     return null;
   }
