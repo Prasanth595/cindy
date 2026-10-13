@@ -241,7 +241,13 @@ export async function withSendToSessionLock<T>(
   // 不能用 `sendToSessionLocks.get(sessionId)` 判断归属——那是队尾，后来的
   // 等待者一排队就会换掉它（会让持锁者的嵌套调用排到等待者后面，又成自锁）。
   const held = heldLockKeys.getStore()?.get(sessionId);
-  if (held?.active) return task();
+  if (held?.active) {
+    // 重入放行仍要过重启栅栏：withSessionRestartLock 会先登记重启标记再排队，
+    // 所以“重启已在等待”是一个与持锁无关的状态；跳过它会让嵌套发送在重启
+    // 开始后继续执行，违反“重启开始后拒绝新工作”。
+    assertSessionNotRestarting(sessionId);
+    return task();
+  }
   const { release, entry } = await acquireSendToSessionLockEntry(sessionId, undefined, getStage);
   const record: HeldLockRecord = { entry, active: true };
   // 条目结算（含 bail 强制结算）即视为不再持有：此时嵌套调用必须重新排队。

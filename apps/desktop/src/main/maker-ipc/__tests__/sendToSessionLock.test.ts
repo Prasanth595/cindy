@@ -5,6 +5,7 @@ import {
   hasSendToSessionLock,
   trackSendToSessionLockRun,
   withSendToSessionLock,
+  withSessionRestartLock,
 } from '../sendToSessionLock';
 
 const h = vi.hoisted(() => ({
@@ -316,5 +317,34 @@ describe('sendToSessionLock', () => {
     await queuedDone;
     expect(innerRan).toBe(true);
     expect(queuedAcquired).toBe(true);
+  });
+
+  it('same-chain reentry is refused once a session restart is queued', async () => {
+    // withSessionRestartLock 先登记重启标记再排队；“重启已在等待”与持锁无关，
+    // 重入放行必须继续守栅栏，否则嵌套发送会在重启开始后执行。
+    let nestedRan = false;
+    let releaseRestart!: () => void;
+    const restartHolding = new Promise<void>((resolve) => {
+      releaseRestart = resolve;
+    });
+    let restartDone!: Promise<void>;
+
+    await withSendToSessionLock('s-restart', async () => {
+      restartDone = (async () => {
+        const result = await withSessionRestartLock('s-restart', () => restartHolding);
+        return result;
+      })();
+      // 重启在排队等外层释放，标记已登记。
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(withSendToSessionLock('s-restart', async () => {
+        nestedRan = true;
+      })).rejects.toThrow('Session restart is still in progress');
+      expect(nestedRan).toBe(false);
+    });
+
+    releaseRestart();
+    await restartDone;
+    expect(nestedRan).toBe(false);
   });
 });
