@@ -1127,19 +1127,16 @@ function findAvailableGhost(id: string, namespace?: string | null): InstalledGho
 }
 
 export function findGhostForInstanceId(id: string, namespace?: string | null): InstalledGhost | null {
+  // Plugin requests recheck their target many times per call. An exact
+  // instance key reads only that instance so each check does not rescan every
+  // install; anything else still resolves against the full list.
+  if (namespace === undefined) {
+    if (isAppSessionBoundaryPending()) return null;
+    const ghost = getGhostManager().findInstalledInstance(id);
+    if (ghost) return isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null;
+  }
   const resolved = resolvePluginInstanceQuery(availableGhosts(), id, namespace);
   return resolved.status === 'unique' ? resolved.ghost : null;
-}
-
-/**
- * Library requests recheck their target after every await. Read only this
- * instance so each check does not rescan every install.
- */
-function findGhostForLibraryRequest(id: string): InstalledGhost | null {
-  if (isAppSessionBoundaryPending()) return null;
-  const ghost = getGhostManager().findInstalledInstance(id);
-  if (!ghost) return findGhostForInstanceId(id);
-  return isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null;
 }
 
 function libraryStorageKeyFor(id: string): string | null {
@@ -5945,7 +5942,7 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
       log,
     });
     librarySlotSingleton = new GhostLibrarySlot({
-      getGhost: findGhostForLibraryRequest,
+      getGhost: findGhostForInstanceId,
       prepareRequest: finishPendingLegacyLibraryReattach,
       bindingStore,
       getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
