@@ -9881,9 +9881,9 @@ export function resolveGhostWebviewAttach(
   const resolvedPartition = resolveGhostWebviewPartitionClaim(partitionClaim, owner);
   if (!resolvedPartition) return null;
   if (!isPluginInstanceKey(resolvedPartition.ghostId)) return null;
-  const ghost = availableGhosts().find(
-    (candidate) => installedGhostStoragePart(candidate) === resolvedPartition.ghostId,
-  );
+  // Panels recheck this on every click and key press; an exact instance key
+  // reads only that instance.
+  const ghost = findGhostForInstanceId(resolvedPartition.ghostId);
   if (!ghost || !ghost.enabled) return null;
   if (resolvedPartition.ghostId !== installedGhostStoragePart(ghost)) return null;
   const partition = ownerScopedGhostPartitionForInstalledGhost(ghost, owner);

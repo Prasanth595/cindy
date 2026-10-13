@@ -9,9 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ghostPartition, ghostWebviewEntryPaths, type InstalledGhost } from '../../../shared/ghost.js';
 import { installedGhostMutationTargetToken } from '../../../shared/pluginIdentity.js';
 import { GhostManager, type GhostManagerOptions } from '../GhostManager.js';
 import { runGhostSnapshotWorkerRequest } from '../ghostSnapshotWorkerProcess.js';
+import { ownerScopedGhostPartitionForInstalledGhost, resolveGhostWebviewPartitionClaim } from '../ghostWebviewPartition.js';
 import { writeTestCindyPackage } from './cindyPackageFixture.js';
 import { createGhostProductionCallbacks } from './ghostProductionCallbacksFixture.js';
 
@@ -20,6 +22,7 @@ type TargetStore = {
   isTargetCurrent(ghostId: string, expectedTarget: string | null): boolean;
 };
 type WakeHandler = (ghostId: string) => Promise<{ state: string }>;
+type AttachResolver = (partitionClaim: unknown, src: unknown) => { ghost: InstalledGhost } | null;
 
 const TARGET = '_ns__acme__canvas';
 const OTHER_PLUGINS = 12;
@@ -32,7 +35,7 @@ let workDir: string;
 let manager: GhostManager;
 let owner: string;
 
-async function packageFor(id: string): Promise<string> {
+async function packageFor(id: string, withPanel = false): Promise<string> {
   return writeTestCindyPackage(path.join(workDir, `${id}-${Date.now()}-${Math.random()}.cindy`), {
     schemaVersion: 2,
     id,
@@ -40,20 +43,27 @@ async function packageFor(id: string): Promise<string> {
     version: '1.0.0',
     kind: 'chip',
     entry: 'main.js',
-    slots: ['tool'],
+    slots: withPanel ? ['tool', 'panel'] : ['tool'],
     tools: [{ name: 'do_thing', description: 'do' }],
-  }, { 'main.js': '// ok\n' });
+    ...(withPanel ? { panel: { html: 'panel.html' } } : {}),
+  }, { 'main.js': '// ok\n', ...(withPanel ? { 'panel.html': '<!doctype html>' } : {}) });
 }
 
 async function installTarget(): Promise<void> {
-  await expect(manager.install(await packageFor('canvas'), {
+  await expect(manager.install(await packageFor('canvas', true), {
     namespace: 'acme', registrySource: 'market', pluginId: 'plugin-canvas',
   })).resolves.toMatchObject({ ghost: { instanceKey: TARGET } });
 }
 
+const session = { mode: 'cloud' as const, dataOwnerId: 'owner-a', generation: 1 };
+
 function productionCallbacks(spawn = vi.fn(async () => ({ ok: true, state: 'running' }))) {
-  const callbacks = createGhostProductionCallbacks<{ store: TargetStore; wake: WakeHandler }>({
-    functions: ['availableGhosts', 'findGhostForInstanceId', 'ghostInstallMutationTargetFor'],
+  const callbacks = createGhostProductionCallbacks<{
+    store: TargetStore;
+    wake: WakeHandler;
+    resolveGhostWebviewAttach: AttachResolver;
+  }>({
+    functions: ['availableGhosts', 'findGhostForInstanceId', 'ghostInstallMutationTargetFor', 'resolveGhostWebviewAttach'],
     callbacks: { store: ['setGhostKvStore'], wake: ['setGhostWakeHandler'] },
   })({
     getGhostManager: () => manager,
@@ -62,6 +72,12 @@ function productionCallbacks(spawn = vi.fn(async () => ({ ok: true, state: 'runn
     activeOwnerScopeKey: () => owner,
     installedGhostMutationTargetToken,
     runtime: { stateOf: () => 'off', spawn },
+    getActiveAppSession: () => session,
+    resolveGhostWebviewPartitionClaim,
+    ownerScopedGhostPartitionForInstalledGhost,
+    ghostWebviewEntryPaths,
+    GHOST_SCHEME: 'cindy-ghost',
+    ensureGhostProtocolRegistered: vi.fn(),
   });
   return { ...callbacks, spawn };
 }
@@ -104,6 +120,18 @@ describe('cindy-ghost:// target lookup', () => {
     expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ instanceKey: TARGET }));
     expect(list).not.toHaveBeenCalled();
     expect(readdir).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a panel on every click and key press without rescanning the other installed plugins', () => {
+    const { resolveGhostWebviewAttach } = productionCallbacks();
+    const claim = ghostPartition(TARGET);
+    expect(resolveGhostWebviewAttach(claim, 'cindy-ghost://canvas/panel.html')?.ghost.instanceKey).toBe(TARGET);
+    const list = vi.spyOn(manager, 'list');
+    for (let gesture = 0; gesture < 40; gesture += 1) {
+      expect(resolveGhostWebviewAttach(claim, 'cindy-ghost://canvas/panel.html')).not.toBeNull();
+    }
+    expect(resolveGhostWebviewAttach(claim, 'cindy-ghost://canvas/other.html')).toBeNull();
+    expect(list).not.toHaveBeenCalled();
   });
 
   it('keeps the root and organization instances of the same plugin apart', () => {
