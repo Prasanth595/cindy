@@ -6485,6 +6485,10 @@ assertRouteCurrent();
           : {}),
         ...(reviewMode
           ? {
+              // Keep project instructions inside the approved Review root.
+              // An empty marker list stops Codex from walking above cwd while
+              // still loading an AGENTS.md located in cwd itself.
+              ...(process.platform === 'win32' ? {} : { project_root_markers: [] }),
               // Windows native sandboxes cannot enforce this split read scope.
               // Keep the deny policy, and route evidence reads through the host.
               // Native AGENTS discovery also invokes that incompatible sandbox.
