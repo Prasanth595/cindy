@@ -6561,6 +6561,9 @@
         "slotWorkspace": "Workspace sessions"
       },
       "commandPaletteTag": "Plugin command",
+      "commandPaletteSource": {
+        "team": "Team shared"
+      },
       "library": {
         "title": "Durable library",
         "loading": "Loading library info…",
