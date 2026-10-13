@@ -6583,6 +6583,7 @@
         "legacyReattachConfirmText": "引き継ぐ",
         "legacyReattachDone": "以前の作品データを引き継ぎました",
         "legacyReattachFailed": "引き継ぎに失敗しました",
+        "legacyReattachNeedsRestart": "このプラグインのキャッシュを消去できませんでした。Cindy を再起動してからプラグインを使ってください。",
         "legacyInUseBanner": "このコンピューター上の別のインストール(ローカル版など)が、このプラグインの以前の作品データをまだ使っています。そのインストールをアンインストールすると、ここで引き継げます。",
         "legacyFoundUnknownBanner": "このコンピューターには、このプラグインが以前残した可能性のある作品データ({{size}} · {{count}} ファイル)があります。出所の記録がなく、現在のインストールでは使われていません。",
         "legacyReattachUnknownSource": "この作品データには出所の記録がありません。手動またはスクリプトでコピーされた可能性があります。このプラグインのものか確認してください。"

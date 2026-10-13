@@ -406,8 +406,6 @@ export class GhostLibrarySlot {
   /** 处理一条 library-request(ghost-pipe:send 的 invoke 返回值即本结果)。 */
   async handleLibraryRequest(ghostId: string, payload: unknown): Promise<GhostPipeLibraryResult> {
     try {
-      const preparing = this.deps.prepareRequest?.(ghostId);
-      if (preparing) await preparing;
       return await this.dispatch(ghostId, payload);
     } catch (err) {
       if (err instanceof GhostLibraryRequestCancelled) {
@@ -442,6 +440,15 @@ export class GhostLibrarySlot {
           staging: { ...GHOST_LIBRARY_CAPABILITIES_V1.staging },
         },
       };
+    }
+    // Host work such as an unfinished reattach settles only for a request that
+    // will really open the library.
+    const preparing = this.deps.prepareRequest?.(ghostId);
+    if (preparing) {
+      await preparing;
+      if (!this.checkEligibility(ghostId)) {
+        return fail('NOT_DECLARED', '插件未装入、已停用或未声明 "library" 能力', 'PERMISSION_DENIED');
+      }
     }
     if (isGhostLibraryStagingOp(op)) {
       if (op === 'staging.release') {
@@ -563,6 +570,7 @@ export class GhostLibrarySlot {
    */
   async resolvePanelFilePath(ghostId: string, relPath: string): Promise<string | null> {
     try {
+      if (!this.checkEligibility(ghostId)) return null;
       const preparing = this.deps.prepareRequest?.(ghostId);
       if (preparing) await preparing;
       if (!this.checkEligibility(ghostId)) return null;

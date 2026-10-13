@@ -66,6 +66,8 @@ import {
   safeStorage,
   session as electronSession,
   shell,
+  webContents as electronWebContents,
+  type Session,
   type WebContents,
 } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
@@ -438,6 +440,7 @@ import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlServi
 import { trashGhostLibrary } from './libraryTrash.js';
 import {
   finishLegacyLibraryReattach,
+  LibrarySwapNeedsRestartError,
   readLegacyLibraryReattachJournal,
   relocateOrAdoptLibraryMeta,
   startLegacyLibraryReattach,
@@ -6376,6 +6379,20 @@ function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReat
  * runtime and panels share an in-memory partition whose cache would otherwise
  * be written back over the swapped library.
  */
+/** Close every page still open in a plugin partition and wait until each is gone. */
+async function closePartitionPages(partitionSession: Session, timeoutMs = 5_000): Promise<void> {
+  const pages = electronWebContents.getAllWebContents()
+    .filter((page) => !page.isDestroyed() && page.session === partitionSession);
+  await Promise.all(pages.map((page) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('plugin page did not close')), timeoutMs);
+    page.once('destroyed', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    page.close();
+  })));
+}
+
 async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Promise<T>): Promise<T> {
   const slot = getGhostLibrarySlot();
   const ids = [fromId, toId];
@@ -6394,6 +6411,9 @@ async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Pro
       return running;
     },
     notifyPanels: (phase) => broadcastGhostWindowPush('ghosts:library-replaced', { id: toId, phase }),
+    closePages: async () => {
+      if (partition) await closePartitionPages(electronSession.fromPartition(partition));
+    },
     holdLibraries: (on) => {
       for (const id of ids) slot.setRelocating(id, on);
     },
@@ -9652,8 +9672,11 @@ export function registerGhostIpc(): void {
         ? { ok: true as const }
         : { ok: false as const, cancelled: false as const, message: res.message };
     } catch (error) {
+      // The raw error can name absolute paths; it stays in the Main log.
       log.warn('legacy library reattach failed', { id, error: error instanceof Error ? error.message : String(error) });
-      return { ok: false as const, cancelled: false as const, message: error instanceof Error ? error.message : String(error) };
+      return error instanceof LibrarySwapNeedsRestartError
+        ? { ok: false as const, cancelled: false as const, message: t('settings.ghosts.library.legacyReattachNeedsRestart') }
+        : { ok: false as const, cancelled: false as const };
     } finally {
       releaseMutation();
     }

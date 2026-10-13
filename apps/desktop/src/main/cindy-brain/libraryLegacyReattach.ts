@@ -201,9 +201,11 @@ export async function finishLegacyLibraryReattach(
 }
 
 /**
- * A library copied in without host identity (no `.cindy-library`) gets the new
- * owner written in; one that has an identity is relocated as usual. Safe to
- * run again: the written identity already names the new owner.
+ * A library copied in without host identity (no `.cindy-library/meta.json`)
+ * gets the new owner written in; one that has an identity is relocated as
+ * usual. Safe to run again: a stop after the folder was made but before the
+ * identity landed still finds no meta.json, and a written identity already
+ * names the new owner.
  */
 export async function relocateOrAdoptLibraryMeta(
   root: string,
@@ -213,18 +215,26 @@ export async function relocateOrAdoptLibraryMeta(
   now = Date.now(),
 ): Promise<void> {
   const hostDir = path.join(root, '.cindy-library');
-  if (await directoryIdentity(root) !== null && await directoryIdentity(hostDir) === null) {
-    await fs.promises.mkdir(hostDir, { recursive: true });
-    const metaFile = path.join(hostDir, 'meta.json');
-    const temporary = `${metaFile}.${randomUUID()}.tmp`;
-    await fs.promises.writeFile(temporary, JSON.stringify({ version: 1, ghostId: toId, createdAt: now }), {
-      flag: 'wx',
-      mode: 0o600,
-    });
-    await fs.promises.rename(temporary, metaFile);
+  const metaFile = path.join(hostDir, 'meta.json');
+  const hasMeta = await fs.promises.lstat(metaFile).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  });
+  if (await directoryIdentity(root) === null || hasMeta) {
+    await relocate(root, fromId, toId);
     return;
   }
-  await relocate(root, fromId, toId);
+  await fs.promises.mkdir(hostDir, { recursive: true });
+  const temporary = `${metaFile}.${randomUUID()}.tmp`;
+  const handle = await fs.promises.open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(JSON.stringify({ version: 1, ghostId: toId, createdAt: now }), 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fs.promises.rename(temporary, metaFile);
+  await syncDirectory(hostDir);
 }
 
 export interface PluginHoldForLibrarySwapDeps {
@@ -232,6 +242,11 @@ export interface PluginHoldForLibrarySwapDeps {
   stopRuntime(): Promise<{ browser: boolean; node: boolean }>;
   /** 通知各窗口里这个插件的面板：start = 先卸下，done = 从磁盘重新挂上。 */
   notifyPanels(phase: 'start' | 'done'): void;
+  /**
+   * 关掉这个实例分区里仍开着的页面，等它们真正销毁。面板与后台页之间走同源
+   * BroadcastChannel，Main 不在中间，只能把旧页关掉，不能只靠 notifyPanels。
+   */
+  closePages(): Promise<void>;
   holdLibraries(on: boolean): void;
   disposeLibraries(): Promise<void>;
   /**
@@ -243,9 +258,33 @@ export interface PluginHoldForLibrarySwapDeps {
   warn(message: string, error: unknown): void;
 }
 
+/** 换库后旧缓存清不掉：插件保持停止、作品库保持拦截，重启 Cindy 后分区自然清空。 */
+export class LibrarySwapNeedsRestartError extends Error {
+  constructor(cause: unknown) {
+    super('plugin cache could not be cleared after the library swap', { cause });
+  }
+}
+
+/** 关掉旧页、清掉分区；失败再试一次。返回是否清干净。 */
+async function clearStalePluginState(deps: PluginHoldForLibrarySwapDeps): Promise<unknown> {
+  let failure: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await deps.closePages();
+      await deps.clearPartitionStorage();
+      return null;
+    } catch (error) {
+      failure = error;
+      deps.warn('plugin partition storage clear failed after library swap', error);
+    }
+  }
+  return failure ?? new Error('plugin cache clear failed');
+}
+
 /**
  * 换库期间插件不能运行、面板不能挂着：进程与面板都可能把旧库的状态写回来。
- * 顺序：停进程、卸面板 → 换库 → 清分区（此时没人在用）→ 放行作品库 → 重启进程、挂回面板。
+ * 顺序：停进程、卸面板并关掉旧页 → 换库 → 再关一次旧页、清分区（此时没人在用）
+ * → 放行作品库 → 重启进程、挂回面板。清不掉就停在拦截状态，报需要重启。
  */
 export async function withPluginHeldForLibrarySwap<T>(
   deps: PluginHoldForLibrarySwapDeps,
@@ -254,17 +293,25 @@ export async function withPluginHeldForLibrarySwap<T>(
   const running = await deps.stopRuntime();
   deps.notifyPanels('start');
   deps.holdLibraries(true);
+  let result: T;
   try {
+    await deps.closePages();
     await deps.disposeLibraries();
-    return await run();
-  } finally {
-    try {
-      await deps.clearPartitionStorage();
-    } catch (error) {
-      deps.warn('plugin partition storage clear failed after library swap', error);
-    }
-    deps.holdLibraries(false);
-    deps.restartRuntime(running);
-    deps.notifyPanels('done');
+    result = await run();
+  } catch (error) {
+    const failure = await clearStalePluginState(deps);
+    if (failure !== null) throw new LibrarySwapNeedsRestartError(failure);
+    release(deps, running);
+    throw error;
   }
+  const failure = await clearStalePluginState(deps);
+  if (failure !== null) throw new LibrarySwapNeedsRestartError(failure);
+  release(deps, running);
+  return result;
+}
+
+function release(deps: PluginHoldForLibrarySwapDeps, running: { browser: boolean; node: boolean }): void {
+  deps.holdLibraries(false);
+  deps.restartRuntime(running);
+  deps.notifyPanels('done');
 }

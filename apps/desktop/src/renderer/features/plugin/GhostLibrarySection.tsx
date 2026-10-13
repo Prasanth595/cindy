@@ -160,7 +160,10 @@ function GhostLibrarySectionInner({ ghostId }: { ghostId: string }) {
     try {
       const res = await window.electronAPI.ghosts.libraryReattachLegacy(ghostId);
       if (res.ok) toast.success(t('settings.ghosts.library.legacyReattachDone'));
-      else if (!res.cancelled) toast.error(`${t('settings.ghosts.library.legacyReattachFailed')}:${res.message ?? ''}`);
+      else if (!res.cancelled) {
+        const failed = t('settings.ghosts.library.legacyReattachFailed');
+        toast.error(res.message ? `${failed}:${res.message}` : failed);
+      }
     } finally {
       setBusy(null);
       void refresh();

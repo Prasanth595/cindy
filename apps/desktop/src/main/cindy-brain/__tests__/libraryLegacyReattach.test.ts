@@ -8,6 +8,7 @@ import { relocateLibraryMetaOwner } from '../libraryBinding.js';
 import { LibraryStagingStore, relocateLibraryStagingOwner } from '../libraryStaging.js';
 import {
   finishLegacyLibraryReattach,
+  LibrarySwapNeedsRestartError,
   readLegacyLibraryReattachJournal,
   relocateOrAdoptLibraryMeta,
   startLegacyLibraryReattach,
@@ -300,6 +301,16 @@ describe('library without host identity', () => {
     expect(readMeta(library)).toMatchObject({ ghostId: TO, createdAt: 9 });
   });
 
+  it('writes the identity on a rerun that stopped after the identity folder was made', async () => {
+    const library = path.join(root, 'libraries', FROM);
+    fs.mkdirSync(path.join(library, '.cindy-library'), { recursive: true });
+    fs.writeFileSync(path.join(library, '.cindy-library', 'meta.json.leftover.tmp'), '{');
+    const relocate = vi.fn(async () => {});
+    await relocateOrAdoptLibraryMeta(library, FROM, TO, relocate, 9);
+    expect(relocate).not.toHaveBeenCalled();
+    expect(readMeta(library)).toMatchObject({ ghostId: TO, createdAt: 9 });
+  });
+
   it('relocates an existing identity instead of overwriting it', async () => {
     const library = path.join(root, 'libraries', FROM);
     plantLibrary(library, FROM, 'old');
@@ -318,6 +329,7 @@ describe('plugin hold during a library swap', () => {
     const deps: PluginHoldForLibrarySwapDeps = {
       stopRuntime: async () => { calls.push('stop'); return { browser: true, node: false }; },
       notifyPanels: (phase) => { calls.push('panels:' + phase); },
+      closePages: async () => { calls.push('close-pages'); },
       holdLibraries: (on) => { calls.push(on ? 'hold' : 'release'); },
       disposeLibraries: async () => { calls.push('dispose'); },
       clearPartitionStorage: async () => { calls.push('clear'); },
@@ -328,11 +340,12 @@ describe('plugin hold during a library swap', () => {
     return { calls, deps };
   }
 
-  it('clears the partition while nothing runs, then restores the plugin and reloads panels', async () => {
+  it('closes old pages before the swap and again before clearing, then restores the plugin', async () => {
     const { calls, deps } = recorder();
     await withPluginHeldForLibrarySwap(deps, async () => { calls.push('swap'); });
     expect(calls).toEqual([
-      'stop', 'panels:start', 'hold', 'dispose', 'swap', 'clear', 'release', 'restart:true:false', 'panels:done',
+      'stop', 'panels:start', 'hold', 'close-pages', 'dispose', 'swap',
+      'close-pages', 'clear', 'release', 'restart:true:false', 'panels:done',
     ]);
   });
 
@@ -340,12 +353,30 @@ describe('plugin hold during a library swap', () => {
     const { calls, deps } = recorder();
     await expect(withPluginHeldForLibrarySwap(deps, async () => { throw new Error('stopped'); }))
       .rejects.toThrow('stopped');
-    expect(calls.slice(-4)).toEqual(['clear', 'release', 'restart:true:false', 'panels:done']);
+    expect(calls.slice(-5)).toEqual(['close-pages', 'clear', 'release', 'restart:true:false', 'panels:done']);
   });
 
-  it('restores the plugin even when the partition clear fails', async () => {
-    const { calls, deps } = recorder({ clearPartitionStorage: async () => { throw new Error('busy'); } });
+  it('retries a failed clear once and then restores the plugin', async () => {
+    let attempts = 0;
+    const { calls, deps } = recorder({
+      clearPartitionStorage: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('busy');
+        calls.push('clear');
+      },
+    });
     await withPluginHeldForLibrarySwap(deps, async () => {});
-    expect(calls.slice(-4)).toEqual(['warn', 'release', 'restart:true:false', 'panels:done']);
+    expect(calls.slice(-6)).toEqual(['warn', 'close-pages', 'clear', 'release', 'restart:true:false', 'panels:done']);
+  });
+
+  it.each([
+    ['the swap finished', async () => {}],
+    ['the swap stopped midway', async () => { throw new Error('stopped'); }],
+  ])('keeps the plugin stopped and the library held when the clear keeps failing after %s', async (_label, swap) => {
+    const { calls, deps } = recorder({ clearPartitionStorage: async () => { throw new Error('busy'); } });
+    await expect(withPluginHeldForLibrarySwap(deps, swap)).rejects.toBeInstanceOf(LibrarySwapNeedsRestartError);
+    expect(calls).not.toContain('release');
+    expect(calls.some((call) => call.startsWith('restart'))).toBe(false);
+    expect(calls).not.toContain('panels:done');
   });
 });

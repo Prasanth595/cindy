@@ -168,6 +168,18 @@ describe('GhostLibrarySlot', () => {
     expect(resolveLibraryRoot).toHaveBeenCalled();
   });
 
+  it('does not run host preparation for capability queries, invalid ops or undeclared plugins', async () => {
+    const prepareRequest = vi.fn(() => Promise.resolve());
+    await slot.disposeAll();
+    slot = new GhostLibrarySlot({ ...slotDeps, prepareRequest });
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'capabilities' })).resolves.toMatchObject({ ok: true });
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'nope' })).resolves.toMatchObject({ ok: false });
+    ghosts.set(GHOST_ID, makeGhost(false));
+    await expect(slot.handleLibraryRequest(GHOST_ID, { op: 'open' })).resolves.toMatchObject({ errorCode: 'NOT_DECLARED' });
+    await expect(slot.resolvePanelFilePath(GHOST_ID, 'a.txt')).resolves.toBeNull();
+    expect(prepareRequest).not.toHaveBeenCalled();
+  });
+
   it('资格审:未声明 library 能力/停用 → NOT_DECLARED', async () => {
     ghosts.set(GHOST_ID, makeGhost(false));
     const r = await slot.handleLibraryRequest(GHOST_ID, { op: 'open' });
