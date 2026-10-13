@@ -323,14 +323,15 @@ export function startCompanionCloud(input: {
   async function flush(botId: string) {
     const bot = pick(null).find(candidate => candidate.botId === botId);
     if (!bot) throw new Error('NOT_HOME');
+    // The whole conversation backlog first: the old copy stops mirroring once demoted, and a long
+    // drain must not leave edits made meanwhile behind.
+    await mirror.syncBot(bot.botId, bot.actorId, bot.name, { drain: true });
     // Every portable value must reach the server: a skipped one would be lost by the move. Repeat
     // until a pass writes nothing, so the move starts from what is on disk right now.
     for (let pass = 0; ; pass += 1) {
       if (await uploader.syncBot(bot.botId, bot.actorId, Number.POSITIVE_INFINITY, { requireAll: true }) === 0) break;
       if (pass >= 2) throw new Error('COMPANION_STILL_CHANGING');
     }
-    // The whole conversation backlog too: the old copy stops mirroring once demoted.
-    await mirror.syncBot(bot.botId, bot.actorId, bot.name, { drain: true });
   }
 
   const runtime: CompanionCloudRuntime = {

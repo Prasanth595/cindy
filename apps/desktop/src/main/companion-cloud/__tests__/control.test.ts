@@ -126,8 +126,12 @@ describe('transfer', () => {
     expect(await t.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: true });
     const order = t.calls.map(call => `${call.method} ${call.route}`);
     const patch = order.indexOf('PATCH /actors/actor-1');
-    expect(order.indexOf('POST /preferences')).toBeLessThan(patch);
-    expect(order.indexOf('POST /conversations')).toBeLessThan(patch);
+    const conversation = order.lastIndexOf('POST /conversations');
+    const upload = order.lastIndexOf('GET /preferences');
+    expect(conversation).toBeGreaterThanOrEqual(0);
+    // Values are synced last, so edits made while the backlog drains still reach the server.
+    expect(upload).toBeGreaterThan(conversation);
+    expect(upload).toBeLessThan(patch);
     expect(t.calls[patch]!.data).toEqual({ homeDeviceId: 'laptop', expectedHomeDeviceId: 'desk' });
     expect(t.state.isDemoted('bot_mia')).toBe(true);
     expect(t.actors[0]!.homeDeviceId).toBe('laptop');
