@@ -46,11 +46,23 @@ export interface LegacyLibraryReattachDeps {
   trashRoot(): string;
   /** 自定义位置：把 binding 与目录一起从 fromId 搬到 toId（重跑时无记录即返回）。 */
   relocateCustomBinding(fromId: string, toId: string): Promise<void>;
+  /** 自定义位置：搬之前确认 toId 没有 binding、自定义父目录下也没有同名目录。 */
+  assertCustomBindingRelocatable(fromId: string, toId: string): Promise<void>;
   /** 自定义位置下 toId 的库根；没有 binding 时返回 null。 */
   customRoot(id: string): Promise<string | null>;
   relocateMeta(root: string, fromId: string, toId: string): Promise<void>;
   relocateStaging(root: string, fromId: string, toId: string): Promise<void>;
   assertCurrent(): void;
+  /** 把目录项刷到磁盘；目录不存在时跳过。测试可注入以检查顺序。 */
+  syncDirectory?(dir: string): Promise<void>;
+}
+
+async function syncDirectoryIfPresent(dir: string): Promise<void> {
+  try {
+    await syncDirectory(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 
 async function directoryIdentity(dir: string): Promise<DirectoryIdentity | null> {
@@ -135,7 +147,10 @@ export async function startLegacyLibraryReattach(
     throw new Error('another library reattach is unfinished');
   }
   deps.assertCurrent();
-  if (input.oldLocation === 'custom') await assertCustomLibraryRelocatable(await deps.customRoot(input.fromId));
+  if (input.oldLocation === 'custom') {
+    await assertCustomLibraryRelocatable(await deps.customRoot(input.fromId));
+    await deps.assertCustomBindingRelocatable(input.fromId, input.toId);
+  }
   deps.assertCurrent();
   const journal: LegacyLibraryReattachJournal = {
     version: 1,
@@ -197,7 +212,21 @@ export async function finishLegacyLibraryReattach(
   deps.assertCurrent();
   await deps.relocateStaging(deps.stagingRoot(toId), fromId, toId);
   deps.assertCurrent();
+  // Every rename and identity rewrite above must be on disk before the journal
+  // goes; otherwise a crash could leave the moves half applied with nothing to
+  // finish them from.
+  const sync = deps.syncDirectory ?? syncDirectoryIfPresent;
+  for (const dir of new Set([
+    deps.trashRoot(),
+    path.dirname(deps.defaultRoot(toId)),
+    path.dirname(deps.stagingRoot(toId)),
+    path.join(root, '.cindy-library'),
+    path.join(deps.stagingRoot(toId), '.cindy-library'),
+  ])) {
+    await sync(dir);
+  }
   await fs.promises.rm(deps.journalFile(), { force: true });
+  await sync(path.dirname(deps.journalFile()));
 }
 
 /**

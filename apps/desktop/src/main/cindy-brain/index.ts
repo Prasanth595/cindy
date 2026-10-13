@@ -6361,6 +6361,7 @@ function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReat
     stagingRoot: (id) => ownerScopedUserDataPath('library-staging', id),
     trashRoot: () => ownerScopedUserDataPath('libraries-trash'),
     relocateCustomBinding: (fromId, toId) => store.relocateBinding(fromId, toId),
+    assertCustomBindingRelocatable: (fromId, toId) => store.assertCanRelocateBinding(fromId, toId),
     customRoot: async (id) => {
       const binding = await store.getBinding(id, { strict: true });
       return binding ? path.join(binding.root, id) : null;

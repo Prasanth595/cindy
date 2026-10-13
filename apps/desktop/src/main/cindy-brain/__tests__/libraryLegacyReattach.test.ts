@@ -50,6 +50,7 @@ function deps(overrides: Partial<LegacyLibraryReattachDeps> = {}): LegacyLibrary
     stagingRoot: (id) => path.join(root, 'library-staging', id),
     trashRoot: () => path.join(root, 'libraries-trash'),
     relocateCustomBinding: async () => {},
+    assertCustomBindingRelocatable: async () => {},
     customRoot: async () => null,
     relocateMeta: async (dir, fromId, toId) => {
       await relocateLibraryMetaOwner(dir, fromId, toId);
@@ -168,6 +169,44 @@ describe('legacy library reattach', () => {
     }));
     expect(relocateCustomBinding).toHaveBeenCalledWith(FROM, TO);
     expect(readMeta(path.join(custom, TO)).ghostId).toBe(TO);
+  });
+
+  it('flushes every moved directory and identity before removing the journal', async () => {
+    plantDefaultPair();
+    const order: string[] = [];
+    const journal = path.join(root, 'library-reattach.json');
+    await startLegacyLibraryReattach({ fromId: FROM, toId: TO, oldLocation: 'default', now: 7 }, deps({
+      syncDirectory: async (dir) => {
+        order.push((fs.existsSync(journal) ? 'before:' : 'after:') + path.relative(root, dir));
+      },
+    }));
+    expect(order).toEqual([
+      'before:libraries-trash',
+      'before:libraries',
+      'before:library-staging',
+      `before:${path.join('libraries', TO, '.cindy-library')}`,
+      `before:${path.join('library-staging', TO, '.cindy-library')}`,
+      'after:',
+    ]);
+    expectReattached();
+  });
+
+  it('stops before moving anything when the custom destination is already taken', async () => {
+    plantDefaultPair();
+    const custom = path.join(root, 'custom');
+    plantLibrary(path.join(custom, FROM), FROM, 'old');
+    fs.mkdirSync(path.join(custom, TO));
+    const relocateCustomBinding = vi.fn(async () => {});
+    await expect(startLegacyLibraryReattach({ fromId: FROM, toId: TO, oldLocation: 'custom', now: 7 }, deps({
+      relocateCustomBinding,
+      assertCustomBindingRelocatable: async (_fromId, toId) => {
+        if (fs.existsSync(path.join(custom, toId))) throw new Error('library custom root destination already exists');
+      },
+      customRoot: async (id) => path.join(custom, id),
+    }))).rejects.toThrow('destination already exists');
+    expect(relocateCustomBinding).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(root, 'library-reattach.json'))).toBe(false);
+    expect(fs.readFileSync(path.join(root, 'libraries', TO, 'marker.txt'), 'utf8')).toBe('new');
   });
 
   it('stops before moving anything when the old custom library is unavailable', async () => {

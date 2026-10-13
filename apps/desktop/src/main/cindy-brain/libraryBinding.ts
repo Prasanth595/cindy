@@ -149,9 +149,16 @@ export async function relocateLibraryMetaOwner(
   const file = path.join(root, '.cindy-library', 'meta.json');
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
-    await fs.promises.writeFile(temporary, JSON.stringify(next), { flag: 'wx', mode: 0o600 });
+    const handle = await fs.promises.open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify(next), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     assertCurrent();
     await fs.promises.rename(temporary, file);
+    await syncDirectory(path.dirname(file));
   } finally {
     await fs.promises.rm(temporary, { force: true });
   }
