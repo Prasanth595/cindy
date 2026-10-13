@@ -91,7 +91,7 @@ class BrowserWebviewPoolImpl {
     // off-screen makes Electron capturePage fail with UnknownVizError, while
     // a 1×1 viewport also breaks responsive layout and hit testing. Opacity
     // hides the parking region without suspending the guest's painting.
-    div.style.cssText = 'position:fixed;left:0;top:0;width:1280px;height:720px;opacity:0;z-index:-1;pointer-events:none;';
+    div.style.cssText = 'position:fixed;left:0;top:0;width:1280px;height:720px;opacity:0;z-index:-1;pointer-events:none;display:grid;grid-template-columns:1280px;grid-template-rows:720px;';
     div.setAttribute('aria-hidden', 'true');
     document.body.appendChild(div);
     this.container = div;
@@ -116,6 +116,8 @@ class BrowserWebviewPoolImpl {
     const container = this.ensureContainer();
     const wrapper = document.createElement('div');
     wrapper.dataset.poolTabId = tabId;
+    // All parked wrappers occupy the same grid cell. In a visible flex slot
+    // grid placement is inert; no reparent-specific positioning is needed.
     // wrapper 自身负责把 webview 填满它 —— caller slot 给 wrapper 多大宽高,
     // webview 跟着拉伸。display:flex 让 webview 100% 填充。
     // background 用主题 surface token(规则 16:走 token,不写 hex pair):
@@ -123,7 +125,7 @@ class BrowserWebviewPoolImpl {
     // 设 surface 色让过渡帧贴近主题(light → 浅,dark → 深),guest 加载后由
     // 网页内容覆盖。Mac 实测也会有半帧灰过渡,顺手统一处理。
     wrapper.style.cssText =
-      'position:relative;width:100%;height:100%;display:flex;background-color:var(--surface);';
+      'position:relative;width:100%;height:100%;display:flex;background-color:var(--surface);grid-area:1 / 1;';
     const webview = document.createElement('webview') as WebviewTag;
     // 强制 partition —— main 端 hardener 也会兜底,但这里显式写,debug 时更明显。
     webview.setAttribute('partition', BROWSER_PARTITION);

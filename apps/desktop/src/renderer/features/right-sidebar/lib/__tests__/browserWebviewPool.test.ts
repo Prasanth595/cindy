@@ -48,6 +48,18 @@ describe('browserWebviewPool', () => {
     expect(parking.style.pointerEvents).toBe('none');
   });
 
+  it('overlays multiple parked guests instead of stacking them outside the host', () => {
+    const entries = ['background-a', 'background-b', 'background-c'].map(id => browserWebviewPool.acquire(id));
+    const parking = entries[0].wrapper.parentElement!;
+    expect(parking.style.display).toBe('grid');
+    expect(parking.style.gridTemplateColumns).toBe('1280px');
+    expect(parking.style.gridTemplateRows).toBe('720px');
+    for (const entry of entries) {
+      expect(entry.wrapper.parentElement).toBe(parking);
+      expect(entry.wrapper.style.gridArea).toBe('1 / 1');
+    }
+  });
+
   it('acquire returns same entry on repeated tabId', () => {
     const a1 = browserWebviewPool.acquire('tab-a');
     const a2 = browserWebviewPool.acquire('tab-a');
