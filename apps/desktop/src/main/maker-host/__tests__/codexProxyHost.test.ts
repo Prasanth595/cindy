@@ -4199,6 +4199,12 @@ describe('codex proxy host', () => {
         .toMatchObject({ input, tools: [{ type: 'web_search', external_web_access: false }] });
       expect(apply({ model: 'openai-codex/gpt-6.1-sol', input: [{ role: 'user', content: 'Hello' }] }))
         .not.toHaveProperty('tools');
+      for (const status of ['in_progress', 'failed']) {
+        expect(apply({
+          model: 'openai-codex/gpt-6.1-sol',
+          input: [{ type: 'web_search_call', status, action: { type: actionType } }],
+        })).not.toHaveProperty('tools');
+      }
       expect(apply({ model: 'openai-codex/gpt-6.1-luna', input })).not.toHaveProperty('tools');
     },
   );
