@@ -183,6 +183,15 @@ vitest run src/agents/codex/app-server/external-auth.native.test.ts`，覆盖分
 管理员 requirements 可能覆盖 CLI 临时凭证设置：客户端可阻止后续任务，但启动后的
 配置检查不能证明原生初始化阶段从未读取历史根中的认证；不得声称具备这一保证，
 也不得自行复制上游策略加载器或改写用户认证文件规避策略。
+原生线程的 `model_provider` 不能证明其 `agent_message` 密文的实际来源：
+独立子 Agent 可以经代理使用其他供应商，而原生身份仍继承父线程。恢复到 GPT API 时，
+不得仅凭父线程的订阅身份自动删除协作密文；普通提前闭流也不是解密失败的证据。
+遇到 `stream closed before response.completed` 的终态错误时，两端可提供显式的
+可读历史恢复入口，保留普通重试；复用 `fork-strip-encrypted`，保留原任务且不自动发消息。
+Desktop 与 Mobile 恢复进行期间只禁用来源任务的重试，不阻塞其他任务；原任务出现新输入或重新运行后，
+迟到的恢复结果不得自动跳转，旧操作完成时也不得释放其他任务或后续操作的等待状态。
+Desktop 回包还须核对浏览器当前路由，覆盖地址已切换但 React 尚未渲染新任务的窗口。
+旧格式包含加密 `agent_message` 时也走既有历史恢复标记，不由 legacy sanitizer 丢弃消息。
 普通加密推理失败继续使用现有 HTTP 透明重试；只有上游明确
 拒绝且请求里仅剩不可剥除的压缩块密文时，proxy 才标记
 `CINDY_ENCRYPTED_COMPACTION_INCOMPATIBLE`，交给既有 compact 失败恢复流程。

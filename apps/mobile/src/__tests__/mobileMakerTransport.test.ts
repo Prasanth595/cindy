@@ -352,6 +352,7 @@ describe("mobile maker transport", () => {
       "maker:goal:resume",
       "maker:goal:update",
       "maker:fork",
+      "maker:fork-strip-encrypted",
       "maker:get-session-tree",
       "maker:navigate-session-tree",
       "maker:rewind:preview",
@@ -982,6 +983,7 @@ describe("mobile maker transport", () => {
     const { calls, maker } = harness();
 
     await maker.fork("s1", "m2");
+    await maker.forkStripEncrypted("s1");
     await maker.getSessionTree("s1");
     await maker.navigateSessionTree("s1", "entry-2", {
       summarize: true,
@@ -994,6 +996,7 @@ describe("mobile maker transport", () => {
 
     expect(calls.map((call) => [call.channel, call.args])).toEqual([
       ["maker:fork", ["s1", "m2"]],
+      ["maker:fork-strip-encrypted", ["s1"]],
       ["maker:get-session-tree", ["s1"]],
       [
         "maker:navigate-session-tree",

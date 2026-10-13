@@ -489,6 +489,8 @@
     "deleteOne": "删除本条消息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可读历史新建任务",
+    "readableHistoryRecoveryDescription": "如果重试仍然失败，可用可读历史新建任务，省略内部加密信息。原任务保留，失败消息不会自动重发。",
     "requestFormatError": "应用发送的请求格式有误，本次回复未能完成。",
     "replyFailed": "本次回复未能完成。请查看错误详情以了解原因。",
     "showErrorDetails": "查看错误详情",

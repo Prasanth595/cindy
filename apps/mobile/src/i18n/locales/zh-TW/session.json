@@ -493,6 +493,8 @@
     "deleteOne": "刪除本條訊息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可讀歷史建立新任務",
+    "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
     "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
     "replyFailed": "本次回覆未能完成。請查看錯誤詳情以瞭解原因。",
     "showErrorDetails": "查看錯誤詳情",

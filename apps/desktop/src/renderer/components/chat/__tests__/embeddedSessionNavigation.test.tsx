@@ -443,7 +443,7 @@ describe('sidebar-embedded session navigation boundary', () => {
       'if (sessionNavigationVersionRef.current !== navigationRequestVersion) return;',
     );
     expect(source).toContain(
-      'if (sessionNavigationVersionRef.current !== forkStripNavigationVersion) return;',
+      'if (sessionNavigationVersionRef.current !== forkStripNavigationVersion || !recovery.isCurrent()) return;',
     );
     expect(source).toContain('isNavigationCurrent:');
     expect(source).toContain('[navigationMode, sessionId],');

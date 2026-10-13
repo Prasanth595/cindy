@@ -493,6 +493,8 @@
     "deleteOne": "このメッセージを削除"
   },
   "tail": {
+    "readableHistoryRecovery": "読み取れる履歴から新しいタスクを作成",
+    "readableHistoryRecoveryDescription": "再試行しても失敗する場合は、読み取れる履歴から新しいタスクを作成できます。内部の暗号化情報は省略されます。元のタスクは保持され、失敗したメッセージは自動で再送信されません。",
     "requestFormatError": "アプリが送信したリクエストの形式に問題があり、返信を完了できませんでした。",
     "replyFailed": "返信を完了できませんでした。原因を確認するには、エラーの詳細をご覧ください。",
     "showErrorDetails": "エラーの詳細を表示",

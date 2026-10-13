@@ -2089,7 +2089,7 @@ function isGptEncryptedHistoryModel(model: string | null | undefined): boolean {
  *
  * - 加密 compaction 仍替换成明文上下文缺失提示。
  * - 多 Agent 历史会在 agent_message.content 里夹带仅兼容 GPT Responses 上游可解的
- *   encrypted_content；ChatGPT 与版本化 gpt-* / namespace/gpt-* 模型原样透传。其它模型
+ *   encrypted_content；ChatGPT 与 GPT API 原样透传，记录线程的身份不能证明子消息的密文来源。其它模型
  *   只删除这些嵌套密文，保留可读正文与路由元数据；若消息只剩密文则整条丢弃。
  * - reasoning.encrypted_content 不属于本故障；继续交给后续供应商兼容层判断，
  *   不在这里扩大删除面。
@@ -2134,10 +2134,10 @@ export function createCrossProviderCompactionCompatTransform(): RequestTransform
     if (!ctx.upstreamBase) return null;
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
     const providerContext = providerContextForRequest(ctx.headers, requestModel);
-    if (
-      isChatGptUpstreamBase(ctx.upstreamBase) ||
-      isGptEncryptedHistoryModel(providerContext.catalogModel)
-    ) return null;
+    // A subscription parent can receive messages from an independently routed API
+    // child. Native parent identity is not evidence that its ciphertext is invalid.
+    if (isChatGptUpstreamBase(ctx.upstreamBase)
+      || isGptEncryptedHistoryModel(providerContext.catalogModel)) return null;
     const replaced = rewriteCrossProviderHistoryItems(body);
     if (!replaced) return null;
     log.info('rewrote incompatible Codex history for non-GPT model', {

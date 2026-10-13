@@ -34,6 +34,7 @@ import {
   parseTransportPayload,
 } from '../transport.js';
 import { DL_CONTACTS_SYNC_CHANNEL } from '../contactsSyncProtocol.js';
+import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
 import { resolveDesktopIceServers, REMOTE_DESKTOP_ICE_CONFIG_TIMEOUT_MS } from '../remoteDesktopIceConfig.js';
 import { REMOTE_DESKTOP_ICE_SERVERS } from '../remoteDesktopIce.js';
@@ -129,6 +130,48 @@ function makeHarness(opts?: {
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('outbound invoke admission', () => {
+  it('waits for a 20-second mobile history recovery without widening other requests or replaying it', async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 15_000 } });
+    const calls: Promise<unknown>[] = [];
+    try {
+      h.client.start(); await vi.advanceTimersByTimeAsync(0); h.current().ack();
+      const channel = 'maker:fork-strip-encrypted';
+      const recovered = h.client.invoke('host', { channel, args: ['source'] },
+        resolveRemoteInvokeTimeoutMs(channel, ['source'], 'mobile'));
+      const settled = vi.fn();
+      calls.push(recovered.catch(error => error));
+      void recovered.then(settled, settled);
+      const ordinary = h.client.invoke('host', { channel: 'maker:list-active', args: [] })
+        .catch(error => error);
+      calls.push(ordinary);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(settled).not.toHaveBeenCalled();
+      expect(await ordinary).toMatchObject({ code: 'INVOKE_TIMEOUT' });
+
+      // Other peers can still complete requests while the recovery waits.
+      const other = h.client.invoke('other-host', { channel: 'maker:list-active', args: [] });
+      calls.push(other.catch(error => error));
+      const otherFrame = h.current().sent.find(frame => frame.kind === 'invoke' && frame.dst === 'other-host')!;
+      h.current().push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'other-host', id: otherFrame.id,
+        payload: { ok: true, result: [] } });
+      await expect(other).resolves.toMatchObject({ ok: true });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      const recoveryFrames = h.current().sent.filter(frame => frame.kind === 'invoke' &&
+        (frame.payload as InvokePayload).channel === channel);
+      expect(recoveryFrames).toHaveLength(1);
+      h.current().push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'host', id: recoveryFrames[0].id,
+        payload: { ok: true, result: { id: 'recovered-task' } } });
+      await expect(recovered).resolves.toEqual({ ok: true, result: { id: 'recovered-task' } });
+      expect(h.sockets).toHaveLength(1);
+      expect(h.current().closed).toBeNull();
+      expect(h.current().sent.some(frame => frame.kind === 'link-close')).toBe(false);
+    } finally {
+      h.client.stop(); await Promise.all(calls); vi.useRealTimers();
+    }
+  });
+
   it('shares 12/4 across ordinary and shared-task destinations while preserving wire scope', async () => {
     vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 60_000, requestTimeoutMs: 30_000 } });

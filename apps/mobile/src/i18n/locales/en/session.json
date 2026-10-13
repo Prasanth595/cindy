@@ -493,6 +493,8 @@
     "deleteOne": "Delete this message"
   },
   "tail": {
+    "readableHistoryRecovery": "New task from readable history",
+    "readableHistoryRecoveryDescription": "If retry keeps failing, create a new task using readable history. Internal encrypted information is omitted. The original task is kept, and the failed message is not resent automatically.",
     "requestFormatError": "The app sent an invalid request, so this reply could not be completed.",
     "replyFailed": "This reply could not be completed. Check the error details for more information.",
     "showErrorDetails": "Show Error Details",

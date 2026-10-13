@@ -44,6 +44,29 @@ const clickText = (text: string) => {
 };
 
 describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
+  it.each(['live', 'tail'] as const)('offers explicit %s recovery without automatically retrying', async surface => {
+    await i18n.changeLanguage(locale);
+    const recover = vi.fn();
+    const retry = vi.fn();
+    const error = 'stream disconnected before completion: stream closed before response.completed';
+    const renderBanner = (busy: boolean) => surface === 'live'
+      ? <InlineQueueSection projection={{ error, errorRetryText: 'original' } as InputProjection} busy={busy}
+          onRecoverHistory={recover} onRetryError={retry} onClearError={vi.fn()} onResume={vi.fn()} />
+      : <SessionTailBanner state={{ kind: 'error-tail', text: error, rawError: error, clientId: 'e', continueKind: 'error', retryable: true }}
+          busy={busy} onRecoverHistory={recover} onContinue={retry} onDismiss={vi.fn()} />;
+    await act(async () => root.render(renderBanner(false)));
+    expect(host.textContent).toContain(i18n.t('session.tail.readableHistoryRecoveryDescription'));
+    expect(recover).not.toHaveBeenCalled();
+    await act(async () => clickText(i18n.t('session.tail.readableHistoryRecovery')));
+    expect(recover).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    await act(async () => root.render(renderBanner(true)));
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="session.readableHistoryRecovery"]')!;
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
   it.each(['live', 'tail'] as const)('localizes %s, preserves retry and switches locale without another request', async surface => {
     await i18n.changeLanguage(locale);
     for (const key of ['requestFormatError', 'replyFailed', 'showErrorDetails', 'hideErrorDetails', 'retry']) {

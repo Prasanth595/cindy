@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "ログとフィードバック",
+    "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
+    "uploaded": "ログをアップロードしました。アップロード番号：{{code}}。問題の報告時にこの番号を添えてください。",
+    "close": "閉じる",
+    "uploadDescription": "問題の報告時にアップロード番号を添えてください。",
+    "uploadDetails": "アップロード内容を確認"
+  },
   "taskMove": {
     "upgradeComputer": "このコンピューターの Cindy はタスクの移動に対応していません。「{{name}}」の Cindy を更新してください。",
     "sourceProjects": "タスクのコンピューターのプロジェクト",
@@ -10554,6 +10562,8 @@
       "syncAuthFailed": "同期に失敗しました：{{msg}}",
       "syncAuthDaemonRestartFailed": "認証情報はリモートに送信されましたが、古い daemon が再起動されませんでした — リモートに再接続してから再試行してください",
       "invalidEncryptedContent": "プロバイダーを変更したため、以前の暗号化が使用できなくなりました。このセッションは元のプロバイダーでのみ続行できます。または Fork をクリックしてプロトコル暗号化コンテンツを破棄し、新しいセッションで続行してください。",
+      "readableHistoryRecovery": "読み取れる履歴から新しいタスクを作成",
+      "readableHistoryRecoveryDescription": "再試行しても失敗する場合は、読み取れる履歴から新しいタスクを作成できます。内部の暗号化情報は省略されます。元のタスクは保持され、失敗したメッセージは自動で再送信されません。",
       "forkStripEncrypted": "Fork して切り離す",
       "forkStripEncryptedRunning": "Fork 中…",
       "forkStripEncryptedTitle": "暗号化推論を除いた新しいセッションを Fork で作成",
@@ -14417,7 +14427,9 @@
         "description": "請求書の発行を申請するには、以下の情報を {{email}} までメールでお送りください。",
         "requiredInfo": "メールには以下の情報を記載してください：",
         "emailSubject": "注文 {{orderId}} の請求書発行申請",
-        "emailBody": "こんにちは。\n\n以下の注文について請求書の発行を申請します。\n\n────────────────────\n注文 ID：{{orderId}}\nアプリケーション：{{application}}\n支払い方法：{{paymentMethod}}\n請求金額：{{amount}}\n請求書宛名：\n担当者名：\n電話番号：\nメールアドレス：\n────────────────────\n\nよろしくお願いいたします。",
+        "personalInvoicePolicy": "Cindy個人版へのチャージでは、原則として<strong>個人宛ての請求書</strong>を発行します。宛名には氏名または「個人」を記載できます。会社の経費精算のために企業名義の請求書が必要な場合は、<strong>会社の公印を押印した経費精算説明書</strong>をご提出いただき、説明書に請求書の宛名を明記してください。",
+        "invoiceTitleHint": "記入方法：個人宛ての場合は、氏名または「個人」を記載してください。会社の経費精算のために企業名義で発行する場合は、会社の公印を押印し、請求書の宛名を明記した経費精算説明書をメールに添付してください。",
+        "emailBody": "こんにちは。\n\n以下の注文について請求書の発行を申請します。\n\n────────────────────\n注文 ID：{{orderId}}\nアプリケーション：{{application}}\n支払い方法：{{paymentMethod}}\n請求金額：{{amount}}\n請求書宛名：\n{{invoiceTitleHint}}\n\n担当者名：\n電話番号：\nメールアドレス：\n────────────────────\n\nよろしくお願いいたします。",
         "sendAction": "請求書の申請を送信",
         "emailCopied": "サポートメールアドレスをコピーしました",
         "emailCopyFailed": "サポートメールアドレスをコピーできませんでした。もう一度お試しください。",
