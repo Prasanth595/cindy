@@ -32,7 +32,7 @@ export function BotSettingsDrawer() {
     ? null
     : (bots.find((candidate) => candidate.id === match?.params.botId) ?? null);
   // A demoted copy (the companion runs on another computer) is read-only: edits here would never
-  // reach the companion. Its settings live on the main computer (the shadow banner links there).
+  // reach the companion. Its settings live on the main computer (the banner on its task links there).
   const bot = localBot && cloud.demotedBotIds.includes(localBot.id) ? null : localBot;
   const open = searchParams.get('settings') === '1' && (bot !== null || !!remoteBot);
 
