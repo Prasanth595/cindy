@@ -327,10 +327,10 @@ const REMOTE_PI_ATTACHMENT_MAX_BYTES = 256 * 1024;
  * teammate guide + 记忆索引)可达数十 KB,而 Windows 命令行整条上限 32767、超过预算守卫
  * 就拒绝启动。Pi 对「磁盘上存在的路径」会读取文件内容,所以超限时把提示词写进会话
  * configHome、命令行只留路径 —— argv 不再随提示词增长。上限取 Windows 预算的四分之一,
- * 给项目 Skill / 扩展路径留出空间。
+ * 给项目 Skill / 扩展路径留出空间。仅本地会话适用,远端见下面的落盘条件。
  */
 const PI_APPEND_SYSTEM_PROMPT_INLINE_LIMIT = Math.floor(PI_WINDOWS_SPAWN_ARGV_BUDGET / 4);
-/** 超限提示词在会话 configHome (PI_CODING_AGENT_DIR) 内的文件名。 */
+/** 超限提示词在本地会话 configHome (PI_CODING_AGENT_DIR) 内的文件名。 */
 const PI_APPEND_SYSTEM_PROMPT_FILE_NAME = 'append-system-prompt.md';
 /**
  * Compatibility fallback for hosts that do not provide persistent derivation.
@@ -3979,8 +3979,17 @@ export class PiAgent extends BaseAgent {
       // teammate guide or memory index, and the Windows budget guard keeps its
       // headroom for explicit Skill / extension paths. A failed write falls back to
       // the inline value (the guard then still fails closed before spawning).
+      //
+      // Local sessions only. Remote sessions must keep the inline value: the SSH
+      // daemon hashes the whole pi command line (pi-remote-transport launchHash) into
+      // its reattach identity, so a file path that survives content changes would let
+      // a reconnecting session keep running the prompt it loaded at spawn; the stable
+      // remote configHome is also never removed on close, so a spilled prompt would
+      // outlive the session on the remote disk. POSIX argv budgets (128K) leave room
+      // for the inline value anyway.
       let appendSystemPromptFile: string | undefined;
-      if (appendSystemPrompt.length > PI_APPEND_SYSTEM_PROMPT_INLINE_LIMIT) {
+      if (!opts.remoteHostId
+        && appendSystemPrompt.length > PI_APPEND_SYSTEM_PROMPT_INLINE_LIMIT) {
         const spillPath = joinRemotePosixPath(configHome, PI_APPEND_SYSTEM_PROMPT_FILE_NAME);
         try {
           await writeFile(spillPath, appendSystemPrompt);

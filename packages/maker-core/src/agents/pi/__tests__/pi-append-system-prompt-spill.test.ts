@@ -2,11 +2,13 @@
  * 超长 host 提示词改走文件通道 —— mock transport / PiRpcProcess(不 spawn 真 pi),
  * 捕获 spawn argv 与 PI_CODING_AGENT_DIR,验证:
  *   1. 超过内联上限的 `--append-system-prompt`(Bot 身份 + profile context +
- *      teammate guide + 记忆索引可达数十 KB)写进会话 configHome,命令行只留路径,
+ *      teammate guide + 记忆索引可达数十 KB)写进本地会话 configHome,命令行只留路径,
  *      Windows 预算守卫因此仍有余量;
  *   2. 同一提示词若按旧行为内联,断言守卫会拦下 —— 证明该用例本身就在危险区;
  *   3. 小提示词保持内联,普通会话的命令行不变;
- *   4. 文件内容与提示词一致,会话关闭后随 configHome 一并清理。
+ *   4. 远端会话保持内联:远端 daemon 把整条命令行哈希进重连身份,落盘会让内容变化
+ *      不可见(重连跑旧提示词),且远端 configHome 关闭不清理、会把提示词留在远端磁盘;
+ *   5. 文件内容与提示词一致,本地会话关闭后随 configHome 一并清理。
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -18,6 +20,8 @@ import { assertPiSpawnArgvFitsPlatform } from '../project-resource-cli.js';
 const knobs = vi.hoisted(() => ({
   spawnArgs: [] as string[],
   configHome: '',
+  remoteArgs: [] as string[],
+  remoteWrites: [] as string[],
 }));
 
 vi.mock('../transport.js', () => ({
@@ -82,6 +86,8 @@ describe('PiAgent oversized --append-system-prompt file channel', () => {
   beforeEach(() => {
     knobs.spawnArgs = [];
     knobs.configHome = '';
+    knobs.remoteArgs = [];
+    knobs.remoteWrites = [];
     agentHome = mkdtempSync(path.join(tmpdir(), 'pi-prompt-file-home-'));
     cwd = mkdtempSync(path.join(tmpdir(), 'pi-prompt-file-cwd-'));
   });
@@ -92,7 +98,7 @@ describe('PiAgent oversized --append-system-prompt file channel', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  function buildDeps(): AgentDeps {
+  function buildDeps(options: { remote?: boolean } = {}): AgentDeps {
     return {
       auth: {
         getState: async () => ({ authenticated: true, identity: 't', authSource: 'api-key' as const }),
@@ -100,7 +106,10 @@ describe('PiAgent oversized --append-system-prompt file channel', () => {
         logout: async () => {},
         getAuthEnv: async () => ({}),
       },
-      runtimeConfig: { endpoint: 'http://127.0.0.1:9' },
+      runtimeConfig: {
+        endpoint: 'http://127.0.0.1:9',
+        ...(options.remote ? { remoteEndpoint: 'https://gateway.example.test' } : {}),
+      },
       binaryPath: path.join(agentHome, 'pi'),
       logger: noopLogger,
       capabilityAdditions: {
@@ -110,6 +119,33 @@ describe('PiAgent oversized --append-system-prompt file channel', () => {
       },
       resolvePiGatewayModelApi: () => 'openai-responses',
       resolvePiAgentHome: () => agentHome,
+      ...(options.remote
+        ? {
+            resolveRemotePiBinaryPath: async () => '/remote/pi',
+            getRemotePiTransport: async (_host: string, transportOptions: { args: string[] }) => {
+              knobs.remoteArgs = [...transportOptions.args];
+              return {
+                writeLine: async () => {},
+                onLine: () => () => {},
+                onStderr: () => () => {},
+                onClose: () => () => {},
+                close: async () => {},
+                pid: 4321,
+                isClosed: () => false,
+                remoteBinaryPath: '/remote/pi',
+              };
+            },
+            getRemotePiFileOps: () => ({
+              mkdirp: async () => {},
+              writeFile: async (file: string) => { knobs.remoteWrites.push(file); },
+              stat: async () => ({ isFile: true }),
+              rm: async () => {},
+              listDir: async () => [],
+              readFile: async () => { throw new Error('unexpected remote file read in fixture'); },
+              sha256File: async () => { throw new Error('unexpected remote file hash in fixture'); },
+            }),
+          }
+        : {}),
     };
   }
 
@@ -159,6 +195,30 @@ describe('PiAgent oversized --append-system-prompt file channel', () => {
       const { value } = appendPromptValue();
       expect(value).toBe('You are Cindy.');
       expect(existsSync(path.join(knobs.configHome, SPILL_FILE_NAME))).toBe(false);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('keeps an oversized prompt inline for remote sessions (argv stays the launch identity)', async () => {
+    // 9K:超过内联上限(7500)但整条命令行仍能通过预算守卫 —— 这样各平台断言同一件事:
+    // 远端会话不因超限落盘。
+    const oversizedPrompt = '-- 伙伴上下文 --\n'.repeat(750);
+    const handle = await new PiAgent(buildDeps({ remote: true })).startSession({
+      sessionId: 'spill-remote',
+      workingDir: cwd,
+      model: 'm',
+      remoteHostId: 'remote-1',
+      botProfilePrompt: oversizedPrompt,
+    });
+    try {
+      const index = knobs.remoteArgs.indexOf('--append-system-prompt');
+      expect(index).toBeGreaterThan(-1);
+      // 远端 daemon 把整条命令行哈希进重连身份(pi-remote-transport launchHash):
+      // 落盘会让内容变化在 argv 里不可见,重连会继续跑旧提示词;而且远端 configHome
+      // 关闭不清理,提示词会留在远端磁盘。所以远端保持内联、不写文件。
+      expect(knobs.remoteArgs[index + 1]).toBe(oversizedPrompt.trim());
+      expect(knobs.remoteWrites.some((file) => file.endsWith(SPILL_FILE_NAME))).toBe(false);
     } finally {
       await handle.close();
     }
