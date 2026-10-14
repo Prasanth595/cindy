@@ -47,7 +47,7 @@ describe('execution failures are a projection of the current snapshot', () => {
   it('shows a new epoch and newly failed old source without reloading that message page', () => {
     expect(projectBotGroupExecutionFailures([source], [])).toEqual([source]);
     expect(projectBotGroupExecutionFailures([source], [{ ...failure, epoch: 2, code: 'QUOTA_EXCEEDED' }])[1])
-      .toMatchObject({ id: 'execution-failure:run:2', runtimeFailureCode: 'QUOTA_EXCEEDED' });
+      .toMatchObject({ id: 'execution-failure:run:2', runtimeFailureCode: 'QUOTA_EXCEEDED', failureSourceMessageId: 'source' });
     expect(projectBotGroupExecutionFailures([], [failure])).toEqual([]);
   });
 });

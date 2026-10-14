@@ -70,7 +70,7 @@ import { useRegisterContentHeader } from '../feature-context';
 import { BotAvatar } from './BotAvatar';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
-import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botGroupAttachments';
+import { botGroupAttachmentScope, splitBotGroupMessageAttachments, toRetryAttachmentInputs } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
@@ -192,6 +192,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [reloadVersion, setReloadVersion] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [continuing, setContinuing] = useState(false);
+  const [retryingFailureId, setRetryingFailureId] = useState<string | null>(null);
+  const retryingFailureRef = useRef(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
@@ -614,6 +616,40 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
   };
 
+  /**
+   * 重试一位伙伴这次失败的回复：把它当时要回应的用户消息（正文 + 可重发的附件）
+   * 原样再发给它。只发这一位，不会重新叫醒其他人；群里会多一条同样的用户消息。
+   */
+  const retryFailure = async (notice: BotGroupMessageView, source: BotGroupMessageView) => {
+    const api = botGroupApi();
+    const botId = notice.authorBotId;
+    if (!api || !botId || retryingFailureRef.current) return;
+    const attachments = toRetryAttachmentInputs(source.attachments);
+    if (!source.content.trim() && attachments.length === 0) return;
+    retryingFailureRef.current = true;
+    setRetryingFailureId(notice.id);
+    stickToBottomRef.current = true;
+    try {
+      const result = await api.sendBotGroupMessage({
+        groupId,
+        text: source.content,
+        mentions: { all: false, botIds: [botId] },
+        clientId: crypto.randomUUID(),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      });
+      if (!result.ok) {
+        toast.error(t(botGroupErrorKey(result.errorCode, 'bots.groupChat.composer.sendFailed')));
+        return;
+      }
+      loadRef.current();
+    } catch {
+      toast.error(t('bots.groupChat.composer.sendFailed'));
+    } finally {
+      retryingFailureRef.current = false;
+      setRetryingFailureId(null);
+    }
+  };
+
   /** 开始 / 不用了 / 继续 / 重试 / 结束分工; main pushes 'plan' and the view re-reads. */
   const runPlanAction = async (action: BotGroupPlanAction, planId: string) => {
     if (planPendingRef.current) return;
@@ -752,6 +788,17 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     : [];
   const pendingFor = (planId: string | null) =>
     planId && planPending?.planId === planId ? planPending.action : null;
+  const messageById = new Map(messages.map((message) => [message.id, message]));
+  /** 只有本机拥有一条已加载、可重发的用户消息的成员回复失败，才给「重试」。 */
+  const failureRetry = (message: BotGroupMessageView) => {
+    if (message.kind !== 'notice' || !isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) return undefined;
+    if (group.archived || message.planId !== null || !message.authorBotId) return undefined;
+    if (memberById.get(message.authorBotId)?.status !== 'active') return undefined;
+    const source = message.failureSourceMessageId ? messageById.get(message.failureSourceMessageId) : undefined;
+    if (!source || source.kind !== 'message' || source.authorKind !== 'user') return undefined;
+    if (!source.content.trim() && toRetryAttachmentInputs(source.attachments).length === 0) return undefined;
+    return { retrying: retryingFailureId === message.id, onRetry: () => void retryFailure(message, source) };
+  };
 
   return (
     <div ref={threadLayoutRef} className="flex h-full min-w-0 overflow-hidden">
@@ -864,6 +911,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   canContinue={message.id === continueId}
                   continuing={continuing}
                   onContinue={() => void continueRound()}
+                  failureRetry={failureRetry(message)}
                   plan={message.planId ? planById.get(message.planId) : undefined}
                   planActionable={
                     message.kind === 'plan' &&
@@ -991,6 +1039,7 @@ function BotGroupTimelineItem({
   canContinue,
   continuing,
   onContinue,
+  failureRetry,
   plan,
   planActionable,
   planReassignable,
@@ -1011,6 +1060,8 @@ function BotGroupTimelineItem({
   canContinue: boolean;
   continuing: boolean;
   onContinue: () => void;
+  /** Present only for a member-turn failure the host can re-issue. */
+  failureRetry?: { retrying: boolean; onRetry: () => void };
   /** Snapshot of the plan this message belongs to (安排卡, hand-off or plan end). */
   plan: BotGroupPlanView | undefined;
   planActionable: boolean;
@@ -1041,7 +1092,7 @@ function BotGroupTimelineItem({
   if (message.kind === 'notice' || message.authorKind === 'system') {
     const name = message.authorName.trim() || member?.name || '';
     if (isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) {
-      return <BotGroupRuntimeFailureNotice name={name} code={message.runtimeFailureCode} />;
+      return <BotGroupRuntimeFailureNotice name={name} code={message.runtimeFailureCode} onRetry={failureRetry?.onRetry} retrying={failureRetry?.retrying} />;
     }
     const key = botGroupNoticeKey(message.noticeCode, message.planId !== null);
     const text = key ? t(key, { name }) : message.content;

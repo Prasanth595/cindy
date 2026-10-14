@@ -94,7 +94,7 @@ export function projectBotGroupExecutionFailures(
     id: `execution-failure:${failure.executionId}:${failure.epoch}`, sequence: source.sequence,
     kind: 'notice', authorKind: 'system', authorBotId: failure.botId, authorName: failure.botName,
     content: '', noticeCode: failure.code === 'RUNTIME_TIMEOUT' ? 'member-timeout' : 'member-failed',
-    runtimeFailureCode: failure.code, mentions: { all: false, botIds: [] }, planId: failure.planId,
+    runtimeFailureCode: failure.code, failureSourceMessageId: source.id, mentions: { all: false, botIds: [] }, planId: failure.planId,
     threadRootId: source.threadRootId ?? null, files: [], attachments: [], createdAt: failure.updatedAt ?? source.createdAt,
   }))]);
 }

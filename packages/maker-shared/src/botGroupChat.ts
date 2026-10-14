@@ -157,6 +157,8 @@ export interface BotGroupMessageView {
   noticeCode: BotGroupNoticeCode | null;
   /** Localized cause and remedy for a failed execution; raw diagnostics stay on the executor. */
   runtimeFailureCode?: BotGroupRuntimeFailureCode;
+  /** On a projected failure notice: the message whose execution failed (its request to retry). */
+  failureSourceMessageId?: string;
   /** The plan this message belongs to: the 安排卡, a step hand-off or the plan's end. */
   planId: string | null;
   /** Step hand-off files, relative to the plan's work directory (POSIX separators). */
