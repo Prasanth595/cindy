@@ -60,3 +60,13 @@ it.each(['org', 'organization'])('rejects old visibility capability for %s owner
   expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
   expect(save).not.toHaveBeenCalled();
 });
+
+it.each(['loading', 'loaded'])('closes after same-owner generation changes while %s', async (phase) => {
+  if (phase === 'loading') load.mockReturnValueOnce(new Promise(() => {}));
+  const view = open();
+  if (phase === 'loaded') await screen.findByRole('checkbox', { name: 'Parent' });
+  setDataOwnerGeneration('owner-a', 2);
+  view.rerender(<VisibilityEditorDialog open onOpenChange={close} skillName="demo" currentTier="team" currentOwnerType="org" onSaved={saved} />);
+  await waitFor(() => expect(close).toHaveBeenCalledWith(false));
+  expect(save).not.toHaveBeenCalled();
+});

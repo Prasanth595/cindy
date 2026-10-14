@@ -51,6 +51,10 @@ export function VisibilityEditorDialog({
   const { t } = useTranslation();
   const { user } = useAuth();
   const dialogOwner = useMemo(() => getDataOwnerGeneration(), [open]);
+  const isDialogOwnerCurrent = isDataOwnerGenerationCurrent(dialogOwner);
+  useEffect(() => {
+    if (open && !isDialogOwnerCurrent) onOpenChange(false);
+  }, [open, isDialogOwnerCurrent, onOpenChange]);
   const identityPolicy = useSkillhubIdentityPolicy(user);
   const currentOwnerIsTeam = currentOwnerType === 'org' || currentOwnerType === 'organization';
 

@@ -48,6 +48,11 @@ describe('Department audience selection', () => {
     expect(screen.getByRole('checkbox', { name: 'Parent' })).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: 'Sibling' })).toBeNull();
     expect(screen.getByTestId('selection').textContent).toBe('["s"]');
+    expect(screen.queryByRole('button', { name: 'skillhub.audience.expand' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'skillhub.audience.collapse' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.audience.expand' }));
+    expect(screen.getByRole('checkbox', { name: 'Sibling' })).toBeTruthy();
   });
   it('keeps invalid selections visible and never silently widens the audience', async () => {
     render(<Fixture initial={['deleted']} />);

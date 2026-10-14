@@ -101,7 +101,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
             {rows.map(({ department: d, depth, hasChildren }) => {
               const included = departmentAncestors(d.id, parents).some(id => selectedIds.has(id));
               return <div key={d.id} className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16 }}>
-                {hasChildren && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
+                {hasChildren && !query.trim() && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
                   onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(d.id)) next.delete(d.id); else next.add(d.id); return next; })}>
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </Button></Tip>}
