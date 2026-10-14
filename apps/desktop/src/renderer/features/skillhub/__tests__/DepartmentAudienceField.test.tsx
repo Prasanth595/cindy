@@ -55,6 +55,16 @@ describe('Department audience selection', () => {
     expect(screen.getByTestId('selection').textContent).toBe('["deleted"]');
     expect(screen.getByRole('button', { name: /skillhub.audience.unavailable/ })).toBeTruthy();
   });
+  it('explains excess selections and allows removal to restore validity', async () => {
+    const many = Array.from({ length: 501 }, (_, i) => ({ id: `d${i}`, name: `Dept ${i}`, parentId: null }));
+    load.mockResolvedValue({ success: true, audienceSupported: true, departments: many });
+    render(<Fixture initial={many.map(d => d.id)} />);
+    await screen.findByText('skillhub.audience.limit');
+    await waitFor(() => expect(valid).toHaveBeenLastCalledWith(false));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Dept 500' }));
+    await waitFor(() => expect(valid).toHaveBeenLastCalledWith(true));
+    expect(screen.queryByText('skillhub.audience.limit')).toBeNull();
+  });
   it('blocks old servers and permits retry after a failed lookup', async () => {
     load.mockResolvedValueOnce({ success: true, ids: [], names: [] });
     render(<Fixture initial={['p']} />);

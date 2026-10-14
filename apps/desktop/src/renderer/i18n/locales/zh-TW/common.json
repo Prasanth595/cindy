@@ -13940,6 +13940,7 @@
       "cleanupComplete": "清理完成"
     },
     "audience": {
+      "limit": "最多選擇 500 個部門，請移除部分選擇後儲存。",
       "label": "可見成員",
       "all": "全部成員",
       "departments": "指定部門",

@@ -13991,6 +13991,7 @@
       "cleanupComplete": "Cleanup completed"
     },
     "audience": {
+      "limit": "Select up to 500 departments. Remove some selections to save.",
       "label": "Visible members",
       "all": "All members",
       "departments": "Selected departments",
