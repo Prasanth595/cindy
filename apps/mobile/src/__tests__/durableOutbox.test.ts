@@ -1170,3 +1170,40 @@ describe("app-owned delivery and reconciliation", () => {
     ).toEqual(["first", "follow-up"]);
   });
 });
+
+it('persists companion identity across restart and refuses a changed resource before starting enqueue', async () => {
+  const { store, storage, deps } = await setup();
+  const resourceRef = { collectionId: 'teammates', kind: 'bot', id: 'writer' };
+  await store.add({ ...message(), resourceRef });
+  const restarted = createDurableOutbox(storage); await restarted.activate('alice');
+  expect(restarted.getSnapshot()[0].resourceRef).toEqual(resourceRef);
+  const beforeEnqueue = vi.fn(async () => { throw new Error('ACCESS_REVOKED'); });
+  const guarded = createDurableOutboxDelivery({ ...deps, store: restarted, beforeEnqueue, retryable: () => false });
+  await guarded.run();
+  expect(beforeEnqueue).toHaveBeenCalledTimes(1); expect(deps.enqueue).not.toHaveBeenCalled();
+  expect(restarted.getSnapshot()[0]).toMatchObject({ state: 'failed', enqueueStarted: false, resourceRef });
+  expect(restarted.getSnapshot()[0].item.clientId).toBe('id-1');
+});
+
+it('does not drop the resource gate when its persisted identity is corrupt', async () => {
+  const storage = disk();
+  const store = createDurableOutbox(storage); await store.activate('alice');
+  await store.add(message());
+  const [key, raw] = [...storage.data.entries()][0];
+  storage.data.set(key, JSON.stringify({ ...JSON.parse(raw), resourceRef: null }));
+  const restarted = createDurableOutbox(storage); await restarted.activate('alice');
+  expect(restarted.getSnapshot()).toEqual([]);
+  expect(storage.data.has(key)).toBe(true);
+});
+
+it('cancels an enqueue if its page-independent resource check spans an account or foreground change', async () => {
+  const { store, deps, deactivate } = await setup(); await store.add(message());
+  const check = deferred<void>();
+  const beforeEnqueue = vi.fn(() => check.promise);
+  const guarded = createDurableOutboxDelivery({ ...deps, beforeEnqueue });
+  const run = guarded.run();
+  for (let n = 0; n < 40 && !beforeEnqueue.mock.calls.length; n++) await Promise.resolve();
+  expect(beforeEnqueue).toHaveBeenCalledTimes(1);
+  deactivate(); check.resolve(); await run;
+  expect(deps.enqueue).not.toHaveBeenCalled(); expect(store.getSnapshot()[0].enqueueStarted).toBe(false);
+});

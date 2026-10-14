@@ -24535,7 +24535,7 @@ describe('CodexAgent.forkSdkSession', () => {
     else await expect(result).rejects.toBeInstanceOf(AgentNotAuthenticatedError);
   });
 
-  it.each([false, true])('requests Cindy recovery before forking indexed history (lazy=%s)', async (lazy) => {
+  it.each(['indexed', 'lazy', 'legacy-agent-cipher'])('requests Cindy recovery before native forking (%s)', async (format) => {
     const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-indexed-fork-'));
     try {
       const agent = new CodexAgent(createDeps());
@@ -24543,9 +24543,13 @@ describe('CodexAgent.forkSdkSession', () => {
       const dir = path.join(codexHome, 'sessions', '2026', '09', '05');
       await fs.mkdir(dir, { recursive: true });
       const source = path.join(dir, 'rollout-source-thread-id.jsonl');
-      const original = JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
-        id: 'source-thread-id', ...(lazy ? { history_base: { thread_id: 'parent' } } : {}),
-      } }) + '\n';
+      const original = format === 'legacy-agent-cipher'
+        ? JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', content: [
+            { type: 'encrypted_content', encrypted_content: 'child-ciphertext' },
+          ] } }) + '\n'
+        : JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
+            id: 'source-thread-id', ...(format === 'lazy' ? { history_base: { thread_id: 'parent' } } : {}),
+          } }) + '\n';
       await fs.writeFile(source, original);
       const host = installFakeHost(agent);
       await expect(agent.forkSdkSession({

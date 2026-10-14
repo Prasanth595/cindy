@@ -578,6 +578,7 @@ import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
 import { initLogUploadService, scheduleStartupBackfill } from './log-upload';
+import { createOpenLogsMenuItem, openLogsDirectory } from './logSupport';
 import { WindowManualDragController } from './windowManualDrag';
 import { issueWritableDirectoryPickerGrant } from './maker-ipc/writableDirectoryPickerGrant.js';
 // 设备互联(跨设备远程控制): relay 连接 host + 开关/设备列表 IPC
@@ -2916,6 +2917,8 @@ function installApplicationMenu(
     {
       label: labels.helpMenu,
       submenu: [
+        createOpenLogsMenuItem(),
+        { type: 'separator' },
         {
           label: labels.help,
           click: () => dispatchApplicationMenuCommand(mainWindow, 'open-help'),
@@ -3155,6 +3158,7 @@ function buildWindowsTrayMenu(): Menu {
       label: t('settings.windowBehavior.trayMenu.show'),
       click: () => focusMainWindow(),
     },
+    createOpenLogsMenuItem(),
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
@@ -3916,6 +3920,8 @@ const createWindow = () => {
     app.quit();
   });
   void ensureMainAppPresence('main-window-created', mainWindow);
+  // Keep diagnostics reachable from the tray even before login or if the renderer fails.
+  if (process.platform === 'win32') ensureWindowsTray();
 
   installApplicationMenu(
     mainWindow,
@@ -4874,7 +4880,7 @@ const registerIpcHandlers = () => {
       }
       windowsClosePromptFallback.acknowledge();
       writeWindowsCloseBehavior(behavior);
-      if (behavior === 'quit') destroyWindowsTray();
+      // The tray also provides diagnostics while running; only app shutdown owns its destruction.
       return behavior;
     },
   );
@@ -7509,19 +7515,11 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Settings → About: 打开 <userData>/logs 在系统文件管理器。
-  // 路径在主进程派生（renderer 不需要也不应该知道 userData 全路径）。
-  // 目录不存在时先创建，避免空安装首次点击失败。
-  ipcMain.handle('app:open-logs-dir', async (): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const logDir = path.join(app.getPath('userData'), 'logs');
-      fs.mkdirSync(logDir, { recursive: true });
-      const errMsg = await shell.openPath(logDir);
-      if (errMsg) return { success: false, error: errMsg };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  // Settings → About: shared local diagnostics entry, also available before login.
+  // The sender cannot choose a path.
+  ipcMain.handle('app:open-logs-dir', (event): Promise<{ success: boolean }> => {
+    assertTrustedAppRendererEvent(event);
+    return openLogsDirectory();
   });
 
   // Settings → Cindy Make: open Cindy's private managed-tool directory.

@@ -30,6 +30,8 @@ export interface DurableOutboxDeliveryDeps {
     upload: DurableUpload,
   ): Promise<RemoteSerializedAttachment>;
   enqueue(record: DurableOutboxRecord): Promise<InputProjection>;
+  /** Recheck resource ownership before recording that an external write has started. */
+  beforeEnqueue?(record: DurableOutboxRecord): Promise<void>;
   cancel(record: DurableOutboxRecord): Promise<boolean>;
   history(record: DurableOutboxRecord): Promise<boolean>;
   /** A remote row alone cannot release the local bubble before offline history owns it. */
@@ -286,6 +288,8 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
           sendAtMs: record.sendAtMs ?? Date.now(),
         });
       }
+      await deps.beforeEnqueue?.(record);
+      if (!current(record) || !deps.canRun(record)) return;
       // This write precedes every external enqueue. Crash recovery therefore knows it must reconcile.
       await update({ state: "sending", enqueueStarted: true, error: undefined });
       const result = await deps.enqueue(record);

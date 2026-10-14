@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "Logs and Feedback",
+    "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
+    "uploaded": "Logs uploaded. Upload code: {{code}}. Include this code when reporting the problem.",
+    "close": "Close",
+    "uploadDescription": "Include the upload code when reporting the problem.",
+    "uploadDetails": "What gets uploaded"
+  },
   "taskMove": {
     "upgradeComputer": "This computer’s Cindy version does not support moving tasks. Update Cindy on “{{name}}” to use this feature.",
     "sourceProjects": "Projects on the task’s computer",
@@ -10559,6 +10567,8 @@
       "syncAuthFailed": "Sync failed: {{msg}}",
       "syncAuthDaemonRestartFailed": "Credentials pushed, but the old daemon did not restart — reconnect to the remote before retrying",
       "invalidEncryptedContent": "Switching providers made the previous encryption unusable. This session can only continue under the original provider, or click Fork to drop the protocol-encrypted content and continue in a new session.",
+      "readableHistoryRecovery": "New task from readable history",
+      "readableHistoryRecoveryDescription": "If retry keeps failing, create a new task using readable history. Internal encrypted information is omitted. The original task is kept, and the failed message is not resent automatically.",
       "forkStripEncrypted": "Fork and strip",
       "forkStripEncryptedRunning": "Forking…",
       "forkStripEncryptedTitle": "Fork and strip into a new session",
@@ -14433,7 +14443,9 @@
         "description": "Please email the following information to {{email}} to request an invoice.",
         "requiredInfo": "Please include these details in your email:",
         "emailSubject": "Invoice request for order {{orderId}}",
-        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
+        "personalInvoicePolicy": "Invoices for Cindy Personal top-ups are issued in <strong>an individual’s name</strong> by default. You can use your name or “Individual” as the invoice title. If you need an invoice in your company’s name for expense reimbursement, provide <strong>a reimbursement statement bearing the company’s official stamp</strong> and specifying the invoice title.",
+        "invoiceTitleHint": "Instructions: For an individual invoice, enter your name or “Individual”. For an invoice in your company’s name for expense reimbursement, attach a reimbursement statement bearing the company’s official stamp and specifying the invoice title.",
+        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \n{{invoiceTitleHint}}\n\nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
         "sendAction": "Send Invoice Request",
         "emailCopied": "Support email copied",
         "emailCopyFailed": "Support email wasn’t copied — try again",

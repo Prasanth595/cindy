@@ -238,8 +238,16 @@ Mobile 用 `runtimeVersion.policy: "fingerprint"`:OTA 热更只在**指纹一致
 启动检查、设置页与强制更新屏共用 `src/update/useBundleUpdatePrompt.ts` 的安装出口。
 Android 8 及以上的新原生包优先应用内下载 HTTPS APK；Android 7、旧包缺少
 `CindyAppInstaller`，或安装地址是网页时，继续使用浏览器。权限由自建构建的
-`app.config.js` 声明；同流程生成的官网 APK 和 Google Play AAB 当前共享这一原生配置，
-EAS 商店构建不声明。
+`app.config.js` 声明；Global 在同一次 Expo prebuild 后配置 `website` / `play` 变体：
+官网 APK 保留 `REQUEST_INSTALL_PACKAGES`，Play AAB 通过 Manifest overlay 移除该权限。
+变体只修改生成的 Android 工程，不修改 Expo 配置或 fingerprint 输入；EAS 商店构建不声明
+该权限。
+
+`scripts/build-android.mjs --region global --execute` 在输出产物前自动读取官网 APK 的
+权限和 Play AAB 内嵌的最终 Manifest，分别要求有／无安装权限，并回读两份产物的
+runtimeVersion 要求一致；读取失败或不满足条件即停止构建交付。此校验随每次实际构建执行，
+覆盖最终 Manifest 合并结果。`androidLocal.test.ts` 只验证变体 patch 和权限断言，不能替代
+Expo prebuild + Gradle 的实包验证；验证构建链时需保留上述实际产物校验结果。
 
 Global 自建 APK 与 Google Play AAB 共用自建 OTA 配置和原生构建流程，不能仅凭
 `IS_OTA_SELFHOST` 判断整包更新渠道。Android 原生安装桥读取系统记录的 installer：

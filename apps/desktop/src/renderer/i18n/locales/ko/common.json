@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "로그 및 피드백",
+    "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
+    "uploaded": "로그를 업로드했습니다. 업로드 번호: {{code}}. 문제를 신고할 때 이 번호를 함께 보내세요.",
+    "close": "닫기",
+    "uploadDescription": "문제를 신고할 때 업로드 번호를 함께 보내세요.",
+    "uploadDetails": "업로드 항목 보기"
+  },
   "taskMove": {
     "upgradeComputer": "이 컴퓨터의 Cindy 버전은 작업 이동을 지원하지 않습니다. “{{name}}”의 Cindy를 업데이트해 주세요.",
     "sourceProjects": "작업이 있는 컴퓨터의 프로젝트",
@@ -10518,6 +10526,8 @@
       "syncAuthFailed": "동기화 실패: {{msg}}",
       "syncAuthDaemonRestartFailed": "자격 증명이 원격에 푸시되었지만 이전 daemon이 재시작되지 않았습니다 — 원격에 다시 연결한 후 재시도하세요",
       "invalidEncryptedContent": "제공자 변경으로 이전 암호화를 사용할 수 없습니다. 이 세션은 원래 제공자에서만 계속할 수 있으며, 또는 Fork를 클릭하여 프로토콜 암호화 콘텐츠를 버리고 새 세션에서 계속할 수 있습니다.",
+      "readableHistoryRecovery": "읽을 수 있는 기록으로 새 작업 만들기",
+      "readableHistoryRecoveryDescription": "재시도해도 실패하면 읽을 수 있는 기록으로 새 작업을 만들 수 있습니다. 내부 암호화 정보는 제외됩니다. 기존 작업은 유지되며 실패한 메시지는 자동으로 다시 전송되지 않습니다.",
       "forkStripEncrypted": "Fork 및 분리",
       "forkStripEncryptedRunning": "Fork 중…",
       "forkStripEncryptedTitle": "암호화 추론을 제거한 새 세션으로 Fork",
@@ -14381,7 +14391,9 @@
         "description": "세금계산서 발급을 신청하려면 다음 정보를 {{email}}로 보내 주세요.",
         "requiredInfo": "이메일에 다음 정보를 포함해 주세요:",
         "emailSubject": "주문 {{orderId}} 세금계산서 발급 신청",
-        "emailBody": "안녕하세요.\n\n다음 주문에 대한 세금계산서 발급을 신청합니다.\n\n────────────────────\n주문 ID: {{orderId}}\n애플리케이션: {{application}}\n결제 수단: {{paymentMethod}}\n발행 금액: {{amount}}\n청구서 제목: \n담당자: \n전화번호: \n이메일: \n────────────────────\n\n감사합니다.",
+        "personalInvoicePolicy": "Cindy 개인용 충전 시 기본적으로 <strong>개인 명의의 세금계산서</strong>가 발급됩니다. 발급 명의는 성명 또는 “개인”으로 기재할 수 있습니다. 회사 경비 정산을 위해 기업 명의의 세금계산서가 필요한 경우, <strong>회사 직인이 날인된 경비 정산 설명서</strong>를 제출하고 설명서에 발급 명의를 명시해 주세요.",
+        "invoiceTitleHint": "작성 안내: 개인 명의의 경우 성명 또는 “개인”을 기재해 주세요. 회사 경비 정산을 위해 기업 명의로 발급받으려면, 회사 직인이 날인되고 발급 명의가 명시된 경비 정산 설명서를 이메일에 첨부해 주세요.",
+        "emailBody": "안녕하세요.\n\n다음 주문에 대한 세금계산서 발급을 신청합니다.\n\n────────────────────\n주문 ID: {{orderId}}\n애플리케이션: {{application}}\n결제 수단: {{paymentMethod}}\n발행 금액: {{amount}}\n청구서 제목: \n{{invoiceTitleHint}}\n\n담당자: \n전화번호: \n이메일: \n────────────────────\n\n감사합니다.",
         "sendAction": "세금계산서 신청 보내기",
         "emailCopied": "고객센터 이메일을 복사했습니다",
         "emailCopyFailed": "고객센터 이메일을 복사하지 못했습니다. 다시 시도해 주세요.",

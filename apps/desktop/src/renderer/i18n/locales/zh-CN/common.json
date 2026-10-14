@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "日志与反馈",
+    "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
+    "uploaded": "日志已上传，上传编号：{{code}}。反馈时请附上编号。",
+    "close": "关闭",
+    "uploadDescription": "上传后，请在反馈中附上上传编号。",
+    "uploadDetails": "查看上传内容"
+  },
   "taskMove": {
     "upgradeComputer": "这台电脑的 Cindy 版本暂不支持移动任务。请更新「{{name}}」上的 Cindy 后再试。",
     "sourceProjects": "任务所在电脑的项目",
@@ -10518,6 +10526,8 @@
       "syncAuthFailed": "同步失败：{{msg}}",
       "syncAuthDaemonRestartFailed": "凭证已推送到远端，但旧 daemon 没重启 — 请重连远端后再点重试",
       "invalidEncryptedContent": "由于更换供应商导致加密不可用，本任务只能在原供应商下使用，或点此 Fork 丢弃协议加密内容并在新任务继续。",
+      "readableHistoryRecovery": "用可读历史新建任务",
+      "readableHistoryRecoveryDescription": "如果重试仍然失败，可用可读历史新建任务，省略内部加密信息。原任务保留，失败消息不会自动重发。",
       "forkStripEncrypted": "Fork 并剥离",
       "forkStripEncryptedRunning": "Fork 中…",
       "forkStripEncryptedTitle": "Fork 并剥离出新任务(去掉加密推理内容)",
@@ -14381,7 +14391,9 @@
         "description": "请将以下信息发送至客服邮箱 {{email}}，以申请开具发票。",
         "requiredInfo": "邮件中请提供以下信息：",
         "emailSubject": "申请开具订单 {{orderId}} 的发票",
-        "emailBody": "您好，\n\n我想申请开具以下订单的发票：\n\n────────────────────\n订单号：{{orderId}}\n应用：{{application}}\n支付方式：{{paymentMethod}}\n开票金额：{{amount}}\n发票抬头：\n联系人：\n联系电话：\n邮箱：\n────────────────────\n\n谢谢。",
+        "personalInvoicePolicy": "Cindy 个人版充值默认开具<strong>个人抬头发票</strong>，抬头可填写姓名或“个人”。如需开具企业抬头发票用于公司报销，请提供<strong>加盖公司公章的报销说明</strong>，并在说明中注明开票抬头。",
+        "invoiceTitleHint": "填写说明：个人抬头请填写姓名或“个人”；如需企业抬头用于公司报销，请随邮件附上加盖公司公章、注明开票抬头的报销说明。",
+        "emailBody": "您好，\n\n我想申请开具以下订单的发票：\n\n────────────────────\n订单号：{{orderId}}\n应用：{{application}}\n支付方式：{{paymentMethod}}\n开票金额：{{amount}}\n发票抬头：\n{{invoiceTitleHint}}\n\n联系人：\n联系电话：\n邮箱：\n────────────────────\n\n谢谢。",
         "sendAction": "发送开票申请",
         "emailCopied": "客服邮箱已复制",
         "emailCopyFailed": "复制客服邮箱失败，请重试",

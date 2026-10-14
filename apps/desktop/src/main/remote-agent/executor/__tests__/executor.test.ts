@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { handleExecMcpRequest } from '../ccMcp';
 import { RemoteExecutor, type ExecutorConfirmation } from '../executor';
 import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
+import type { GitCredentialHistory } from '../gitCredentials';
 import { findWindowsGitBash, truncateOutput } from '../shell';
 import type { GuardedFetch } from '../webFetch';
 import { ExecutorWorkspace } from '../workspace';
@@ -578,9 +580,25 @@ describe('findWindowsGitBash', () => {
 });
 
 describe('shared provider credentials', () => {
+  it('preserves same-account command approval while sharing checks nested credential reads', () => {
+    const workspace = new ExecutorWorkspace({ workingDir: project });
+    const sameAccount = new ExecutorGate(workspace, 'normal');
+    const shared = new ExecutorGate(workspace, 'normal', Date.now, { confirmCredentials: true });
+    for (const command of [
+      "bash -c 'cat .env'",
+      "python -c 'open(\".env\").read()'",
+      'echo $(git diff)',
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(sameAccount.authorize(action).ok, command).toBe(true);
+      expect(shared.authorize(action).ok, command).toBe(false);
+    }
+  });
+
   function sharedExecutor(
     mode: ReturnType<typeof executorGateModeFor>,
     confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,
+    gitCredentials?: GitCredentialHistory,
   ) {
     const workspace = new ExecutorWorkspace({ workingDir: project });
     const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
@@ -590,9 +608,37 @@ describe('shared provider credentials', () => {
       rgPath: RG,
       tempDir: path.join(root, 'tmp'),
       ...(confirm ? { confirm } : {}),
+      ...(gitCredentials ? { gitCredentials } : {}),
     });
     return { executor, gate, workspace };
   }
+
+  it.runIf(posix)('keeps source-filter searches from following a link into credentials without consent', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=followed-link');
+    fs.symlinkSync('.env', path.join(project, 'safe.ts'));
+    const output = execFileSync(RG, ['--follow', '-g', '*.ts', 'PRIVATE_FIXTURE', '.'], { cwd: project, encoding: 'utf8' });
+    expect(output).toContain('PRIVATE_FIXTURE=followed-link');
+    const asked = vi.fn(async () => false);
+    const { gate, executor } = sharedExecutor('full', asked);
+    try {
+      const safe: ExecutorAction = { kind: 'exec', command: "rg -g '*.ts' PRIVATE_FIXTURE .", cwd: project };
+      expect(gate.authorize(safe).ok).toBe(true);
+      for (const command of [
+        "rg --follow -g '*.ts' PRIVATE_FIXTURE .",
+        "rg -nL -g '*.ts' PRIVATE_FIXTURE .",
+        "grep -R --include='*.ts' PRIVATE_FIXTURE .",
+        "grep --dereference-r --include='*.ts' PRIVATE_FIXTURE .",
+      ]) {
+        const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+        expect(gate.authorize(action).ok, command).toBe(false);
+        expect(await executor.confirm(action), command).toBe(false);
+        expect(gate.authorize(action).ok, command).toBe(false);
+      }
+      expect(asked).toHaveBeenCalledTimes(4);
+    } finally {
+      await executor.close();
+    }
+  });
 
   it('holds credential reads, writes and commands even with full access, and nothing else', () => {
     const { gate, workspace } = sharedExecutor('full');
@@ -622,6 +668,130 @@ describe('shared provider credentials', () => {
     fs.writeFileSync(path.join(outside, '.aws', 'credentials'), 'key');
     fs.symlinkSync(path.join(outside, '.aws'), path.join(project, 'cloud'), process.platform === 'win32' ? 'junction' : 'dir');
     expect(gate.authorize({ kind: 'read', path: path.join(project, 'cloud', 'credentials') }).ok).toBe(false);
+  });
+
+  it('resolves a public-file operand through a directory link before full-access authorization', async () => {
+    const secretDir = path.join(outside, '.aws');
+    fs.mkdirSync(secretDir);
+    fs.writeFileSync(path.join(secretDir, 'example.pub'), 'PRIVATE_FIXTURE=linked-content');
+    fs.symlinkSync(secretDir, path.join(project, 'public'), process.platform === 'win32' ? 'junction' : 'dir');
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', asked);
+    const action: ExecutorAction = { kind: 'exec', command: 'cat public/example.pub', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(await executor.confirm(action)).toBe(false);
+      expect(asked).toHaveBeenCalledExactlyOnceWith(action);
+      expect(gate.authorize(action).ok).toBe(false);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.runIf(posix)('checks an exempt operand again when its symlink target changes', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=changed-target');
+    fs.writeFileSync(path.join(project, 'ordinary.txt'), 'public fixture');
+    const link = path.join(project, '.env.example');
+    fs.symlinkSync('ordinary.txt', link);
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', asked);
+    const action: ExecutorAction = { kind: 'exec', command: 'cat .env.example', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(true);
+      expect(text(await executor.callTool('Bash', { command: action.command }))).toContain('public fixture');
+      expect(asked).not.toHaveBeenCalled();
+      fs.rmSync(link);
+      fs.symlinkSync('.env', link);
+      expect(gate.authorize(action).ok).toBe(false);
+      const denied = await executor.callTool('Bash', { command: action.command });
+      expect(denied.isError).toBe(true);
+      expect(text(denied)).not.toContain('PRIVATE_FIXTURE=changed-target');
+      expect(asked).toHaveBeenCalledExactlyOnceWith(action);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.runIf(posix)('does not reuse a Git exemption or ordinary approval after a template link changes', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=changed-during-probe');
+    fs.writeFileSync(path.join(project, 'ordinary.txt'), 'public fixture');
+    const link = path.join(project, '.env.example');
+    fs.symlinkSync('ordinary.txt', link);
+    const asked = vi.fn(async () => false);
+    const history = {
+      provesSafe: vi.fn(async () => {
+        fs.rmSync(link);
+        fs.symlinkSync('.env', link);
+        return true;
+      }),
+    } as unknown as GitCredentialHistory;
+    const { gate, executor } = sharedExecutor('full', asked, history);
+    const ordinary: ExecutorAction = { kind: 'exec', command: 'cat .env.example', cwd: project };
+    const compound: ExecutorAction = { kind: 'exec', command: 'git diff && cat .env.example', cwd: project };
+    gate.recordApproval(ordinary);
+    gate.recordCredentialExemption(compound);
+    try {
+      expect(await executor.confirm(compound)).toBe(false);
+      expect(asked).toHaveBeenCalledExactlyOnceWith(compound);
+      expect(gate.authorize(compound).ok).toBe(false);
+      expect(gate.authorize(ordinary).ok).toBe(false);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('resolves ordinary templates in the actual shell directory and keeps local tasks unchanged', () => {
+    const templates = path.join(project, 'templates');
+    fs.mkdirSync(templates);
+    fs.writeFileSync(path.join(templates, '.env.example'), 'PUBLIC_FIXTURE=example');
+    fs.writeFileSync(path.join(project, 'README.md'), 'documentation');
+    const { gate, workspace } = sharedExecutor('full');
+    for (const command of [
+      'cat templates/.env.example',
+      'cat < templates/.env.example',
+      'cd templates && cat .env.example',
+      'grep -f templates/.env.example README.md',
+    ]) {
+      expect(gate.authorize({ kind: 'exec', command, cwd: project }).ok, command).toBe(true);
+    }
+    for (const command of [
+      'cat missing/.env.example',
+      'cat templates/.env.*',
+      'cat templates/../templates/.env.example',
+      'cd "$DIR" && cat .env.example',
+      'ln -sf .env templates/.env.example && cat templates/.env.example',
+      'HOME=/other cat templates/.env.example',
+      'unknown-reader --input templates/.env.example',
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(gate.authorize(action).ok, command).toBe(false);
+      expect(gate.credentialGitReads(action), command).toBeNull();
+      expect(new ExecutorGate(workspace, 'full').authorize(action).ok, command).toBe(true);
+    }
+  });
+
+  it.runIf(posix)('keeps consent for broken template links and linked auxiliary reader inputs', () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=auxiliary-input');
+    fs.writeFileSync(path.join(project, 'README.md'), 'documentation');
+    fs.symlinkSync('.env', path.join(project, '.env.example'));
+    fs.symlinkSync('missing', path.join(project, '.env.sample'));
+    const escaped = 'literal' + String.fromCharCode(92) + '.env.example';
+    fs.writeFileSync(path.join(project, escaped), 'public fixture');
+    const { gate } = sharedExecutor('full');
+    for (const command of [
+      'cat .env.sample',
+      'grep -f .env.example README.md',
+      'sed -f .env.example README.md',
+      'git grep -f .env.example -- README.md',
+      'git blame --contents .env.example README.md',
+      'git diff && cat < .env.example',
+      'sh -c "cat .env.example"',
+      'cat ' + escaped,
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(gate.authorize(action).ok, command).toBe(false);
+      expect(gate.credentialGitReads(action), command).toBeNull();
+    }
   });
 
   it('asks on this computer and goes ahead only with what the user allowed', async () => {
@@ -775,6 +945,56 @@ describe('shared provider credentials', () => {
       expect(grep.text).toContain('secret');
       expect(grep.text).not.toContain('credential file(s) left out');
       expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('lets git commands run without asking once this computer has checked they cannot show credentials', async () => {
+    const asked: ExecutorAction[] = [];
+    const checked: string[] = [];
+    let safe = true;
+    const gitCredentials = {
+      provesSafe: async (command: string) => {
+        checked.push(command);
+        return safe;
+      },
+    } as unknown as GitCredentialHistory;
+    const { executor, gate } = sharedExecutor('full', async (action) => {
+      asked.push(action);
+      return false;
+    }, gitCredentials);
+    const log: ExecutorAction = { kind: 'exec', command: 'git log -p', cwd: project };
+    expect(gate.authorize(log).ok).toBe(false);
+    expect(await executor.confirm(log)).toBe(true);
+    expect(gate.authorize(log).ok).toBe(true);
+    expect(asked).toEqual([]);
+    // 核实不了时照旧问；命令还读别的凭证、或打出保存的凭证时不交给核实。
+    safe = false;
+    expect(await executor.confirm(log)).toBe(false);
+    expect(asked).toEqual([log]);
+    const withEnv: ExecutorAction = { kind: 'exec', command: 'git log -p && cat .env', cwd: project };
+    const fill: ExecutorAction = { kind: 'exec', command: 'git credential fill', cwd: project };
+    expect(await executor.confirm(withEnv)).toBe(false);
+    expect(await executor.confirm(fill)).toBe(false);
+    expect(asked).toEqual([log, withEnv, fill]);
+    expect(checked).toEqual(['git log -p', 'git log -p']);
+  });
+
+  it('does not let a safe git credential check satisfy plan-mode command approval', async () => {
+    const gitCredentials = {
+      provesSafe: async () => true,
+    } as unknown as GitCredentialHistory;
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('plan', asked, gitCredentials);
+    const action: ExecutorAction = { kind: 'exec', command: 'git remote show origin', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(await executor.confirm(action)).toBe(true);
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(asked).not.toHaveBeenCalled();
+      gate.recordApproval(action);
+      expect(gate.authorize(action).ok).toBe(true);
     } finally {
       await executor.close();
     }

@@ -22,8 +22,8 @@ import {
 import { createHash } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import { LibraryBindingStore, relocateLibraryMetaOwner } from '../libraryBinding.js';
-import { LibraryVault } from '../libraryVault.js';
-import { initCustomLibraryTree, openExistingCustomLibrary } from '../libraryDirFd.js';
+import { LibraryVault, type LibraryVaultDeps } from '../libraryVault.js';
+import { initCustomLibraryTree, openExistingCustomLibrary, parseExistingStdout } from '../libraryDirFd.js';
 import { createLibraryDbCore, type SqliteDatabaseConstructor } from '../libraryDbCore.js';
 import { LibrarySqlService } from '../librarySqlService.js';
 import { GhostManager } from '../GhostManager.js';
@@ -361,7 +361,8 @@ describe('GhostLibrarySlot', () => {
   }
 
   async function seedSourceDatabase(value: string, instanceId = GHOST_ID): Promise<void> {
-    expect(await slot.handleLibraryRequest(instanceId, { op: 'db.open', dbPath: 'library.sqlite' }))
+    const opened = await slot.handleLibraryRequest(instanceId, { op: 'db.open', dbPath: 'library.sqlite' });
+    expect(opened, JSON.stringify(opened))
       .toMatchObject({ ok: true, op: 'db.open' });
     expect(await slot.handleLibraryRequest(instanceId, {
       op: 'db.exec', dbPath: 'library.sqlite', sql: 'CREATE TABLE source_state (value TEXT)',
@@ -374,7 +375,48 @@ describe('GhostLibrarySlot', () => {
     })).toMatchObject({ ok: true, op: 'db.exec', rows: [{ value }] });
   }
 
+  function useInProcessCustomTreeForArchiveTests(): void {
+    // These cases exercise real SQLite data, binding relocation and rollback.
+    // Repeated PowerShell startup/Add-Type under parallel Windows CI can exceed
+    // the native helper's 15s deadline before any archive assertion runs. Keep
+    // fixture metadata on disk, but inject helper IO here only; the custom-root
+    // swap/held-fd cases below and libraryVault.test.ts retain the real helpers.
+    const readIfPresent = async (file: string): Promise<string | null> => {
+      try {
+        return await fs.promises.readFile(file, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
+    };
+    createVault.mockImplementation((deps: LibraryVaultDeps) => {
+      const metaDir = path.join(deps.rootDir(), '.cindy-library');
+      const metaFile = path.join(metaDir, 'meta.json');
+      return new LibraryVault({
+        ...deps,
+        openExistingCustom: async () => {
+          const meta = await readIfPresent(metaFile);
+          if (meta === null) return { ok: false, code: 'MISSING' };
+          const usage = await readIfPresent(path.join(metaDir, 'usage.json'));
+          return parseExistingStdout(`OK\n${meta}\n${usage ?? ''}`);
+        },
+        initCustomTree: async ({ metaJson }) => {
+          await fs.promises.mkdir(path.join(metaDir, 'tmp'), { recursive: true });
+          await fs.promises.mkdir(path.join(metaDir, 'backups'), { recursive: true });
+          try {
+            await fs.promises.writeFile(metaFile, metaJson, { flag: 'wx' });
+            return { ok: true, createdMeta: true };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: true, createdMeta: false };
+            throw error;
+          }
+        },
+      });
+    });
+  }
+
   it.each(['default', 'custom'] as const)('source archive wrapper isolates the real SQLite %s Library from a replacement source', async (location) => {
+    useInProcessCustomTreeForArchiveTests();
     if (location === 'custom') {
       expect((await bindingStore.setBinding(GHOST_ID, candidate)).ok).toBe(true);
     }
@@ -406,6 +448,7 @@ describe('GhostLibrarySlot', () => {
   });
 
   it.each(['default', 'custom'] as const)('source archive wrapper restores the real SQLite %s Library on inverse after failure', async (location) => {
+    useInProcessCustomTreeForArchiveTests();
     if (location === 'custom') {
       expect((await bindingStore.setBinding(GHOST_ID, candidate)).ok).toBe(true);
     }
@@ -441,6 +484,7 @@ describe('GhostLibrarySlot', () => {
   });
 
   it.each(['default', 'custom'] as const)('delayed session creation does not block real Manager %s source archive rollback', async (location) => {
+    useInProcessCustomTreeForArchiveTests();
     const manager = new GhostManager({
       getRootDir: () => path.join(tmp, 'ghosts'),
       onArchiveSourceState: relocateLibraryState,

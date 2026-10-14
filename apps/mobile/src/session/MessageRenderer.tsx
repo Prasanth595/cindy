@@ -22,6 +22,7 @@ import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/m
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
+import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -766,6 +767,7 @@ export function MessageRenderer({
   busyAction,
   canLoadEarlier,
   emptyTestID,
+  emptyMessage,
   bottomOverlayHeight,
   contentBottomInset,
   isSessionStreaming,
@@ -805,6 +807,7 @@ export function MessageRenderer({
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
   loadEarlierProgressKey?: string | null;
   emptyTestID?: string;
+  emptyMessage?: string;
   /** 排队消息 inline 区(InlineQueueSection),渲染在最后一条消息之后、随内容滚动。 */
   queueFooter?: ReactNode;
   scrollResetKey?: string;
@@ -942,6 +945,7 @@ export function MessageRenderer({
   // LegendList updates getState().scroll optimistically before an imperative native scroll lands.
   // Only native ScrollView scroll/end-drag samples advance this ack source for Android prepend.
   const nativeScrollEventSequenceRef = useRef(0);
+  const [sampleScrollDebug] = useState(createScrollDebugSampler);
   const scrollMetricsRef = useRef<MessageScrollMetrics>({
     contentHeight: 0,
     offsetY: 0,
@@ -2252,7 +2256,9 @@ export function MessageRenderer({
     }
     // Preloads need real geometry, but must not publish bookmarks or trigger user work.
     if (!historyActiveRef.current) return;
-    if (mobileDebugEnabled()) mobileDebugLog('debug', 'scroll', 'list scroll', {
+    const debugFlags = Number(isDragSample) | (Number(isMomentumScrollingRef.current) << 1)
+      | (Number(readingOlderRef.current) << 2) | (Number(nearBottomRef.current) << 3);
+    if (mobileDebugEnabled() && sampleScrollDebug(debugFlags, isFinalDragSample)) mobileDebugLog('debug', 'scroll', 'list scroll', {
       ...metrics, dragging: isDragSample, momentum: isMomentumScrollingRef.current,
       readingOlder: readingOlderRef.current, nearBottom: nearBottomRef.current,
     });
@@ -2822,7 +2828,7 @@ export function MessageRenderer({
         ]}
         ListEmptyComponent={syncingWhileEmpty
           ? <SyncingMessages />
-          : <EmptyMessages testID={emptyTestID} />}
+          : <EmptyMessages testID={emptyTestID} copy={emptyMessage} />}
         ListHeaderComponent={
           loadEarlierAction.visible ? (
             <MessageListActionButton
@@ -3276,12 +3282,12 @@ function ForkOriginMarker({ onOpenForkOrigin }: { onOpenForkOrigin?: () => void 
   );
 }
 
-function EmptyMessages({ testID }: { testID?: string }) {
+function EmptyMessages({ testID, copy }: { testID?: string; copy?: string }) {
   const styles = useThemedStyles(makeStyles);
   const { t } = useTranslation();
   return (
     <View style={styles.emptyCard} testID={testID ?? 'message.empty'}>
-      <Text style={styles.emptyTitle}>{t('message.renderer.emptyMessages')}</Text>
+      <Text style={styles.emptyTitle}>{copy ?? t('message.renderer.emptyMessages')}</Text>
     </View>
   );
 }

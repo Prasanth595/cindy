@@ -21,6 +21,8 @@ export interface DurableOutboxRecord {
   /** Canonical realm-qualified auth accountKey; unqualified pre-release rows are never claimed. */
   accountId: string;
   deviceId: string;
+  /** Permanent resource identity for sends queued from a companion, including after page exit/restart. */
+  resourceRef?: import('@cindy/device-link').RemoteResourceRef;
   /** Stable disk/file identity when a cancelled creation is retried with a fresh session ID. */
   storageSessionId?: string;
   item: MobileOutboxItem;
@@ -252,6 +254,10 @@ function isLoadableOutboxRecord(
     && !!row.deviceId
     && !!row.item?.sessionId
     && !!row.item.clientId
+    && (row.resourceRef === undefined || (row.resourceRef !== null
+      && typeof row.resourceRef.collectionId === 'string' && !!row.resourceRef.collectionId
+      && typeof row.resourceRef.kind === 'string' && !!row.resourceRef.kind
+      && typeof row.resourceRef.id === 'string' && !!row.resourceRef.id))
     && (row.storageSessionId === undefined
       || (typeof row.storageSessionId === 'string' && row.storageSessionId.length > 0))
     && keyFor(row) === key

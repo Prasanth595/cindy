@@ -11,7 +11,7 @@ import * as providerMemory from '@/state/providerModelMemory';
 import * as draftMemory from '@/state/newMakerDraft';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
-  setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
+  setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), selectEffort: undefined as string | null | undefined, remoteProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
 }));
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -38,8 +38,9 @@ vi.mock('@/components/sidebar/SortableList', () => ({
     </div>
   ),
 }));
-vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId, onModelChange, disabled }: { modelId: string; onModelChange: typeof h.selectModel; disabled?: boolean }) => {
+vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId, onModelChange, disabled, effort }: { modelId: string; onModelChange: typeof h.selectModel; disabled?: boolean; effort?: string | null }) => {
   h.selectModel = onModelChange;
+  h.selectEffort = effort;
   return <button data-testid="model-selector" disabled={disabled}>{modelId}</button>;
 } }));
 vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
@@ -88,7 +89,7 @@ const attachments: ComponentProps<typeof ChatInput>['attachmentState'] = {
   pendingFileMentionsVersion: 0, consumePendingFileMentions: () => [],
   removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: (files) => [...files],
 };
-beforeEach(() => { h.listening = false; h.stop.mockClear(); window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
+beforeEach(() => { h.listening = false; h.stop.mockClear(); h.selectEffort = undefined; window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
 afterEach(() => { cleanup(); h.remoteProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const props = {
@@ -195,6 +196,20 @@ it('sends a remote-only Codex model when the controller has no connected provide
   await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   expect(onSend.mock.calls[0][1]).toBe('remote-only');
   expect(onSend.mock.calls[0][6]).toEqual(expect.objectContaining({ providerId: 'openai' }));
+});
+
+// 回归：投影 effort 为 null（目录误判/不可调档）时选择器回落会话已持久化档位，
+// 不能兜底成字面量 'low'；投影有值时仍优先投影值。
+it.each([
+  ['null projection with the persisted session effort instead of a literal low', null, 'high', 'high'],
+  ['the projected effort wins over the initial prop when present', 'medium', 'high', 'medium'],
+] as const)('renders %s', async (_name, projectedEffort, initialEffort, expected) => {
+  h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-only')])];
+  render(<ChatInput {...props} hideRuntimeControls={false} sessionId="ssh-effort-fallback" deviceLinkDeviceId={null} remoteHostId="builder"
+    initialModel="remote-only" initialProviderId="openai" initialEffort={initialEffort}
+    runtimeEffective={{ agentKind: 'codex', model: 'remote-only', providerId: 'openai', effort: projectedEffort, fastMode: false }}
+    onSend={vi.fn()} />);
+  await waitFor(() => expect(h.selectEffort).toBe(expected));
 });
 
 it.each([

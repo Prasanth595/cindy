@@ -176,8 +176,8 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       accessibilityLabel={[title, ambiguous ? row.host.deviceName : '', connection, prefix, generating ? workingCopy : summary, time,
         unread ? t('devices.companions.unread') : ''].filter(Boolean).join(', ')}
       avatar={<>
-        <View style={!online ? { opacity: OFFLINE_AVATAR_OPACITY } : undefined}>
-          <RemoteCompanionAvatar avatar={display.avatar} deviceId={row.host.deviceId} name={title} online={online} size={COMPANION_ROW_AVATAR_SIZE} framed />
+        <View style={connected === false ? { opacity: OFFLINE_AVATAR_OPACITY } : undefined}>
+          <RemoteCompanionAvatar avatar={display.avatar} deviceId={row.host.deviceId} name={title} online={connected === true} size={COMPANION_ROW_AVATAR_SIZE} framed />
         </View>
         <CompanionPresenceRing active={generating} />
         <CompanionPresenceDot connected={connected} />
@@ -193,7 +193,6 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       previewPrefixTestID={attention ? 'teammate.attention' : undefined}
       unread={unread}
       unreadLabel={t('devices.companions.unread')}
-      disabled={!online}
       last={last}
       onPress={() => onSelect(row)} />;
   };

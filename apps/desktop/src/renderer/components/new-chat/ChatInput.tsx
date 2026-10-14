@@ -1769,7 +1769,9 @@ export function ChatInput({
     optimistic: pendingRemoteSwitch,
   });
   const activeModel = composerSelection.display.model;
-  const activeEffort = composerSelection.display.effort ?? 'low';
+  // null = 投影未知/不可调档:回落到会话已持久化的档位(与运行实况一致),不能兜底成
+  // 字面量 'low'——该值会随下一条发送作为用户选择下发,把假档位写成真档位。
+  const activeEffort = composerSelection.display.effort ?? initialEffort ?? 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 

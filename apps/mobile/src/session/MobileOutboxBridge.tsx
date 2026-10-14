@@ -48,6 +48,7 @@ import {
 } from "./sessionReferences";
 import { remoteSessionStore } from "./remoteSessionStore";
 import { cacheOutboxHistory } from "./outboxHistoryCache";
+import { validateOutboxResourceBinding } from './outboxResourceBinding';
 import { findRemoteHistoryView } from "./remoteHistoryViews";
 import {
   isDurableOutboxHandedOff,
@@ -303,8 +304,15 @@ export function MobileOutboxBridge() {
             }
           : attachment;
       },
-      enqueue: (r) =>
-        maker(r).input.enqueue(
+      beforeEnqueue: async (r) => {
+        if (r.resourceRef) {
+          await latest.current.link.openLink(r.deviceId);
+          guard();
+          await validateOutboxResourceBinding(invokeOwned(r), r.deviceId, r.item.sessionId, r.resourceRef, i18n.language);
+          guard();
+        }
+      },
+      enqueue: (r) => maker(r).input.enqueue(
           r.item.sessionId,
           r.prepared!,
           {

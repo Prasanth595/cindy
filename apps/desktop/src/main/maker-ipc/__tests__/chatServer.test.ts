@@ -701,7 +701,8 @@ describe('Chat Server result delivery and refresh', () => {
       if (route === '/executions/claim') {
         claims++;
         return { body: { execution: claims === 1 ? { ...execution, requester_id: selfId, trigger: joinedTrigger() }
-          : claims === 2 ? { ...execution, id: nextId } : null } };
+          // The next ordinary execution has its own source; only the event source read hangs.
+          : claims === 2 ? { ...execution, id: nextId, source_message_id: '50000000-0000-4000-8000-000000000002' } : null } };
       }
       if (route.endsWith(`/messages/${execution.source_message_id}`)) return new Promise(resolve => { resolveSource = resolve; });
       if (route.endsWith(`/executions/${execution.id}`) && body?.action === 'heartbeat')

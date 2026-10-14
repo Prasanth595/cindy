@@ -743,6 +743,7 @@ export interface MobileMakerTransport {
     sourceSessionId: string,
     messageClientId: string,
   ): Promise<RemoteSession>;
+  forkStripEncrypted(sourceSessionId: string): Promise<RemoteSession>;
   rewindPreview(
     sessionId: string,
     clientId: string,
@@ -1376,6 +1377,8 @@ export function createMobileMakerTransport({
       call("maker:get-context-usage", [sessionId, createOpts]),
     fork: (sourceSessionId, messageClientId) =>
       call("maker:fork", [sourceSessionId, messageClientId]),
+    forkStripEncrypted: (sourceSessionId) =>
+      call("maker:fork-strip-encrypted", [sourceSessionId]),
     rewindPreview: (sessionId, clientId) =>
       call("maker:rewind:preview", [sessionId, clientId]),
     rewindCommit: (sessionId, clientId, opts) =>

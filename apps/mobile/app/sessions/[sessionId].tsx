@@ -1,4 +1,5 @@
 import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
+import { useContentRecoveryDiagnostics } from '@/debug/useContentRecoveryDiagnostics';
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
@@ -415,6 +416,8 @@ import {
 } from '@/session/queueEditLifecycle';
 import { findErrorTailClientId, isContinuationQueueItem, resolveSessionTailBanner } from '@/session/sessionTailBannerModel';
 import { SessionTailBanner } from '@/session/SessionTailBanner';
+import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
+import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
   CONTINUE_AFTER_ERROR_PROMPT,
@@ -998,6 +1001,8 @@ function SessionScreenContent() {
     sessionId: string;
     notificationResponse?: string;
     resourceKind?: string;
+    resourceCollectionId?: string;
+    resourceId?: string;
     deviceId?: string;
     deviceName?: string;
     draft?: string;
@@ -2328,12 +2333,7 @@ function SessionScreenContent() {
     && readAckSyncedKey === `${sessionId}:${connectionEpoch}`
     && !outboxRecoverySyncHeld
     ? 'recovered' : 'syncing';
-  const recoveryStartedAtRef = useRef(Date.now());
-  useEffect(() => {
-    if (contentRecoveryState === 'syncing') recoveryStartedAtRef.current = Date.now();
-    else console.debug('[device-link] content recovered', { elapsedMs: Date.now() - recoveryStartedAtRef.current });
-    mobileDebugLog('debug', 'recovery', 'content recovery state', { state: contentRecoveryState, elapsedMs: Date.now() - recoveryStartedAtRef.current });
-  }, [contentRecoveryState]);
+  useContentRecoveryDiagnostics(contentRecoveryState, `${deviceId}:${sessionId}`);
   const showConnectionBanner = useShowConnectionBanner(
     status,
     bannerError,
@@ -2559,7 +2559,7 @@ function SessionScreenContent() {
       setPendingPlanViewerState('half');
     }
   }, [activePendingKind, activePendingRequestId, sessionOperationLayout.composerSlot]);
-  const canUseComposer = sessionOperationLayout.canUseComposer && !sessionResourceCards.blocked && companionEntry.ready;
+  const canUseComposer = sessionOperationLayout.canUseComposer && !sessionResourceCards.blocked && companionEntry.canCompose;
   const canUseRemoteSessionControls = canUseComposer
     && !sessionSettingsLocked
     && !remoteRealtimeControlsUnavailable;
@@ -2573,7 +2573,7 @@ function SessionScreenContent() {
   const composerDisabledReasonKey = composerDisabledReasonI18nKey(
     sessionOperationLayout.composerDisabledReasonSource,
   );
-  const composerDisabledReason = !companionEntry.ready ? t('shared.syncing') : composerDisabledReasonKey
+  const composerDisabledReason = !companionEntry.canCompose ? t('shared.syncing') : composerDisabledReasonKey
     ? t(composerDisabledReasonKey)
     : sessionOperationLayout.composerDisabledReason
       ?? (sessionResourceCards.blocked
@@ -2605,7 +2605,7 @@ function SessionScreenContent() {
     showSyncingShell,
     messageCount: historyView.snapshot.ready ? historyView.snapshot.items.length : messages.length,
     hasSyncedThisOpen: lastSyncedAt !== null,
-    remoteUnavailable: !!remoteUnavailableReason,
+    remoteUnavailable: !!remoteUnavailableReason || status !== 'online' || targetAvailableForDispatch === false,
   });
   const voiceIsProcessing = voiceState === 'submitting' || voiceState === 'refining';
   const composerSendUnavailableReason = canUseComposer ? null : composerDisabledReason;
@@ -4450,6 +4450,18 @@ function SessionScreenContent() {
     () => sending || canStopQueue || remoteSessionRunning || currentTurnStreaming,
     [canStopQueue, currentTurnStreaming, remoteSessionRunning, sending],
   );
+  const {
+    begin: beginHistoryRecovery,
+    invalidate: invalidateHistoryRecoveryNavigation,
+    isPending: isHistoryRecoveryPending,
+    pending: historyRecoveryBusy,
+  } = useHistoryRecoveryNavigation({
+    source: JSON.stringify([auth.accountGeneration, deviceId, sessionId]),
+    running: isSessionStreaming,
+    startedAt: currentSession?.activeTurnStartedAt ?? null,
+    endedAt: currentSession?.lastTurnEndedAt ?? null,
+  });
+  useFocusEffect(useCallback(() => invalidateHistoryRecoveryNavigation, [invalidateHistoryRecoveryNavigation]));
   // Sending/queueing drives the composer immediately, but cannot reopen the loaded previous
   // turn before the new user message arrives. Only remote activity drives message grouping.
   const isMessageListStreaming = remoteSessionRunning || currentTurnStreaming;
@@ -6287,6 +6299,7 @@ function SessionScreenContent() {
       return;
     }
     const connectionDispatchBlockedAtSend = outboxConnectionBlockedNow();
+    invalidateHistoryRecoveryNavigation();
     sendInFlightRef.current = true;
     setSending(true);
     const messageWorkLease = remoteSessionStore.acquireSessionMessageWork(sessionId, true);
@@ -6373,19 +6386,20 @@ function SessionScreenContent() {
       else if (options.draftOverride !== undefined) setComposerDraft(options.draftOverride);
       return;
     }
-    // 需要远端会话的命令在会话建成前必须挡住(review P1)。
+    // 需要远端会话的命令在会话建成且可连接、身份已核对后执行。
     //
     // 命令走的是下方「豁免 outbox」的原路径:/context 直接向被控端取用量、/learn 直接
     // 打蒸馏管线。合成行此刻在被控端还不存在,执行的唯一结果是把草稿消费掉、再糊一张
     // 错误卡。排队也不成立——outbox 的派发动作是「enqueue 一条消息」,命令原样入队
     // agent 只会当普通文本忽略。所以挡住 + 明说:草稿此刻还没被乐观清空(清空在下面
-    // 几行),原文留在输入框,几秒后重试即可。纯本地卡不受影响(判据见
+    // 几行),原文留在输入框,连接恢复且任务就绪后可重试。纯本地卡不受影响(判据见
     // commandNeedsRemoteSession)。
     if (
       commandNeedsRemoteSession(earlyLocalCommand, earlyDesktopCommand)
-      && isRemoteSessionMissing(readSessionRowNow())
+      && (isRemoteSessionMissing(readSessionRowNow()) || connectionDispatchBlockedAtSend || !companionEntry.ready)
     ) {
-      setError(t('session.screen.commandWaitsForSession'));
+      setError(t(isRemoteSessionMissing(readSessionRowNow())
+        ? 'session.screen.commandWaitsForSession' : 'session.screen.sessionNotSyncedRetry'));
       sendInFlightRef.current = false;
       setSending(false);
       return;
@@ -6542,6 +6556,8 @@ function SessionScreenContent() {
           const clearedAt = currentSession.clearedAt ? Date.parse(currentSession.clearedAt) : null;
           record = {
             version: 1, accountId: ownerAtSend.accountKey, deviceId, item, createdAt: Date.now(),
+            ...(readRouteParam(params.resourceKind) === 'bot' && readRouteParam(params.resourceCollectionId) && readRouteParam(params.resourceId)
+              ? { resourceRef: { collectionId: readRouteParam(params.resourceCollectionId)!, kind: 'bot', id: readRouteParam(params.resourceId)! } } : {}),
             draftHandoff: { before: documentBeforeSend, after: documentAfterOptimisticClear },
             state: 'queued', uploads: [], clearBoundaryMs: clearedAt !== null && Number.isFinite(clearedAt) ? clearedAt : null,
           };
@@ -7722,7 +7738,8 @@ function SessionScreenContent() {
   }, [cancelQueueEdit, inputProjection.pendingQueue, queueEditing]);
 
   const retryQueueError = () => {
-    if (queueAvailabilityReason || !inputProjection.errorRetryText) return;
+    if (queueAvailabilityReason || !inputProjection.errorRetryText || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     void runQueueAction(() => maker.input.retryLastError(sessionId));
   };
 
@@ -7820,12 +7837,13 @@ function SessionScreenContent() {
   const continueTailBanner = useCallback(async () => {
     const state = tailBannerState;
     const sessionAtSend = currentSession;
-    if (!state || tailBannerBusy || !sessionId) return;
+    if (!state || tailBannerBusy || !sessionId || isHistoryRecoveryPending()) return;
     if (!sessionAtSend || sessionAtSend.cacheSeeded) {
       setError(t('session.screen.sessionNotSyncedRetry'));
       return;
     }
     const interrupted = state.kind === 'interrupted' || state.continueKind === 'interrupted';
+    invalidateHistoryRecoveryNavigation();
     const prompt = interrupted ? CONTINUE_AFTER_APP_EXIT_PROMPT : CONTINUE_AFTER_ERROR_PROMPT;
     setTailBannerBusy(true);
     // 乐观熄灭:error-tail 走短窗口 hidden(交棒释放见上方声明处注释);interrupted
@@ -7857,7 +7875,7 @@ function SessionScreenContent() {
     } finally {
       setTailBannerBusy(false);
     }
-  }, [currentSession, maker, sessionId, t, tailBannerBusy, tailBannerState]);
+  }, [currentSession, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending, maker, sessionId, t, tailBannerBusy, tailBannerState]);
 
   //「忽略」:error-tail 持久化 dismiss(被控端 merge dismissed:true,重拉不复活),
   // 本地 dismissed 集合乐观熄灭 banner,同时错误卡回流消息流(errorTailClientId 排除
@@ -9167,6 +9185,33 @@ function SessionScreenContent() {
     );
   }, [deviceId, messageActionBusy, performForkAtMessage, t]);
 
+  const historyRecoveryError = inputProjection.error ?? (tailBannerState?.kind === 'error-tail'
+    ? tailBannerState.rawError ?? tailBannerState.text : '');
+  const canRecoverHistory = !isSharedTaskPeer(deviceId) && canUseRemoteSessionControls &&
+    !queueAvailabilityReason && !messageActionBusy && !tailBannerBusy && !queueBusy &&
+    Boolean(currentSession?.sdkSessionId) && canOfferCodexHistoryRecovery({
+      message: historyRecoveryError, agentKind: sessionAgentKind,
+      remoteHostId: currentSession?.remoteHostId, agentDeviceId: currentSession?.agentDeviceId,
+      running: isSessionStreaming || remoteSessionRunning,
+    });
+  const recoverReadableHistory = useCallback(async () => {
+    if (!canRecoverHistory || !deviceId) return;
+    const recovery = beginHistoryRecovery();
+    if (!recovery) return;
+    try {
+      const forked = await maker.forkStripEncrypted(sessionId);
+      if (!recovery.isCurrent() || !navigation.isFocused()) return;
+      remoteSessionStore.upsertDeviceSession(deviceId, deviceName, forked);
+      router.push({ pathname: '/sessions/[sessionId]', params: { sessionId: forked.id, deviceId, deviceName } });
+    } catch (err) {
+      if (recovery.isCurrent() && navigation.isFocused()) {
+        setError(formatRemoteError(err));
+      }
+    } finally {
+      recovery.release();
+    }
+  }, [beginHistoryRecovery, canRecoverHistory, deviceId, deviceName, maker, navigation, router, sessionId]);
+
   const openForkOrigin = useCallback(() => {
     const parentSessionId = currentSession?.parentSessionId;
     const forkedAtMessageId = currentSession?.forkedAtMessageId;
@@ -10026,6 +10071,9 @@ function SessionScreenContent() {
                     busyClientId={messageActionBusy?.clientId ?? null}
                     canLoadEarlier={canLoadEarlierHistory}
                     emptyTestID="session.messageList.empty"
+                    emptyMessage={companionChat && lastSyncedAt === null
+                      && (status !== 'online' || targetAvailableForDispatch === false)
+                      ? t('message.renderer.historyNotCached') : undefined}
                     focusedItemKey={focusedMessageItemKey ?? null}
                     focusedRequestKey={focusedMessageRequestKey}
                     followLatestRequestKey={messageListFollowLatestRequestKey}
@@ -10085,7 +10133,8 @@ function SessionScreenContent() {
                             (resolveSessionTailBanner 内部已按 projection.error 抑制)。 */}
                         {tailBannerState ? (
                           <SessionTailBanner
-                            busy={tailBannerBusy}
+                            busy={tailBannerBusy || historyRecoveryBusy}
+                            onRecoverHistory={canRecoverHistory ? () => void recoverReadableHistory() : undefined}
                             onContinue={() => void continueTailBanner()}
                             onDismiss={dismissTailBanner}
                             state={tailBannerState}
@@ -10106,7 +10155,8 @@ function SessionScreenContent() {
                         {/* 队列状态横幅(错误 / 凭证等待 / 停止确认 / 暂停)。待发送气泡
                             不在这里,它们是消息流里的 pending_send 项。 */}
                         <InlineQueueSection
-                          busy={queueBusy}
+                          busy={queueBusy || historyRecoveryBusy}
+                          onRecoverHistory={canRecoverHistory ? () => void recoverReadableHistory() : undefined}
                           sessionSource={currentSession?.source}
                           onClearError={clearQueueError}
                           onCancelUsageLimitWait={cancelUsageLimitWait}
