@@ -13938,6 +13938,24 @@
       "cleanupIncomplete": "“{{name}}”의 제거 정리가 완료되지 않았습니다. 다시 시도하거나 나중에 스킬을 다시 열어 계속하세요. 정리가 완료될 때까지 재설치할 수 없습니다.",
       "retryCleanup": "정리 다시 시도",
       "cleanupComplete": "정리 완료"
+    },
+    "audience": {
+      "label": "공개 대상 멤버",
+      "all": "모든 멤버",
+      "departments": "지정 부서",
+      "search": "부서 검색",
+      "included": "포함됨",
+      "unavailable": "사용할 수 없는 부서",
+      "remove": "제거",
+      "expand": "펼치기",
+      "collapse": "접기",
+      "invalid": "사용할 수 없는 부서를 제거하고 다시 선택하세요.",
+      "choose": "부서를 하나 이상 선택하세요",
+      "loading": "부서 불러오는 중…",
+      "loadError": "공개 범위를 불러올 수 없습니다. 다시 시도하세요.",
+      "retry": "다시 시도",
+      "conflict": "공개 범위가 변경되었습니다. 최신 설정을 불러와 다시 확인하세요.",
+      "reload": "최신 설정 불러오기"
     }
   },
   "makerExperimental": {

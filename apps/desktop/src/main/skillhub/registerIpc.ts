@@ -747,8 +747,9 @@ export function registerSkillhubIpc(options: RegisterSkillhubIpcOptions): void {
 
   ipcMain.handle(
     'skillhub:set-published-visibility',
-    async (_event, params: Omit<Parameters<SkillhubMarketService['setPublishedVisibility']>[0], 'previousCatalogScope'> & { previousCatalogScope?: unknown }) => {
+    async (event, params: Omit<Parameters<SkillhubMarketService['setPublishedVisibility']>[0], 'previousCatalogScope'> & { previousCatalogScope?: unknown }) => {
       try {
+        assertTrustedAppRendererEvent(event);
         const { previousCatalogScope, ...fields } = params;
         return await marketService.setPublishedVisibility({
           ...fields,
@@ -763,8 +764,9 @@ export function registerSkillhubIpc(options: RegisterSkillhubIpcOptions): void {
   // 读取已发布 skill 的可见对象(共享团队 + 可见部门),编辑可见范围弹窗回显用
   ipcMain.handle(
     'skillhub:get-published-visibility',
-    async (_event, { name }: { name: string }) => {
+    async (event, { name }: { name: string }) => {
       try {
+        assertTrustedAppRendererEvent(event);
         return await marketService.getPublishedVisibility(name);
       } catch (err) {
         return skillhubIpcError(err);
@@ -775,9 +777,10 @@ export function registerSkillhubIpc(options: RegisterSkillhubIpcOptions): void {
   // 拉当前用户所属一级部门（PublishDialog 打开前触发，按需获取）
   ipcMain.handle(
     'skillhub:get-my-depts',
-    async () => {
+    async (event) => {
       log.debug('get-my-depts requested');
       try {
+        assertTrustedAppRendererEvent(event);
         const result = await marketService.getMyDepts();
         log.debug('get-my-depts succeeded', {
           deptCount: result.ids.length,

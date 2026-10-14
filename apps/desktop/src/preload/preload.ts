@@ -3373,6 +3373,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       previousCatalogScope?: 'market' | 'team';
       teamSlug?: string;
       visibleSlugs?: string[];
+      visibilityDepartmentIds?: string[];
+      audienceMode?: 'all' | 'departments';
+      expectedUpdatedAt?: string;
     }): Promise<{
       success: boolean;
       result?: {
@@ -3392,6 +3395,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       success: boolean;
       sharedTeams?: Array<{ id: number; slug: string; name: string }>;
       visibleDepts?: string[];
+      updatedAt?: string;
+      visibility?: 'private' | 'shared' | 'public';
+      audienceSupported?: boolean;
       error?: string;
       errorCode?: string;
     }> => ipcRenderer.invoke('skillhub:get-published-visibility', { name }),
@@ -3513,6 +3519,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       success: boolean;
       ids: string[];
       names: string[];
+      departments?: import('../shared/skillhubAudience').SkillAudienceDepartment[];
+      audienceSupported?: boolean;
       error?: string;
     }> => ipcRenderer.invoke('skillhub:get-my-depts'),
 
@@ -3528,6 +3536,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       tags?: string[];
       visibility?: 'PUBLIC' | 'DEPARTMENT_SCOPED' | 'PRIVATE';
       visibleSlugs?: string[];
+      visibilityDepartmentIds?: string[];
+      audienceMode?: 'all' | 'departments';
+      expectedUpdatedAt?: string;
       deptTeamSlug?: string;
       teamSlug?: string;
       changelog?: string;

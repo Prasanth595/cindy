@@ -14,6 +14,7 @@ export interface PublishFormValues {
   /** 发布团队:od- 开头是飞书一级部门 ID,其余是团队 slug。publisherMode=team 时必填 */
   ownerTeamSlug: string;
   visibleDeptIds: string[];
+  audienceMode?: 'all' | 'departments';
   sharedTeamSlugs: string[];
   changelog: string;
   categorySlugs: string[];
@@ -142,6 +143,8 @@ export function buildSkillhubPublishParams({
     ...(isFirstPublish && {
       tags: categorySlugs,
       visibility: form.visibility,
+      ...(ownerType === 'organization' && form.visibility === 'DEPARTMENT_SCOPED' && form.audienceMode
+        ? { visibilityDepartmentIds: form.audienceMode === 'all' ? [] : form.visibleDeptIds, audienceMode: form.audienceMode } : {}),
       visibleSlugs: ownerType === undefined && form.visibility === 'DEPARTMENT_SCOPED'
         ? [...form.visibleDeptIds, ...form.sharedTeamSlugs]
         : [],

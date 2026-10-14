@@ -13989,6 +13989,24 @@
       "cleanupIncomplete": "Uninstall cleanup for “{{name}}” is unfinished. Retry now or reopen Skills later to continue. Reinstallation is paused until cleanup completes.",
       "retryCleanup": "Retry cleanup",
       "cleanupComplete": "Cleanup completed"
+    },
+    "audience": {
+      "label": "Visible members",
+      "all": "All members",
+      "departments": "Selected departments",
+      "search": "Search departments",
+      "included": "Included",
+      "unavailable": "Unavailable department",
+      "remove": "Remove",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "invalid": "Some departments are unavailable. Remove them and select again.",
+      "choose": "Select at least one department",
+      "loading": "Loading departments…",
+      "loadError": "Unable to load visibility. Please retry.",
+      "retry": "Retry",
+      "conflict": "Visibility has changed. Load the latest settings and confirm again.",
+      "reload": "Load latest settings"
     }
   },
   "makerExperimental": {

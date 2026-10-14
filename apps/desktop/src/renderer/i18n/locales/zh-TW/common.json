@@ -13938,6 +13938,24 @@
       "cleanupIncomplete": "「{{name}}」的解除安裝清理尚未完成。請重試；重新開啟技能中心後也可繼續。清理完成前無法重新安裝。",
       "retryCleanup": "重試清理",
       "cleanupComplete": "清理完成"
+    },
+    "audience": {
+      "label": "可見成員",
+      "all": "全部成員",
+      "departments": "指定部門",
+      "search": "搜尋部門",
+      "included": "已包含",
+      "unavailable": "已失效部門",
+      "remove": "移除",
+      "expand": "展開",
+      "collapse": "收合",
+      "invalid": "部分部門已失效，請移除後重新選擇",
+      "choose": "請選擇至少一個部門",
+      "loading": "正在載入部門…",
+      "loadError": "無法載入可見範圍，請重試",
+      "retry": "重試",
+      "conflict": "可見範圍已被修改，請載入最新範圍後重新確認",
+      "reload": "載入最新範圍"
     }
   },
   "makerExperimental": {

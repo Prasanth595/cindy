@@ -1,3 +1,4 @@
+import { validateSkillAudience, type SkillAudienceInput, type SkillAudienceDepartment } from '../../shared/skillhubAudience';
 import { ServerApiError, type ApiFetchOptions } from '../serverApiClient';
 import { skillhubApiFetch } from './hubApi';
 import { mapHubSkillInfoToDesktopInfo, type HubSkillInfoForDesktop } from './infoMapping';
@@ -19,9 +20,10 @@ interface SkillhubInstalledSkillForHub {
 }
 
 interface SkillhubUserDepartmentsResponse {
-  departments?: Array<{ deptId: string; name: string; path: string }>;
+  departments?: SkillAudienceDepartment[];
   firstLevelDepts?: Array<{ deptId: string; name: string }>;
   allDeptIds?: string[];
+  audienceSupported?: boolean;
 }
 
 function mapFirstLevelDepartments(
@@ -75,7 +77,7 @@ export interface UpdatePublishedFields {
   teamSlug?: string | null;
 }
 
-export interface SetPublishedVisibilityParams {
+export interface SetPublishedVisibilityParams extends SkillAudienceInput {
   name: string;
   visibility: 'private' | 'shared' | 'public';
   /** Catalog containing the currently visible version before this mutation. */
@@ -251,15 +253,18 @@ export class SkillhubMarketService {
     return { success: true as const, result };
   }
 
-  async setPublishedVisibility({ name, visibility, previousCatalogScope, teamSlug, visibleSlugs }: SetPublishedVisibilityParams) {
+  async setPublishedVisibility({ name, visibility, previousCatalogScope, teamSlug, visibleSlugs, ...audience }: SetPublishedVisibilityParams) {
     await this.assertWriteAllowed();
     await this.assertVisibilityAllowed(visibility);
+    validateSkillAudience(audience);
     const result = await this.fetch<SkillVisibilityUpdateResult>(
       `/api/skills-hub/skills/${encodeURIComponent(name)}/set-visibility`,
       {
         method: 'POST',
         body: {
           visibility,
+          ...(audience.visibilityDepartmentIds !== undefined ? { visibilityDepartmentIds: audience.visibilityDepartmentIds, audienceMode: audience.audienceMode } : {}),
+          ...(audience.expectedUpdatedAt !== undefined ? { expectedUpdatedAt: audience.expectedUpdatedAt } : {}),
           ...(teamSlug ? { teamSlug } : {}),
           ...(visibleSlugs !== undefined ? { visibleSlugs } : {}),
         },
@@ -279,11 +284,17 @@ export class SkillhubMarketService {
     const result = await this.fetch<{
       sharedTeams?: Array<{ id: number; slug: string; name: string }>;
       visibleDepts?: string[];
+      updatedAt?: string;
+      visibility?: 'private' | 'shared' | 'public';
+      audienceSupported?: boolean;
     }>(`/api/skills-hub/skills/${encodeURIComponent(name)}/visibility`);
     return {
       success: true as const,
       sharedTeams: result.sharedTeams ?? [],
       visibleDepts: result.visibleDepts ?? [],
+      updatedAt: result.updatedAt,
+      visibility: result.visibility,
+      audienceSupported: result.audienceSupported === true,
     };
   }
 
@@ -296,6 +307,8 @@ export class SkillhubMarketService {
       success: true as const,
       ids: firstLevel.ids,
       names: firstLevel.names,
+      departments: departments.audienceSupported === true ? departments.departments ?? [] : [],
+      audienceSupported: departments.audienceSupported === true,
     };
   }
 

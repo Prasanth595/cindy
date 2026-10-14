@@ -1,3 +1,5 @@
+import { DepartmentAudienceField } from './DepartmentAudienceField';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { Button } from '@/components/ui/button';
 /**
  * VisibilityEditorDialog — 「管理可见性」弹窗,对齐 SkillHub 工作台同名能力。
@@ -48,6 +50,7 @@ export function VisibilityEditorDialog({
 }: VisibilityEditorDialogProps) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const dialogOwner = useMemo(() => getDataOwnerGeneration(), [open]);
   const identityPolicy = useSkillhubIdentityPolicy(user);
   const currentOwnerIsTeam = currentOwnerType === 'org';
 
@@ -56,18 +59,32 @@ export function VisibilityEditorDialog({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [audienceMode, setAudienceMode] = useState<'all' | 'departments'>('all');
+  const [selected, setSelected] = useState<string[]>([]);
+  const [audienceValid, setAudienceValid] = useState(false);
+  const [expectedUpdatedAt, setExpectedUpdatedAt] = useState<string>();
+  const [reload, setReload] = useState(0);
+  const [conflict, setConflict] = useState(false);
   const [tier, setTier] = useState<VisibilityTier>(currentTier);
 
   useEffect(() => {
-    if (!open) {
-      setLoading(true);
-      return;
-    }
-    // 每次打开都从当前状态重置(避免上次编辑残留)
-    setTier(currentTier);
-    setLoadError(null);
-    setLoading(false);
-  }, [open, currentTier]);
+    if (!open) { setLoading(true); return; }
+    let cancelled = false;
+    const owner = getDataOwnerGeneration();
+    setTier(currentTier); setLoadError(null); setConflict(false); setLoading(true); setExpectedUpdatedAt(undefined);
+    void window.electronAPI.skillhub.getPublishedVisibility(skillName).then(result => {
+      if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
+      if (!result.success || (currentOwnerIsTeam && (!result.audienceSupported || !result.updatedAt))) {
+        setLoadError(t('skillhub.audience.loadError')); return;
+      }
+      setExpectedUpdatedAt(result.updatedAt);
+      setSelected(result.visibleDepts ?? []);
+      setAudienceMode(result.visibleDepts?.length ? 'departments' : 'all');
+      if (result.visibility) setTier(result.visibility === 'shared' ? 'team' : result.visibility);
+    }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setLoadError(t('skillhub.audience.loadError')); })
+      .finally(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, currentTier, currentOwnerIsTeam, skillName, reload, t]);
 
   // ── 校验(对齐 SkillHub StepMeta/管理弹窗规则) ──────────────────────────
   // ── 影响提示(SkillHub origin/main 同款文案) ───────────────────────────
@@ -99,6 +116,7 @@ export function VisibilityEditorDialog({
   };
 
   const handleSave = async () => {
+    if (!isDataOwnerGenerationCurrent(dialogOwner)) return;
     const publishVisibility = tier === 'team' ? 'DEPARTMENT_SCOPED' : tier.toUpperCase();
     if (!identityPolicy.allowedVisibilities.includes(publishVisibility as 'PUBLIC' | 'DEPARTMENT_SCOPED' | 'PRIVATE')) return;
     setSaving(true);
@@ -114,8 +132,12 @@ export function VisibilityEditorDialog({
         name: skillName,
         visibility,
         previousCatalogScope,
+        ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}),
+        ...(tier === 'team' ? { audienceMode, visibilityDepartmentIds: audienceMode === 'all' ? [] : selected } : {}),
       });
+      if (!isDataOwnerGenerationCurrent(dialogOwner)) return;
       if (!visRes.success) {
+        if (visRes.errorCode === 'SKILL_DISTRIBUTION_CONFLICT') setConflict(true);
         toast.error(marketActionErrorMessage(visRes.error, visRes.errorCode));
         return;
       }
@@ -130,7 +152,7 @@ export function VisibilityEditorDialog({
   };
 
   return (
-    <Dialog.Root open={open && !loading} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
+    <Dialog.Root open={open} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
       <Dialog.Portal>
         <Dialog.Overlay
           className="modal-scrim fixed inset-0 z-[10000]"
@@ -141,12 +163,12 @@ export function VisibilityEditorDialog({
           className={cn(
             'modal-panel fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
             'w-full max-w-[480px]',
-            'max-h-[85vh] overflow-y-auto',
+            'max-h-[85vh] flex flex-col overflow-hidden',
           )}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           aria-describedby={undefined}
         >
-          <div className="flex items-start justify-between px-5 pt-5">
+          <div className="flex shrink-0 items-start justify-between px-5 pt-5">
             <div className="flex flex-col gap-1">
               <Dialog.Title className="text-lg font-medium text-[var(--msg-assistant-text)]">
                 {t('skillhub.visibilityEditor.title')}
@@ -167,9 +189,9 @@ export function VisibilityEditorDialog({
             </button>
           </div>
 
-          <div className="flex flex-col gap-4 px-5 pt-4 pb-1">
-            {loadError ? (
-              <p className="py-4 text-sm text-[var(--cmd-palette-item-meta)]">{loadError}</p>
+          <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 pt-4 pb-1">
+            {loading ? <p role="status">{t('skillhub.audience.loading')}</p> : loadError ? (
+              <div role="alert">{loadError}<Button type="button" variant="secondary" size="sm" onClick={() => setReload(n => n + 1)}>{t('skillhub.audience.retry')}</Button></div>
             ) : (
               <>
                 {readOnly ? (
@@ -223,6 +245,10 @@ export function VisibilityEditorDialog({
                   </div>
                 </div>
 
+                {tier === 'team' && <DepartmentAudienceField mode={audienceMode} selected={selected}
+                  disabled={readOnly || saving} onValidityChange={setAudienceValid}
+                  onChange={(mode, ids) => { setAudienceMode(mode); setSelected(ids); }} />}
+                {conflict && <div role="alert">{t('skillhub.audience.conflict')}<Button variant="secondary" size="sm" type="button" onClick={() => setReload(n => n + 1)}>{t('skillhub.audience.reload')}</Button></div>}
                 {/* 影响提示 */}
                 {impactText ? (
                   <div
@@ -240,7 +266,7 @@ export function VisibilityEditorDialog({
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-2 p-4">
+          <div className="flex shrink-0 items-center justify-end gap-2 p-4">
             <Button
               variant="secondary"
               size="md"
@@ -256,7 +282,7 @@ export function VisibilityEditorDialog({
               compact
               loading={saving}
               type="button"
-              disabled={loading || saving || Boolean(loadError) || !tierAllowed || readOnly
+              disabled={!isDataOwnerGenerationCurrent(dialogOwner) || loading || saving || (tier === 'team' && !audienceValid) || Boolean(loadError) || !tierAllowed || readOnly
                 || (tier === 'public' && currentTier !== 'public' && publicReview?.status === 'pending')}
               onClick={() => void handleSave()}
             >

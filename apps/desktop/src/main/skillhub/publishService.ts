@@ -1,3 +1,4 @@
+import { validateSkillAudience, type SkillAudienceInput } from '../../shared/skillhubAudience';
 /**
  * skillhub/publishService.ts — publish 端到端编排 (F-pub-5, M5)
  *
@@ -34,7 +35,7 @@ export const PACK_TIMEOUT_MS = 45_000;
 
 // ── 类型 ─────────────────────────────────────────────────────────────────────
 
-export interface PublishParams {
+export interface PublishParams extends SkillAudienceInput {
   absolutePath: string;
   name: string;
   isFirstPublish: boolean;
@@ -219,6 +220,7 @@ export class SkillPublishService {
     errorCode?: string;
     error?: string;
   }> {
+    validateSkillAudience(params);
     // Capture before identity hydration: every await belongs to this publication's owner.
     const publishOwnerScope = activeOwnerScopeKey();
     const publishOwnerId = getCurrentDataOwnerId();
@@ -548,6 +550,10 @@ export class SkillPublishService {
             if (params.deptTeamSlug) commitBody.deptTeamSlug = params.deptTeamSlug;
             if (params.teamSlug) commitBody.teamSlug = params.teamSlug;
             if (params.visibleSlugs !== undefined) commitBody.visibleSlugs = params.visibleSlugs;
+            if (params.visibilityDepartmentIds !== undefined) {
+              commitBody.visibilityDepartmentIds = params.visibilityDepartmentIds;
+              commitBody.audienceMode = params.audienceMode;
+            }
           }
 
           log.debug(

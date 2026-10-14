@@ -372,6 +372,8 @@ describe('SkillhubMarketService', () => {
       success: true,
       ids: ['od-1'],
       names: ['Dept'],
+      departments: [],
+      audienceSupported: false,
     });
     expect(calls[1]).toEqual({
       path: '/api/skills-hub/users/departments',
