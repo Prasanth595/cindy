@@ -346,7 +346,8 @@ describe('newSessionCreation pipeline', () => {
       expect(onReady).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
     } else {
       expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
-      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      if (outcome === 'switch-account') expect(getNewSessionCreationTask('s1')).toBeNull();
+      else expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
       expect(onReady).not.toHaveBeenCalled();
     }
   });
@@ -391,7 +392,7 @@ describe('newSessionCreation pipeline', () => {
       completeNewSessionDurableEdit('s1', 'dev-1');
       expect(getNewSessionCreationTask('s1')).toBeNull();
     } else {
-      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      expect(getNewSessionCreationTask('s1')).toBeNull();
     }
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
   });
@@ -472,7 +473,8 @@ describe('newSessionCreation pipeline', () => {
       expect(getNewSessionCreationTask('s1')).toBeNull();
     } else {
       expect(restore).not.toHaveBeenCalled();
-      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+      if (scope === 'switched-owner') expect(getNewSessionCreationTask('s1')).toBeNull();
+      else expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
     }
     cleanup();
   });
@@ -528,6 +530,57 @@ describe('newSessionCreation pipeline', () => {
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
     setMobileAuthOwner('owner-a');
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
+  });
+
+  it.each(['create-failed', 'enqueue-failed'] as const)('retires %s guards across account generations without changing durable recovery', async status => {
+    const maker = makeMaker(status === 'create-failed'
+      ? { createSession: vi.fn(async () => { throw new Error('INVALID_PARAMS'); }) } : {});
+    const params = makeParams('s1', maker);
+    params.transport.handoffFirstMessage = async () => { throw new Error('disk full'); };
+    startNewSessionCreation(params);
+    await flushPipeline();
+    expect(getNewSessionCreationTask('s1')?.status).toBe(status);
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    editOutbox.records.mockReturnValue([record]);
+    const savedRecord = structuredClone(record);
+    const originalTask = getNewSessionCreationTask('s1');
+    setMobileAuthOwner('owner-a');
+    expect(getNewSessionCreationTask('s1')).toBe(originalTask);
+
+    setMobileAuthOwner('owner-b');
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(shouldBlockSessionSync('s1')).toBe(false);
+    setMobileAuthOwner('owner-a');
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(shouldBlockSessionSync('s1')).toBe(false);
+    expect(editOutbox.records()).toEqual([savedRecord]);
+    expect(editOutbox.update).not.toHaveBeenCalled();
+    expect(maker.worktree.discardPrecreated).not.toHaveBeenCalled();
+    retryNewSessionCreation('s1');
+    await flushPipeline();
+    expect(maker.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an old create reply after switching back and starting a replacement task', async () => {
+    let finishCreate!: (value: { sessionId: string }) => void;
+    const oldMaker = makeMaker({ createSession: vi.fn(() => new Promise(resolve => { finishCreate = resolve; })) });
+    startNewSessionCreation(makeParams('s1', oldMaker));
+    await flushPipeline();
+    setMobileAuthOwner('owner-b');
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(shouldBlockSessionSync('s1')).toBe(false);
+    setMobileAuthOwner('owner-a');
+    const newMaker = makeMaker({ createSession: vi.fn(async () => { throw new Error('INVALID_PARAMS'); }) });
+    startNewSessionCreation(makeParams('s1', newMaker, { draft: { ...DRAFT, firstMessage: 'new draft' } }));
+    await flushPipeline();
+    const replacement = getNewSessionCreationTask('s1');
+    expect(replacement?.status).toBe('create-failed');
+    finishCreate({ sessionId: 's1' });
+    await flushPipeline();
+    expect(getNewSessionCreationTask('s1')).toBe(replacement);
+    expect(getNewSessionCreationTask('s1')?.draft.firstMessage).toBe('new draft');
+    expect(oldMaker.input.enqueue).not.toHaveBeenCalled();
+    expect(shouldBlockSessionSync('s1')).toBe(true);
   });
 
   it('start 同步段即入 store:合成行带 pendingLocalCreation,首条消息以排队气泡上屏', () => {

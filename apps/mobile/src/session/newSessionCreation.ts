@@ -26,7 +26,7 @@
  *    会被 dedup 静默吞掉,丢消息比双发更糟)。
  */
 import { useSyncExternalStore } from 'react';
-import { getMobileAuthOwner, isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import type { SlowSendPhase } from '@/session/SlowSendNotice';
 import * as ExpoCrypto from 'expo-crypto';
 import { isPreconditionFailedRemoteError } from '@cindy/maker-shared/device-link-contract';
@@ -155,6 +155,7 @@ export interface NewSessionCreationTask {
 }
 
 interface InternalTask extends NewSessionCreationTask {
+  owner: MobileAuthOwnerGeneration;
   returningToEdit?: boolean;
   readyForEdit?: 'memory' | 'durable';
   durableEditOwner?: MobileAuthOwnerGeneration;
@@ -179,6 +180,19 @@ function emit(): void {
   taskSnapshots.clear();
   for (const sub of subs) sub();
 }
+
+// Failed pipelines have no pending continuation to retire them on account change.
+// Release their in-memory guards as well as their React snapshots; durable drafts
+// belong to the outbox and remain available when that account signs in again.
+subscribeMobileAuthOwner(() => {
+  let changed = false;
+  for (const [sessionId, task] of tasks) {
+    if (isMobileAuthOwnerCurrent(task.owner)) continue;
+    tasks.delete(sessionId);
+    changed = true;
+  }
+  if (changed) emit();
+});
 
 /** createSession 重试:总尝试次数(首次 + 重试),重试前必 probe。 */
 const CREATE_ATTEMPTS = 3;
@@ -307,6 +321,7 @@ export function startNewSessionCreation(params: NewSessionCreationParams): void 
   ), firstMessageSessionRefs);
   remoteSessionStore.setInputProjectionOptimistically(params.sessionId, buildOptimisticProjection(params.sessionId, queued));
   const task: InternalTask = {
+    owner: getMobileAuthOwner(),
     startedAt: params.startedAt ?? Date.now(),
     phase: 'connecting',
     sessionId: params.sessionId,
@@ -955,7 +970,7 @@ async function isFirstMessageApplied(task: InternalTask): Promise<boolean | null
 }
 
 function isTaskOwnerCurrent(task: InternalTask): boolean {
-  return task.params.isCurrentOwner?.() ?? true;
+  return isMobileAuthOwnerCurrent(task.owner) && (task.params.isCurrentOwner?.() ?? true);
 }
 
 function assertTaskOwnerCurrent(task: InternalTask): void {
