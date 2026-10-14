@@ -157,7 +157,7 @@ export function VisibilityEditorDialog({
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
+    <Dialog.Root open={open && !loading} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
       <Dialog.Portal>
         <Dialog.Overlay
           className="modal-scrim fixed inset-0 z-[10000]"

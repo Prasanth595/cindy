@@ -101,10 +101,10 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
             {rows.map(({ department: d, depth, hasChildren }) => {
               const included = departmentAncestors(d.id, parents).some(id => selectedIds.has(id));
               return <div key={d.id} className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16 }}>
-                {hasChildren && !query.trim() && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
+                <span className="inline-flex h-7 w-7 shrink-0">{hasChildren && !query.trim() && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" className="w-7 px-0" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
                   onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(d.id)) next.delete(d.id); else next.add(d.id); return next; })}>
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </Button></Tip>}
+                </Button></Tip>}</span>
                 <label className="flex flex-1 items-center gap-2 cursor-pointer py-1">
                   <input type="checkbox" checked={included || selected.includes(d.id)} disabled={disabled || included} onChange={() => toggle(d.id)} />
                   {d.name}{included && <span className="text-xs text-[var(--cmd-palette-item-meta)]">{t('skillhub.audience.included')}</span>}

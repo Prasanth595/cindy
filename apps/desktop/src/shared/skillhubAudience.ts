@@ -8,6 +8,9 @@ export interface SkillAudienceInput {
 /** Validate Renderer input before it reaches privileged publication requests. */
 export function validateSkillAudience(input: SkillAudienceInput): void {
   const ids = input.visibilityDepartmentIds;
+  if (input.audienceMode !== undefined && ids === undefined) {
+    throw new Error('Invalid department selection');
+  }
   if (ids !== undefined && (!Array.isArray(ids) || ids.length > 500
     || ids.some(id => typeof id !== 'string' || !id || id.trim() !== id || id.length > 191))) {
     throw new Error('Invalid department selection');

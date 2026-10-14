@@ -78,3 +78,12 @@ it('requires visibility capability for public organization skills without owner 
   expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
   expect(save).not.toHaveBeenCalled();
 });
+
+it('waits for initial visibility before opening the dialog', async () => {
+  let resolve!: (result: unknown) => void;
+  load.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  open();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  resolve({ success: true, audienceSupported: true, updatedAt, visibleDepts: [], visibility: 'shared' });
+  await screen.findByRole('dialog');
+});

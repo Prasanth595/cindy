@@ -13,3 +13,12 @@ it.each(['x'.repeat(100000), '2026-10-14', '2026-10-14T09:00:00.000+00:00'])('re
 it('rejects invalid ISO date values', () => {
   expect(() => validateSkillAudience({ expectedUpdatedAt: '2026-99-14T09:00:00.123Z' })).toThrow('Invalid audience version');
 });
+
+it.each(['departments', 'all'] as const)('rejects %s mode without explicit IDs', (audienceMode) => {
+  expect(() => validateSkillAudience({ audienceMode })).toThrow('Invalid department selection');
+});
+it('accepts explicit audience pairs and legacy absence', () => {
+  expect(() => validateSkillAudience({})).not.toThrow();
+  expect(() => validateSkillAudience({ audienceMode: 'all', visibilityDepartmentIds: [] })).not.toThrow();
+  expect(() => validateSkillAudience({ audienceMode: 'departments', visibilityDepartmentIds: ['dept-1'] })).not.toThrow();
+});
