@@ -304,6 +304,21 @@ describe('BotsSidebar group chats', () => {
     await waitFor(() => expect(document.activeElement).toBe(input));
   });
 
+  it('does not steal search focus when unarchive keeps the group visible', async () => {
+    mocks.groups = [managedGroup(true)];
+    const view = await renderSidebar();
+    fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
+    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
+    await selectArchive(true);
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+
+    fireEvent.change(input, { target: { value: '周末' } });
+    input.focus();
+    mocks.groups = [managedGroup(false)];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
   it('keeps cancelled archives untouched and blocks old-account confirmations', async () => {
     mocks.groups = [managedGroup()];
     mocks.confirm.mockResolvedValueOnce(false);

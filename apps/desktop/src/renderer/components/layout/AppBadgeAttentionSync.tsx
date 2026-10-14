@@ -34,7 +34,7 @@ export function AppBadgeAttentionSync() {
   const remoteBots = useRemoteBots();
   useSyncExternalStore(subscribeBotReadState, readRevision, readRevision);
   const localTeammates = bots.filter(bot => bot.status !== 'archived' && bot.status !== 'deleting' && !bot.hiddenAt && (unread[bot.id] ?? 0) > 0).length
-    + groups.filter(isBotGroupUnread).length;
+    + groups.filter(group => !group.archived && isBotGroupUnread(group)).length;
   const teammates = localTeammates + remoteBots.filter(isRemoteBotUnread).length;
   const owner = getDataOwnerGeneration();
   const { sessions, isLoading, error } = useCCSessions({ includeArchived: 'active' });

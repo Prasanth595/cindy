@@ -130,7 +130,7 @@ function BotsSidebarContent() {
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
   const archivedGroupsToggleRef = useRef<HTMLButtonElement | null>(null);
-  const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean } | null>(null);
+  const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean; origin: HTMLElement | null } | null>(null);
 
   const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
     menuOriginRef.current = origin;
@@ -145,6 +145,7 @@ function BotsSidebarContent() {
     setArchiveBusy(true);
     setArchiveError('');
     const owner = getDataOwnerGeneration();
+    const origin = menuOriginRef.current;
     const actionKey = 'bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive');
     try {
       const accepted = await confirm({ presentation: 'standard', title: t(actionKey),
@@ -156,7 +157,11 @@ function BotsSidebarContent() {
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) setArchiveError(t(chatErrorKey(result.errorCode)));
       else {
-        pendingArchiveFocusRef.current = { groupId: group.id, archived: !group.archived };
+        pendingArchiveFocusRef.current = {
+          groupId: group.id,
+          archived: !group.archived,
+          origin,
+        };
         refreshBotGroups();
       }
     } catch {
@@ -237,6 +242,16 @@ function BotsSidebarContent() {
       // row that replaced the original trigger.
       if (document.querySelector('[role="alertdialog"]')) {
         timer = window.setTimeout(restoreFocus, 50);
+        return;
+      }
+
+      // Focus recovery is only for the original keyboard path. If the user
+      // has already moved focus to another row, the search field, or any
+      // other control while the refresh was in flight, leave that choice
+      // untouched. A body focus means the original row was unmounted.
+      const active = document.activeElement;
+      if (active !== pending.origin && active !== document.body) {
+        pendingArchiveFocusRef.current = null;
         return;
       }
 

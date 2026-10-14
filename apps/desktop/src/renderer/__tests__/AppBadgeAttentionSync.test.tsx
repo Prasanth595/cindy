@@ -20,10 +20,21 @@ const state = vi.hoisted(() => ({
   isLoading: false,
   publish: vi.fn().mockResolvedValue(undefined),
 }));
-const botState = vi.hoisted(() => ({ bots: [] as any[], unread: {} as Record<string, number>, groups: [] as any[], remote: [] as any[] }));
+const botState = vi.hoisted(() => ({
+  bots: [] as unknown[],
+  unread: {} as Record<string, number>,
+  groups: [] as unknown[],
+  unreadGroups: new Set<string>(),
+  remote: [] as unknown[],
+}));
 vi.mock('@/features/bots/useBotUnreadSync', () => ({ useBotUnreadSync: () => {} }));
 vi.mock('@/features/bots/botStore', () => ({ useBotProfiles: () => botState.bots, useBotUnreadCounts: () => botState.unread }));
 vi.mock('@/features/bots/botGroupStore', () => ({ useBotGroupList: () => ({ groups: botState.groups }) }));
+vi.mock('@/features/bots/botReadState', () => ({
+  isBotGroupUnread: (group: { id: string }) => botState.unreadGroups.has(group.id),
+  subscribeBotReadState: () => () => {},
+  getBotLastReadAtMap: () => ({}),
+}));
 vi.mock('@/features/bots/useRemoteBots', () => ({ useRemoteBotSync: () => {}, useRemoteBots: () => botState.remote }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({}) }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
@@ -70,7 +81,7 @@ import { useSessionDisplayRunningState } from '../features/cc-agent/hooks/useSes
 
 afterEach(() => {
   cleanup();
-  botState.bots = []; botState.unread = {}; botState.groups = []; botState.remote = [];
+  botState.bots = []; botState.unread = {}; botState.groups = []; botState.unreadGroups = new Set(); botState.remote = [];
   vi.unstubAllGlobals();
   state.publish.mockClear();
   state.isLoading = false;
@@ -230,4 +241,15 @@ it('maps each unread chat once and fences all Bot lanes out of event-backed Dock
   botState.unread = {};
   view.rerender(<AppBadgeAttentionSync />);
   expect(state.publish).toHaveBeenLastCalledWith(expect.objectContaining({ count: 3 }));
+});
+
+it('excludes archived group unread state from the app badge', () => {
+  vi.stubGlobal('electronAPI', { notificationSetAppAttentionCount: state.publish });
+  botState.groups = [
+    { id: 'active-group', archived: false },
+    { id: 'archived-group', archived: true },
+  ];
+  botState.unreadGroups = new Set(['active-group', 'archived-group']);
+  render(<AppBadgeAttentionSync />);
+  expect(state.publish).toHaveBeenLastCalledWith(expect.objectContaining({ count: 4 }));
 });
