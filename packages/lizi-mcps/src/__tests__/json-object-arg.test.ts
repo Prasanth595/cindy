@@ -3,7 +3,7 @@
  *
  * 覆盖四件事:
  *  1. 运行时兜底行为:object 透传 / JSON-string 还原成 object / 真烂字符串仍报错 /
- *     整体省略(无参工具按内层空 schema 调用)时通过且 args 为 undefined。
+ *     null 归一成 {} / 整体省略(无参工具按内层空 schema 调用)时通过且 args 为 undefined。
  *  2. 端到端复现 GitHub issue #350:经【真实 MCP SDK 校验路径】传一段被 stringify 的
  *     超长 args,旧 `z.record` 会在 entry 报 -32602 invalid_type;新 schema 能还原成
  *     object 并落到 handler。同路径验证省略 args 不再被 -32602 挡回(2026-10-14 修复:
@@ -48,6 +48,14 @@ describe('jsonObjectArg — runtime coercion', () => {
 
   it('rejects a JSON string that parses to a non-object (e.g. a number)', () => {
     expect(schema.safeParse({ args: '42' }).success).toBe(false);
+  });
+
+  it('treats a null args field as an empty object (host collapses {} into null)', () => {
+    // 回归 2026-10-14：宿主把空对象 args 压成 null 送到入口，-32602 expected record。
+    // null / 缺失 / {} 三种「无参数」形态必须统一落成 {}（消费方 args ?? {}）。
+    const r = schema.safeParse({ args: null });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args).toEqual({});
   });
 
   it('accepts an omitted args field (no-parameter tools called without args)', () => {
@@ -150,6 +158,20 @@ describe('jsonObjectArg — end-to-end through real MCP SDK validation (issue #3
       const echo = readEcho(result);
       expect(echo.name).toBe('memory_list');
       expect(echo.argsType).toBe('undefined');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it('accepts the null args the host produces from an empty-object args payload', async () => {
+    const h = await makeEchoHarness();
+    try {
+      const result = (await h.client.callTool({
+        name: 'call_tool',
+        arguments: { name: 'memory_list', args: null },
+      })) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+      expect(result.isError ?? false).toBe(false);
+      expect(readEcho(result).argsType).toBe('object');
     } finally {
       await h.cleanup();
     }

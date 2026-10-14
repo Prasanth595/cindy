@@ -3,8 +3,14 @@ import { z } from 'zod';
 /**
  * string → JSON.parse 出的 object；非 string、或 parse 失败时原样返回，
  * 交给下游 record 校验报原本的错（不吞坏数据）。
+ *
+ * null → `{}`：宿主侧实测（2026-10-14），模型明明传了空对象 `args: {}`，到达 MCP
+ * 入口时却成了 null（同一构建里省略 args 能过、非空 args 能过，只有空对象形态报
+ * `-32602 expected record`），而 `z.record().optional()` 只容忍缺失、不容忍 null。
+ * null 与缺失对消费方同义（都是 `registry.call(name, args ?? {})`），统一归一成 `{}`。
  */
 function coerceStringifiedJson(value: unknown): unknown {
+  if (value === null) return {};
   if (typeof value !== 'string') return value;
   try {
     return JSON.parse(value);
