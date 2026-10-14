@@ -26,8 +26,10 @@ import { resolveRemoteText } from '@cindy/device-link';
 import {
   BOT_GROUP_REMOTE_COLLECTION_ID,
   isBotGroupRuntimeFailureCode,
+  resolveBotGroupQuote,
   type BotGroupAttachment,
   type BotGroupMemberView,
+  type BotGroupQuoteDisplay,
   type BotGroupMessageView,
   type BotGroupPlanAction,
   type BotGroupPlanStepView,
@@ -67,6 +69,7 @@ import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
+import { BotGroupQuote } from './BotGroupQuote';
 import {
   BOT_GROUP_COMPACT_HIT_SLOP,
   BotGroupDivider,
@@ -411,6 +414,7 @@ export function BotGroupTimeline({
         {groupTime !== undefined ? <Text style={styles.time}>{formatBotMessageGroupTime(groupTime, i18n.language)}</Text> : null}
         <CompanionEntering id={message.id} createdAt={message.createdAt} kind={message.authorKind === 'user' ? 'send' : 'reply'}>
         <BotGroupTimelineItem message={message} continued={continued} member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
+          quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, messages) : undefined}
           members={group.members} deviceId={deviceId} online={online} identityFor={identityFor} mentionLabels={mentionLabels}
           resolveMedia={resolveMedia} resolveServerMedia={resolveServerMedia}
           canContinue={message.id === continueId} continuing={continuing} onContinue={onContinue}
@@ -441,12 +445,14 @@ export function BotGroupTimeline({
 }
 
 function BotGroupTimelineItem({
-  message, continued = false, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue,
+  message, continued = false, quoteDisplay, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue,
   plan, planActionable, planReassignable, planPending, onPlanAction, onEditStep,
 }: {
   message: BotGroupMessageView;
   /** Same teammate as the message just above: no second avatar or name. */
   continued?: boolean;
+  /** 引用回复: how the quoted message reads now. */
+  quoteDisplay?: BotGroupQuoteDisplay;
   member: BotGroupMemberView | undefined;
   members: readonly BotGroupMemberView[];
   deviceId: string;
@@ -495,6 +501,7 @@ function BotGroupTimelineItem({
     const compact = message.content.length <= COMPACT_BUBBLE_MAX_CHARS && !message.content.includes('\n');
     return <View style={styles.userRow} testID="botGroup.message.user">
       <View style={styles.userColumn}>
+        {quoteDisplay ? <BotGroupQuote display={quoteDisplay} align="right" /> : null}
         {attachments.length > 0
           ? <BotGroupMessageAttachments messageId={message.id} attachments={attachments} align="right" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} />
           : null}
@@ -529,6 +536,7 @@ function BotGroupTimelineItem({
           actionable={planActionable} reassignable={planReassignable} pending={planPending}
           onStart={() => onPlanAction('start')} onDismiss={() => onPlanAction('dismiss')} onEditStep={onEditStep} />
         : <>
+          {quoteDisplay ? <BotGroupQuote display={quoteDisplay} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
           {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
           <BotGroupHandoffFiles files={message.files} />

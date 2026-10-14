@@ -8977,6 +8977,14 @@
         "attachmentsFailed": "添付ファイルを送信できませんでした。ファイルが残っているか確認するか、削除してから再試行してください",
         "folderNotSupported": "フォルダーは添付できません。中のファイルを選んでください"
       },
+      "quote": {
+        "replyingTo": "{{name}} を引用",
+        "remove": "引用を外す",
+        "jumpLabel": "{{name}} の元のメッセージを表示：{{summary}}",
+        "deleted": "元のメッセージは削除されました",
+        "unavailable": "元のメッセージは閲覧できる履歴にありません",
+        "attachments": "{{name}} など {{total}} 件"
+      },
       "timeline": {
         "loadEarlier": "以前のメッセージを表示",
         "loadEarlierFailed": "以前のメッセージを読み込めませんでした。もう一度お試しください",
@@ -9075,7 +9083,8 @@
         "requestTimeout": "操作の結果をまだ確認できません。更新して結果を確認してから再試行してください。",
         "permissionDenied": "このグループを管理する権限がありません。",
         "serviceError": "チャットサービスで処理を完了できません。しばらくしてから再試行してください。",
-        "groupArchived": "このグループはアーカイブ済みのため操作できません。"
+        "groupArchived": "このグループはアーカイブ済みのため操作できません。",
+        "quoteUnavailable": "引用したメッセージは削除されたか、表示できなくなりました。引用を外したので、もう一度送信してください。"
       },
       "organizer": "まとめ役",
       "plan": {
@@ -9107,9 +9116,11 @@
         "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
       },
       "server": {
-        "reply": "返信",
+        "quoteReply": "引用して返信",
+        "startTopic": "スレッドを作成",
+        "openTopic": "スレッドを表示 · {{count}} 件の返信",
+        "topic": "スレッド",
         "replies": "返信",
-        "replyCount": "{{count}} 件の返信",
         "replyPlaceholder": "このメッセージに返信。@ でパートナーを指定できます…",
         "sendReply": "返信を送信",
         "addReaction": "リアクションを追加",

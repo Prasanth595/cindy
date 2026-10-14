@@ -146,7 +146,12 @@ import {
   __resetForTest as resetFavorites,
   addModelFavorite,
   listModelFavorites,
+  setModelFavoritesOwner,
 } from '@/state/modelFavorites';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { providerShareFavoriteSource, reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
+import { resetProviderShareStoreForTests } from '@/features/provider-share/providerShareStore';
+import type { ProviderShareCommand } from '../../shared/providerShare';
 
 const devices = [{ deviceId: 'device-c', name: 'Studio' }];
 const C_SOURCE = agentDeviceFavoriteSource({ deviceId: 'device-c', providerId: 'c-open' });
@@ -158,6 +163,7 @@ beforeEach(() => {
   resetEnginePrefs();
   resetFavorites();
   catalogs.offline.clear();
+  setDataOwnerGeneration(null, 0);
   remoteLists = { 'device-b': [] };
   let seq = 1;
   invoke = vi.fn(async (deviceId: string, channel: string, args: unknown[]) => {
@@ -167,6 +173,12 @@ beforeEach(() => {
     if (channel === MODEL_FAVORITES_APPLY) {
       const mutation = args[0] as ModelFavoriteMutation;
       if (mutation.kind === 'add') list.push({ uid: `fav-${seq++}`, ...mutation.item });
+      if (mutation.kind === 'update') {
+        const index = list.findIndex((item) => item.uid === mutation.expected.uid);
+        if (index < 0 || JSON.stringify(list[index]) !== JSON.stringify(mutation.expected))
+          throw new Error('stale favorite');
+        list[index] = { uid: mutation.expected.uid, ...mutation.item };
+      }
       if (mutation.kind === 'remove')
         remoteLists[deviceId] = list.filter((item) => item.uid !== mutation.expected.uid);
       return remoteLists[deviceId];
@@ -187,6 +199,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  setDataOwnerGeneration(null, 0);
 });
 
 const list = () => screen.getByRole('listbox');
@@ -390,5 +403,175 @@ describe('被控电脑上的任务:收藏读写被控电脑那一份', () => {
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith('device-b', MODEL_FAVORITES_GET, []);
     expect(within(favoritesGroup()).getByText('B Model')).toBeTruthy();
+  });
+});
+
+describe('收藏 / 全部聚合来源，供应商只筛自己的收藏', () => {
+  const share = (id: string) => ({
+    shareId: id, memberId: `member-${id}`, providerId: 'a-local', providerLabel: 'A Local',
+    hostDeviceId: 'host', deviceName: 'Host', status: 'active' as const, hostOnline: true, hostCapable: true,
+    owner: { displayName: id, avatarUrl: null, region: 'global' as const },
+  });
+  const shares = [share('one'), share('two')];
+  const allDevices = [...devices, ...shares.map((s) => ({ deviceId: `share:${s.shareId}`, name: s.shareId }))];
+  const publish = (received = shares) => reconcileProviderShareFavorites({
+    received, confirmedRegions: ['global'], ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 },
+  });
+  const clickRail = async (key: string) => {
+    await act(async () => fireEvent.click(document.querySelector(`[data-rail-item="${key}"]`)!));
+  };
+  const favoriteNames = () => [...favoritesGroup().querySelectorAll('[data-unified-anchor]')]
+    .map((row) => row.textContent);
+
+  beforeEach(() => {
+    setDataOwnerGeneration('recipient', 1);
+    setModelFavoritesOwner('recipient');
+    publish();
+    for (const s of shares) {
+      catalogs.byDevice[`share:${s.shareId}`] = [{
+        ...(catalogs.local[0] as object), remoteInvocationEnabled: true,
+        models: { 'claude-code': [{ id: 'a-model', name: `Shared ${s.shareId}`, efforts: ['low', 'high'], defaultEffort: 'high' }] },
+      }];
+    }
+    addModelFavorite({ providerId: 'a-local', modelId: 'a-model', agent: 'cc' });
+    addModelFavorite({ providerId: C_SOURCE, modelId: 'c-model', agent: 'cc' });
+    for (const s of shares) addModelFavorite({
+      providerId: providerShareFavoriteSource(s), modelId: 'a-model', agent: 'cc', effort: 'low',
+    });
+  });
+
+  it('从任一来源反复切回收藏 / 全部，四份收藏顺序稳定；同名连接不串收藏', async () => {
+    renderPanel({ devices: allDevices });
+    const initial = favoriteNames();
+    expect(initial).toHaveLength(4);
+    for (const [rail, name] of [
+      ['remote:share:one:a-local', 'Shared one'],
+      ['remote:device-c:c-open', 'C Model'],
+      ['provider:a-local', 'A Model'],
+      ['remote:share:two:a-local', 'Shared two'],
+    ]) {
+      await clickRail(rail!);
+      expect(favoriteNames()).toHaveLength(1);
+      expect(within(favoritesGroup()).getByText(name!)).toBeTruthy();
+      await clickRail('favorites');
+      expect(favoriteNames()).toEqual(initial);
+      await clickRail('all');
+      expect(favoriteNames()).toEqual(initial);
+    }
+    expect(listModelFavorites()).toHaveLength(4);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('聚合收藏选择保留分享路由和配置，取消只删除对应副本', async () => {
+    const { onUnifiedSelect } = renderPanel({ devices: allDevices });
+    await clickRail('favorites');
+    const row = rowOf(favoritesGroup(), 'Shared one');
+    await act(async () => fireEvent.click(row));
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'a-local', modelId: 'a-model', engine: 'cc', effort: 'low',
+      agentDevice: { deviceId: 'share:one', name: 'one' },
+    }));
+    await act(async () => fireEvent.click(within(row).getByRole('button', { name: '取消收藏' })));
+    expect(listModelFavorites().map((item) => item.providerId)).toEqual([
+      'a-local', C_SOURCE, providerShareFavoriteSource(shares[1]!),
+    ]);
+    await clickRail('remote:share:one:a-local');
+    expect(within(list()).queryByRole('group', { name: '收藏' })).toBeNull();
+  });
+
+  it('分享下线或授权变化后，缓存目录不能把旧收藏重新显示出来', async () => {
+    renderPanel({ devices: allDevices });
+    await act(async () => publish([{ ...shares[0]!, hostOnline: false }, shares[1]!]));
+    expect(within(favoritesGroup()).queryByText('Shared one')).toBeNull();
+    expect(listModelFavorites()).toHaveLength(4);
+    await act(async () => publish());
+    expect(within(favoritesGroup()).getByText('Shared one')).toBeTruthy();
+    await act(async () => publish([{ ...shares[0]!, memberId: 'new-member' }, shares[1]!]));
+    expect(within(favoritesGroup()).queryByText('Shared one')).toBeNull();
+    expect(within(favoritesGroup()).getByText('A Model')).toBeTruthy();
+  });
+
+  it('被控任务浏览分享时，收藏增删仍写被控电脑；控制端收藏保持原样', async () => {
+    const controllerItems = listModelFavorites();
+    remoteLists['device-b'] = [{ uid: 'home-fav', providerId: 'b-main', modelId: 'b-model', agent: 'cc' }];
+    renderPanel({ devices: allDevices, homeDeviceId: 'device-b' }, {
+      deviceId: 'device-b', modelId: 'b-model', currentProviderId: 'b-main',
+    });
+    await clickRail('remote:share:one:a-local');
+    expect(within(list()).queryByRole('group', { name: '收藏' })).toBeNull();
+    await act(async () => fireEvent.click(within(rowOf(list(), 'Shared one')).getByRole('button', { name: '收藏' })));
+    expect(remoteLists['device-b']).toHaveLength(2);
+    expect(remoteLists['device-b']![1]!.providerId).toBe(providerShareFavoriteSource(shares[0]!));
+    await clickRail('favorites');
+    expect(favoriteNames()).toHaveLength(2);
+    expect(within(favoritesGroup()).getByText('B Model')).toBeTruthy();
+    await act(async () => fireEvent.click(within(rowOf(favoritesGroup(), 'Shared one')).getByRole('button', { name: '取消收藏' })));
+    expect(remoteLists['device-b']).toHaveLength(1);
+    expect(listModelFavorites()).toEqual(controllerItems);
+    expect(invoke.mock.calls.every(([deviceId]) => deviceId === 'device-b')).toBe(true);
+  });
+
+  it('被控任务在分享里改收藏配置：按原副本条件更新被控电脑，重读后生效', async () => {
+    const controllerItems = listModelFavorites();
+    const source = providerShareFavoriteSource(shares[0]!);
+    const before = { uid: 'home-share', providerId: source, modelId: 'a-model', agent: 'cc' as const, effort: 'low' };
+    remoteLists['device-b'] = [before];
+    renderPanel({ devices: allDevices, homeDeviceId: 'device-b' }, {
+      deviceId: 'device-b', modelId: 'b-model', currentProviderId: 'b-main',
+    });
+    await clickRail('remote:share:one:a-local');
+    const row = () => rowOf(favoritesGroup(), 'Shared one');
+    expect(row().querySelector('[data-unified-triple]')?.textContent).toContain('低');
+    await act(async () => fireEvent.click(within(row()).getByRole('button', { name: '自定义' })));
+    const flyout = await screen.findByTestId('unified-model-config-flyout');
+    await act(async () => {
+      fireEvent.keyDown(flyout.querySelector('[role="slider"]') as HTMLElement, { key: 'ArrowRight' });
+    });
+    expect(invoke).toHaveBeenCalledWith('device-b', MODEL_FAVORITES_APPLY, [{
+      kind: 'update',
+      expected: before,
+      item: expect.objectContaining({ providerId: source, modelId: 'a-model', agent: 'cc', effort: 'high' }),
+    }]);
+    expect(remoteLists['device-b']).toEqual([expect.objectContaining({ uid: 'home-share', providerId: source, effort: 'high' })]);
+    // 重读被控电脑的列表后，同一行按新配置显示；控制端收藏不动。
+    expect(invoke.mock.calls.filter(([, channel]) => channel === MODEL_FAVORITES_GET).length).toBeGreaterThan(1);
+    expect(row().querySelector('[data-unified-triple]')?.textContent).toContain('高');
+    expect(listModelFavorites()).toEqual(controllerItems);
+    expect(invoke.mock.calls.every(([deviceId]) => deviceId === 'device-b')).toBe(true);
+  });
+
+  it('被控电脑收藏了控制端没加载过的跨区分享：按它的区域恢复授权后照常列出', async () => {
+    resetProviderShareStoreForTests();
+    const cn = { ...share('three'), owner: { displayName: 'three', avatarUrl: null, region: 'cn' as const } };
+    catalogs.byDevice['share:three'] = [{
+      ...(catalogs.local[0] as object), remoteInvocationEnabled: true,
+      models: { 'claude-code': [{ id: 'a-model', name: 'Shared three', efforts: ['low', 'high'], defaultEffort: 'high' }] },
+    }];
+    remoteLists['device-b'] = [{ uid: 'home-cn', providerId: providerShareFavoriteSource(cn), modelId: 'a-model', agent: 'cc' }];
+    const command = vi.fn(async (request: ProviderShareCommand) => {
+      if (request.action !== 'received-snapshot') return shares;
+      // Main 只为线索里的区域加载跨区名单；控制端本机收藏只有 global。
+      const withCn = request.favoriteRecovery?.regions.includes('cn') ?? false;
+      return {
+        ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 },
+        confirmedRegions: withCn ? ['global', 'cn'] : ['global'],
+        received: withCn ? [...shares, cn] : shares,
+      };
+    });
+    vi.stubGlobal('electronAPI', {
+      ...(window as unknown as { electronAPI: object }).electronAPI,
+      providerShare: { command, onReceivedChanged: () => () => {} },
+    });
+    renderPanel({ devices: [...allDevices, { deviceId: 'share:three', name: 'three' }], homeDeviceId: 'device-b' }, {
+      deviceId: 'device-b', modelId: 'b-model', currentProviderId: 'b-main',
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(command).toHaveBeenCalledWith({ action: 'received-snapshot', favoriteRecovery: {
+      ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 }, regions: ['global', 'cn'],
+    } });
+    await clickRail('favorites');
+    expect(within(favoritesGroup()).getByText('Shared three')).toBeTruthy();
+    expect(remoteLists['device-b']).toHaveLength(1);
+    resetProviderShareStoreForTests();
   });
 });

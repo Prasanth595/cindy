@@ -77,6 +77,11 @@
     "planDoneGeneric": "分工做完了",
     "olderOnComputer": "更早的消息请在电脑上查看"
   },
+  "quote": {
+    "label": "引用 {{name}}：{{summary}}",
+    "deleted": "原消息已删除",
+    "attachments": "{{name}} 等 {{total}} 个附件"
+  },
   "notice": {
     "memberJoined": "{{name}}加入了群聊",
     "memberFailed": "{{name}}这次没能回复",
@@ -208,7 +213,8 @@
     "requestTimeout": "还未确认操作结果，请刷新查看后再重试。",
     "permissionDenied": "你没有执行此操作的群管理权限。",
     "serviceError": "群聊服务处理失败，请稍后重试。",
-    "groupArchived": "本群已归档，不能执行此操作。"
+    "groupArchived": "本群已归档，不能执行此操作。",
+    "quoteUnavailable": "引用的消息已删除或不可见，已取消引用，请再发送一次"
   },
   "followUp": {
     "next": "分工 · 下一步",

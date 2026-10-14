@@ -8977,6 +8977,14 @@
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
       },
+      "quote": {
+        "replyingTo": "引用 {{name}}",
+        "remove": "取消引用",
+        "jumpLabel": "查看 {{name}} 的原訊息：{{summary}}",
+        "deleted": "原訊息已刪除",
+        "unavailable": "原訊息不在可查看的紀錄裡",
+        "attachments": "{{name}} 等 {{total}} 個附件"
+      },
       "timeline": {
         "loadEarlier": "查看更早的訊息",
         "loadEarlierFailed": "更早的訊息沒能載入，請再試一次",
@@ -9075,7 +9083,8 @@
         "requestTimeout": "還未確認操作結果，請重新整理查看後再重試。",
         "permissionDenied": "你沒有執行此操作的群管理權限。",
         "serviceError": "群聊服務處理失敗，請稍後重試。",
-        "groupArchived": "本群已封存，無法執行此操作。"
+        "groupArchived": "本群已封存，無法執行此操作。",
+        "quoteUnavailable": "引用的訊息已刪除或無法查看，已取消引用，請再傳送一次"
       },
       "organizer": "負責人",
       "plan": {
@@ -9107,9 +9116,11 @@
         "openFailed": "檔案沒能開啟，可能已被移動或刪除"
       },
       "server": {
-        "reply": "回覆",
+        "quoteReply": "引用回覆",
+        "startTopic": "建立話題",
+        "openTopic": "查看話題 · {{count}} 則回覆",
+        "topic": "話題",
         "replies": "回覆",
-        "replyCount": "{{count}} 則回覆",
         "replyPlaceholder": "回覆這則訊息，可用 @ 點名夥伴…",
         "sendReply": "傳送回覆",
         "addReaction": "新增表情回應",

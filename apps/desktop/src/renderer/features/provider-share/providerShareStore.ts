@@ -80,9 +80,20 @@ function setReceived(next: readonly ProviderShareReceived[]): void {
   for (const listener of receivedSubscribers) listener();
 }
 
+type ShareRegion = ProviderShareReceived['owner']['region'];
+
 let membershipRequest = 0;
 let membershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let membershipFailures = 0;
+/** 远程任务所在电脑的收藏不在本机存储里，它们的区域同样是查询线索；按账号隔离，换账号即作废。 */
+let favoriteRegionHints: { dataOwnerId: string | null; regions: ReadonlySet<ShareRegion> } = {
+  dataOwnerId: null, regions: new Set(),
+};
+
+function hintedFavoriteRegions(dataOwnerId: string | null): readonly ShareRegion[] {
+  return favoriteRegionHints.dataOwnerId === dataOwnerId ? [...favoriteRegionHints.regions] : [];
+}
+
 function refreshFavoriteMembership(api: ProviderShareApi): void {
   if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
   membershipRetryTimer = null;
@@ -99,9 +110,10 @@ function refreshFavoriteMembership(api: ProviderShareApi): void {
   };
   void (async () => {
     try {
-      let regions: ProviderShareReceived['owner']['region'][] = [];
-      try { regions = getProviderShareFavoriteRegions(owner.dataOwnerId); }
+      let local: ShareRegion[] = [];
+      try { local = getProviderShareFavoriteRegions(owner.dataOwnerId); }
       catch { /* 清理器会报告存储错误并安排重试；读取恢复后再补齐区域线索。 */ }
+      const regions = [...new Set([...local, ...hintedFavoriteRegions(owner.dataOwnerId)])];
       const snapshot = await api.command({
         action: 'received-snapshot',
         favoriteRecovery: { ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation }, regions },
@@ -149,6 +161,18 @@ export function refreshProviderShareFavoriteMembership(): void {
   }
   const api = providerShareApi();
   if (api) refreshFavoriteMembership(api);
+}
+
+/**
+ * 远程任务读写任务所在电脑的收藏：其中分享收藏的区域本机可能从没加载过，补进查询线索并重新
+ * 核对一次名单，让对方区域的授权被恢复。区域已在线索里时什么都不做。
+ */
+export function requestProviderShareFavoriteRegions(regions: readonly ShareRegion[]): void {
+  const { dataOwnerId } = getDataOwnerGeneration();
+  const known = favoriteRegionHints.dataOwnerId === dataOwnerId ? favoriteRegionHints.regions : new Set<ShareRegion>();
+  if (regions.every((region) => known.has(region))) return;
+  favoriteRegionHints = { dataOwnerId, regions: new Set([...known, ...regions]) };
+  refreshProviderShareFavoriteMembership();
 }
 
 /** 主动再取一次(退出分享后立即刷新列表；推送仍会随后到达)。 */
@@ -247,6 +271,7 @@ export function resetProviderShareStoreForTests(): void {
   if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
   membershipRetryTimer = null;
   membershipFailures = 0;
+  favoriteRegionHints = { dataOwnerId: null, regions: new Set() };
   receivedSubscribers.clear();
   pendingRequests = [];
   pendingSubscribers.clear();

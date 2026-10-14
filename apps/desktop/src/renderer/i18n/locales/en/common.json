@@ -9014,6 +9014,14 @@
         "attachmentsFailed": "Attachments not sent. Check that the files still exist, or remove them and try again.",
         "folderNotSupported": "Folders can’t be attached. Choose the files inside instead."
       },
+      "quote": {
+        "replyingTo": "Quoting {{name}}",
+        "remove": "Remove quote",
+        "jumpLabel": "Go to {{name}}’s original message: {{summary}}",
+        "deleted": "Original message was deleted",
+        "unavailable": "The original message isn’t in the history you can view",
+        "attachments": "{{name}} and others ({{total}} files)"
+      },
       "timeline": {
         "loadEarlier": "Show Earlier Messages",
         "loadEarlierFailed": "Couldn’t load earlier messages. Try again.",
@@ -9112,7 +9120,8 @@
         "requestTimeout": "The result is not confirmed yet. Refresh to check before retrying.",
         "permissionDenied": "You do not have permission to manage this group.",
         "serviceError": "The chat service could not complete the request. Try again later.",
-        "groupArchived": "This group is archived. This action is unavailable."
+        "groupArchived": "This group is archived. This action is unavailable.",
+        "quoteUnavailable": "The quoted message was deleted or is no longer visible. The quote was removed. Send again."
       },
       "organizer": "Organizer",
       "plan": {
@@ -9144,9 +9153,11 @@
         "openFailed": "Couldn’t open the file. It may have been moved or deleted."
       },
       "server": {
-        "reply": "Reply",
+        "quoteReply": "Quote reply",
+        "startTopic": "Start a thread",
+        "openTopic": "View thread · {{count}} replies",
+        "topic": "Thread",
         "replies": "Replies",
-        "replyCount": "{{count}} replies",
         "replyPlaceholder": "Reply to this message; use @ to mention a companion…",
         "sendReply": "Send reply",
         "addReaction": "Add reaction",

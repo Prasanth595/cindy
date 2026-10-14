@@ -9,6 +9,8 @@
     {"id": "group-owner", "status": "proposed", "en": "Group Owner", "translations": {"zh-CN": "群主", "zh-TW": "群主", "ja": "グループオーナー", "ko": "그룹 소유자"}, "checkCase": false, "note": "Chat Server 的群角色，可由人或伙伴担任；不要与伙伴主人或分工负责人混同。群设置成员行英文可简写 Owner。"},
     {"id": "group-admin", "status": "proposed", "en": "Group Admin", "translations": {"zh-CN": "群管理员", "zh-TW": "群管理員", "ja": "グループ管理者", "ko": "그룹 관리자"}, "checkCase": false, "note": "可管理群资料和成员，但不能替伙伴主人授权工具或私人资料。群设置内可简称管理员 / Admin。"},
     {"id": "group-nickname", "status": "proposed", "en": "Group Nickname", "translations": {"zh-CN": "群昵称", "zh-TW": "群暱稱", "ja": "グループ内の名前", "ko": "그룹에서의 이름"}, "checkCase": false, "note": "仅在单个群中显示的名字。为空时使用账号显示名；不覆盖个人资料名字或稳定身份。"},
+    {"id": "group-thread", "status": "proposed", "en": "Thread (in a group chat)", "translations": {"zh-CN": "话题", "zh-TW": "話題", "ja": "スレッド", "ko": "스레드"}, "checkCase": false, "note": "伙伴群聊里挂在某条消息下的子讨论（服务器的 Thread）。zh 取「话题」：入口叫「创建话题」，有回复后叫「查看话题」，面板标题「话题」；话题里的单条发言仍叫「回复」（回复这条消息、发送回复），不要全局替换。它不是任务：已裁决的 Thread→任务 指产品内的 session，这里是群消息的分支讨论，与「引用回复」（quote-reply）不同——引用回复留在当前时间线。2026-10-13 Dash 提出「现在的回复改名叫创建话题」，先登记为 proposed 待走查后定。"},
+    {"id": "quote-reply", "status": "proposed", "en": "Quote reply", "translations": {"zh-CN": "引用回复", "zh-TW": "引用回覆", "ja": "引用して返信", "ko": "인용 답글"}, "checkCase": false, "note": "伙伴群聊消息操作：在当前时间线发一条带被引用者与原消息摘要的新消息，不创建话题（group-thread），也不点名被引用的人。输入框上方的待发引用用「引用 {name}」，取消叫「取消引用」。与任务里「选中文字引用」（chat quote）是不同功能。"},
     {
       "id": "wallpaper-visibility",
       "status": "proposed",

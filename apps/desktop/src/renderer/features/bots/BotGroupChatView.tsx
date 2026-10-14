@@ -10,6 +10,9 @@ import type { ReactNode } from 'react';
  * 分工（§7）：安排卡、交接文件与「下一步 · 继续」「没做完 · 重试」见 BotGroupPlan.tsx；
  * 这里只负责把安排快照接到对应消息上，并调用 main 的安排操作。
  *
+ * 引用回复（§10）：页面持有本群的待发引用（随群切换整页重建，不会串群）；已发消息上的
+ * 引用块以已加载的原消息为准，点击跳到原消息并高亮，原消息不在已加载范围时向前翻几页找。
+ *
  * 附件（§3.1）：托盘状态（`useAttachments`）由页面持有，文件拖到页面任意位置都进托盘，
  * 与普通任务的整区拖入一致；用户消息上的图片与文件复用普通聊天用户气泡的图片视图与
  * 附件 chip。
@@ -47,6 +50,7 @@ import {
 } from '@/lib/fileDrop';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { ControlledBanner, useControlledBy, useComposerCollapsed } from '@/features/remote-device/ControlledBanner';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import type {
@@ -57,14 +61,18 @@ import type {
   BotGroupPlanAction,
   BotGroupPlanStepView,
   BotGroupPlanView,
+  BotGroupQuoteDisplay,
+  BotGroupQuoteView,
   BotGroupSpeakerActivity,
 } from '../../../shared/botGroupChat';
+import { botGroupQuoteFromMessage, isBotGroupMessageQuotable, resolveBotGroupQuote } from '../../../shared/botGroupChat';
 import { useRegisterContentHeader } from '../feature-context';
 import { BotAvatar } from './BotAvatar';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
+import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
 import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
@@ -123,6 +131,27 @@ type PlanPending = { planId: string; action: BotGroupPlanAction | 'edit' };
 
 /** A read that lands within this needs no progress indicator, so a fast switch does not flash. */
 const TIMELINE_LOADING_REVEAL_MS = 200;
+/** Older pages read while looking for a quoted message before saying it is out of reach. */
+const QUOTE_LOCATE_MAX_PAGES = 5;
+const QUOTE_HIGHLIGHT_MS = 2000;
+const NO_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * Originals that loaded quotes point at and that sit only on older pages, newest first. A push
+ * refresh re-reads just the latest page, so these may have been edited or deleted since.
+ */
+function quotedOlderOriginals(
+  older: readonly BotGroupMessageView[],
+  latest: readonly BotGroupMessageView[],
+): BotGroupMessageView[] {
+  const latestIds = new Set(latest.map((message) => message.id));
+  const olderById = new Map(older.map((message) => [message.id, message]));
+  const ids = new Set([...older, ...latest].flatMap((message) => {
+    const target = message.quote?.messageId;
+    return target && !latestIds.has(target) && olderById.has(target) ? [target] : [];
+  }));
+  return [...ids].map((id) => olderById.get(id)!).sort((a, b) => b.sequence - a.sequence);
+}
 
 /** Stable identity for header memoization; member arrays are new on every read. */
 function memberKey(members: readonly BotGroupMemberView[]): string {
@@ -175,6 +204,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const attachmentState = useAttachments(attachmentScope, attachmentScope);
   const [dragOver, setDragOver] = useState(false);
   const dragCounterRef = useRef(0);
+  /** 引用回复 waiting in this group's composer; the page is rebuilt per group. */
+  const [quoteDraft, setQuoteDraft] = useState<BotGroupQuoteView | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  /** Quoted originals on older pages not re-read since the last push: quotes use their snapshot. */
+  const [unverifiedOriginals, setUnverifiedOriginals] = useState<ReadonlySet<string>>(NO_IDS);
+  const loadingOlderRef = useRef(false);
+  const locatingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -208,6 +245,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
+          const shown = stateRef.current;
+          if (shown.kind === 'ready') {
+            const targets = quotedOlderOriginals(shown.older, result.group.messages);
+            if (targets.length > 0) void recheckQuotedOriginals(api, targets, isCurrent);
+          }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
         } else {
@@ -216,6 +258,45 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         }
       } catch {
         if (isCurrent()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
+      }
+    };
+    /**
+     * Re-reads the older pages holding quoted originals after a push and updates only messages
+     * already loaded; history that was never opened is not fetched. Each read covers at least the
+     * newest remaining original, so it ends after at most one read per original. A newer read
+     * supersedes this one; a failed read leaves the rest unverified, so their quotes show the
+     * snapshot, not the stale copy.
+     */
+    const recheckQuotedOriginals = async (
+      api: NonNullable<ReturnType<typeof botGroupApi>>,
+      targets: BotGroupMessageView[],
+      isCurrent: () => boolean,
+    ) => {
+      setUnverifiedOriginals((previous) => new Set([...previous, ...targets.map((target) => target.id)]));
+      let remaining = targets;
+      for (let page = 0; remaining.length > 0 && page < targets.length; page += 1) {
+        let messages: BotGroupMessageView[] | null = null;
+        try {
+          const read = await api.getBotGroup(groupId, { beforeSequence: remaining[0]!.sequence + 1 });
+          messages = read.ok ? read.group.messages : null;
+        } catch {
+          messages = null;
+        }
+        if (!isCurrent() || !messages) return;
+        const fresh = new Map(messages.map((message) => [message.id, message]));
+        const oldest = messages.reduce((min, message) => Math.min(min, message.sequence), Number.POSITIVE_INFINITY);
+        const covered = remaining.filter((target) => fresh.has(target.id) || target.sequence >= oldest);
+        setState((previous) => previous.kind === 'ready'
+          ? { ...previous, older: previous.older.map((message) => fresh.get(message.id) ?? message) }
+          : previous);
+        // An original missing from a page that covers it is no longer readable here: it stays unverified.
+        setUnverifiedOriginals((previous) => {
+          const next = new Set(previous);
+          for (const target of covered) if (fresh.has(target.id)) next.delete(target.id);
+          return next;
+        });
+        remaining = remaining.filter((target) => !covered.includes(target));
+        if (covered.length === 0) return;
       }
     };
     loadRef.current = additionalSources => void load(additionalSources);
@@ -247,6 +328,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const messages = useMemo(
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
+  );
+  // Quotes resolve against verified copies only; an unverified original falls back to the snapshot.
+  const quoteSources = useMemo(
+    () => (unverifiedOriginals.size > 0 ? messages.filter((message) => !unverifiedOriginals.has(message.id)) : messages),
+    [messages, unverifiedOriginals],
   );
   const acknowledge = useCallback(() => {
     if (!isDataOwnerGenerationCurrent(readOwner.current) || !stickToBottomRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
@@ -391,28 +477,32 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     return () => observer.disconnect();
   }, [ready]);
 
-  const loadOlder = async () => {
-    if (state.kind !== 'ready' || loadingOlder) return;
-    const first = messages[0];
+  /** Reads one older page; returns it so 引用 can keep paging toward the original. */
+  const loadOlder = async (beforeSequence?: number): Promise<{ messages: BotGroupMessageView[]; hasMore: boolean } | null> => {
+    const base = stateRef.current;
+    if (base.kind !== 'ready' || loadingOlderRef.current) return null;
+    const loaded = mergeBotGroupMessages(base.older, base.group.messages);
+    const before = beforeSequence ?? loaded[0]?.sequence;
     const api = botGroupApi();
-    if (!first || !api) return;
+    if (!before || !api) return null;
     const owner = getDataOwnerGeneration();
+    loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const sourceMessageIds = mergeBotGroupMessages(state.older, state.group.messages).map(message => message.id);
-      const result = await api.getBotGroup(groupId, { beforeSequence: first.sequence, sourceMessageIds });
-      if (!isDataOwnerGenerationCurrent(owner)) return;
+      const sourceMessageIds = loaded.map(message => message.id);
+      const result = await api.getBotGroup(groupId, { beforeSequence: before, sourceMessageIds });
+      if (!isDataOwnerGenerationCurrent(owner)) return null;
       if (!result.ok) {
         toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
-        return;
+        return null;
       }
       const element = scrollRef.current;
       if (element) prependAnchorRef.current = { height: element.scrollHeight, top: element.scrollTop };
-      const newerRefresh = stateRef.current.kind === 'ready' && stateRef.current.group !== state.group;
+      const newerRefresh = stateRef.current.kind === 'ready' && stateRef.current.group !== base.group;
       setState((previous) => {
         if (previous.kind !== 'ready') return previous;
         // A newer push refresh wins over an older in-flight pagination request.
-        const executionFailures = previous.group === state.group
+        const executionFailures = previous.group === base.group
           ? result.group.executionFailures ?? previous.group.executionFailures
           : previous.group.executionFailures;
         return {
@@ -425,12 +515,88 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       });
       // A push may have refreshed before these sources were displayed. Reconcile their current state too.
       if (newerRefresh) loadRef.current(result.group.messages.map(message => message.id));
+      return { messages: result.group.messages, hasMore: result.group.hasMoreBefore };
     } catch {
       toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
+      return null;
     } finally {
+      loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
   };
+
+  /**
+   * Goes to a quoted message in this group's main timeline, paging back a bounded number
+   * of times. A deleted or unreachable original says so instead of jumping anywhere else.
+   */
+  const locateQuoted = async (quote: BotGroupQuoteView) => {
+    if (locatingRef.current) return;
+    const find = (list: readonly BotGroupMessageView[]) => list.find(message => message.id === quote.messageId && !message.threadRootId);
+    const settle = (original: BotGroupMessageView | undefined) => {
+      if (original && !original.deleted) setJumpTarget(original.id);
+      else toast.info(t(original ? 'bots.groupChat.quote.deleted' : 'bots.groupChat.quote.unavailable'));
+    };
+    const base = stateRef.current;
+    if (base.kind !== 'ready') return;
+    const latest = find(base.group.messages);
+    if (latest) { settle(latest); return; }
+    locatingRef.current = true;
+    // Push refreshes re-read only the newest page, so an original on an older page may have
+    // changed since it was paged in: re-read its page first and go by what that says.
+    const paged = find(base.older);
+    if (paged) {
+      try {
+        // A failed re-read is not a verified original: stay put rather than jump to a stale copy.
+        const read = await loadOlder(paged.sequence + 1);
+        if (!read) return;
+        const original = find(read.messages);
+        if (original) setUnverifiedOriginals((previous) => {
+          if (!previous.has(original.id)) return previous;
+          const next = new Set(previous);
+          next.delete(original.id);
+          return next;
+        });
+        settle(original);
+      } finally {
+        locatingRef.current = false;
+      }
+      return;
+    }
+    try {
+      let hasMore = base.older.length > 0 ? base.olderHasMore : base.group.hasMoreBefore;
+      let before: number | undefined;
+      for (let page = 0; hasMore && page < QUOTE_LOCATE_MAX_PAGES; page += 1) {
+        const read = await loadOlder(before);
+        if (!read) return;
+        const original = find(read.messages);
+        if (original) { settle(original); return; }
+        const oldest = read.messages.reduce((min, message) => Math.min(min, message.sequence), Number.POSITIVE_INFINITY);
+        hasMore = read.hasMore && Number.isFinite(oldest) && (quote.sequence === null || oldest > quote.sequence);
+        before = Number.isFinite(oldest) ? oldest : undefined;
+      }
+      settle(undefined);
+    } finally {
+      locatingRef.current = false;
+    }
+  };
+
+  // The original is on screen after the render that loaded it: center it, move focus, light it up.
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const target = [...(contentRef.current?.querySelectorAll<HTMLElement>('[data-bot-group-message-id]') ?? [])]
+      .find(element => element.dataset.botGroupMessageId === jumpTarget);
+    if (!target) return;
+    setJumpTarget(null);
+    stickToBottomRef.current = false;
+    target.scrollIntoView?.({ block: 'center' });
+    target.focus({ preventScroll: true });
+    setHighlightId(jumpTarget);
+  }, [jumpTarget, messages]);
+  useEffect(() => {
+    if (!highlightId) return;
+    const timer = window.setTimeout(() => setHighlightId(null), QUOTE_HIGHLIGHT_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlightId]);
 
   const continueRound = async () => {
     const api = botGroupApi();
@@ -658,13 +824,26 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                     {formatBotMessageGroupTime(groupTime, i18n.language)}
                   </p>
                 ) : null}
+                <div
+                  data-bot-group-message-id={message.id}
+                  // Focusable only as a jump target, so a click elsewhere keeps its usual focus.
+                  tabIndex={jumpTarget === message.id || highlightId === message.id ? -1 : undefined}
+                  className={cn(
+                    '-m-1.5 rounded-xl p-1.5 outline-none transition-colors',
+                    highlightId === message.id && 'bg-[hsl(var(--search-match-bg))] ring-1 ring-[var(--border-default)]',
+                  )}
+                >
                 <BotGroupTimelineItem
                   message={message}
                   shareScope={shareScope}
                   sharing={sharing}
+                  quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
+                  onLocateQuote={message.quote ? () => void locateQuoted(message.quote!) : undefined}
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
+                    onQuote={group.serverBacked && !group.archived && isBotGroupMessageQuotable(message)
+                      ? () => setQuoteDraft(botGroupQuoteFromMessage(message)) : undefined}
                     onReply={group.serverBacked ? () => {
                       threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
                       if (threadCloseAnimationRef.current) {
@@ -706,6 +885,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                     if (message.planId) void editPlanStep(message.planId, step, action, botId);
                   }}
                 />
+                </div>
               </div>
             );
           })}
@@ -746,6 +926,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}
+        quote={quoteDraft ? { view: quoteDraft, display: resolveBotGroupQuote(quoteDraft, quoteSources) } : null}
+        onQuoteChange={setQuoteDraft}
         onSent={() => {
           stickToBottomRef.current = true;
           loadRef.current();
@@ -764,7 +946,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
     </main>
-    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={closeThread} />}
+    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} quoteSources={quoteSources} onClose={closeThread} />}
     </div>
   );
 }
@@ -800,6 +982,8 @@ function BotGroupTimelineItem({
   message,
   shareScope,
   sharing,
+  quoteDisplay,
+  onLocateQuote,
   actions,
   member,
   members,
@@ -817,6 +1001,9 @@ function BotGroupTimelineItem({
   message: BotGroupMessageView;
   shareScope: string;
   sharing: boolean;
+  /** 引用回复: how the quoted message reads now; absent when this message quotes nothing. */
+  quoteDisplay?: BotGroupQuoteDisplay;
+  onLocateQuote?: () => void;
   actions?: ReactNode;
   member: BotGroupMemberView | undefined;
   members: readonly BotGroupMemberView[];
@@ -868,6 +1055,7 @@ function BotGroupTimelineItem({
         className={`relative flex justify-end ${sharing ? 'ml-10' : ''}`}>
         {sharing && <ShareMessageCheckbox clientId={message.id} />}
         <div className="flex min-w-0 max-w-[72%] flex-col items-end gap-2">
+          {quoteDisplay ? <BotGroupQuoteBlock display={quoteDisplay} onLocate={onLocateQuote} align="right" /> : null}
           <BotGroupUserAttachments attachments={message.attachments} />
           {hasText ? (
             <div
@@ -927,6 +1115,7 @@ function BotGroupTimelineItem({
           />
         ) : (
           <>
+            {quoteDisplay ? <BotGroupQuoteBlock display={quoteDisplay} onLocate={onLocateQuote} /> : null}
             {hasText ? (
               <div className={`min-w-0 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
                 <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />

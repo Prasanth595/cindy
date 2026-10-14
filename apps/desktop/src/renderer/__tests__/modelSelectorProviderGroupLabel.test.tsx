@@ -147,6 +147,7 @@ vi.mock('@/features/provider-group/useLocalProviderGroups', () => ({
 }));
 vi.mock('@/features/provider-share/providerShareStore', () => ({
   ensureProviderShareReceivedStarted: vi.fn(),
+  requestProviderShareFavoriteRegions: vi.fn(),
   useProviderShareReceived: () => ({
     received: [{ shareId: 's1', providerLabel: 'X', deviceName: "Magi's Mac Mini", owner: { displayName: 'Magi' } }],
     loaded: true,

@@ -8977,6 +8977,14 @@
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
       },
+      "quote": {
+        "replyingTo": "引用 {{name}}",
+        "remove": "取消引用",
+        "jumpLabel": "查看 {{name}} 的原消息：{{summary}}",
+        "deleted": "原消息已删除",
+        "unavailable": "原消息不在可查看的记录里",
+        "attachments": "{{name}} 等 {{total}} 个附件"
+      },
       "timeline": {
         "loadEarlier": "查看更早的消息",
         "loadEarlierFailed": "更早的消息没能加载，请再试一次",
@@ -9075,7 +9083,8 @@
         "requestTimeout": "还未确认操作结果，请刷新查看后再重试。",
         "permissionDenied": "你没有执行此操作的群管理权限。",
         "serviceError": "群聊服务处理失败，请稍后重试。",
-        "groupArchived": "本群已归档，不能执行此操作。"
+        "groupArchived": "本群已归档，不能执行此操作。",
+        "quoteUnavailable": "引用的消息已删除或不可见，已取消引用，请再发送一次"
       },
       "organizer": "负责人",
       "plan": {
@@ -9107,9 +9116,11 @@
         "openFailed": "文件没能打开，可能已被移动或删除"
       },
       "server": {
-        "reply": "回复",
+        "quoteReply": "引用回复",
+        "startTopic": "创建话题",
+        "openTopic": "查看话题 · {{count}} 条回复",
+        "topic": "话题",
         "replies": "回复",
-        "replyCount": "{{count}} 条回复",
         "replyPlaceholder": "回复这条消息，可用 @ 点名伙伴…",
         "sendReply": "发送回复",
         "addReaction": "添加表情回应",
