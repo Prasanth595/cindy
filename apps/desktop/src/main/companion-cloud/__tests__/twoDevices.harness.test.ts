@@ -117,7 +117,7 @@ async function createDevice(name: string, peers: () => DeviceLinkDeviceView[], o
       restoreMemory: async (botId, filename, raw) => { (memories.get(botId) ?? (memories.set(botId, new Map()), memories.get(botId)!)).set(filename, raw); },
       removeMemory: async (botId, filename) => { memories.get(botId)?.delete(filename); },
       readSkill: async (botId, slug) => skills.get(botId)?.get(slug) ?? null,
-      saveSkill: async (botId, slug, content) => { (skills.get(botId) ?? (skills.set(botId, new Map()), skills.get(botId)!)).set(slug, content); },
+      saveSkill: async (botId, slug, content, _enabled) => { (skills.get(botId) ?? (skills.set(botId, new Map()), skills.get(botId)!)).set(slug, content); },
       removeSkill: async (botId, slug) => { skills.get(botId)?.delete(slug); },
       ensureCanonicalSession: async (botId) => ensureSession(botId),
       localMessageTimes: async (sessionId, fromMs) => visible(sessionId).filter(row => row.createdAt >= fromMs)

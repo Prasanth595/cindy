@@ -45,7 +45,7 @@ export interface CompanionMaterializeHost {
   restoreMemory: (botId: string, filename: string, raw: string, fence: CompanionWriteFence) => Promise<void>;
   removeMemory: (botId: string, filename: string, fence: CompanionWriteFence) => Promise<void>;
   readSkill: (botId: string, slug: string) => Promise<string | null>;
-  saveSkill: (botId: string, slug: string, content: string, fence: CompanionWriteFence) => Promise<void>;
+  saveSkill: (botId: string, slug: string, content: string, enabled: boolean, fence: CompanionWriteFence) => Promise<void>;
   removeSkill: (botId: string, slug: string, fence: CompanionWriteFence) => Promise<void>;
   ensureCanonicalSession: (botId: string, fence: CompanionWriteFence) => Promise<string>;
   /**
@@ -172,7 +172,8 @@ export async function materializeCompanion(input: {
           return;
         }
         if (content === undefined) return;
-        if (content !== current) await step(() => host.saveSkill(botId, slug, content, fence));
+        // Always written: also sets the cloud's enabled state, even when the body is unchanged.
+        await step(() => host.saveSkill(botId, slug, content, record(value)?.enabled !== false, fence));
         applied.set(key, { hash: valueHash(value), revision: row.revision });
       });
     }

@@ -1162,6 +1162,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       beforeDeliver: async () => {
         await updateExecution(run, 'heartbeat');
         if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+        // Handed to another computer since the claim (the hand-over demotes this copy): never run it here.
+        if (companion?.isShadowed(botId) || !companion?.installConfirmed(botId)) throw new Error('MEMBER_UNAVAILABLE');
       } });
     run.accepted = true;
     run.settlement = { terminal: { sessionId: '', activeInputClientId: run.clientId, outcome: 'done', resultText: '' },

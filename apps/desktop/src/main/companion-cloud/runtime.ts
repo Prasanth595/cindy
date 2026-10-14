@@ -303,12 +303,13 @@ export function startCompanionCloud(input: {
     const botId = actor.externalId;
     if (materializing.has(botId) || Date.now() < (autoRetryAt.get(botId) ?? 0)) return;
     autoRetryAt.set(botId, Date.now() + AUTO_RETRY_MS);
+    // Hidden first, through the home confirmation and the claim: the stale copy must not run or sync
+    // meanwhile. The take-over lifts it once complete; a failure keeps it hidden and retries.
+    demoteNow(actor);
     // Confirm the home with the server before un-demoting: a stale actor cache must not
     // resurrect a copy whose companion has already moved on.
     void input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: input.selfDeviceId, expectedHomeDeviceId: input.selfDeviceId })
       .then(async () => {
-        // Hidden before this installation becomes the owner: no sync cycle may pick up the stale copy.
-        demoteNow(actor);
         // Automatic: never take the companion from the other installation on this computer.
         if (await claimInstall(actor, 'handed') !== 'mine') throw new Error('INSTALL_CLAIM_LOST');
         return materialize(actor);

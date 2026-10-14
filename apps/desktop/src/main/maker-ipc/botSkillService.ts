@@ -297,9 +297,10 @@ export async function listBotSkillSourcesForBot(botId: string, deps: BotSkillSer
 }
 
 /** Restore one own skill's SKILL.md verbatim (cloud companions), keeping its native frontmatter. */
-export async function saveBotSkillSourceForBot(botId: string, slug: string, source: string, deps: BotSkillServiceDeps = {}): Promise<void> {
+export async function saveBotSkillSourceForBot(botId: string, slug: string, source: string,
+  options: { enabled?: boolean } = {}, deps: BotSkillServiceDeps = {}): Promise<void> {
   const boundary = captureOwnerBoundary(deps);
-  await saveBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug, source);
+  await saveBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug, source, options);
   assertOwnerBoundary(deps, boundary);
 }
 

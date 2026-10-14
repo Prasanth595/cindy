@@ -32,6 +32,7 @@ export function fakeApi(handler: ApiHandler) {
 export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
   const memories = new Map<string, string>();
   const skills = new Map<string, string>();
+  const disabledSkills = new Set<string>();
   const rows: CompanionMirrorRow[] = [];
   let profile: { status: string; displayName: string; description: string } | null = null;
   const host = {
@@ -43,7 +44,9 @@ export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
     restoreMemory: vi.fn(async (_bot: string, file: string, raw: string) => { memories.set(file, raw); }),
     removeMemory: vi.fn(async (_bot: string, file: string) => { memories.delete(file); }),
     readSkill: vi.fn(async (_bot: string, slug: string) => skills.get(slug) ?? null),
-    saveSkill: vi.fn(async (_bot: string, slug: string, content: string) => { skills.set(slug, content); }),
+    saveSkill: vi.fn(async (_bot: string, slug: string, content: string, enabled = true) => {
+      skills.set(slug, content); if (enabled) disabledSkills.delete(slug); else disabledSkills.add(slug);
+    }),
     removeSkill: vi.fn(async (_bot: string, slug: string) => { skills.delete(slug); }),
     ensureCanonicalSession: vi.fn(async () => 'session-1'),
     localMessageTimes: vi.fn(async (_sid: string, from: number) =>
@@ -57,7 +60,7 @@ export function fakeLocal(overrides: Partial<CompanionMaterializeHost> = {}) {
       .sort((a, b) => b.createdAt - a.createdAt).slice(0, limit)),
     ...overrides,
   };
-  return { host: host as unknown as CompanionMaterializeHost & typeof host, memories, skills, rows,
+  return { host: host as unknown as CompanionMaterializeHost & typeof host, memories, skills, disabledSkills, rows,
     setProfile: (value: typeof profile) => { profile = value; } };
 }
 

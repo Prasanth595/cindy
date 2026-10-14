@@ -383,6 +383,18 @@ describe('verbatim SKILL.md (cloud companions)', () => {
     await expect(saveBotSkillSource(userDataDir, 'bot_a', 'big', `---\nname: big\n---\n${'x'.repeat(BOT_SKILL_MAX_BODY_BYTES + 1)}`))
       .rejects.toBeInstanceOf(BotSkillStoreError);
   });
+
+  it('applies the requested enabled state, moving the whole skill folder', async () => {
+    const source = '---\nname: brew\ndescription: Brew\n---\n\nsteps\n';
+    await saveBotSkillSource(userDataDir, 'bot_c', 'brew', source);
+    await fs.writeFile(path.join(botSkillsDir(userDataDir, 'bot_c'), 'brew', 'helper.sh'), 'echo hi');
+    await saveBotSkillSource(userDataDir, 'bot_c', 'brew', source, { enabled: false });
+    expect((await readBotSkill(userDataDir, 'bot_c', 'brew'))?.enabled).toBe(false);
+    expect(await listBotSkillSources(userDataDir, 'bot_c')).toEqual([{ slug: 'brew', source, enabled: false }]);
+    await saveBotSkillSource(userDataDir, 'bot_c', 'brew', source, { enabled: true });
+    expect((await readBotSkill(userDataDir, 'bot_c', 'brew'))?.enabled).toBeUndefined();
+    expect(await fs.readFile(path.join(botSkillsDir(userDataDir, 'bot_c'), 'brew', 'helper.sh'), 'utf8')).toBe('echo hi');
+  });
 });
 
 describe('strict skill reads (cloud companions)', () => {

@@ -492,6 +492,23 @@ describe('installation guard', () => {
     expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
   });
 
+  it('hides a copy handed here before confirming the home with the server', async () => {
+    let demotedAtPatch: boolean | undefined;
+    let state: { isDemoted: (botId: string) => boolean } | undefined;
+    const t = setup({ home: 'desk', handler: (route, method) => {
+      if (method === 'PATCH') { demotedAtPatch = state?.isDemoted('bot_mia'); return {}; }
+      if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: MIA, revision: 1 }] : { revision: 1 };
+      if (route === '/conversations') return { id: ROOM };
+      if (route.includes('/messages?')) return [];
+      return {};
+    } });
+    state = t.state;
+    t.runtime.reconcile([]);
+    await vi.waitFor(() => expect(t.local.host.createProfile).toHaveBeenCalledOnce());
+    expect(demotedAtPatch).toBe(true);
+    await vi.waitFor(() => expect(t.state.isDemoted('bot_mia')).toBe(false));
+  });
+
   it('takes over an existing, never-synced copy handed here before this computer saw the move', async () => {
     // Another computer's installation ran it; this device's own copy was never demoted.
     const t = guarded({ installationId: 'install-x', deviceId: 'laptop' });

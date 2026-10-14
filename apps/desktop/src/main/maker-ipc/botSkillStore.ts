@@ -517,9 +517,11 @@ export async function listBotSkillSources(userDataDir: string, botId: string): P
 
 /**
  * Write a whole SKILL.md verbatim (cloud companions restoring a copy), so native frontmatter
- * survives; same write queue, size limit and runtime refresh as saveBotSkill.
+ * survives; same write queue, size limit and runtime refresh as saveBotSkill. `enabled` sets
+ * where it lives (moving the whole skill folder); omitted, it keeps its current state.
  */
-export async function saveBotSkillSource(userDataDir: string, botId: string, slug: string, source: string): Promise<void> {
+export async function saveBotSkillSource(userDataDir: string, botId: string, slug: string, source: string,
+  options: { enabled?: boolean } = {}): Promise<void> {
   if (!normalizeBotSkillSlug(slug) || normalizeBotSkillSlug(slug) !== slug) throw new BotSkillStoreError('INVALID_ARGS', 'Invalid skill slug');
   if (Buffer.byteLength(parseBotSkillFile(source).body, 'utf8') > BOT_SKILL_MAX_BODY_BYTES)
     throw new BotSkillStoreError('SKILL_BODY_TOO_LARGE', 'Skill body too large');
@@ -527,7 +529,13 @@ export async function saveBotSkillSource(userDataDir: string, botId: string, slu
   const pending = (skillWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
     const previous = await readBotSkill(userDataDir, botId, slug);
     await ensureLayout(userDataDir, botId);
-    const skillDir = resolveSkillDir(userDataDir, botId, slug, previous?.enabled !== false);
+    const enabled = options.enabled ?? previous?.enabled !== false;
+    const skillDir = resolveSkillDir(userDataDir, botId, slug, enabled);
+    if (previous && (previous.enabled !== false) !== enabled) {
+      // Move the folder (scripts and templates included) to the other state.
+      await fs.mkdir(path.dirname(skillDir), { recursive: true });
+      await fs.rename(resolveSkillDir(userDataDir, botId, slug, !enabled), skillDir);
+    }
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), source, 'utf8');
     invalidateBotSkillRuntime(key);

@@ -100,6 +100,17 @@ describe('materializeCompanion', () => {
     expect(local.host.rebuildContext).not.toHaveBeenCalled();
   });
 
+  it('applies the cloud skill\'s enabled state even when the body is unchanged', async () => {
+    const { api } = cloud([profilePref,
+      { key: 'companion.skill.v1:brew', value: { slug: 'brew', content: 'same', enabled: false } },
+      { key: 'companion.skill.v1:tea', value: { slug: 'tea', content: 'same' } }]);
+    const local = fakeLocal();
+    local.setProfile({ status: 'active', displayName: 'Mia', description: '' });
+    local.skills.set('brew', 'same'); local.skills.set('tea', 'same'); local.disabledSkills.add('tea');
+    await materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM });
+    expect([...local.disabledSkills]).toEqual(['brew']);
+  });
+
   it('publishes the demotion before the first local write', async () => {
     const { api } = cloud([profilePref]);
     const local = fakeLocal();
