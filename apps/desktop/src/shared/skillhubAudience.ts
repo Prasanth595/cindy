@@ -19,5 +19,7 @@ export function validateSkillAudience(input: SkillAudienceInput): void {
     throw new Error('Select at least one department');
   }
   if (input.expectedUpdatedAt !== undefined && (typeof input.expectedUpdatedAt !== 'string'
+    || input.expectedUpdatedAt.length !== 24
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(input.expectedUpdatedAt)
     || !Number.isFinite(Date.parse(input.expectedUpdatedAt)))) throw new Error('Invalid audience version');
 }
