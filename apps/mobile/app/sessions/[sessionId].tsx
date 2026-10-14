@@ -286,7 +286,6 @@ import { ImageLightbox } from '@/session/ImageLightbox';
 import { pickWriteFields, retryPatchWhileLatest, writeGuardFields } from '@/session/swipeRowRegistry';
 import {
   dismissNewSessionCreation,
-  prepareNewSessionCreationForEdit,
   getNewSessionCreationTask,
   retryNewSessionCreation,
   shouldBlockSessionSync,
@@ -641,6 +640,7 @@ import {
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
+import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
 import type {
   MobileGoalLimitsInput,
   MobileGoalStatusPayload,
@@ -4069,19 +4069,11 @@ function SessionScreenContent() {
           style: 'cancel',
           onPress: () => {
             if (!creationTask) return;
-            const ownerAtEdit = getMobileAuthOwner();
-            void prepareNewSessionCreationForEdit(sessionId)
-              .then(async (prepared) => {
-                if (!prepared || !isMobileAuthOwnerCurrent(ownerAtEdit) || outboxSessionAliveRef.current !== sessionId) return;
-                const durableFirst = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sessionId && r.deviceId === deviceId && r.creation);
-                if (durableFirst) {
-                  const owner = getMobileAuthOwner();
-                  await mobileDurableOutbox.update(durableFirst, { suspended: true, state: 'failed', error: t('session.screen.firstMessageNotSent') });
-                  if (!isMobileAuthOwnerCurrent(owner) || outboxSessionAliveRef.current !== sessionId) return;
-                  dismissNewSessionCreation(sessionId);
-                  router.replace({ pathname: '/sessions/new', params: { recoverySessionId: sessionId, deviceId, deviceName } });
-                  return;
-                }
+            void returnNewSessionToEdit({
+              sessionId, deviceId,
+              isCurrent: () => outboxSessionAliveRef.current === sessionId,
+              onReady: params => router.replace({ pathname: '/sessions/new', params }),
+              stashDraft: prepared => {
                 // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
                 // 而下一行 dismiss 会连同合成会话行一起删掉——会话页 unmount 时 cleanup 会把它们
                 // 写进那个已经不存在的会话的草稿,用户在新建页看不到、也再也找不回来。
@@ -4113,9 +4105,8 @@ function SessionScreenContent() {
                 } else {
                   stashNewSessionDraftForEdit(prepared);
                 }
-                dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
-                router.replace({ pathname: '/sessions/new', params: { deviceId, deviceName } });
-              })
+              },
+            })
               .catch((err: unknown) => {
                 // 补偿回收失败时保留 task + 合成行，绝不先跳回表单再创建第二个孤儿
                 // worktree。用户可取消等待连接恢复，或直接复用同 sessionId 重试创建。

@@ -18,7 +18,14 @@ import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy
 
 const recoveryStorage = vi.hoisted(() => new Map<string, string>());
 const persistCancelledDraft = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('@/session/mobileDurableOutbox', () => ({ persistCancelledCreationDraft: persistCancelledDraft }));
+const editOutbox = vi.hoisted(() => ({ records: vi.fn((): DurableOutboxRecord[] => []), update: vi.fn(async () => {}) }));
+vi.mock('@/session/mobileDurableOutbox', () => ({
+  persistCancelledCreationDraft: persistCancelledDraft,
+  getCurrentMobileOutboxRecords: editOutbox.records,
+  mobileDurableOutbox: { update: editOutbox.update },
+}));
+import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
 const recoveryAsyncStorage = vi.hoisted(() => ({
   getItem: vi.fn(async (key: string) => recoveryStorage.get(key) ?? null),
   setItem: vi.fn(async (key: string, value: string) => {
@@ -196,6 +203,9 @@ async function flushPipeline(): Promise<void> {
 describe('newSessionCreation pipeline', () => {
   beforeEach(async () => {
     persistCancelledDraft.mockReset();
+    editOutbox.records.mockReset().mockReturnValue([]);
+    editOutbox.update.mockReset().mockResolvedValue(undefined);
+    setMobileAuthOwner('owner-a');
     await recoveryTesting.drainMutations();
     recoveryStorage.clear();
     recoveryTesting.resetVolatileLedgers();
@@ -227,6 +237,100 @@ describe('newSessionCreation pipeline', () => {
       's22',
       's23',
     ]) dismissNewSessionCreation(id);
+  });
+
+  it('recovers the original draft and attachments from a group rejection before source metadata exists', async () => {
+    const attachments = [{ id: 'attachment-a', name: 'notes.txt', ext: '.txt', path: '/uploads/notes.txt', category: 'file' as const, mimeType: 'text/plain', size: 10 }];
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[REMOTE_AGENT_GROUP_UNAVAILABLE] group unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker, { attachments }));
+    await flushPipeline();
+    expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+    expect(remoteSessionStore.getSessions().find(s => s.id === 's1')?.source).toBeUndefined();
+    const onReady = vi.fn();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    expect(drainStashedNewSessionDraft()).toMatchObject({ draft: DRAFT, attachments });
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac' });
+  });
+
+  it.each([false, true])('keeps durable recovery bytes and only leaves after suspension is saved (save fails: %s)', async (fails) => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    editOutbox.records.mockReturnValue([record]);
+    if (fails) editOutbox.update.mockRejectedValueOnce(new Error('storage full'));
+    const onReady = vi.fn();
+    const recovery = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    if (fails) {
+      await expect(recovery).rejects.toThrow('storage full');
+      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      expect(onReady).not.toHaveBeenCalled();
+    } else {
+      await recovery;
+      expect(getNewSessionCreationTask('s1')).toBeNull();
+      expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', recoverySessionId: 's1' });
+    }
+    expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
+    expect(record.item.text).toBe(DRAFT.firstMessage);
+    expect(record.creation?.draft).toEqual(DRAFT);
+    expect(drainStashedNewSessionDraft()).toBeNull();
+  });
+
+  it('lets the mounted composer stash its follow-ups before dismissing the task or navigating', async () => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    const stashDraft = vi.fn((task) => {
+      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      expect(remoteSessionStore.getSessions().find(s => s.id === 's1')?.status).toBe('active');
+      stashNewSessionDraftForEdit(task, { draft: { ...task.draft, firstMessage: 'hello world\n\nfollow-up' } });
+    });
+    const onReady = vi.fn(() => {
+      expect(stashDraft).toHaveBeenCalledOnce();
+      expect(getNewSessionCreationTask('s1')).toBeNull();
+      expect(drainStashedNewSessionDraft()?.draft.firstMessage).toBe('hello world\n\nfollow-up');
+    });
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, stashDraft, onReady });
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it.each(['failure', 'success', 'leave', 'switch-account'])('preserves the worktree compensation gate when returning to edit: %s', async (outcome) => {
+    let resolveDiscard!: (value: { discarded: boolean }) => void;
+    let rejectDiscard!: (error: Error) => void;
+    const maker = makeMaker({ worktree: { discardPrecreated: vi.fn(() => new Promise((resolve, reject) => {
+      resolveDiscard = resolve; rejectDiscard = reject;
+    })) } });
+    startNewSessionCreation(makeParams('s1', maker, {
+      draft: { ...DRAFT, workingDir: '/repo/.cindy-worktrees/new-task' },
+      precreatedWorktree: { path: '/repo/.cindy-worktrees/new-task', recoveryKey: 'edit-recovery-key', originalWorkingDir: '/repo' },
+      confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    }));
+    await flushPipeline();
+    let current = true;
+    const onReady = vi.fn();
+    const recovery = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => current, onReady });
+    await flushPipeline();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(getNewSessionCreationTask('s1')).not.toBeNull();
+    if (outcome === 'failure') {
+      rejectDiscard(new Error('[PRECONDITION_FAILED] cleanup pending'));
+      await expect(recovery).rejects.toThrow('cleanup pending');
+    } else {
+      if (outcome === 'leave') current = false;
+      if (outcome === 'switch-account') setMobileAuthOwner('owner-b');
+      resolveDiscard({ discarded: true });
+      await recovery;
+    }
+    if (outcome === 'success') {
+      expect(drainStashedNewSessionDraft()?.draft.workingDir).toBe('/repo');
+      expect(onReady).toHaveBeenCalledOnce();
+    } else {
+      expect(drainStashedNewSessionDraft()).toBeNull();
+      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      expect(onReady).not.toHaveBeenCalled();
+    }
   });
 
   it('start 同步段即入 store:合成行带 pendingLocalCreation,首条消息以排队气泡上屏', () => {

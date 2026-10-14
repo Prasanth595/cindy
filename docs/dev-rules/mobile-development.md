@@ -81,6 +81,17 @@ pnpm --filter mobile test:smoke
 
 ## 专项入口
 
+### 任务入口与创建失败恢复
+
+- 来源未确认时不挂载远端任务内容，但必须显示读取状态和返回入口；读取失败、空记录或
+  超时允许手动重读当前任务，不重置共享设备连接。账号或设备切换后忽略旧读取结果。
+- 本地创建进行中或失败时，来源门禁显示创建进度或失败原因；失败时直接提供重试和返回编辑，
+  不依赖尚不存在的远端任务记录。返回编辑复用 worktree 补偿和持久草稿恢复流程；
+  回收或保存失败保留原任务与草稿。已确认来源的任务在重连时保持内容挂载。
+
+实现与回归：`CindyMakeSessionGate.tsx`、`SessionEntryRecovery.tsx`、
+`returnNewSessionToEdit.ts`、`cindyMakeSessionGate.test.tsx` 与 `newSessionCreation.test.ts`。
+
 ### 消息缓存与首页偏好
 
 - iOS、Android 的最近消息窗口统一写入私有 `cache/session-messages-v1/` 文件，

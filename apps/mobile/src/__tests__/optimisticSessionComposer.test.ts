@@ -317,8 +317,13 @@ describe('mobile optimistic composer while session is not ready', () => {
     const branch = source.slice(backToEditStart, backToEditEnd);
     // 跨页导航:upload controller 随会话页销毁,在途上传保不住,只能取消 + 告知。
     expect(branch).toContain("takeOutboxForSession(sessionId, 'cancel')");
-    expect(branch.indexOf('takeOutboxForSession'))
-      .toBeLessThan(branch.indexOf('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })'));
+    expect(branch).toContain('returnNewSessionToEdit({');
+    expect(branch).toContain('stashDraft: prepared => {');
+    const recovery = readSource('src/session/returnNewSessionToEdit.ts');
+    const stash = recovery.indexOf('stashDraft(prepared);');
+    const dismiss = recovery.indexOf('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
+    expect(stash).toBeGreaterThanOrEqual(0);
+    expect(dismiss).toBeGreaterThan(stash);
     expect(branch).toContain('outboxItemDraftText');
     // 装不下的中转对象回收 + 把「没能带回多少」随 stash 带到新建页。
     expect(branch).toContain('discardRecoveredAttachments(dropped);');

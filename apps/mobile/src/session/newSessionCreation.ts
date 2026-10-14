@@ -523,6 +523,8 @@ function subscribeTasks(callback: () => void): () => void {
 }
 
 function getTaskSnapshot(sessionId: string): NewSessionCreationTask | null {
+  const current = tasks.get(sessionId);
+  if (!current || !isTaskOwnerCurrent(current)) return null;
   if (!taskSnapshots.has(sessionId)) {
     const task = tasks.get(sessionId);
     taskSnapshots.set(sessionId, task ? { ...task } : null);
