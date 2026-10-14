@@ -6,7 +6,7 @@ import { app } from 'electron';
 import { and, asc, desc, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { portableBotAvatarOrFallback, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
-import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
 import { fetchPublicImageBytes } from '../im/publicImageFetch.js';
 import { getDbClient } from '../localDb/client/current.js';
@@ -239,6 +239,9 @@ export function createCompanionCloudHost(input: {
   probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
   log?: CompanionLog;
 }): CompanionCloudHost {
+  // Every reader (send guards, routines, lists) sees only the active owner's homes, and that
+  // owner's persisted demotion, even before its Chat Server instance has started.
+  companionHomes.bindOwner(activeOwnerScopeKey, () => companionShadowStore().read());
   return {
     homes: companionHomes,
     openState: (endpoint, humanActorId, current) => createCompanionCloudState({

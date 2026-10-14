@@ -66,6 +66,21 @@ describe('retired actors', () => {
   });
 });
 
+describe('owner scoping', () => {
+  it('drops the previous owner\'s homes and loads the new owner\'s persisted shadows on first read', () => {
+    const homes = createCompanionHomeRegistry();
+    let owner = 'a';
+    const persisted: Record<string, string[]> = { a: [], b: ['mia'] };
+    homes.bindOwner(() => owner, () => persisted[owner]!);
+    homes.update(companionSnapshot({ enabled: true, selfDeviceId: 'me', humanActorId: 'human', actors: [bot('actor-a', 'mia', 'me')] }));
+    expect(homes.isShadowed('mia')).toBe(false);
+    expect(homes.snapshot().actors).toHaveLength(1);
+    owner = 'b';
+    expect(homes.isShadowed('mia')).toBe(true);
+    expect(homes.snapshot()).toMatchObject({ enabled: false, actors: [], demotedBotIds: ['mia'] });
+  });
+});
+
 describe('persisted shadows', () => {
   it('keep a demoted copy shadowed while the server is unknown or the feature is off', () => {
     const homes = createCompanionHomeRegistry();

@@ -2636,16 +2636,10 @@ let botDelegationServiceHolder: BotDelegationService | null = null;
 let botDirectMessageServiceHolder: BotDirectMessageService | null = null;
 let botGroupChatServiceHolder: BotGroupChatService | null = null;
 /**
- * Settle a pending account / endpoint switch before reading companion state: the lazy Chat Server
- * wrapper rebinds (and resets the companion registry) only when touched, so a guard or deletion
- * never acts on the previous owner's companions.
+ * Settle a pending account / endpoint switch before using the companion runtime: the lazy Chat
+ * Server wrapper rebinds only when touched. (The home registry itself is owner-scoped.)
  */
 function settleCompanionOwner(): void { void botGroupChatServiceHolder?.chatServer; }
-/** isCompanionShadowed for the current owner. */
-function isCurrentCompanionShadowed(botId: string): boolean {
-  settleCompanionOwner();
-  return isCompanionShadowed(botId);
-}
 let unsubscribeCompanionCloudBroadcast: (() => void) | null = null;
 const listCompanionDevices = async () => (await handleListDevices(deviceDirectoryDeps())).devices;
 
@@ -11046,7 +11040,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [companionLink] = await getDbClient().drizzle
         .select({ role: botSessionLinks.role, botId: botSessionLinks.botId })
         .from(botSessionLinks).where(eq(botSessionLinks.sessionId, targetSessionId)).limit(1);
-      if (isShadowedCompanionCanonical(companionLink, isCurrentCompanionShadowed)) {
+      if (isShadowedCompanionCanonical(companionLink, isCompanionShadowed)) {
         return { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE };
       }
 
@@ -16219,7 +16213,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       assertCindyMakeSessionAvailable(botInput?.source);
       const blocked = botSessionInputBlockReason(botInput ?? null);
       // Rechecked under the send lock right before every real send, including queue drains.
-      if (botInput?.source === 'bot' && isShadowedCompanionCanonical(botInput, isCurrentCompanionShadowed)) {
+      if (botInput?.source === 'bot' && isShadowedCompanionCanonical(botInput, isCompanionShadowed)) {
         throwIpcError('PRECONDITION_FAILED', SHADOWED_COMPANION_INPUT_MESSAGE);
       }
       if (args[2] && typeof args[2] === 'object') {

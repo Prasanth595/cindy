@@ -15,7 +15,21 @@ export function createCompanionHomeRegistry() {
   let persisted: readonly string[] = [];
   let snapshot = EMPTY_COMPANION_CLOUD_SNAPSHOT;
   const listeners = new Set<CompanionHomeListener>();
-  const actorOf = (botId: string) => snapshot.actors.find(actor => actor.externalId === botId);
+  // Owner scoping: reads after an account / data-owner switch never see the previous owner's
+  // homes; the new owner's persisted shadows apply at once, before its Chat Server instance runs.
+  let ownerBinding: { owner: () => string; loadPersisted: () => readonly string[] } | null = null;
+  let boundOwner: string | null = null;
+  const sync = () => {
+    if (!ownerBinding) return;
+    const owner = ownerBinding.owner();
+    if (owner === boundOwner) return;
+    boundOwner = owner;
+    live = EMPTY_COMPANION_CLOUD_SNAPSHOT;
+    try { persisted = [...new Set(ownerBinding.loadPersisted())].sort(); } catch { persisted = []; }
+    emit();
+  };
+  const current = () => { sync(); return snapshot; };
+  const actorOf = (botId: string) => current().actors.find(actor => actor.externalId === botId);
   const emit = () => {
     const demotedBotIds = [...new Set([...live.demotedBotIds, ...persisted])].sort();
     const next = { ...live, actors: live.actors.map(actor => ({ ...actor })), demotedBotIds };
@@ -27,24 +41,30 @@ export function createCompanionHomeRegistry() {
   };
   const registry = {
     /** Live state plus persisted shadows (demotedBotIds is their union). */
-    snapshot: () => snapshot,
-    update(next: CompanionCloudSnapshot) { live = next; emit(); },
+    snapshot: current,
+    update(next: CompanionCloudSnapshot) { sync(); live = next; emit(); },
     /** Replace the persisted shadow set (loaded at owner start, rewritten when demotion changes). */
-    setPersistedShadows(ids: readonly string[]) { persisted = [...new Set(ids)].sort(); emit(); },
-    persistedShadows: () => persisted,
+    setPersistedShadows(ids: readonly string[]) { sync(); persisted = [...new Set(ids)].sort(); emit(); },
+    persistedShadows: () => { sync(); return persisted; },
     reset() { live = EMPTY_COMPANION_CLOUD_SNAPSHOT; persisted = []; emit(); },
-    isEnabled: () => snapshot.enabled,
+    /** Scope the registry to the active data owner (process-wide instance). */
+    bindOwner(owner: () => string, loadPersisted: () => readonly string[]) {
+      ownerBinding = { owner, loadPersisted };
+      boundOwner = owner();
+    },
+    isEnabled: () => current().enabled,
     /** Home device of a registered companion; undefined when this account has no actor for it. */
     homeOf: (botId: string): string | null | undefined => actorOf(botId)?.homeDeviceId,
     /** True when the feature is off, the companion has no home yet, or this computer is its home. */
     isHomeHere(botId: string): boolean {
-      if (!snapshot.enabled) return true;
+      const view = current();
+      if (!view.enabled) return true;
       const home = actorOf(botId)?.homeDeviceId;
-      return !home || home === snapshot.selfDeviceId;
+      return !home || home === view.selfDeviceId;
     },
     actorIdFor: (botId: string): string | null => actorOf(botId)?.id ?? null,
     /** The local copy of a companion that runs elsewhere (or in another install): hidden, never runs here. */
-    isShadowed: (botId: string): boolean => snapshot.demotedBotIds.includes(botId),
+    isShadowed: (botId: string): boolean => current().demotedBotIds.includes(botId),
     onChange(listener: CompanionHomeListener): () => void {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
