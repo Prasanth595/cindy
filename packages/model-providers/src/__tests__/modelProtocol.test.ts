@@ -30,6 +30,39 @@ function fixture(api?: PiModelApi) {
 }
 
 describe('per-model protocol comparison', () => {
+  it('displays the fixed-protocol host route instead of conflicting API metadata', () => {
+    const { provider, byAgent } = fixture();
+    byAgent.codex.api = 'openai-responses';
+    byAgent.codex.route = { baseUrl: 'https://example.invalid', wireProtocol: 'openai-chat', requestPath: '/custom' };
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')).toMatchObject({
+      outbound: 'openai-completions', localConversion: true,
+    });
+    delete byAgent.codex.route;
+    provider.routing.codex!.wireProtocol = 'openai-chat';
+    provider.routing.codex!.requestPath = '/custom';
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')?.outbound).toBe('openai-completions');
+  });
+
+  it('distinguishes a stored model override from a catalog route and a connection default', () => {
+    const { provider, byAgent } = fixture();
+    provider.routing.codex!.wireProtocol = 'openai-chat';
+    byAgent.codex.route = { baseUrl: 'https://example.invalid', wireProtocol: 'openai-responses' };
+    byAgent.codex.userModelConfig = { id: model.id, name: model.name, api: 'openai-responses' };
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')).toMatchObject({
+      source: 'model', connection: 'openai-completions', outbound: 'openai-responses',
+    });
+    delete byAgent.codex.userModelConfig.api;
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')?.source).toBe('catalog');
+    delete byAgent.codex.route;
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')).toMatchObject({
+      source: 'connection', outbound: 'openai-completions',
+    });
+    // A deliberate choice remains an override even while equal to the default.
+    byAgent.codex.api = 'openai-completions';
+    byAgent.codex.userModelConfig.api = 'openai-completions';
+    expect(modelProtocolComparison(provider, byAgent).forAgent('codex')?.source).toBe('model');
+  });
+
   it('compares a newly delivered Google API with both compatibility harnesses and recommends Pi', () => {
     const { provider, byAgent } = fixture('google-generative-ai');
     const result = modelProtocolComparison(provider, byAgent);
