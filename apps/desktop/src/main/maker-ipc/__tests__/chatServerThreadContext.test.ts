@@ -38,6 +38,7 @@ vi.mock('ws', async () => {
 });
 import { withChatServer } from '../chatServer.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
+import { buildBotGroupQuoteCard } from '../../../shared/botGroupChat.js';
 
 /**
  * A minimal in-memory Chat Server: message reads honor `all`, `threadRootId`,
@@ -197,6 +198,55 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(completed).toEqual([expect.objectContaining({ executionId: nova.id })]);
     expect(directPosts).toBe(0);
     expect(messages.at(-1)).toMatchObject({ authorId: bots[0].id, threadRootId: root.id });
+  });
+
+  /** A main-timeline 引用回复 card, as the host writes it. */
+  function quoting(message: FakeMessage, original: Pick<FakeMessage, 'id' | 'seq' | 'author'>, files: { count: number; name: string | null } = { count: 0, name: null }) {
+    message.content.unshift(buildBotGroupQuoteCard({ messageId: original.id, authorName: original.author.name, authorKind: 'user',
+      excerpt: 'snapshot words', attachmentCount: files.count, attachmentName: files.name, sequence: Number(original.seq) }) as never);
+    return message;
+  }
+
+  it('names the quoted file for the Agent, from the original when read and from the snapshot otherwise', async () => {
+    const live = post('', { media: ['live-plan.pdf'] });
+    const background = quoting(post('看看这个'), live);
+    // An original older than what this run reads: only its card snapshot is known.
+    const older = { id: uuid(++ids), seq: '1', author: { kind: 'human', name: 'Alex' } };
+    const request = quoting(post('@所有人 处理这个文件'), older, { count: 2, name: 'q3-report.pdf' });
+    request.mentions = bots.map(bot => bot.id);
+    trigger(request);
+    await vi.advanceTimersByTimeAsync(2000);
+    const data = payload(inputs('nova')[0]!.message);
+    expect(data.currentRequest.quote).toEqual({ messageId: older.id, from: 'Alex', text: 'snapshot words', attachments: 2, attachmentName: 'q3-report.pdf' });
+    const seen = JSON.stringify(data);
+    expect(seen).toContain(background.id);
+    expect(seen).toContain(JSON.stringify({ messageId: live.id, from: 'Alex', text: '', attachments: 1, attachmentName: 'live-plan.pdf' }));
+  });
+
+  it('carries a 话题 root\'s quote into the Thread context, resolved against what this run read', async () => {
+    const original = post('定价页分三档：免费、个人、团队。');
+    const root = quoting(post('就按这个做'), original);
+    const question = post('@所有人 这样行吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
+    trigger(question);
+    await vi.advanceTimersByTimeAsync(2000);
+    const data = payload(inputs('nova')[0]!.message);
+    expect(data.thread.root).toMatchObject({ id: root.id, text: '就按这个做',
+      quote: { messageId: original.id, from: 'Alex', text: '定价页分三档：免费、个人、团队。' } });
+    expect(data.currentRequest.quote).toBeUndefined();
+    expect(inputs('nova')[0]!.message).toContain('quoting someone does not address them');
+  });
+
+  it('gives a main-group quote reply\'s current request only a deleted marker once the original is gone', async () => {
+    const original = post('旧的报价单');
+    const request = quoting(post('@所有人 按这个改'), original);
+    request.mentions = bots.map(bot => bot.id);
+    Object.assign(original, { deleted: true, content: [] });
+    trigger(request);
+    await vi.advanceTimersByTimeAsync(2000);
+    const data = payload(inputs('nova')[0]!.message);
+    expect(data.currentRequest).toMatchObject({ id: request.id, text: '@所有人 按这个改', location: 'main',
+      quote: { messageId: original.id, deleted: true } });
+    expect(inputs('nova')[0]!.message).not.toContain('snapshot words');
   });
 
   it('marks an unavailable Thread root instead of letting the Agent guess it', async () => {

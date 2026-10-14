@@ -1,5 +1,5 @@
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
-import { readBotGroupExecutionFailure, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
+import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
 import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
@@ -45,7 +45,9 @@ export function chatAccessLost(error: unknown): boolean {
 }
 const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
   ? `${member.name} (${member.ownerName.trim()})` : member.name;
+// A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
 const contentText = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? '' : message.content
+  .filter(block => !readBotGroupQuoteCard(block))
   .map(block => block.text ?? block.fallback ?? (block.type === 'media' ? block.caption ?? '' : '')).join('\n');
 
 /** Empty device identity means a server-owned conversation, never a fictitious computer. */
@@ -114,6 +116,7 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     isOwned: member.ownerActorId === selfId, role: member.role,
     status: 'active',
   }));
+  const deletedIds = new Set(page.messages.filter(message => message.deleted).map(message => message.id));
   const sorted = [...new Map(page.messages.map(message => [message.id, message])).values()].filter(message => !message.deleted)
     .sort((a, b) => BigInt(chatCursor(a.seq)) < BigInt(chatCursor(b.seq)) ? -1 : BigInt(a.seq) > BigInt(b.seq) ? 1 : 0);
   const messages: BotGroupMessageView[] = sorted.map((message, index) => {
@@ -126,11 +129,13 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     const member = active.find(candidate => candidate.id === message.authorId);
     const joined = message.origin === 'system' && !message.deleted && message.content.find(block =>
       block.type === 'card' && block.namespace === 'cindy.membership' && block.schemaRevision === 1 && block.data?.type === 'member.joined');
+    const quote = message.origin === 'system' ? null : readBotGroupQuote(message.content);
     return { id: message.id, sequence: index + 1, kind: message.origin === 'system' ? 'notice' : 'message',
       authorKind: message.origin === 'system' ? 'system' : message.author.kind === 'human' ? 'user' : 'bot',
       authorBotId: message.authorId, authorName: joined && typeof joined.data?.displayName === 'string' ? joined.data.displayName
         : member ? memberName(member) : message.author.name,
       isSelf: message.authorId === selfId, content: contentText(message), mentions: { all: false, botIds: [] },
+      ...(quote ? { quote: deletedIds.has(quote.messageId) ? { ...quote, originalDeleted: true } : quote } : {}),
       noticeCode: joined ? 'member-joined' : null, planId: null, files: [],
       attachments: message.deleted ? [] : message.content.flatMap(block => {
         if (block.type !== 'media' || !block.mediaId) return [];

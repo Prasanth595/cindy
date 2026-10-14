@@ -105,7 +105,7 @@ describe('chat interaction controls', () => {
     render(<ChatMessageActions shareScope="group:room" groupId="room" message={{ ...message, replyCount: 2 }} onReply={reply} onChanged={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'chat.messageActionBar.copy' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('Root message'));
-    fireEvent.click(screen.getByRole('button', { name: k('replyCount') }));
+    fireEvent.click(screen.getByRole('button', { name: k('openTopic') }));
     expect(reply).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.isActive('group:room')).toBe(true);

@@ -77,6 +77,11 @@
     "planDoneGeneric": "分工做完了",
     "olderOnComputer": "更早的訊息請在電腦上查看"
   },
+  "quote": {
+    "label": "引用 {{name}}：{{summary}}",
+    "deleted": "原訊息已刪除",
+    "attachments": "{{name}} 等 {{total}} 個附件"
+  },
   "notice": {
     "memberJoined": "{{name}}加入了群聊",
     "memberFailed": "{{name}}這次沒能回覆",
@@ -208,7 +213,8 @@
     "requestTimeout": "還未確認操作結果，請重新整理查看後再重試。",
     "permissionDenied": "你沒有執行此操作的群管理權限。",
     "serviceError": "群聊服務處理失敗，請稍後重試。",
-    "groupArchived": "本群已封存，無法執行此操作。"
+    "groupArchived": "本群已封存，無法執行此操作。",
+    "quoteUnavailable": "引用的訊息已刪除或無法查看，已取消引用，請再傳送一次"
   },
   "followUp": {
     "next": "分工 · 下一步",

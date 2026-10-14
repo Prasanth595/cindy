@@ -2,6 +2,9 @@
  * Bot group chat wire contract shared by Desktop main, preload and renderer.
  * Product rules: docs/product-rules/bot-group-chat.md.
  */
+import type { BotGroupQuoteInput, BotGroupQuoteView } from './botGroupQuote';
+
+export * from './botGroupQuote';
 
 export const BOT_GROUP_MIN_MEMBERS = 2;
 export const BOT_GROUP_MAX_MEMBERS = 6;
@@ -139,6 +142,8 @@ export interface BotGroupMessageView {
   isSelf?: boolean;
   threadRootId?: string | null;
   replyCount?: number;
+  /** 引用回复: the earlier main-timeline message this one quotes; not a Thread parent. */
+  quote?: BotGroupQuoteView;
   reactions?: Array<{ emoji: string; count: number; me: boolean }>;
   id: string;
   sequence: number;
@@ -341,6 +346,8 @@ export type BotGroupErrorCode =
   | 'PLAN_OPEN'
   /** The plan already ended, was replaced, or is in a state that does not allow the action. */
   | 'PLAN_CLOSED'
+  /** The quoted message was deleted, moved out of reach or never belonged to this timeline. */
+  | 'QUOTE_UNAVAILABLE'
   | 'INTERNAL';
 
 export interface BotGroupFailure {
@@ -391,6 +398,8 @@ export interface BotGroupSendInput {
   division?: boolean;
   /** At most `BOT_GROUP_ATTACHMENTS_MAX`; with attachments the text may be empty. */
   attachments?: BotGroupAttachmentInput[];
+  /** 引用回复 on a server group; the host reads the message itself. A quote alone is not a message. */
+  quote?: BotGroupQuoteInput;
 }
 
 export interface BotGroupPlanActionInput {
