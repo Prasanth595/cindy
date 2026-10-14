@@ -21,6 +21,7 @@ const persistCancelledDraft = vi.hoisted(() => vi.fn(async () => {}));
 const editOutbox = vi.hoisted(() => ({ records: vi.fn((): DurableOutboxRecord[] => []), update: vi.fn(async (_record: DurableOutboxRecord, _patch: Partial<DurableOutboxRecord>) => {}) }));
 vi.mock('@/session/mobileDurableOutbox', () => ({
   persistCancelledCreationDraft: persistCancelledDraft,
+  suspendCreationDraftForCleanup: vi.fn(async () => {}),
   getCurrentMobileOutboxRecords: editOutbox.records,
   mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {} },
 }));

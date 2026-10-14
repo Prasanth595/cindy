@@ -50,7 +50,7 @@ import {
 } from '@/session/newSession';
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
-import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft } from './mobileDurableOutbox';
+import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
 import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
 import {
   forgetPendingPrecreatedWorktree,
@@ -487,6 +487,11 @@ export async function prepareNewSessionCreationForEdit(
     if (!discard) {
       throw new Error(i18n.t('session.new.worktreeCleanupPending'));
     }
+    // The task may be retired on account change while the host is deleting the
+    // directory. Persist the send fence first; the recovery ledger keeps the
+    // obligation to reconcile its ACK when the original account returns.
+    await suspendCreationDraftForCleanup({ sessionId, deviceId: task.deviceId });
+    assertTaskOwnerCurrent(task);
     try {
       await withTransientRemoteRetry(async () => {
         assertTaskOwnerCurrent(task);

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { getMobileAuthOwner, setMobileAuthOwner } from '../auth/authOwnerGeneration';
+import type { MobileMakerTransport } from '../device-link/mobileMakerTransport';
 import type { DurableOutboxRecord } from '../session/durableOutbox';
 import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/cancelledCreationDraft';
 import { buildOutboxItem } from '../session/sessionOutbox';
@@ -19,7 +20,11 @@ vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
 } }));
 vi.mock('../session/durableOutboxFiles', () => ({ durableOutboxUploadUri: vi.fn(), removeOutboxFiles: vi.fn() }));
 vi.mock('../session/mobileAttachmentUpload', () => ({ discardMobileUploadedAttachment: vi.fn() }));
+vi.mock('expo-crypto', () => ({ getRandomBytes: (n: number) => new Uint8Array(n).fill(7) }));
 import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft } from '../session/mobileDurableOutbox';
+import { getNewSessionCreationTask, prepareNewSessionCreationForEdit, startNewSessionCreation } from '../session/newSessionCreation';
+import { listPendingPrecreatedWorktrees, recoverPendingPrecreatedWorktrees, registerPendingPrecreatedWorktree } from '../session/precreatedWorktreeRecovery';
+import { completePrecreatedWorktreeRecovery } from '../session/completePrecreatedWorktreeRecovery';
 
 // Run the page's actual recovery -> durable save -> worktree creation statements.
 // Extract AST nodes, as in newSessionWorktreeSync, so ordering is tested without
@@ -93,6 +98,75 @@ function harness(previous: DurableOutboxRecord | null = null) {
   const run = new Function(`${compiled}; return run;`)() as (input: typeof bindings) => Promise<unknown>;
   return { bindings, run: () => run(bindings) };
 }
+
+it.each(['switch-during-cleanup', 'suspend-fails'] as const)('persists the send fence before cleanup: %s', async scenario => {
+  await harness().run();
+  const saved = getCurrentMobileOutboxRecords()[0];
+  const owner = getMobileAuthOwner();
+  const recoveryKey = 'recovery-key-account-switch-1234';
+  const ledger = { sessionId: saved.item.sessionId, deviceId: saved.deviceId,
+    path: saved.creation!.draft.workingDir, recoveryKey, createdAt: Date.now(), phase: 'precreated' as const };
+  await registerPendingPrecreatedWorktree(owner.accountId, ledger);
+  let finishDiscard!: (ack: { discarded: true }) => void;
+  const discard = vi.fn(() => {
+    const persisted = [...disk.data.values()].map(raw => JSON.parse(raw))
+      .find(value => value.item?.sessionId === saved.item.sessionId);
+    expect(persisted.suspended).toBe(true);
+    expect(persisted.creation.cancelled).toBeUndefined();
+    return new Promise<{ discarded: true }>(resolve => { finishDiscard = resolve; });
+  });
+  startNewSessionCreation({
+    sessionId: saved.item.sessionId, deviceId: saved.deviceId, deviceName: 'PC',
+    draft: saved.creation!.draft, attachments: [], planModeArm: false, legacyPlanRestore: null,
+    precreatedWorktree: { path: ledger.path, recoveryKey, originalWorkingDir: '/repo', createdAt: ledger.createdAt },
+    precreatedWorktreeAccountId: owner.accountId,
+    confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    authGateHint: 'not authenticated', onUnauthenticated: () => {},
+    transport: { openLink: async () => {}, subscribe: async () => {},
+      maker: { worktree: { discardPrecreated: discard } } as unknown as MobileMakerTransport },
+  });
+  await vi.waitFor(() => expect(getNewSessionCreationTask(saved.item.sessionId)?.status).toBe('create-failed'));
+  if (scenario === 'suspend-fails') disk.fail = true;
+  const pending = prepareNewSessionCreationForEdit(saved.item.sessionId);
+  if (scenario === 'suspend-fails') {
+    await expect(pending).rejects.toThrow('disk unavailable');
+    expect(discard).not.toHaveBeenCalled();
+    expect(getCurrentMobileOutboxRecords()[0].suspended).toBe(false);
+    expect(await listPendingPrecreatedWorktrees(owner.accountId)).toEqual([ledger]);
+    disk.fail = false;
+    return;
+  }
+  await vi.waitFor(() => expect(discard).toHaveBeenCalledOnce());
+  setMobileAuthOwner('bob', 'global');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const bobRecord = { ...saved, accountId: getMobileAuthOwner().accountKey };
+  await mobileDurableOutbox.add(bobRecord);
+  const diskBeforeReply = new Map(disk.data);
+  finishDiscard({ discarded: true });
+  await expect(pending).resolves.toBeNull();
+  expect(getNewSessionCreationTask(saved.item.sessionId)).toBeNull();
+  expect(getCurrentMobileOutboxRecords()).toEqual([bobRecord]);
+  expect(disk.data).toEqual(diskBeforeReply);
+  expect(await listPendingPrecreatedWorktrees(owner.accountId)).toEqual([ledger]);
+
+  // A cold reload after switching back must not make the old path sendable.
+  setMobileAuthOwner('alice', 'global');
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  expect(getCurrentMobileOutboxRecords()[0]).toMatchObject({ suspended: true, creation: { draft: saved.creation!.draft } });
+  expect(getNewSessionCreationTask(saved.item.sessionId)).toBeNull();
+  const result = await recoverPendingPrecreatedWorktrees(owner.accountId, {
+    openLink: async () => {}, discardPrecreated: async () => ({ discarded: true }),
+    cancelPrecreated: async () => ({ discarded: true }), isSessionClaimed: async () => false,
+    shouldDefer: record => getNewSessionCreationTask(record.sessionId) !== null,
+    onDiscarded: completePrecreatedWorktreeRecovery,
+  });
+  expect(result.recovered).toBe(1);
+  expect(await listPendingPrecreatedWorktrees(owner.accountId)).toEqual([]);
+  expect(getCurrentMobileOutboxRecords()[0]).toMatchObject({ suspended: true, state: 'failed',
+    creation: { cancelled: true, draft: { workingDir: '/repo' } }, item: saved.item, uploads: saved.uploads });
+  expect(getNewSessionCreationTask(saved.item.sessionId)?.readyForEdit).toBe('durable');
+});
 
 it('persists the draft and attachments before reserving and dispatching worktree creation', async () => {
   const h = harness();
