@@ -432,7 +432,7 @@ export function recommendedAgentForModel(
 }
 
 /** 某 (provider, model, agent) 已解析的能力(规格 §2.2)。 */
-export interface UnifiedAgentCapability {
+export interface UnifiedAgentCapability extends Pick<CatalogModel, 'displayPricing' | 'currency' | 'costDiscount'> {
   agent: AgentKind;
   /**
    * ★该引擎下真正要发出去的 model id(bridge 壳已还原)。写 draft / 建会话 / 切模型
@@ -500,6 +500,9 @@ function capabilityOf(
   return {
     agent,
     wireModelId: model.id,
+    ...(model.displayPricing && model.currency ? {
+      displayPricing: model.displayPricing, currency: model.currency, costDiscount: model.costDiscount,
+    } : {}),
     protocolMode: protocol?.mode ?? 'unknown',
     nativeApi: comparison.reference,
     outboundApi: protocol?.outbound ?? null,

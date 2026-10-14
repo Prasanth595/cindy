@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   discarded: [] as any[],
   deleted: [] as string[],
   keyboardAvoidingView: null as any,
-  platform: { OS: 'ios' },
+  platform: { OS: 'ios' }, headerBlur: [] as number[], headerFade: [] as (number | undefined)[],
 }));
 
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn(async () => ({})) }));
@@ -61,7 +61,8 @@ vi.mock('expo-router', () => ({
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
 }));
-vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children) }));
+vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children), useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }) }));
+vi.mock('@/session/SessionHeaderNativeControls', () => ({ SessionHeaderNativeBlur: ({ height, fadeInside }: any) => { h.headerBlur.push(height); h.headerFade.push(fadeInside); return null; } }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({
@@ -266,7 +267,7 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
-  h.platform.OS = 'ios'; h.keyboardAvoidingView = null;
+  h.platform.OS = 'ios'; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = [];
   h.local = {
@@ -285,6 +286,15 @@ describe('group timeline', () => {
     h.platform.OS = 'android';
     await render();
     expect(h.keyboardAvoidingView).toMatchObject({ enabled: true, behavior: 'height' });
+    expect(h.headerBlur).toEqual([]);
+  });
+
+  it('floats the iOS header on the task header blur instead of an opaque band', async () => {
+    await render();
+    // Before the header is measured the blur still covers the status bar plus one bar row.
+    expect(h.headerBlur.at(-1)).toBe(59 + 44);
+    // The two-line identity stays over solid blur; the feather starts at the header's lower edge.
+    expect(h.headerFade.at(-1)).toBe(0);
   });
 
   it('waits for measured tail positioning before acknowledging replies, including new snapshots', async () => {

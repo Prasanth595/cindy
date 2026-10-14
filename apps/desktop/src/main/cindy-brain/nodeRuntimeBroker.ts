@@ -148,6 +148,8 @@ export interface NodeRuntimeStartAttemptContext {
 
 export interface GhostNodeRuntimeBrokerDeps {
   getGhost(id: string): InstalledGhost | null;
+  /** 宿主要求这个实例暂不启动时返回原因(如换库后缓存没清掉、需要重启应用)。 */
+  startBlockedReason?(id: string): string | null;
   openSecretInput?: (input: import('./nodeSecretSetup.js').NodeSecretSetupInput) => Promise<boolean>;
   /** Main's exact live tool-call lookup; a plugin cannot select another call's owner. */
   getCallSignal?: (ghostId: string, callId: string) => AbortSignal | null;
@@ -1727,6 +1729,8 @@ export class GhostNodeRuntimeBroker {
     if (this.destroyed || this.stoppedGhosts.has(GhostNodeRuntimeBroker.instanceId(ghost))) {
       throw new WorkerStartError('Node 工作进程启动已取消', false, true);
     }
+    const blocked = this.deps.startBlockedReason?.(GhostNodeRuntimeBroker.instanceId(ghost)) ?? null;
+    if (blocked !== null) throw new WorkerStartError(blocked, false);
     this.sendStatus(ghost, 'starting', undefined, entryRel);
     let current = ghost;
     let lastError = new Error('Node 工作进程启动失败');

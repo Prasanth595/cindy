@@ -31,6 +31,7 @@ import { UserAttachmentChip } from '@/components/chat/UserAttachmentChip';
 import { CHAT_BODY_CLASS } from '@/components/chat/chatChrome';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { Tip } from '@/components/ui/tooltip';
 import {
   getDataOwnerGeneration,
@@ -92,7 +93,7 @@ import {
   mergeBotGroupPlans,
   openBotGroupPlan,
 } from './botGroupPresentation';
-import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction } from './botGroupStore';
+import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, useBotGroupSummary } from './botGroupStore';
 import { botGroupReadKey, markBotRead } from './botReadState';
 import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from './botConversationTimeline';
 
@@ -119,6 +120,9 @@ const PLAN_ACTION_FAILED: Record<BotGroupPlanAction, string> = {
 };
 
 type PlanPending = { planId: string; action: BotGroupPlanAction | 'edit' };
+
+/** A read that lands within this needs no progress indicator, so a fast switch does not flash. */
+const TIMELINE_LOADING_REVEAL_MS = 200;
 
 /** Stable identity for header memoization; member arrays are new on every read. */
 function memberKey(members: readonly BotGroupMemberView[]): string {
@@ -237,6 +241,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   }, [groupId, reloadVersion]);
 
   const group = state.kind === 'ready' ? state.group : null;
+  // Until the timeline arrives, the header comes from the group's sidebar row (same account).
+  const listed = useBotGroupSummary(state.kind === 'loading' || state.kind === 'error' ? groupId : null);
+  const headerGroup = group ?? listed;
   const messages = useMemo(
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
@@ -315,10 +322,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [group?.serverBacked, threadRootId, closeThread, shareScope]);
   const settingsLabel = t('bots.groupChat.settings.open');
-  const headerMembers = group ? memberKey(group.members) : '';
+  const headerMembers = headerGroup ? memberKey(headerGroup.members) : '';
   const header = useMemo(() => {
-    if (!group) return null;
-    const names = botGroupMemberNames(group.members, separator);
+    if (!headerGroup) return null;
+    const names = botGroupMemberNames(headerGroup.members, separator);
     return (
       <div ref={threadHeaderRef} data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
         <button
@@ -327,14 +334,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           className="flex min-w-0 items-center gap-2 rounded-full px-2 py-1 text-left hover:bg-[var(--surface-hover)]"
           style={WINDOW_NO_DRAG_STYLE}
         >
-          <BotGroupAvatarStack members={group.members} />
-          <span className="min-w-0 truncate text-13 font-medium text-[var(--text-primary)]">{group.name}</span>
+          <BotGroupAvatarStack members={headerGroup.members} />
+          <span className="min-w-0 truncate text-13 font-medium text-[var(--text-primary)]">{headerGroup.name}</span>
           <span className="hidden min-w-0 truncate text-12 text-[var(--text-tertiary)] sm:inline" title={names}>
             {names}
           </span>
         </button>
         <div className="ml-auto flex shrink-0 items-center">
-          {group.serverBacked && group.canInvite && <ChatInviteButton groupId={group.id} />}
+          {headerGroup.serverBacked && headerGroup.canInvite && <ChatInviteButton groupId={headerGroup.id} />}
           <Tip text={settingsLabel}>
             <button
               type="button"
@@ -350,7 +357,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       </div>
     );
     // headerMembers stands in for the member array, which is new on every read.
-  }, [group?.name, group?.id, group?.serverBacked, group?.canInvite, headerMembers, openSettings, separator, settingsLabel]);
+  }, [headerGroup?.name, headerGroup?.id, headerGroup?.serverBacked, headerGroup?.canInvite, headerMembers, openSettings, separator, settingsLabel]);
   useRegisterContentHeader(header);
 
   // Follow new messages and banner viewport changes only while the reader is at the bottom.
@@ -517,8 +524,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   };
 
   if (state.kind === 'loading') {
-    // Local reads are fast; an empty surface avoids a spinner flash.
-    return <main className="h-full bg-[var(--surface)]" />;
+    return (
+      <main className="flex h-full items-center justify-center bg-[var(--surface)]">
+        <BotGroupTimelineLoading />
+      </main>
+    );
   }
   if (state.kind !== 'ready' || !group) {
     const failed = state.kind === 'error';
@@ -756,6 +766,25 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     </main>
     {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={closeThread} />}
     </div>
+  );
+}
+
+function BotGroupTimelineLoading() {
+  const { t } = useTranslation();
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), TIMELINE_LOADING_REVEAL_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!visible) return null;
+  return (
+    <Spinner
+      size={20}
+      data-testid="bot-group-timeline-loading"
+      className="text-[var(--text-tertiary)]"
+      role="status"
+      aria-label={t('ccAgent.common.loading')}
+    />
   );
 }
 

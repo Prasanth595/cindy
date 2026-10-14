@@ -64,7 +64,10 @@ import {
   ipcMain,
   nativeImage,
   safeStorage,
+  session as electronSession,
   shell,
+  webContents as electronWebContents,
+  type Session,
   type WebContents,
 } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
@@ -435,6 +438,15 @@ import { LibraryVault, statfsFreeBytes, DEFAULT_LIBRARY_LIMITS } from './library
 import { LibraryStagingStore, relocateLibraryStagingOwner } from './libraryStaging.js';
 import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlService.js';
 import { trashGhostLibrary } from './libraryTrash.js';
+import {
+  finishLegacyLibraryReattach,
+  LibrarySwapNeedsRestartError,
+  readLegacyLibraryReattachJournal,
+  relocateOrAdoptLibraryMeta,
+  startLegacyLibraryReattach,
+  withPluginHeldForLibrarySwap,
+  type LegacyLibraryReattachDeps,
+} from './libraryLegacyReattach.js';
 import { migrateGhostLibrary } from './libraryMigrate.js';
 import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
 import {
@@ -1118,6 +1130,14 @@ function findAvailableGhost(id: string, namespace?: string | null): InstalledGho
 }
 
 export function findGhostForInstanceId(id: string, namespace?: string | null): InstalledGhost | null {
+  // Plugin requests recheck their target many times per call. An exact
+  // instance key reads only that instance so each check does not rescan every
+  // install; anything else still resolves against the full list.
+  if (namespace === undefined) {
+    if (isAppSessionBoundaryPending()) return null;
+    const ghost = getGhostManager().findInstalledInstance(id);
+    if (ghost) return isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null;
+  }
   const resolved = resolvePluginInstanceQuery(availableGhosts(), id, namespace);
   return resolved.status === 'unique' ? resolved.ghost : null;
 }
@@ -1856,6 +1876,8 @@ export function getGhostManager(): GhostManager {
       },
       readUnconfirmedConfirmationEvidence: (record) =>
         getNamespaceMigrationHost().readUnconfirmedConfirmationEvidence(record),
+      canReclaimLegacyBareInstance: (input) =>
+        getNamespaceMigrationHost().canReclaimLegacyBareInstance(input),
       isNamespaceMigrationBusy: (ghostId) => getNamespaceMigrationHost().isNamespaceMigrationBusy(ghostId),
       marketIdentityForInstance: (instance) => {
         try {
@@ -1964,6 +1986,9 @@ export function getGhostRuntime(): GhostRuntime {
     runtimeSingleton = new GhostRuntime({
       adapter: electronSandboxAdapter,
       log,
+      startBlockedReason: (id) => libraryRestartRequiredReason(
+        isValidPluginInstallRelId(id) ? pluginInstallStoragePart(id) : id,
+      ),
       // 熔断不再自动转沉睡(Lizi 2026-07-09 定案):面板原地显示错误状态,
       // 关闭(沉睡)/ 重载都由用户在面板上决定,主机只记日志。
       onFused: (id) => log.warn('ghost fused after repeated crashes', { id }),
@@ -2151,6 +2176,7 @@ export function getGhostNodeRuntimeBroker(): GhostNodeRuntimeBroker {
   if (!nodeRuntimeBrokerSingleton) {
     nodeRuntimeBrokerSingleton = new GhostNodeRuntimeBroker({
       getGhost: findGhostForInstanceId,
+      startBlockedReason: libraryRestartRequiredReason,
       getCallSignal: (ghostId, callId) =>
         getGhostPipeDispatcher().getPendingCallSignal(ghostId, callId),
       getCallSessionId: (ghostId, callId) =>
@@ -5924,6 +5950,7 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
     });
     librarySlotSingleton = new GhostLibrarySlot({
       getGhost: findGhostForInstanceId,
+      prepareRequest: finishPendingLegacyLibraryReattach,
       bindingStore,
       getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
       getStagingRoot: (ghostId) => ownerScopedUserDataPath('library-staging', ghostId),
@@ -6137,8 +6164,13 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
       softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
       softLimitExceeded: false,
       orphaned: false,
+      legacyLibrary: null,
+      legacyLibraryInUse: false,
     };
   }
+  await finishPendingLegacyLibraryReattach()?.catch((error: unknown) => {
+    log.warn('library reattach recovery failed', { error: error instanceof Error ? error.message : String(error) });
+  });
   const store = getGhostLibraryBindingStore();
   const binding = await store.getBinding(storagePart);
   const resolution = await store.resolveLibraryRoot(storagePart);
@@ -6200,7 +6232,336 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
     softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     softLimitExceeded: usedBytes > DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     orphaned,
+    ...(supported && ghost
+      ? await findLegacyLibraryUsage(ghost)
+      : { legacyLibrary: null, legacyLibraryInUse: false }),
   };
+}
+
+interface LegacyLibraryCandidate {
+  kind: 'candidate';
+  fromId: string;
+  toId: string;
+  oldLocation: 'default' | 'custom';
+  /** uninstalled = 宿主卸载时留下的库；unknown = 没有宿主身份文件、来源无法证明。 */
+  provenance: 'uninstalled' | 'unknown';
+  usedBytes: number;
+  fileCount: number;
+}
+
+/** 一个目录树的文件数与字节数；只用于展示，数到上限即停。 */
+async function countLibraryFiles(root: string, limit = 20000): Promise<{ usedBytes: number; fileCount: number }> {
+  let usedBytes = 0;
+  let fileCount = 0;
+  const stack = [root];
+  while (stack.length > 0 && fileCount < limit) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) {
+        fileCount += 1;
+        usedBytes += (await fs.promises.stat(full).catch(() => null))?.size ?? 0;
+      }
+    }
+  }
+  return { usedBytes, fileCount };
+}
+
+/**
+ * An installed instance under a namespaced key may have an older library left
+ * under the bare id by an earlier install. A library the host marked as left
+ * by an uninstall counts; so does a directory without any host identity
+ * (copied in by hand or by a migration script), whose source is unknown. A
+ * library with an identity of another owner never counts. The current
+ * instance must still use the default location. GhostManager decides whether
+ * the bare id is free; `in-use` means another install still runs on it.
+ */
+async function findLegacyLibraryCandidate(
+  ghost: InstalledGhost,
+): Promise<LegacyLibraryCandidate | { kind: 'in-use' } | null> {
+  const fromId = ghost.manifest.id;
+  const toId = installedGhostStoragePart(ghost);
+  if (fromId === toId || ghost.manifest.library !== true || !isValidGhostId(fromId)) return null;
+  const offer = getGhostManager().bareLibraryOffer(fromId, ghost.namespace ?? null);
+  if (offer === 'unavailable') return null;
+  const store = getGhostLibraryBindingStore();
+  if (await store.getBinding(toId) !== null) return null;
+  let oldLocation: 'default' | 'custom' = 'default';
+  let root = ownerScopedUserDataPath('libraries', fromId);
+  if (await store.getBinding(fromId) !== null) {
+    const resolution = await store.resolveLibraryRoot(fromId);
+    if (resolution.kind !== 'custom' || resolution.root === null) return null;
+    oldLocation = 'custom';
+    root = resolution.root;
+  }
+  const rootStat = await fs.promises.lstat(root).catch(() => null);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) return null;
+  if (offer === 'in-use') return { kind: 'in-use' };
+  const hostDir = path.join(root, '.cindy-library');
+  if (!(await fs.promises.lstat(hostDir).catch(() => null))) {
+    const usage = await countLibraryFiles(root);
+    if (usage.fileCount === 0) return null;
+    return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'unknown', ...usage };
+  }
+  let meta: { ghostId?: unknown };
+  try {
+    meta = JSON.parse(await fs.promises.readFile(path.join(hostDir, 'meta.json'), 'utf8')) as typeof meta;
+  } catch {
+    return null;
+  }
+  // Nothing runs under the bare id (offer is available), so a library still
+  // owned by it was left behind. The uninstall marker is not required: for a
+  // custom location it lands under the default root instead.
+  if (meta.ghostId !== fromId) return null;
+  let usedBytes = 0;
+  let fileCount = 0;
+  try {
+    const usage = JSON.parse(
+      await fs.promises.readFile(path.join(hostDir, 'usage.json'), 'utf8'),
+    ) as { files?: number; bytes?: number };
+    usedBytes = Number(usage.bytes ?? 0);
+    fileCount = Number(usage.files ?? 0);
+  } catch {
+    /* 账本缺失按 0 计 */
+  }
+  return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'uninstalled', usedBytes, fileCount };
+}
+
+async function findLegacyLibraryUsage(
+  ghost: InstalledGhost,
+): Promise<Pick<GhostLibraryOverview, 'legacyLibrary' | 'legacyLibraryInUse'>> {
+  try {
+    const found = await findLegacyLibraryCandidate(ghost);
+    if (found?.kind === 'in-use') return { legacyLibrary: null, legacyLibraryInUse: true };
+    return {
+      legacyLibrary: found
+        ? { usedBytes: found.usedBytes, fileCount: found.fileCount, provenance: found.provenance }
+        : null,
+      legacyLibraryInUse: false,
+    };
+  } catch (error) {
+    log.warn('legacy library lookup failed', { error: error instanceof Error ? error.message : String(error) });
+    return { legacyLibrary: null, legacyLibraryInUse: false };
+  }
+}
+
+function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReattachDeps {
+  const ownerKey = activeOwnerScopeKey();
+  const store = getGhostLibraryBindingStore();
+  return {
+    journalFile: () => ownerScopedUserDataPath('library-reattach.json'),
+    defaultRoot: (id) => ownerScopedUserDataPath('libraries', id),
+    stagingRoot: (id) => ownerScopedUserDataPath('library-staging', id),
+    trashRoot: () => ownerScopedUserDataPath('libraries-trash'),
+    relocateCustomBinding: (fromId, toId) => store.relocateBinding(fromId, toId),
+    assertCustomBindingRelocatable: (fromId, toId) => store.assertCanRelocateBinding(fromId, toId),
+    customRoot: async (id) => {
+      const binding = await store.getBinding(id, { strict: true });
+      return binding ? path.join(binding.root, id) : null;
+    },
+    relocateMeta: async (root, fromId, toId) => {
+      assertCurrent();
+      // 接回的目标实例已装好，顺手清掉卸载时留的 orphaned，设置页不用等插件首次打开才自愈。
+      await relocateOrAdoptLibraryMeta(root, fromId, toId, async (dir, from, to) => {
+        await relocateLibraryMetaOwner(dir, from, to, assertCurrent, { clearOrphaned: true });
+      });
+    },
+    relocateStaging: (root, fromId, toId) =>
+      relocateLibraryStagingOwner(root, fromId, toId, ownerKey, assertCurrent),
+    assertCurrent,
+  };
+}
+
+/**
+ * Holds the plugin out of the way while both library directories move: the
+ * runtime and panels share an in-memory partition whose cache would otherwise
+ * be written back over the swapped library.
+ */
+/**
+ * Instances whose partition cache could not be cleared after a library swap.
+ * They stay stopped until Cindy restarts, which empties the in-memory
+ * partition; panel attach and both runtimes check this before starting.
+ */
+const libraryRestartRequired = new Set<string>();
+
+function libraryRestartRequiredKey(id: string): string {
+  return `${activeOwnerScopeKey()}\0${id}`;
+}
+
+function libraryRestartRequiredReason(id: string): string | null {
+  return libraryRestartRequired.has(libraryRestartRequiredKey(id))
+    ? t('settings.ghosts.library.legacyReattachNeedsRestart')
+    : null;
+}
+
+/** Close every page still open in a plugin partition and wait until each is gone. */
+async function closePartitionPages(partitionSession: Session, timeoutMs = 5_000): Promise<void> {
+  const pages = electronWebContents.getAllWebContents()
+    .filter((page) => !page.isDestroyed() && page.session === partitionSession);
+  await Promise.all(pages.map((page) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('plugin page did not close')), timeoutMs);
+    page.once('destroyed', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    page.close();
+  })));
+}
+
+async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Promise<T>): Promise<T> {
+  const slot = getGhostLibrarySlot();
+  const ids = [fromId, toId];
+  const ghostBefore = findGhostForInstanceId(toId);
+  const partition = ghostBefore
+    ? ownerScopedGhostPartitionForInstalledGhost(ghostBefore, getActiveAppSession())
+    : null;
+  return withPluginHeldForLibrarySwap({
+    stopRuntime: async () => {
+      const running = {
+        browser: getGhostRuntime().stateOf(toId) === 'running',
+        node: getGhostNodeRuntimeBroker().stateOf(toId) === 'running',
+      };
+      getGhostRuntime().stop(toId);
+      await getGhostNodeRuntimeBroker().stopAndWait(toId);
+      return running;
+    },
+    notifyPanels: (phase) => broadcastGhostWindowPush('ghosts:library-replaced', { id: toId, phase }),
+    closePages: async () => {
+      if (partition) await closePartitionPages(electronSession.fromPartition(partition));
+    },
+    holdLibraries: (on) => {
+      for (const id of ids) slot.setRelocating(id, on);
+    },
+    disposeLibraries: async () => {
+      for (const id of ids) await slot.disposeGhost(id);
+    },
+    clearPartitionStorage: async () => {
+      if (partition) await electronSession.fromPartition(partition).clearStorageData();
+    },
+    restartRuntime: (running) => {
+      const ghost = findGhostForInstanceId(toId);
+      if (!ghost?.enabled || !isGhostAvailableForActiveSession(ghost.manifest.id)) return;
+      spawnIfResident(ghost);
+      const warn = (error: unknown) => log.warn('plugin restart after library reattach failed', {
+        id: toId, error: error instanceof Error ? error.message : String(error),
+      });
+      if (running.browser && !isResidentBrowserGhost(ghost.manifest)) {
+        void getGhostRuntime().spawn(ghost).catch(warn);
+      }
+      if (running.node && ghost.manifest.node?.lifecycle !== 'resident') {
+        void getGhostNodeRuntimeBroker().startForRecovery(ghost).catch(warn);
+      }
+    },
+    warn: (message, error) => log.warn(message, {
+      id: toId, error: error instanceof Error ? error.message : String(error),
+    }),
+  }, run).catch((error: unknown) => {
+    if (error instanceof LibrarySwapNeedsRestartError) libraryRestartRequired.add(libraryRestartRequiredKey(toId));
+    throw error;
+  });
+}
+
+let pendingLegacyLibraryReattach: Promise<void> | null = null;
+/** Owner whose journal is known to be absent; library requests then skip the file read. */
+let legacyLibraryReattachClearOwner: string | null = null;
+/** The two libraries named by the unfinished journal, once it has been read. */
+let legacyLibraryReattachIds: { owner: string; ids: readonly string[] } | null = null;
+
+/**
+ * A reattach that stopped midway leaves its journal. Finish it before a
+ * library request runs, so neither end is opened half moved. When recovery
+ * fails, only the two libraries it names stay closed; with a ghostId, other
+ * plugins' requests go on.
+ */
+function finishPendingLegacyLibraryReattach(ghostId?: string): Promise<void> | undefined {
+  if (ghostId !== undefined && isOutsideFailedLegacyLibraryReattach(ghostId)) return undefined;
+  const running = runPendingLegacyLibraryReattach();
+  if (!running || ghostId === undefined) return running;
+  return running.catch((error: unknown) => {
+    if (!isOutsideFailedLegacyLibraryReattach(ghostId)) throw error;
+  });
+}
+
+/** A recovery that failed is retried only by the two libraries it names. */
+function isOutsideFailedLegacyLibraryReattach(ghostId: string): boolean {
+  const known = legacyLibraryReattachIds;
+  if (known === null || known.owner !== activeOwnerScopeKey()) return false;
+  return !known.ids.includes(ghostId) && !known.ids.includes(libraryStorageKeyFor(ghostId) ?? ghostId);
+}
+
+function runPendingLegacyLibraryReattach(): Promise<void> | undefined {
+  if (isAppSessionBoundaryPending()) return undefined;
+  if (legacyLibraryReattachClearOwner === activeOwnerScopeKey()) return undefined;
+  pendingLegacyLibraryReattach ??= (async () => {
+    try {
+      const ownerKey = activeOwnerScopeKey();
+      const assertCurrent = (): void => {
+        if (activeOwnerScopeKey() !== ownerKey || isAppSessionBoundaryPending()) {
+          throw new Error('Library reattach owner changed');
+        }
+      };
+      const deps = legacyLibraryReattachDeps(assertCurrent);
+      legacyLibraryReattachIds = null;
+      const journal = await readLegacyLibraryReattachJournal(deps.journalFile());
+      if (journal) {
+        legacyLibraryReattachIds = { owner: ownerKey, ids: [journal.fromId, journal.toId] };
+        await getGhostManager().runExclusiveMutation(() =>
+          withLibrariesHeld(journal.fromId, journal.toId, () => finishLegacyLibraryReattach(journal, deps)));
+        await refreshMivoLibraryExtraDirGrant().catch(() => undefined);
+      }
+      legacyLibraryReattachClearOwner = ownerKey;
+      legacyLibraryReattachIds = null;
+    } finally {
+      pendingLegacyLibraryReattach = null;
+    }
+  })();
+  return pendingLegacyLibraryReattach;
+}
+
+/**
+ * Settings-page reattach, run after the Main confirmation. The current
+ * library goes to the library trash; the old one takes its place.
+ */
+export async function reattachLegacyLibraryForActiveOwner(
+  ghostId: string,
+  expectedTarget: string | null,
+): Promise<{ ok: boolean; message?: string }> {
+  await finishPendingLegacyLibraryReattach();
+  return getGhostManager().runExclusiveMutation(async () => {
+    const assertCurrent = (): void => {
+      if (expectedTarget === null || ghostLibraryDeleteTargetFor(ghostId) !== expectedTarget) {
+        throw new Error('Library 对应的 Plugin 或账号已变化，请重新操作');
+      }
+    };
+    assertCurrent();
+    const ghost = findGhostForInstanceId(ghostId);
+    const found = ghost ? await findLegacyLibraryCandidate(ghost) : null;
+    if (found?.kind !== 'candidate') return { ok: false, message: '没有可以接回的作品数据' };
+    const candidate = found;
+    assertCurrent();
+    // A failure midway leaves the journal; the next library request finishes it.
+    legacyLibraryReattachClearOwner = null;
+    await withLibrariesHeld(candidate.fromId, candidate.toId, () =>
+      startLegacyLibraryReattach(
+        { fromId: candidate.fromId, toId: candidate.toId, oldLocation: candidate.oldLocation, now: Date.now() },
+        legacyLibraryReattachDeps(assertCurrent),
+      ));
+    legacyLibraryReattachClearOwner = activeOwnerScopeKey();
+    await refreshMivoLibraryExtraDirGrant().catch((error) => {
+      log.warn('library extraDirs reattach sync failed', {
+        ghostId: candidate.toId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return { ok: true };
+  });
 }
 
 function ghostLibraryDeleteTargetFor(ghostId: string): string | null {
@@ -6433,6 +6794,8 @@ export async function installAndDock(
     trustOverride?: GhostHostTrustOverride;
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
   },
 ): Promise<InstalledGhost> {
@@ -6452,6 +6815,8 @@ async function installAndDockLocked(
     installOrigin?: 'agent-forge';
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
   },
 ): Promise<InstalledGhost> {
@@ -6477,6 +6842,7 @@ async function installAndDockLocked(
     ...(opts.installOrigin ? { installOrigin: opts.installOrigin } : {}),
     ...(opts.registrySource ? { registrySource: opts.registrySource } : {}),
     ...(opts.pluginId ? { pluginId: opts.pluginId } : {}),
+    ...(opts.reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
     namespace: opts.namespace,
     ...(opts.beforePackagePlacement ? { beforePackagePlacement: opts.beforePackagePlacement } : {}),
   });
@@ -6862,6 +7228,44 @@ export interface MarketGhostPackageCommitEvidence {
   canonicalManifest: GhostManifest;
 }
 
+/**
+ * An organization market install may find a library left under the bare id by
+ * an earlier install whose source cannot be proven, such as a local package.
+ * Ask before reattaching it. Market evidence reattaches without asking.
+ */
+export async function confirmLegacyLibraryReattach(plugin: {
+  ghostId: string;
+  namespace: string | null;
+  pluginId: string;
+  name: string;
+}): Promise<boolean> {
+  const { ghostId, namespace, pluginId } = plugin;
+  if (namespace === null || !isValidGhostId(ghostId)) return false;
+  if (!getGhostManager().canOfferBareReclaim(ghostId, namespace, pluginId)) return false;
+  if (getNamespaceMigrationHost().canReclaimLegacyBareInstance({ ghostId, namespace, pluginId })) return false;
+  const leftover = fs.existsSync(ownerScopedUserDataPath('libraries', ghostId)) ||
+    (await getGhostLibraryBindingStore().getBinding(ghostId)) !== null;
+  if (!leftover) return false;
+  const options = {
+    type: 'question' as const,
+    title: t('settings.ghosts.library.reattachTitle'),
+    message: t('settings.ghosts.library.reattachTitle'),
+    detail: `${plugin.name}\n\n${t('settings.ghosts.library.reattachDescription')}`,
+    buttons: [
+      t('settings.ghosts.library.reattachConfirm'),
+      t('settings.ghosts.library.reattachSkip'),
+    ],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  const parent = mainShellWindows().find((window) => window.isVisible() && !window.isMinimized());
+  const decision = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  return decision.response === 0;
+}
+
 export async function installOrUpdateMarketGhostPackage(
   cindyFilePath: string,
   expected: {
@@ -6880,6 +7284,8 @@ export async function installOrUpdateMarketGhostPackage(
     pendingMarketRecord?: GhostFirstPartyPendingMarketRecord;
     /** Server-market resource id. Recorded on the instance so another market does not reuse it. */
     pluginId?: string;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     /** 自定义 Git/本地市场在打包前读取的 Manifest，用于防止打包窗口内能力扩张。 */
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
@@ -6919,6 +7325,8 @@ async function installOrUpdateMarketGhostPackageLocked(
     pendingMarketRecord?: GhostFirstPartyPendingMarketRecord;
     /** Server-market resource id. Recorded on the instance so another market does not reuse it. */
     pluginId?: string;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
     /** 新包已经原子换位；后续异常不能再按落位失败回滚来源路由。 */
@@ -7039,6 +7447,7 @@ async function installOrUpdateMarketGhostPackageLocked(
         enable: true,
         registrySource: 'market',
         ...(expected.pluginId ? { pluginId: expected.pluginId } : {}),
+        ...(expected.reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
         expectedPackageSha256: inspected.packageSha256,
         consent: { decision: expected.consent, manifest: inspected.manifest },
         beforePackagePlacement: expected.beforeCommitInLock,
@@ -9251,6 +9660,52 @@ export function registerGhostIpc(): void {
       releaseMutation();
     }
   });
+  ipcMain.handle('ghosts:library-reattach-legacy', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    const expectedOwner = captureGhostMutationOwner();
+    const expectedTarget = ghostLibraryDeleteTargetFor(id);
+    // 换掉当前作品数据是破坏性操作，唯一有效的确认在 Main(与删除同口径)。
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const ghost = findGhostForInstanceId(id);
+    const ghostName = ghost?.manifest.name ?? id;
+    const found = ghost ? await findLegacyLibraryCandidate(ghost).catch(() => null) : null;
+    const unknownSource = found?.kind === 'candidate' && found.provenance === 'unknown'
+      ? `\n\n${t('settings.ghosts.library.legacyReattachUnknownSource')}`
+      : '';
+    const options = {
+      type: 'question' as const,
+      title: t('settings.ghosts.library.legacyReattachConfirmTitle'),
+      message: t('settings.ghosts.library.legacyReattachConfirmTitle'),
+      detail: `${ghostName}\n\n${t('settings.ghosts.library.legacyReattachConfirmDescription')}${unknownSource}`,
+      buttons: [
+        t('settings.ghosts.library.legacyReattachConfirmText'),
+        t('settings.ghosts.library.cancel'),
+      ],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const decision = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+    if (decision.response !== 0) return { ok: false as const, cancelled: true as const };
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      const res = await reattachLegacyLibraryForActiveOwner(id, expectedTarget);
+      return res.ok
+        ? { ok: true as const }
+        : { ok: false as const, cancelled: false as const, message: res.message };
+    } catch (error) {
+      // The raw error can name absolute paths; it stays in the Main log.
+      log.warn('legacy library reattach failed', { id, error: error instanceof Error ? error.message : String(error) });
+      return error instanceof LibrarySwapNeedsRestartError
+        ? { ok: false as const, cancelled: false as const, message: t('settings.ghosts.library.legacyReattachNeedsRestart') }
+        : { ok: false as const, cancelled: false as const };
+    } finally {
+      releaseMutation();
+    }
+  });
 
   // 面板错误态的「重载意识」:清熔断记账 + 重新拉起沙箱。
   ipcMain.handle('ghosts:reload', async (event, id: unknown) => {
@@ -9451,10 +9906,11 @@ export function resolveGhostWebviewAttach(
   const resolvedPartition = resolveGhostWebviewPartitionClaim(partitionClaim, owner);
   if (!resolvedPartition) return null;
   if (!isPluginInstanceKey(resolvedPartition.ghostId)) return null;
-  const ghost = availableGhosts().find(
-    (candidate) => installedGhostStoragePart(candidate) === resolvedPartition.ghostId,
-  );
+  // Panels recheck this on every click and key press; an exact instance key
+  // reads only that instance.
+  const ghost = findGhostForInstanceId(resolvedPartition.ghostId);
   if (!ghost || !ghost.enabled) return null;
+  if (libraryRestartRequiredReason(resolvedPartition.ghostId) !== null) return null;
   if (resolvedPartition.ghostId !== installedGhostStoragePart(ghost)) return null;
   const partition = ownerScopedGhostPartitionForInstalledGhost(ghost, owner);
   if (!partition) return null;

@@ -57,6 +57,19 @@ Catalog (version)
 Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）。媒体 route 使用 `agents: []`。
 `contextWindowMax` 是客户端容量投影，不能填进 Registry；容量与工作预算见 [运行时细则](model-catalog-runtime.md)。
 
+### Gateway 复杂价目展示
+
+Model Access V5 通过 `X-Cindy-Model-Capabilities: display_pricing` 协商可选 `displayPricing`。
+聊天和媒体目录都保留该字段与同一连接快照的 `currency`、`costDiscount`；不进入公共
+Registry/defaults、ModelPriceQuote 或 token 成本估算，不跨供应商补价。
+成功刷新缺字段或价目不可解析时清除旧价目，模型仍正常更新；新增属性忽略，未知单位保留。
+展示字段变化不构成整份目录失败；网络或核心模型协议失败仍沿用既有目录恢复语义。
+
+Desktop 模型详情优先展示结构化价目，缺字段沿用原有价格。`price` 为每 `quantity` 个
+`unit` 的折扣前报价，只在展示时应用一次折扣，保留币种与“约/起价”语义；label、tier、
+notes 仅按纯文本呈现，未知单位不猜换算。列表不新增价格入口，统一从既有模型详情查看，也不从混合单位挑最低价。
+共享目录可传递这些可选展示字段，旧端缺字段仍合法；首期 UI 仅覆盖 Desktop 现有详情入口。
+
 ### 覆盖顺序
 
 这里是**模型资料字段**的优先级，右边覆盖左边；成员、权限、实际计费、显示开关不套用此链：

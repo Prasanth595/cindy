@@ -6582,7 +6582,23 @@
         "installLocationPickedPrefix": "선택됨:",
         "installLocationChange": "변경…",
         "bindAfterInstallFailed": "사용자 지정 저장 위치 설정에 실패하여 기본 위치로 되돌렸습니다",
-        "cancel": "취소"
+        "cancel": "취소",
+        "reattachTitle": "이 플러그인의 이전 작업 데이터를 다시 연결할까요?",
+        "reattachDescription": "이 컴퓨터에 이 플러그인을 이전에 설치했을 때의 작업 데이터가 남아 있습니다. 이전에 로컬에서 가져온 후 제거한 버전의 데이터일 수 있습니다. 다시 연결하면 이전 캔버스와 이미지를 이번에 설치한 플러그인에서 계속 사용할 수 있습니다. 연결하지 않으면 빈 상태로 시작하며, 이전 데이터는 이 컴퓨터에 그대로 남습니다.",
+        "reattachConfirm": "다시 연결",
+        "reattachSkip": "연결 안 함",
+        "legacyFoundBanner": "이 컴퓨터에 이 플러그인이 이전에 남긴 작업 데이터({{size}} · 파일 {{count}}개)가 있지만, 현재 설치에서는 사용하지 않고 있습니다.",
+        "legacyReattach": "이전 작업 데이터 다시 연결",
+        "legacyReattachBusy": "다시 연결하는 중…",
+        "legacyReattachConfirmTitle": "이전 작업 데이터를 다시 연결할까요?",
+        "legacyReattachConfirmDescription": "플러그인이 이전 작업 데이터를 사용하게 됩니다. 현재 작업 데이터는 휴지통으로 옮겨져 30일간 보관된 후 완전히 삭제됩니다.",
+        "legacyReattachConfirmText": "다시 연결",
+        "legacyReattachDone": "이전 작업 데이터를 다시 연결했습니다",
+        "legacyReattachFailed": "다시 연결하지 못했습니다",
+        "legacyReattachNeedsRestart": "이 플러그인의 캐시를 지우지 못했습니다. Cindy를 다시 시작한 뒤 플러그인을 사용하세요.",
+        "legacyInUseBanner": "이 컴퓨터의 다른 설치(예: 로컬 버전)가 이 플러그인의 이전 작업 데이터를 아직 사용하고 있습니다. 그 설치를 제거하면 여기에서 다시 연결할 수 있습니다.",
+        "legacyFoundUnknownBanner": "이 컴퓨터에 이 플러그인이 이전에 남긴 것으로 보이는 작업 데이터({{size}} · 파일 {{count}}개)가 있습니다. 출처 기록이 없으며 현재 설치에서는 사용하지 않고 있습니다.",
+        "legacyReattachUnknownSource": "이 작업 데이터에는 출처 기록이 없습니다. 수동이나 스크립트로 복사되었을 수 있습니다. 이 플러그인의 데이터가 맞는지 확인하세요."
       },
       "updateConfirm": {
         "title": "플러그인 \"{{name}}\"을(를) 업데이트할까요?",
@@ -9704,6 +9720,21 @@
       "addRemoteProject": "원격 프로젝트 추가"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "무료",
+        "estimated": "약 {{price}}",
+        "startingAt": "{{price}}부터",
+        "units": {
+          "token": "토큰",
+          "character": "문자",
+          "image": "장",
+          "second": "초",
+          "minute": "분",
+          "request": "요청",
+          "megapixel": "메가픽셀",
+          "megapixelSecond": "메가픽셀·초"
+        }
+      },
       "budgetNeedsApiKey": "이 모델은 설정에서 API key를 구성해야 사용할 수 있습니다",
       "paymentRequired": {
         "badge": "유료",

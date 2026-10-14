@@ -6582,7 +6582,23 @@
         "installLocationPickedPrefix": "選択済み:",
         "installLocationChange": "変更…",
         "bindAfterInstallFailed": "カスタム保存場所の設定に失敗したため、既定の場所に戻しました",
-        "cancel": "キャンセル"
+        "cancel": "キャンセル",
+        "reattachTitle": "このプラグインの以前の作品データを引き継ぎますか?",
+        "reattachDescription": "このコンピューターには、このプラグインを以前インストールしたときの作品データが残っています。以前ローカルから読み込み、その後アンインストールしたバージョンのものかもしれません。引き継ぐと、以前のキャンバスや画像を今回インストールしたプラグインで引き続き使えます。引き継がない場合は空の状態から始まり、以前のデータはこのコンピューターに残ります。",
+        "reattachConfirm": "引き継ぐ",
+        "reattachSkip": "引き継がない",
+        "legacyFoundBanner": "このコンピューターには、このプラグインが以前残した作品データ({{size}} · {{count}} ファイル)があり、現在のインストールでは使われていません。",
+        "legacyReattach": "以前の作品データを引き継ぐ",
+        "legacyReattachBusy": "引き継ぎ中…",
+        "legacyReattachConfirmTitle": "以前の作品データを引き継ぎますか?",
+        "legacyReattachConfirmDescription": "プラグインは以前の作品データを使うようになります。現在の作品データはごみ箱に移動され 30 日間保持された後、完全に消去されます。",
+        "legacyReattachConfirmText": "引き継ぐ",
+        "legacyReattachDone": "以前の作品データを引き継ぎました",
+        "legacyReattachFailed": "引き継ぎに失敗しました",
+        "legacyReattachNeedsRestart": "このプラグインのキャッシュを消去できませんでした。Cindy を再起動してからプラグインを使ってください。",
+        "legacyInUseBanner": "このコンピューター上の別のインストール(ローカル版など)が、このプラグインの以前の作品データをまだ使っています。そのインストールをアンインストールすると、ここで引き継げます。",
+        "legacyFoundUnknownBanner": "このコンピューターには、このプラグインが以前残した可能性のある作品データ({{size}} · {{count}} ファイル)があります。出所の記録がなく、現在のインストールでは使われていません。",
+        "legacyReattachUnknownSource": "この作品データには出所の記録がありません。手動またはスクリプトでコピーされた可能性があります。このプラグインのものか確認してください。"
       },
       "updateConfirm": {
         "title": "プラグイン「{{name}}」を更新しますか?",
@@ -9704,6 +9720,21 @@
       "addRemoteProject": "リモートプロジェクトを追加"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "無料",
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} から",
+        "units": {
+          "token": "トークン",
+          "character": "文字",
+          "image": "枚",
+          "second": "秒",
+          "minute": "分",
+          "request": "リクエスト",
+          "megapixel": "メガピクセル",
+          "megapixelSecond": "メガピクセル·秒"
+        }
+      },
       "budgetNeedsApiKey": "このモデルは設定で API key を構成してから使用できます",
       "paymentRequired": {
         "badge": "有料",
