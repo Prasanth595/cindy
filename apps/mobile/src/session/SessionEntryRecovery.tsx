@@ -42,14 +42,15 @@ export function LocalSessionCreationRecovery({ task }: { task: NewSessionCreatio
   const router = useRouter();
   const alive = useRef(true);
   const editing = useRef(false);
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState(false);
+  const busy = pending || task.returningToEdit === true;
   const [editError, setEditError] = useState<string | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const failed = task.status === 'create-failed';
   const backToEdit = async () => {
-    if (editing.current) return;
+    if (editing.current || busy) return;
     editing.current = true;
-    setBusy(true);
+    setPending(true);
     setEditError(null);
     try {
       await returnNewSessionToEdit({
@@ -60,7 +61,7 @@ export function LocalSessionCreationRecovery({ task }: { task: NewSessionCreatio
       if (alive.current) setEditError(formatRemoteError(error));
     } finally {
       editing.current = false;
-      if (alive.current) setBusy(false);
+      if (alive.current) setPending(false);
     }
   };
   return (
@@ -74,7 +75,7 @@ export function LocalSessionCreationRecovery({ task }: { task: NewSessionCreatio
       {failed ? <>
         <MainWindowActionButton action={{
           label: t('session.screen.retry'), testID: 'session.creationRetry', disabled: busy,
-          onPress: () => { if (!editing.current) retryNewSessionCreation(task.sessionId); },
+          onPress: () => { if (!editing.current && !busy) retryNewSessionCreation(task.sessionId); },
         }} numberOfLines={0} />
         <MainWindowActionButton action={{
           label: t('session.screen.backToEdit'), testID: 'session.creationEdit', busy,

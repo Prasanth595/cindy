@@ -14,17 +14,25 @@ export const SESSION_ENTRY_LOOKUP_TIMEOUT_MS = 20_000;
 type Lookup = { key: string; status: 'loading' | 'failed' | 'missing' | 'timedOut' | 'loaded' };
 
 /** Use the raw mirror to recognize hidden tasks opened by an old link. */
-export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, children }: {
+export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, children, ownsSessionSubscription = false }: {
   sessionId: string;
   deviceId?: string;
   children: ReactNode;
+  /** Only the task route owns the pipeline subscription; file routes also use this gate. */
+  ownsSessionSubscription?: boolean;
 }) {
   const { t } = useTranslation();
   const { accountGeneration } = useAuth();
-  const { openLink, connectionEpoch } = useDeviceLink();
+  const { openLink, connectionEpoch, unsubscribe } = useDeviceLink();
   const sessions = useSyncExternalStore(remoteSessionStore.subscribe, remoteSessionStore.getSessions);
   const deviceId = routeDeviceId ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
   const maker = useMobileMakerTransport(deviceId);
+  // The creation pipeline registers this owner before navigating here. The gate
+  // owns its lifetime even when source lookup keeps the task content unmounted.
+  useEffect(() => () => {
+    if (!ownsSessionSubscription || !deviceId || !sessionId) return;
+    void unsubscribe(`session:${sessionId}`, deviceId, ['sessions', `session:${sessionId}`]).catch(() => undefined);
+  }, [deviceId, sessionId, unsubscribe, ownsSessionSubscription]);
   const knownSession = sessions.find(session => session.id === sessionId
     && (!deviceId || session.deviceLinkDeviceId === deviceId));
   const knownSource = knownSession?.source;

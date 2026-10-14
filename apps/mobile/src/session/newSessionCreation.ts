@@ -142,6 +142,7 @@ export interface NewSessionCreationTask {
   readonly draft: NewSessionDraft;
   readonly attachments: readonly RemoteSerializedAttachment[];
   readonly firstMessageClientId: string;
+  readonly returningToEdit?: boolean;
   readonly collabDraft?: OrcaWorkerFormValue;
   readonly precreatedWorktree?: {
     path: string;
@@ -152,6 +153,7 @@ export interface NewSessionCreationTask {
 }
 
 interface InternalTask extends NewSessionCreationTask {
+  returningToEdit?: boolean;
   startedAt: number;
   phase: SlowSendPhase;
   status: NewSessionCreationStatus;
@@ -324,7 +326,7 @@ export function startNewSessionCreation(params: NewSessionCreationParams): void 
 /** create-failed 的「重试」:同 sessionId 重跑管线(被控端幂等,安全)。 */
 export function retryNewSessionCreation(sessionId: string): void {
   const task = tasks.get(sessionId);
-  if (!task || task.status !== 'create-failed') return;
+  if (!task || task.status !== 'create-failed' || task.returningToEdit) return;
   // Once createSession may have run against a managed path, retrying can create
   // another wrong-id session that shares it. Recovery must first prove the
   // exact pre-generated id was claimed; unknown/NOT_FOUND stays retain-only.
@@ -371,6 +373,19 @@ export function dismissNewSessionCreation(sessionId: string, opts: { removeSynth
     remoteSessionStore.clearPendingTitlePreview(sessionId);
   }
   emit();
+}
+
+/** Keep recovery exclusive across page remounts, through cleanup and durable save. */
+export function beginNewSessionReturnToEdit(sessionId: string): (() => void) | null {
+  const task = tasks.get(sessionId);
+  if (!task || task.status !== 'create-failed' || task.returningToEdit || !isTaskOwnerCurrent(task)) return null;
+  task.returningToEdit = true;
+  emit();
+  return () => {
+    if (tasks.get(sessionId) !== task) return;
+    task.returningToEdit = false;
+    emit();
+  };
 }
 
 /**

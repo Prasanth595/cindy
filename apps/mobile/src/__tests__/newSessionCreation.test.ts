@@ -265,7 +265,11 @@ describe('newSessionCreation pipeline', () => {
     if (fails) {
       await expect(recovery).rejects.toThrow('storage full');
       expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(false);
       expect(onReady).not.toHaveBeenCalled();
+      retryNewSessionCreation('s1');
+      await flushPipeline();
+      expect(maker.createSession).toHaveBeenCalledTimes(2);
     } else {
       await recovery;
       expect(getNewSessionCreationTask('s1')).toBeNull();
@@ -314,9 +318,15 @@ describe('newSessionCreation pipeline', () => {
     expect(onReady).not.toHaveBeenCalled();
     expect(drainStashedNewSessionDraft()).toBeNull();
     expect(getNewSessionCreationTask('s1')).not.toBeNull();
+    expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(true);
+    retryNewSessionCreation('s1');
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    expect(maker.worktree.discardPrecreated).toHaveBeenCalledTimes(1);
+    expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
     if (outcome === 'failure') {
       rejectDiscard(new Error('[PRECONDITION_FAILED] cleanup pending'));
       await expect(recovery).rejects.toThrow('cleanup pending');
+      expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(false);
     } else {
       if (outcome === 'leave') current = false;
       if (outcome === 'switch-account') setMobileAuthOwner('owner-b');
@@ -350,6 +360,15 @@ describe('newSessionCreation pipeline', () => {
     expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
     expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
     current = false;
+    // A fresh page has no local busy flag: the task itself must exclude both actions.
+    expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(true);
+    const createCalls = maker.createSession.mock.calls.length;
+    retryNewSessionCreation('s1');
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    await flushPipeline();
+    expect(maker.createSession).toHaveBeenCalledTimes(createCalls);
+    expect(editOutbox.update).toHaveBeenCalledTimes(1);
+    expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
     if (outcome === 'switch-account') setMobileAuthOwner('owner-b');
     finishSave();
     await recovery;

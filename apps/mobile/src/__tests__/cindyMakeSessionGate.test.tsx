@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   listeners: new Set<() => void>(),
   maker: { getSession: vi.fn() },
   openLink: vi.fn(),
+  unsubscribe: vi.fn(),
   connectionEpoch: 0,
   accountGeneration: 1,
   task: null as NewSessionCreationTask | null,
@@ -49,6 +50,7 @@ vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: {
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ accountGeneration: state.accountGeneration }) }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({
   openLink: state.openLink,
+  unsubscribe: state.unsubscribe,
   connectionEpoch: state.connectionEpoch,
 }) }));
 vi.mock('@/device-link/useMobileMakerTransport', () => ({ useMobileMakerTransport: () => state.maker }));
@@ -67,6 +69,7 @@ beforeEach(() => {
   state.sessions = [];
   state.maker.getSession.mockReset().mockResolvedValue(null);
   state.openLink.mockReset().mockResolvedValue(undefined);
+  state.unsubscribe.mockReset().mockResolvedValue(undefined);
   state.connectionEpoch = 0;
   state.accountGeneration = 1;
   state.task = null;
@@ -89,7 +92,7 @@ afterEach(() => {
 describe('mobile Cindy Make links', () => {
   const Content = vi.fn(() => createElement('span', {}, 'Composer'));
   const renderGate = () => act(async () => root.render(
-    <CindyMakeSessionGate sessionId="new-task" deviceId="device-a"><Content /></CindyMakeSessionGate>,
+    <CindyMakeSessionGate sessionId="new-task" deviceId="device-a" ownsSessionSubscription><Content /></CindyMakeSessionGate>,
   ));
   const click = (id: string) => act(async () => {
     const button = container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`);
@@ -102,6 +105,56 @@ describe('mobile Cindy Make links', () => {
     firstMessageClientId: 'first-message', attachments: [],
     draft: { agentKind: 'codex', workspaceKind: 'dialogue', model: 'model', effort: 'medium',
       permissionMode: 'auto', workingDir: '', providerId: 'openai', fastMode: false, firstMessage: 'Keep my draft' },
+  });
+
+  it.each(['running', 'create-failed'] as const)('releases pipeline subscriptions when leaving the %s recovery page', async status => {
+    state.task = { ...failedCreation(), status };
+    await renderGate();
+    expect(state.unsubscribe).not.toHaveBeenCalled();
+    await act(async () => root.render(null));
+    expect(state.unsubscribe).toHaveBeenCalledExactlyOnceWith(
+      'session:new-task', 'device-a', ['sessions', 'session:new-task'],
+    );
+  });
+
+  it('keeps subscriptions through the recovery-to-content handoff and releases them on exit', async () => {
+    state.task = failedCreation();
+    await renderGate();
+    state.task = null;
+    state.maker.getSession.mockResolvedValue({ id: 'new-task', source: 'desktop' });
+    await renderGate();
+    expect(container.textContent).toBe('Composer');
+    expect(state.unsubscribe).not.toHaveBeenCalled();
+    await act(async () => root.render(null));
+    expect(state.unsubscribe).toHaveBeenCalledExactlyOnceWith(
+      'session:new-task', 'device-a', ['sessions', 'session:new-task'],
+    );
+  });
+
+  it('does not release the task route subscription when a file route using the gate exits', async () => {
+    state.maker.getSession.mockResolvedValue({ id: 'new-task', source: 'desktop' });
+    await act(async () => root.render(
+      <CindyMakeSessionGate sessionId="new-task" deviceId="device-a"><Content /></CindyMakeSessionGate>,
+    ));
+    await act(async () => root.render(null));
+    expect(state.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('keeps retry and edit locked after remounting while task recovery is still pending', async () => {
+    state.task = { ...failedCreation(), returningToEdit: true };
+    await renderGate();
+    await act(async () => root.render(null));
+    await renderGate();
+    for (const id of ['session.creationRetry', 'session.creationEdit']) {
+      expect(container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)?.disabled).toBe(true);
+      await click(id);
+    }
+    expect(state.retryCreation).not.toHaveBeenCalled();
+    expect(state.returnToEdit).not.toHaveBeenCalled();
+    state.task = { ...state.task!, returningToEdit: false };
+    await renderGate();
+    await click('session.creationRetry');
+    expect(state.retryCreation).toHaveBeenCalledOnce();
   });
 
   it('offers a manual metadata retry after an empty response without reconnecting', async () => {

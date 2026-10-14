@@ -89,6 +89,9 @@ pnpm --filter mobile test:smoke
   不依赖尚不存在的远端任务记录。返回编辑复用 worktree 补偿和持久草稿恢复流程；
   回收或保存失败保留原任务与草稿。回收开始后离页仍完成同账号的草稿恢复与任务清理，
   仅取消跳转；账号切换后停止旧账号操作。已确认来源的任务在重连时保持内容挂载。
+- 返回编辑的忙碌状态由创建任务持有，覆盖回收与持久保存；离页重进仍禁止并发重试或
+  重复返回编辑，失败后释放。页面入口统一释放创建管线预订阅的任务 topic；恢复页切到
+  正常内容时保留订阅，最终离页时清理。
 
 实现与回归：`CindyMakeSessionGate.tsx`、`SessionEntryRecovery.tsx`、
 `returnNewSessionToEdit.ts`、`cindyMakeSessionGate.test.tsx` 与 `newSessionCreation.test.ts`。
