@@ -24,7 +24,7 @@ vi.mock('@/session/mobileDurableOutbox', () => ({
   getCurrentMobileOutboxRecords: editOutbox.records,
   mobileDurableOutbox: { update: editOutbox.update },
 }));
-import { getMobileAuthOwner, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
 const recoveryAsyncStorage = vi.hoisted(() => ({
   getItem: vi.fn(async (key: string) => recoveryStorage.get(key) ?? null),
@@ -46,6 +46,7 @@ vi.mock('expo-crypto', () => ({
   getRandomBytes: (n: number) => new Uint8Array(n).fill(7),
 }));
 import {
+  completeNewSessionDurableEdit,
   dismissNewSessionCreation,
   dismissRecoveredPrecreatedSession,
   drainStashedNewSessionDraft,
@@ -271,8 +272,12 @@ describe('newSessionCreation pipeline', () => {
       expect(maker.createSession).toHaveBeenCalledTimes(2);
     } else {
       await recovery;
-      expect(getNewSessionCreationTask('s1')).toBeNull();
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
       expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', recoverySessionId: 's1' });
+      completeNewSessionDurableEdit('s1', 'another-device');
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+      completeNewSessionDurableEdit('s1', 'dev-1');
+      expect(getNewSessionCreationTask('s1')).toBeNull();
     }
     expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
     expect(record.item.text).toBe(DRAFT.firstMessage);
@@ -291,7 +296,7 @@ describe('newSessionCreation pipeline', () => {
     });
     const onReady = vi.fn(() => {
       expect(stashDraft).toHaveBeenCalledOnce();
-      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('memory');
       expect(drainStashedNewSessionDraft('s1', 'dev-1')?.draft.firstMessage).toBe('hello world\n\nfollow-up');
       expect(getNewSessionCreationTask('s1')).toBeNull();
     });
@@ -334,7 +339,7 @@ describe('newSessionCreation pipeline', () => {
       await recovery;
     }
     if (outcome === 'success' || outcome === 'leave') {
-      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('memory');
       expect(drainStashedNewSessionDraft('s1', 'dev-1')?.draft.workingDir).toBe('/repo');
       expect(getNewSessionCreationTask('s1')).toBeNull();
       expect(remoteSessionStore.getSessions().find(s => s.id === 's1')).toBeUndefined();
@@ -373,13 +378,103 @@ describe('newSessionCreation pipeline', () => {
     if (outcome === 'switch-account') setMobileAuthOwner('owner-b');
     finishSave();
     await recovery;
+    expect(onReady).not.toHaveBeenCalled();
     if (outcome === 'leave') {
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+      expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(true);
+      retryNewSessionCreation('s1');
+      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+      await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+      expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', recoverySessionId: 's1' });
+      expect(editOutbox.update).toHaveBeenCalledTimes(1);
+      expect(maker.createSession).toHaveBeenCalledTimes(createCalls);
+      completeNewSessionDurableEdit('s1', 'dev-1');
       expect(getNewSessionCreationTask('s1')).toBeNull();
     } else {
       expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
     }
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
+  });
+
+  it('keeps a cancelled durable worktree recovery visible until its form accepts it', async () => {
+    const maker = makeMaker();
+    startNewSessionCreation(makeParams('s1', maker, {
+      draft: { ...DRAFT, workingDir: '/repo/.cindy-worktrees/a' },
+      precreatedWorktree: { path: '/repo/.cindy-worktrees/a', recoveryKey: 'durable-a', originalWorkingDir: '/repo' },
+      confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    }));
+    await flushPipeline();
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    persistCancelledDraft.mockImplementationOnce(async () => { record.creation!.cancelled = true; });
+    editOutbox.records.mockReturnValue([record]);
+    let finishSave!: () => void;
+    editOutbox.update.mockImplementationOnce(() => new Promise<void>(resolve => { finishSave = resolve; }));
+    let current = true;
+    const onReady = vi.fn();
+    const recovery = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => current, onReady });
+    await flushPipeline();
+    current = false;
+    finishSave();
+    await recovery;
+    const bridge = outboxLeaseHarness([record]);
+    bridge.refresh();
+    expect(record.creation?.cancelled).toBe(true);
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(true);
     expect(onReady).not.toHaveBeenCalled();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', recoverySessionId: 's1' });
+    expect(maker.worktree.discardPrecreated).toHaveBeenCalledTimes(1);
+    expect(editOutbox.update).toHaveBeenCalledTimes(1);
+    completeNewSessionDurableEdit('s1', 'dev-1');
+    bridge.refresh();
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(false);
+    expect(record.item.text).toBe(DRAFT.firstMessage);
+  });
+
+  it.each(['matching', 'device', 'account', 'not-ready', 'switched-owner'])('only acknowledges durable edit recovery after the matching form restores it: %s', async scope => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    editOutbox.records.mockReturnValue([record]);
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
+    const owner = getMobileAuthOwner();
+    if (scope === 'account') record.accountId = 'foreign-owner';
+    if (scope === 'not-ready') editOutbox.records.mockReturnValue([]);
+    if (scope === 'switched-owner') setMobileAuthOwner('owner-b');
+    // Execute the real form effect, including readiness and ownership guards.
+    const page = ts.createSourceFile('new.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let effect = '';
+    function findEffect(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(page) === 'useEffect'
+        && node.arguments[0]?.getText(page).includes('completeNewSessionDurableEdit(')) effect = node.arguments[0].getText(page);
+      ts.forEachChild(node, findEffect);
+    }
+    findEffect(page);
+    expect(effect).not.toBe('');
+    const restore = vi.fn(() => expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable'));
+    const bindings = {
+      outboxOwner: owner, params: { recoverySessionId: 's1' }, routeDeviceId: scope === 'device' ? 'dev-2' : 'dev-1',
+      leaveForeignOutboxRecovery: () => false, isMobileAuthOwnerCurrent,
+      getCurrentMobileOutboxRecords: editOutbox.records, outboxRecoveryRef: { current: null },
+      userTouchedDeviceRef: { current: false }, restoreCreationDraft: restore,
+      setSelectedDeviceId: vi.fn(), setSelectedDeviceName: vi.fn(), completeNewSessionDurableEdit,
+      mobileDurableOutbox: { subscribe: () => () => {}, ready: async () => {} },
+    };
+    const compiled = ts.transpileModule(`function run(bindings) { const { ${Object.keys(bindings).join(', ')} } = bindings; return (${effect})(); }`,
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const cleanup = (new Function(`${compiled}; return run;`)() as (b: typeof bindings) => () => void)(bindings);
+    await flushPipeline();
+    if (scope === 'matching') {
+      expect(restore).toHaveBeenCalledWith(DRAFT, [], { enabled: false, restorePermissionMode: null }, 'dev-1');
+      expect(getNewSessionCreationTask('s1')).toBeNull();
+    } else {
+      expect(restore).not.toHaveBeenCalled();
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    }
+    cleanup();
   });
 
   it.each([false, true])('isolates a late background edit draft from another task (other form already claimed: %s)', async claimed => {
@@ -410,7 +505,7 @@ describe('newSessionCreation pipeline', () => {
     expect(drainStashedNewSessionDraft()).toBeNull();
     expect(drainStashedNewSessionDraft('s1', 'another-device')).toBeNull();
     expect((formB ?? drainStashedNewSessionDraft('s2', 'dev-1'))?.draft.firstMessage).toBe('draft B');
-    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('memory');
     expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(true);
     retryNewSessionCreation('s1');
     expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');

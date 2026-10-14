@@ -244,6 +244,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import {
   createNewSessionId,
+  completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
   getNewSessionCreationTask,
   startNewSessionCreation,
@@ -857,7 +858,8 @@ export default function NewRemoteSessionScreen() {
     let restored = false;
     const restore = () => {
       if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
-      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation);
+      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation
+        && r.accountId === owner.accountKey && r.deviceId === routeDeviceId);
       if (!record?.creation || record.prepared) return;
       restored = true;
       outboxRecoveryRef.current = record;
@@ -868,11 +870,12 @@ export default function NewRemoteSessionScreen() {
         record.deviceId);
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
+      completeNewSessionDurableEdit(sid, record.deviceId);
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
     return () => { active = false; unsubscribe(); };
-  }, [params.recoverySessionId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
+  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
   useEffect(() => {
     const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;

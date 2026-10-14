@@ -144,7 +144,7 @@ export interface NewSessionCreationTask {
   readonly attachments: readonly RemoteSerializedAttachment[];
   readonly firstMessageClientId: string;
   readonly returningToEdit?: boolean;
-  readonly readyForEdit?: boolean;
+  readonly readyForEdit?: 'memory' | 'durable';
   readonly collabDraft?: OrcaWorkerFormValue;
   readonly precreatedWorktree?: {
     path: string;
@@ -156,7 +156,8 @@ export interface NewSessionCreationTask {
 
 interface InternalTask extends NewSessionCreationTask {
   returningToEdit?: boolean;
-  readyForEdit?: boolean;
+  readyForEdit?: 'memory' | 'durable';
+  durableEditOwner?: MobileAuthOwnerGeneration;
   editDraft?: { owner: MobileAuthOwnerGeneration; value: StashedNewSessionDraft };
   startedAt: number;
   phase: SlowSendPhase;
@@ -611,7 +612,7 @@ export function stashNewSessionDraftForEdit(
     collabDraft: task.collabDraft ?? null,
   };
   current.editDraft = { owner: getMobileAuthOwner(), value };
-  current.readyForEdit = true;
+  current.readyForEdit = 'memory';
   emit();
 }
 
@@ -623,6 +624,24 @@ export function drainStashedNewSessionDraft(sessionId?: string, deviceId?: strin
   const { value } = task.editDraft;
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
   return value;
+}
+
+/** Saving the durable draft does not transfer ownership to a form that has left. */
+export function markNewSessionDurableEditReady(sessionId: string, deviceId: string): void {
+  const task = tasks.get(sessionId);
+  if (!task || task.deviceId !== deviceId || task.status !== 'create-failed' || !isTaskOwnerCurrent(task)) return;
+  task.readyForEdit = 'durable';
+  task.durableEditOwner = getMobileAuthOwner();
+  emit();
+}
+
+/** Called only after the matching form has restored the persisted draft. */
+export function completeNewSessionDurableEdit(sessionId: string, deviceId: string): void {
+  const task = tasks.get(sessionId);
+  if (!task || task.deviceId !== deviceId || task.readyForEdit !== 'durable'
+    || !isTaskOwnerCurrent(task) || !task.durableEditOwner
+    || !isMobileAuthOwnerCurrent(task.durableEditOwner)) return;
+  dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
 }
 
 // ---------------------------------------------------------------------------

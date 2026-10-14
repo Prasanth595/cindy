@@ -168,8 +168,10 @@ describe('mobile Cindy Make links', () => {
     expect(container.textContent).toBe('Composer');
   });
 
-  it('keeps a prepared draft reachable through edit without retrying its cancelled creation', async () => {
-    state.task = { ...failedCreation(), readyForEdit: true };
+  it.each(['memory', 'durable'] as const)('keeps a prepared %s draft reachable after remount without retrying its cancelled creation', async readyForEdit => {
+    state.task = { ...failedCreation(), readyForEdit };
+    await renderGate();
+    await act(async () => root.render(null));
     await renderGate();
     expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationRetry"]')?.disabled).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationEdit"]')?.disabled).toBe(false);
