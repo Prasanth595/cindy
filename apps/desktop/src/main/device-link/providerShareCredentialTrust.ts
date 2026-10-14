@@ -87,6 +87,21 @@ export function setProviderShareCredentialTrusted(share: ProviderShareReceived, 
   log.info('provider share credential trust updated', { shareId: share.shareId, trusted });
 }
 
+/**
+ * 设置页的开关(打开前的确认在设置页，与「完全访问」等其他授权同一做法)。只认名单里现有的、且仍是界面上
+ * 看到的那个成员(`memberId`)的分享：用户确认的是这一份，重新加入(成员变了)后旧的点击不作数。
+ * 返回保存后的状态；找不到这条分享(或成员已变)返回 null。
+ */
+export function changeProviderShareCredentialTrust(
+  request: { shareId: string; memberId: string; trusted: boolean },
+  findReceivedShare: (shareId: string) => ProviderShareReceived | null,
+): boolean | null {
+  const share = findReceivedShare(request.shareId);
+  if (!share || share.memberId !== request.memberId) return null;
+  setProviderShareCredentialTrusted(share, request.trusted);
+  return request.trusted;
+}
+
 /** 退出分享后删掉，重新加入要重新打开。 */
 export function forgetProviderShareCredentialTrust(shareId: string): void {
   const trustedShares = { ...store.read().trustedShares };

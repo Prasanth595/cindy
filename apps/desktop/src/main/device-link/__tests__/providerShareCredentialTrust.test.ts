@@ -73,6 +73,25 @@ describe('provider share credential trust', () => {
     expect(saved).toEqual({ trustedShares: { a: { memberId: 'member-a', region: 'cn' } } });
   });
 
+  it('changes the setting from the settings page only for the member that page showed', async () => {
+    const trust = await load();
+    const a = share('a');
+    let current: ProviderShareReceived | null = a;
+    const find = (id: string) => (id === 'a' ? current : null);
+
+    expect(trust.changeProviderShareCredentialTrust({ shareId: 'a', memberId: a.memberId, trusted: true }, find)).toBe(true);
+    expect(trust.isProviderShareCredentialTrusted(a)).toBe(true);
+    expect(trust.changeProviderShareCredentialTrust({ shareId: 'a', memberId: a.memberId, trusted: false }, find)).toBe(false);
+    expect(trust.isProviderShareCredentialTrusted(a)).toBe(false);
+
+    // 设置页上看到的是旧成员、名单里已是新成员(重新加入)：按找不到处理，不替新成员打开。
+    current = { ...a, memberId: 'member-new' };
+    expect(trust.changeProviderShareCredentialTrust({ shareId: 'a', memberId: a.memberId, trusted: true }, find)).toBeNull();
+    expect(trust.isProviderShareCredentialTrusted(current)).toBe(false);
+    // 分享已不在名单里。
+    expect(trust.changeProviderShareCredentialTrust({ shareId: 'gone', memberId: 'x', trusted: true }, find)).toBeNull();
+  });
+
   it('forgets a share after leaving it', async () => {
     const trust = await load();
     const a = share('a');

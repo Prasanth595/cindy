@@ -72,7 +72,7 @@ beforeEach(() => {
     if (cmd.action === 'set-credential-trust') {
       if (credentialTrustWriteFails) throw new Error('write failed');
       credentialTrusted = cmd.trusted === true;
-      return { ok: true };
+      return { trusted: credentialTrusted };
     }
     throw new Error(`unexpected ${cmd.action}`);
   });
@@ -188,7 +188,8 @@ describe('ProviderShareReceivedDetail', () => {
   });
 });
 
-// 「凭证操作总是允许」(provider-sharing.md §9 第 7 条，2026-10-15)：打开前确认一次，关闭直接生效。
+// 「凭证操作总是允许」(provider-sharing.md §9 第 7 条，2026-10-15)：打开前确认一次，关闭直接生效；
+// 请求带上设置页此刻看到的成员。
 describe('ProviderShareReceivedDetail credential trust', () => {
   const trustSwitch = () => screen.getByRole('switch', { name: 'providerShare.received.credentialTrust.label' });
   const ready = () => waitFor(() => expect(trustSwitch().hasAttribute('disabled')).toBe(false));
@@ -200,7 +201,9 @@ describe('ProviderShareReceivedDetail credential trust', () => {
     expect(trustSwitch().getAttribute('aria-checked')).toBe('false');
 
     fireEvent.click(trustSwitch());
-    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-trust', shareId: 'share-1', trusted: true }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({
+      action: 'set-credential-trust', shareId: 'share-1', memberId: 'mem-1', trusted: true,
+    }));
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
       title: 'providerShare.received.credentialTrust.confirmTitle:{"name":"Magi"}',
       description: 'providerShare.received.credentialTrust.confirmDescription:{"name":"Magi"}',
@@ -209,7 +212,9 @@ describe('ProviderShareReceivedDetail credential trust', () => {
     expect(trustSwitch().getAttribute('aria-checked')).toBe('true');
 
     fireEvent.click(trustSwitch());
-    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-trust', shareId: 'share-1', trusted: false }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({
+      action: 'set-credential-trust', shareId: 'share-1', memberId: 'mem-1', trusted: false,
+    }));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
     await ready();
     expect(trustSwitch().getAttribute('aria-checked')).toBe('false');

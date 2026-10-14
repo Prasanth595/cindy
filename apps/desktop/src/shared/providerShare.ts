@@ -144,7 +144,8 @@ export type ProviderShareCommand =
   | { action: 'leave'; memberId: string }
   /** 受邀者：这条分享是否打开了「凭证操作总是允许」(provider-sharing.md §9 第 7 条)。只存在本机。 */
   | { action: 'credential-trust'; shareId: string }
-  | { action: 'set-credential-trust'; shareId: string; trusted: boolean };
+  /** 返回保存后的状态。`memberId` 是设置页上看到的成员，与当前名单不一致(已重新加入)时拒绝。 */
+  | { action: 'set-credential-trust'; shareId: string; memberId: string; trusted: boolean };
 
 export interface ProviderShareCommandResult {
   owned: ProviderShareOwnerState;
@@ -161,7 +162,7 @@ export interface ProviderShareCommandResult {
   withdraw: { ok: true };
   leave: { ok: true };
   'credential-trust': { trusted: boolean };
-  'set-credential-trust': { ok: true };
+  'set-credential-trust': { trusted: boolean };
 }
 
 /** 任务记录里「Agent 在某个分享者的电脑上」的前缀(见 main/device-link/providerShareGuest)。 */

@@ -49,10 +49,10 @@ import {
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
+  changeProviderShareCredentialTrust,
   forgetProviderShareCredentialTrust,
   isProviderShareCredentialTrusted,
   pruneProviderShareCredentialTrust,
-  setProviderShareCredentialTrusted,
 } from './providerShareCredentialTrust.js';
 import {
   findReceivedShare,
@@ -273,7 +273,12 @@ function parseCommand(raw: unknown): ProviderShareCommand {
       return { action: 'credential-trust', shareId: text(value.shareId, 'shareId', 128) };
     case 'set-credential-trust':
       if (typeof value.trusted !== 'boolean') throwIpcError('INVALID_PARAMS', 'trusted is required');
-      return { action: 'set-credential-trust', shareId: text(value.shareId, 'shareId', 128), trusted: value.trusted };
+      return {
+        action: 'set-credential-trust',
+        shareId: text(value.shareId, 'shareId', 128),
+        memberId: text(value.memberId, 'memberId', 128),
+        trusted: value.trusted,
+      };
     default:
       throwIpcError('INVALID_PARAMS', 'Unknown command');
   }
@@ -444,11 +449,10 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       return { trusted: share !== null && isProviderShareCredentialTrusted(share) };
     }
     case 'set-credential-trust': {
-      // 只认名单里现有的分享：记下这时的成员 id 与区域，重新加入或分享消失后自动失效。
-      const share = findReceivedShare(command.shareId);
-      if (!share) throwIpcError('NOT_FOUND', 'Shared provider not found');
-      setProviderShareCredentialTrusted(share, command.trusted);
-      return { ok: true };
+      // 只认名单里现有的、且仍是设置页上看到的那个成员的分享：记下这时的成员 id 与区域，重新加入或分享消失后自动失效。
+      const trusted = changeProviderShareCredentialTrust(command, findReceivedShare);
+      if (trusted === null) throwIpcError('NOT_FOUND', 'Shared provider not found');
+      return { trusted };
     }
   }
 }

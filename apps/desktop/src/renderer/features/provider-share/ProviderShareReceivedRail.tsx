@@ -139,7 +139,8 @@ export function ProviderShareReceivedRailGroup({
 
 /**
  * 「凭证操作总是允许」(provider-sharing.md §9 第 7 条)：只存在本机。关闭 = 照旧逐次确认；打开 = 这个
- * 分享的所有任务凭证操作不再确认，按任务自己的权限档处理。打开前确认一次，关闭直接生效。
+ * 分享的所有任务凭证操作不再确认，按任务自己的权限档处理。打开前确认一次，关闭直接生效；请求带上此刻
+ * 看到的成员，重新加入后旧的点击不作数。
  */
 function CredentialTrustRow({ share }: { share: ProviderShareReceived }) {
   const { t } = useTranslation();
@@ -179,11 +180,13 @@ function CredentialTrustRow({ share }: { share: ProviderShareReceived }) {
     setTrusted(next);
     setBusy(true);
     try {
-      await window.electronAPI.providerShare.command({
+      const result = await window.electronAPI.providerShare.command({
         action: 'set-credential-trust',
         shareId: share.shareId,
+        memberId: share.memberId,
         trusted: next,
       });
+      setTrusted(result.trusted);
     } catch {
       setTrusted(previous);
       toast.error(t('providerShare.received.credentialTrust.writeFailed'));
