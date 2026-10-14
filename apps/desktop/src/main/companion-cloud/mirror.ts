@@ -69,8 +69,10 @@ export function mirrorMessageText(row: CompanionMirrorRow): string | null {
   if (row.clientId.startsWith(COMPANION_DIRECT_CLIENT_PREFIX) || row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)) return null;
   const parsedMeta = parse(row.agentMeta);
   const meta = parsedMeta && typeof parsedMeta === 'object' ? parsedMeta as Record<string, unknown> : {};
-  // Private/coordination replies are hidden in the local timeline as well.
-  if (row.role === 'assistant' && meta.botPrivateReply === true) return null;
+  // Private/coordination replies are hidden in the local timeline as well; so are progress
+  // commentary and sub-agent output, which are never a reply (bots.ts canonicalReplyVisibility).
+  if (row.role === 'assistant' && (meta.botPrivateReply === true || meta.assistantPhase === 'commentary'
+    || (meta.parentToolUseId ?? null) !== null || (meta.parent_tool_use_id ?? null) !== null)) return null;
   if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
   const text = visibleMessageText(row.role, row.content);
   // Attachments count on their own: an images-only message is still the owner's message.
