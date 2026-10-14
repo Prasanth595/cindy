@@ -141,4 +141,34 @@ describe('MakerMemoryManager.runReview · reviewOneShot 注入与回退', () => 
       manager.dispose();
     }
   });
+
+  it('fails closed when the account switches during the injected call (no cross-account send)', async () => {
+    // Greptile P1 回归: 辅助链 await 横跨账号边界时链会中止并返回 null, 若此时
+    // 直接回落默认路由, 旧 owner 的 dump 会经新账号凭据发出且不可撤回。任一分支
+    // 出发前必须复核 scope 并抛出, 默认路由一次都不被调用。
+    const agent = fakeAgent('default-route suggestion');
+    let scope = 'test:owner:1';
+    const manager = new MakerMemoryManager({
+      basePath: root,
+      sqliteFactory,
+      agents: { 'claude-code': agent },
+      logger: noopLogger,
+      initialEnabled: true,
+      ownerScopeKey: () => scope,
+      reviewOneShot: async () => {
+        scope = 'test:owner:2'; // 链等待期间用户切换账号
+        return null;
+      },
+    });
+    await manager.write(WORKDIR, {
+      type: 'user', name: 'pref', title: 'Preference',
+      description: 'Durable preference', body: 'Keep this preference.',
+    });
+    try {
+      await expect(manager.runReview(WORKDIR)).rejects.toThrow(/owner scope/i);
+      expect(agent.oneShot).not.toHaveBeenCalled();
+    } finally {
+      manager.dispose();
+    }
+  });
 });

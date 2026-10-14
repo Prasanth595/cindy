@@ -934,8 +934,11 @@ export class MakerMemoryManager {
     const custom = this.deps.reviewOneShot
       ? await this.deps.reviewOneShot(prompt, REVIEW_ONE_SHOT_OPTS)
       : null;
+    // 辅助链的 await 可能横跨账号边界(链因此中止并返回 null)。此时旧 owner 的
+    // dump 一条都不能再发: 回落默认路由会读新账号凭据, 而末尾复核只能挡住返回,
+    // 撤不回已发出的 prompt。任一分支出发前必须重新复核, fail-closed 抛出。
+    this.assertScopeUnchanged(scopeAtEntry);
     if (custom && custom.trim().length > 0) {
-      this.assertScopeUnchanged(scopeAtEntry);
       return { suggestions: custom };
     }
     const agent = this.deps.agents[reviewAgentKind];
