@@ -12,17 +12,17 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
-import { isDurableOutboxHandedOff, isDurableOutboxSettled, type DurableOutboxRecord } from '@/session/durableOutbox';
+import { createDurableOutbox, isDurableOutboxHandedOff, isDurableOutboxSettled, type DurableOutboxRecord } from '@/session/durableOutbox';
 import { buildOutboxItem, outboxItemAttachments } from '@/session/sessionOutbox';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 const recoveryStorage = vi.hoisted(() => new Map<string, string>());
 const persistCancelledDraft = vi.hoisted(() => vi.fn(async () => {}));
-const editOutbox = vi.hoisted(() => ({ records: vi.fn((): DurableOutboxRecord[] => []), update: vi.fn(async () => {}) }));
+const editOutbox = vi.hoisted(() => ({ records: vi.fn((): DurableOutboxRecord[] => []), update: vi.fn(async (_record: DurableOutboxRecord, _patch: Partial<DurableOutboxRecord>) => {}) }));
 vi.mock('@/session/mobileDurableOutbox', () => ({
   persistCancelledCreationDraft: persistCancelledDraft,
   getCurrentMobileOutboxRecords: editOutbox.records,
-  mobileDurableOutbox: { update: editOutbox.update },
+  mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {} },
 }));
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
@@ -53,6 +53,7 @@ import {
   getNewSessionCreationTask,
   prepareNewSessionCreationForEdit,
   retryNewSessionCreation,
+  restoreNewSessionDurableEdit,
   shouldBlockSessionSync,
   stashNewSessionDraftForEdit,
   startNewSessionCreation,
@@ -112,7 +113,7 @@ function outboxLeaseHarness(initial: DurableOutboxRecord[]) {
     isDurableOutboxHandedOff, isDurableOutboxSettled, remoteSessionStore, sessionFromCreateResult, outboxItemAttachments,
     CINDY_MAKE_ENABLED, isCindyMakeSource,
     findRemoteHistoryView: (_deviceId: string, sessionId: string) => ({ isActive: () => visible.has(sessionId) }),
-    dismissRecoveredPrecreatedSession, leases,
+    dismissRecoveredPrecreatedSession, restoreNewSessionDurableEdit, leases,
     leaseKey: (record: DurableOutboxRecord) => JSON.stringify([record.deviceId, record.item.sessionId]) };
   const compiled = ts.transpileModule(`function create(bindings) {
     const { ${Object.keys(bindings).join(', ')} } = bindings;
@@ -283,6 +284,87 @@ describe('newSessionCreation pipeline', () => {
     expect(record.item.text).toBe(DRAFT.firstMessage);
     expect(record.creation?.draft).toEqual(DRAFT);
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
+  });
+
+  it.each(['editReady', 'cancelled'] as const)('restores a persisted %s edit entry after restart and keeps it until the matching form claims it', async marker => {
+    const bytes = new Map<string, string>();
+    const storage = { getAllKeys: async () => [...bytes.keys()], getItem: async (key: string) => bytes.get(key) ?? null,
+      setItem: async (key: string, value: string) => { bytes.set(key, value); },
+      removeItem: async (key: string) => { bytes.delete(key); } };
+    const owner = getMobileAuthOwner();
+    const original = recoveryOutboxRecord('s1');
+    const record = { ...original, accountId: owner.accountKey, suspended: true,
+      creation: { ...original.creation!, [marker]: true as const } };
+    const beforeRestart = createDurableOutbox(storage);
+    await beforeRestart.activate(owner.accountKey);
+    await beforeRestart.add(record);
+    const diskSnapshot = [...bytes];
+    const afterRestart = createDurableOutbox(storage);
+    await afterRestart.activate(owner.accountKey);
+    editOutbox.records.mockImplementation(() => [...afterRestart.getSnapshot()]);
+    const bridge = outboxLeaseHarness([...afterRestart.getSnapshot()]);
+    bridge.refresh();
+    expect(remoteSessionStore.getSessions().some(row => row.id === 's1')).toBe(true);
+    expect(bridge.leases.size).toBe(0);
+    expect(getNewSessionCreationTask('s1')).toMatchObject({ readyForEdit: 'durable', draft: DRAFT });
+    expect(getNewSessionCreationTask('s1')).toBe(getNewSessionCreationTask('s1'));
+    expect(shouldBlockSessionSync('s1')).toBe(true);
+    const onReady = vi.fn();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'PC', recoverySessionId: 's1' });
+    completeNewSessionDurableEdit('s1', 'wrong-device');
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    completeNewSessionDurableEdit('s1', 'dev-1');
+    bridge.refresh();
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(remoteSessionStore.getSessions()).toEqual([]);
+    expect([...bytes]).toEqual(diskSnapshot);
+    expect(editOutbox.update).not.toHaveBeenCalled();
+    if (marker === 'editReady') {
+      remoteSessionStore.upsertDeviceSession('dev-1', 'PC', {
+        ...sessionFromCreateResult({ sessionId: 's1' }, DRAFT), pendingLocalCreation: false,
+      });
+      bridge.refresh();
+      expect(remoteSessionStore.getSessions().some(row => row.id === 's1')).toBe(true);
+      remoteSessionStore.clear();
+    }
+    // If the editor is lost in another restart before submitting, the saved draft is reachable again.
+    const secondRestart = createDurableOutbox(storage);
+    await secondRestart.activate(owner.accountKey);
+    editOutbox.records.mockImplementation(() => [...secondRestart.getSnapshot()]);
+    bridge.setRecords([...secondRestart.getSnapshot()]);
+    bridge.refresh();
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    setMobileAuthOwner('owner-b');
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+  });
+
+  it.each(['cancellation-save', 'edit-save'])('keeps creation locked after worktree cleanup when %s fails, then retries only recovery', async failure => {
+    const maker = makeMaker();
+    startNewSessionCreation(makeParams('s1', maker, {
+      draft: { ...DRAFT, workingDir: '/repo/.cindy-worktrees/a' },
+      precreatedWorktree: { path: '/repo/.cindy-worktrees/a', recoveryKey: 'cleanup-a', originalWorkingDir: '/repo' },
+      confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    }));
+    await flushPipeline();
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    editOutbox.records.mockReturnValue([record]);
+    if (failure === 'cancellation-save') persistCancelledDraft.mockRejectedValueOnce(new Error('disk full'));
+    else editOutbox.update.mockRejectedValueOnce(new Error('disk full'));
+    const onReady = vi.fn();
+    await expect(returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady })).rejects.toThrow('disk full');
+    expect(getNewSessionCreationTask('s1')).toMatchObject({ worktreeCleanupAcknowledged: true, returningToEdit: false });
+    expect(onReady).not.toHaveBeenCalled();
+    retryNewSessionCreation('s1');
+    await flushPipeline();
+    expect(maker.createSession).not.toHaveBeenCalled();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
+    expect(maker.worktree.discardPrecreated).toHaveBeenCalledTimes(1);
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', recoverySessionId: 's1' });
+    expect(editOutbox.update).toHaveBeenLastCalledWith(record, expect.objectContaining({
+      suspended: true, creation: expect.objectContaining({ editReady: true }),
+    }));
   });
 
   it('lets the mounted composer stash its follow-ups before dismissing the task or navigating', async () => {

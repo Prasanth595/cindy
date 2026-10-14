@@ -85,6 +85,11 @@ export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, child
     loaded?.scope === scope ? loaded.source : undefined
   );
   if (!CINDY_MAKE_ENABLED && isCindyMakeSource(source)) return <Redirect href="/" />;
+  if (localCreation && (localCreation.readyForEdit || localCreation.worktreeCleanupAcknowledged)) {
+    return <LocalSessionCreationRecovery
+      key={JSON.stringify([sessionId, deviceId, accountGeneration, localCreation.startedAt, localCreation.status])}
+      task={localCreation} />;
+  }
   if (!CINDY_MAKE_ENABLED && source === undefined) {
     if (localCreation) return <LocalSessionCreationRecovery
       key={JSON.stringify([sessionId, deviceId, accountGeneration, localCreation.startedAt, localCreation.status])}

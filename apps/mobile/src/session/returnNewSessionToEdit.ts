@@ -18,15 +18,15 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   const ownerCurrent = () => isMobileAuthOwnerCurrent(owner);
   const task = getNewSessionCreationTask(sessionId);
   if (!ownerCurrent() || !isCurrent() || task?.deviceId !== deviceId) return;
+  if (task.readyForEdit && !task.returningToEdit) {
+    onReady({ deviceId, deviceName: task.deviceName,
+      ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
+    return;
+  }
   const release = beginNewSessionReturnToEdit(sessionId);
   if (!release) return;
   const taskCurrent = () => ownerCurrent() && getNewSessionCreationTask(sessionId) === task;
   try {
-    if (task.readyForEdit) {
-      if (isCurrent()) onReady({ deviceId, deviceName: task.deviceName,
-        ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
-      return;
-    }
     const prepared = await prepareNewSessionCreationForEdit(sessionId);
     // Cleanup may already have deleted the worktree. Leaving only cancels navigation,
     // not draft recovery or task dismissal; account changes still fence all writes.
@@ -37,6 +37,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
     if (durableFirst) {
       await mobileDurableOutbox.update(durableFirst, {
         suspended: true, state: 'failed', error: i18n.t('session.screen.firstMessageNotSent'),
+        creation: { ...durableFirst.creation!, editReady: true },
       });
       if (!taskCurrent()) return;
       markNewSessionDurableEditReady(sessionId, deviceId);

@@ -50,7 +50,8 @@ import {
 } from '@/session/newSession';
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
-import { persistCancelledCreationDraft } from './mobileDurableOutbox';
+import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft } from './mobileDurableOutbox';
+import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
 import {
   forgetPendingPrecreatedWorktree,
   parseDiscardPrecreatedAck,
@@ -145,6 +146,7 @@ export interface NewSessionCreationTask {
   readonly firstMessageClientId: string;
   readonly returningToEdit?: boolean;
   readonly readyForEdit?: 'memory' | 'durable';
+  readonly worktreeCleanupAcknowledged?: boolean;
   readonly collabDraft?: OrcaWorkerFormValue;
   readonly precreatedWorktree?: {
     path: string;
@@ -155,6 +157,7 @@ export interface NewSessionCreationTask {
 }
 
 interface InternalTask extends NewSessionCreationTask {
+  worktreeCleanupAcknowledged?: boolean;
   owner: MobileAuthOwnerGeneration;
   returningToEdit?: boolean;
   readyForEdit?: 'memory' | 'durable';
@@ -174,6 +177,10 @@ const subs = new Set<() => void>();
 // useSyncExternalStore 的快照必须引用稳定:每次变更 bump 版本并重建缓存数组。
 let snapshotVersion = 0;
 const taskSnapshots = new Map<string, NewSessionCreationTask | null>();
+// A mounted editor owns the restored draft for this process only. On restart the
+// durable record must make it reachable again, until resubmission replaces it.
+let claimedDurableEdits = new WeakSet<DurableOutboxRecord>();
+const durableEditSnapshots = new WeakMap<DurableOutboxRecord, NewSessionCreationTask>();
 
 function emit(): void {
   snapshotVersion += 1;
@@ -185,6 +192,7 @@ function emit(): void {
 // Release their in-memory guards as well as their React snapshots; durable drafts
 // belong to the outbox and remain available when that account signs in again.
 subscribeMobileAuthOwner(() => {
+  claimedDurableEdits = new WeakSet();
   let changed = false;
   for (const [sessionId, task] of tasks) {
     if (isMobileAuthOwnerCurrent(task.owner)) continue;
@@ -346,7 +354,7 @@ export function startNewSessionCreation(params: NewSessionCreationParams): void 
 /** create-failed 的「重试」:同 sessionId 重跑管线(被控端幂等,安全)。 */
 export function retryNewSessionCreation(sessionId: string): void {
   const task = tasks.get(sessionId);
-  if (!task || task.status !== 'create-failed' || task.returningToEdit || task.readyForEdit) return;
+  if (!task || task.status !== 'create-failed' || task.returningToEdit || task.readyForEdit || task.worktreeCleanupAcknowledged) return;
   // Once createSession may have run against a managed path, retrying can create
   // another wrong-id session that shares it. Recovery must first prove the
   // exact pre-generated id was claimed; unknown/NOT_FOUND stays retain-only.
@@ -472,7 +480,7 @@ export async function prepareNewSessionCreationForEdit(
     return null;
   }
   const precreated = task.precreatedWorktree;
-  if (precreated) {
+  if (precreated && !task.worktreeCleanupAcknowledged) {
     const discard = task.precreatedWorktreeSessionCreateStarted
       ? task.params.transport.maker.worktree.cancelPrecreated
       : task.params.transport.maker.worktree.discardPrecreated;
@@ -492,6 +500,10 @@ export async function prepareNewSessionCreationForEdit(
         if (!parseDiscardPrecreatedAck(discardResult)) {
           throw new Error(i18n.t('session.new.worktreeCleanupPending'));
         }
+        // The old directory/identity is no longer usable, even if a later local
+        // write fails. Returning to edit may retry persistence, never creation.
+        task.worktreeCleanupAcknowledged = true;
+        emit();
       }, { maxAttempts: 2 });
     } catch (err) {
       if (isStaleNewSessionOwnerError(err)) {
@@ -505,6 +517,8 @@ export async function prepareNewSessionCreationForEdit(
       }
       throw err;
     }
+  }
+  if (precreated) {
     assertTaskOwnerCurrent(task);
     await persistCancelledCreationDraft({ sessionId, deviceId: task.params.deviceId,
       originalWorkingDir: precreated.originalWorkingDir });
@@ -524,7 +538,49 @@ export async function prepareNewSessionCreationForEdit(
 }
 
 export function getNewSessionCreationTask(sessionId: string): NewSessionCreationTask | null {
-  return tasks.get(sessionId) ?? null;
+  return tasks.get(sessionId) ?? getDurableEditTask(sessionId);
+}
+
+function isDurableEditRecord(record: DurableOutboxRecord): boolean {
+  return record.accountId === getMobileAuthOwner().accountKey
+    && record.suspended === true && record.state === 'failed'
+    && !!(record.creation?.editReady || record.creation?.cancelled)
+    && !record.prepared && !record.enqueueStarted && record.sendAtMs === undefined
+    && !record.cancelRequested && !isDurableOutboxSettled(record);
+}
+
+function getDurableEditTask(sessionId: string): NewSessionCreationTask | null {
+  const record = getCurrentMobileOutboxRecords().find(record =>
+    record.item.sessionId === sessionId && isDurableEditRecord(record) && !claimedDurableEdits.has(record));
+  if (!record?.creation) return null;
+  let task = durableEditSnapshots.get(record);
+  if (!task) {
+    task = {
+      sessionId, deviceId: record.deviceId, deviceName: record.creation.deviceName,
+      startedAt: record.createdAt, phase: 'creating', status: 'create-failed',
+      error: record.error ?? i18n.t('session.screen.firstMessageNotSent'),
+      draft: record.creation.draft, attachments: record.item.attachmentSlots.filter(
+        (attachment): attachment is RemoteSerializedAttachment => attachment !== null),
+      firstMessageClientId: record.item.clientId, readyForEdit: 'durable',
+    };
+    durableEditSnapshots.set(record, task);
+  }
+  return task;
+}
+
+/** Rebuild only the local recovery entry, never restart a cancelled pipeline. */
+export function restoreNewSessionDurableEdit(record: DurableOutboxRecord): boolean {
+  if (!isDurableEditRecord(record) || !record.creation) return false;
+  // Claiming already removes the synthetic row. Do not repeatedly delete a
+  // later authoritative mirror row while the editor still holds this record.
+  if (claimedDurableEdits.has(record)) return true;
+  if (!remoteSessionStore.getSessions().some(session => session.id === record.item.sessionId)) {
+    remoteSessionStore.upsertDeviceSession(record.deviceId, record.creation.deviceName, {
+      ...sessionFromCreateResult({ sessionId: record.item.sessionId }, record.creation.draft),
+      pendingLocalCreation: true,
+    });
+  }
+  return true;
 }
 
 /** Host cancellation ACK is authoritative; keep the durable outbox draft for editing. */
@@ -546,20 +602,23 @@ export function dismissRecoveredPrecreatedSession(record: { sessionId: string; d
  * enqueue-failed / done 时会话已建成,照常同步。
  */
 export function shouldBlockSessionSync(sessionId: string): boolean {
-  const status = tasks.get(sessionId)?.status;
+  const status = getNewSessionCreationTask(sessionId)?.status;
   return status === 'running' || status === 'create-failed';
 }
 
 function subscribeTasks(callback: () => void): () => void {
   subs.add(callback);
+  const offOutbox = mobileDurableOutbox.subscribe(callback);
   return () => {
+    offOutbox();
     subs.delete(callback);
   };
 }
 
 function getTaskSnapshot(sessionId: string): NewSessionCreationTask | null {
   const current = tasks.get(sessionId);
-  if (!current || !isTaskOwnerCurrent(current)) return null;
+  if (!current) return getDurableEditTask(sessionId);
+  if (!isTaskOwnerCurrent(current)) return null;
   if (!taskSnapshots.has(sessionId)) {
     const task = tasks.get(sessionId);
     taskSnapshots.set(sessionId, task ? { ...task } : null);
@@ -653,10 +712,18 @@ export function markNewSessionDurableEditReady(sessionId: string, deviceId: stri
 /** Called only after the matching form has restored the persisted draft. */
 export function completeNewSessionDurableEdit(sessionId: string, deviceId: string): void {
   const task = tasks.get(sessionId);
-  if (!task || task.deviceId !== deviceId || task.readyForEdit !== 'durable'
+  if (task && (task.deviceId !== deviceId || task.readyForEdit !== 'durable'
     || !isTaskOwnerCurrent(task) || !task.durableEditOwner
-    || !isMobileAuthOwnerCurrent(task.durableEditOwner)) return;
+    || !isMobileAuthOwnerCurrent(task.durableEditOwner))) return;
+  const record = getCurrentMobileOutboxRecords().find(record => record.item.sessionId === sessionId
+    && record.deviceId === deviceId && isDurableEditRecord(record));
+  if (!task && !record) return;
+  if (record) claimedDurableEdits.add(record);
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
+  if (!task) {
+    dismissRecoveredPrecreatedSession({ sessionId, deviceId });
+    emit();
+  }
 }
 
 // ---------------------------------------------------------------------------

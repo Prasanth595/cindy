@@ -324,6 +324,20 @@ describe('mobile Cindy Make links', () => {
     expect(container.textContent).toBe('Composer');
   });
 
+  it.each(['durable', 'cleanup-ack'] as const)('keeps %s recovery accessible with known metadata and blocks retries after remount', async stateKind => {
+    state.task = { ...failedCreation(), ...(stateKind === 'durable'
+      ? { readyForEdit: 'durable' as const } : { worktreeCleanupAcknowledged: true }) };
+    state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'desktop' }];
+    await renderGate();
+    await act(async () => root.render(null));
+    await renderGate();
+    expect(container.textContent).not.toContain('Composer');
+    await click('session.creationRetry');
+    expect(state.retryCreation).not.toHaveBeenCalled();
+    await click('session.creationEdit');
+    expect(state.returnToEdit).toHaveBeenCalled();
+  });
+
   it('keeps recovery available after leaving and reopening a failed creation', async () => {
     state.task = failedCreation();
     await renderGate();

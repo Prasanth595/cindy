@@ -75,8 +75,8 @@ export function LocalSessionCreationRecovery({ task }: { task: NewSessionCreatio
     >
       {failed ? <>
         <MainWindowActionButton action={{
-          label: t('session.screen.retry'), testID: 'session.creationRetry', disabled: busy || !!task.readyForEdit,
-          onPress: () => { if (!editing.current && !busy && !task.readyForEdit) retryNewSessionCreation(task.sessionId); },
+          label: t('session.screen.retry'), testID: 'session.creationRetry', disabled: busy || !!task.readyForEdit || !!task.worktreeCleanupAcknowledged,
+          onPress: () => { if (!editing.current && !busy && !task.readyForEdit && !task.worktreeCleanupAcknowledged) retryNewSessionCreation(task.sessionId); },
         }} numberOfLines={0} />
         <MainWindowActionButton action={{
           label: t('session.screen.backToEdit'), testID: 'session.creationEdit', busy,
