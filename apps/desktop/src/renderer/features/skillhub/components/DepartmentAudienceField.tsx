@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Tip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { SkillAudienceDepartment } from '../../../../shared/skillhubAudience';
@@ -99,10 +100,10 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
             {rows.map(({ department: d, depth, hasChildren }) => {
               const included = departmentAncestors(d.id, parents).some(id => selectedIds.has(id));
               return <div key={d.id} className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16 }}>
-                {hasChildren && <Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
+                {hasChildren && <Tip text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
                   onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(d.id)) next.delete(d.id); else next.add(d.id); return next; })}>
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </Button>}
+                </Button></Tip>}
                 <label className="flex flex-1 items-center gap-2 cursor-pointer py-1">
                   <input type="checkbox" checked={included || selected.includes(d.id)} disabled={disabled || included} onChange={() => toggle(d.id)} />
                   {d.name}{included && <span className="text-xs text-[var(--cmd-palette-item-meta)]">{t('skillhub.audience.included')}</span>}

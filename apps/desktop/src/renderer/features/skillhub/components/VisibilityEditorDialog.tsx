@@ -52,7 +52,7 @@ export function VisibilityEditorDialog({
   const { user } = useAuth();
   const dialogOwner = useMemo(() => getDataOwnerGeneration(), [open]);
   const identityPolicy = useSkillhubIdentityPolicy(user);
-  const currentOwnerIsTeam = currentOwnerType === 'org';
+  const currentOwnerIsTeam = currentOwnerType === 'org' || currentOwnerType === 'organization';
 
   // loading 初始为 true,且关闭时复位 —— Dialog 在数据就绪前不挂载,
   // 避免"先弹出矮窗再撑开"的跳变(设计规范:拿到数据后一次成型)。

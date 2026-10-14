@@ -52,3 +52,11 @@ it('keeps failed loading retryable and does not save on cancellation', async () 
   fireEvent.click(screen.getByRole('button', { name: 'skillhub.publishDialog.cancel' }));
   expect(save).not.toHaveBeenCalled();
 });
+
+it.each(['org', 'organization'])('rejects old visibility capability for %s ownership', async (owner) => {
+  load.mockResolvedValue({ success: true, visibleDepts: [] });
+  render(<VisibilityEditorDialog open onOpenChange={close} skillName="demo" currentTier="team" currentOwnerType={owner} onSaved={saved} />);
+  await screen.findByRole('alert');
+  expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(save).not.toHaveBeenCalled();
+});

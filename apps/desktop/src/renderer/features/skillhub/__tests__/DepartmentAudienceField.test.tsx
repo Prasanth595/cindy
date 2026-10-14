@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
+import { Tooltip } from '@/components/ui/tooltip';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
@@ -16,8 +17,8 @@ const valid = vi.fn();
 function Fixture({ initial = [] }: { initial?: string[] }) {
   const [mode, setMode] = useState<'all' | 'departments'>('departments');
   const [selected, setSelected] = useState(initial);
-  return <><DepartmentAudienceField mode={mode} selected={selected} onValidityChange={valid}
-    onChange={(nextMode, next) => { setMode(nextMode); setSelected(next); }} /><output data-testid="selection">{JSON.stringify(selected)}</output></>;
+  return <Tooltip.Provider><DepartmentAudienceField mode={mode} selected={selected} onValidityChange={valid}
+    onChange={(nextMode, next) => { setMode(nextMode); setSelected(next); }} /><output data-testid="selection">{JSON.stringify(selected)}</output></Tooltip.Provider>;
 }
 beforeEach(() => {
   vi.clearAllMocks(); setDataOwnerGeneration('owner-a', 1);
