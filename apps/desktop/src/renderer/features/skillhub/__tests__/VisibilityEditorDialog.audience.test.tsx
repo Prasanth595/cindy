@@ -5,7 +5,7 @@ import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 const t = (key: string) => key;
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t }) }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: { membershipKind: 'org' } }) }));
-vi.mock('../hooks/useSkillhubIdentityPolicy', () => ({ useSkillhubIdentityPolicy: () => ({ allowedVisibilities: ['PUBLIC', 'DEPARTMENT_SCOPED'] }) }));
+vi.mock('../hooks/useSkillhubIdentityPolicy', () => ({ useSkillhubIdentityPolicy: () => ({ ownerType: 'organization', allowedVisibilities: ['PUBLIC', 'DEPARTMENT_SCOPED'] }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock('../PublishDialog', () => ({ VisibilityCard: ({ label, onSelect, value }: { label: string; onSelect: (value: string) => void; value: string }) =>
   <button onClick={() => onSelect(value)}>{label}</button> }));
@@ -68,5 +68,13 @@ it.each(['loading', 'loaded'])('closes after same-owner generation changes while
   setDataOwnerGeneration('owner-a', 2);
   view.rerender(<VisibilityEditorDialog open onOpenChange={close} skillName="demo" currentTier="team" currentOwnerType="org" onSaved={saved} />);
   await waitFor(() => expect(close).toHaveBeenCalledWith(false));
+  expect(save).not.toHaveBeenCalled();
+});
+
+it('requires visibility capability for public organization skills without owner metadata', async () => {
+  load.mockResolvedValue({ success: true, visibility: 'public', visibleDepts: [] });
+  render(<VisibilityEditorDialog open onOpenChange={close} skillName="demo" currentTier="public" onSaved={saved} />);
+  await screen.findByRole('alert');
+  expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
   expect(save).not.toHaveBeenCalled();
 });
