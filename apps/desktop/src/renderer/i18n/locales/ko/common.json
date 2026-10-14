@@ -6536,6 +6536,9 @@
         "slotWorkspace": "워크스페이스 세션"
       },
       "commandPaletteTag": "플러그인 명령",
+      "commandPaletteSource": {
+        "team": "팀 공유"
+      },
       "library": {
         "title": "영구 라이브러리",
         "loading": "라이브러리 정보를 불러오는 중…",

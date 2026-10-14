@@ -6536,6 +6536,9 @@
         "slotWorkspace": "ワークスペースセッション"
       },
       "commandPaletteTag": "プラグインコマンド",
+      "commandPaletteSource": {
+        "team": "チーム共有"
+      },
       "library": {
         "title": "永続ライブラリ",
         "loading": "ライブラリ情報を読み込み中…",

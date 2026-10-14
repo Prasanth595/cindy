@@ -6536,6 +6536,9 @@
         "slotWorkspace": "工作區任務"
       },
       "commandPaletteTag": "插件指令",
+      "commandPaletteSource": {
+        "team": "團隊共享"
+      },
       "library": {
         "title": "持久作品庫",
         "loading": "正在讀取庫資訊…",
