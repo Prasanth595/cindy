@@ -189,7 +189,7 @@ describe('desktop auth session-expiry detection', () => {
     const body = ghostSource.slice(start, end);
 
     expect(body).toContain('const roots = listGhostOwnerProjectionRoots();');
-    expect(body).toContain('await withSharedSkillRootsLock(() =>');
+    expect(body).toContain('withSharedSkillRootsLock);');
     expect(body).toContain('removeGhostSkillLinksForRoots(roots, undefined,');
     expect(body).toContain("roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills'))");
     expect(body).toContain('throw new Error(`ghost owner skill cleanup incomplete');

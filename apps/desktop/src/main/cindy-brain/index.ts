@@ -1251,10 +1251,11 @@ export async function suspendAllGhosts(): Promise<void> {
   resetNodeRuntimeBrokerForAccountBoundary();
   brainRootCache = null;
   const roots = listGhostOwnerProjectionRoots();
-  // Legacy links live in the shared home roots; serialize with other Cindy processes.
-  const skillCleanup = await withSharedSkillRootsLock(() =>
-    removeGhostSkillLinksForRoots(roots, undefined,
-      roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills'))));
+  // Private revocation is protected by this instance's owner boundary. Only
+  // an actual legacy shared-link removal needs the machine-wide writer lock.
+  const skillCleanup = await removeGhostSkillLinksForRoots(roots, undefined,
+    roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills')),
+    withSharedSkillRootsLock);
   for (const warning of skillCleanup.warnings) {
     log.warn('ghost owner skill cleanup warning', { warning });
   }
