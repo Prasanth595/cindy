@@ -340,6 +340,53 @@ describe('newSessionCreation pipeline', () => {
     expect(getNewSessionCreationTask('s1')).toBeNull();
   });
 
+  it.each(['editReady', 'cancelled'] as const)('releases the %s claim only after the last editor leaves and can be claimed again', marker => {
+    const original = recoveryOutboxRecord('s1');
+    const record = { ...original, accountId: getMobileAuthOwner().accountKey, suspended: true,
+      creation: { ...original.creation!, [marker]: true as const } };
+    editOutbox.records.mockReturnValue([record]);
+    restoreNewSessionDurableEdit(record);
+    const releaseFirst = completeNewSessionDurableEdit('s1', 'dev-1');
+    const releaseSecond = completeNewSessionDurableEdit('s1', 'dev-1');
+    expect(releaseFirst).toBeTypeOf('function');
+    expect(releaseSecond).toBeTypeOf('function');
+    releaseFirst!();
+    releaseFirst!();
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(remoteSessionStore.getSessions()).toEqual([]);
+    releaseSecond!();
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+    expect(remoteSessionStore.getSessions().some(row => row.id === 's1')).toBe(true);
+    const releaseReopened = completeNewSessionDurableEdit('s1', 'dev-1');
+    releaseSecond!();
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    releaseReopened!();
+    expect(getNewSessionCreationTask('s1')?.draft).toEqual(DRAFT);
+    expect(editOutbox.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['submitted', 'removed', 'replaced', 'account'] as const)('does not resurrect an old edit entry on form cleanup after %s', change => {
+    const original = recoveryOutboxRecord('s1');
+    const record = { ...original, accountId: getMobileAuthOwner().accountKey, suspended: true,
+      creation: { ...original.creation!, editReady: true as const } };
+    editOutbox.records.mockReturnValue([record]);
+    restoreNewSessionDurableEdit(record);
+    const release = completeNewSessionDurableEdit('s1', 'dev-1');
+    if (change === 'submitted') editOutbox.records.mockReturnValue([{ ...record, suspended: false, state: 'queued' }]);
+    if (change === 'removed') editOutbox.records.mockReturnValue([]);
+    let releaseReplacement: (() => void) | undefined;
+    if (change === 'replaced') {
+      editOutbox.records.mockReturnValue([{ ...record }]);
+      releaseReplacement = completeNewSessionDurableEdit('s1', 'dev-1');
+    }
+    if (change === 'account') setMobileAuthOwner('owner-b');
+    release!();
+    expect(remoteSessionStore.getSessions()).toEqual([]);
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(editOutbox.update).not.toHaveBeenCalled();
+    releaseReplacement?.();
+  });
+
   it.each(['cancellation-save', 'edit-save'])('keeps creation locked after worktree cleanup when %s fails, then retries only recovery', async failure => {
     const maker = makeMaker();
     startNewSessionCreation(makeParams('s1', maker, {
@@ -525,6 +572,9 @@ describe('newSessionCreation pipeline', () => {
     editOutbox.records.mockReturnValue([record]);
     await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
     const owner = getMobileAuthOwner();
+    // Model the persisted edit-ready patch so the real form acquires a releaseable claim.
+    record.suspended = true;
+    record.creation!.editReady = true;
     if (scope === 'account') record.accountId = 'foreign-owner';
     if (scope === 'not-ready') editOutbox.records.mockReturnValue([]);
     if (scope === 'switched-owner') setMobileAuthOwner('owner-b');
@@ -560,6 +610,10 @@ describe('newSessionCreation pipeline', () => {
       else expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
     }
     cleanup();
+    if (scope === 'matching') {
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable');
+      expect(remoteSessionStore.getSessions().some(row => row.id === 's1')).toBe(true);
+    }
   });
 
   it.each([false, true])('isolates a late background edit draft from another task (other form already claimed: %s)', async claimed => {

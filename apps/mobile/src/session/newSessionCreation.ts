@@ -177,9 +177,9 @@ const subs = new Set<() => void>();
 // useSyncExternalStore 的快照必须引用稳定:每次变更 bump 版本并重建缓存数组。
 let snapshotVersion = 0;
 const taskSnapshots = new Map<string, NewSessionCreationTask | null>();
-// A mounted editor owns the restored draft for this process only. On restart the
-// durable record must make it reachable again, until resubmission replaces it.
-let claimedDurableEdits = new WeakSet<DurableOutboxRecord>();
+// Each mounted editor holds a claim until it leaves. The durable record remains
+// recoverable after all editors leave or the process restarts.
+let claimedDurableEdits = new WeakMap<DurableOutboxRecord, number>();
 const durableEditSnapshots = new WeakMap<DurableOutboxRecord, NewSessionCreationTask>();
 
 function emit(): void {
@@ -192,7 +192,7 @@ function emit(): void {
 // Release their in-memory guards as well as their React snapshots; durable drafts
 // belong to the outbox and remain available when that account signs in again.
 subscribeMobileAuthOwner(() => {
-  claimedDurableEdits = new WeakSet();
+  claimedDurableEdits = new WeakMap();
   let changed = false;
   for (const [sessionId, task] of tasks) {
     if (isMobileAuthOwnerCurrent(task.owner)) continue;
@@ -715,7 +715,7 @@ export function markNewSessionDurableEditReady(sessionId: string, deviceId: stri
 }
 
 /** Called only after the matching form has restored the persisted draft. */
-export function completeNewSessionDurableEdit(sessionId: string, deviceId: string): void {
+export function completeNewSessionDurableEdit(sessionId: string, deviceId: string): (() => void) | undefined {
   const task = tasks.get(sessionId);
   if (task && (task.deviceId !== deviceId || task.readyForEdit !== 'durable'
     || !isTaskOwnerCurrent(task) || !task.durableEditOwner
@@ -723,12 +723,26 @@ export function completeNewSessionDurableEdit(sessionId: string, deviceId: strin
   const record = getCurrentMobileOutboxRecords().find(record => record.item.sessionId === sessionId
     && record.deviceId === deviceId && isDurableEditRecord(record));
   if (!task && !record) return;
-  if (record) claimedDurableEdits.add(record);
+  const owner = getMobileAuthOwner();
+  const claims = claimedDurableEdits;
+  if (record) claims.set(record, (claims.get(record) ?? 0) + 1);
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
   if (!task) {
     dismissRecoveredPrecreatedSession({ sessionId, deviceId });
     emit();
   }
+  let released = false;
+  return () => {
+    if (released || !record) return;
+    released = true;
+    const remaining = (claims.get(record) ?? 1) - 1;
+    if (remaining > 0) { claims.set(record, remaining); return; }
+    claims.delete(record);
+    // A submitted/replaced record or a later account generation belongs to a
+    // different flow. Never resurrect its old synthetic row on form cleanup.
+    if (!isMobileAuthOwnerCurrent(owner) || !getCurrentMobileOutboxRecords().includes(record)) return;
+    if (restoreNewSessionDurableEdit(record)) emit();
+  };
 }
 
 // ---------------------------------------------------------------------------

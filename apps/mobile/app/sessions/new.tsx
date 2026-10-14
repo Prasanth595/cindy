@@ -856,6 +856,7 @@ export default function NewRemoteSessionScreen() {
     if (!sid) return;
     let active = true;
     let restored = false;
+    let releaseEditClaim: (() => void) | undefined;
     const restore = () => {
       if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
       const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation
@@ -870,11 +871,11 @@ export default function NewRemoteSessionScreen() {
         record.deviceId);
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
-      completeNewSessionDurableEdit(sid, record.deviceId);
+      releaseEditClaim = completeNewSessionDurableEdit(sid, record.deviceId);
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); };
+    return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
   }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
   useEffect(() => {
     const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
