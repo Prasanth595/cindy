@@ -945,3 +945,19 @@ describe('factory defaults survive send-time calibration', () => {
       .toEqual({ model: 'auto', providerId: 'xd' });
   });
 });
+
+
+describe('organization AUTO default and explicit choices', () => {
+  it('uses AUTO for untouched drafts and unattended defaults but preserves manual real-model selection', () => {
+    const gateway = provider('xd', true, { pi: [model('real'), model('auto/base', { newSessionDefault: ['pi'] })] });
+    const providers = [gateway];
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'real', chosenByUser: false, providersLoading: false }))
+      .toMatchObject({ model: 'auto/base', providerId: 'xd' });
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'real', chosenByUser: true, providersLoading: false }))
+      .toEqual({ model: 'real', providerId: null });
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi', draft: { model: 'real', providerId: 'xd', chosenByUser: true } }))
+      .toMatchObject({ model: 'real', providerId: 'xd' });
+    gateway.models.pi![1] = model('auto/base', { newSessionDefault: ['pi'], contextWindow: 500_000 });
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'real', chosenByUser: true, providersLoading: false }).model).toBe('real');
+  });
+});

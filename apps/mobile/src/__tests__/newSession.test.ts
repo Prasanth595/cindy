@@ -28,6 +28,7 @@ import {
   parseNewSessionDeviceOptions,
   parseExtraDirsInput,
   pickAgentDefaultRuntime,
+  pickInitialGroupAutoRuntime,
   pickInitialNewSessionWorkspace,
   hostDraftRuntimeFromDefaults,
   isHostDraftDefaultsReady,
@@ -143,9 +144,9 @@ describe('hostDraftRuntimeFromDefaults', () => {
 
   it('leaves a never-chosen host seed to the catalog regional default, like the desktop controller', () => {
     expect(hostDraftRuntimeFromDefaults({ model: 'seed', modelChosenByUser: false, providerId: null }, 'pi')).toBeNull();
-    // 选过来源即视为明确选择。
+    // 保留来源，同时记住模型仍是未手选种子。
     expect(hostDraftRuntimeFromDefaults({ model: 'seed', modelChosenByUser: false, providerId: 'xd' }, 'pi'))
-      .toEqual({ agentKind: 'pi', model: 'seed', effort: '', providerId: 'xd' });
+      .toEqual({ agentKind: 'pi', model: 'seed', effort: '', providerId: 'xd', chosenByUser: false });
   });
 });
 
@@ -3010,4 +3011,51 @@ describe('closed saved model requires reselection', () => {
       fetch: async () => ({ providers: [], modelVisibilityOverrides: visibilityOverrides }), buildRows: () => rows });
     expect(result).toMatchObject({ catalogKnown: true, rows, visibilityOverrides });
   });
+});
+
+
+describe('group AUTO initial selection', () => {
+  const autoRow = () => ({ ...modelRow('auto/base', [], null, ['pi']), provider: { id: 'xd', name: 'Cindy', auth: { method: 'managed' }, access: { kind: 'managed' } } as ProviderModelRow['provider'] });
+  const input = () => ({ userTouched: false, appliedDeviceId: null, selectedDeviceId: 'device-a', hostDefaultsSettled: true,
+    hostRuntime: null, modelRows: [modelRow('legacy', [], null, ['pi']), autoRow()], rowsAgentKind: 'pi' as const, catalogReady: true, currentEffort: '' });
+  it('prefers marked AUTO on initial open and agent switch, retaining explicit choices', () => {
+    expect(resolveNewSessionAutoDefault(input())?.patch).toMatchObject({ model: 'auto/base', providerId: 'xd' });
+    expect(pickAgentDefaultRuntime({ agentKind: 'pi', hostRuntime: null, modelRows: input().modelRows, currentEffort: '', catalogReady: true })).toMatchObject({ model: 'auto/base', providerId: 'xd' });
+    expect(resolveNewSessionAutoDefault({ ...input(), userTouched: true })).toBeNull();
+    const real = modelRow('real'); real.provider = autoRow().provider;
+    const hostRuntime = hostDraftRuntimeFromDefaults({ model: 'real', providerId: 'xd', modelChosenByUser: true }, 'pi');
+    expect(resolveNewSessionAutoDefault({ ...input(), modelRows: [real, autoRow()], hostRuntime })?.patch.model).toBe('real');
+    expect(resolveNewSessionAutoDefault({ ...input(), modelRows: [modelRow('legacy', [], null, ['pi'])] })?.patch.model).toBe('legacy');
+  });
+  it('replaces an untouched host seed only inside its chosen provider', () => {
+    const real = modelRow('real'); real.provider = autoRow().provider;
+    const hostRuntime = hostDraftRuntimeFromDefaults({ model: 'real', providerId: 'xd', modelChosenByUser: false }, 'pi');
+    expect(resolveNewSessionAutoDefault({ ...input(), modelRows: [real, autoRow()], hostRuntime })?.patch.model).toBe('auto/base');
+  });
+});
+
+
+it('initial mobile entry selects the base AUTO and submits its installed harness, preserving manual choices', () => {
+  const providers: import('@cindy/model-providers').ProviderView[] = [{
+    id: 'xd', name: 'Cindy', source: 'builtin', connected: true, auth: { method: 'managed' }, access: { kind: 'managed' },
+    agents: ['claude-code', 'pi'], routing: { 'claude-code': { upstream: 'https://provider.test', authStrategy: 'none' }, pi: { upstream: 'https://provider.test', authStrategy: 'none' } },
+    models: {
+      'claude-code': [{ id: 'auto/z-base', name: 'AUTO (base)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 0, newSessionDefault: ['claude-code'] }],
+      pi: [{ id: 'auto/a-extra', name: 'AUTO (extra)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 1, newSessionDefault: ['pi'] }],
+    },
+  }];
+  const initialAutoRuntime = pickInitialGroupAutoRuntime(providers, new Set(['claude-code', 'pi']), {});
+  expect(initialAutoRuntime).toMatchObject({ model: 'auto/z-base', agentKind: 'claude-code', providerId: 'xd' });
+  expect(pickInitialGroupAutoRuntime(providers, new Set(['pi']), {})).toMatchObject({ model: 'auto/a-extra', agentKind: 'pi' });
+  expect(pickInitialGroupAutoRuntime(providers, new Set(['pi']), { 'pi:xd:auto/a-extra': false })).toBeNull();
+  const input = { userTouched: false, appliedDeviceId: 'device-a', selectedDeviceId: 'device-a', hostDefaultsSettled: true,
+    hostRuntime: null, modelRows: [], rowsAgentKind: 'pi' as const, catalogReady: true, currentEffort: '',
+    initialAutoRuntime, currentRuntime: { agentKind: 'pi' as const, model: 'old-seed', providerId: 'xd' } };
+  const patch = resolveNewSessionAutoDefault(input)?.patch;
+  expect(patch).toMatchObject({ agentKind: 'claude-code', model: 'auto/z-base' });
+  expect(buildRemoteCreateSessionOptions({ ...DEFAULT_NEW_SESSION_DRAFT, ...patch })).toMatchObject({ model: 'auto/z-base', agentKind: 'claude-code', providerId: 'xd' });
+  expect(resolveNewSessionAutoDefault({ ...input, userTouched: true })).toBeNull();
+  expect(resolveNewSessionAutoDefault({ ...input, hostRuntime: { agentKind: 'pi', model: 'real', effort: '', providerId: 'xd' } })).toBeNull();
+  expect(resolveNewSessionAutoDefault({ ...input, hostRuntime: { agentKind: 'pi', model: 'real', effort: '', providerId: 'anthropic', chosenByUser: false } })).toBeNull();
+  expect(resolveNewSessionAutoDefault({ ...input, currentRuntime: initialAutoRuntime! })).toBeNull();
 });

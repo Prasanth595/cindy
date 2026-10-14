@@ -58,6 +58,29 @@ function resolve(providers: ProviderView[], availableAgents = allAgents) {
 }
 
 describe('resolveNewMakerDefaultTuple', () => {
+  it('keeps the base group ahead of an additional group even across different harnesses', () => {
+    const gateway = provider({ id: 'xd', access: 'managed', models: {
+      'claude-code': [{ ...model('auto/z-base', 'high', ['claude-code']), sortOrder: 0 }],
+      pi: [{ ...model('auto/a-extra', 'high', ['pi']), sortOrder: 1 }],
+    } });
+    expect(resolve([gateway])).toMatchObject({ model: 'auto/z-base', vendor: 'cc' });
+    expect(resolve([gateway], new Set(['pi']))).toMatchObject({ model: 'auto/a-extra', vendor: 'pi' });
+  });
+
+  it('uses the server-selected group AUTO before factory defaults without removing real choices', () => {
+    const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('real'), model('auto/extra'), model('auto/base', 'high', ['pi'])] } });
+    const subscription = provider({ id: 'openai', access: 'subscription', models: { codex: [model('gpt-6.1-sol')] } });
+    for (const providers of [[subscription, gateway], [gateway, subscription]]) {
+      expect(resolve(providers)).toMatchObject({ providerId: 'xd', model: 'auto/base', vendor: 'pi' });
+    }
+    expect(gateway.models.pi?.map(model => model.id)).toEqual(['real', 'auto/extra', 'auto/base']);
+    expect(resolveNewMakerDefaultTuple({ providers: [gateway, subscription], providersLoading: false,
+      availableAgents: allAgents, availableAgentsLoaded: true, isModelEnabled: (_a, _p, m) => !m.id.startsWith('auto/') }))
+      .toMatchObject({ model: 'gpt-6.1-sol' });
+    gateway.models.pi = [model('real')];
+    expect(resolve([gateway, subscription])).toMatchObject({ model: 'gpt-6.1-sol' });
+  });
+
   it.each([
     { defaultEffort: undefined, efforts: ['low', 'medium', 'high'], expected: 'medium' },
     { defaultEffort: 'max', efforts: ['low', 'medium', 'high'], expected: 'high' },

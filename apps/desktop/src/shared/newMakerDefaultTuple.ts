@@ -130,6 +130,28 @@ export function resolveNewMakerDefaultTuples(args: {
   if (providersLoading || !availableAgentsLoaded) return [];
   const tuples: NewMakerDefaultTuple[] = [];
 
+  // Organization AUTO is explicitly selected by the server per harness. It is
+  // only an initial default; draft callers retain their existing manual-choice guards.
+  for (const provider of [...providers].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (providerCatalogId(provider) !== 'xd' || provider.access?.kind !== 'managed' ||
+      !provider.connected || provider.suspended || provider.modelDiscoveryFailure) continue;
+    const choices: { tuple: NewMakerDefaultTuple; order: number }[] = [];
+    for (const agent of ['pi', 'codex', 'claude-code'] as const) {
+      const vendor = vendorForAgent(agent);
+      if (!availableAgents.has(vendor)) continue;
+      const ids = (provider.models[agent] ?? []).filter(model =>
+        model.id.startsWith('auto/') && model.newSessionDefault?.includes(agent),
+      ).map(model => model.id).sort();
+      const model = matchingModel(provider, agent, ids, false, args.isModelEnabled);
+      if (!model) continue;
+      choices.push({ order: model.sortOrder ?? Number.MAX_SAFE_INTEGER, tuple: { vendor, providerId: provider.id, model: model.id,
+        effort: model.efforts.length === 0 || model.defaultEffort === null ? null
+          : (clampEffortToSupported(model.defaultEffort, model.efforts) ?? defaultEffortForCapabilities(model.efforts)) as Effort | null } });
+    }
+    const preferred = choices.sort((a, b) => a.order - b.order || a.tuple.model.localeCompare(b.tuple.model))[0];
+    if (preferred) tuples.push(preferred.tuple);
+  }
+
   for (const policy of DEFAULT_POLICIES) {
     const matchingProviders = providers.filter(
       (candidate) =>

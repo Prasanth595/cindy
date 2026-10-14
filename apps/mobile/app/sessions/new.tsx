@@ -219,6 +219,7 @@ import {
   pickInitialNewSessionWorkspace,
   pickNewSessionDefaultDevice,
   resolveNewSessionAutoDefault,
+  pickInitialGroupAutoRuntime,
   sessionFromCreateResult,
   compensatePrecreatedWorktree,
   reconcileEffortAfterFallback,
@@ -1551,7 +1552,13 @@ export default function NewRemoteSessionScreen() {
   // 被控电脑默认与 providers 都是异步到达,任一就绪后此 effect 再触发。
   useEffect(() => {
     if (!newSessionPreferencesLoaded) return;
+    const initialAuto = !newSessionPreferences?.agentKind && deviceProviders.ready
+      ? pickInitialGroupAutoRuntime(deviceProviders.providers, availableAgentKinds ?? new Set([draft.agentKind]), deviceProviders.modelVisibilityOverrides)
+      : null;
+    const candidateHost = initialAuto ? hostRuntimeFor(initialAuto.agentKind) : null;
     const result = resolveNewSessionAutoDefault({
+      initialAutoRuntime: !candidateHost || (candidateHost.chosenByUser === false && candidateHost.providerId === initialAuto?.providerId) ? initialAuto : null,
+      currentRuntime: draft,
       userTouched: userTouchedRuntimeRef.current,
       appliedDeviceId: autoDefaultDeviceRef.current,
       selectedDeviceId,
@@ -1619,7 +1626,7 @@ export default function NewRemoteSessionScreen() {
         autoDefaultDeviceRef.current = previousAutoDefaultDevice;
       }
     };
-  }, [capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
+  }, [availableAgentKinds, deviceProviders.providers, draft.model, draft.providerId, capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
 
   // 目录就绪后的来源终检(codex review P1):自动默认/恢复在目录加载期信任的来源可能已失效
   // (provider 被删/断开/模型下架),就绪后必须复核——联合回退整对 (model, providerId)

@@ -15,7 +15,9 @@ import type {
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import type { MobileModelOption } from './agentCapabilities';
 import { effectiveSourceIdForModel } from '@cindy/model-providers/registry';
-import { reconcileEffortForModel, type ProviderModelRow } from './providerModelSections';
+import { providerCatalogId } from '@cindy/model-providers/provider-identity';
+import { buildMobileModelSections, flattenProviderSections, reconcileEffortForModel, type ProviderModelRow } from './providerModelSections';
+import type { ProviderView } from '@cindy/model-providers';
 import type { RemoteSession } from './types';
 
 export type NewSessionAgentKind = 'claude-code' | 'codex' | 'pi';
@@ -394,6 +396,8 @@ export function buildRecentWorkspaceOptions(
 }
 
 export interface NewSessionRuntime {
+  /** False only when the host explicitly identifies an untouched seed. */
+  chosenByUser?: boolean;
   agentKind: NewSessionAgentKind;
   model: string;
   effort: string;
@@ -423,7 +427,40 @@ function pickRegionalNewSessionDefault<T extends NewSessionDefaultModel>(
   models: readonly T[],
   agentKind: NewSessionAgentKind,
 ): T | undefined {
-  return models.find((model) => isNewSessionDefaultForAgent(model, agentKind));
+  return models.find(model => model.id.startsWith('auto/') && isNewSessionDefaultForAgent(model, agentKind))
+    ?? models.find((model) => isNewSessionDefaultForAgent(model, agentKind));
+}
+
+/** Rows already reflect the host's route eligibility and visibility overrides. */
+function groupAutoRow(rows: readonly ProviderModelRow[], agent: NewSessionAgentKind, providerId?: string | null): ProviderModelRow | undefined {
+  return rows.filter(row => row.model.id.startsWith('auto/') && isNewSessionDefaultForAgent(row.model, agent) &&
+    (!providerId || row.provider.id === providerId) && providerCatalogId(row.provider) === 'xd' && row.provider.access?.kind === 'managed')
+    .sort((a, b) => a.model.id.localeCompare(b.model.id))[0];
+}
+
+/** Fresh mobile drafts may choose another installed harness when the base AUTO requires it. */
+export function pickInitialGroupAutoRuntime(
+  providers: readonly ProviderView[],
+  agents: ReadonlySet<NewSessionAgentKind>,
+  visibilityOverrides?: Record<string, boolean> | null,
+): NewSessionRuntime | null {
+  const candidates = (['pi', 'codex', 'claude-code'] as const).flatMap(agentKind => {
+    if (!agents.has(agentKind)) return [];
+    const rows = flattenProviderSections(buildMobileModelSections({ providers, agentKind, visibilityOverrides }).sections);
+    const row = groupAutoRow(rows, agentKind);
+    return row ? [{ row, agentKind, order: row.provider.models[agentKind]?.find(model => model.id === row.model.id)?.sortOrder ?? Number.MAX_SAFE_INTEGER }] : [];
+  }).sort((a, b) => a.order - b.order || a.row.model.id.localeCompare(b.row.model.id));
+  const selected = candidates[0];
+  return selected ? { agentKind: selected.agentKind, model: selected.row.model.id, providerId: selected.row.provider.id,
+    effort: reconcileEffortForModel(selected.row.model, '') } : null;
+}
+
+function hostRuntimeWithGroupAuto(runtime: NewSessionRuntime | null | undefined, rows: readonly ProviderModelRow[], agent: NewSessionAgentKind, catalogReady: boolean): NewSessionRuntime | null {
+  if (runtime?.agentKind !== agent) return null;
+  if (!catalogReady || runtime.chosenByUser !== false) return runtime;
+  const preferred = groupAutoRow(rows, agent, runtime.providerId);
+  return preferred ? { ...runtime, model: preferred.model.id, providerId: preferred.provider.id,
+    effort: reconcileEffortForModel(preferred.model, runtime.effort) } : runtime;
 }
 
 /**
@@ -749,7 +786,7 @@ export function hostDraftRuntimeFromDefaults(
   const providerId = typeof value.providerId === 'string' && value.providerId ? value.providerId : null;
   if (value.modelChosenByUser === false && providerId === null) return null;
   const effort = typeof value.effort === 'string' ? value.effort.trim() : '';
-  return { agentKind, model, effort, providerId };
+  return { agentKind, model, effort, providerId, ...(value.modelChosenByUser === false ? { chosenByUser: false } : {}) };
 }
 
 /**
@@ -785,7 +822,7 @@ export function pickAgentDefaultRuntime(args: {
 }): NewSessionRuntime {
   const { agentKind, modelRows, currentEffort, catalogReady } = args;
   let flatModel: MobileModelOption | undefined;
-  const recent = args.hostRuntime?.agentKind === agentKind ? args.hostRuntime : null;
+  const recent = hostRuntimeWithGroupAuto(args.hostRuntime, modelRows, agentKind, catalogReady);
   const baseEffort = recent?.effort ?? currentEffort;
   let model: string;
   let providerId: string | null;
@@ -806,7 +843,8 @@ export function pickAgentDefaultRuntime(args: {
     // 在 ProviderModelRow 层面选行,保留来源身份(codex review P2):同 modelId
     // 多 provider 时按 id 回查会把标记行错绑到首见 provider;标记行优先、无标记
     // 取首行,模型与 provider 同源。
-    const chosenRow = modelRows.find((row) => isNewSessionDefaultForAgent(row.model, agentKind))
+    const chosenRow = groupAutoRow(modelRows, agentKind)
+      ?? modelRows.find((row) => isNewSessionDefaultForAgent(row.model, agentKind))
       ?? modelRows[0];
     model = chosenRow.model.id;
     providerId = chosenRow.provider.id;
@@ -936,6 +974,9 @@ export function canResolveStoredAgentRuntime(input: {
  * currentEffort = 当前 draft.effort,作为 reconcile 的 base(与 effect 里 setDraft updater 读 current.effort 等价)。
  */
 export function resolveNewSessionAutoDefault(input: {
+  /** Only supplied when no engine preference or manual model choice exists. */
+  initialAutoRuntime?: NewSessionRuntime | null;
+  currentRuntime?: Pick<NewSessionRuntime, 'agentKind' | 'model' | 'providerId'>;
   userTouched: boolean;
   appliedDeviceId: string | null;
   selectedDeviceId: string;
@@ -969,9 +1010,15 @@ export function resolveNewSessionAutoDefault(input: {
   } = input;
   if (userTouched) return null;
   if (!selectedDeviceId) return null;
-  if (appliedDeviceId === selectedDeviceId) return null;
   if (!hostDefaultsSettled) return null;
-  const recent = input.hostRuntime?.agentKind === rowsAgentKind ? input.hostRuntime : null;
+  const initialAuto = input.initialAutoRuntime;
+  if (catalogReady && initialAuto && (!input.hostRuntime || (input.hostRuntime.chosenByUser === false &&
+      (!input.hostRuntime.providerId || input.hostRuntime.providerId === initialAuto.providerId))) &&
+    (input.currentRuntime?.model !== initialAuto.model || input.currentRuntime?.agentKind !== initialAuto.agentKind || input.currentRuntime?.providerId !== initialAuto.providerId)) {
+    return { appliedDeviceId: selectedDeviceId, source: 'catalog-default', patch: initialAuto };
+  }
+  if (appliedDeviceId === selectedDeviceId) return null;
+  const recent = hostRuntimeWithGroupAuto(input.hostRuntime, modelRows, rowsAgentKind, catalogReady);
   if (recent) {
     // 联合解析(口径同 pickAgentDefaultRuntime):来源失效时 model 随之一并回退
     // (codex review P1)。
@@ -1006,7 +1053,7 @@ export function resolveNewSessionAutoDefault(input: {
   // provider 时按 id 回查会把标记行错绑到首见 provider;标记行优先、无标记取
   // 首行,模型与 provider 同源。modelRows 为空(旧被控端/目录不可用)才走扁平回退。
   const providerRow = modelRows.length > 0
-    ? modelRows.find((row) => isNewSessionDefaultForAgent(row.model, rowsAgentKind))
+    ? groupAutoRow(modelRows, rowsAgentKind) ?? modelRows.find((row) => isNewSessionDefaultForAgent(row.model, rowsAgentKind))
       ?? modelRows[0]
     : undefined;
   const flatDefault = providerRow

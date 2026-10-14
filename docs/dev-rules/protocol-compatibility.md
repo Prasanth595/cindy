@@ -11,6 +11,16 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 组织模型组 AUTO 默认选择
+
+不新增 wire 字段或 schema 版本。Model Access 已有的 `newSessionDefault` / `sortOrder`
+用于标记当前成员的 AUTO 初始默认及组优先级。`auto/<accessGroupId>` 仍为普通非空模型 ID，
+目录保留组名与真实模型，授权和实际目标解析仍由服务端完成。内部目标与组优先级字段不进入 wire。
+旧客户端可手选 AUTO，但不承诺首次默认它；新客户端连接无 AUTO 的旧服务端沿用原默认。
+完整默认选择需要对应 Server 与客户端版本，发布可分步进行。手机消费执行主机目录，
+主机 `modelChosenByUser` 缺省仍视为未知并保留旧选择，明确 false 才可替换未手选种子。
+没有新的 device-link channel、权限、凭证、数据库迁移或 Mobile fingerprint 变更。
+
 ## Model Access 复杂价目
 
 保持 V5，新增可组合的 `display_pricing` 能力声明，复用 `X-Cindy-Model-Capabilities` 与

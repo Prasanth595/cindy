@@ -435,3 +435,14 @@ describe('capabilities refresh clamp contract', () => {
     });
   });
 });
+
+
+it('uses group AUTO for an untouched managed host seed while preserving either side manual selection', () => {
+  const capabilities = caps({ availableModels: [...caps().availableModels, {
+    ...caps().availableModels[0], id: 'auto/base', displayName: 'AUTO (base)', newSessionDefault: ['claude-code'],
+  }] });
+  const remote = { model: 'claude-opus-4-8', providerId: 'xd', modelChosenByUser: false };
+  expect(resolveDeviceLinkDraftDefaults(capabilities, remote, undefined, 'claude-code').model).toBe('auto/base');
+  expect(resolveDeviceLinkDraftDefaults(capabilities, { ...remote, modelChosenByUser: true }, undefined, 'claude-code').model).toBe('claude-opus-4-8');
+  expect(resolveDeviceLinkDraftDefaults(capabilities, remote, 'claude-opus-4-8', 'claude-code').model).toBe('claude-opus-4-8');
+});

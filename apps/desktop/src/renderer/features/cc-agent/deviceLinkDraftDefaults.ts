@@ -119,10 +119,14 @@ export function resolveDeviceLinkDraftDefaults(
               (b.model.sortOrder ?? Number.MAX_SAFE_INTEGER) || a.index - b.index,
         )[0]?.model.id
     : undefined;
+  const groupAuto = agentKind && (providerId === null || providerId === 'xd')
+    ? models.filter(model => model.id.startsWith('auto/') && model.defaultEnabled !== false &&
+      model.newSessionDefault?.includes(agentKind)).sort((a, b) => a.id.localeCompare(b.id))[0]?.id
+    : undefined;
   const wantedModelId =
     targetModel ??
-    (remoteDraft?.modelChosenByUser === false && providerId === null
-      ? (markedDefault ?? remoteDraft.model)
+    (remoteDraft?.modelChosenByUser === false
+      ? (groupAuto ?? (providerId === null ? markedDefault : undefined) ?? remoteDraft.model)
       : remoteDraft?.model);
 
   if (models.length === 0) {

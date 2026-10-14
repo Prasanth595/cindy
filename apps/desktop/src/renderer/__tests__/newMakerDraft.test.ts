@@ -171,6 +171,17 @@ describe('newMakerDraft store', () => {
     expect(applySuggestedDefaultTuple(resolve())).toBe(false);
   });
 
+  it('applies the group AUTO tuple to the real draft store and preserves a manual real model after refresh', async () => {
+    const { applySuggestedDefaultTuple, getDraft, markDefaultTupleCustomized, patchCurrentVendorPrefs } = await loadModule();
+    const auto = { vendor: 'pi' as const, providerId: 'xd', model: 'auto/base', effort: 'high' as const };
+    expect(applySuggestedDefaultTuple(auto)).toBe(true);
+    expect(getDraft().lastByVendor.pi.model).toBe('auto/base');
+    markDefaultTupleCustomized();
+    patchCurrentVendorPrefs({ model: 'real' });
+    expect(applySuggestedDefaultTuple({ ...auto, effort: 'medium' })).toBe(false);
+    expect(getDraft().lastByVendor.pi.model).toBe('real');
+  });
+
   it('用户明确改过组合后，登录态变化不再覆盖', async () => {
     const { applySuggestedDefaultTuple, getDraft, markDefaultTupleCustomized } = await loadModule();
     markDefaultTupleCustomized();
