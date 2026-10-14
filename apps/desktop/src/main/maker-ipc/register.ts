@@ -2635,6 +2635,17 @@ let orcaCollabServiceHolder: OrcaCollabService | null = null;
 let botDelegationServiceHolder: BotDelegationService | null = null;
 let botDirectMessageServiceHolder: BotDirectMessageService | null = null;
 let botGroupChatServiceHolder: BotGroupChatService | null = null;
+/**
+ * Settle a pending account / endpoint switch before reading companion state: the lazy Chat Server
+ * wrapper rebinds (and resets the companion registry) only when touched, so a guard or deletion
+ * never acts on the previous owner's companions.
+ */
+function settleCompanionOwner(): void { void botGroupChatServiceHolder?.chatServer; }
+/** isCompanionShadowed for the current owner. */
+function isCurrentCompanionShadowed(botId: string): boolean {
+  settleCompanionOwner();
+  return isCompanionShadowed(botId);
+}
 let unsubscribeCompanionCloudBroadcast: (() => void) | null = null;
 const listCompanionDevices = async () => (await handleListDevices(deviceDirectoryDeps())).devices;
 
@@ -11035,7 +11046,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [companionLink] = await getDbClient().drizzle
         .select({ role: botSessionLinks.role, botId: botSessionLinks.botId })
         .from(botSessionLinks).where(eq(botSessionLinks.sessionId, targetSessionId)).limit(1);
-      if (isShadowedCompanionCanonical(companionLink, isCompanionShadowed)) {
+      if (isShadowedCompanionCanonical(companionLink, isCurrentCompanionShadowed)) {
         return { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE };
       }
 
@@ -11812,6 +11823,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       },
       // A message the owner wrote in the companion's room reaches its main task like any user input.
       deliverToCanonical: async (botId, text, clientId) => {
+        // A room message drives the companion's main task like a same-account device: only where this
+        // computer allows same-account device control (the room carries no authenticated device).
+        if (!readDeviceLinkSettings().remoteControlEnabled) return { ok: false as const, errorCode: 'REMOTE_CONTROL_DISABLED' };
         if (!botDelegationServiceHolder) return { ok: false as const, errorCode: 'DELEGATION_UNAVAILABLE' };
         const ensured = await botDelegationServiceHolder.ensureCanonicalSession(botId);
         if (!ensured.ok) return { ok: false as const, errorCode: ensured.errorCode };
@@ -12009,6 +12023,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // Deleted on its home: other devices stop showing it. Started first and independently, so a
       // local cleanup failure below never skips it; it records retirePending and retries itself.
       // A demoted copy never retires the cloud companion.
+      settleCompanionOwner();
       void activeCompanionCloud()?.retire(botId).catch((error: unknown) => {
         log.warn('companion cloud retire failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
       });
@@ -12147,9 +12162,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.startPlan(input) : botGroupNotReady;
   });
-  // Settle a pending account / endpoint switch first: the lazy Chat Server wrapper rebinds (and
-  // resets the companion registry) only when touched, so nothing here serves the previous owner.
-  const currentCompanionHomes = () => { void botGroupChatServiceHolder?.chatServer; return companionHomes; };
+  const currentCompanionHomes = () => { settleCompanionOwner(); return companionHomes; };
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_STATE, async (event) => {
     assertTrustedAppRendererEvent(event);
     return companionCloudView(currentCompanionHomes().snapshot(), listCompanionDevices);
@@ -16206,7 +16219,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       assertCindyMakeSessionAvailable(botInput?.source);
       const blocked = botSessionInputBlockReason(botInput ?? null);
       // Rechecked under the send lock right before every real send, including queue drains.
-      if (botInput?.source === 'bot' && isShadowedCompanionCanonical(botInput, isCompanionShadowed)) {
+      if (botInput?.source === 'bot' && isShadowedCompanionCanonical(botInput, isCurrentCompanionShadowed)) {
         throwIpcError('PRECONDITION_FAILED', SHADOWED_COMPANION_INPUT_MESSAGE);
       }
       if (args[2] && typeof args[2] === 'object') {
