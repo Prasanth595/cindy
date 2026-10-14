@@ -2483,15 +2483,65 @@ it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-param
   expect(callTool.parameters.required).toEqual(['server', 'tool']);
   expect(callTool.parameters.required).not.toContain('args');
   // 披露门: 先按 schema 检视一次再调用 (与生产路径同序)。
-  await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
-  await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool' });
+  // 目标选 list_tools 而不是 call_tool: 后者的参数必填 name, 「完全省略 args」对它本来就
+  // 是非法调用, 用它当夹具会把「省略即转发 {}」与「信封缺 name」两件事混在一起。
+  await gateway.listResult({ server: 'cindy_memory', tool: 'list_tools' });
+  await gateway.executeCall({ server: 'cindy_memory', tool: 'list_tools' });
   expect(requests).toHaveLength(1);
   expect(requests[0].method).toBe('tools/call');
-  expect(requests[0].params).toEqual({ name: 'call_tool', arguments: {} });
-  // 对照: 显式传 args 时仍原样转发 (既有行为不变)。
+  expect(requests[0].params).toEqual({ name: 'list_tools', arguments: {} });
+  // 对照: 显式传 args 时仍原样转发 (既有行为不变), 含通用 call_tool 的 {name, args} 信封。
+  await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
   await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool', args: { name: 'memory_list', args: {} } });
   expect(requests[1].params).toEqual({
     name: 'call_tool',
     arguments: { name: 'memory_list', args: {} },
   });
+  // 2026-10-15 回归: args 就是「所选工具自己的参数」, 直调形态合法, schema 不得收窄;
+  // 同时必须把通用 call_tool 的信封 {name, args} 作为提示属性挂在 args 上 —— 此前 args 是
+  // 无声明字段的自由袋子, 模型看不到信封就把内层字段平铺进来并丢掉 name。
+  const argsSchema = callTool.parameters.properties.args;
+  expect(argsSchema.additionalProperties).toBe(true);
+  expect(argsSchema.properties).toHaveProperty('name');
+  expect(argsSchema.properties).toHaveProperty('args');
+  expect(argsSchema.properties.name.type).toBeUndefined();
+  expect(argsSchema.properties.args.type).toBeUndefined();
+});
+
+it('tells the model the call_tool envelope instead of forwarding a flattened envelope', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const requests: Array<{ method: string; params: any }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    requests.push({ method, params });
+    return { content: [{ type: 'text', text: 'ok' }] };
+  } };
+  const gateway = new context.Gateway();
+  gateway.add('cindy_memory', client, [
+    { name: 'list_tools', inputSchema: { type: 'object' } },
+    { name: 'call_tool', inputSchema: { type: 'object' } },
+  ]);
+  gateway.register({ registerTool: () => undefined });
+  await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
+  // 模型把内层参数平铺进 args、丢掉 name: 不触达 MCP, 一次说清正确形态。
+  await expect(gateway.executeCall({
+    server: 'cindy_memory',
+    tool: 'call_tool',
+    args: { filename: 'project_x.md' },
+  })).rejects.toThrow(/envelope \{"name": <tool>, "args"/);
+  expect(requests).toHaveLength(0);
+  // 直调形态不受影响: 所选工具不是 call_tool 时, args 仍原样转发 (含参数名恰好叫 args/name)。
+  gateway.add('cindy_workspace', client, [{ name: 'status', inputSchema: { type: 'object' } }]);
+  await gateway.listResult({ server: 'cindy_workspace', tool: 'status' });
+  await gateway.executeCall({ server: 'cindy_workspace', tool: 'status', args: { args: ['x'], name: 'y' } });
+  expect(requests[0].params).toEqual({ name: 'status', arguments: { args: ['x'], name: 'y' } });
 });
