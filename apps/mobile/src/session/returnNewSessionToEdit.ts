@@ -6,7 +6,7 @@ import {
   stashNewSessionDraftForEdit, type NewSessionCreationTask,
 } from './newSessionCreation';
 
-/** Shared by the source gate and the mounted task screen; cleanup must finish before leaving. */
+/** Shared by both entry screens; finish recovery even if the initiating screen leaves. */
 export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, onReady, stashDraft = stashNewSessionDraftForEdit }: {
   sessionId: string;
   deviceId: string;
@@ -15,10 +15,12 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   stashDraft?: (task: NewSessionCreationTask) => void;
 }): Promise<void> {
   const owner = getMobileAuthOwner();
-  const active = () => isMobileAuthOwnerCurrent(owner) && isCurrent();
-  if (!active() || getNewSessionCreationTask(sessionId)?.deviceId !== deviceId) return;
+  const ownerCurrent = () => isMobileAuthOwnerCurrent(owner);
+  if (!ownerCurrent() || !isCurrent() || getNewSessionCreationTask(sessionId)?.deviceId !== deviceId) return;
   const prepared = await prepareNewSessionCreationForEdit(sessionId);
-  if (!prepared || !active()) return;
+  // Cleanup may already have deleted the worktree. Leaving only cancels navigation,
+  // not draft recovery or task dismissal; account changes still fence all writes.
+  if (!prepared || !ownerCurrent()) return;
   const durableFirst = getCurrentMobileOutboxRecords().find((record) =>
     record.accountId === owner.accountKey && record.deviceId === deviceId
       && record.item.sessionId === sessionId && record.creation);
@@ -26,12 +28,12 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
     await mobileDurableOutbox.update(durableFirst, {
       suspended: true, state: 'failed', error: i18n.t('session.screen.firstMessageNotSent'),
     });
-    if (!active()) return;
+    if (!ownerCurrent()) return;
     dismissNewSessionCreation(sessionId);
-    onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
+    if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
     return;
   }
   stashDraft(prepared);
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
-  onReady({ deviceId, deviceName: prepared.deviceName });
+  if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName });
 }

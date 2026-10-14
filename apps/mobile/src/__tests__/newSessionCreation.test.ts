@@ -323,14 +323,43 @@ describe('newSessionCreation pipeline', () => {
       resolveDiscard({ discarded: true });
       await recovery;
     }
-    if (outcome === 'success') {
+    if (outcome === 'success' || outcome === 'leave') {
       expect(drainStashedNewSessionDraft()?.draft.workingDir).toBe('/repo');
-      expect(onReady).toHaveBeenCalledOnce();
+      expect(getNewSessionCreationTask('s1')).toBeNull();
+      expect(remoteSessionStore.getSessions().find(s => s.id === 's1')).toBeUndefined();
+      expect(onReady).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
     } else {
       expect(drainStashedNewSessionDraft()).toBeNull();
       expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
       expect(onReady).not.toHaveBeenCalled();
     }
+  });
+
+  it.each(['leave', 'switch-account'])('finishes durable edit recovery after leaving but fences account changes: %s', async (outcome) => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+    editOutbox.records.mockReturnValue([record]);
+    let finishSave!: () => void;
+    editOutbox.update.mockImplementationOnce(() => new Promise<void>(resolve => { finishSave = resolve; }));
+    let current = true;
+    const onReady = vi.fn();
+    const recovery = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => current, onReady });
+    await flushPipeline();
+    expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
+    expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+    current = false;
+    if (outcome === 'switch-account') setMobileAuthOwner('owner-b');
+    finishSave();
+    await recovery;
+    if (outcome === 'leave') {
+      expect(getNewSessionCreationTask('s1')).toBeNull();
+    } else {
+      expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+    }
+    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(onReady).not.toHaveBeenCalled();
   });
 
   it('start 同步段即入 store:合成行带 pendingLocalCreation,首条消息以排队气泡上屏', () => {

@@ -87,7 +87,8 @@ pnpm --filter mobile test:smoke
   超时允许手动重读当前任务，不重置共享设备连接。账号或设备切换后忽略旧读取结果。
 - 本地创建进行中或失败时，来源门禁显示创建进度或失败原因；失败时直接提供重试和返回编辑，
   不依赖尚不存在的远端任务记录。返回编辑复用 worktree 补偿和持久草稿恢复流程；
-  回收或保存失败保留原任务与草稿。已确认来源的任务在重连时保持内容挂载。
+  回收或保存失败保留原任务与草稿。回收开始后离页仍完成同账号的草稿恢复与任务清理，
+  仅取消跳转；账号切换后停止旧账号操作。已确认来源的任务在重连时保持内容挂载。
 
 实现与回归：`CindyMakeSessionGate.tsx`、`SessionEntryRecovery.tsx`、
 `returnNewSessionToEdit.ts`、`cindyMakeSessionGate.test.tsx` 与 `newSessionCreation.test.ts`。
