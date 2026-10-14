@@ -341,7 +341,10 @@ describe('SkillPublishService', () => {
     );
   });
 
-  it('sends the hand-filled description to Hub commit as summary', async () => {
+  it.each(['public', 'departments', 'old-replica'])('publishes summary with safe audience protocol: %s', async (mode) => {
+    const scoped = mode !== 'public';
+    const commitPath = scoped ? '/api/skills-hub/v2/skills/publish/commit' : '/api/skills-hub/skills/publish/commit';
+    if (scoped) { serverPolicy.ownerType = 'organization'; serverPolicy.allowedVisibilities = ['PUBLIC', 'DEPARTMENT_SCOPED']; }
     writeApiKeyFile();
     fs.mkdirSync('/tmp/xdt-publish-service-test/skill', { recursive: true });
     fs.writeFileSync(
@@ -386,7 +389,8 @@ describe('SkillPublishService', () => {
             uploadUrl: 'https://oss.example.com/skills/lark-task.zip',
           };
         }
-        if (apiPath === '/api/skills-hub/skills/publish/commit') {
+        if (apiPath === commitPath) {
+          if (mode === 'old-replica') throw new Error('NOT_FOUND');
           return {
             slug: 'lark-task',
             version: (opts?.body as { version: string }).version,
@@ -406,14 +410,21 @@ describe('SkillPublishService', () => {
         version: '1.0.0',
         displayName: 'Lark Task',
         summary: 'Publish summary',
-        visibility: 'PUBLIC',
+        visibility: scoped ? 'DEPARTMENT_SCOPED' : 'PUBLIC',
+        ...(scoped ? { audienceMode: 'departments' as const, visibilityDepartmentIds: ['dept-1'] } : {}),
         tags: ['productivity'],
       },
       () => {},
     );
 
+    if (mode === 'old-replica') {
+      expect(result.success).toBe(false);
+      expect(vi.mocked(serverApiFetch).mock.calls.some(([path]) => path === '/api/skills-hub/skills/publish/commit')).toBe(false);
+      expect(writeSnapshot).not.toHaveBeenCalled();
+      return;
+    }
     expect(result.success).toBe(true);
-    expect(serverApiFetch).toHaveBeenCalledWith('/api/skills-hub/skills/publish/commit', {
+    expect(serverApiFetch).toHaveBeenCalledWith(commitPath, {
       method: 'POST',
       baseUrl: expect.any(Function),
       logLabel: '/api/skills-hub',
@@ -425,7 +436,7 @@ describe('SkillPublishService', () => {
     });
     const commitCall = vi
       .mocked(serverApiFetch)
-      .mock.calls.find(([path]) => path === '/api/skills-hub/skills/publish/commit');
+      .mock.calls.find(([path]) => path === commitPath);
     expect(commitCall?.[1]?.body).not.toHaveProperty('description');
   });
 

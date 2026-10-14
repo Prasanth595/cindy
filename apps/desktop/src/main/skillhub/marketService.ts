@@ -257,8 +257,10 @@ export class SkillhubMarketService {
     await this.assertWriteAllowed();
     await this.assertVisibilityAllowed(visibility);
     validateSkillAudience(audience);
+    const writePrefix = audience.visibilityDepartmentIds !== undefined || audience.expectedUpdatedAt !== undefined
+      ? '/api/skills-hub/v2' : '/api/skills-hub';
     const result = await this.fetch<SkillVisibilityUpdateResult>(
-      `/api/skills-hub/skills/${encodeURIComponent(name)}/set-visibility`,
+      `${writePrefix}/skills/${encodeURIComponent(name)}/set-visibility`,
       {
         method: 'POST',
         body: {

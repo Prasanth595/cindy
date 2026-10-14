@@ -561,7 +561,10 @@ export class SkillPublishService {
               `firstPublish=${params.isFirstPublish}`,
           );
 
-          await skillhubApiFetch('/api/skills-hub/skills/publish/commit', {
+          const commitPath = commitBody.visibilityDepartmentIds !== undefined
+            ? '/api/skills-hub/v2/skills/publish/commit'
+            : '/api/skills-hub/skills/publish/commit';
+          await skillhubApiFetch(commitPath, {
             method: 'POST',
             body: commitBody,
           });

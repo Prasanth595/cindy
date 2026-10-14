@@ -308,6 +308,16 @@ describe('SkillhubMarketService', () => {
     ]);
   });
 
+  it('uses a versioned write and never falls back when an old replica rejects it', async () => {
+    const fetch = vi.fn().mockRejectedValue(new ServerApiError('NOT_FOUND', 404, 'not found'));
+    const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });
+    await expect(service.setPublishedVisibility({ name: 'demo', visibility: 'shared',
+      audienceMode: 'departments', visibilityDepartmentIds: ['dept-1'], expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+    })).rejects.toThrow('not found');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith('/api/skills-hub/v2/skills/demo/set-visibility', expect.anything());
+  });
+
   it('updates installed scope for immediate moves and public-review transitions', async () => {
     const updateRegistryCatalogScope = vi.fn(async () => undefined);
     const { fetch } = makeFetch([
