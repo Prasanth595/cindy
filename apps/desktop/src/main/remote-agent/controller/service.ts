@@ -76,6 +76,8 @@ export interface DeviceAgentServiceDeps {
   webFetch?: GuardedFetch;
   /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
   sharedProviderCredentialNotice?(): string;
+  /** 受邀者是否在设置里对这个分享打开了「凭证操作总是允许」(每次判断现读)。 */
+  isSharedProviderCredentialTrusted?(deviceId: string): boolean;
   logger: Logger;
 }
 
@@ -171,7 +173,8 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
     const switchToken = groupSwitch && sessionId ? groupSwitch.takeForOpen(sessionId) : undefined;
     // 受邀者任务(分享来的供应商)：内容会经过分享者的电脑。
     //  - Agent 自带的 WebFetch 在分享者电脑上已关闭，改由本机抓取；
-    //  - 凭证类文件不随启动同步，任务中读写凭证类文件、执行读取凭证的命令不论权限档都要本机确认。
+    //  - 凭证类文件不随启动同步，任务中读写凭证类文件、执行读取凭证的命令不论权限档都要本机确认；
+    //    受邀者在设置里对这个分享打开「凭证操作总是允许」后不再确认(启动同步仍不带凭证文件)。
     // 同账号任务都不提供。
     const shared = deps.isSharedProviderDevice?.(input.deviceId) === true;
     const webFetch = deps.webFetch && shared ? deps.webFetch : undefined;
@@ -197,6 +200,9 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
             credentialConsent: {
               description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
               ...(sessionId ? { grant: credentialGrantFor(sessionId, input.deviceId) } : {}),
+              ...(deps.isSharedProviderCredentialTrusted
+                ? { trusted: () => deps.isSharedProviderCredentialTrusted?.(input.deviceId) === true }
+                : {}),
             },
           }
         : {}),

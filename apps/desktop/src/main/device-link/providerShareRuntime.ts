@@ -49,6 +49,13 @@ import {
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
+  forgetProviderShareCredentialTrust,
+  isProviderShareCredentialTrusted,
+  pruneProviderShareCredentialTrust,
+  setProviderShareCredentialTrusted,
+} from './providerShareCredentialTrust.js';
+import {
+  findReceivedShare,
   getReceivedShares,
   getReceivedSharesSnapshot,
   leaveProviderShare,
@@ -178,6 +185,14 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
   startProviderShareGuest({
     changed(received) {
       emit(PROVIDER_SHARE_IPC.RECEIVED_CHANGED, received);
+      // 被删除、被移出的分享：「凭证操作总是允许」一并失效(只看名单已确认完整的区域)。
+      try {
+        pruneProviderShareCredentialTrust(received, getReceivedSharesSnapshot().confirmedRegions);
+      } catch (error) {
+        log.warn('provider share credential trust prune failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     settled(state, preview) {
       emit(PROVIDER_SHARE_IPC.SETTLED, { state, preview });
@@ -254,6 +269,11 @@ function parseCommand(raw: unknown): ProviderShareCommand {
       return { action: value.action, requestId: text(value.requestId, 'requestId', 128) };
     case 'leave':
       return { action: 'leave', memberId: text(value.memberId, 'memberId', 128) };
+    case 'credential-trust':
+      return { action: 'credential-trust', shareId: text(value.shareId, 'shareId', 128) };
+    case 'set-credential-trust':
+      if (typeof value.trusted !== 'boolean') throwIpcError('INVALID_PARAMS', 'trusted is required');
+      return { action: 'set-credential-trust', shareId: text(value.shareId, 'shareId', 128), trusted: value.trusted };
     default:
       throwIpcError('INVALID_PARAMS', 'Unknown command');
   }
@@ -413,9 +433,23 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'withdraw':
       await withdrawProviderShareRequest(command.requestId);
       return { ok: true };
-    case 'leave':
+    case 'leave': {
+      const shareId = getReceivedShares().find((share) => share.memberId === command.memberId)?.shareId;
       await leaveProviderShare(command.memberId);
+      if (shareId) forgetProviderShareCredentialTrust(shareId);
       return { ok: true };
+    }
+    case 'credential-trust': {
+      const share = findReceivedShare(command.shareId);
+      return { trusted: share !== null && isProviderShareCredentialTrusted(share) };
+    }
+    case 'set-credential-trust': {
+      // 只认名单里现有的分享：记下这时的成员 id 与区域，重新加入或分享消失后自动失效。
+      const share = findReceivedShare(command.shareId);
+      if (!share) throwIpcError('NOT_FOUND', 'Shared provider not found');
+      setProviderShareCredentialTrusted(share, command.trusted);
+      return { ok: true };
+    }
   }
 }
 

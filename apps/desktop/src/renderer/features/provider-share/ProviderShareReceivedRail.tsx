@@ -1,11 +1,11 @@
 /**
  * 设置 → 模型供应商里「分享给我的」(受邀者)。别人分享给我的供应商与自己的供应商同在左栏，
- * 单独成组(没有分享时整组不显示)、用分享者头像标明来自谁；点开后右栏显示状态、可用的模型
- * 与「退出」。输入分享链接的入口在页面右上角(ProviderSharePasteButton)。
+ * 单独成组(没有分享时整组不显示)、用分享者头像标明来自谁；点开后右栏显示状态、可用的模型、
+ * 「凭证操作总是允许」开关与「退出」。输入分享链接的入口在页面右上角(ProviderSharePasteButton)。
  *
  * 模型清单读分享者电脑上分享给我的那份目录(`share:<id>`)，只读：开关与排序由分享者决定。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { readProviderShareGroupSize, type ProviderShareReceived } from '@cindy/device-link';
@@ -17,6 +17,7 @@ import {
 } from '@/components/settings/ReadOnlyProviderModels';
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { providerMonogram } from '@/lib/providerModels';
@@ -132,6 +133,85 @@ export function ProviderShareReceivedRailGroup({
           </Tip>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 「凭证操作总是允许」(provider-sharing.md §9 第 7 条)：只存在本机。关闭 = 照旧逐次确认；打开 = 这个
+ * 分享的所有任务凭证操作不再确认，按任务自己的权限档处理。打开前确认一次，关闭直接生效。
+ */
+function CredentialTrustRow({ share }: { share: ProviderShareReceived }) {
+  const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
+  // null = 还没读到本机记录，开关先不可点。
+  const [trusted, setTrusted] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const name = share.owner.displayName;
+
+  useEffect(() => {
+    let cancelled = false;
+    setTrusted(null);
+    window.electronAPI.providerShare
+      .command({ action: 'credential-trust', shareId: share.shareId })
+      .then((result) => {
+        if (!cancelled) setTrusted(result.trusted);
+      })
+      .catch(() => {
+        if (!cancelled) setTrusted(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [share.shareId, share.memberId]);
+
+  const change = async (next: boolean) => {
+    if (next) {
+      const ok = await confirm({
+        presentation: 'standard',
+        title: t('providerShare.received.credentialTrust.confirmTitle', { name }),
+        description: t('providerShare.received.credentialTrust.confirmDescription', { name }),
+        confirmText: t('providerShare.received.credentialTrust.confirm'),
+      });
+      if (!ok) return;
+    }
+    const previous = trusted;
+    setTrusted(next);
+    setBusy(true);
+    try {
+      await window.electronAPI.providerShare.command({
+        action: 'set-credential-trust',
+        shareId: share.shareId,
+        trusted: next,
+      });
+    } catch {
+      setTrusted(previous);
+      toast.error(t('providerShare.received.credentialTrust.writeFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      data-testid="provider-share-credential-trust"
+      className="flex shrink-0 items-center gap-3 border-t px-5 py-3"
+      style={{ borderColor: 'var(--settings-theme-card-border)' }}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="text-13 font-medium text-[var(--text-primary)]">
+          {t('providerShare.received.credentialTrust.label')}
+        </span>
+        <span className="text-12 leading-[1.4] text-[var(--text-tertiary)]">
+          {t('providerShare.received.credentialTrust.description', { name })}
+        </span>
+      </div>
+      <Switch
+        checked={trusted === true}
+        disabled={trusted === null || busy}
+        aria-label={t('providerShare.received.credentialTrust.label')}
+        onCheckedChange={(next) => void change(next)}
+      />
     </div>
   );
 }
@@ -263,6 +343,8 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
           {t('providerShare.received.detailNote', { name: share.owner.displayName })}
         </p>
       </div>
+
+      <CredentialTrustRow key={share.shareId} share={share} />
 
       {status === 'active' && groupSize !== null && (
         <SharedProviderGroupStatus key={catalogDeviceId} deviceId={catalogDeviceId} providerId={share.providerId} initialSize={groupSize} />

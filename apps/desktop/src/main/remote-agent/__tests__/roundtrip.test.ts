@@ -339,6 +339,51 @@ describe('remote agent round trip', () => {
     }
   });
 
+  it('does not ask about credentials while the share is trusted in settings, and asks again once it is off', async () => {
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=one');
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => fakeHostedAgent(input, [env]),
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    let trusted = true;
+    const opts = { sessionId: `trust-${randomUUID()}`, workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    const deps = { ...makeDeps(host), credentialConsent: { description: 'Only this task.', trusted: () => trusted } };
+    let localConfirmations = 0;
+    const handle = await startRemoteAgentSession('pi', opts, deps);
+    const run = async () => {
+      const reader = (async () => {
+        const results: string[] = [];
+        for await (const event of handle.events()) {
+          if (event.type === 'text') results.push((event.data as { text: string }).text);
+          if (event.type === 'done') return results;
+        }
+        return results;
+      })();
+      await handle.send({ type: 'user', content: 'read credentials' });
+      return reader;
+    };
+    try {
+      handle.setInteractionResolver(async (request) => {
+        if (request.requestId !== 'forged') localConfirmations += 1;
+        return { kind: 'permission', behavior: 'allow' };
+      });
+      expect(await run()).toEqual(['credential:200']);
+      expect(localConfirmations).toBe(0);
+      // 关掉开关：同一个 Agent 的下一次凭证操作恢复确认。
+      trusted = false;
+      expect(await run()).toEqual(['credential:200']);
+      expect(localConfirmations).toBe(1);
+    } finally {
+      await handle.close({ reason: 'navigation' });
+      host.dispose();
+    }
+  });
+
   it('runs a turn on the other computer while files, commands and confirmations stay here', async () => {
     const host = createHost();
     const handle = await startRemoteAgentSession('pi', {

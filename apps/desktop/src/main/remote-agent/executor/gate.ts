@@ -14,7 +14,8 @@
  *    只认本机用户刚批准过的同一地址；批准过的地址抓取时放开内网(域名也可能解析到内网)；
  *  - 计划模式：只允许读取、抓取网页和静态可证只读的命令，其余同样要本机用户批准过；
  *  - 供应商分享的受邀者任务：内容会经过分享者的电脑，凭证类的读写与读取凭证的命令即使在全权下
- *    也要本机用户确认；用户可明确允许当前任务后续的凭证操作(credentials.ts)。
+ *    也要本机用户确认；用户可明确允许当前任务后续的凭证操作(credentials.ts)，也可在设置里对这个
+ *    分享打开「凭证操作总是允许」，之后按任务自己的权限档处理。
  * 批准记录只在短时间内有效；命令与抓取的批准用一次即失效，路径批准在有效期内覆盖同一路径的读写
  * (编辑会先读后写)。
  */
@@ -95,6 +96,11 @@ function approvalOf(action: ExecutorAction): { kind: Approval['kind']; key: stri
 export interface ExecutorGateOptions {
   /** 供应商分享的受邀者任务：凭证类操作不论权限档都要本机用户确认。 */
   confirmCredentials?: boolean;
+  /**
+   * 受邀者在设置里对这个分享打开了「凭证操作总是允许」(每次判断都现读，开关随时生效)。
+   * 为 true 时凭证类操作不再要求确认，按任务自己的权限档处理。
+   */
+  credentialsTrusted?: () => boolean;
 }
 
 export class ExecutorGate {
@@ -161,7 +167,9 @@ export class ExecutorGate {
    * 真实目标再判一次)、目录级读取的根本身是凭证目录，或命令读取 / 打出凭证。
    */
   needsCredentialConsent(action: ExecutorAction): boolean {
-    return !this.credentialsAllowedForSession && this.isCredentialAction(action);
+    return !this.credentialsAllowedForSession
+      && this.options.credentialsTrusted?.() !== true
+      && this.isCredentialAction(action);
   }
 
   private isCredentialAction(action: ExecutorAction): boolean {

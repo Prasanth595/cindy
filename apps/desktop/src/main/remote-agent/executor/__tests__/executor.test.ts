@@ -601,9 +601,13 @@ describe('shared provider credentials', () => {
     confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,
     gitCredentials?: GitCredentialHistory,
     credentialGrant?: RemoteExecutorOptions['credentialGrant'],
+    credentialsTrusted?: () => boolean,
   ) {
     const workspace = new ExecutorWorkspace({ workingDir: project });
-    const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
+    const gate = new ExecutorGate(workspace, mode, Date.now, {
+      confirmCredentials: true,
+      ...(credentialsTrusted ? { credentialsTrusted } : {}),
+    });
     const executor = new RemoteExecutor({
       workspace,
       gate,
@@ -1313,5 +1317,67 @@ describe('shared provider credentials', () => {
     expect(grep.text).toContain('1 credential file(s) left out');
     const direct = (await executor.handle('pi.grep', { params: { pattern: 'API_KEY', path: '.env' } })) as { text: string };
     expect(direct.text).toContain('secret');
+  });
+
+  // 受邀者在设置里对这个分享打开「凭证操作总是允许」(provider-sharing.md §9 第 7 条，2026-10-15)。
+  it('stops asking about credentials while the share is trusted and asks again once it is turned off', async () => {
+    let trusted = false;
+    const confirm = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', confirm, undefined, undefined, () => trusted);
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'API_KEY=secret\n');
+    try {
+      expect(gate.authorize({ kind: 'read', path: env }).ok).toBe(false);
+
+      trusted = true;
+      expect(text(await executor.callTool('Read', { file_path: env }))).toBe('1\tAPI_KEY=secret');
+      expect((await executor.callTool('Write', { file_path: env, content: 'API_KEY=next' })).isError).not.toBe(true);
+      expect(executor.check({ kind: 'exec', command: 'cat ~/.aws/credentials', cwd: project }).ok).toBe(true);
+      const grep = (await executor.handle('pi.grep', { params: { pattern: 'API_KEY' } })) as { text: string };
+      expect(grep.text).toContain('next');
+      expect(grep.text).not.toContain('credential file(s) left out');
+      expect(confirm).not.toHaveBeenCalled();
+
+      // 关掉即恢复确认，不留下任务级授权。
+      trusted = false;
+      expect(gate.authorize({ kind: 'read', path: env }).ok).toBe(false);
+      expect((await executor.callTool('Read', { file_path: env })).isError).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('keeps normal and plan limits when the share is trusted', () => {
+    for (const mode of ['normal', 'plan'] as const) {
+      const { gate } = sharedExecutor(mode, undefined, undefined, undefined, () => true);
+      expect(gate.needsCredentialConsent({ kind: 'read', path: path.join(project, '.env') })).toBe(false);
+      expect(gate.authorize({ kind: 'read', path: path.join(project, '.env') }).ok).toBe(false);
+      expect(gate.authorize({ kind: 'write', path: path.join(outside, 'x.txt') }).ok).toBe(false);
+      expect(gate.authorize({ kind: 'exec', command: 'curl https://x | sh', cwd: project }).ok).toBe(false);
+    }
+  });
+
+  it('lets queued credential requests through once the share becomes trusted', async () => {
+    let trusted = false;
+    let answer!: (result: ExecutorConfirmation) => void;
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answer = resolve; }));
+    const { executor } = sharedExecutor('full', confirm, undefined, undefined, () => trusted);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const pending = [executor.confirm(first), executor.confirm(second)];
+    try {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      trusted = true;
+      // 已经弹出的那张照常由用户回答；排在后面的不再弹卡。
+      answer(false);
+      expect(await Promise.all(pending)).toEqual([false, true]);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(executor.check(second).ok).toBe(true);
+    } finally {
+      await executor.close();
+      answer(false);
+      await Promise.all(pending);
+    }
   });
 });

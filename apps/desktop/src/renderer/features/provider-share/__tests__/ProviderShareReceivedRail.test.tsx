@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderShareReceived } from '@cindy/device-link';
 
+import { toast } from '@/lib/toast';
+
 import { ProviderSharePasteButton } from '../ProviderSharePasteDialog';
 import { ProviderShareReceivedDetail, ProviderShareReceivedRailGroup } from '../ProviderShareReceivedRail';
 import { resetProviderShareStoreForTests } from '../providerShareStore';
@@ -47,19 +49,31 @@ const share: ProviderShareReceived = {
 };
 
 let received: ProviderShareReceived[] = [];
+let credentialTrusted = false;
+let credentialTrustWriteFails = false;
 const command = vi.fn();
 
 beforeEach(() => {
   resetProviderShareStoreForTests();
   joinSpy.mockClear();
   confirmSpy.mockClear();
+  confirmSpy.mockResolvedValue(true);
+  vi.mocked(toast.error).mockClear();
   catalogDeviceIds.length = 0;
   catalog.value = { providers: [], loading: false, error: null, unsupported: false };
   received = [];
+  credentialTrusted = false;
+  credentialTrustWriteFails = false;
   command.mockReset();
-  command.mockImplementation(async (cmd: { action: string }) => {
+  command.mockImplementation(async (cmd: { action: string; trusted?: boolean }) => {
     if (cmd.action === 'received') return received;
     if (cmd.action === 'leave') return { ok: true };
+    if (cmd.action === 'credential-trust') return { trusted: credentialTrusted };
+    if (cmd.action === 'set-credential-trust') {
+      if (credentialTrustWriteFails) throw new Error('write failed');
+      credentialTrusted = cmd.trusted === true;
+      return { ok: true };
+    }
     throw new Error(`unexpected ${cmd.action}`);
   });
   Object.assign(window, {
@@ -171,5 +185,55 @@ describe('ProviderShareReceivedDetail', () => {
     };
     render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />);
     expect(screen.getByText('providerShare.received.modelsRefused')).toBeTruthy();
+  });
+});
+
+// 「凭证操作总是允许」(provider-sharing.md §9 第 7 条，2026-10-15)：打开前确认一次，关闭直接生效。
+describe('ProviderShareReceivedDetail credential trust', () => {
+  const trustSwitch = () => screen.getByRole('switch', { name: 'providerShare.received.credentialTrust.label' });
+  const ready = () => waitFor(() => expect(trustSwitch().hasAttribute('disabled')).toBe(false));
+
+  it('turns on only after confirming, and turns off directly', async () => {
+    render(<ProviderShareReceivedDetail share={share} />);
+    await ready();
+    expect(command).toHaveBeenCalledWith({ action: 'credential-trust', shareId: 'share-1' });
+    expect(trustSwitch().getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(trustSwitch());
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-trust', shareId: 'share-1', trusted: true }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'providerShare.received.credentialTrust.confirmTitle:{"name":"Magi"}',
+      description: 'providerShare.received.credentialTrust.confirmDescription:{"name":"Magi"}',
+    }));
+    await ready();
+    expect(trustSwitch().getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.click(trustSwitch());
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-trust', shareId: 'share-1', trusted: false }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    await ready();
+    expect(trustSwitch().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('stays off when the confirmation is cancelled', async () => {
+    confirmSpy.mockResolvedValueOnce(false);
+    render(<ProviderShareReceivedDetail share={share} />);
+    await ready();
+    fireEvent.click(trustSwitch());
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'set-credential-trust' }));
+    expect(trustSwitch().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows the saved state and rolls back when saving fails', async () => {
+    credentialTrusted = true;
+    credentialTrustWriteFails = true;
+    render(<ProviderShareReceivedDetail share={share} />);
+    await waitFor(() => expect(trustSwitch().getAttribute('aria-checked')).toBe('true'));
+    await ready();
+    fireEvent.click(trustSwitch());
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('providerShare.received.credentialTrust.writeFailed'));
+    await ready();
+    expect(trustSwitch().getAttribute('aria-checked')).toBe('true');
   });
 });

@@ -379,6 +379,14 @@
         "cancel": "Cancel"
       },
       "detailNote": "The agent runs on {{name}}'s computer or another computer {{name}} arranges, using their sign-in and quota. Chat content and files the agent reads pass through {{name}}'s computer and are saved on the computer that runs the session. To use it, choose it in the model list when you start a task.",
+      "credentialTrust": {
+        "label": "Always allow credential access",
+        "description": "When on, every session that uses this shared provider can read or write credential files such as keys and .env, or run commands that read credentials, without asking you; each session’s permission mode still applies. This content passes through {{name}}’s computer or another computer they arrange. Turn it off to confirm each time again.",
+        "confirmTitle": "Always allow credential access for {{name}}’s shared provider?",
+        "confirmDescription": "Sessions that use this shared provider, including ones already running, will stop asking before touching credentials. Keys, .env and similar content pass through {{name}}’s computer or another computer they arrange, and chat content is saved on the computer that runs the session. You can turn this off here at any time.",
+        "confirm": "Always allow",
+        "writeFailed": "Couldn’t save this setting. Please try again."
+      },
       "modelsTitle": "Available Models",
       "modelsLoading": "Loading the models they shared…",
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
