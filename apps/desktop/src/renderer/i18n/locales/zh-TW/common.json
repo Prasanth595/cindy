@@ -9396,6 +9396,7 @@
       "loadingDevices": "正在讀取電腦清單…",
       "devicesFailed": "未能讀取電腦清單",
       "noTargets": "沒有可接手的電腦。另一台電腦需要上線、登入同一帳號，並開啟「允許同帳號裝置控制本機」",
+      "resumeToMove": "先恢復 {{name}}，再換到另一台電腦",
       "moveTo": "交給「{{device}}」",
       "transferTitle": "把 {{name}} 交給「{{device}}」？",
       "transferDescription": "從現在起 {{name}} 在「{{device}}」上執行。工作目錄和連線留在這台電腦，這台電腦上的對話變為歷史紀錄。",

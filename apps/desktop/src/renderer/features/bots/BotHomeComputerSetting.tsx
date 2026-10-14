@@ -28,7 +28,7 @@ const TRANSFER_ERROR_KEYS: Record<CompanionCloudFailureCode, string> = {
   BUSY: 'bots.cloud.transferBusy',
 };
 
-export function BotHomeComputerSetting({ bot }: { bot: { id: string; name: string } }) {
+export function BotHomeComputerSetting({ bot }: { bot: { id: string; name: string; status?: string } }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const cloud = useCompanionCloud();
@@ -41,7 +41,10 @@ export function BotHomeComputerSetting({ bot }: { bot: { id: string; name: strin
   const actor = cloud.enabled ? cloud.actors.find((candidate) => candidate.externalId === bot.id) : undefined;
   if (!actor || !cloud.selfDeviceId || actor.homeDeviceId !== cloud.selfDeviceId) return null;
 
+  // Only a running companion syncs (and so can be handed over); a paused one is resumed first.
+  const movable = bot.status === undefined || bot.status === 'active';
   const loadTargets = () => {
+    if (!movable) return;
     setTargets(null);
     setTargetsFailed(false);
     const api = companionCloudApi();
@@ -94,7 +97,9 @@ export function BotHomeComputerSetting({ bot }: { bot: { id: string; name: strin
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56 max-w-80">
-            {targetsFailed ? (
+            {!movable ? (
+              <DropdownMenuItem disabled className="whitespace-normal">{t('bots.cloud.resumeToMove', { name: bot.name })}</DropdownMenuItem>
+            ) : targetsFailed ? (
               <DropdownMenuItem disabled>{t('bots.cloud.devicesFailed')}</DropdownMenuItem>
             ) : targets === null ? (
               <DropdownMenuItem disabled>{t('bots.cloud.loadingDevices')}</DropdownMenuItem>

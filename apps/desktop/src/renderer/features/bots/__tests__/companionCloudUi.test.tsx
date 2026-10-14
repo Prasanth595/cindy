@@ -189,6 +189,15 @@ describe('BotHomeComputerSetting', () => {
     expect(h.navigate).not.toHaveBeenCalled();
   });
 
+  it('asks to resume a paused companion before moving it', async () => {
+    resetCompanionCloudStoreForTests(snapshot('desk'));
+    maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));
+    render(<BotHomeComputerSetting bot={{ ...bot, status: 'paused' }} />);
+    openMenu();
+    expect(await screen.findByText('bots.cloud.resumeToMove:{"name":"Mia"}')).toBeTruthy();
+    expect(maker.listCompanionTransferTargets).not.toHaveBeenCalled();
+  });
+
   it('says when no other computer can take over', async () => {
     resetCompanionCloudStoreForTests(snapshot('desk'));
     maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));

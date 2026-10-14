@@ -9433,6 +9433,7 @@
       "loadingDevices": "Loading your computers…",
       "devicesFailed": "Couldn’t load your computers",
       "noTargets": "No computer can take over. The other computer must be online, signed in to the same account, and have “Allow same-account devices to control this machine” turned on",
+      "resumeToMove": "Resume {{name}} before moving it to another computer",
       "moveTo": "Move to “{{device}}”",
       "transferTitle": "Move {{name}} to “{{device}}”?",
       "transferDescription": "From now on {{name}} runs on “{{device}}”. The working directory and connections stay on this computer, and the conversation here becomes history.",

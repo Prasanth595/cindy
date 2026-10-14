@@ -9396,6 +9396,7 @@
       "loadingDevices": "正在读取电脑列表…",
       "devicesFailed": "未能读取电脑列表",
       "noTargets": "没有可接手的电脑。另一台电脑需要在线、登录同一账号，并开启「允许同账号设备控制本机」",
+      "resumeToMove": "先恢复 {{name}}，再换到另一台电脑",
       "moveTo": "交给「{{device}}」",
       "transferTitle": "把 {{name}} 交给「{{device}}」？",
       "transferDescription": "从现在起 {{name}} 在「{{device}}」上运行。工作目录和连接留在这台电脑，这台电脑上的对话变为历史记录。",
