@@ -6578,7 +6578,23 @@
         "installLocationPickedPrefix": "已选择：",
         "installLocationChange": "更改…",
         "bindAfterInstallFailed": "自定义存储位置设置失败，已回退默认位置",
-        "cancel": "取消"
+        "cancel": "取消",
+        "reattachTitle": "接回这个插件以前的作品数据？",
+        "reattachDescription": "本机还保留着这个插件以前安装时的作品数据，可能来自之前从本地导入、后来卸载的版本。接回后，以前的画布和图片会继续出现在这次安装的插件里；不接回则从空白开始，以前的数据仍保留在本机。",
+        "reattachConfirm": "接回",
+        "reattachSkip": "不接回",
+        "legacyFoundBanner": "这台电脑上还有这个插件以前留下的作品数据（{{size}} · {{count}} 个文件），当前安装没有使用它。",
+        "legacyReattach": "接回以前的作品数据",
+        "legacyReattachBusy": "正在接回…",
+        "legacyReattachConfirmTitle": "接回以前的作品数据？",
+        "legacyReattachConfirmDescription": "插件会改用以前留下的作品数据。当前的作品数据会移入回收站，保留 30 天，期满后彻底清除。",
+        "legacyReattachConfirmText": "接回",
+        "legacyReattachDone": "已接回以前的作品数据",
+        "legacyReattachFailed": "接回失败",
+        "legacyReattachNeedsRestart": "没能清掉这个插件的缓存。请重启 Cindy 后再使用这个插件。",
+        "legacyInUseBanner": "这台电脑上另一个安装（例如本地版）还在使用这个插件以前的作品数据。卸载那个安装后，可以在这里接回。",
+        "legacyFoundUnknownBanner": "这台电脑上有一份可能是这个插件以前留下的作品数据（{{size}} · {{count}} 个文件），没有来源记录，当前安装没有使用它。",
+        "legacyReattachUnknownSource": "这份作品数据没有来源记录，可能是手动复制或用脚本搬过来的。请确认它属于这个插件。"
       },
       "updateConfirm": {
         "title": "更新插件「{{name}}」？",
@@ -9696,6 +9712,21 @@
       "addRemoteProject": "添加远程项目"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "免费",
+        "estimated": "约 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字符",
+          "image": "张",
+          "second": "秒",
+          "minute": "分钟",
+          "request": "次",
+          "megapixel": "百万像素",
+          "megapixelSecond": "百万像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在设置里配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付费",

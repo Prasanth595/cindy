@@ -307,6 +307,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('ghosts:changed', cb),
     onRuntimeChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:runtime-changed', cb),
+    onLibraryReplaced: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload('ghosts:library-replaced', cb),
     onPreviewMedia: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:preview-media', cb),
     unreadSync: (): { entries: unknown[] } => {

@@ -12,6 +12,7 @@ import { clearDraft, getDraft } from '@/lib/composerDraftStore';
 import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../feature-context';
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
 import { botGroupAttachmentScope } from '../botGroupAttachments';
+import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
@@ -1046,6 +1047,130 @@ describe('BotGroupChatView', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
     expect(mocks.sendBotGroupMessage.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: [removed === 'picked' ? 'other' : 'picked'] });
+  });
+
+  describe('while the timeline loads', () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+    /** The sidebar list as main reports it; the view only borrows the row for its header. */
+    async function listGroups(groups: BotGroupDetail[]) {
+      resetBotGroupStoreForTests();
+      window.electronAPI.maker.listBotGroups = vi.fn(async () => ({ ok: true as const, groups }));
+      refreshBotGroups();
+      await waitFor(() => expect(getBotGroupListSnapshot().loaded).toBe(true));
+    }
+    afterEach(() => resetBotGroupStoreForTests());
+
+    it('shows the listed header at once and a progress indicator only for a slow read', async () => {
+      await listGroups([detail({ messages: [] })]);
+      const read = deferred<{ ok: true; group: BotGroupDetail }>();
+      mocks.getBotGroup.mockReturnValue(read.promise);
+      renderView();
+      const header = screen.getByTestId('content-header');
+      expect(header.textContent).toContain('周末出游');
+      expect(header.textContent).toContain('咪咪');
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(await screen.findByRole('status', { name: 'ccAgent.common.loading' })).toBeTruthy();
+      await act(async () => read.resolve({ ok: true, group: detail() }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+      expect(screen.getByRole('textbox')).toBeTruthy();
+    });
+
+    it('never shows a fast read’s progress indicator', async () => {
+      await listGroups([detail()]);
+      renderView();
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+      await new Promise((done) => setTimeout(done, 250));
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+    });
+
+    it('keeps a quickly left group’s late timeline and header out of the next group', async () => {
+      await listGroups([detail(), detail({ id: 'g2', name: '读书会', members: [{ botId: 'ajie', name: '阿杰', avatar: '', avatarColor: 'green', status: 'active' }] })]);
+      const first = deferred<{ ok: true; group: BotGroupDetail }>();
+      const second = deferred<{ ok: true; group: BotGroupDetail }>();
+      mocks.getBotGroup.mockImplementation((id: string) => (id === 'g1' ? first.promise : second.promise));
+      const view = renderView();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      mocks.groupId = 'g2';
+      view.rerender(
+        <Tooltip.Provider>
+        <FeatureSidebarSlotProvider isCollapsed={false}>
+          <HeaderSlot />
+          <BotGroupChatView />
+        </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>,
+      );
+      const header = screen.getByTestId('content-header');
+      expect(header.textContent).toContain('读书会');
+      expect(header.textContent).not.toContain('周末出游');
+      await act(async () => first.resolve({ ok: true, group: detail() }));
+      expect(screen.queryByText('周六 8:10 有票')).toBeNull();
+      expect(header.textContent).not.toContain('周末出游');
+      await act(async () => second.resolve({ ok: true, group: detail({ id: 'g2', name: '读书会', messages: [msg({ id: 'r1', content: '这周读哪本' })] }) }));
+      expect(await screen.findByText('这周读哪本')).toBeTruthy();
+      expect(screen.queryByText('周六 8:10 有票')).toBeNull();
+    });
+
+    it('opens the route-owned settings from the loading header without re-reading the timeline', async () => {
+      await listGroups([detail()]);
+      mocks.getBotGroup.mockReturnValue(new Promise(() => {}));
+      renderView();
+      fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.settings.open' }));
+      expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/g1?groupSettings=1');
+      expect(mocks.getBotGroup).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows only the second visit’s read after A → B → A', async () => {
+      await listGroups([detail(), detail({ id: 'g2', name: '读书会' })]);
+      const reads: Array<{ id: string; resolve: (value: { ok: true; group: BotGroupDetail }) => void }> = [];
+      mocks.getBotGroup.mockImplementation((id: string) => new Promise((resolve) => { reads.push({ id, resolve }); }));
+      const view = renderView();
+      const rerender = (id: string) => {
+        mocks.groupId = id;
+        view.rerender(
+          <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+          </Tooltip.Provider>,
+        );
+      };
+      rerender('g2');
+      rerender('g1');
+      expect(reads.map((read) => read.id)).toEqual(['g1', 'g2', 'g1']);
+      await act(async () => reads[0]!.resolve({ ok: true, group: detail({ messages: [msg({ id: 'old', content: '第一次打开的旧回包' })] }) }));
+      await act(async () => reads[1]!.resolve({ ok: true, group: detail({ id: 'g2', name: '读书会', messages: [msg({ id: 'b', content: '读书会的回包' })] }) }));
+      expect(screen.queryByText('第一次打开的旧回包')).toBeNull();
+      expect(screen.queryByText('读书会的回包')).toBeNull();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      await act(async () => reads[2]!.resolve({ ok: true, group: detail() }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+    });
+
+    it('keeps the header with a retry when the first read fails', async () => {
+      await listGroups([detail()]);
+      mocks.getBotGroup.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT', message: '' });
+      renderView();
+      expect(await screen.findByText('bots.groupChat.loadFailedTitle')).toBeTruthy();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      fireEvent.click(screen.getByRole('button', { name: /bots.retry/ }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+    });
+
+    it('shows no header for a group that is no longer listed, then the unavailable state', async () => {
+      await listGroups([]);
+      mocks.getBotGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+      renderView();
+      expect(screen.getByTestId('content-header').textContent).toBe('');
+      expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+      expect(screen.getByTestId('content-header').textContent).toBe('');
+    });
   });
 
   it('refreshes on a push for this group and shows the unavailable state after delete', async () => {

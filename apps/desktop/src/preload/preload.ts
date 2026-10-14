@@ -691,6 +691,8 @@ const fanOutGhostRecentUsageChanged = createIpcFanOut('ghosts:recent-usage-chang
 const fanOutGhostInstallRequested = createIpcFanOut('ghosts:install-requested');
 // 意识运行时状态广播(crashed/fused → 面板原地错误接管态)。
 const fanOutGhostRuntimeChanged = createIpcFanOut('ghosts:runtime-changed');
+// 设置页接回旧作品库后，对应插件面板从磁盘重新加载。
+const fanOutGhostLibraryReplaced = createIpcFanOut('ghosts:library-replaced');
 // 意识面板「点图看大图」推送(main 拦下 /preview/ 导航并过闸后推 cindy-media 地址)。
 const fanOutGhostPreviewMedia = createIpcFanOut('ghosts:preview-media');
 // 意识聊天卡片更新推送(卡槽③:card-update 过闸后带 html 全量推,renderer 免回查)。
@@ -1436,6 +1438,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onRecentUsageChanged: fanOutGhostRecentUsageChanged,
     onInstallRequested: fanOutGhostInstallRequested,
     onRuntimeChanged: fanOutGhostRuntimeChanged,
+    onLibraryReplaced: fanOutGhostLibraryReplaced,
     onPreviewMedia: fanOutGhostPreviewMedia,
     onCardUpdated: fanOutGhostCardUpdated,
     onSessionActivity: fanOutGhostSessionActivity,
@@ -1539,6 +1542,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:library-unbind', id),
     libraryDelete: (id: string): Promise<{ ok: boolean; cancelled?: boolean; message?: string }> =>
       ipcRenderer.invoke('ghosts:library-delete', id),
+    /** 接回裸 id 下以前留下的作品数据；确认框由 Main 弹出。 */
+    libraryReattachLegacy: (id: string): Promise<{ ok: boolean; cancelled?: boolean; message?: string }> =>
+      ipcRenderer.invoke('ghosts:library-reattach-legacy', id),
     legacyRecoveryStatus: (): Promise<
       import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus
     > => ipcRenderer.invoke('ghosts:legacy-recovery-status'),

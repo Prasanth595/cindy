@@ -6603,7 +6603,23 @@
         "installLocationPickedPrefix": "Selected:",
         "installLocationChange": "Change…",
         "bindAfterInstallFailed": "Failed to set the custom storage location; fell back to the default",
-        "cancel": "Cancel"
+        "cancel": "Cancel",
+        "reattachTitle": "Reattach this plugin's earlier work data?",
+        "reattachDescription": "This computer still has work data from an earlier install of this plugin, possibly a locally imported version that was later uninstalled. Reattach it to keep your earlier canvases and images in this install. If you skip, this install starts empty and the earlier data stays on this computer.",
+        "reattachConfirm": "Reattach",
+        "reattachSkip": "Don't reattach",
+        "legacyFoundBanner": "This computer still has earlier work data from this plugin ({{size}} · {{count}} files) that the current install does not use.",
+        "legacyReattach": "Reattach earlier work data",
+        "legacyReattachBusy": "Reattaching…",
+        "legacyReattachConfirmTitle": "Reattach earlier work data?",
+        "legacyReattachConfirmDescription": "The plugin will use the earlier work data instead. Its current work data is moved to the trash and kept for 30 days, then permanently removed.",
+        "legacyReattachConfirmText": "Reattach",
+        "legacyReattachDone": "Earlier work data reattached",
+        "legacyReattachFailed": "Reattach failed",
+        "legacyReattachNeedsRestart": "This plugin's cache could not be cleared. Restart Cindy before using the plugin again.",
+        "legacyInUseBanner": "Another install on this computer (such as a local copy) is still using this plugin's earlier work data. Uninstall that install to reattach the data here.",
+        "legacyFoundUnknownBanner": "This computer has work data that may have been left by this plugin ({{size}} · {{count}} files). It has no source record, and the current install does not use it.",
+        "legacyReattachUnknownSource": "This work data has no source record. It may have been copied in by hand or by a script. Make sure it belongs to this plugin."
       },
       "updateConfirm": {
         "title": "Update plugin \"{{name}}\"?",
@@ -9733,6 +9749,21 @@
       "addRemoteProject": "Add remote project"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "Free",
+        "estimated": "About {{price}}",
+        "startingAt": "From {{price}}",
+        "units": {
+          "token": "tokens",
+          "character": "characters",
+          "image": "image",
+          "second": "second",
+          "minute": "minute",
+          "request": "request",
+          "megapixel": "MP",
+          "megapixelSecond": "MP·s"
+        }
+      },
       "budgetNeedsApiKey": "This model needs an API key — configure it in Settings",
       "paymentRequired": {
         "badge": "Paid",

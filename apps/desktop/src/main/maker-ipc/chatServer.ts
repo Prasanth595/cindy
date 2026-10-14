@@ -82,6 +82,7 @@ class ChatResponseError extends Error {
 const CHAT_AUTH_RETRY_MS = 60_000;
 /** Main-group messages kept as background for a Thread request (the Thread itself is read separately). */
 const THREAD_BACKGROUND_LIMIT = 30;
+const ATTACHMENT_REFRESH_COALESCE_MS = 200;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
 const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
@@ -188,7 +189,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let profileRefreshedAt = 0;
   const running = new Map<string, Running>();
   const metadata = new Map<string, Promise<void>>();
-  const rooms = new Set<string>();
+  /**
+   * Followed room scopes, each with the newest cursor this process has read or acked. It only
+   * chooses where a reconnect resumes; every reconnect also re-reads each followed room.
+   */
+  const rooms = new Map<string, string>();
+  /** Keep a room's newer cursor: a late snapshot or event must not rewind where it resumes. */
+  const advanceRoom = (roomId: string, cursor: string) => {
+    const known = rooms.get(roomId);
+    if (known === undefined || /^\d+$/.test(cursor) && /^\d+$/.test(known) && BigInt(cursor) > BigInt(known)) rooms.set(roomId, cursor);
+  };
   let socket: WebSocket | undefined;
   let reconnect: ReturnType<typeof setTimeout> | undefined;
   let reconnectDelay = 500;
@@ -364,8 +374,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   const resolveGroup = async (groupId: string) => {
     await register();
     if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
-    const localGroups = await localSources();
-    if (localGroups.some(group => group.id === groupId)) {
+    // A server room has no local row; only an existing local history may still need its upgrade.
+    const [localRow] = await getDbClient().drizzle.select({ id: botGroups.id }).from(botGroups).where(eq(botGroups.id, groupId)).limit(1);
+    if (localRow && (await localSources()).some(group => group.id === groupId)) {
       await ensureUpgrade();
       if (!upgradedGroups.has(groupId)) throw new Error('IMPORT_PENDING');
     }
@@ -408,9 +419,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
   }
-  function subscribe(roomId: string) {
-    const fresh = !rooms.has(roomId); rooms.add(roomId);
-    if (fresh && connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: '0' }));
+  /**
+   * Follow a room from a cursor whose state has already been read. A snapshot cursor skips
+   * replaying the room's whole change log, one full re-read per hundred old changes.
+   */
+  function subscribe(roomId: string, cursor = '0') {
+    const fresh = !rooms.has(roomId); advanceRoom(roomId, cursor);
+    if (fresh && connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
   }
   function connect() {
     if (!current()) return;
@@ -429,13 +444,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           memberJoinedClaims = true;
           reconnectDelay = 500; connected = true;
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
-          for (const roomId of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: '0' }));
-          for (const roomId of rooms) changed(roomId);
+          for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
+          for (const roomId of rooms.keys()) changed(roomId);
         } else if (event.type === 'changes') {
-          // This adapter stores no client history/cursor. Each invalidation re-reads
-          // authoritative state; reconnect always starts from zero.
+          // This adapter stores no client history. Each invalidation re-reads authoritative
+          // state; a reconnect resumes after the last cursor this process has read or acked.
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
+            if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
             changed(roomId);
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
@@ -449,6 +465,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.error?.code === 'RESET_REQUIRED') {
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+              if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -470,7 +487,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   async function snapshot(roomId: string) {
     id.parse(roomId); await register();
     const value = await api<Snapshot>(`/conversations/${roomId}/snapshot`);
-    subscribe(roomId);
+    subscribe(roomId, value.cursor);
     return value;
   }
   function managementActor(s: Snapshot) {
@@ -518,6 +535,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // Attachments are independent of the text projection. A failed object store
   // request never rejects a room/Thread; subsequent reads retry after a backoff.
   const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number }>();
+  // A page's attachments settle close together; one re-read of the room and sidebar shows
+  // them all instead of one full re-read per file.
+  const attachmentRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  function attachmentsChanged(roomId: string) {
+    if (!current() || attachmentRefreshes.has(roomId)) return;
+    attachmentRefreshes.set(roomId, setTimeout(() => {
+      attachmentRefreshes.delete(roomId);
+      changed(roomId);
+    }, ATTACHMENT_REFRESH_COALESCE_MS));
+  }
   async function messageViews(roomId: string, messages: Message[], members: Member[]) {
     return messages.map(message => {
       const view = messageView(message, members);
@@ -532,7 +559,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           void media.download(roomId, mediaId).then(value => {
             if (current()) entry.value = value;
           }).catch(() => { entry.retryAt = Date.now() + 30000; })
-            .finally(() => { if (current()) changed(roomId); });
+            .finally(() => attachmentsChanged(roomId));
         }
         if (cached.value) view.attachments.push(cached.value);
       }
@@ -540,16 +567,29 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     });
   }
   async function detail(roomId: string, options?: unknown, summaryOnly = false): Promise<BotGroupDetail> {
-    const s = await snapshot(roomId);
+    id.parse(roomId);
     const o = z.object({ beforeSequence: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional(),
       sourceMessageIds: z.array(id).optional() }).parse(options ?? {});
     const query = new URLSearchParams({ limit: String(o.limit ?? 100) });
     if (o.beforeSequence) query.set('before', String(o.beforeSequence));
-    const page = summaryOnly ? s.messages : await api<Message[]>(`/conversations/${roomId}/messages?${query}`);
-    const executions = await api<Execution[]>(`/conversations/${roomId}/executions`);
-    const executionFailures = summaryOnly ? undefined : await failureSnapshot(roomId, s.members, [...(o.sourceMessageIds ?? []), ...page.map(m => m.id)], executions);
+    // Independent reads share a round trip. Each is awaited in the former serial order, so the
+    // first failure in snapshot → messages → executions → failures → plans is still the one
+    // reported (a left room stays 「not found」), whichever request fails first in time.
+    // A followed room reports every later change, so its snapshot may run alongside. A new
+    // room first takes the snapshot cursor it will follow from, before the rest is read.
+    const snapshotRead = snapshot(roomId);
+    if (!rooms.has(roomId)) await snapshotRead;
+    const messagesRead = summaryOnly ? null : api<Message[]>(`/conversations/${roomId}/messages?${query}`);
+    const executionsRead = api<Execution[]>(`/conversations/${roomId}/executions`);
+    for (const read of [messagesRead, executionsRead]) read?.catch(() => undefined);
+    const s = await snapshotRead;
+    const page = (await messagesRead) ?? s.messages;
+    const executions = await executionsRead;
     const ids = page.flatMap(m => m.content.flatMap(b => b.namespace === 'cindy.plan' && typeof b.data?.planId === 'string' ? [id.parse(b.data.planId)] : []));
-    const serverPlans = await api<ServerPlan[]>(`/conversations/${roomId}/plans${ids.length ? `?ids=${ids.join(',')}` : ''}`);
+    const plansRead = api<ServerPlan[]>(`/conversations/${roomId}/plans${ids.length ? `?ids=${ids.join(',')}` : ''}`);
+    plansRead.catch(() => undefined);
+    const executionFailures = summaryOnly ? undefined : await failureSnapshot(roomId, s.members, [...(o.sourceMessageIds ?? []), ...page.map(m => m.id)], executions);
+    const serverPlans = await plansRead;
     const workspace = workspaces().read(roomId);
     const plans = serverPlans.map(plan => planView(plan, s.members, workspace));
     const open = plans.find(p => ['proposed', 'running', 'waiting'].includes(p.status));
@@ -1086,7 +1126,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     ownedBots: () => result(async () => { await register(); return { bots: actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active').map(a => ({ actorId: a.id, name: a.name })) }; }),
     refreshProfile: () => result(async () => {
       await api('/profile/refresh', 'POST'); profileRefreshedAt = Date.now();
-      for (const roomId of rooms) changed(roomId);
+      for (const roomId of rooms.keys()) changed(roomId);
       changed(''); return {};
     }),
     manage: input => result(async () => {
@@ -1319,6 +1359,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
       disposed = true; clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); socket?.close();
+      for (const refresh of attachmentRefreshes.values()) clearTimeout(refresh);
+      attachmentRefreshes.clear();
       for (const run of running.values()) {
         run.releaseToolAuthority?.();
         if (run.sessionId) void deps.abortLane(run.sessionId).catch(() => undefined);

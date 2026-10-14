@@ -7,7 +7,7 @@
  * 再来的推送合并成一次补取。账号（data owner）切换时立即清空，旧账号的迟到响应
  * 一律丢弃（electron-security-and-process-boundaries §4–5：renderer 不持有真相）。
  */
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { seedBotGroupReadState } from './botReadState';
 
 import {
@@ -143,6 +143,15 @@ export function subscribeBotGroups(listener: () => void): () => void {
 
 export function useBotGroupList(): BotGroupListSnapshot {
   return useSyncExternalStore(subscribeBotGroups, getBotGroupListSnapshot, getBotGroupListSnapshot);
+}
+
+/** One listed group, or null; a null id reads nothing and never re-renders on list refreshes. */
+export function useBotGroupSummary(groupId: string | null): BotGroupSummary | null {
+  const read = useCallback(
+    () => (groupId ? getBotGroupListSnapshot().groups.find((group) => group.id === groupId) ?? null : null),
+    [groupId],
+  );
+  return useSyncExternalStore(subscribeBotGroups, read, read);
 }
 
 const NOT_READY: BotGroupMutationResult = { ok: false, errorCode: 'HOST_NOT_READY', message: '' };
