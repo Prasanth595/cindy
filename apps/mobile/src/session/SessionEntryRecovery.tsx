@@ -7,6 +7,7 @@ import { MainWindowActionButton, MainWindowEmptyState } from '@/components/Mobil
 import { formatRemoteError } from '@/device-link/remoteStatus';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { spacing } from '@/theme/tokens';
+import { goBackGuarded } from '@/utils/backGuard';
 import { retryNewSessionCreation, type NewSessionCreationTask } from './newSessionCreation';
 import { returnNewSessionToEdit } from './returnNewSessionToEdit';
 
@@ -27,7 +28,7 @@ export function SessionEntryStatus({ title, copy, loading, children }: {
             {children}
             <MainWindowActionButton action={{
               label: t('session.entry.back'), testID: 'session.entryBack',
-              onPress: () => router.canGoBack() ? router.back() : router.replace('/'),
+              onPress: () => goBackGuarded(router),
             }} numberOfLines={0} />
           </View>
         </MainWindowEmptyState>
