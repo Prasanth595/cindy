@@ -224,7 +224,7 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     }
     for (const key of [
       'install', 'uninstall', 'inspect', 'devRuntime', 'devCall',
-      'approve', 'revokeApproval', 'setCindyPref', 'listCardsBySession',
+      'approve', 'revokeApproval', 'setErrandConfig', 'listCardsBySession',
     ]) {
       expect(ghostKeys).not.toEqual(expect.arrayContaining([key]));
     }

@@ -261,6 +261,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     planModeEnabled: !!row.planModeEnabled,
     clearedAt: msToIso(row.clearedAt),
     pinnedAt: msToIso(row.pinnedAt),
+    hiddenAt: msToIso(row.hiddenAt),
     userSendAt: msToIso(row.userSendAt),
     agentKind: row.agentKind as AgentKind,
     source: normalizeSessionSource(row.source),

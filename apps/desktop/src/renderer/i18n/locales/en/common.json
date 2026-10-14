@@ -6357,6 +6357,8 @@
         "agentTasksRequest": "Review task permission",
         "agentTasks": "Can create and manage its own Cindy tasks",
         "agentTasksDetail": "Can send messages, read results and stop its own executions. Tasks remain visible to you. Uses this plugin’s AI settings and may incur model charges; does not grant access to other tasks.",
+        "agentHiddenTasks": "Can create background tasks hidden from the task list",
+        "agentHiddenTasksDetail": "Tasks this plugin creates can stay out of the task list, search and notifications. You can always view, open or show them in the task list from Background Tasks on this plugin’s page; uninstalling the plugin shows them again.",
         "agentErrand": "Create tasks, perform work, and read results",
         "agentErrandDetail": "Created tasks appear in Cindy’s task list, where you can view progress and continue the conversation.",
         "agentSchedule": "Can ask you to create an automation",
@@ -6477,28 +6479,12 @@
         "infoVersion": "Version",
         "updateTitle": "Update version",
         "updateDesc": "Pick a new .cindy file to replace the installed version in place; enabled state and panel position are preserved.",
-        "cindyPrefs": {
-          "title": "Cindy abilities",
-          "desc": "Each Cindy delegation ability this plugin requested can be pinned to a specific model; defaults follow the system (built-in proxy).",
-          "cap": {
-            "image.generate": "Image generation",
-            "image.edit": "Image editing",
-            "video.generate": "Video generation",
-            "video.edit": "Image-to-video",
-            "text.oneshot": "Quick answer (text)",
-            "embed.text": "Text to vector"
-          },
-          "defaultOption": "{{model}} (default)",
-          "defaultOptionDeclared": "{{model}} (plugin declared)",
-          "searchPlaceholder": "Search models or providers",
-          "budgetBadge": "Discount",
-          "noModels": "No models available"
-        },
         "errandPrefs": {
-          "title": "Task settings",
-          "desc": "For tasks created by this plugin. New tasks use the originating task’s model, or the current new-task selection when created from a panel. Existing tasks keep their own model. Permissions are set separately and use ordinary task defaults. Full access is never inherited.",
-          "legacyDesc": "For tasks created by this plugin. New tasks use the originating task’s model, or the current new-task selection when created from a panel. Existing tasks keep their own model. The legacy API retains its original permissions until you explicitly choose a mode.",
+          "title": "Model & tasks",
+          "desc": "Used for this plugin’s quick answers and the tasks it creates; defaults to the system auxiliary model, and new tasks default to the originating task’s model.",
+          "descModelOnly": "Used for this plugin’s quick answers; defaults to the system auxiliary model.",
           "legacyPermission": "Keep original permissions",
+          "legacyPermissionHint": "The legacy API keeps its original permissions until you choose a mode.",
           "agent": "Agent",
           "model": "Model",
           "permission": "Write access",
@@ -6507,8 +6493,8 @@
           "workdirDefault": "Plugin's dedicated folder (default)",
           "workdirPick": "Choose…",
           "workdirClear": "Reset to default folder",
-          "sourceDefault": "Follow the originating task; panel default shown below",
-          "sourceCustom": "Use the model selected for this plugin",
+          "followAuxiliary": "Follow system auxiliary model · {{model}}",
+          "followAuxiliaryUnset": "Follow system auxiliary model",
           "restoreModel": "Reset model"
         },
         "toolsTitle": "Tools",
@@ -6563,6 +6549,22 @@
       "commandPaletteTag": "Plugin command",
       "commandPaletteSource": {
         "team": "Team shared"
+      },
+      "backgroundTasks": {
+        "title": "Background Tasks",
+        "description": "Tasks this plugin runs in the background, outside the task list. Open one to check it, or show it in the task list to use it as usual.",
+        "refresh": "Refresh Background Tasks",
+        "loading": "Loading background tasks…",
+        "loadFailed": "Could not load background tasks",
+        "empty": "No background tasks",
+        "statusRunning": "Running",
+        "statusIdle": "Idle",
+        "statusArchived": "Archived",
+        "lastActive": "Last activity {{time}}",
+        "open": "Open Task",
+        "reveal": "Show in Task List",
+        "revealed": "Task shown in the task list",
+        "revealFailed": "Could not show the task in the task list"
       },
       "library": {
         "title": "Durable library",

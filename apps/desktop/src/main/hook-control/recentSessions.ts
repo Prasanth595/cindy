@@ -77,6 +77,8 @@ export async function listRecentHookSessions(
         isNull(sessions.remoteHostId),
         or(isNull(sessions.orcaRole), ne(sessions.orcaRole, 'worker')),
         inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
+        // 插件后台隐藏任务不出现在最近任务中。
+        isNull(sessions.hiddenAt),
       ),
     )
     .orderBy(desc(sql`COALESCE(${sessions.userSendAt}, ${sessions.updatedAt})`))

@@ -105,6 +105,37 @@ describe('sessionsStore status bucket migration', () => {
     expect(patched).toHaveBeenCalledTimes(2);
   });
 
+  it('removes a task moved to the background from every bucket and refetches the loaded buckets', async () => {
+    const hidden = session('plugin-task');
+    const keep = session('keep');
+    mocks.list.mockImplementation(async () => [hidden, keep]);
+    await sessionsStore.ensureByFilter('active');
+    await sessionsStore.ensureByFilter('all');
+    mocks.list.mockReset();
+    mocks.list.mockImplementation(async () => [keep]);
+    const patched = vi.fn();
+    const off = sessionsStore.subscribePatches(patched);
+    const snapshots: string[][] = [];
+    const offStore = sessionsStore.subscribe(() => {
+      const active = sessionsStore.getByFilter('active');
+      if (active) snapshots.push(active.map((row) => row.id));
+    });
+    try {
+      sessionsStore.patchLocal('plugin-task', { hiddenAt: '2026-10-15T00:00:00.000Z' });
+      // The first notification already removed the row in place, before any refetch.
+      expect(snapshots[0]).toEqual(['keep']);
+      expect(sessionsStore.findById('plugin-task')).toBeNull();
+      expect(patched).toHaveBeenCalledWith('plugin-task', { hiddenAt: '2026-10-15T00:00:00.000Z' },
+        expect.objectContaining({ id: 'plugin-task', hiddenAt: '2026-10-15T00:00:00.000Z' }));
+      await waitFor(() => expect(requestedFilters().sort()).toEqual(['active', 'all']));
+      await waitFor(() => expect(sessionsStore.getByFilter('active')?.map((row) => row.id)).toEqual(['keep']));
+      expect(sessionsStore.getByFilter('all')?.map((row) => row.id)).toEqual(['keep']);
+      // A reveal patch alone does not insert a row; the created push refetches instead.
+      sessionsStore.patchLocal('plugin-task', { hiddenAt: null });
+      expect(sessionsStore.findById('plugin-task')).toBeNull();
+    } finally { off(); offStore(); }
+  });
+
   it('moves a row with an authoritative timestamp into archived and all without querying', async () => {
     const target = session('archive-me', 'active', '2026-08-27T00:00:00.000Z');
     const keepActive = session('keep-active', 'active', '2026-08-27T00:30:00.000Z');

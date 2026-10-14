@@ -467,6 +467,7 @@ describe('orcaTeamStore', () => {
         plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
         cleared_at INTEGER,
         pinned_at INTEGER,
+        hidden_at INTEGER,
         summary TEXT,
         user_send_at INTEGER,
         agent_kind TEXT NOT NULL DEFAULT 'codex',

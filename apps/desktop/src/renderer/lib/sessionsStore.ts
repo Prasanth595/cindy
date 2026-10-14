@@ -958,6 +958,23 @@ export const sessionsStore = {
    */
   patchLocal(id: string, patch: Partial<Session>): void {
     if (!id || !patch) return;
+    // 插件把任务转入后台(hiddenAt 非空):主进程列表已排除它,这里与删除一样从所有桶
+    // 就地移除;再整体重拉一次,补齐满桶空位并压过转入后台前发出的旧列表请求。
+    // 恢复显示由 sessions:created 推送触发重拉,不走这里。
+    if (typeof patch.hiddenAt === 'string' && patch.hiddenAt.length > 0) {
+      const row = this.findById(id);
+      let removed = false;
+      for (const [filter, list] of cache) {
+        const next = list.filter((session) => session.id !== id);
+        if (next.length === list.length) continue;
+        cache.set(filter, next);
+        removed = true;
+      }
+      if (removed) notify();
+      patchSubs.forEach((fn) => fn(id, patch, row ? mergeSession(row, patch) : null));
+      if (removed) void this.forceRefreshAll().catch(() => undefined);
+      return;
+    }
     const pendingBeforePatch =
       patch.status !== undefined ? pendingStatusTransitions.get(id) : undefined;
     const sourceSession = patch.status !== undefined ? this.findById(id) : null;

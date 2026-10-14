@@ -1041,22 +1041,6 @@ const appearanceSettingsInfo = ipcRenderer.sendSync(
   'appearance-settings:get-sync',
 ) as AppearanceSettings | null;
 
-type CindyMediaPreferenceOption = {
-  id: string;
-  label: string;
-  group: string;
-  providerId: string;
-  providerName: string;
-  modelId: string;
-  modelName: string;
-  routing?: import('@cindy/model-providers').Provider['routing'];
-};
-
-type CindyMediaPreferenceKind = {
-  options: CindyMediaPreferenceOption[];
-  defaultModel: CindyMediaPreferenceOption | null;
-};
-
 contextBridge.exposeInMainWorld('electronAPI', {
   modelFavoritesHost: {
     ready: () => ipcRenderer.send(FAVORITE_HOST_READY),
@@ -1313,54 +1297,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         expectedInstalledInstanceId: string;
       },
     ): Promise<{ ghost: unknown }> => ipcRenderer.invoke('ghosts:update', lizFilePath, opts),
-    cindyPrefsSync: (
+    /**
+     * 插件「模型与任务」配置(快问快答与插件新建任务共用;sendSync 首帧同帧渲染)。
+     * auxiliaryModelLabel = 当前系统辅助模型的显示名(未选模型时快问快答跟随它)。
+     */
+    errandPrefsSync: (
       id: string,
-    ): {
-      overrides: Record<string, string>;
-      /**
-       * 每类目一份下拉数据(能力键按类目取对应清单)。
-       * options 为空或 defaultModel 为 null = 目录没给该类目模型,能力暂不可用。
-       */
-      image: CindyMediaPreferenceKind;
-      imageEdit: CindyMediaPreferenceKind;
-      video: CindyMediaPreferenceKind;
-      videoEdit: CindyMediaPreferenceKind;
-      /** 文本类(快问快答):选项是当前供应商目录的全部文本模型(cat: 编码钉值,
-       *  带供应商/模型/徽标等结构化字段供富列表渲染);declaredModel = 身份卡声明
-       *  的偏好模型;utilityProfiles = 存量轻量档位钉的展示名表(老钉值回显用)。 */
-      text: {
-        options: Array<{
-          id: string;
-          label: string;
-          group: string;
-          providerId: string;
-          agentKind: string;
-          modelId: string;
-          modelName: string;
-          icon?: string;
-          budget: boolean;
-          subscription: boolean;
-          routing?: import('@cindy/model-providers').Provider['routing'];
-          agentSuffix?: string;
-        }>;
-        defaultModel: { id: string; label: string } | null;
-        declaredModel?: { id: string; label: string } | null;
-        utilityProfiles?: Array<{ id: string; label: string }>;
-      };
-      /** 向量类(文本转向量):同 image/video 走目录派生。 */
-      embed: {
-        options: Array<{ id: string; label: string }>;
-        defaultModel: { id: string; label: string } | null;
-      };
-    } => ipcRenderer.sendSync('ghosts:cindy-prefs', id),
-    setCindyPref: (
-      id: string,
-      capability: string,
-      model: string | null,
-    ): Promise<{ overrides: Record<string, string> }> =>
-      ipcRenderer.invoke('ghosts:cindy-prefs:set', id, capability, model),
-    /** 派活(errand)每插件配置(插件详情页「AI 代办」卡;sendSync 首帧同帧渲染)。 */
-    errandPrefsSync: (id: string): { config: Record<string, unknown> } =>
+    ): { config: Record<string, unknown>; auxiliaryModelLabel?: string | null } =>
       ipcRenderer.sendSync('ghosts:errand-prefs', id),
     setErrandConfig: (
       id: string,
@@ -1397,6 +1340,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval),
     requestTaskApproval: (id: string): Promise<{ granted: boolean }> =>
       ipcRenderer.invoke('ghosts:request-task-approval', id),
+    /** 详情页「后台任务」:本插件转入后台的任务(仅本机窗口,不进 device-link)。 */
+    listBackgroundTasks: (id: string): Promise<{
+      items: Array<{ taskId: string; title: string; status: 'active' | 'archived'; updatedAt: number; running: boolean }>;
+    }> => ipcRenderer.invoke('ghosts:background-tasks:list', id),
+    /** 「显示到任务列表」:与插件 cindy.tasks.setHidden 共用宿主写入口。 */
+    revealBackgroundTask: (id: string, taskId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:background-tasks:reveal', id, taskId),
     /** 目录级禁用清单(插件页项目范围视图;sendSync 保证切换同帧渲染)。 */
     workdirPrefsSync: (workdir: string): { disabled: string[] } =>
       ipcRenderer.sendSync('ghosts:workdir-prefs', workdir),

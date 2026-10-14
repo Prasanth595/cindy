@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   botOwnedSessionNotificationTitle,
   findSessionNotificationSession,
+  isReviewSessionNotificationTarget,
   sendSessionEventNotification,
 } from '@/lib/sessionEventNotification';
 import { applyRemoteSessionActivity, clearRemoteSessionActivity, getRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
@@ -195,5 +196,24 @@ describe('shared session event notifications', () => {
     expect(findSessionNotificationSession('same-session', [visible, complete])).toEqual(
       complete[0],
     );
+  });
+});
+
+describe('tasks omitted from the task list', () => {
+  afterEach(() => { Reflect.deleteProperty(window, 'electronAPI'); });
+  it('suppresses plugin background tasks resolved from the database, but not visible ones', async () => {
+    const rows: Record<string, unknown> = {
+      bg: { id: 'bg', source: 'plugin', hiddenAt: '2026-10-15T00:00:00.000Z' },
+      shown: { id: 'shown', source: 'plugin', hiddenAt: null },
+      review: { id: 'review', source: 'review' },
+    };
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: { localDb: { sessions: { get: async (id: string) => rows[id] ?? null } } },
+    });
+    expect(await isReviewSessionNotificationTarget('bg')).toBe(true);
+    expect(await isReviewSessionNotificationTarget('review')).toBe(true);
+    expect(await isReviewSessionNotificationTarget('shown')).toBe(false);
+    expect(await isReviewSessionNotificationTarget('missing')).toBe(false);
   });
 });

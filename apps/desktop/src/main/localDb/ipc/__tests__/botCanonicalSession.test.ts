@@ -281,6 +281,7 @@ function createDb(filename = ':memory:'): void {
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
       pinned_at INTEGER,
+      hidden_at INTEGER,
       summary TEXT,
       provider_id TEXT,
       user_send_at INTEGER,

@@ -6332,6 +6332,8 @@
         "agentTasksRequest": "세션 권한 확인",
         "agentTasks": "이 플러그인의 Cindy 세션을 만들고 관리할 수 있음",
         "agentTasksDetail": "메시지를 보내고 결과를 읽으며 자신의 실행을 중지할 수 있습니다. 세션은 사용자에게 표시됩니다. 플러그인의 AI 설정을 사용하며 모델 비용이 발생할 수 있습니다. 다른 세션에 대한 접근 권한은 부여하지 않습니다.",
+        "agentHiddenTasks": "세션 목록에 표시되지 않는 백그라운드 세션을 만들 수 있음",
+        "agentHiddenTasksDetail": "이 플러그인이 만든 세션을 세션 목록, 검색, 알림에 표시하지 않을 수 있습니다. 플러그인 상세의 「백그라운드 세션」에서 언제든지 확인하고 열거나 세션 목록에 표시할 수 있으며, 플러그인을 제거하면 다시 표시됩니다.",
         "agentErrand": "작업을 만들고 실행하며 결과를 읽을 수 있습니다",
         "agentErrandDetail": "생성된 작업은 Cindy 작업 목록에 표시되며 진행 상황을 확인하고 대화를 이어갈 수 있습니다.",
         "agentSchedule": "자동화 새로 만들기를 요청할 수 있음",
@@ -6452,28 +6454,12 @@
         "infoVersion": "버전",
         "updateTitle": "버전 업데이트",
         "updateDesc": "새 .cindy 파일을 선택해 설치된 버전을 그 자리에서 교체합니다. 활성 상태와 패널 위치는 유지됩니다.",
-        "cindyPrefs": {
-          "title": "Cindy 능력",
-          "desc": "이 플러그인이 신청한 각 Cindy 대행 능력마다 사용할 모델을 지정할 수 있습니다. 기본값은 시스템(내장 프록시)을 따릅니다.",
-          "cap": {
-            "image.generate": "이미지 생성",
-            "image.edit": "이미지 편집",
-            "video.generate": "영상 생성",
-            "video.edit": "이미지로 영상",
-            "text.oneshot": "빠른 답변(텍스트)",
-            "embed.text": "텍스트 벡터 변환"
-          },
-          "defaultOption": "{{model}} (기본값)",
-          "defaultOptionDeclared": "{{model}}(플러그인 선언)",
-          "searchPlaceholder": "모델 또는 제공자 검색",
-          "budgetBadge": "할인",
-          "noModels": "사용 가능한 모델 없음"
-        },
         "errandPrefs": {
-          "title": "작업 설정",
-          "desc": "이 플러그인이 만드는 작업의 설정입니다. 새 작업은 호출한 작업의 모델을 사용하며, 패널에서 만들면 현재 새 작업의 선택을 사용합니다. 기존 작업은 자신의 모델을 유지합니다. 권한은 별도로 설정하며 일반 작업의 기본 권한을 사용합니다. 전체 접근 권한은 상속하지 않습니다.",
-          "legacyDesc": "이 플러그인이 만드는 작업의 설정입니다. 새 작업은 호출한 작업의 모델을 사용하며, 패널에서 만들면 현재 새 작업의 선택을 사용합니다. 기존 작업은 자신의 모델을 유지합니다. 기존 API는 원래 권한을 유지합니다. 권한을 선택하면 해당 설정을 사용합니다.",
+          "title": "모델 및 작업",
+          "desc": "이 플러그인의 빠른 답변과 플러그인이 만드는 작업에 사용할 모델입니다. 기본적으로 시스템 보조 모델을 따르며, 새 작업은 호출한 작업의 모델을 사용합니다.",
+          "descModelOnly": "이 플러그인의 빠른 답변에 사용할 모델입니다. 기본적으로 시스템 보조 모델을 따릅니다.",
           "legacyPermission": "기존 권한 유지",
+          "legacyPermissionHint": "기존 API는 원래 권한을 유지합니다. 권한을 선택하면 해당 설정을 사용합니다.",
           "agent": "Agent",
           "model": "모델",
           "permission": "쓰기 권한",
@@ -6482,8 +6468,8 @@
           "workdirDefault": "플러그인 전용 폴더(기본)",
           "workdirPick": "선택…",
           "workdirClear": "기본 폴더로 되돌리기",
-          "sourceDefault": "호출한 작업 따르기 · 아래는 패널의 기본 모델",
-          "sourceCustom": "이 플러그인용으로 선택한 모델 사용",
+          "followAuxiliary": "시스템 보조 모델 따르기 · {{model}}",
+          "followAuxiliaryUnset": "시스템 보조 모델 따르기",
           "restoreModel": "모델 초기화"
         },
         "toolsTitle": "Tools",
@@ -6538,6 +6524,22 @@
       "commandPaletteTag": "플러그인 명령",
       "commandPaletteSource": {
         "team": "팀 공유"
+      },
+      "backgroundTasks": {
+        "title": "백그라운드 세션",
+        "description": "이 플러그인이 백그라운드에서 실행하며 세션 목록에 표시되지 않는 세션입니다. 열어서 확인하거나 세션 목록에 표시해 평소처럼 사용할 수 있습니다.",
+        "refresh": "백그라운드 세션 새로 고침",
+        "loading": "백그라운드 세션을 불러오는 중…",
+        "loadFailed": "백그라운드 세션을 불러오지 못했습니다",
+        "empty": "백그라운드 세션이 없습니다",
+        "statusRunning": "실행 중",
+        "statusIdle": "대기 중",
+        "statusArchived": "보관됨",
+        "lastActive": "마지막 활동 {{time}}",
+        "open": "세션 열기",
+        "reveal": "세션 목록에 표시",
+        "revealed": "세션을 세션 목록에 표시했습니다",
+        "revealFailed": "세션을 세션 목록에 표시하지 못했습니다"
       },
       "library": {
         "title": "영구 라이브러리",

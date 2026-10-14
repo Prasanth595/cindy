@@ -48,6 +48,7 @@ describe('sessionActiveTurn', () => {
         status TEXT NOT NULL DEFAULT 'active',
         source TEXT NOT NULL DEFAULT 'desktop',
         cleared_at INTEGER,
+        hidden_at INTEGER,
         active_turn_started_at INTEGER,
         active_turn_pid INTEGER,
         last_turn_ended_at INTEGER,
@@ -508,6 +509,23 @@ describe('sessionActiveTurn', () => {
       's-pending',
       's-pending-2',
     ]);
+  });
+
+  it('excludes plugin background tasks from both red-dot legs', async () => {
+    const { listInterruptedPendingSessionIds, listErrorTailPendingSessionIds } = await import('../sessionActiveTurn.js');
+    const client = createTestDbClient();
+    const now = Date.now();
+    await seedSession(client, 's-visible', { startedAt: now - 1000, source: 'plugin' });
+    await seedSession(client, 's-background', { startedAt: now - 1000, source: 'plugin' });
+    for (const id of ['s-visible', 's-background']) {
+      await client.exec(
+        'INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [`${id}-err`, `${id}-err`, id, 'error', '{"message":"boom"}', now - 500, null],
+      );
+    }
+    await client.exec('UPDATE sessions SET hidden_at = ? WHERE id = ?', [now, 's-background']);
+    expect(await listInterruptedPendingSessionIds()).toEqual(['s-visible']);
+    expect(await listErrorTailPendingSessionIds()).toEqual(['s-visible']);
   });
 
   it('hasAssistantProgressAfterMessage detects agent output after the user row', async () => {

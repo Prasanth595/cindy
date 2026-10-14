@@ -9,6 +9,10 @@ import { assertPluginWorkerDirectoryScope, resolvePluginWorkerDirectory } from '
 import { PluginWriteAccessGate } from './pluginWriteAccessGate.js';
 import { pluginWorkerCompletedAt } from './pluginWorkerCompletion.js';
 import { createPluginTaskStore } from './pluginTaskStore.js';
+import { createPluginBackgroundTaskHandlers, selectPluginHiddenTaskRows } from './pluginHiddenTasks.js';
+import { setSessionHidden } from '../localDb/ipc/sessionHidden.js';
+import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
+import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
 import { showMobilePluginTaskPermission, setPluginTaskHandler, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
@@ -4783,6 +4787,8 @@ function handleAgentIslandSessionStopped(
 }
 
 function shouldNotifyAgentIslandForSession(sessionId: string): boolean {
+  // 插件后台隐藏任务不在灵动岛/菜单栏展示运行中，也不提醒(显示到任务列表后恢复)。
+  if (isSessionHiddenSync(sessionId)) return false;
   return shouldNotifyAgentIslandForSessionByPolicy(
     AGENT_ISLAND_DISPLAY_CONFIG,
     isKnownOrcaWorkerSession(sessionId),
@@ -12455,7 +12461,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertCurrent();
         if (workers.length || reservations.length) throw new PluginTaskError('TASK_BUSY', 'Register the team plan before creating Workers');
       },
-      createSession: async (pluginId, taskId, title, route, isolatedWorkspace, requestedRoute, onPersistenceStarted, callId) => {
+      createSession: async (pluginId, taskId, title, route, isolatedWorkspace, requestedRoute, onPersistenceStarted, callId, hidden) => {
         assertPlugin(pluginId);
         const cfg = readPluginTaskConfig(pluginId);
         const configurationIsCurrent = () => {
@@ -12488,12 +12494,29 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           onPersistenceStarted,
           permissionMode: clampPluginTaskPermissionMode(cfg.permissionMode),
           ...(workingDir ? { workingDir } : {}),
-          shouldContinue: () => getCurrentDbClientSnapshot() === snapshot && isPluginTaskAuthorized(pluginId) && configurationIsCurrent(),
+          ...(hidden ? { hidden: true } : {}),
+          shouldContinue: () => getCurrentDbClientSnapshot() === snapshot && isPluginTaskAuthorized(pluginId) && configurationIsCurrent()
+            && (!hidden || ghostDeclaresHiddenTasks(findGhostForInstanceId(pluginId)?.manifest)),
           notifySessionCreated: ({ sessionId, workdir }) => {
+            // 插件订阅口径不因隐藏改变(isGhostEligibleSessionRow);后台任务不发「新建」推送,
+            // 不进侧栏、手机列表与新任务通知。
             notifyGhostSessionEvent('created', { sessionId, workdir });
-            broadcastSessionCreated(sessionId);
+            if (!hidden) broadcastSessionCreated(sessionId);
           },
         });
+      },
+      assertHiddenTasksAllowed: pluginId => {
+        assertPlugin(pluginId);
+        if (!ghostDeclaresHiddenTasks(findGhostForInstanceId(pluginId)?.manifest))
+          throw new PluginTaskError('PERMISSION_DENIED', 'Background tasks require agent.hiddenTasks in ghost.json');
+      },
+      setHidden: async (taskId, hidden, assertAllowed) => {
+        await setSessionHidden({ sessionId: taskId, hidden, db: snapshot.client, assertCurrent: assertAllowed });
+      },
+      revealPluginTasks: async pluginId => {
+        for (const row of await selectPluginHiddenTaskRows(snapshot.client, pluginId)) {
+          await setSessionHidden({ sessionId: row.taskId, hidden: false, db: snapshot.client, assertCurrent });
+        }
       },
       readSession: async taskId => {
         assertCurrent();
@@ -12511,7 +12534,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             effort: selected.effort ?? '', fastMode: selected.fastMode }
           : { agentKind: row.agentKind as PluginTaskRoute['agentKind'], providerId: row.providerId ?? '', model: row.model, effort: row.effort, fastMode: row.fastMode };
         const revision = Number.parseInt(pluginTaskConfigHash('sha256').update(JSON.stringify([resolvedConfig, row.permissionMode, row.planModeEnabled, row.workingDir, row.status, row.orcaRole])).digest('hex').slice(0, 12), 16);
-        return { taskId, title: row.title, status: row.status, revision, resolvedConfig, workingDir: row.workingDir ?? undefined, permissionMode: row.permissionMode, planModeEnabled: !!row.planModeEnabled };
+        return { taskId, title: row.title, status: row.status, revision, resolvedConfig, workingDir: row.workingDir ?? undefined, permissionMode: row.permissionMode, planModeEnabled: !!row.planModeEnabled, hidden: row.hiddenAt != null };
       },
       dispatch: async (pluginId, taskId, clientId, text) => {
         assertPlugin(pluginId);
@@ -12843,6 +12866,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       case 'setModel': return service.setModel(pluginId, request);
       case 'create': return service.create(pluginId, request);
       case 'get': return service.get(pluginId, request.taskId);
+      case 'setHidden': return service.setHidden(pluginId, request);
       case 'list': return service.list(pluginId, request.after, request.limit);
       case 'send': return service.send(pluginId, request);
       case 'readMessages': {
@@ -12910,6 +12934,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   ipcMain.handle('maker:get-plugin-write-access-recovery', (event, taskId: unknown) => pluginWriteAccessFromHost(event, taskId, false));
   ipcMain.handle('maker:retry-plugin-write-access', (event, taskId: unknown) => pluginWriteAccessFromHost(event, taskId, true));
 
+  // 插件详情页「后台任务」:只服务本机可信窗口(打开/显示到任务列表都是本机 UI 动作),
+  // 不登记 device-link;停用的插件同样可查,透明性不依赖插件仍可运行。
+  const pluginBackgroundTasks = createPluginBackgroundTaskHandlers({
+    currentDb: () => getCurrentDbClientSnapshot()?.client ?? null,
+    isInstalled: pluginId => findGhostForInstanceId(pluginId) !== null,
+    isRunning: taskId => maker.getSession(taskId)?.isTurnRunning() === true,
+    setHidden: input => setSessionHidden(input),
+  });
+  const assertLocalBackgroundTaskUi = (event: Electron.IpcMainInvokeEvent) => {
+    if (isDeviceLinkInvoke()) throwIpcError('PERMISSION_DENIED', 'Local task UI required');
+    assertTrustedAppRendererEvent(event);
+  };
+  ipcMain.handle('ghosts:background-tasks:list', (event, pluginId: unknown) => {
+    assertLocalBackgroundTaskUi(event);
+    return pluginBackgroundTasks.list(pluginId);
+  });
+  ipcMain.handle('ghosts:background-tasks:reveal', (event, pluginId: unknown, taskId: unknown) => {
+    assertLocalBackgroundTaskUi(event);
+    return pluginBackgroundTasks.reveal(pluginId, taskId);
+  });
+
   // Legacy result-returning adapter; ordinary task configuration lives above.
   setGhostErrandRunner(
     createGhostErrandRunner({
@@ -12948,7 +12993,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           notifySessionCreated: (info) => notifyGhostSessionEvent('created', info),
         });
         // errand 会话在侧边栏可见(与 workspace 槽同通道刷新)——透明是这个
-        // 能力的安全边界之一,不做隐藏会话。
+        // 能力的安全边界之一,errand 不支持隐藏。普通任务只有声明 agent.hiddenTasks
+        // 才能转入后台,且用户始终能在插件详情页「后台任务」查看与接手。
         broadcastSessionCreated(sessionId);
         return sessionId;
       },
