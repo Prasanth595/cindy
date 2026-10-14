@@ -3720,6 +3720,8 @@
         "dws": "DingTalk account (CLI)"
       },
       "dws": {
+        "sendRateLimited": "DingTalk is still rate limiting sends after retries. The last message was not sent. Open the session in Cindy to view the reply.",
+        "sendFailed": "The last DingTalk message could not be confirmed as sent. Open the session in Cindy to view the reply.",
         "intro": "Uses the official DingTalk command-line tool dws to send and receive messages as a DingTalk account, with access to group chat context. In DMs it responds only to the linked owner; in groups anyone can @mention it to ask questions, but actions such as editing files or running commands need the owner’s confirmation. Messages you send to yourself are not delivered, so set up a dedicated DingTalk account for {{appName}}.",
         "recheck": "Check again",
         "openRepo": "dws installation guide ↗",

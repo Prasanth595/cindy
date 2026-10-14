@@ -497,6 +497,7 @@ type TelegramBotErrorCode = 'invalid-token' | 'provider-api' | 'network' | 'secr
 type DingTalkBotTransportStatus = DiscordBotTransportStatus;
 /** 钉钉「钉钉账号（dws CLI）」方式的状态快照；不含任何凭证。 */
 interface DingTalkDwsStateSnapshot {
+  lastSendError?: 'rate_limited' | 'failed' | null;
   status: DingTalkBotTransportStatus;
   enabled: boolean;
   installed: boolean;

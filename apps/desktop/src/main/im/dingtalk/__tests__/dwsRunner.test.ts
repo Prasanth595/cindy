@@ -119,6 +119,65 @@ describe('createDwsRunner', () => {
     await expect(pending).rejects.toMatchObject({ code: 'DIGITAL_EMPLOYEE_NOT_ENABLED' });
   });
 
+  it('preserves a structured stderr rate-limit code without exposing diagnostics', async () => {
+    const child = fakeChild();
+    const runner = createDwsRunner({
+      resolveBinary: () => '/bin/dws',
+      spawnProcess: () => child as unknown as ChildProcess,
+      killTree: vi.fn(),
+    });
+    const pending = runner.runJson(['chat', '+messages-send']);
+    child.stderr.end(
+      JSON.stringify({
+        error: {
+          server_error_code: 'RATE_LIMIT_ERROR',
+          message: 'private diagnostic content',
+        },
+      }),
+    );
+    child.emit('close', 1);
+    await expect(pending).rejects.toMatchObject({
+      code: 'RATE_LIMIT_ERROR',
+      message: 'dws command failed (RATE_LIMIT_ERROR)',
+    });
+  });
+
+  it.each([
+    [1, null, '{"success":true}', 'private diagnostic content'],
+    [null, 'SIGTERM', '{"success":true}', ''],
+    [1, null, '', 'x'.repeat(70_000)],
+  ])(
+    'rejects unsuccessful exits even with valid stdout (%s, %s)',
+    async (code, signal, stdout, stderr) => {
+      const child = fakeChild();
+      const runner = createDwsRunner({
+        resolveBinary: () => '/bin/dws',
+        spawnProcess: () => child as unknown as ChildProcess,
+        killTree: vi.fn(),
+      });
+      const pending = runner.runJson(['chat', '+messages-send']);
+      child.stdout.end(stdout);
+      child.stderr.end(stderr);
+      child.emit('close', code, signal);
+      await expect(pending).rejects.toMatchObject({ code: 'process_failed' });
+      await expect(pending).rejects.not.toThrow('private diagnostic content');
+    },
+  );
+
+  it('allows informational stderr alongside successful stdout', async () => {
+    const child = fakeChild();
+    const runner = createDwsRunner({
+      resolveBinary: () => '/bin/dws',
+      spawnProcess: () => child as unknown as ChildProcess,
+      killTree: vi.fn(),
+    });
+    const pending = runner.runJson(['auth', 'status']);
+    child.stdout.end('{"authenticated":true}');
+    child.stderr.end('informational diagnostic');
+    child.emit('close', 0);
+    await expect(pending).resolves.toEqual({ authenticated: true });
+  });
+
   it('kills the process tree on timeout', async () => {
     vi.useFakeTimers();
     const child = fakeChild();

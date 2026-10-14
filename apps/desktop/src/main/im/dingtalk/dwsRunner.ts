@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  DwsCommandError,
   DWS_NOT_INSTALLED,
   parseDwsJsonOutput,
   type DwsRunner,
@@ -25,6 +26,7 @@ import { killProcessTree } from '../../scheduler-host/proc-util';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
+const MAX_STDERR_BYTES = 64 * 1024;
 const NPM_PACKAGE_VENDOR = ['node_modules', 'dingtalk-workspace-cli', 'vendor'];
 
 export interface DwsBinaryLookupDeps {
@@ -133,8 +135,14 @@ export function createDwsRunner(deps: DwsRunnerDeps = defaultDeps): DwsRunner {
           }
           chunks.push(chunk);
         });
-        // dws 在 stderr 打印诊断；只需排空，不记录内容。
-        child.stderr?.resume();
+        // dws 的失败 JSON（包括 RATE_LIMIT_ERROR）写在 stderr；只保留有界缓冲，
+        // 解析后仅上抛错误码，绝不把诊断正文、消息参数或凭证原样带进日志。
+        const stderrChunks: Buffer[] = [];
+        let stderrSize = 0;
+        child.stderr?.on('data', (chunk: Buffer) => {
+          stderrSize += chunk.length;
+          if (stderrSize <= MAX_STDERR_BYTES) stderrChunks.push(chunk);
+        });
         const timer = setTimeout(() => {
           deps.killTree(child);
           reject(new Error('dws command timed out'));
@@ -143,15 +151,26 @@ export function createDwsRunner(deps: DwsRunnerDeps = defaultDeps): DwsRunner {
           clearTimeout(timer);
           reject(new Error(DWS_NOT_INSTALLED));
         });
-        child.once('close', () => {
+        child.once('close', (code, signal) => {
           clearTimeout(timer);
           if (overflow) {
             reject(new Error('dws output exceeded the size limit'));
             return;
           }
           try {
-            // dws 的错误也以 JSON 输出（含非零退出码）；统一按输出解析。
-            resolve(parseDwsJsonOutput(Buffer.concat(chunks).toString('utf8')));
+            const stdout = Buffer.concat(chunks).toString('utf8');
+            const stderr =
+              stderrSize <= MAX_STDERR_BYTES ? Buffer.concat(stderrChunks).toString('utf8') : '';
+            // 成功必须同时满足正常退出和有效 stdout，不能把 stderr 的任意 JSON 当成功。
+            const failure = commandError(stdout) ?? commandError(stderr);
+            if (failure) throw failure;
+            if (code !== 0 || signal) {
+              throw new DwsCommandError(
+                'process_failed',
+                `dws command failed (exit=${code}, signal=${signal ?? 'none'})`,
+              );
+            }
+            resolve(parseDwsJsonOutput(stdout));
           } catch (error) {
             reject(error);
           }
@@ -185,4 +204,21 @@ export function createDwsRunner(deps: DwsRunnerDeps = defaultDeps): DwsRunner {
       };
     },
   };
+}
+
+/** 只提取完整的结构化错误；不尝试从混杂诊断文本中猜 JSON 边界。 */
+function commandError(output: string): DwsCommandError | null {
+  try {
+    parseDwsJsonOutput(output);
+  } catch (error) {
+    if (
+      error instanceof DwsCommandError &&
+      error.code !== 'empty_output' &&
+      error.code !== 'invalid_output'
+    ) {
+      const code = /^[A-Za-z0-9_.-]{1,128}$/.test(error.code) ? error.code : 'dws_error';
+      return new DwsCommandError(code, `dws command failed (${code})`);
+    }
+  }
+  return null;
 }

@@ -649,6 +649,7 @@ const fanOutDingTalkBotStatusChange = createIpcFanOut('dingtalkBot:status-change
 const fanOutDingTalkBotOwnerChange = createIpcFanOut('dingtalkBot:owner-change');
 // 钉钉「钉钉账号（dws CLI）」方式：main 推送不含凭证的状态快照。
 type DingTalkDwsStateSnapshot = {
+  lastSendError?: 'rate_limited' | 'failed' | null;
   status:
     | { kind: 'idle' }
     | { kind: 'connecting' }

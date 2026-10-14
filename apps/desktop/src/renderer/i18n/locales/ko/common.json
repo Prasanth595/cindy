@@ -3713,6 +3713,8 @@
         "dws": "DingTalk 계정(CLI)"
       },
       "dws": {
+        "sendRateLimited": "DingTalk 전송 제한으로 재시도 후에도 전송하지 못했습니다. Cindy 작업에서 답변을 확인하세요.",
+        "sendFailed": "최근 DingTalk 메시지의 전송을 확인하지 못했습니다. Cindy 작업에서 답변을 확인하세요.",
         "intro": "DingTalk 공식 명령줄 도구 dws를 사용해 DingTalk 계정으로 메시지를 주고받고 그룹 채팅 맥락도 읽습니다. DM에서는 연결된 소유자에게만 응답하고, 그룹에서는 누구나 @멘션으로 질문할 수 있지만 파일 수정이나 명령 실행 같은 작업에는 소유자의 확인이 필요합니다. 자기 자신에게 보낸 메시지는 전달되지 않으므로 {{appName}} 전용 DingTalk 계정을 준비하세요.",
         "recheck": "다시 확인",
         "openRepo": "dws 설치 안내 ↗",

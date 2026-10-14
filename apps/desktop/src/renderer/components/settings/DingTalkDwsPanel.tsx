@@ -60,6 +60,15 @@ export function DingTalkDwsPanel({ dws }: { dws: DwsController }) {
       <p className="text-12 leading-[1.6] text-[var(--settings-section-desc)]">
         {t('settings.dingtalkBot.dws.intro')}
       </p>
+      {state.lastSendError && (
+        <p className="text-12 leading-[1.6] text-[var(--settings-error-text)]" role="alert">
+          {t(
+            state.lastSendError === 'rate_limited'
+              ? 'settings.dingtalkBot.dws.sendRateLimited'
+              : 'settings.dingtalkBot.dws.sendFailed',
+          )}
+        </p>
+      )}
 
       {!state.installed ? (
         <StepCard
