@@ -262,6 +262,11 @@ describe('LoginHandoff 时序(fake-timer)', () => {
       );
       act(() => probe.current!.reportLoginPanelUnmounted());
       expect(probe.current!.phase).toBe('awaiting-cover-release');
+      if (probe.current!.brandLayout === 'login') {
+        expect(screen.getByTestId('login-brand-canvas').style.transition).toBe(
+          `transform ${T.panelMs}ms ${T.panelEasing}`,
+        );
+      }
       act(() => vi.advanceTimersByTime(T.brandExitMs * 2));
       expect(probe.current!.phase).toBe('awaiting-cover-release');
       expect(probe.current!.brandStageMounted).toBe(true);
@@ -297,7 +302,10 @@ describe('LoginHandoff 时序(fake-timer)', () => {
       fireAnchors();
       act(() => vi.advanceTimersByTime(elapsedMs));
       expect(probe.current!.brandLayout).toBe('login');
-      const transformBefore = screen.getByTestId('login-brand-canvas').style.transform;
+      const canvas = screen.getByTestId('login-brand-canvas');
+      const transformBefore = canvas.style.transform;
+      const transitionBefore = window.getComputedStyle(canvas).transition;
+      expect(transitionBefore).toBe(`transform ${T.panelMs}ms ${T.panelEasing}`);
       const sloganBefore = probe.current!.sloganRevealed;
 
       view.rerender(
@@ -311,7 +319,8 @@ describe('LoginHandoff 时序(fake-timer)', () => {
       expect(probe.current!.brandLayout).toBe('login');
       expect(probe.current!.panelBottomReserve).toBe(0);
       expect(probe.current!.sloganRevealed).toBe(sloganBefore);
-      expect(screen.getByTestId('login-brand-canvas').style.transform).toBe(transformBefore);
+      expect(canvas.style.transform).toBe(transformBefore);
+      expect(window.getComputedStyle(canvas).transition).toBe(transitionBefore);
       expect(screen.getByTestId('login-brand-content').style.opacity).toBe('0');
     },
   );
