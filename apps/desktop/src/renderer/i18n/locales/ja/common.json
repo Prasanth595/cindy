@@ -9735,6 +9735,66 @@
       "shadowTitle": "この仲間は「{{device}}」で動作しています",
       "shadowHint": "ここの会話は閲覧のみできます。",
       "openOnHome": "「{{device}}」で開く"
+    },
+    "channels": {
+      "title": "メッセージプラットフォーム",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飛書",
+        "lark": "Lark"
+      },
+      "status": {
+        "connected": "接続済み",
+        "connecting": "接続中…",
+        "offline": "オフライン",
+        "conflict": "別のデバイスがこのボットを使用中",
+        "error": "エラー",
+        "idle": "未接続"
+      },
+      "remove": "削除",
+      "removeAria": "{{platform}} を削除",
+      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram や飛書で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
+      "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
+      "add": {
+        "button": "プラットフォームを追加",
+        "title": "{{name}} にプラットフォームを追加",
+        "description": "プラットフォームで作成したボットの認証情報を貼り付けてください。このコンピューターにのみ保存されます。",
+        "platformLabel": "プラットフォーム",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "@BotFather が発行した Token を貼り付け",
+          "ownerLabel": "あなたの Telegram ユーザー ID",
+          "ownerPlaceholder": "数字のみの ID（@userinfobot で確認）",
+          "ownerHint": "この ID からのメッセージは {{name}} 自身の権限で実行されます。それ以外の人はゲストとして扱われます。"
+        },
+        "feishu": {
+          "serviceLabel": "サービス",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "App Secret を貼り付け"
+        },
+        "confirm": "接続",
+        "connecting": "接続中…",
+        "errors": {
+          "invalidToken": "Bot Token の形式ではないようです。123456:ABC… の形式です。",
+          "invalidOwner": "ユーザー ID は数字で入力してください。",
+          "invalidFeishu": "App ID と App Secret の両方を入力してください。",
+          "conflict": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
+          "botUnavailable": "{{name}} は現在利用できません。復帰後にもう一度お試しください。",
+          "connectFailed": "接続できませんでした：{{reason}}",
+          "failed": "完了できませんでした。しばらくしてからもう一度お試しください。"
+        }
+      },
+      "removeConfirm": {
+        "title": "{{platform}} を削除しますか？",
+        "description": "このボットは返信を停止し、認証情報はこのコンピューターから削除され、非表示のタスクはアーカイブされます。{{name}} の記憶と性格は変わりません。",
+        "confirm": "削除",
+        "cancel": "キャンセル",
+        "failed": "削除できませんでした。しばらくしてからもう一度お試しください",
+        "ok": "OK"
+      }
     }
   },
   "common": {

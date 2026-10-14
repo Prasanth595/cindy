@@ -238,9 +238,15 @@ function cachedChatNameForNote(feishuIm: FeishuIM, chatId: string): string | nul
   return null;
 }
 
+export interface FeishuAdapterOptions {
+  /** 伙伴自有连接: 私聊按主人 / 外部用户分落点(transport 对外开放时才会有外部私聊)。 */
+  companionBotId?: string;
+}
+
 export function buildFeishuAdapter(
   feishuIm: FeishuIM,
   config: ImOrchestratorConfig,
+  _options: FeishuAdapterOptions = {},
 ): ImChannelAdapter {
   const isLark = () => feishuIm.getService() === 'lark';
   const conversationPrefix = () => (isLark() ? '[Lark·DM] ' : '[飞书·DM] ');
@@ -351,6 +357,13 @@ export function buildFeishuAdapter(
     processingEmoji: REACTION_PROCESSING,
     queuedEmoji: 'OneSecond',
     buildVendorOptions: (userId) => ({ feishuChatId: userId, source: 'feishu' }),
+    // 伙伴自有连接: TOFU 认定的主人私聊进主任务; 群 / 话题按 lane 一条专线; 对外开放
+    // 后的外部用户私聊(transport guests)按用户一条专线。
+    companionLane: (userId) => {
+      const lane = decodeFeishuLaneUserId(userId);
+      if (lane) return { kind: 'group', chatId: lane.chatId, threadId: lane.threadId };
+      return userId === feishuIm.getOwnerOpenId() ? { kind: 'owner-dm' } : { kind: 'guest-dm', userId };
+    },
 
     // 群轮次(speaker 存在)统一挂强确认策略 — 群历史前缀携带成员可控文本,
     // 注入可借 owner 轮次的宽松档执行危险操作; 确认卡经 deliverToOwnerDm

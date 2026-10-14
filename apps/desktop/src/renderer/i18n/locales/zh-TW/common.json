@@ -9735,6 +9735,66 @@
       "shadowTitle": "這個夥伴已在「{{device}}」上執行",
       "shadowHint": "這裡的對話只能檢視。",
       "openOnHome": "開啟「{{device}}」上的夥伴"
+    },
+    "channels": {
+      "title": "訊息平台",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飛書",
+        "lark": "Lark"
+      },
+      "status": {
+        "connected": "已連線",
+        "connecting": "連線中…",
+        "offline": "已離線",
+        "conflict": "另一台裝置正在使用這個機器人",
+        "error": "發生錯誤",
+        "idle": "未連線"
+      },
+      "remove": "移除",
+      "removeAria": "移除 {{platform}}",
+      "empty": "{{name}} 還沒有訊息平台。把你在 Telegram 或飛書申請的機器人加進來，{{name}} 就會在那裡回覆。",
+      "externalNote": "傳訊息給這個機器人的人都是在和 {{name}} 對話。你自己的訊息依 {{name}} 的權限執行；其他人各有一條隱藏任務，權限受限。",
+      "sharedMemoryNote": "{{name}} 會把這裡和其它對話裡的資訊一起使用。想隔開記憶，請換一位夥伴。",
+      "add": {
+        "button": "新增平台",
+        "title": "為 {{name}} 新增平台",
+        "description": "貼上你在平台上申請的機器人憑證，只存在這台電腦上。",
+        "platformLabel": "平台",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "貼上 @BotFather 產生的 Token",
+          "ownerLabel": "你的 Telegram 使用者 ID",
+          "ownerPlaceholder": "純數字 ID（向 @userinfobot 查詢）",
+          "ownerHint": "來自這個 ID 的訊息依 {{name}} 自己的權限執行，其他人都視為訪客。"
+        },
+        "feishu": {
+          "serviceLabel": "服務",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "貼上 App Secret"
+        },
+        "confirm": "連線",
+        "connecting": "連線中…",
+        "errors": {
+          "invalidToken": "這不像 Bot Token，格式應為 123456:ABC…",
+          "invalidOwner": "使用者 ID 應該是一串數字。",
+          "invalidFeishu": "App ID 和 App Secret 都要填。",
+          "conflict": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
+          "botUnavailable": "{{name}} 目前無法使用，等 TA 恢復後再試。",
+          "connectFailed": "未能連線：{{reason}}",
+          "failed": "未能完成，請稍後再試。"
+        }
+      },
+      "removeConfirm": {
+        "title": "移除 {{platform}}？",
+        "description": "這個機器人不再回覆，憑證會從這台電腦刪除，它的隱藏任務會封存。{{name}} 的記憶和個性不變。",
+        "confirm": "移除",
+        "cancel": "取消",
+        "failed": "未能移除，請稍後再試",
+        "ok": "知道了"
+      }
     }
   },
   "common": {

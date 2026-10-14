@@ -142,11 +142,15 @@ function normalizeStringList(value: unknown): string[] {
 export interface BotSessionProjection {
   id: string;
   title: string;
-  /** `group` is a hidden group-chat lane; see botGroupLane.ts before counting sessions. */
-  kind: 'chat' | 'worker' | 'history' | 'group';
+  /**
+   * `group` is a hidden group-chat lane, `channel` a hidden personal-IM lane (a
+   * Telegram / Feishu group handed to the Bot); see botGroupLane.ts before
+   * counting sessions.
+   */
+  kind: 'chat' | 'worker' | 'history' | 'group' | 'channel';
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
-  role?: 'canonical' | 'delegation' | 'history' | 'group';
+  role?: 'canonical' | 'delegation' | 'history' | 'group' | 'channel';
   /** Group-lane only: the group whose chat owns this hidden Session. */
   groupId?: string;
   profileVersion?: number;

@@ -1,0 +1,92 @@
+import { describe, expect, it, vi } from 'vitest';
+
+const state = vi.hoisted(() => ({ rows: [] as unknown[][] }));
+vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ drizzle: { select: () => {
+  const q: Record<string, unknown> = {};
+  for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy']) q[method] = () => q;
+  q.limit = async () => state.rows.shift() ?? [];
+  return q;
+} } }) }));
+
+import { hydrateBotProfileRuntime } from '../botProfileRuntime';
+import type { MakerSessionCreateOpts } from '../sessionRequest';
+
+const SOUL = '我是小满，主人的老搭档。\n\n说话简短直接，群里少说话。\n';
+
+function seed(
+  role: string,
+  routeKey: string | null,
+  capabilities: Record<string, unknown> = { memory: false, mcpMode: 'inherit', toolsetMode: 'inherit' },
+): void {
+  state.rows = [
+    [{ botId: 'bot', role, routeKey, profileVersion: 3 }],
+    [{ displayName: '小满', description: '老搭档' }],
+    [{ identitySource: SOUL, capabilitiesJson: JSON.stringify(capabilities) }],
+  ];
+}
+
+function prompt(opts: MakerSessionCreateOpts): string {
+  return [opts.botProfilePrompt, opts.botProfileContextPrompt].join('\n');
+}
+
+describe('IM channel lanes hydrate the full Bot profile', () => {
+  it('treats a channel group lane as a full-profile lane with the whole SOUL', async () => {
+    seed('channel', 'im:telegram:777:g:-100123');
+    const opts = { id: 'lane', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm' } as MakerSessionCreateOpts;
+    const snapshot = await hydrateBotProfileRuntime(opts, {}, { persistSnapshot: false });
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.botId).toBe('bot');
+    expect(opts.botRuntimeProfile?.botId).toBe('bot');
+    const text = prompt(opts);
+    expect(text).toContain('我是小满，主人的老搭档。');
+    expect(text).toContain('说话简短直接，群里少说话。');
+  });
+
+  it('treats a guest-DM channel lane the same way', async () => {
+    seed('channel', 'im:telegram:777:dm:555');
+    const opts = { id: 'lane', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm' } as MakerSessionCreateOpts;
+    const snapshot = await hydrateBotProfileRuntime(opts, {}, { persistSnapshot: false });
+    expect(snapshot?.botId).toBe('bot');
+    expect(prompt(opts)).toContain('说话简短直接，群里少说话。');
+  });
+
+  it('keeps the Feishu outbound channel tool mounted on a Feishu channel lane even under an explicit allowlist', async () => {
+    const narrow = {
+      toolCapabilityVersion: 1, memory: false,
+      mcpMode: 'allowlist', mcpServers: [], toolsetMode: 'allowlist', toolsets: [],
+    };
+    const deps = {
+      listMcpServers: vi.fn(async () => [
+        { name: 'cindy_feishu_bot', source: 'builtin' as const, available: true },
+        { name: 'cindy_browser', source: 'builtin' as const, available: true },
+      ]),
+      listToolsets: vi.fn(async () => [
+        { id: 'feishu_bot', name: 'Feishu bot', available: true },
+        { id: 'browser', name: 'Browser', available: true },
+      ]),
+    };
+    seed('channel', 'im:feishu:cli_app:g:oc_chat', narrow);
+    const lane = {
+      id: 'lane', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm',
+      vendorOptions: { feishuChatId: 'g/oc_chat', source: 'feishu' },
+    } as unknown as MakerSessionCreateOpts;
+    const laneSnapshot = await hydrateBotProfileRuntime(lane, deps, { persistSnapshot: false });
+    expect(lane.botRuntimeProfile?.mcpPolicy.configured).toContain('cindy_feishu_bot');
+    expect(lane.botRuntimeProfile?.mcpPolicy.configured).not.toContain('cindy_browser');
+    expect(lane.botRuntimeProfile?.toolsetPolicy.configured).toEqual(['feishu_bot']);
+    expect(laneSnapshot?.disabledToolsets).toEqual(['browser']);
+
+    // The canonical chat (shared with Desktop, no channel vendor options) keeps the explicit choice.
+    seed('canonical', null, narrow);
+    const main = { id: 'main', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm' } as MakerSessionCreateOpts;
+    const mainSnapshot = await hydrateBotProfileRuntime(main, deps, { persistSnapshot: false });
+    expect(main.botRuntimeProfile?.mcpPolicy.configured).not.toContain('cindy_feishu_bot');
+    expect(mainSnapshot?.disabledToolsets).toEqual(expect.arrayContaining(['feishu_bot', 'browser']));
+  });
+
+  it('still refuses read-only history links', async () => {
+    seed('history', null);
+    const opts = { id: 'old', agentKind: 'claude-code', workingDir: '/x', model: 'm' } as MakerSessionCreateOpts;
+    await expect(hydrateBotProfileRuntime(opts, {}, { persistSnapshot: false })).resolves.toBeNull();
+  });
+});

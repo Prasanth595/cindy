@@ -427,6 +427,63 @@ describe('IM slash commands', () => {
     expect(mocks.sendMarkdownText).toHaveBeenCalledWith('ou_user', ui.agent.apiKeyMissing);
   });
 
+  describe('connection handed to a companion bot', () => {
+    it('/new in a group rotates the bot lane instead of creating a channel task', async () => {
+      const repo = makeRepo();
+      const rotateCompanionLane = vi.fn(async () => 'rotated' as const);
+      const turnRunner = makeTurnRunner({ rotateCompanionLane } as Partial<ImTurnRunner>);
+      const { handlers } = makeHarness({ repo, turnRunner });
+
+      await handlers.handleSlashCommand('/new', { botContextId: 'bot', userId: 'g/oc_chat' });
+
+      expect(rotateCompanionLane).toHaveBeenCalledWith('bot', 'g/oc_chat');
+      expect(repo.prepareNewSession).not.toHaveBeenCalled();
+      expect(repo.createSession).not.toHaveBeenCalled();
+      expect(mocks.sendMarkdownText).toHaveBeenCalledWith('g/oc_chat', ui.slash.companionLaneNew);
+    });
+
+    it('/new in the owner DM keeps the bot’s main conversation and explains why', async () => {
+      const repo = makeRepo();
+      const turnRunner = makeTurnRunner({
+        rotateCompanionLane: vi.fn(async () => 'owner-dm' as const),
+      } as Partial<ImTurnRunner>);
+      const { handlers } = makeHarness({ repo, turnRunner });
+
+      await handlers.handleSlashCommand('/new', { botContextId: 'bot', userId: 'ou_user' });
+
+      expect(repo.prepareNewSession).not.toHaveBeenCalled();
+      expect(mocks.resetSessionToDefaults).not.toHaveBeenCalled();
+      expect(mocks.sendMarkdownText).toHaveBeenCalledWith('ou_user', ui.slash.companionDmNew);
+    });
+
+    it('/new falls back to the channel’s own behaviour when the connection is not handed over', async () => {
+      const repo = makeRepo();
+      const turnRunner = makeTurnRunner({
+        rotateCompanionLane: vi.fn(async () => 'unbound' as const),
+      } as Partial<ImTurnRunner>);
+      const { handlers } = makeHarness({ repo, turnRunner });
+
+      await handlers.handleSlashCommand('/new', { botContextId: 'bot', userId: 'ou_user' });
+
+      expect(repo.prepareNewSession).toHaveBeenCalled();
+      expect(mocks.sendMarkdownText).toHaveBeenCalledWith('ou_user', ui.slash.new);
+    });
+
+    it.each(['/model', '/permission', '/project'])('%s points to the bot settings instead of changing the bot task', async (cmd) => {
+      const turnRunner = makeTurnRunner({
+        companionBotIdFor: vi.fn(() => 'bot-mimi'),
+      } as Partial<ImTurnRunner>);
+      const { handlers, cards } = makeHarness({ turnRunner, adapterOverrides: { projectSwitching: true } });
+
+      await handlers.handleSlashCommand(cmd, { botContextId: 'bot', userId: 'ou_user' });
+
+      expect(turnRunner.resolveRouteTarget).not.toHaveBeenCalled();
+      expect(cards.buildModelPickerCard).not.toHaveBeenCalled();
+      expect(mocks.sendInteractiveCard).not.toHaveBeenCalled();
+      expect(mocks.sendMarkdownText).toHaveBeenCalledWith('ou_user', ui.slash.companionManagedCommand);
+    });
+  });
+
   it('/stop 与 !stop 同语义 — 中止当前 turn 并回执', async () => {
     const stopActiveTurn = vi.fn(async () => ({ stopped: true, droppedQueued: 2 }));
     const turnRunner = makeTurnRunner({ stopActiveTurn } as Partial<ImTurnRunner>);

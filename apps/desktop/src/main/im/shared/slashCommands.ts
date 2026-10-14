@@ -214,6 +214,17 @@ export function createSlashHandlers(
       return true;
     }
 
+    // 连接已交给伙伴: 模型 / 权限 / 工作目录归伙伴设置管, 不在渠道里改伙伴任务的配置
+    // (伙伴的 Home 工作区与模型链是伙伴的正本)。
+    if (
+      (cmd === '/model' || cmd === '/permission' || cmd === '/project') &&
+      ui.slash.companionManagedCommand &&
+      turnRunner.companionBotIdFor?.(ctx.botContextId)
+    ) {
+      await safeSendText(ctx, ui.slash.companionManagedCommand);
+      return true;
+    }
+
     switch (cmd) {
       case '/help':
         await safeSendText(ctx, ui.slash.help);
@@ -254,6 +265,31 @@ export function createSlashHandlers(
         if (threadScoped && threadUi) {
           await safeSendText(ctx, threadUi.newDeprecated);
           return true;
+        }
+        // 连接已交给伙伴: 群 / 话题换一条新专线; 主人私聊不轮换伙伴主任务。
+        // 伙伴当前解析不出时('unbound')走下面原有的 `/new`, 与消息路由的回落一致。
+        // `/ctr` 接管中仍按原有 `/new` 处理(它会顺带结束接管)。
+        if (
+          turnRunner.rotateCompanionLane &&
+          !bindingStore.get({ channel, botContextId: ctx.botContextId, userId: ctx.userId })
+        ) {
+          let companionNew: 'unbound' | 'owner-dm' | 'rotated';
+          try {
+            companionNew = await turnRunner.rotateCompanionLane(ctx.botContextId, ctx.userId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error(`/new companion lane rotation failed: ${msg}`);
+            await safeSendText(ctx, ui.agent.sendInternalError(msg));
+            return true;
+          }
+          if (companionNew === 'owner-dm') {
+            await safeSendText(ctx, ui.slash.companionDmNew ?? ui.slash.new);
+            return true;
+          }
+          if (companionNew === 'rotated') {
+            await safeSendText(ctx, ui.slash.companionLaneNew ?? ui.slash.new);
+            return true;
+          }
         }
         const prepared = await repo.prepareNewSession(ctx.botContextId, ctx.userId);
         const auth = await turnRunner.getAuthStatusForRoute?.(prepared);

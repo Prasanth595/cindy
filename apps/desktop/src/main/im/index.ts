@@ -73,6 +73,8 @@ import {
   wechatCompatibilityPolicy,
   wechatIm,
   wecomIm,
+  createBotFeishuIM,
+  createBotTelegramIM,
 } from './host';
 import { wireFeishuOrchestrator, type FeishuOrchestratorConfig } from './feishu';
 import { wireDiscordOrchestrator } from './discord';
@@ -82,6 +84,13 @@ import { wireWechatOrchestrator } from './wechat';
 import { wireWecomOrchestrator } from './wecom';
 import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
+import {
+  configureBotImConnectionRuntime,
+  startBotImConnections,
+  stopBotImConnections,
+} from './shared/botImConnectionRuntime';
+import { secretKeyPrefixFor } from './shared/botImConnectionStore';
+import { ownerScopedImSecrets } from './ownerScopedStorage';
 import { backfillLegacyImDefaultRoutes, backfillLegacyImDefaultRoutesAtStartup } from './shared/channelDefaultRouteSync';
 import type { ImDefaultSettingsChannel } from '../../shared/imDefaultSettings';
 import { createSerializedConnectionLifecycle } from './connectionLifecycle';
@@ -107,6 +116,7 @@ import {
   writeWechatWorkingDir,
 } from './wechat/channelSettings';
 
+export { registerBotImConnectionIpc } from './shared/botImConnectionRuntime';
 export {
   registerTelegramBotConfigIpc,
   im,
@@ -234,6 +244,33 @@ export function startImOrchestrators(): void {
   wireDingTalkOrchestrator(dingtalkIm, DINGTALK_CONFIG);
   wireWechatOrchestrator(wechatIm, WECHAT_CONFIG);
   wireWecomOrchestrator(wecomIm, WECOM_CONFIG);
+
+  // 伙伴自有 IM 连接: 每条记录一份传输层 + 编排器, 与上面设置页那份并存。
+  // 实例在 initializeImConnection 里按记录起, 这里只注入装配方式。
+  configureBotImConnectionRuntime({
+    create: (record) => {
+      const prefix = secretKeyPrefixFor(record.id);
+      if (record.channel === 'telegram') {
+        const im = createBotTelegramIM(prefix);
+        const orchestrator = wireTelegramOrchestrator(im, TELEGRAM_CONFIG, {
+          instanceKey: `telegram#${record.id}`,
+          companionBotId: record.botId,
+          sessionAuthIpc: false,
+        });
+        return { kind: 'telegram', im, orchestrator };
+      }
+      const im = createBotFeishuIM(prefix);
+      const orchestrator = wireFeishuOrchestrator(im, FEISHU_CONFIG, {
+        instanceKey: `feishu#${record.id}`,
+        companionBotId: record.botId,
+      });
+      return { kind: 'feishu', im, orchestrator };
+    },
+    settingsIdentity: () => ({
+      telegramToken: ownerScopedImSecrets.read('telegram-bot-token')?.trim() || null,
+      feishuAppId: ownerScopedImSecrets.read('feishu_bot_app_id')?.trim() || null,
+    }),
+  });
 
   ipcMain.handle('wechatBot:get-state', (event) => {
     assertTrustedAppRendererEvent(event);
@@ -458,6 +495,8 @@ async function initializeImConnection(): Promise<void> {
   }
   activateImAccountBoundary();
   await im.init();
+  // 伙伴自有连接跟在设置页那份后面起; 各自失败只记日志。
+  await startBotImConnections();
 }
 
 /**
@@ -583,6 +622,8 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
   },
   stopConnection: async (reason) => {
     try {
+      // 伙伴自有连接先放掉(记录保留, 下次登录再起), 再停设置页那份。
+      await stopBotImConnections();
       await im.dispose();
     } finally {
       bindingStore.resetRuntime();

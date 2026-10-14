@@ -47,6 +47,21 @@ Cindy Session，以父任务关系回到发起伙伴，但不冒充该伙伴或�
 不进入主时间线；群里分工时的每一步由同为 `role = 'group'` 的分工 Session 完成（工作目录见下文例外）。
 规则见 [伙伴群聊](bot-group-chat.md)。
 
+伙伴自己带 IM 机器人（2026-10-15 Chris 裁决）：用户在平台自己申请机器人（本期为 Telegram bot 与飞书 / Lark
+bot），凭证直接填在伙伴设置「消息平台」页，这个机器人就是这位伙伴；一位伙伴可以同时挂多个平台。它与
+设置 → IM 机器人 里那份独立的个人 bot 互不相干，不走「交给伙伴」的归属转移，也不用 Cindy 云上分配机器人。
+每条连接一份传输层实例（复用个人 bot 的 Telegram / 飞书适配器，凭证按连接 id 前缀隔离在本机安全存储），
+它说什么、记得什么、会什么、用什么模型，全部来自伙伴。主人私聊进该伙伴的 canonical 主任务；每个群 / 话题与
+每位外部用户的私聊各一条隐藏的渠道专线 Session（`role = 'channel'`，
+`route_key = 'im:<channel>:<botContextId>:g:<chatId>[:t:<threadId>]'` / `…:dm:<userId>`），与主任务共享 Profile
+与 Home，不进入任务列表、主时间线、历史列表与未读。连接对外开放：任何人给这个机器人发消息都是在和伙伴对话。
+伙伴决定身份，说话的人决定权限：主人轮次按伙伴权限档，外部用户与群成员按渠道的访客策略（逐轮强确认、
+命令只认主人），连接不扩大任何权限。同一伙伴所有渠道共享记忆，不设每群记忆隔离。伙伴被删除时连接一并
+停掉、清凭证、归档专线。连接记录是账号级设置（`bot-im-connections.json`），不含凭证。
+实现见 `im/shared/botImConnectionStore.ts`（记录）、`im/shared/botImConnectionRuntime.ts`（实例生命周期）、
+`im/shared/imBotBindingRuntime.ts` 与 `im/shared/turnRunner.ts`（落点解析）、`localDb/ipc/bots.ts`（专线创建）；
+官方 Cindy bot、其它个人渠道与「代主人收发」沿后续分期接入同一骨架。
+
 ## 3. 长期会话生命周期
 
 ### 3.1 稳定主任务

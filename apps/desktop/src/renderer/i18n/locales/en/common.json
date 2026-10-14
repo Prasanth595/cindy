@@ -9779,6 +9779,66 @@
       "shadowTitle": "This teammate now runs on “{{device}}”",
       "shadowHint": "The conversation here is read only.",
       "openOnHome": "Open on “{{device}}”"
+    },
+    "channels": {
+      "title": "Messaging platforms",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "Feishu",
+        "lark": "Lark"
+      },
+      "status": {
+        "connected": "Connected",
+        "connecting": "Connecting…",
+        "offline": "Offline",
+        "conflict": "Another device is using this bot",
+        "error": "Error",
+        "idle": "Not connected"
+      },
+      "remove": "Remove",
+      "removeAria": "Remove {{platform}}",
+      "empty": "{{name}} has no messaging platform yet. Add a bot you created on Telegram or Feishu, and {{name}} will reply there.",
+      "externalNote": "Anyone who messages this bot is talking to {{name}}. Your own messages run with {{name}}’s permissions; everyone else gets a separate hidden task with restricted permissions.",
+      "sharedMemoryNote": "{{name}} uses information from here and from other conversations together. To keep memories separate, use another teammate.",
+      "add": {
+        "button": "Add platform",
+        "title": "Add a platform for {{name}}",
+        "description": "Paste the credentials of a bot you created on the platform. They stay on this computer.",
+        "platformLabel": "Platform",
+        "telegram": {
+          "tokenLabel": "Bot token",
+          "tokenPlaceholder": "Paste the token from @BotFather",
+          "ownerLabel": "Your Telegram user ID",
+          "ownerPlaceholder": "Numeric ID (ask @userinfobot)",
+          "ownerHint": "Messages from this ID run with {{name}}’s own permissions. Everyone else is treated as a guest."
+        },
+        "feishu": {
+          "serviceLabel": "Service",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "Paste the app secret"
+        },
+        "confirm": "Connect",
+        "connecting": "Connecting…",
+        "errors": {
+          "invalidToken": "That doesn’t look like a bot token. It should look like 123456:ABC…",
+          "invalidOwner": "The user ID should be a number.",
+          "invalidFeishu": "Fill in both the App ID and the App Secret.",
+          "conflict": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
+          "botUnavailable": "{{name}} is unavailable right now. Try again once it’s back.",
+          "connectFailed": "Couldn’t connect: {{reason}}",
+          "failed": "Couldn’t finish. Try again later."
+        }
+      },
+      "removeConfirm": {
+        "title": "Remove {{platform}}?",
+        "description": "This bot stops replying, its credentials are deleted from this computer, and its hidden tasks are archived. {{name}}’s memory and personality stay the same.",
+        "confirm": "Remove",
+        "cancel": "Cancel",
+        "failed": "Couldn’t remove it. Try again later.",
+        "ok": "OK"
+      }
     }
   },
   "common": {

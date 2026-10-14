@@ -50,7 +50,7 @@ import { refreshBotGroups, useBotGroupList } from './botGroupStore';
 import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
-import { withoutBotGroupLanes } from './botGroupLane';
+import { withoutBotHiddenLanes } from './botGroupLane';
 import {
   botListSubtitle,
   botListTimestampAt,
@@ -224,8 +224,9 @@ export function TeammatesSection() {
     const canonicalSessionId = canonicalBotSessionId(bot);
     const canonicalActivity = canonicalSessionId ? islandActivity.get(canonicalSessionId) : undefined;
     if (canonicalActivity?.phase === 'running') return canonicalActivity;
-    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」。
-    return withoutBotGroupLanes(bot.sessions).map((session) => islandActivity.get(session.id))
+    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」;
+    // IM 专线在 IM 里回复,同样不点亮这一行。
+    return withoutBotHiddenLanes(bot.sessions).map((session) => islandActivity.get(session.id))
       .find((activity) => activity?.phase === 'running');
   };
   // 伙伴搜索并入侧栏总搜索(TeammateSearchResults),段内不再单独筛选。

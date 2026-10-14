@@ -20,7 +20,10 @@ import {
   createFeishuIM,
   createTelegramIM,
   createWecomIM,
+  TELEGRAM_DEFAULT_BEHAVIOR,
+  type FeishuIM,
   type IMHost,
+  type TelegramIM,
 } from '@cindy/im';
 import { TencentIlinkTransport } from '@cindy/wechat-ilink';
 
@@ -185,6 +188,13 @@ const host: IMHost = {
 };
 
 export const feishuIm = createFeishuIM(host);
+/**
+ * 伙伴自有飞书 / Lark 连接的传输层实例: 凭证与 TOFU 主人按连接前缀隔离、不注册设置卡
+ * IPC、对外开放(非主人的私聊与群 @ 带非主人标记进业务层)。
+ */
+export function createBotFeishuIM(secretKeyPrefix: string): FeishuIM {
+  return createFeishuIM(host, { secretKeyPrefix, ipc: false, guests: true });
+}
 export const discordIm = createDiscordIM(host, {
   resolveImageUrl: resolveManagedImageAbsPath,
   expiredCardNotice: discordUiText.expiredCardNotice,
@@ -199,6 +209,23 @@ export const telegramIm = createTelegramIM(host, {
   // owner 私聊的 "/" 命令菜单(BotCommandScopeChat 只发 owner, 其他人不可见)。
   commandMenu: buildPersonalBotCommandMenu((key) => t(key)),
 });
+/**
+ * 伙伴自有 Telegram 连接的传输层实例: 与设置页那份同一套宿主能力, 但凭证按连接
+ * 前缀隔离、不注册设置卡 IPC、对外开放私聊(陌生人消息带非主人标记进业务层),
+ * 行为配置用默认值(伙伴的身份与分寸来自它的 SOUL)。
+ */
+export function createBotTelegramIM(secretKeyPrefix: string): TelegramIM {
+  return createTelegramIM(host, {
+    resolveImageUrl: resolveManagedImageAbsPath,
+    expiredCardNotice: telegramUiText.expiredCardNotice,
+    ownerNoticeText: (phase) => t(`settings.telegramBot.ownerNotice.${phase}`),
+    behavior: () => TELEGRAM_DEFAULT_BEHAVIOR,
+    commandMenu: buildPersonalBotCommandMenu((key) => t(key)),
+    secretKeyPrefix,
+    ipc: false,
+    guestDm: true,
+  });
+}
 export const dingtalkIm = createDingTalkIM(host, {
   fetcher: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init),
 });

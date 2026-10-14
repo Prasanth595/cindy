@@ -18,7 +18,7 @@ vi.mock('../behaviorStore', () => ({
 }));
 
 describe('Telegram group history access scope', () => {
-  const adapter = buildTelegramAdapter({} as never, {} as never);
+  const adapter = buildTelegramAdapter({ getOwnerUserId: () => '123' } as never, {} as never);
 
   it('clears successful and cancelled status reactions but retains an error signal', () => {
     expect(adapter.terminalReactionEmoji?.('done')).toBeNull();
@@ -36,6 +36,32 @@ describe('Telegram group history access scope', () => {
     expect(result?.contextSnapshot).toEqual({ replyContext: '[Alice] quoted text', replyMessageCount: 1 });
     // The same reply the model sees is the one Auto-review may use.
     expect(result?.replyContext).toEqual({ author: 'Alice', text: 'quoted text' });
+  });
+
+  it('drops the settings-page persona on a teammate-owned connection', async () => {
+    const teammate = buildTelegramAdapter({ getOwnerUserId: () => '123' } as never, {} as never, {
+      companionBotId: 'bot-mimi',
+    });
+    const bound = await teammate.prepareAgentTurnText?.({
+      contextId: 'bot-1',
+      senderId: '123',
+      text: 'question',
+      replyContext: { author: 'Alice', text: 'quoted text' },
+    } as IMMessageEvent);
+    expect(bound?.agentText).not.toContain('<bot_persona>');
+    expect(bound?.agentText).not.toContain('Private instructions');
+    expect(bound?.agentText).toContain('quoted text');
+    // A teammate DM without a reply block needs no model-only rewrite at all.
+    expect(
+      await teammate.prepareAgentTurnText?.({ contextId: 'bot-1', senderId: '123', text: 'q' } as IMMessageEvent),
+    ).toBeNull();
+  });
+
+  it('maps the owner DM, guest DMs and groups / topics to companion lanes', () => {
+    expect(adapter.companionLane?.('123')).toEqual({ kind: 'owner-dm' });
+    expect(adapter.companionLane?.('999')).toEqual({ kind: 'guest-dm', userId: '999' });
+    expect(adapter.companionLane?.('g/-100')).toEqual({ kind: 'group', chatId: '-100', threadId: '' });
+    expect(adapter.companionLane?.('g/-100/77')).toEqual({ kind: 'group', chatId: '-100', threadId: '77' });
   });
 
   it('only lets owner-triggered group turns omit the policy in Full access', () => {

@@ -96,6 +96,11 @@ vi.mock('../botStore', () => ({
 vi.mock('../BotLifecycleSettings', () => ({
   BotLifecycleSettings: () => <div data-testid="bot-lifecycle-settings" />,
 }));
+vi.mock('../BotChannelsPage', () => ({
+  BotChannelsPage: ({ bot }: { bot: { id: string } }) => (
+    <div data-testid="bot-channels-page">{bot.id}</div>
+  ),
+}));
 vi.mock('@/components/new-chat/ModelSelector', () => ({
   ModelSelector: ({ unifiedAgents, onUnifiedSelect, modelId, onEffortChange, onNavigateToProviders }: {
     onNavigateToProviders?: () => void;
@@ -538,6 +543,24 @@ describe('Bot settings profile consolidation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'bots.settingsTabs.model' }));
     expect(screen.getByRole('region', { name: 'bots.settingsTabs.model' })).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: 'bots.nameLabel' })).toBeNull();
+  });
+
+  it('lists messaging platforms after capabilities and opens it from the home row or a deep link', () => {
+    const view = renderSettings();
+    const rows = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent)
+      .filter((text) => text === 'bots.capabilities.title' || text === 'bots.channels.title');
+    expect(rows).toEqual(['bots.capabilities.title', 'bots.channels.title']);
+    fireEvent.click(screen.getByRole('button', { name: 'bots.channels.title' }));
+    expect(screen.getByTestId('bot-channels-page').textContent).toBe('bot-1');
+    expect(screen.getByRole('heading', { name: 'bots.channels.title' })).toBeTruthy();
+    view.unmount();
+
+    render(
+      <BotSettings bot={bot()} initialPage="channels" onBack={vi.fn()} onOpenSession={vi.fn()} />,
+    );
+    expect(screen.getByTestId('bot-channels-page')).toBeTruthy();
   });
 
   it('keeps the current inner page and its draft when saving before navigation fails', async () => {

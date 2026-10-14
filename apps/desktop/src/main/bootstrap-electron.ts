@@ -284,6 +284,7 @@ import {
   feishuIm,
   telegramIm,
   prepareImDefaultSettingsChange,
+  registerBotImConnectionIpc,
   registerTelegramBotConfigIpc,
   startImOrchestrators,
   startImConnection,
@@ -9637,6 +9638,8 @@ app.on('ready', async () => {
   // Telegram 个人 bot 行为/人格/群参与配置的 IPC(设置卡数据面),与 im.registerIpc
   // 同期无条件注册;不能放 host.ts 模块顶层(mock electron 的单测收集期会炸)。
   registerTelegramBotConfigIpc();
+  // 伙伴自有 IM 机器人连接的 IPC(伙伴设置「消息平台」页数据面), 同期无条件注册。
+  registerBotImConnectionIpc();
   // 把 telegram transport 注入 device-link 的跨设备上下线执行器。用注入而非
   // 静态 import: device-link 侧直接引 im/host 会把整个 IM 子系统拽进它的依赖链
   // (host.ts 模块顶层就调 app.getPath / ipcMain.handle),而 main 进程又禁止运行时

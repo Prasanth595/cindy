@@ -82,6 +82,7 @@ import {
 } from '../maker-host/remote-provider-access-store.js';
 import { registerModelFavoritesSync } from './modelFavoritesSync.js';
 import { advanceRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
+import { removeBotImConnectionsForBot } from '../im/shared/botImConnectionRuntime.js';
 import { markImSessionManualRouteOverride } from '../im/shared/manualRouteOverride.js';
 import { configureAppDefaultModelSelection, inspectAppDefaultModel } from './appDefaultModelControl.js';
 import type { BuiltinApiKeyBridgeDeps } from '../secrets/builtinApiKeyBridge.js';
@@ -4509,6 +4510,19 @@ export function wakeSessionInputAfterCredentialSwitch(sessionId: string): void {
   agentInputCoordinatorHolder?.wakeSession(sessionId, 'credential-switch-applied-inline');
 }
 
+let prepareBotSessionForImSendHolder: ((sessionId: string) => Promise<string | null>) | null = null;
+
+/**
+ * IM 直发进伙伴会话(连接已交给伙伴: 主任务 / `channel` 专线)前的守卫, 与桌面
+ * `sendToAgentAccepted` 的伙伴部分同源: 伙伴暂停 / 归档 / 归属不完整时返回拒绝原因
+ * (调用方回一句渠道提示, 不发送); 否则先对齐伙伴模型链首选路由、再刷新能力纪元。
+ * 不持有 send 锁 —— 调用方必须在 acquirePendingAgentSwitch 之前调用, 对齐登记的
+ * 切换意图由随后的锁内应用落实。非伙伴会话直接放行。holder 未就绪时放行。
+ */
+export async function prepareBotSessionForImSend(sessionId: string): Promise<string | null> {
+  return prepareBotSessionForImSendHolder ? prepareBotSessionForImSendHolder(sessionId) : null;
+}
+
 let applyPiImModelSelectionHolder: ((
   sessionId: string, model: string, providerId: string | null | undefined,
   previousRoute: { model: string; providerId: string | null } | null,
@@ -8374,7 +8388,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         !row ||
         row.source !== 'bot' ||
         row.status !== 'active' ||
-        (row.role !== 'canonical' && row.role !== 'delegation' && row.role !== 'group')
+        (row.role !== 'canonical' && row.role !== 'delegation' && row.role !== 'group'
+          && row.role !== 'channel')
       ) {
         return 'not-bot';
       }
@@ -12095,7 +12110,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       void botDelegationServiceHolder?.resumeCompletionDelivery(botId);
       await updateBotRoutineLifecycle(botId, 'resume');
     },
-    onBeforeDelete: prepareCompanionImportDeletion,
+    onBeforeDelete: async (botId) => {
+      // 伙伴自有的 IM 机器人连接先停掉并清凭证: 伙伴没了, 它的 bot 不能继续收消息。
+      await removeBotImConnectionsForBot(botId);
+      await prepareCompanionImportDeletion(botId);
+    },
     onDeleted: async (botId, assertOwner) => {
       assertOwner();
       // Deleted on its home: other devices stop showing it. Started first and independently, so a
@@ -14881,8 +14900,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
         .where(and(
           eq(botSessionLinks.sessionId, sessionId),
-          // Group lanes follow the Bot's current model chain exactly like its canonical Chat.
-          inArray(botSessionLinks.role, ['canonical', 'group']),
+          // Group / IM channel lanes follow the Bot's current model chain exactly like its canonical Chat.
+          inArray(botSessionLinks.role, ['canonical', 'group', 'channel']),
           isNull(botSessionLinks.archivedAt),
           // Paused settings may preview grants; sending still requires an active Bot.
           purpose === 'preview'
@@ -15030,7 +15049,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         and(
           eq(botSessionLinks.sessionId, sessionId),
           isNull(botSessionLinks.archivedAt),
-          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group']),
+          inArray(botSessionLinks.role, ['canonical', 'delegation', 'group', 'channel']),
         ),
       )
       .limit(1);
@@ -16423,7 +16442,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         throwIpcError('PRECONDITION_FAILED', SHADOWED_COMPANION_INPUT_MESSAGE);
       }
       if (args[2] && typeof args[2] === 'object') {
-        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group'].includes(botInput.role ?? '')) {
+        if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group', 'channel'].includes(botInput.role ?? '')) {
           botFallbackInputs.add(args[2]);
         } else {
           botFallbackInputs.delete(args[2]);
@@ -16447,6 +16466,29 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         : withCindyMakeProjectUse(app.getPath('userData'), botInput?.workingDir, () => sendToAgentAcceptedUnlocked(...args));
     });
   };
+  prepareBotSessionForImSendHolder = async (sessionId) => {
+    const [botInput] = await getDbClient()
+      .drizzle.select({
+        source: sessions.source,
+        role: botSessionLinks.role,
+        profileStatus: botProfiles.status,
+      })
+      .from(sessions)
+      .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
+      .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    const blocked = botSessionInputBlockReason(botInput ?? null);
+    if (blocked || botInput?.source !== 'bot') return blocked;
+    // TODO(im-bot-companion): IM turns do not yet get the desktop model-chain
+    // fallback (botFallbackInputs / coordinator recovery); a failing primary
+    // route surfaces as an IM error instead of moving to the next candidate.
+    await reconcileBotModelRoute(sessionId);
+    const live = maker.getSession(sessionId);
+    if (live) await refreshBotCapabilityEpochBeforeSend(live);
+    return null;
+  };
+
   // Shared by pre-send pressure checks and the final automatic-continuation gate.
   // A stale/archived link must not turn a delegated or deleted companion into a direct chat.
   const readContextRecoverySession = async (sessionId: string) => {

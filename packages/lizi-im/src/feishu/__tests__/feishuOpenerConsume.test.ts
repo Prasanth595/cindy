@@ -106,7 +106,8 @@ vi.mock('../appRegistration.js', () => ({
   pollAppRegistration: vi.fn(),
 }));
 
-vi.mock('../moduleScope.js', () => ({
+vi.mock('../moduleScope.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../moduleScope.js')>()),
   getLog: () => ({
     trace: vi.fn(),
     debug: vi.fn(),

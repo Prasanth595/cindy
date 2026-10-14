@@ -40,6 +40,7 @@ export type {
 } from './types.js';
 
 export { FeishuIM, createFeishuIM } from './feishu/index.js';
+export type { FeishuIMOptions } from './feishu/index.js';
 export {
   decodeLaneUserId as decodeFeishuLaneUserId,
   encodeLaneUserId as encodeFeishuLaneUserId,
@@ -64,7 +65,11 @@ export {
   EXPRESSIVE_ERROR_POOL,
   pickExpressiveReaction,
 } from './telegram/reactionPool.js';
-export type { TelegramIMOptions, TelegramGroupWindowEntry } from './telegram/index.js';
+export type {
+  TelegramIMOptions,
+  TelegramConfigState,
+  TelegramGroupWindowEntry,
+} from './telegram/index.js';
 export { TELEGRAM_DEFAULT_BEHAVIOR } from './telegram/index.js';
 export type { TelegramBehaviorConfig } from './telegram/index.js';
 export { TELEGRAM_PERSONAL_CAPABILITIES } from './telegram/presentationCapabilities.js';

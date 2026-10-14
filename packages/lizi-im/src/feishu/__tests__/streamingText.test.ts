@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../outbound.js', () => mocks);
-vi.mock('../moduleScope.js', () => ({
+vi.mock('../moduleScope.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../moduleScope.js')>()),
   getLog: () => ({ debug: vi.fn(), error: vi.fn(), warn: vi.fn() }),
   getHost: () => ({
     media: { resolveMediaUrl: mocks.resolveMediaUrl },

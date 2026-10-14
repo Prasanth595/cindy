@@ -2315,6 +2315,25 @@ interface ElectronAPI {
     ) => () => void;
   };
 
+  // ── 伙伴自有 IM 机器人连接(Telegram / 飞书, 伙伴设置「消息平台」页)──
+  botImConnection: {
+    list: () => Promise<import('../shared/botImConnection').BotImConnectionListPayload>;
+    /**
+     * 填凭证并建连。伙伴不存在 → NOT_FOUND; 其余都是 PRECONDITION_FAILED, 以 message 前缀
+     * 区分: BOT_INACTIVE(未启用)、TOKEN_IN_USE / APP_IN_USE(同一个 bot 已在这台电脑上用)、
+     * CONNECT_FAILED(连不上, 后面带原因)。
+     */
+    add: (
+      payload: import('../shared/botImConnection').BotImConnectionAddInput,
+    ) => Promise<import('../shared/botImConnection').BotImConnectionAddResult>;
+    remove: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionRemoveResult>;
+    onChanged: (
+      listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
+    ) => () => void;
+  };
+
   // ── Personal DingTalk Bot (Settings → IM Bot → Personal) ──
   dingtalkBot: {
     getState: () => Promise<{

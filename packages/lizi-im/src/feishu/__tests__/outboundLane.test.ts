@@ -92,7 +92,8 @@ vi.mock('../ownerGuard.js', () => ({
   check: vi.fn(() => true),
 }));
 
-vi.mock('../moduleScope.js', () => ({
+vi.mock('../moduleScope.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../moduleScope.js')>()),
   getLog: () => ({
     debug: vi.fn(),
     info: vi.fn(),

@@ -47,7 +47,8 @@ function sessionSafeUserId(userId: string): string {
 /**
  * 人格块(soul.md 语义) — Hermes channel_prompt 先例: 每轮注入送模型文本,
  * 不落 transcript(prepareAgentTurnText 的 agentText 只进模型, 落库用渠道原文)。
- * owner 在设置卡编辑, 即改即生效。
+ * owner 在设置卡编辑, 即改即生效。只有设置页那份个人 bot 有人格块; 伙伴自有连接的
+ * 身份来自伙伴的 SOUL(会话启动时装配), 不再注入。
  */
 function personaBlock(): string {
   const persona = readTelegramPersona();
@@ -66,10 +67,17 @@ function sanitizeSpeakerText(value: string): string {
     .slice(0, 64);
 }
 
+export interface TelegramAdapterOptions {
+  /** 伙伴自有连接: 不注入设置页人格, 私聊按主人 / 外部用户分落点。 */
+  companionBotId?: string;
+}
+
 export function buildTelegramAdapter(
   telegramIm: TelegramIM,
   config: ImOrchestratorConfig,
+  options: TelegramAdapterOptions = {},
 ): ImChannelAdapter {
+  const companion = Boolean(options.companionBotId);
   // 同一条群任务会混入 owner 与非 owner 的消息。Full access 只能取缔 owner
   // 触发轮次的逐轮策略；用对象身份记录这批 policy，避免把会话级权限误当成
   // 整个群所有成员的授权。WeakSet 不延长排队 policy 的生命周期。
@@ -106,6 +114,13 @@ export function buildTelegramAdapter(
     terminalReactionEmoji: (kind) => (kind === 'error' ? '👎' : null),
     // /project: 从 Telegram 把当前会话切到 desktop 项目目录(bot 原生会话)。
     projectSwitching: true,
+    // 伙伴自有连接: 主人私聊进主任务; 群 / topic 按 lane 一条专线; 对外开放后的
+    // 陌生人私聊(transport guestDm)按用户一条专线。
+    companionLane: (userId) => {
+      const lane = decodeTelegramLaneUserId(userId);
+      if (lane) return { kind: 'group', chatId: lane.chatId, threadId: lane.threadId };
+      return userId === telegramIm.getOwnerUserId() ? { kind: 'owner-dm' } : { kind: 'guest-dm', userId };
+    },
     buildVendorOptions: (userId) => ({ telegramChatId: userId, source: 'telegram' }),
     // 一群一会话的权限收紧(D1 + 2026-07-30 review 修订): 除显式 Full access 外,
     // 所有群轮次都挂破坏性操作强确认 — 不只成员触发的。群窗口/引用块把成员可控文本注入
@@ -145,7 +160,7 @@ export function buildTelegramAdapter(
       const replyBlock = event.replyContext
         ? buildTelegramReplyContextBlock(event.replyContext)
         : '';
-      const persona = personaBlock();
+      const persona = companion ? '' : personaBlock();
       if (!lane) {
         // DM: 无群窗口, 但人格块与引用注入(回复某条消息触发)同样生效。
         if (!replyBlock && !persona) return null;

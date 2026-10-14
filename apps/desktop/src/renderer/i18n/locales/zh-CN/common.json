@@ -9735,6 +9735,66 @@
       "shadowTitle": "这个伙伴已在「{{device}}」上运行",
       "shadowHint": "这里的对话只能查看。",
       "openOnHome": "打开「{{device}}」上的伙伴"
+    },
+    "channels": {
+      "title": "消息平台",
+      "platform": {
+        "telegram": "Telegram",
+        "feishu": "飞书",
+        "lark": "Lark"
+      },
+      "status": {
+        "connected": "已连接",
+        "connecting": "连接中…",
+        "offline": "已下线",
+        "conflict": "另一台设备正在用这个机器人",
+        "error": "出错",
+        "idle": "未连接"
+      },
+      "remove": "移除",
+      "removeAria": "移除 {{platform}}",
+      "empty": "{{name}} 还没有消息平台。把你在 Telegram 或飞书申请的机器人加进来，{{name}} 就会在那里回复。",
+      "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
+      "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
+      "add": {
+        "button": "添加平台",
+        "title": "给 {{name}} 添加平台",
+        "description": "粘贴你在平台上申请的机器人凭证，只存在这台电脑上。",
+        "platformLabel": "平台",
+        "telegram": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "粘贴 @BotFather 生成的 Token",
+          "ownerLabel": "你的 Telegram 用户 ID",
+          "ownerPlaceholder": "纯数字 ID（向 @userinfobot 查询）",
+          "ownerHint": "来自这个 ID 的消息按 {{name}} 自己的权限执行，其他人都按访客处理。"
+        },
+        "feishu": {
+          "serviceLabel": "服务",
+          "appIdLabel": "App ID",
+          "appIdPlaceholder": "cli_xxxxxxxxxxxxxxxx",
+          "appSecretLabel": "App Secret",
+          "appSecretPlaceholder": "粘贴 App Secret"
+        },
+        "confirm": "连接",
+        "connecting": "连接中…",
+        "errors": {
+          "invalidToken": "这不像 Bot Token，格式应为 123456:ABC…",
+          "invalidOwner": "用户 ID 应该是一串数字。",
+          "invalidFeishu": "App ID 和 App Secret 都要填。",
+          "conflict": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
+          "botUnavailable": "{{name}} 现在不可用，等 TA 恢复后再试。",
+          "connectFailed": "没连上：{{reason}}",
+          "failed": "没能完成，请稍后再试。"
+        }
+      },
+      "removeConfirm": {
+        "title": "移除 {{platform}}？",
+        "description": "这个机器人不再回复，凭证从这台电脑删除，它的隐藏任务会归档。{{name}} 的记忆和性格不变。",
+        "confirm": "移除",
+        "cancel": "取消",
+        "failed": "没能移除，请稍后再试",
+        "ok": "知道了"
+      }
     }
   },
   "common": {

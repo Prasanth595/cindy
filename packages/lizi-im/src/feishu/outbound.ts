@@ -25,7 +25,7 @@ import { open as openFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 
-import { getLog } from './moduleScope.js';
+import { getLog, scopeSlot } from './moduleScope.js';
 import { buildInteractiveCardV1, buildMarkdownCardV2 } from './cards.js';
 import { decodeLaneUserId } from './codec.js';
 import * as ownerGuard from './ownerGuard.js';
@@ -344,32 +344,43 @@ for (my $index = 0; $index < @segments; $index += 1) {
 print STDOUT '1';
 `;
 
-let client: Lark.Client | null = null;
-let creds: BotCredentials | null = null;
+const out_SLOT = Symbol('feishu.out');
+function createOutState() {
+  return {
+    client: null as Lark.Client | null,
+    creds: null as BotCredentials | null,
+    lastBoundCreds: null as BotCredentials | null,
+    accountEpoch: 0,
+    laneAnchors: new Map<string, LaneAnchorState>(),
+    patchableOpeners: new Map<string, string>(),
+    openerTriggers: new Map<string, string>(),
+    deferredOpenerConsumes: [] as DeferredOpenerConsume[],
+    evictedOpeners: [] as string[],
+    openThreadByTrigger: new Map< string, { ts: number; promise: Promise<OpenThreadOutcome> } >(),
+    cardLanes: new Map<string, { ts: number; lane: string }>(),
+  };
+}
+/** 本实例(FeishuScope)的模块状态; 没有 scope 时落在默认实例上。 */
+const S = () => scopeSlot(out_SLOT, createOutState);
 
 /** 最近一次 bind 的账号身份 — 跨 unbind 保留, 用于判「账号是否真替换」。 */
-let lastBoundCreds: BotCredentials | null = null;
 
 function sameBoundAccount(next: BotCredentials): boolean {
-  return (
-    lastBoundCreds !== null &&
-    lastBoundCreds.appId === next.appId &&
-    lastBoundCreds.service === next.service
-  );
+  const bound = S().lastBoundCreds;
+  return bound !== null && bound.appId === next.appId && bound.service === next.service;
 }
 
 /**
  * 账号代次 — 账号身份变化(换账号 bind / 明确清凭证)时递增: 在途的排空/兜底
  * 续段据此丢弃, 旧账号的终态不得经新账号的 client 呈现。
  */
-let accountEpoch = 0;
 
 function clearAccountScopedOutboundState(): void {
-  laneAnchors.clear();
-  patchableOpeners.clear();
-  openerTriggers.clear();
+  S().laneAnchors.clear();
+  S().patchableOpeners.clear();
+  S().openerTriggers.clear();
   clearDeferredOpenerConsumes();
-  accountEpoch += 1;
+  S().accountEpoch += 1;
 }
 
 /**
@@ -379,12 +390,12 @@ function clearAccountScopedOutboundState(): void {
  */
 export function forgetBoundAccount(): void {
   clearAccountScopedOutboundState();
-  lastBoundCreds = null;
+  S().lastBoundCreds = null;
 }
 
 /** 当前账号代次(清凭证递增) — 在途排空续段比对用。 */
 export function getAccountEpoch(): number {
-  return accountEpoch;
+  return S().accountEpoch;
 }
 
 export function bindClient(c: BotCredentials): void {
@@ -392,9 +403,9 @@ export function bindClient(c: BotCredentials): void {
   // 重连(reconnectSavedCredentials: stop → start 同凭证)时 turn 仍在跑, 未消费
   // 的 opener / 锚点必须仍可被认领, 否则答案无处 patch、话题出站没有 reply 根。
   if (!sameBoundAccount(c)) clearAccountScopedOutboundState();
-  lastBoundCreds = c;
-  creds = c;
-  client = new Lark.Client({
+  S().lastBoundCreds = c;
+  S().creds = c;
+  S().client = new Lark.Client({
     appId: c.appId,
     appSecret: c.appSecret,
     domain: c.service === 'lark' ? Lark.Domain.Lark : Lark.Domain.Feishu,
@@ -402,9 +413,9 @@ export function bindClient(c: BotCredentials): void {
 }
 
 export function unbindClient(): void {
-  client = null;
-  creds = null;
-  cardLanes.clear();
+  S().client = null;
+  S().creds = null;
+  S().cardLanes.clear();
   // patchableOpeners / laneAnchors 不随 unbind 清空(见 bindClient 的账号替换清理)。
 }
 
@@ -429,18 +440,17 @@ interface LaneAnchorState {
   inThreadReply: boolean;
 }
 
-const laneAnchors = new Map<string, LaneAnchorState>();
 
 /** wsClient 在 owner 群触发时登记回挂锚点。 */
 export function pushReplyAnchor(laneUserId: string, messageId: string): void {
-  const state = laneAnchors.get(laneUserId) ?? {
+  const state = S().laneAnchors.get(laneUserId) ?? {
     queue: [],
     held: null,
     quotedHeld: false,
     inThreadReply: false,
   };
   state.queue.push(messageId);
-  laneAnchors.set(laneUserId, state);
+  S().laneAnchors.set(laneUserId, state);
 }
 
 // ── patchable opener (开话题开场白卡 = 本轮流式卡) ──────────────────────────
@@ -448,22 +458,20 @@ export function pushReplyAnchor(laneUserId: string, messageId: string): void {
 // 回复, 而是直接 patch 这张卡 — 话题里第一条可见内容就是答案。lane → opener
 // 卡的映射由 wsClient 在 openThread 成功后登记, streamingText.start 认领。
 
-const patchableOpeners = new Map<string, string>();
 
 /**
  * 开场白卡对应的触发消息 id(lane → 群主流触发消息)。开场白 patch/替换失败
  * 被撤回后, 话题里不再有合法锚点 — 回拨到触发消息并带 reply_in_thread 回复
  * 才能落回话题(触发消息本人在群主流)。
  */
-const openerTriggers = new Map<string, string>();
 
 export function pushPatchableOpener(
   laneUserId: string,
   messageId: string,
   triggerMessageId?: string,
 ): void {
-  patchableOpeners.set(laneUserId, messageId);
-  if (triggerMessageId) openerTriggers.set(laneUserId, triggerMessageId);
+  S().patchableOpeners.set(laneUserId, messageId);
+  if (triggerMessageId) S().openerTriggers.set(laneUserId, triggerMessageId);
 }
 
 /**
@@ -472,12 +480,12 @@ export function pushPatchableOpener(
  * 失败的降级群 lane / 话题内 @)返回 null, 走新建流式卡的老路。
  */
 export function claimPatchableOpener(laneUserId: string): string | null {
-  const openerId = patchableOpeners.get(laneUserId);
+  const openerId = S().patchableOpeners.get(laneUserId);
   if (!openerId) return null;
-  patchableOpeners.delete(laneUserId);
+  S().patchableOpeners.delete(laneUserId);
   // openerTriggers 保留 — patch/替换失败撤回开场白卡时需要回拨锚点
   // (rearmAnchorToTrigger 消费); 正常认领成功则随下次 push 覆盖或账号替换清空。
-  const state = laneAnchors.get(laneUserId) ?? {
+  const state = S().laneAnchors.get(laneUserId) ?? {
     queue: [],
     held: null,
     quotedHeld: false,
@@ -488,7 +496,7 @@ export function claimPatchableOpener(laneUserId: string): string | null {
   state.held = openerId;
   state.quotedHeld = true;
   state.inThreadReply = false;
-  laneAnchors.set(laneUserId, state);
+  S().laneAnchors.set(laneUserId, state);
   return openerId;
 }
 
@@ -504,7 +512,6 @@ export type DeferredOpenerConsume = (
 ) & { epoch: number };
 
 const MAX_DEFERRED_OPENER_CONSUMES = 50;
-const deferredOpenerConsumes: DeferredOpenerConsume[] = [];
 
 /**
  * 容量淘汰的开场白卡 id — 条目被挤掉时其 opener 已被原子预留(不可再认领),
@@ -512,12 +519,11 @@ const deferredOpenerConsumes: DeferredOpenerConsume[] = [];
  */
 // 上限防御撤除: 每个条目只是短消息 id, 且连接恢复排空即清 — 有界淘汰会
 // 再次静默丢卡(阈值从 51 推迟到 101 而已), 不留可收口记录违背设计。
-const evictedOpeners: string[] = [];
 
 /** 账号替换时清空暂存消费(属旧账号的开场白卡, 新账号不需要)。 */
 function clearDeferredOpenerConsumes(): void {
-  deferredOpenerConsumes.length = 0;
-  evictedOpeners.length = 0;
+  S().deferredOpenerConsumes.length = 0;
+  S().evictedOpeners.length = 0;
 }
 
 export function deferOpenerConsume(
@@ -526,23 +532,23 @@ export function deferOpenerConsume(
     | { spec: InteractiveCardSpec }
   ),
 ): void {
-  deferredOpenerConsumes.push({ ...entry, epoch: accountEpoch });
-  while (deferredOpenerConsumes.length > MAX_DEFERRED_OPENER_CONSUMES) {
-    const evicted = deferredOpenerConsumes.shift();
+  S().deferredOpenerConsumes.push({ ...entry, epoch: S().accountEpoch });
+  while (S().deferredOpenerConsumes.length > MAX_DEFERRED_OPENER_CONSUMES) {
+    const evicted = S().deferredOpenerConsumes.shift();
     if (evicted) {
-      evictedOpeners.push(evicted.openerId);
+      S().evictedOpeners.push(evicted.openerId);
     }
   }
 }
 
 /** 取出被容量淘汰的开场白卡 id(清空), 连接恢复排空时撤回。 */
 export function drainEvictedOpeners(): string[] {
-  return evictedOpeners.splice(0, evictedOpeners.length);
+  return S().evictedOpeners.splice(0, S().evictedOpeners.length);
 }
 
 /** 取出全部暂存的消费(清空), 调用方在连接就绪后排空。 */
 export function drainDeferredOpenerConsumes(): DeferredOpenerConsume[] {
-  return deferredOpenerConsumes.splice(0, deferredOpenerConsumes.length);
+  return S().deferredOpenerConsumes.splice(0, S().deferredOpenerConsumes.length);
 }
 
 /**
@@ -554,12 +560,12 @@ export function takeMatchingDeferredOpenerConsume(
   userId: string,
   kind: 'markdown' | 'spec',
 ): DeferredOpenerConsume | undefined {
-  for (let i = deferredOpenerConsumes.length - 1; i >= 0; i--) {
-    const entry = deferredOpenerConsumes[i]!;
+  for (let i = S().deferredOpenerConsumes.length - 1; i >= 0; i--) {
+    const entry = S().deferredOpenerConsumes[i]!;
     if (entry.userId !== userId) continue;
     if (kind === 'markdown' && !('markdown' in entry)) continue;
     if (kind === 'spec' && !('spec' in entry)) continue;
-    deferredOpenerConsumes.splice(i, 1);
+    S().deferredOpenerConsumes.splice(i, 1);
     return entry;
   }
   return undefined;
@@ -567,9 +573,9 @@ export function takeMatchingDeferredOpenerConsume(
 
 /** 按 openerId 取出暂存消费 — 原兜底发送认领本轮条目, 避免同 lane 后续发送误领。 */
 export function takeDeferredOpenerConsumeById(openerId: string): DeferredOpenerConsume | undefined {
-  const index = deferredOpenerConsumes.findIndex((entry) => entry.openerId === openerId);
+  const index = S().deferredOpenerConsumes.findIndex((entry) => entry.openerId === openerId);
   if (index < 0) return undefined;
-  return deferredOpenerConsumes.splice(index, 1)[0];
+  return S().deferredOpenerConsumes.splice(index, 1)[0];
 }
 
 /**
@@ -578,7 +584,7 @@ export function takeDeferredOpenerConsumeById(openerId: string): DeferredOpenerC
  * 不应消费上一轮遗留的 opener。
  */
 export function getOpenerTrigger(laneUserId: string): string | undefined {
-  return openerTriggers.get(laneUserId);
+  return S().openerTriggers.get(laneUserId);
 }
 
 /**
@@ -587,10 +593,10 @@ export function getOpenerTrigger(laneUserId: string): string | undefined {
  * 仍落回话题 — 而不是向已删除的开场白卡 reply 失败。无触发记录返回 false。
  */
 export function rearmAnchorToTrigger(laneUserId: string): boolean {
-  const triggerId = openerTriggers.get(laneUserId);
-  openerTriggers.delete(laneUserId);
+  const triggerId = S().openerTriggers.get(laneUserId);
+  S().openerTriggers.delete(laneUserId);
   if (!triggerId) return false;
-  const state = laneAnchors.get(laneUserId) ?? {
+  const state = S().laneAnchors.get(laneUserId) ?? {
     queue: [],
     held: null,
     quotedHeld: false,
@@ -599,7 +605,7 @@ export function rearmAnchorToTrigger(laneUserId: string): boolean {
   state.held = triggerId;
   state.quotedHeld = true;
   state.inThreadReply = true;
-  laneAnchors.set(laneUserId, state);
+  S().laneAnchors.set(laneUserId, state);
   return true;
 }
 
@@ -624,13 +630,13 @@ function resolveSendTarget(userId: string, opts?: { advanceRound?: boolean; thre
   }
   if (!lane) return { kind: 'open_id', id: userId };
 
-  const state = laneAnchors.get(userId) ?? {
+  const state = S().laneAnchors.get(userId) ?? {
     queue: [],
     held: null,
     quotedHeld: false,
     inThreadReply: false,
   };
-  laneAnchors.set(userId, state);
+  S().laneAnchors.set(userId, state);
   // 领取条件: advanceRound(流式建卡 = 新回合)必领; 其余出站只在完全没有
   // 持有时领(首次一次性回复)。回合中途的卡片/文件**不领** — 队列里可能已经
   // 排着下一轮的触发锚点, 中途领取会把下一轮的锚点偷来错挂。队列空时保留
@@ -698,12 +704,12 @@ async function requireSendTarget(userId: string, opts?: { advanceRound?: boolean
   if (!target && lane?.threadId) {
     // A persisted topic lane survives restart, unlike its in-memory reply anchor.
     // Recover from that exact thread; never fall back to the group main timeline.
-    const epoch = accountEpoch;
+    const epoch = S().accountEpoch;
     const res = await ensureClient().im.v1.message.list({
       params: { container_id_type: 'thread', container_id: lane.threadId,
         sort_type: 'ByCreateTimeDesc', page_size: 50 },
     });
-    if (epoch !== accountEpoch) throw new Error('Feishu account replaced during anchor recovery');
+    if (epoch !== S().accountEpoch) throw new Error('Feishu account replaced during anchor recovery');
     ensureClient();
     if (res.code !== 0) throw new Error(`Feishu topic anchor lookup failed: ${res.code}`);
     const anchor = res.data?.items?.find((item) =>
@@ -730,7 +736,7 @@ async function withSendTarget<T>(
   opts: { advanceRound?: boolean; threadTs?: string } | undefined,
   send: (target: SendTarget) => Promise<T>,
 ): Promise<T> {
-  return runWithPinnedAccount({ client: ensureClient(), epoch: accountEpoch }, async () => {
+  return runWithPinnedAccount({ client: ensureClient(), epoch: S().accountEpoch }, async () => {
     const target = await requireSendTarget(userId, opts);
     ensureClient();
     return send(target);
@@ -738,11 +744,11 @@ async function withSendTarget<T>(
 }
 
 export function getBoundClient(): Lark.Client | null {
-  return client;
+  return S().client;
 }
 
 export function getBoundCreds(): BotCredentials | null {
-  return creds;
+  return S().creds;
 }
 
 interface PinnedAccount {
@@ -764,19 +770,20 @@ export function runWithPinnedAccount<T>(
 export function isPinnedAccountCurrent(): boolean {
   const pin = pinnedAccount.getStore();
   if (!pin) return true;
-  return pin.epoch === accountEpoch;
+  return pin.epoch === S().accountEpoch;
 }
 
 function ensureClient(): Lark.Client {
   const pin = pinnedAccount.getStore();
   if (pin) {
-    if (pin.epoch !== accountEpoch) {
+    if (pin.epoch !== S().accountEpoch) {
       throw new Error(
         '[feishu/outbound] pinned Feishu account was replaced — send aborted',
       );
     }
     return pin.client;
   }
+  const client = S().client;
   if (!client)
     throw new Error('[feishu/outbound] Lark.Client not bound — feishu connection not established');
   return client;
@@ -829,27 +836,23 @@ const OPEN_THREAD_DEDUP_TTL_MS = 10 * 60_000;
 const OPEN_THREAD_DEDUP_MAX_ENTRIES = 200;
 /** 超时/断线后用同一 uuid 再打 reply 的次数(不含首次)。 */
 const OPEN_THREAD_UNCERTAIN_RETRIES = 2;
-const openThreadByTrigger = new Map<
-  string,
-  { ts: number; promise: Promise<OpenThreadOutcome> }
->();
 
 function pruneOpenThreadDedup(): void {
   const now = Date.now();
-  for (const [triggerId, entry] of openThreadByTrigger) {
-    if (now - entry.ts > OPEN_THREAD_DEDUP_TTL_MS) openThreadByTrigger.delete(triggerId);
+  for (const [triggerId, entry] of S().openThreadByTrigger) {
+    if (now - entry.ts > OPEN_THREAD_DEDUP_TTL_MS) S().openThreadByTrigger.delete(triggerId);
   }
-  while (openThreadByTrigger.size > OPEN_THREAD_DEDUP_MAX_ENTRIES) {
+  while (S().openThreadByTrigger.size > OPEN_THREAD_DEDUP_MAX_ENTRIES) {
     let oldestKey: string | undefined;
     let oldestTs = Number.POSITIVE_INFINITY;
-    for (const [triggerId, entry] of openThreadByTrigger) {
+    for (const [triggerId, entry] of S().openThreadByTrigger) {
       if (entry.ts < oldestTs) {
         oldestTs = entry.ts;
         oldestKey = triggerId;
       }
     }
     if (oldestKey === undefined) break;
-    openThreadByTrigger.delete(oldestKey);
+    S().openThreadByTrigger.delete(oldestKey);
   }
 }
 
@@ -871,15 +874,15 @@ function pruneOpenThreadDedup(): void {
  */
 export function openThread(replyToMessageId: string): Promise<OpenThreadOutcome> {
   const now = Date.now();
-  const cached = openThreadByTrigger.get(replyToMessageId);
+  const cached = S().openThreadByTrigger.get(replyToMessageId);
   if (cached && now - cached.ts <= OPEN_THREAD_DEDUP_TTL_MS) return cached.promise;
 
   const promise = doOpenThread(replyToMessageId).then((outcome) => {
     // unconfirmed 不是稳定结论: 清掉缓存, 重投再用同一 uuid 取回原消息。
-    if (outcome.kind === 'unconfirmed') openThreadByTrigger.delete(replyToMessageId);
+    if (outcome.kind === 'unconfirmed') S().openThreadByTrigger.delete(replyToMessageId);
     return outcome;
   });
-  openThreadByTrigger.set(replyToMessageId, { ts: now, promise });
+  S().openThreadByTrigger.set(replyToMessageId, { ts: now, promise });
   pruneOpenThreadDedup();
   return promise;
 }
@@ -892,7 +895,7 @@ export function openThread(replyToMessageId: string): Promise<OpenThreadOutcome>
  * 重试提示正是设计意图。
  */
 export function evictOpenThreadOutcome(replyToMessageId: string): void {
-  openThreadByTrigger.delete(replyToMessageId);
+  S().openThreadByTrigger.delete(replyToMessageId);
 }
 
 /**
@@ -1113,24 +1116,23 @@ export async function removeReaction(messageId: string, reactionId: string): Pro
 
 const CARD_LANE_TTL_MS = 31 * 24 * 60 * 60 * 1000;
 const CARD_LANE_MAX_ENTRIES = 512;
-const cardLanes = new Map<string, { ts: number; lane: string }>();
 
 function pruneCardLanes(): void {
   const now = Date.now();
-  for (const [messageId, entry] of cardLanes) {
-    if (now - entry.ts > CARD_LANE_TTL_MS) cardLanes.delete(messageId);
+  for (const [messageId, entry] of S().cardLanes) {
+    if (now - entry.ts > CARD_LANE_TTL_MS) S().cardLanes.delete(messageId);
   }
-  while (cardLanes.size > CARD_LANE_MAX_ENTRIES) {
+  while (S().cardLanes.size > CARD_LANE_MAX_ENTRIES) {
     let oldestKey: string | undefined;
     let oldestTs = Number.POSITIVE_INFINITY;
-    for (const [messageId, entry] of cardLanes) {
+    for (const [messageId, entry] of S().cardLanes) {
       if (entry.ts < oldestTs) {
         oldestTs = entry.ts;
         oldestKey = messageId;
       }
     }
     if (oldestKey === undefined) break;
-    cardLanes.delete(oldestKey);
+    S().cardLanes.delete(oldestKey);
   }
 }
 
@@ -1138,7 +1140,7 @@ function pruneCardLanes(): void {
 /** 登记交互卡的发卡 lane(按钮回调 resolveCardLane 反查用)。 */
 export function registerCardLane(userId: string, messageId: string): void {
   if (!decodeLaneUserId(userId)) return;
-  cardLanes.set(messageId, { ts: Date.now(), lane: userId });
+  S().cardLanes.set(messageId, { ts: Date.now(), lane: userId });
   pruneCardLanes();
 }
 
@@ -1149,7 +1151,7 @@ export function registerCardLane(userId: string, messageId: string): void {
  */
 export function resolveCardLane(messageId: string, chatId: string): string | null {
   pruneCardLanes();
-  const entry = cardLanes.get(messageId);
+  const entry = S().cardLanes.get(messageId);
   if (!entry) return null;
   const lane = decodeLaneUserId(entry.lane);
   if (!lane || lane.chatId !== chatId) return null;
@@ -1802,7 +1804,7 @@ export async function resolveReplyMessage(
   messageId: string,
   expectedChatId: string,
 ): Promise<ResolvedReplyMessage | null> {
-  const c = client;
+  const c = S().client;
   if (!c) return null;
   const log = getLog();
   try {
@@ -1885,7 +1887,7 @@ export async function fetchChatHistoryPage(args: {
   pageToken?: string;
   pageSize?: number;
 }): Promise<ChatHistoryPage> {
-  const c = client;
+  const c = S().client;
   if (!c) throw new Error('feishu client not bound');
   const res = await c.im.v1.message.list({
     params: {
@@ -1950,7 +1952,7 @@ export async function fetchChatHistoryPage(args: {
  */
 export async function getChatName(chatId: string): Promise<string | null> {
   const log = getLog();
-  const c = client;
+  const c = S().client;
   if (!c) return null;
   try {
     const res = await c.im.v1.chat.get({ path: { chat_id: chatId } });

@@ -135,9 +135,25 @@ export interface ImSessionNamespace {
 }
 
 /**
+ * 连接交给伙伴后, 一个入站 userId 落在伙伴的哪条任务上:
+ *   - owner-dm: 已验证的主人私聊 → 伙伴主任务(canonical);
+ *   - group: 群 / 话题 → 伙伴的 `channel` 专线(按 chat + topic 一条);
+ *   - guest-dm: 获准的非主人私聊 → 伙伴的 `channel` 专线(按 userId 一条)。
+ */
+export type ImCompanionLane =
+  | { kind: 'owner-dm' }
+  | { kind: 'group'; chatId: string; threadId: string }
+  | { kind: 'guest-dm'; userId: string };
+
+/**
  * 渠道适配器 — 编排层所有渠道差异的唯一注入点。
  */
 export interface ImChannelAdapter {
+  /**
+   * 连接交给伙伴时的落点解析(见 ImCompanionLane)。只有支持「交给伙伴」的渠道
+   * 实现; 缺省 = 这个渠道的连接不能交给伙伴, 保持原有路由。
+   */
+  companionLane?: (userId: string) => ImCompanionLane;
   /** Resolve an authenticated private notification topic before any default-session or command routing. */
   resolveNotificationReply?: (event: IMMessageEvent) => Promise<string | null>;
   notificationReplyText?: { unavailable: string; commands: string };
@@ -310,6 +326,12 @@ export interface ImUiTextPack {
     detachedBySlash: string;
     detachedByRevoke: string;
     notAttached: string;
+    /** 连接已交给伙伴时, 主人私聊里 `/new` 的提示(伙伴主任务不轮换)。缺省回 `new`。 */
+    companionDmNew?: string;
+    /** 连接已交给伙伴时, 群 / 话题里 `/new` 换了一条新专线后的提示。缺省回 `new`。 */
+    companionLaneNew?: string;
+    /** 连接已交给伙伴时, 改模型 / 权限 / 项目这类命令的提示(这些归伙伴设置管)。 */
+    companionManagedCommand?: string;
   };
   agent: {
     completedNoText: string;
@@ -337,6 +359,8 @@ export interface ImUiTextPack {
     scheduledTaskHeader: (name: string | null) => string;
     unsupportedOnly: (entries: IMUnsupportedEntry[]) => string;
     unsupportedNotice: (entries: IMUnsupportedEntry[]) => string;
+    /** 伙伴当前不能接消息(暂停 / 归档等)时的渠道提示。缺省用 runtimeError 包一层。 */
+    companionUnavailable?: (reason: string) => string;
   };
   /**
    * 派发前失败文案。agentUnsupported 用于「所选 Agent 无法提供渠道所需的

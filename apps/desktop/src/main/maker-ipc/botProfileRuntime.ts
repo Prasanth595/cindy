@@ -494,8 +494,9 @@ export async function hydrateBotProfileRuntime(
     .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
     .where(and(eq(botSessionLinks.sessionId, opts.id), eq(sessions.source, 'bot')))
     .limit(1);
-  // Group lanes are long-lived like the canonical Chat and share its Profile/Home.
-  if (!row || !['canonical', 'delegation', 'group'].includes(row.role)) return null;
+  // Group lanes and IM channel lanes are long-lived like the canonical Chat and
+  // share its Profile/Home. Channel lanes are full-profile lanes (not chat-only).
+  if (!row || !['canonical', 'delegation', 'group', 'channel'].includes(row.role)) return null;
   const [profile] = await db
     .select()
     .from(botProfiles)
@@ -793,6 +794,26 @@ export async function hydrateBotProfileRuntime(
       runtimeConfiguredMcpServers.push(serverName);
     }
   }
+  // IM 专线(飞书连接交给伙伴后的群 / 话题)的渠道出站工具是这条专线回消息、回文件的
+  // 载体, 不是伙伴的可选能力: 会话带飞书渠道 vendorOptions 时始终挂上, 伙伴显式收窄的
+  // 工具集也不收掉它。只放行这一项, 不扩其它能力; 继承模式本来就包含它。
+  if (row.role === 'channel' && typeof opts.vendorOptions?.feishuChatId === 'string') {
+    const imServer = 'cindy_feishu_bot';
+    const imToolset = PROVIDER_NAME_TO_PLUGIN_ID[imServer];
+    if (
+      !runtimeConfiguredMcpServers.includes(imServer)
+      && mcpCatalog.some((item) => item.name === imServer && item.available !== false)
+    ) {
+      runtimeConfiguredMcpServers.push(imServer);
+    }
+    if (
+      !runtimeConfiguredToolsets.includes(imToolset)
+      && toolsetCatalog.some((item) => item.id === imToolset && item.available !== false)
+    ) {
+      runtimeConfiguredToolsets.push(imToolset);
+    }
+    disabledToolsets = disabledToolsets.filter((id) => id !== imToolset);
+  }
   const identity = chatOnly ? profile.description : version.identitySource.trim();
   opts.botProfilePrompt = buildBotProfilePrompt({
     displayName: profile.displayName,
@@ -1049,8 +1070,9 @@ export async function hydrateBotProfileRuntime(
           : JSON.stringify(previousResolved.runtimeEpoch ?? {}),
       )
     : null;
-  // Canonical Chats and group lanes follow Profile updates; delegation children stay frozen.
-  const followsProfile = row.role === 'canonical' || row.role === 'group';
+  // Canonical Chats, group lanes and IM channel lanes follow Profile updates;
+  // delegation children stay frozen.
+  const followsProfile = row.role === 'canonical' || row.role === 'group' || row.role === 'channel';
   const runtimeEpochChanged = followsProfile && previousSnapshot !== undefined
     ? previousSnapshot.profileVersion !== row.profileVersion
       || previousRuntimeEpoch?.sha256 !== runtimeEpochSha256
