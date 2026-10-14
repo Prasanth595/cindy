@@ -20,7 +20,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
 import {
@@ -53,7 +53,7 @@ import { readRemoteCollectionCache } from '@/device-link/remoteResourceAvailabil
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
-import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
+import { fontWeight, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 import { goBackGuarded } from '@/utils/backGuard';
 import {
   BOT_GROUP_MESSAGE_AVATAR_SIZE,
@@ -61,7 +61,8 @@ import {
   BotGroupDuoAvatar,
   useBotGroupIdentities,
 } from './BotGroupAvatars';
-import { ChatIdentityHeader } from './ChatIdentityHeader';
+import { CHAT_HEADER_BLUR_FADE_INSIDE, ChatIdentityHeader } from './ChatIdentityHeader';
+import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
@@ -118,6 +119,10 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
+  // iOS: the header floats on the task header's feathered blur and the timeline scrolls beneath it.
+  const floatingHeader = Platform.OS === 'ios';
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const stickToBottom = useRef(true);
   const group = chat.state.kind === 'ready' ? chat.state.group : null;
   const focused = useIsFocused();
@@ -262,6 +267,8 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     onOpenSettings={() => setSettings(true)}
     settingsLabel={t('groupChat.settings.open')} />;
 
+  const offlineNote = group && !chat.online
+    ? <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(offlineKey)}</Text> : null;
   let body;
   if (chat.state.kind === 'loading' && !chat.online) {
     // Nothing to show until the computer is reachable again; the screen re-reads on reconnect.
@@ -297,8 +304,9 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
         Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web',
       )}
     >
-      {!chat.online ? <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(offlineKey)}</Text> : null}
-      <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.timeline} keyboardShouldPersistTaps="handled"
+      {floatingHeader ? null : offlineNote}
+      <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.timeline, floatingHeader && { paddingTop: headerHeight + spacing.md }]}
+        scrollIndicatorInsets={floatingHeader ? { top: headerHeight } : undefined} keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         maintainVisibleContentPosition={chat.server ? { minIndexForVisible: group.hasMoreBefore ? 1 : 0 } : undefined}
         onScroll={onScroll} scrollEventThrottle={64}
@@ -325,10 +333,19 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     </KeyboardAvoidingView>;
   }
 
-  return <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']} testID="botGroup.screen">
+  return <SafeAreaView style={styles.screen} edges={floatingHeader ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']} testID="botGroup.screen">
     <Stack.Screen options={{ headerShown: false }} />
-    {header}
-    {body}
+    {floatingHeader ? <>
+      <View style={[styles.flex, group ? null : { paddingTop: headerHeight }]}>{body}</View>
+      <SessionHeaderNativeBlur height={Math.max(headerHeight, insets.top + navigationChrome.target)} fadeInside={CHAT_HEADER_BLUR_FADE_INSIDE} />
+      <View style={[styles.floatingHeader, { paddingTop: insets.top }]} onLayout={(event) => setHeaderHeight(event.nativeEvent.layout.height)}>
+        {header}
+        {offlineNote}
+      </View>
+    </> : <>
+      {header}
+      {body}
+    </>}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
       act={chat.act} onClose={() => setSettings(false)}
       onRefresh={chat.reload}
@@ -523,6 +540,7 @@ function BotGroupTimelineItem({
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.surface },
   flex: { flex: 1 },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyActions: { flexDirection: 'row', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.lg },
   timeline: { flexGrow: 1, justifyContent: 'flex-end', gap: spacing.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },

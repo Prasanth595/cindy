@@ -15,6 +15,7 @@ import {
   type InstalledGhost,
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
+  confirmLegacyLibraryReattach: vi.fn(async (_plugin: unknown) => false),
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
     dir: string;
@@ -103,6 +104,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  confirmLegacyLibraryReattach: (plugin: unknown) => runtime.confirmLegacyLibraryReattach(plugin),
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
@@ -249,6 +251,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 afterEach(() => {
   runtime.ghosts = [];
+  runtime.confirmLegacyLibraryReattach.mockReset();
+  runtime.confirmLegacyLibraryReattach.mockImplementation(async () => false);
   runtime.install.mockReset();
   runtime.inspect.mockReset();
   runtime.inspectedManifest = null;
@@ -2151,6 +2155,32 @@ describe('PluginMarketService migration and defaultInstall', () => {
     );
     expect(runtime.install.mock.calls[0]?.[1]?.pendingMarketRecord)
       .not.toHaveProperty('approvedPackageSha256');
+  });
+
+  it.each([true, false])('asks once before a first organization install and passes the answer (%s)', async (answer) => {
+    runtime.confirmLegacyLibraryReattach.mockImplementation(async () => answer);
+    const item = summary({ scope: 'organization', organizationId: 'org-1', ghostId: 'acme-tool', namespace: 'acme' });
+    runtime.install.mockResolvedValue({
+      manifest: manifest(item.ghostId),
+      dir: '/userData/cindy-brain/' + item.ghostId,
+      enabled: true,
+    });
+    const target = harness([item]);
+    await target.service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledTimes(1);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledWith({
+      ghostId: 'acme-tool', namespace: 'acme', pluginId: item.id, name: item.name,
+    });
+    const options = runtime.install.mock.calls[0]?.[1] as Record<string, unknown>;
+    if (answer) expect(options).toMatchObject({ reclaimLegacyBareInstance: true });
+    else expect(options).not.toHaveProperty('reclaimLegacyBareInstance');
+  });
+
+  it('does not ask about leftover libraries for a public install', async () => {
+    const item = summary();
+    runtime.install.mockResolvedValue({ manifest: manifest(), dir: '/userData/cindy-brain/cindy-test', enabled: true });
+    await harness([item]).service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).not.toHaveBeenCalled();
   });
 
   it('manual market install accepts the normalized setup manifest returned by detail', async () => {

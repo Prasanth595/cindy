@@ -161,6 +161,23 @@ function rpcRequest(method = 'echo', params: unknown = { value: 1 }) {
 }
 
 describe('nodeRuntimeBroker owner boundary races', () => {
+  it('does not spawn a worker for an instance the host holds stopped until restart', async () => {
+    const ghost = fakeGhost();
+    const spawnProcess = vi.fn(() => new FakeNodeProcess() as unknown as NodeWorkerProcess);
+    const broker = new GhostNodeRuntimeBroker({
+      getGhost: () => ghost,
+      spawnProcess,
+      startBlockedReason: (id) => (id === 'node-ghost' ? 'restart Cindy' : null),
+    });
+    try {
+      await expect(broker.handleRequest('node-ghost', rpcRequest('blocked'))).resolves.toMatchObject({ ok: false });
+      await expect(broker.startForRecovery(ghost)).rejects.toThrow('restart Cindy');
+      expect(spawnProcess).not.toHaveBeenCalled();
+    } finally {
+      broker.destroyAll();
+    }
+  });
+
   it('owner boundary change during startup kills the worker and fails closed', async () => {
     let generation = 1;
     const invalidated = vi.fn();

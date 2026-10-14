@@ -289,6 +289,11 @@ export interface GhostManagerOptions {
     namespace: string | null;
     packageSha256: string | null;
   }) => { pluginId: string } | null;
+  /**
+   * Market evidence that a bare-id library left by an organization install
+   * removed before the registry existed belongs to this organization plugin.
+   */
+  canReclaimLegacyBareInstance?: (input: { ghostId: string; namespace: string; pluginId: string }) => boolean;
   canResumePendingResidentOffline?: (ghostId: string) => boolean;
   onResumePendingResidentOffline?: (ghost: InstalledGhost) => void;
   preparePendingResidentForMigration?: (ghostId: string) => Promise<boolean>;
@@ -596,6 +601,21 @@ export function ghostManifestHostUnsupportedReason(raw: unknown): string | null 
  * - **卸载防御**:id 先过格式校验(shared/ghost 同一份规则),再确认
  *   目标是 rootDir 的直接子目录,杜绝借 id 删任意路径。
  */
+/**
+ * The bare key is free when no record holds it. A user-confirmed reattach may
+ * also replace an inactive record that never belonged to an organization.
+ */
+function canTakeBareKey(
+  registry: PluginInstanceRegistry,
+  ghostId: string,
+  allowInactiveRootHolder: boolean,
+): boolean {
+  const holders = Object.values(registry.instances).filter((record) =>
+    record.instanceKey === ghostId || record.contentRelId === ghostId);
+  if (holders.length === 0) return true;
+  return allowInactiveRootHolder && holders.every((record) => !record.active && record.namespace === null);
+}
+
 export class GhostManager {
   private readonly receiptStore: GhostInstallReceiptStore;
   private readonly retirements = new FeatureRetirementStore(() => this.receiptStore.rootDir());
@@ -797,6 +817,7 @@ export class GhostManager {
     namespace: string | null,
     source?: PluginInstanceSource,
     pluginId?: string | null,
+    userConfirmedBareReclaim = false,
   ):
     | { kind: 'blocked'; reason: string }
     | { kind: 'ok'; instanceKey: string; relId: string } {
@@ -810,8 +831,57 @@ export class GhostManager {
       }
       const reusable = findReusableInstance(registry, { ghostId, namespace, source, pluginId });
       if (reusable) return { kind: 'ok', instanceKey: reusable.instanceKey, relId: reusable.contentRelId };
+      // The same organization plugin takes the bare key back, so its leftover
+      // library opens again: by market evidence, or because the user said so.
+      if (namespace !== null && source === 'market' && pluginId &&
+          canTakeBareKey(registry, ghostId, userConfirmedBareReclaim) &&
+          (userConfirmedBareReclaim ||
+            this.options.canReclaimLegacyBareInstance?.({ ghostId, namespace, pluginId }) === true)) {
+        return { kind: 'ok', instanceKey: ghostId, relId: ghostId };
+      }
     }
     return { kind: 'ok', instanceKey, relId };
+  }
+
+  /**
+   * Whether the library left under the bare id may move to an installed
+   * instance in this namespace. `in-use` means an install still runs under the
+   * bare id (for example the local copy), so its library is not left behind.
+   * A record of another organization never gives the bare id away. The caller
+   * asks the user.
+   */
+  bareLibraryOffer(ghostId: string, namespace: string | null): 'available' | 'in-use' | 'unavailable' {
+    this.ensureCurrentOwnerContextSync();
+    const registry = this.syncInstanceRegistry();
+    if (this.instanceRegistryService.isBlocked()) return 'unavailable';
+    const holders = Object.values(registry.instances).filter((record) =>
+      record.instanceKey === ghostId || record.contentRelId === ghostId);
+    if (holders.some((record) => !record.active && record.namespace !== null && record.namespace !== namespace)) {
+      return 'unavailable';
+    }
+    if (holders.some((record) => record.active)) return 'in-use';
+    try {
+      return fs.lstatSync(this.contentPath(ghostId), { throwIfNoEntry: false }) === undefined ? 'available' : 'in-use';
+    } catch {
+      return 'unavailable';
+    }
+  }
+
+  /**
+   * Whether an organization market install could take the bare key if the
+   * user confirms. No evidence is checked here; the caller asks the user.
+   */
+  canOfferBareReclaim(ghostId: string, namespace: string, pluginId: string): boolean {
+    this.ensureCurrentOwnerContextSync();
+    const registry = this.syncInstanceRegistry();
+    if (this.instanceRegistryService.isBlocked()) return false;
+    if (findReusableInstance(registry, { ghostId, namespace, source: 'market', pluginId })) return false;
+    if (!canTakeBareKey(registry, ghostId, true)) return false;
+    try {
+      return fs.lstatSync(this.contentPath(ghostId), { throwIfNoEntry: false }) === undefined;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -2439,7 +2509,33 @@ export class GhostManager {
   list(): InstalledGhost[] {
     this.ensureCurrentOwnerContextSync();
     this.syncInstanceRegistry();
-    const listedDirs = this.listContentEntries();
+    const result = this.projectListedEntries(this.listContentEntries());
+    result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id));
+    return result;
+  }
+
+  /**
+   * One active instance by its registry key, projected exactly as list() does
+   * but without rescanning every install. Undefined means the cached registry
+   * cannot answer, so the caller must fall back to list().
+   */
+  findInstalledInstance(instanceKey: string): InstalledGhost | undefined {
+    this.ensureCurrentOwnerContextSync();
+    if (this.instanceRegistryService.isBlocked()) return undefined;
+    const record = this.instanceRegistryService.current()?.instances[instanceKey];
+    if (!record?.active || !isValidPluginInstallRelId(record.contentRelId)) return undefined;
+    let dir: string;
+    try {
+      dir = this.contentPath(record.contentRelId);
+      if (classifyGhostDirEntrySync(dir) !== 'directory') return undefined;
+    } catch {
+      return undefined;
+    }
+    const [ghost] = this.projectListedEntries([{ relId: record.contentRelId, dir }]);
+    return ghost && installedGhostStoragePart(ghost) === instanceKey ? ghost : undefined;
+  }
+
+  private projectListedEntries(listedDirs: Array<{ relId: string; dir: string }>): InstalledGhost[] {
     const result: InstalledGhost[] = [];
     for (const listed of listedDirs) {
       const { relId, dir } = listed;
@@ -2568,7 +2664,6 @@ export class GhostManager {
         ...(identity.namespace === null && this.options.isTrustedBundledId?.(identity.ghostId) ? { builtin: true } : {}),
       });
     }
-    result.sort((a, b) => a.manifest.id.localeCompare(b.manifest.id));
     return result;
   }
 
@@ -3350,6 +3445,8 @@ export class GhostManager {
       registrySource?: PluginInstanceSource;
       pluginId?: string | null;
       namespace?: string | null;
+      /** The user agreed to reattach the library left under the bare id. */
+      reclaimLegacyBareInstance?: boolean;
       /** Synchronous live-authority check immediately before publishing the staged package. */
       beforePackagePlacement?: () => void;
     },
@@ -3369,6 +3466,8 @@ export class GhostManager {
       registrySource?: PluginInstanceSource;
       pluginId?: string | null;
       namespace?: string | null;
+      /** The user agreed to reattach the library left under the bare id. */
+      reclaimLegacyBareInstance?: boolean;
       beforePackagePlacement?: () => void;
     },
   ): Promise<{ ghost: InstalledGhost } | { rejection: InstallRejection }> {
@@ -3410,7 +3509,7 @@ export class GhostManager {
     const registrySource = opts?.registrySource ??
       (opts?.installOrigin === 'agent-forge' ? 'agent-forge' : 'manual');
     const placement = this.planInstancePlacement(
-      manifest.id, identity.namespace, registrySource, opts?.pluginId,
+      manifest.id, identity.namespace, registrySource, opts?.pluginId, opts?.reclaimLegacyBareInstance === true,
     );
     if (placement.kind === 'blocked') {
       return { rejection: { code: 'already-installed', reason: placement.reason } };

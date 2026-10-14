@@ -8,7 +8,7 @@
  *  - 插件面板窗口状态(detach / attach)
  *  - 双阶段就绪握手 + visibility 刷新
  *  - 插件管理(list / reload / setEnabled / resolvePanelMedia / runtimeStates +
- *    事件订阅 onChanged / onRuntimeChanged / onPreviewMedia)
+ *    事件订阅 onChanged / onRuntimeChanged / onLibraryReplaced / onPreviewMedia)
  *  - 面板产物右键菜单媒体动作(copyMediaToClipboard / showItemInFolder)
  *  - 面板拖拽引渡落会话附件(cacheMediaForSession)
  *
@@ -75,6 +75,7 @@ function fanOut(channel: string): (cb: (payload: unknown) => void) => Unsub {
 
 const fanOutGhostsChanged = fanOut('ghosts:changed');
 const fanOutGhostRuntimeChanged = fanOut('ghosts:runtime-changed');
+const fanOutGhostLibraryReplaced = fanOut('ghosts:library-replaced');
 const fanOutGhostPreviewMedia = fanOut('ghosts:preview-media');
 
 function onCurrentGhostBadge(
@@ -267,6 +268,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onChanged: fanOutGhostsChanged,
     /** 插件运行时状态变化（crashed / fused / off 等）。 */
     onRuntimeChanged: fanOutGhostRuntimeChanged,
+    onLibraryReplaced: fanOutGhostLibraryReplaced,
     /** 面板点图/视频预览（宿主弹 lightbox）。 */
     onPreviewMedia: fanOutGhostPreviewMedia,
     /** 未读角标快照（ghostUnreadStore 首帧）。 */

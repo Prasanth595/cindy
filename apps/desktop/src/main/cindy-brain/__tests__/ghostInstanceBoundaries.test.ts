@@ -34,7 +34,8 @@ function harness() {
     blobUrl: (hash, ext) => 'cindy-media://blobs/' + hash + ext });
   const api = load({ availableGhosts: () => ghosts, findInstalledGhostByInstanceId, resolveInstalledGhost,
     installedGhostPhysicalKeys,
-    requireGhostAvailableForActiveSession: vi.fn(), getGhostManager: () => ({ setEnabled }),
+    requireGhostAvailableForActiveSession: vi.fn(), getGhostManager: () => ({ setEnabled,
+      findInstalledInstance: (key: string) => ghosts.find((ghost) => installedGhostStoragePart(ghost) === key) }),
     beginGhostMutation: () => vi.fn(), captureGhostMutationOwner: vi.fn(),
     getGhostNodeRuntimeBroker: () => ({ stop }), getGhostSubscriptionGateway: () => ({ dropGhost: vi.fn() }),
     getGhostErrandSlot: () => ({ clearGhost: vi.fn() }),

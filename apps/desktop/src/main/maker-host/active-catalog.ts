@@ -1,3 +1,4 @@
+import type { ModelDisplayPricing } from '@cindy/model-providers';
 import {
   projectProviderMediaModels,
   isCustomRoutedProvider,
@@ -184,6 +185,8 @@ export interface XdGatewayAgentOverride {
  * 能力字段已由服务端一次归一化,客户端不再二次转换(见 model-access/index.ts)。
  */
 export interface XdGatewayModelInfo {
+  displayPricing?: ModelDisplayPricing;
+  currency?: 'USD' | 'CNY';
   id: string;
   availability?: 'available' | 'requires_payment';
   /** Gateway 原生 mode(issue #882,权威分类字段;缺省时下游按 id 正则兜底)。 */
@@ -1112,6 +1115,14 @@ function declaredPiModels(providerId: string, discovered: readonly CatalogModel[
   return [...byId.values()];
 }
 
+function gatewayDisplayPricing(model: XdGatewayModelInfo): Pick<CatalogModel, 'displayPricing' | 'currency' | 'costDiscount'> {
+  return model.displayPricing && model.currency ? {
+    displayPricing: model.displayPricing,
+    currency: model.currency,
+    ...(model.costDiscount !== undefined ? { costDiscount: model.costDiscount } : {}),
+  } : {};
+}
+
 function projectXdGatewayMediaModels(
   provider: Provider,
   gatewayModels: readonly XdGatewayModelInfo[],
@@ -1121,6 +1132,7 @@ function projectXdGatewayMediaModels(
     .filter((model) => model.mode === 'image_generation')
     .map((model) => ({
       ...pickModelMetadata(model),
+      ...gatewayDisplayPricing(model),
       id: model.id,
       name: model.name ?? model.id,
       discoveredMetadata: pickModelMetadata(model),
@@ -1131,6 +1143,7 @@ function projectXdGatewayMediaModels(
     .filter((model) => model.mode === 'video_generation')
     .map((model) => ({
       ...pickModelMetadata(model),
+      ...gatewayDisplayPricing(model),
       id: model.id,
       name: model.name ?? model.id,
       discoveredMetadata: pickModelMetadata(model),
@@ -1144,6 +1157,7 @@ function projectXdGatewayMediaModels(
     .filter((model) => model.mode === 'embedding' && model.availability === 'available')
     .map((model) => ({
       ...pickModelMetadata(model),
+      ...gatewayDisplayPricing(model),
       id: model.id,
       name: model.name ?? model.id,
       discoveredMetadata: pickModelMetadata(model),
@@ -1156,6 +1170,7 @@ function projectXdGatewayMediaModels(
     )
     .map((model) => ({
       ...pickModelMetadata(model),
+      ...gatewayDisplayPricing(model),
       id: model.id,
       name: model.name ?? model.id,
       mode: model.mode,
@@ -1568,6 +1583,7 @@ function computeMerged(): Catalog {
         const cost = effectiveGatewayModelCost(gm);
         const contextWindow = ov.contextWindow ?? gm.contextWindow;
         const merged: CatalogModel = {
+          ...gatewayDisplayPricing(gm),
           id: gm.id,
           discoveredMetadata: { ...pickModelMetadata(gm), ...pickModelMetadata(ov) },
           ...(nativeApi !== undefined ? { nativeApi } : {}),

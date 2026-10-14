@@ -7,8 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { resolveRemoteText, type RemoteResource } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import { RemoteCompanionAvatar } from '@/components/RemoteCompanionAvatar';
-import { radius, spacing, iconSize, iconStroke, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
-import { CHAT_HEADER_MARK_SIZE, ChatIdentityHeader, ChatIdentitySubtitle } from './ChatIdentityHeader';
+import { radius, spacing, iconSize, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { CHAT_HEADER_GLYPH_STROKE, CHAT_HEADER_MARK_SIZE, ChatIdentityHeader, ChatIdentitySubtitle } from './ChatIdentityHeader';
 import { CompanionPresenceRing } from './CompanionPresenceRing';
 import { CompanionProfileSheet } from './CompanionProfileSheet';
 import { useTeammateNavigation } from './useTeammateNavigation';
@@ -61,7 +61,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       controlsReady={controlsReady}
       onBack={onBack}
       onOpenSettings={() => { setInitialPage('home'); setProfile(true); }}
-      accessory={resource.links?.some(link=>link.target.kind==='resource'&&link.target.ref.id==='todos:'+resource.ref.id)?<HomeHeaderGlassButton testID="companion.todos.open" disabled={!controlsReady} accessibilityLabel={t('devices.teammateTodo.title')} onPress={()=>setTodos(true)}><ListTodo size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textPrimary}/></HomeHeaderGlassButton>:undefined}
+      accessory={resource.links?.some(link=>link.target.kind==='resource'&&link.target.ref.id==='todos:'+resource.ref.id)?<HomeHeaderGlassButton testID="companion.todos.open" disabled={!controlsReady} accessibilityLabel={t('devices.teammateTodo.title')} onPress={()=>setTodos(true)}><ListTodo size={iconSize.lg} strokeWidth={CHAT_HEADER_GLYPH_STROKE} color={colors.textPrimary}/></HomeHeaderGlassButton>:undefined}
       settingsLabel={t('devices.companionProfile.settingsTitle')} />
     <CompanionTodos visible={todos} onClose={()=>setTodos(false)} botId={resource.ref.id} deviceId={deviceId} deviceName={deviceName} online={online}/>
     <CompanionProfileSheet initialPage={initialPage} visible={profile} onClose={() => setProfile(false)} onClosed={() => { const action = pending.current; pending.current = null; action?.(); }}
