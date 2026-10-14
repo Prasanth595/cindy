@@ -643,6 +643,18 @@ export function buildUserProvider(
         ...(nativeApi !== undefined ? { nativeApi } : {}),
         // Projection is not a user edit. Save only the original configuration.
         userModelConfig: structuredClone(storedModel),
+        // applyPreset snapshots protocol fields into storage. Their presence is
+        // not evidence of a user edit while they match this bound preset. Keep
+        // storage intact; only the displayed provenance uses this comparison.
+        protocolCustomized: Boolean(
+          (storedModel.api && storedModel.api !== presetModel?.api) ||
+          (storedModel.piApi && storedModel.piApi !== presetModel?.piApi) ||
+          (storedModel.route && (
+            storedModel.route.baseUrl !== presetModel?.route?.baseUrl ||
+            storedModel.route.wireProtocol !== presetModel?.route?.wireProtocol ||
+            storedModel.route.requestPath !== presetModel?.route?.requestPath
+          ))
+        ),
         ...(m.api ? { api: m.api, ...(agent === 'pi' ? { piApi: m.api } : {}) } : {}),
         ...(importedApi && !m.piApi && !m.api ? {
           api: importedApi, ...(agent === 'pi' ? { piApi: importedApi } : {}),

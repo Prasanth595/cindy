@@ -3,8 +3,8 @@
 // IPC is replaced with an in-memory store; no real credentials or network calls.
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildUserProvider, modelProtocolComparison } from '@cindy/model-providers';
-import type { CustomProviderConfig, ProviderRuntimeModelConfig, ProviderView } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, modelProtocolComparison } from '@cindy/model-providers';
+import type { AgentKind, CustomProviderConfig, ProviderRuntimeModelConfig, ProviderView } from '@cindy/model-providers';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
   t: (key: string) => key, i18n: { language: 'en', resolvedLanguage: 'en' },
@@ -123,4 +123,63 @@ describe('issue #6015: saved connection protocol versus model protocol', () => {
       Object.defineProperty(window, 'electronAPI', { configurable: true, value: previousAPI });
     }
   });
+});
+
+
+it('shows catalog provenance for untouched preset snapshots with a read-only protocol', () => {
+  const preset = BUNDLED_CATALOG.presets!.find(item => item.id === 'opencode-go')!;
+  const provider = { ...buildUserProvider({ id: 'preset-fixture', name: 'Preset fixture', runtimes: { pi: {
+    ...structuredClone(preset.runtimes.pi!), catalogPresetId: preset.id,
+  } } }, { presets: BUNDLED_CATALOG.presets }), connected: true } as ProviderView;
+  const model = provider.models.pi!.find(item => item.userModelConfig?.api || item.userModelConfig?.piApi)!;
+  render(<ModelAdvancedDrawer provider={provider}
+    row={{ id: model.id, name: model.name, avail: ['pi'], byAgent: { pi: model } }}
+    open onOpenChange={vi.fn()} pricePresentationOf={() => null}
+    onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+  expect(screen.getByText('settings.providers.models.advanced.protocol.sourceCatalog')).toBeTruthy();
+  expect(screen.queryByText('settings.providers.models.advanced.protocol.sourceModel')).toBeNull();
+});
+
+it.each([
+  { name: 'Pi piApi and custom route', agent: 'pi', baseUrl: 'https://supplier.example.test/v1', modelId: 'fixture-model', expected: 'openai-completions', source: 'connection' },
+  { name: 'Codex custom request path', agent: 'codex', baseUrl: 'https://supplier.example.test/v1', modelId: 'fixture-model', expected: 'openai-completions', source: 'connection' },
+  { name: 'Codex mixed-protocol catalog', agent: 'codex', baseUrl: 'https://api.individual.githubcopilot.com', modelId: 'gpt-5-mini', expected: 'openai-responses', source: 'catalog' },
+] as const)('restores protocol and complete route: $name', async ({ agent, baseUrl, modelId, expected, source }) => {
+  const engine: AgentKind = agent;
+  let saved: CustomProviderConfig = { id: 'restore-fixture', name: 'Restore fixture', runtimes: { [engine]: {
+    baseUrl, wireProtocol: 'openai-chat', models: [{ id: modelId, name: 'Fixture', contextWindow: 32768,
+      api: 'anthropic-messages', piApi: 'anthropic-messages',
+      route: { baseUrl: 'https://custom.example.test', wireProtocol: 'anthropic-messages', requestPath: '/custom/messages' },
+    }],
+  } } };
+  const original = structuredClone(saved.runtimes[engine]!.models[0]!);
+  const previousAPI = window.electronAPI;
+  const update = vi.fn(async (value: CustomProviderConfig) => { saved = structuredClone(value); return { ok: true }; });
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+  function renderDrawer() {
+    const provider = { ...buildUserProvider(saved), connected: true } as ProviderView;
+    const model = provider.models[engine]![0]!;
+    return render(<ModelAdvancedDrawer provider={provider}
+      row={{ id: model.id, name: model.name, avail: [engine], byAgent: { [engine]: model } }}
+      open onOpenChange={vi.fn()} pricePresentationOf={() => null}
+      onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+  }
+  try {
+    const view = renderDrawer();
+    const button = screen.getByRole('button', { name: `${engine === 'pi' ? 'Pi' : 'Codex'} · settings.providers.custom.fields.wireProtocol` });
+    fireEvent.keyDown(button, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.providers.models.advanced.protocol.restoreRoute' }));
+    await waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const { api: _api, piApi: _piApi, route: _route, ...unchanged } = original;
+    expect(saved.runtimes[engine]!.models[0]).toEqual(unchanged);
+    const restored = buildUserProvider(saved);
+    expect(modelProtocolComparison(restored, { [engine]: restored.models[engine]![0]! }).forAgent(engine))
+      .toMatchObject({ outbound: expected, source, customized: false });
+    view.unmount();
+    renderDrawer();
+    expect(screen.getByText(`settings.providers.models.advanced.protocol.source${source === 'catalog' ? 'Catalog' : 'Connection'}`)).toBeTruthy();
+  } finally {
+    cleanup();
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: previousAPI });
+  }
 });

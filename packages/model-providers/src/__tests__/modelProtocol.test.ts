@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { buildUserProvider } from '../user-provider.js';
+import { BUNDLED_CATALOG } from '../catalog.js';
+import type { CustomProviderConfig, ProviderPreset, ProviderRuntimeModelConfig } from '../types.js';
 import { modelProtocolComparison, nativeModelAgents } from '../modelProtocol.js';
 import { pickRecommendedAgent, resolveAgentCapability } from '../unifiedSelection.js';
 import type { CatalogModel, PiModelApi, Provider } from '../types.js';
@@ -236,5 +239,58 @@ describe('custom supplier transport ownership', () => {
     provider.source = 'user';
     expect(modelProtocolComparison(provider, byAgent).forAgent('codex')?.mode).toBe('unknown');
     expect(nativeModelAgents(provider, byAgent)).toEqual(['pi']);
+  });
+});
+
+
+describe('preset protocol provenance (#6015)', () => {
+  const presetModel: ProviderRuntimeModelConfig = {
+    id: 'preset-model', name: 'Preset model', api: 'anthropic-messages', piApi: 'anthropic-messages',
+    route: { baseUrl: 'https://supplier.example.test', wireProtocol: 'anthropic-messages', requestPath: '/messages' },
+  };
+  const preset: ProviderPreset = { id: 'fixture-preset', name: 'Fixture', runtimes: { pi: {
+    baseUrl: 'https://supplier.example.test', wireProtocol: 'openai-chat', models: [presetModel],
+  } } };
+  const config = (): CustomProviderConfig => ({ id: 'preset-connection', name: 'Fixture', runtimes: { pi: {
+    ...preset.runtimes.pi!, catalogPresetId: preset.id, models: [structuredClone(presetModel)],
+  } } });
+  function project(value: CustomProviderConfig, presets = [preset]) {
+    const provider = buildUserProvider(value, { presets });
+    return { provider, model: provider.models.pi![0]!, protocol: modelProtocolComparison(provider, { pi: provider.models.pi![0]! }).forAgent('pi') };
+  }
+  it('treats saved preset api, piApi and route snapshots as catalog defaults without rewriting storage', () => {
+    const value = config();
+    value.runtimes.pi!.models[0]!.contextWindow = 32768;
+    const before = structuredClone(value);
+    const result = project(value);
+    expect(result.protocol).toMatchObject({ source: 'catalog', customized: false, outbound: 'anthropic-messages' });
+    expect(result.model.userModelConfig).toEqual(before.runtimes.pi!.models[0]);
+    expect(value).toEqual(before);
+  });
+  it.each(['api', 'piApi', 'baseUrl', 'wireProtocol', 'requestPath'] as const)('keeps a diverging %s field customized', field => {
+    const value = config();
+    const stored = value.runtimes.pi!.models[0]!;
+    if (field === 'api' || field === 'piApi') stored[field] = 'openai-responses';
+    else if (field === 'baseUrl') stored.route!.baseUrl = 'https://other.example.test';
+    else if (field === 'wireProtocol') stored.route!.wireProtocol = 'openai-responses';
+    else stored.route!.requestPath = '/custom';
+    expect(project(value).protocol).toMatchObject({ source: 'model', customized: true });
+  });
+  it('does not infer matching defaults from an unavailable preset or a detached endpoint', () => {
+    expect(project(config(), []).protocol).toMatchObject({ source: 'model', customized: true });
+    const value = config();
+    value.runtimes.pi!.baseUrl = 'https://detached.example.test';
+    expect(project(value).protocol).toMatchObject({ source: 'model', customized: true });
+  });
+  it('labels untouched OpenCode Go Pi snapshots as catalog defaults', () => {
+    const go = BUNDLED_CATALOG.presets!.find(item => item.id === 'opencode-go')!;
+    expect(go).toBeDefined();
+    const provider = buildUserProvider({ id: 'go', name: 'Go', runtimes: { pi: {
+      ...structuredClone(go.runtimes.pi!), catalogPresetId: go.id,
+    } } }, { presets: BUNDLED_CATALOG.presets });
+    const models = provider.models.pi!.filter(item => item.userModelConfig?.api || item.userModelConfig?.piApi || item.userModelConfig?.route);
+    expect(models.length).toBeGreaterThan(0);
+    for (const item of models) expect(modelProtocolComparison(provider, { pi: item }).forAgent('pi'))
+      .toMatchObject({ source: 'catalog', customized: false });
   });
 });

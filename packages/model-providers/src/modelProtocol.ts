@@ -48,7 +48,9 @@ export function modelProtocolComparison(
       : routeApi ?? connection ?? model.api ?? null;
     // Stored customization is separate from the effective source: a custom
     // path can make stale API metadata inactive, but it must still be resettable.
-    const customized = Boolean(model.userModelConfig?.api || model.userModelConfig?.piApi || model.userModelConfig?.route);
+    const customized = model.protocolCustomized ?? Boolean(
+      model.userModelConfig?.api || model.userModelConfig?.piApi || model.userModelConfig?.route,
+    );
     const usesModelProtocol = agent === 'pi'
       ? Boolean(model.api || model.piApi || routeApi)
       : Boolean(routeApi || (model.api && model.api === outbound));
