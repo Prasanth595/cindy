@@ -114,7 +114,7 @@ describe('CCAgentSessionView 接线不变式', () => {
   });
   it('已有设备互联任务与保留原路由的 SSH 任务跳过来源门禁，草稿与本地任务仍保留门禁', () => {
     expect(chatInputSrc).toContain(
-      'const enforceConnectedSourceGate = (!sessionId || !deviceLinkDeviceId) && !preserveSshCodexRoute;',
+      'const enforceConnectedSourceGate = (!sessionId || !catalogDeviceId) && !preserveSshCodexRoute;',
     );
     expect(chatInputSrc).toContain('const preserveSshCodexRoute = !!sessionId && !!sshCodexHostId &&');
     expect(chatInputSrc).toMatch(
@@ -154,12 +154,12 @@ describe('CCAgentSessionView 接线不变式', () => {
     expect(menuSource).toContain("item('openInNewWindow', onOpenInNewWindow, ownerActionsBlocked)");
     expect(menuSource).toContain('disabled={disabled}');
   });
-  it('live / 历史错误横幅都携带 SSH 与 device-link 执行端归属', () => {
+  it('live / 历史错误横幅都携带 SSH、device-link 与远程 Agent 执行端归属', () => {
     expect(sessionViewSrc).toMatch(
-      /<ErrorTailErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}/,
+      /<ErrorTailErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}[\s\S]*?agentDeviceId=\{session\?\.agentDeviceId\}/,
     );
     expect(sessionViewSrc).toMatch(
-      /<ErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}/,
+      /<ErrorBanner[\s\S]*?remoteHostId=\{session\?\.remoteHostId \?\? undefined\}[\s\S]*?deviceLinkDeviceId=\{remoteDeviceId\}[\s\S]*?agentDeviceId=\{session\?\.agentDeviceId\}/,
     );
   });
   it('远程活动镜像在 turn 执行或等待交互时压过中断时间戳启发式', () => {
@@ -174,7 +174,14 @@ describe('CCAgentSessionView 接线不变式', () => {
   it('双时间戳中断候选必须等 main 真值确认,未确认不当作中断证据(#4513)', () => {
     // 视图侧:候选出现(activeTurnStartedAt 变化)时向 main 回填一次权威运行态,
     // main 说在飞则与 isRunning/remoteTurnActive 同样锁存 ack。
-    expect(sessionViewSrc).toContain('getSessionTurnActive(sessionId)');
+    // 行为由 useSessionTurnActiveTruth.test.tsx 覆盖;这里只锁视图接线。
+    expect(sessionViewSrc).toContain('useSessionTurnActiveTruth({');
+    // 远程会话的真值问被控端:控制端本机 main 没有这个 turn,永远答 false。
+    expect(sessionViewSrc).toContain(
+      'const turnActiveDeviceId = remoteDeviceId ?? session?.deviceLinkDeviceId ?? null;',
+    );
+    // 链路恢复在线时重查:离线期间查询失败落 null,不重查会永久压住真中断横幅。
+    expect(sessionViewSrc).toContain("online: remoteConn === 'local' || remoteConn === 'connected',");
     // 真值绑定所属会话:路由复用切会话时旧 true 不得锁存新会话的 ack(P1)。
     expect(sessionViewSrc).toContain('mainTurnActiveForSession');
     expect(sessionViewSrc).toContain(

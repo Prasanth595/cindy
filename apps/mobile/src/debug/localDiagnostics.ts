@@ -12,6 +12,7 @@ import {
 } from "./mobileDebugFiles";
 import { getMobileMarkdownRenderMetrics } from "../session/mobileMarkdownRenderMetrics";
 import { getMobileMessageWebViewMetrics } from "../session/mobileMessageWebViewMetrics";
+import { setJankMetricsEnabled, takeJankMetrics } from "./jankMetrics";
 import {
   MAX_DIAGNOSTIC_EVENTS,
   projectDiagnostic,
@@ -36,6 +37,8 @@ let debugBatch = "";
 let debugBytes = 0;
 let dropped = 0;
 const MAX_PENDING_BYTES = 512 * 1024;
+/** About every 30 s on the 2 s probe, plus immediately after any stall. */
+const JANK_METRICS_EVERY_TICKS = 15;
 
 function updateDebugSink(): void {
   setMobileDebugSink(
@@ -253,9 +256,11 @@ export function startLocalDiagnostics(): () => void {
     void flushDiagnostics().catch(() => {});
   });
   let timer: ReturnType<typeof setInterval> | undefined;
+  let ticksSinceJankMetrics = 0;
   const tick = () => {
     const now = performance.now();
-    if (state === "active" && now - lastTick > 3000)
+    const stalled = state === "active" && now - lastTick > 3000;
+    if (stalled)
       mobileDebugLog("warn", "lifecycle", "js stall", {
         elapsedMs: now - lastTick - 2000,
         // A timer gap alone cannot distinguish busy JS from process suspension.
@@ -269,9 +274,20 @@ export function startLocalDiagnostics(): () => void {
         markdown: getMobileMarkdownRenderMetrics(),
         webViews: getMobileMessageWebViewMetrics(),
       });
+    // Counters cover the interval since the previous line, so a line written
+    // right after a stall attributes the work that ran during it.
+    ticksSinceJankMetrics += 1;
+    if (
+      enabled &&
+      (stalled || ticksSinceJankMetrics >= JANK_METRICS_EVERY_TICKS)
+    ) {
+      ticksSinceJankMetrics = 0;
+      mobileDebugLog("debug", "performance", "jank metrics", takeJankMetrics());
+    }
     void flushDiagnostics().catch(() => {});
   };
   const syncProbe = () => {
+    setJankMetricsEnabled(enabled && !stopped);
     if (!enabled || stopped) {
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;

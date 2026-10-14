@@ -35,7 +35,7 @@ function setup() {
 
 it.each([
   ['auto', 60, ['60', '0.8', '2560', '1500000']],
-  ['saver', 60, ['30', '0.65', '0', '1000000']],
+  ['saver', 60, ['60', '0.65', '0', '1000000']],
   ['hd', 30, ['30', '0.9', '3840', '3000000']],
 ] as const)('passes the %s tier capture budget to the macOS helper', async (quality, fps, args) => {
   const { owner } = setup();
@@ -59,4 +59,20 @@ it('accepts frames up to the tier budget and stops capture beyond it', async () 
   await vi.waitFor(() => expect(auto.child.kill).toHaveBeenCalledOnce());
   auto.owner.stop();
   await expect(rejected).resolves.toBeNull();
+});
+
+it('captures only the 代输入 window, never the display, and returns to the display after', async () => {
+  const { owner } = setup();
+  owner.setExcludedWindows([7, 8]);
+  owner.setWindow(4242);
+  // The window view exists only as the overlay stream.
+  await expect(owner.frame('1', false)).resolves.toBeNull();
+  expect(h.spawn).not.toHaveBeenCalled();
+  void owner.frame('1', true, { fps: 30, quality: 'auto', audio: false });
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  expect(h.spawn.mock.calls[0][1].at(-1)).toBe('window:4242');
+  owner.setWindow(null);
+  void owner.frame('1', true, { fps: 30, quality: 'auto', audio: false });
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+  expect(h.spawn.mock.calls[1][1].at(-1)).toBe('7,8');
 });

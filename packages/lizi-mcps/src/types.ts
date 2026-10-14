@@ -232,6 +232,11 @@ export interface SchedulerMcpDeps {
   authorizeCall?: import('./tool-call-authority.js').ToolCallAuthorizer;
   getScheduler(): import('@cindy/maker-scheduler').Scheduler;
   /**
+   * 同账号其它电脑上的定时任务(host 注入,desktop 经既有 `maker:schedule:*` 远程控制通道)。
+   * 缺省 = host 未接 → 工具的 `device` 只接受 local,其它值返 REMOTE_UNSUPPORTED。
+   */
+  remote?: import('./scheduler/_devices.js').SchedulerRemoteDeps;
+  /**
    * 前置检查脚本(preRunHook)统一安装服务(host 注入,desktop 实现为
    * scheduler-host/hook-script-generator.installHookScript):落盘路径规范、
    * 命令拼装、落盘后自测全部由 host 代码保证,agent 不允许绕开它手写脚本文件。
@@ -553,6 +558,12 @@ export interface BrowserMcpDeps {
   supportsResourceDownloads?(): boolean;
   /** Whether the active backend accepts semantic element queries. */
   supportsSemanticQueries?(): boolean;
+  /**
+   * 代输入: true while the target tab still shows a page where the owner just
+   * typed a secret. Page-state reads (evaluate, requests, response bodies,
+   * console) are then refused.
+   */
+  pageReadsRestricted?(target: { profile?: string; targetId?: string }): Promise<boolean>;
   logger?: LiziMcpLogger;
   /**
    * Optional L2 (user-local) recipe layer. The host scans userData, parses with
@@ -653,6 +664,11 @@ export interface ComputerMcpDeps {
     args: Record<string, unknown>,
     context?: ComputerMcpCallContext,
   ): Promise<unknown>;
+  /**
+   * 代输入: whether typing would land in a password field — the element at a
+   * screen point of this app, or its focused element. Roles only, never values.
+   */
+  isSecureTarget?(target: { pid: number; point?: { x: number; y: number } }): Promise<boolean>;
   logger?: LiziMcpLogger;
 }
 

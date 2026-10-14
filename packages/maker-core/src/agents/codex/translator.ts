@@ -32,6 +32,7 @@ import {
   stripInternalWebCitations,
 } from '@cindy/maker-shared/internal-citation';
 
+import { TokenSpeedMeter } from '../shared/token-speed.js';
 import type { AgentEvent, AgentTaskStatus, AgentTaskUpdateEventData } from '../../types/events.js';
 import { normalizeAccountRateLimitSnapshot } from '../../types/account-rate-limits.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
@@ -79,6 +80,8 @@ export interface CodexRuntimeState {
   reasoningTextLen: Map<string, number>;
   /** item.id → agentMessage 已 emit 文本字符长度(citation 归一化后的空间,见 handleAgentMessage)。 */
   itemTextLen: Map<string, number>;
+  /** Live tok/s shown in the status bar (Pi extension algorithm). */
+  tokenSpeed: TokenSpeedMeter;
   /** Current model-active interval start; null while tools/approvals own the turn. */
   generationStartedAt: number | null;
   /** Tool/approval boundaries currently owning the turn. Generation resumes after all finish. */
@@ -99,6 +102,7 @@ export interface CodexRuntimeState {
   itemDeltaText: Map<string, string>;
   /** item.id → item/started 或 item/updated 最新原始全文快照。 */
   itemSnapshotText: Map<string, string>;
+  itemMessagePhase: Map<string, 'commentary' | 'final_answer'>;
   /** 已经 emit 过 tool_use 的 item.id (避免 started + 第一次 updated 重复)。 */
   emittedToolUse: Set<string>;
   /** 尚未 emit 的 Web Search 候选输入，供跨 started/updated/completed 快照补全。 */
@@ -129,6 +133,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
+    tokenSpeed: new TokenSpeedMeter(),
     generationStartedAt: null,
     generationPendingToolIds: new Set(),
     generationDurationMs: 0,
@@ -140,6 +145,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     itemRawText: new Map(),
     itemDeltaText: new Map(),
     itemSnapshotText: new Map(),
+    itemMessagePhase: new Map(),
     emittedToolUse: new Set(),
     pendingWebSearchInput: new Map(),
     emittedWebSearchInput: new Map(),
@@ -164,6 +170,7 @@ function sampleCodexGenerationHeartbeat(rt: CodexRuntimeState, now = Date.now())
     now - previous > CODEX_GENERATION_HEARTBEAT_MS + CODEX_GENERATION_SUSPEND_GAP_MS
   ) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
   }
   rt.generationHeartbeatAt = now;
 }
@@ -181,6 +188,7 @@ function startCodexGenerationHeartbeat(rt: CodexRuntimeState): void {
 /** Reset per-turn model-generation timing; turn wall-clock is tracked separately by the host. */
 export function resetCodexGenerationTiming(rt: CodexRuntimeState): void {
   stopCodexGenerationHeartbeat(rt);
+  rt.tokenSpeed.reset();
   rt.generationStartedAt = null;
   rt.generationPendingToolIds.clear();
   rt.generationDurationMs = 0;
@@ -197,6 +205,7 @@ function closeCodexGenerationInterval(rt: CodexRuntimeState, endedAt: number): v
   if (startedAt === null) return;
   if (endedAt < startedAt) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
     return;
   }
   rt.generationDurationMs += endedAt - startedAt;
@@ -310,6 +319,9 @@ function noteCodexGenerationBoundary(
     // for pause pairing but fail closed for TPS.
     rt.generationTimingReliable = false;
   }
+  if (phase === 'started' && (item.type === 'reasoning' || item.type === 'agentMessage')) {
+    rt.tokenSpeed.start();
+  }
   if (
     typeof item.type !== 'string' ||
     !CODEX_GENERATION_PAUSE_ITEM_TYPES.has(item.type)
@@ -322,6 +334,8 @@ function noteCodexGenerationBoundary(
   }
   const pauseId = `item:${item.id}`;
   if (phase === 'started') {
+    // The model finished emitting this call; its execution is not generation time.
+    rt.tokenSpeed.pause(receivedAt);
     pauseCodexGeneration(rt, turnId, pauseId, receivedAt);
     return;
   }
@@ -1104,9 +1118,12 @@ function emitAgentMessageProgress(
   ctx.rt.itemRawText.set(itemId, rawText);
   ctx.rt.itemTextLen.set(itemId, emitted.length);
   if (delta.length === 0) return;
+  ctx.rt.tokenSpeed.recordDelta(delta);
   queue.push({
     type: 'text',
-    data: { text: delta, isFinal: false, agentMessageId: itemId },
+    data: { text: delta, isFinal: false, agentMessageId: itemId,
+      ...(ctx.rt.itemMessagePhase.has(itemId) ? { phase: ctx.rt.itemMessagePhase.get(itemId) } : {}),
+    },
     source: 'codex',
   });
 }
@@ -1178,12 +1195,14 @@ function handleAgentMessage(
   ctx: CodexTranslateContext,
 ): void {
   const rawText = item.text ?? '';
+  if (item.phase) ctx.rt.itemMessagePhase.set(item.id, item.phase);
 
   if (phase === 'completed') {
     ctx.rt.itemTextLen.delete(item.id);
     ctx.rt.itemRawText.delete(item.id);
     ctx.rt.itemDeltaText.delete(item.id);
     ctx.rt.itemSnapshotText.delete(item.id);
+    ctx.rt.itemMessagePhase.delete(item.id);
     // 既有契约:completed 只出 final 全文、不补 delta(desktop codexTranslator.test
     // 钉死 3 事件形状)。boundary 按住的尾段与「completed 才首次出现的文本」同一待遇:
     // 不进 delta 流,由 final 全文兜底(main 落库层 onAssistantTextEvent 的 isFinal
@@ -1315,6 +1334,7 @@ export function translateReasoningSummaryTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
+  ctx.rt.tokenSpeed.recordDelta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);
@@ -1349,6 +1369,7 @@ export function translateReasoningTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
+  ctx.rt.tokenSpeed.recordDelta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);

@@ -215,8 +215,12 @@ vi.mock("@/session/mediaPlayerWebView", () => ({
 vi.mock("@/session/MarkdownBlockContent", () => ({
   MarkdownBlockContent: () => null,
 }));
+// 只把菜单项 id 投到 DOM,供删除入口可见性断言;不渲染真实底部面板。
 vi.mock("@/session/MessageActionSheet", () => ({
-  MessageActionSheet: () => null,
+  MessageActionSheet: ({ items }: any) =>
+    createElement("div", {
+      "data-menu-items": items.map((item: any) => item.id).join(","),
+    }),
 }));
 vi.mock("@/session/AuthorizationMessageCard", () => ({
   AuthorizationMessageCard: () => null,
@@ -334,6 +338,31 @@ describe("device source label", () => {
       { viewerDeviceId: "phone-b" },
     );
     expect(html).toContain("从电脑发送");
+  });
+});
+
+describe("message delete entry", () => {
+  const menus = (html: string) =>
+    [...html.matchAll(/data-menu-items="([^"]*)"/g)].map((m) => m[1]);
+
+  it("stays in the More menu while the session still looks running locally", () => {
+    // 点停止后手机本地运行态可能晚于被控端收敛:删除不能因此被藏起来,
+    // 运行中能否删由被控端 SESSION_RUNNING 判定。
+    const messages = [msg("u1", "first", null), msg("u2", "second", null)];
+    for (const isSessionStreaming of [true, false]) {
+      const items = menus(
+        render(messages, { onDeleteMessage: vi.fn(), isSessionStreaming }),
+      );
+      expect(items.length).toBe(2);
+      for (const ids of items) expect(ids.split(",")).toContain("delete");
+    }
+  });
+
+  it("is absent when the screen offers no delete action (shared task guest)", () => {
+    const items = menus(
+      render([msg("u1", "first", null)], { isSessionStreaming: false }),
+    );
+    for (const ids of items) expect(ids.split(",")).not.toContain("delete");
   });
 });
 
@@ -484,5 +513,18 @@ describe("source labels reveal their ids on long press", () => {
     expect(html).toContain("由自动化发送");
     expect(html).not.toContain("自动化 ID");
     expect(html).not.toMatch(/data-testid="message.automationOrigin"[^>]*data-hint/);
+  });
+});
+
+describe('private group reply source', () => {
+  it('renders the host group name and id on assistant replies after remote normalization', () => {
+    const html = render([{ ...msg('group-private', 'Private reply', {
+      sourceGroup: { groupId: 'g-1', name: 'Design' },
+      origin: { kind: 'session', senderSessionId: 'lane', senderBotId: 'bot-1' },
+    }), role: 'assistant' }]);
+    expect(html).toContain('从群聊「Design」发送');
+    expect(html).toContain('群聊 ID：g-1');
+    expect(html).toContain('message.groupSource');
+    expect(render([{ ...msg('ordinary', 'Private', null), role: 'assistant' }])).not.toContain('message.groupSource');
   });
 });

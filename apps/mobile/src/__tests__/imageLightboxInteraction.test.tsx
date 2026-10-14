@@ -18,7 +18,11 @@ type GestureNode = {
   handlers: Record<string, Handler>;
   children?: GestureNode[];
 };
-type Animation = { target: number; done?: (finished: boolean) => void };
+type Animation = {
+  target: number;
+  done?: (finished: boolean) => void;
+  decay?: { velocity: number; clamp: [number, number]; rubberBandEffect?: boolean };
+};
 type Value = { value: number; animation?: Animation };
 const runtime = vi.hoisted(() => ({
   nodes: new Map<string, any>(),
@@ -82,6 +86,18 @@ vi.mock("react-native", async () => {
     },
   };
 });
+vi.mock("@/session/NativeVideoPlayer", async () => ({
+  NativeVideoPlayer: (props: any) => {
+    runtime.nodes.set(props.testID ?? "NativeVideoPlayer", props);
+    return null;
+  },
+}));
+vi.mock("@/session/mediaPlayerWebView", async () => ({
+  RemoteMediaPlayerWebView: (props: any) => {
+    runtime.nodes.set(props.testID ?? "RemoteMediaPlayerWebView", props);
+    return null;
+  },
+}));
 vi.mock("@/components/AppText", async () => ({
   Text: (await import("react-native")).Text,
 }));
@@ -181,6 +197,12 @@ vi.mock("react-native-reanimated", async () => {
     cancelAnimation: cancel,
     withTiming: timing,
     withSpring: timing,
+    // 惯性滑行:测试里按速度方向直接落到 clamp 端点。
+    withDecay: (decay: NonNullable<Animation["decay"]>, done?: Animation["done"]) => ({
+      target: decay.velocity > 0 ? decay.clamp[1] : decay.clamp[0],
+      done,
+      decay,
+    }),
   };
 });
 
@@ -342,6 +364,16 @@ function transform() {
     scale: style.transform[4].scale,
   };
 }
+/** 画面位移(origin 折进 translate 后):捏合中途重新锚定会改 raw translate,画面不变。 */
+function visual() {
+  const t = runtime.nodes.get("Image").style[1].current.transform;
+  const scale = t[4].scale;
+  return {
+    x: t[0].translateX + t[2].translateX * (1 - scale),
+    y: t[1].translateY + t[3].translateY * (1 - scale),
+    scale,
+  };
+}
 const press = (id: string) =>
   act(() => runtime.nodes.get(id).onPress({ stopPropagation: vi.fn() }));
 const doubleTapAtCorner = () => fire(doubleTap(), "onEnd", { x: 330, y: 650 });
@@ -422,6 +454,257 @@ describe("image viewer gesture lifecycle", () => {
     finishAnimations();
     expect(transform().y).toBe(0);
     expect(transform().x).toBe(-195);
+  });
+
+  // 双击右下角后:2.5x,T=(-195,-375);未知尺寸按 400×800 铺满,溢出 x=300、y=600。
+  it("keeps following a zoomed pan past the image edge and springs back on release", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: -200, changeY: 0 });
+    const stretched = transform().x;
+    expect(stretched).toBeLessThan(-300);
+    expect(stretched).toBeGreaterThan(-395);
+    // 往回拖同样的距离回到原处,越界段不吞位移
+    fire(pan(), "onChange", { changeX: 200, changeY: 0 });
+    expect(transform().x).toBeCloseTo(-195, 6);
+    fire(pan(), "onChange", { changeX: -200, changeY: 0 });
+    fire(pan(), "onFinalize", { velocityX: 0, velocityY: 0 });
+    finishAnimations();
+    expect(transform()).toEqual({ x: -300, y: -375, scale: 2.5 });
+  });
+
+  it("flings with inertia inside the bounds and a touch catches it in place", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: 10, changeY: 0 });
+    fire(pan(), "onFinalize", { velocityX: 1500, velocityY: 0 });
+    const fling = runtime.values.find((v) => v.animation?.decay)?.animation?.decay;
+    expect(fling).toEqual({ velocity: 1500, clamp: [-300, 300], rubberBandEffect: true });
+    const fail = vi.fn();
+    act(() => pan().handlers.onTouchesDown({}, { fail }));
+    expect(fail).not.toHaveBeenCalled();
+    expect(runtime.values.some((v) => v.animation?.decay)).toBe(false);
+    // 接住后没拖就抬手:在边界内原地停住,不再滑也不回弹
+    const caught = transform();
+    fire(pan(), "onFinalize", {}, false);
+    finishAnimations();
+    expect(transform()).toEqual(caught);
+  });
+
+  it("lets a pinch overshoot the max zoom and settles back around the fingers", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    // 焦点相对中心 (50,-100),其下图片点 p = (F - T) / 2.5 = (98, 110)
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 2.4 });
+    expect(transform().scale).toBeGreaterThan(4);
+    expect(transform().scale).toBeLessThan(6);
+    fire(pinch(), "onFinalize");
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+    finishAnimations();
+    const settled = transform();
+    expect(settled.scale).toBe(4);
+    expect(settled.x + 98 * settled.scale).toBeCloseTo(50, 6);
+    expect(settled.y + 110 * settled.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("zooms a second pinch around the fingers, not the stale screen focal", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2 });
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    const after = transform();
+    expect(after.scale).toBe(3);
+    expect(after.x + 98 * after.scale).toBeCloseTo(50, 6);
+    expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("does not jump when the fingers lift one at a time", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const pinched = visual();
+    // 先抬一指:焦点跳到余下那根手指上(半个指距),倍率不变,画面不能跟着跳。
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1.2, numberOfPointers: 1 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    expect(visual().y).toBeCloseTo(pinched.y, 6);
+    expect(visual().scale).toBeCloseTo(pinched.scale, 6);
+    // 余下那根手指激活的单指平移不能叠加位移,松手也不另起惯性滑行。
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: 40, changeY: 0 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    fire(pinch(), "onFinalize");
+    fire(pan(), "onFinalize", { velocityX: 2000, velocityY: 0 });
+    expect(runtime.values.some((v) => v.animation?.decay)).toBe(false);
+    finishAnimations();
+    const after = transform();
+    expect(after.scale).toBe(3);
+    expect(after.x + 98 * after.scale).toBeCloseTo(50, 6);
+    expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("keeps the pinch in charge when a pan that started first ends mid-pinch", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    // 单指先拖,第二根手指落下开始捏合
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: 10, changeY: 0 });
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const pinched = visual();
+    // 平移在捏合进行中收到位移并结束:不叠加、不滑行,也不改写捏合起点
+    fire(pan(), "onChange", { changeX: 40, changeY: 0 });
+    fire(pan(), "onFinalize", { velocityX: 2000, velocityY: 0 });
+    expect(runtime.values.some((v) => v.animation?.decay)).toBe(false);
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    expect(visual().y).toBeCloseTo(pinched.y, 6);
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    // 平移后画面位移 (-185,-375),焦点 (50,-100) 下的图片点 p = (F - T) / 2.5 = (94, 110)
+    const after = transform();
+    expect(after.scale).toBe(3);
+    expect(after.x + 94 * after.scale).toBeCloseTo(50, 6);
+    expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("lets the remaining finger keep dragging after the first one lifts", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1.2, numberOfPointers: 1 });
+    const lifted = visual();
+    fire(pinch(), "onChange", { focalX: 330, focalY: 290, scale: 1.2, numberOfPointers: 1 });
+    expect(visual().y).toBeCloseTo(lifted.y - 10, 6);
+    expect(visual().x).toBeCloseTo(lifted.x, 6);
+  });
+
+  it("settles an over-zoom around the two-finger focal, not the last remaining finger", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 2.4, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 2.4, numberOfPointers: 1 });
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    const settled = transform();
+    expect(settled.scale).toBe(4);
+    expect(settled.x + 98 * settled.scale).toBeCloseTo(50, 6);
+    expect(settled.y + 110 * settled.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("re-anchors when the gesture's own scale baseline resets with the pointer count", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const before = visual();
+    // 指数变化那一帧手势倍率回到 1:画面倍率不能跟着掉回 2.5x。
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1, numberOfPointers: 1 });
+    expect(visual().scale).toBeCloseTo(before.scale, 6);
+    expect(visual().x).toBeCloseTo(before.x, 6);
+  });
+
+  it("keeps the point under the fingers when pinching during an edge rebound", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    // 拖过左边缘松手:回弹尚未落定
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: -200, changeY: 0 });
+    fire(pan(), "onFinalize", { velocityX: 0, velocityY: 0 });
+    const start = transform();
+    expect(start.x).toBeLessThan(-300);
+    // 回弹途中在屏幕中心捏到 4x:中心下的图片点 p = (0 - T) / 2.5
+    const pointX = -start.x / 2.5;
+    fire(pinch(), "onStart", { focalX: 200, focalY: 400 });
+    fire(pinch(), "onChange", { focalX: 200, focalY: 400, scale: 1.6 });
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    const settled = transform();
+    expect(settled.scale).toBe(4);
+    expect(settled.x + pointX * settled.scale).toBeCloseTo(0, 6);
+  });
+
+  it("lets a pinch shrink below 1x and springs back to the fitted image", () => {
+    mount();
+    fire(pinch(), "onStart", { focalX: 200, focalY: 400 });
+    fire(pinch(), "onChange", { focalX: 220, focalY: 420, scale: 0.5 });
+    expect(transform().scale).toBeLessThan(1);
+    expect(transform().scale).toBeGreaterThan(0.5);
+    fire(pinch(), "onFinalize");
+    // 回弹到 1x 落定前不放开翻页:快速横划不能在回弹中途切走当前图。
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+    finishAnimations();
+    expect(transform()).toEqual({ x: 0, y: 0, scale: 1 });
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+  });
+
+  it("unlocks paging after a synchronous settle under reduced motion", () => {
+    runtime.immediate = true;
+    mount();
+    fire(pinch(), "onStart", { focalX: 200, focalY: 400 });
+    fire(pinch(), "onChange", { focalX: 220, focalY: 420, scale: 0.5 });
+    fire(pinch(), "onFinalize");
+    expect(transform()).toEqual({ x: 0, y: 0, scale: 1 });
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+  });
+
+  it("keeps settling into the new bounds when the image size arrives mid-spring", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 2.4 });
+    fire(pinch(), "onFinalize");
+    // 横图 1600×900 contain 后 400×225:4x 时纵向溢出只剩 (900-800)/2 = 50
+    act(() => runtime.nodes.get("Image").onLoad({ source: { width: 1600, height: 900 } }));
+    finishAnimations();
+    const settled = transform();
+    expect(settled.scale).toBe(4);
+    expect(Math.abs(settled.y)).toBeLessThanOrEqual(50);
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+  });
+
+  it("unlocks paging when the image size arrives during a translation-only settle at 1x", () => {
+    mount();
+    // 倍率未变、只有焦点漂移:松手只回弹位移
+    fire(pinch(), "onStart", { focalX: 200, focalY: 400 });
+    fire(pinch(), "onChange", { focalX: 260, focalY: 400, scale: 1 });
+    fire(pinch(), "onFinalize");
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+    act(() => runtime.nodes.get("Image").onLoad({ source: { width: 1600, height: 900 } }));
+    finishAnimations();
+    expect(transform()).toEqual({ x: 0, y: 0, scale: 1 });
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+  });
+
+  it("keeps the native edge bounce available for a single image at 1x", () => {
+    const url = "https://example.invalid/solo.png";
+    mount({
+      images: [{
+        key: "solo", url, title: "Solo", subtitle: "",
+        payload: { kind: "media", media: { kind: "image", url, previewable: true } },
+      } as ImageLightboxProps["images"][number]],
+      initialUrl: url,
+    });
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
   });
 
   it("does not accept dragging as the second tap", () => {
@@ -789,5 +1072,159 @@ describe("annotation drawing", () => {
     press("message.imageLightboxSendToChatButton");
     await act(async () => { await Promise.resolve(); });
     expect(onSubmit.mock.calls[0][3]).toMatchObject({ naturalWidth: 400, naturalHeight: 800 });
+  });
+});
+
+describe("chrome toggle, loading and video pages", () => {
+  const singleTap = () =>
+    gestures().find((g) => g.kind === "Tap" && g.options.numberOfTaps === 1)!;
+  const chrome = () => runtime.nodes.get("message.imageLightboxChrome");
+  const chromeOpacity = () => chrome().style[1].current.opacity;
+
+  it("toggles the chrome on single tap instead of closing, at any zoom", () => {
+    const { props } = mount();
+    fire(singleTap(), "onEnd", {}, true);
+    finishAnimations();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(chrome().pointerEvents).toBe("none");
+    expect(chromeOpacity()).toBe(0);
+
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(singleTap(), "onEnd", {}, true);
+    finishAnimations();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(chrome().pointerEvents).toBe("box-none");
+    expect(chromeOpacity()).toBe(1);
+  });
+
+  it("lets the placeholder zoom and shows the tools disabled while the original is loading", async () => {
+    const url = "xdt-image://cache/photo.png";
+    const image = {
+      key: "remote", title: "Photo", url,
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    let finish!: (media: unknown) => void;
+    const resolver = vi.fn((media: { thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.resolve({ url: "file:///thumb.png", previewable: true })
+      : new Promise((resolve) => { finish = resolve; })));
+    runtime.gesture = null;
+    await act(async () => {
+      mount({
+        images: [image], initialUrl: url, onResolveRemoteMedia: resolver as never, onShareImage: vi.fn(),
+        annotation: { submitLabel: "Send", allowDirectSubmit: true, onSubmit: vi.fn() },
+      });
+    });
+
+    expect(runtime.gesture).not.toBeNull();
+    const preview = () => runtime.nodes.get("message.imageLightboxPreviewLayer");
+    expect(preview().source.uri).toBe("file:///thumb.png");
+    expect(runtime.nodes.get("message.imageLightboxShareButton").disabled).toBe(true);
+    expect(runtime.nodes.get("message.imageLightboxSendToChatButton").disabled).toBe(true);
+    expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(true);
+
+    act(() => preview().onLoad({ source: { width: 160, height: 90 } }));
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(preview().style[1].current.transform[4].scale).toBe(2.5);
+
+    await act(async () => {
+      finish({ url: "file:///full.png", previewable: true, mimeType: "image/png" });
+    });
+    act(() => runtime.nodes.get("Image").onLoad({ source: { width: 1600, height: 900 } }));
+    expect(runtime.nodes.get("message.imageLightboxShareButton").disabled).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxSendToChatButton").disabled).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(false);
+  });
+
+  it("backs a sent image with its local copy from the first frame when no remote thumbnail is cached", async () => {
+    const url = "xdt-image://cache/sent.png";
+    const image = {
+      key: "sent", title: "Sent", url, previewUri: "file:///sent-local.jpg",
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    // 气泡用的是本地图,从没取过远程缩略图:缓存查询必然落空,原图仍在路上。
+    const resolver = vi.fn((media: { thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.reject(new Error("not cached"))
+      : new Promise(() => undefined)));
+    await act(async () => {
+      mount({ images: [image], initialUrl: url, onResolveRemoteMedia: resolver as never });
+    });
+    expect(runtime.nodes.get("message.imageLightboxPreviewLayer").source.uri).toBe("file:///sent-local.jpg");
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(false);
+  });
+
+  it("unlocks paging when the original fails after the placeholder was zoomed", async () => {
+    const url = "xdt-image://cache/broken.png";
+    const image = {
+      key: "broken", title: "Broken", url,
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    const failures = new Map<string, (error: Error) => void>();
+    const resolver = vi.fn((media: { url: string; thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.resolve({ url: "file:///thumb.png", previewable: true })
+      : new Promise((_resolve, reject) => { failures.set(media.url, reject); })));
+    const fail = (error: Error) => failures.get(url)!(error);
+    await act(async () => {
+      const nextUrl = "xdt-image://cache/next.png";
+      const next = {
+        key: "next", title: "Next", url: nextUrl,
+        payload: { kind: "media", media: { kind: "image", url: nextUrl, previewable: false } },
+      } as ImageLightboxProps["images"][number];
+      mount({ images: [image, next], initialUrl: url, onResolveRemoteMedia: resolver as never });
+    });
+    act(() => runtime.nodes.get("message.imageLightboxPreviewLayer").onLoad({ source: { width: 160, height: 90 } }));
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+
+    await act(async () => { fail(new Error("gone")); });
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(true);
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+  });
+
+  it("plays video pages with the native player, falls back to the web player and releases on close", async () => {
+    const url = "xdt-video://cache/clip.mp4";
+    const video = {
+      key: "video", title: "clip.mp4", url,
+      payload: { kind: "media", media: { kind: "video", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    const resolved = { url: "https://cdn.invalid/clip.mp4", previewable: true, mimeType: "video/mp4" };
+    const resolver = vi.fn(async (media: { thumbnail?: boolean }) => {
+      if (media.thumbnail) throw new Error("no thumb");
+      return resolved;
+    });
+    const onReleaseRemoteMedia = vi.fn();
+    const onShareImage = vi.fn();
+    await act(async () => {
+      mount({
+        images: [video], initialUrl: url, onResolveRemoteMedia: resolver as never,
+        onReleaseRemoteMedia, onShareImage,
+      });
+    });
+    const player = runtime.nodes.get("message.imageLightboxVideoPlayer");
+    expect(player.url).toBe(resolved.url);
+    expect(player.visible).toBe(true);
+    expect(runtime.nodes.has("message.imageLightboxShareButton")).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxCloseButton")).toBeTruthy();
+
+    act(() => player.onError("decode failed"));
+    const web = runtime.nodes.get("message.imageLightboxVideoWebPlayer");
+    expect(web.url).toBe(resolved.url);
+
+    // WebView 兜底也播不了:落失败态给重试,重试经 forceRefresh 重新取件后回到原生播放器。
+    runtime.nodes.delete("message.imageLightboxVideoPlayer");
+    act(() => web.onStatusChange({ type: "xdt-media-player/status", state: "error", error: "decode" }));
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(true);
+    await act(async () => press("message.imageLightboxRetryButton"));
+    expect(resolver).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url }),
+      expect.objectContaining({ forceRefresh: true }),
+    );
+    expect(runtime.nodes.get("message.imageLightboxVideoPlayer").url).toBe(resolved.url);
+
+    act(() => root.unmount());
+    expect(onReleaseRemoteMedia).toHaveBeenCalledWith(url, resolved);
+    root = createRoot(document.createElement("div"));
   });
 });

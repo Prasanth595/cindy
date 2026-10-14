@@ -60,6 +60,9 @@ export interface TeammateListProps {
   groups?: TeammateListGroups;
   /** Home only: the create entry shown under an empty list. */
   emptyAction?: ReactElement | null;
+  /** Explicit inset for the overlaid home bar; other routes keep automatic scroll insets. */
+  topInset?: number;
+  notice?: ReactElement | null;
   /** 独立整页、铺到透明系统顶栏下时,由列表自己让出上下安全区。 */
   scrollInsetProps?: Pick<ScrollViewProps, 'automaticallyAdjustsScrollIndicatorInsets' | 'contentInsetAdjustmentBehavior'>;
 }
@@ -83,12 +86,16 @@ function useAwaitingSessions(items: readonly HostedRemoteCollectionItem[]): Read
 
 /** Identity list shared by home (with group chats) and the collection route. No host headings. */
 export function TeammateList({ items, loading, refreshing, error, isOnline, connectionState, onRefresh, onSelect,
-  embedded = false, autoFocusSearch = false, onInteract, groups, emptyAction, scrollInsetProps }: TeammateListProps) {
+  embedded = false, autoFocusSearch = false, onInteract, groups, emptyAction, scrollInsetProps, topInset, notice }: TeammateListProps) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const now = useMinuteNow();
+  const listRef = useRef<FlatList<ListEntry>>(null);
+  // The notice sits in the list header; a kept-alive list may be scrolled past it when it appears.
+  const showsNotice = !!notice;
+  useEffect(() => { if (showsNotice) listRef.current?.scrollToOffset({ offset: 0, animated: true }); }, [showsNotice]);
   const [query, setQuery] = useState('');
   const awaiting = useAwaitingSessions(items);
   const entries = useMemo<ListEntry[]>(() => {
@@ -106,6 +113,9 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
     return names;
   }, [items, i18n.language]);
   const searchLabel = t(groups ? 'devices.companions.searchWithGroups' : 'devices.companions.search');
+  const errorKey = error === 'CHAT_ENDPOINT_UNAVAILABLE' ? 'groupChat.server.endpointUnavailable'
+    : error === 'CHAT_LIST_FAILED' ? 'groupChat.server.loadFailed'
+    : items.length + (groups?.items.length ?? 0) ? 'devices.companions.stale' : 'devices.resources.loadFailed';
   const header = <View style={styles.controls}>
     <View style={styles.search}>
       <Search size={iconSize.md} color={colors.textPlaceholder} strokeWidth={iconStroke.regular} />
@@ -122,7 +132,7 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       </Pressable> : null}
     </View>
     {error ? <View style={styles.noticeRow}>
-      <Text accessibilityRole="alert" style={[styles.notice, styles.noticeText]} testID="teammates.error">{t(items.length ? 'devices.companions.stale' : 'devices.resources.loadFailed')}</Text>
+      <Text accessibilityRole="alert" style={[styles.notice, styles.noticeText]} testID="teammates.error">{t(errorKey)}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel={t('devices.resources.retry')} disabled={refreshing}
         onPress={onRefresh} style={styles.retry} testID="teammates.refresh">
         {refreshing ? <ActivityIndicator color={colors.textSecondary} /> : <RefreshCw size={iconSize.sm} color={colors.textSecondary} />}
@@ -173,8 +183,8 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       accessibilityLabel={[title, ambiguous ? row.host.deviceName : '', connection, prefix, generating ? workingCopy : summary, time,
         unread ? t('devices.companions.unread') : ''].filter(Boolean).join(', ')}
       avatar={<>
-        <View style={!online ? { opacity: OFFLINE_AVATAR_OPACITY } : undefined}>
-          <RemoteCompanionAvatar avatar={display.avatar} deviceId={row.host.deviceId} name={title} online={online} size={COMPANION_ROW_AVATAR_SIZE} framed />
+        <View style={connected === false ? { opacity: OFFLINE_AVATAR_OPACITY } : undefined}>
+          <RemoteCompanionAvatar avatar={display.avatar} deviceId={row.host.deviceId} name={title} online={connected === true} size={COMPANION_ROW_AVATAR_SIZE} framed />
         </View>
         <CompanionPresenceRing active={generating} />
         <CompanionPresenceDot connected={connected} />
@@ -190,7 +200,6 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       previewPrefixTestID={attention ? 'teammate.attention' : undefined}
       unread={unread}
       unreadLabel={t('devices.companions.unread')}
-      disabled={!online}
       last={last}
       onPress={() => onSelect(row)} />;
   };
@@ -200,11 +209,14 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
     return <BotGroupListRow key={`group:${entry.row.key}`} row={entry.row} online={groups.isOnline(entry.row.host)} last={last}
       onPress={() => groups.onSelect(entry.row)} />;
   };
-  if (embedded) return <View testID="teammates.list">{header}{entries.length ? entries.map(renderEntry) : empty}</View>;
-  return <FlatList {...scrollInsetProps} style={styles.list} contentContainerStyle={styles.content} data={entries} keyExtractor={(entry) => `${entry.kind}:${entry.row.key}`}
+  if (embedded) return <View testID="teammates.list">{notice}{header}{entries.length ? entries.map(renderEntry) : empty}</View>;
+  return <FlatList ref={listRef} {...scrollInsetProps} style={styles.list} contentContainerStyle={[styles.content, topInset !== undefined && { paddingTop: topInset }]}
+    contentInsetAdjustmentBehavior={topInset !== undefined ? 'never' : scrollInsetProps?.contentInsetAdjustmentBehavior}
+    automaticallyAdjustsScrollIndicatorInsets={topInset !== undefined ? false : scrollInsetProps?.automaticallyAdjustsScrollIndicatorInsets}
+    scrollIndicatorInsets={topInset !== undefined ? { top: topInset } : undefined} data={entries} keyExtractor={(entry) => `${entry.kind}:${entry.row.key}`}
     keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" onScrollBeginDrag={onInteract} testID="teammates.list"
-    ListHeaderComponent={header} ListEmptyComponent={empty} renderItem={({ item, index }) => renderEntry(item, index)}
-    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textSecondary} />} />;
+    ListHeaderComponent={<>{notice}{header}</>} ListEmptyComponent={empty} renderItem={({ item, index }) => renderEntry(item, index)}
+    refreshControl={<RefreshControl progressViewOffset={topInset} refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textSecondary} />} />;
 }
 
 /**

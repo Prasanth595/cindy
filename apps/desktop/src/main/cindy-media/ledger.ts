@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, exists, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, lt, ne, or, sql } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 
 import { getDbClient } from '../localDb/client/current';
@@ -29,6 +29,52 @@ export type LedgerDb = BetterSQLite3Database<typeof schema>;
 /** 生产默认句柄:DbClient 的 drizzle 代理(未就绪时抛错,由调用方折叠成结构化失败)。 */
 function defaultDb(): LedgerDb {
   return getDbClient().drizzle;
+}
+
+// Publication, reference borrowers and live-message cleanup share one lock.
+// Cleanup must observe a completed publication/rollback, never a provisional pin.
+const sessionMediaRefLocks = new WeakMap<LedgerDb, Map<string, Promise<void>>>();
+export async function withSessionMediaRefLock<T>(
+  db: LedgerDb,
+  sessionId: string,
+  perform: () => Promise<T>,
+): Promise<T> {
+  let locks = sessionMediaRefLocks.get(db);
+  if (!locks) {
+    locks = new Map();
+    sessionMediaRefLocks.set(db, locks);
+  }
+  const previous = locks.get(sessionId) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  locks.set(sessionId, next);
+  try {
+    await previous;
+    return await perform();
+  } finally {
+    release();
+    if (locks.get(sessionId) === next) locks.delete(sessionId);
+  }
+}
+
+const ghostOwnedRefKinds = [
+  'ghost-gallery', 'ghost-grant', 'ghost-tool-grant', 'ghost-deposit',
+] as const;
+
+export async function relocateGhostMediaRefs(
+  fromId: string,
+  toId: string,
+  db: LedgerDb = defaultDb(),
+): Promise<void> {
+  if (fromId === toId) return;
+  const ownedOrigin = and(eq(mediaRefs.originKind, 'ghost'), eq(mediaRefs.originId, fromId));
+  const ownedRef = and(inArray(mediaRefs.refKind, ghostOwnedRefKinds), eq(mediaRefs.refId, fromId));
+  await db.update(mediaRefs).set({
+    originId: sql`case when ${ownedOrigin} then ${toId} else ${mediaRefs.originId} end`,
+    refId: sql`case when ${ownedRef} then ${toId} else ${mediaRefs.refId} end`,
+  }).where(or(ownedOrigin, ownedRef)).run();
 }
 
 /** Shared task reads use existing provenance; knowing a blob hash grants nothing. */
@@ -354,31 +400,34 @@ export async function removeRefs(
  * Remove one session-attachment ref only when no live message in that session
  * still contains the blob hash.  The predicate is part of the DELETE so a
  * concurrent message commit cannot turn a read-then-delete check into data
- * loss; at worst a later commit recreates the coarse session ref.
+ * loss. The session lock also covers task imports that reuse a ref before
+ * publishing their managed URL; the SQL predicate runs after they settle.
  */
 export async function removeSessionAttachmentRefIfUnreferencedByLiveMessage(
   params: { sessionId: string; hash: string },
   db: LedgerDb = defaultDb(),
 ): Promise<number> {
   if (!/^[0-9a-f]{64}$/.test(params.hash)) return 0;
-  const result = await db
-    .delete(mediaRefs)
-    .where(
-      and(
-        eq(mediaRefs.refKind, 'session-attachment'),
-        eq(mediaRefs.refId, params.sessionId),
-        eq(mediaRefs.hash, params.hash),
-        sql`NOT EXISTS (
-          SELECT 1
-            FROM messages
-           WHERE messages.session_id = ${params.sessionId}
-             AND messages.rewind_at IS NULL
-             AND messages.content LIKE ${`%${params.hash}%`}
-        )`,
-      ),
-    )
-    .run();
-  return result.changes;
+  return withSessionMediaRefLock(db, params.sessionId, async () => {
+    const result = await db
+      .delete(mediaRefs)
+      .where(
+        and(
+          eq(mediaRefs.refKind, 'session-attachment'),
+          eq(mediaRefs.refId, params.sessionId),
+          eq(mediaRefs.hash, params.hash),
+          sql`NOT EXISTS (
+            SELECT 1
+              FROM messages
+             WHERE messages.session_id = ${params.sessionId}
+               AND messages.rewind_at IS NULL
+               AND messages.content LIKE ${`%${params.hash}%`}
+          )`,
+        ),
+      )
+      .run();
+    return result.changes;
+  });
 }
 
 /**

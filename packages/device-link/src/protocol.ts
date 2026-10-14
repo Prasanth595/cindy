@@ -26,10 +26,27 @@ import {
   type RelayErrorCode,
   type RelayErrorPayload,
 } from '@cindy/device-link-protocol';
+import type { InvokeResultTransfer, InvokeTransferOptions } from './invokeTransfer.js';
+import { isProviderSharePeer as isProviderSharePeerLocal } from './providerSharePeer.js';
+import { isSharedTaskPeer as isSharedTaskPeerLocal } from './sharedTaskPeer.js';
 
 export { SHARED_TASK_RELAY_CAPABILITY, sharedTaskDeviceId, parseSharedTaskScope, type SharedTaskScope } from '@cindy/device-link-protocol';
 export { sharedTaskHostPeer, sharedTaskGuestPeer, isSharedTaskPeer, parseSharedTaskPeer } from './sharedTaskPeer.js';
 export type { SharedTaskPeer } from './sharedTaskPeer.js';
+export {
+  PROVIDER_SHARE_RELAY_CAPABILITY,
+  parseProviderShareScope,
+  providerShareIdentifier,
+  type ProviderShareEndpoint,
+  type ProviderShareScope,
+} from '@cindy/device-link-protocol';
+export { providerShareHostPeer, providerShareGuestPeer, isProviderSharePeer, parseProviderSharePeer } from './providerSharePeer.js';
+export type { ProviderSharePeer } from './providerSharePeer.js';
+
+/** Any cross-account scoped peer (shared task or provider share): never treat as a same-account device. */
+export function isScopedPeer(value: unknown): boolean {
+  return isSharedTaskPeerLocal(value) || isProviderSharePeerLocal(value);
+}
 
 export {
   MAX_FRAME_BYTES,
@@ -189,6 +206,8 @@ export interface LinkClosePayload {
 export interface InvokePayload {
   channel: string;
   args: unknown[];
+  /** 可选结果传输编码声明（见 invokeTransfer.ts）；旧被控端忽略。 */
+  transfer?: InvokeTransferOptions;
 }
 
 /**
@@ -197,7 +216,12 @@ export interface InvokePayload {
  * 控制端 renderer 继续用现有 extractIpcError 解码,错误协议全链路免改。
  */
 export type InvokeResultPayload =
-  | { ok: true; result: unknown }
+  | {
+      ok: true;
+      result: unknown;
+      /** 仅在请求声明了 transfer 时出现；控制端 DeviceLinkClient 在交给调用方前还原。 */
+      transfer?: InvokeResultTransfer;
+    }
   | {
       ok: false;
       error: { code: DeviceLinkErrorCode | 'IPC_ERROR'; message: string };

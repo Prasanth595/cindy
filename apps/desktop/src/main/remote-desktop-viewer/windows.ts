@@ -18,6 +18,7 @@ import {
   isTrustedCindyRendererWindow,
 } from '../security/trustedAppRenderer.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { createLogger } from '../logger.js';
 import { ResourceUsageWindowController } from '../resource-usage-window/controller.js';
 import { createResourceUsageWindow } from '../resource-usage-window/window.js';
 import type { SupportedLocale } from '../../shared/locale.js';
@@ -31,6 +32,8 @@ import { readViewerResolution, writeViewerResolution } from './resolutionMemory.
 import { resolveDesktopInputBinary } from '../remote-desktop/inputHost.js';
 import { ClipboardCounter } from '../remote-desktop/clipboardCounter.js';
 import { transferDesktopClipboardContent } from '../remote-desktop/clipboard.js';
+
+const log = createLogger('remote-viewer');
 
 async function requestRemote<T>(device: string, request: unknown, check: () => void): Promise<T> {
   check();
@@ -94,13 +97,24 @@ export class RemoteDesktopViewerWindows {
       target.deviceId.length > 256 ||
       target.deviceId === getSelfDeviceId() ||
       typeof target.name !== 'string' ||
-      target.name.length > 256
+      target.name.length > 256 ||
+      (target.handoff !== undefined &&
+        (typeof target.handoff !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(target.handoff)))
     )
       throwIpcError('INVALID_PARAMS', 'Invalid remote desktop target');
-    let entry = [...this.entries].find((e) => e.connection.target?.deviceId === target.deviceId);
+    // A 代输入 window view is its own window, separate from a whole-desktop viewer.
+    let entry = [...this.entries].find(
+      (e) =>
+        e.connection.target?.deviceId === target.deviceId &&
+        e.connection.target.handoff === target.handoff,
+    );
     if (!entry) entry = [...this.entries].find((e) => !e.connection.target) ?? this.create();
     if (!entry.connection.active)
-      entry.connection.bind({ deviceId: target.deviceId, name: target.name });
+      entry.connection.bind({
+        deviceId: target.deviceId,
+        name: target.name,
+        ...(target.handoff ? { handoff: target.handoff } : {}),
+      });
     entry.controller.open(sender);
     // The spare shell is created off the next click path, never connects to a peer.
     this.prewarm();
@@ -272,15 +286,14 @@ export class RemoteDesktopViewerWindows {
     ipcMain.handle(REMOTE_VIEWER.PRESENTED, (event) => {
       this.entry(event).controller.markPresentationReady(event.sender);
     });
-    ipcMain.handle(REMOTE_VIEWER.CLOSE, async (event, generation) => {
+    ipcMain.handle(REMOTE_VIEWER.CLOSE, (event, generation) => {
       const entry = this.entry(event);
       if (generation !== entry.connection.generation) return;
       try {
-        await entry.connection.close(generation);
+        entry.connection.close(generation);
       } catch {
         throwIpcError('PRECONDITION_FAILED', 'DESKTOP_STOP_FAILED');
       }
-      if (generation !== entry.connection.generation) return;
       entry.controller.close(event.sender);
     });
     ipcMain.handle(REMOTE_VIEWER.PREFERENCES, async (event, generation, patch) => {
@@ -323,7 +336,14 @@ export class RemoteDesktopViewerWindows {
     });
     ipcMain.handle(REMOTE_VIEWER.CLIPBOARD, async (event, generation, action) => {
       const result = await this.entry(event).connection.clipboard(generation, action);
-      if (!result.ok) throwIpcError('PRECONDITION_FAILED', result.code);
+      if (!result.ok) {
+        // Code only: clipboard contents never reach logs.
+        log.warn('clipboard transfer failed', {
+          action: action === 'copy' || action === 'paste' ? action : 'invalid',
+          code: result.code,
+        });
+        throwIpcError('PRECONDITION_FAILED', result.code);
+      }
     });
     ipcMain.handle(REMOTE_VIEWER.CREDENTIAL, async (event, generation, action, enabled) => {
       try {

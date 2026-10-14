@@ -40,6 +40,7 @@ import {
 import { buildMainWindowLayout } from '@/components/mainWindowLayout';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { formatRemoteError } from '@/device-link/remoteStatus';
+import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { useRemoteSyncTask } from '@/device-link/remoteSyncTask';
 import {
@@ -598,7 +599,12 @@ function DeviceDetailScreenContent() {
         try {
           const updated = await maker.patchSessionMeta(row.session.id, patch);
           if (updated) remoteSessionStore.applySessionPatch(row.rowDeviceId, row.session.id, updated);
-        } catch {
+        } catch (err) {
+          if (isExplicitRemoteNotFoundError(err) && patch.status !== undefined) {
+            remoteSessionStore.applySessionPatch(row.rowDeviceId, row.session.id, { status: 'deleted' });
+            remoteSessionStore.requestReseed(row.rowDeviceId);
+            return;
+          }
           failed.push(row);
         }
       }));

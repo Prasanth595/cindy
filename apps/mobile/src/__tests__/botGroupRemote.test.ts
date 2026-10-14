@@ -45,6 +45,59 @@ function chatData(overrides: Record<string, unknown> = {}) {
 }
 
 describe('parseBotGroupChatData', () => {
+  it('retains validated management roles, revisions and capability without granting them to old hosts', () => {
+    const parsed = parseBotGroupChatData(chatData({ revision: 3, supportsSettingsManagement: true,
+      members: [{ botId: 'mimi', name: 'Mimi', role: 'admin', isOwned: true }] }));
+    expect(parsed).toMatchObject({ revision: 3, supportsSettingsManagement: true, members: [{ role: 'admin', isOwned: true }] });
+    expect(parseBotGroupChatData(chatData({ revision: -1 }))?.revision).toBeUndefined();
+    expect(parseBotGroupChatData(chatData())?.supportsSettingsManagement).toBe(false);
+  });
+  it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('preserves only allowlisted runtime failure codes from the computer: %s', runtimeFailureCode => {
+    const data = chatData({ messages: [{ id: 'failure', sequence: 1, kind: 'notice', authorKind: 'system',
+      authorName: 'Bot', content: '', createdAt: 1, noticeCode: 'member-failed', runtimeFailureCode }] });
+    const parsed = parseBotGroupChatData(data)!;
+    expect(parsed.messages[0].runtimeFailureCode).toBe(runtimeFailureCode === 'AUTH_REQUIRED' ? runtimeFailureCode : undefined);
+    expect(JSON.stringify(parsed.messages)).not.toContain('private diagnostic');
+  });
+  it('preserves server member identities and removal capability', () => {
+    const parsed = parseBotGroupChatData(chatData({ serverBacked: true, supportsMemberRemoval: true,
+      members: [{ botId: 'human', actorId: 'actor', actorKind: 'human', isOwned: false, name: 'Person', status: 'active' }] }));
+    expect(parsed).toMatchObject({ serverBacked: true, supportsMemberRemoval: true,
+      members: [expect.objectContaining({ actorId: 'actor', actorKind: 'human', isOwned: false })] });
+  });
+
+  it('keeps a validated 引用回复 and the tombstone it degrades to', () => {
+    const quote = { messageId: '11111111-1111-4111-8111-111111111111', authorName: '咪咪', authorKind: 'bot',
+      excerpt: '好的，我看看', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    const reply = (id: string, value: unknown) => ({ id, sequence: 5, kind: 'message', authorKind: 'user', authorBotId: null,
+      authorName: '', content: '就这样', noticeCode: null, planId: null, files: [], createdAt: 50, quote: value });
+    const parsed = parseBotGroupChatData(chatData({ messages: [
+      { id: 'gone', sequence: 3, kind: 'message', authorKind: 'bot', authorBotId: 'mimi', authorName: '咪咪', content: '（消息已删除）', deleted: true, createdAt: 30 },
+      reply('q1', quote),
+      reply('q2', { ...quote, messageId: '../other-group' }),
+      reply('q3', { ...quote, authorKind: 'system' }),
+      reply('q4', { ...quote, originalDeleted: true }),
+    ] }))!;
+    const byId = new Map(parsed.messages.map(message => [message.id, message]));
+    expect(byId.get('gone')?.deleted).toBe(true);
+    expect(byId.get('q1')?.quote).toEqual(quote);
+    expect(byId.get('q2')?.quote).toBeUndefined();
+    expect(byId.get('q3')?.quote).toBeUndefined();
+    expect(byId.get('q4')?.quote).toEqual({ ...quote, originalDeleted: true });
+    // Older computers send neither field.
+    expect(parseBotGroupChatData(chatData())!.messages.every(message => !message.quote && !message.deleted)).toBe(true);
+  });
+
+  it('preserves a server join notice through the phone projection', () => {
+    const joined = { id: 'joined', sequence: 20, kind: 'notice', authorKind: 'system', authorBotId: null,
+      authorName: 'Taylor', content: 'Taylor joined the group', noticeCode: 'member-joined',
+      planId: null, createdAt: 20 };
+    const parsed = parseBotGroupChatData(chatData({ messages: [joined],
+      lastMessage: { authorKind: 'system', authorName: 'Taylor', preview: joined.content, noticeCode: joined.noticeCode, createdAt: 20 } }))!;
+    expect(parsed.messages[0]).toMatchObject(joined);
+    expect(parsed.lastMessage).toMatchObject({ authorKind: 'system', noticeCode: 'member-joined', authorName: 'Taylor' });
+  });
+
   it('validates the host projection field by field and keeps host paths off the phone', () => {
     const parsed = parseBotGroupChatData(chatData())!;
     expect(parsed.messages.map((message) => message.id)).toEqual(['m1', 'm2', 'm4']);
@@ -139,6 +192,7 @@ describe('actions', () => {
     ['[INVALID_PARAMS] MEMBER_LIMIT', 'MEMBER_LIMIT'],
     [new Error('[NOT_FOUND] NOT_FOUND'), 'NOT_FOUND'],
     [new Error('[INVALID_PARAMS] MEMBER_UNAVAILABLE'), 'MEMBER_UNAVAILABLE'],
+    [new Error('[INVALID_PARAMS] MENTION_UNAVAILABLE'), 'MENTION_UNAVAILABLE'],
     [new Error('[NOT_CONNECTED] not online within 1500ms'), null],
     [new Error('XPLAN_OPEN'), null],
   ])('reads the group error code of %s', (error, code) => {
@@ -178,5 +232,15 @@ describe('actions', () => {
     expect(nextBotGroupSendAttempt(first, '', false, next, ['a1']).clientId).toBe('c2');
     expect(nextBotGroupSendAttempt(first, '', false, next, ['a2', 'a1']).clientId).toBe('c3');
     expect(nextBotGroupSendAttempt(first, '', false, next).clientId).toBe('c4');
+  });
+
+  it('reuses an unchanged target intent but gives changed IDs, order or Everyone a new key', () => {
+    let serial = 0;
+    const next = () => `c${++serial}`;
+    const first = nextBotGroupSendAttempt(null, '@Ann', false, next, [], { all: false, botIds: ['picked', 'other'] });
+    expect(nextBotGroupSendAttempt(first, '@Ann', false, next, [], { botIds: ['picked', 'other'], all: false })).toBe(first);
+    expect(nextBotGroupSendAttempt(first, '@Ann', false, next, [], { all: false, botIds: ['new'] }).clientId).toBe('c2');
+    expect(nextBotGroupSendAttempt(first, '@Ann', false, next, [], { all: false, botIds: ['other', 'picked'] }).clientId).toBe('c3');
+    expect(nextBotGroupSendAttempt(first, '@Ann', false, next, [], { all: true, botIds: ['picked', 'other'] }).clientId).toBe('c4');
   });
 });

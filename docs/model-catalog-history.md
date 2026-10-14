@@ -3,6 +3,45 @@
 > 参考记录，不是当前配置或部署状态。当前维护规则见 [模型配置与下发](dev-rules/model-catalog-maintenance.md)。
 > 下列文字记录各批次当时的事实，不能相互当作后续状态的证明。引用时须带日期、来源和验证范围。
 
+## Meta Muse Wonder（2026-10-13）
+
+Meta 于 2026-10-12 发布 Muse Wonder / Muse Wonder Full。依据 Meta Model API 官方
+[模型](https://dev.meta.ai/docs/models)、[推理档位](https://dev.meta.ai/docs/reasoning)、
+[价格](https://dev.meta.ai/docs/pricing-rate-limits) 页（核验日 2026-10-13），在 Server 正本与客户端离线
+Registry 同步新增：
+
+- 公共型号 `meta/muse-wonder-1.0`（精确 alias `muse-wonder-1.0`，名称 Muse Wonder）：1,048,576 上下文，
+  文字 / 图片输入、文字输出（官方另支持视频、音频、PDF 输入，Cindy 现有字段只登记已使用的文字与图片），
+  minimal / low / medium / high / xhigh / max 六档（官方 `none` 返回 400，不登记）。官方未公布最大输出，
+  留空，不按 Muse Spark 或聚合商数字补；官方请求缺省档位由模型自定，默认档按 Cindy 的 medium 优先规则取 medium。
+- global 官方参考价 USD 4 / 20 / 缓存读 0.2（每百万 tokens），自发布日 2026-10-12 生效；Wonder 无
+  Contributor 折扣，官方未列缓存写价，保持未知。
+- XD 独立条目 `xd/meta-muse-wonder-1.0` → Gateway `meta/muse-wonder-1.0`，Claude Code / Codex 路由，
+  原生协议 OpenAI Responses；`meta/muse-wonder-` 家族规则与 Muse Spark 同形态。
+- **Muse Wonder Full 不登记**：官方说明它只在 Muse Code 订阅中提供，不经 Model API；把 API 档位设为
+  `max` 也不等于 Full。
+- Codex 发送档位时原本只对 Seed 2.1 Pro、GLM-5.2 保留 `minimal`，其余收敛为 `low`；本批把
+  `meta/muse-wonder-1.0` 与官方 ID `muse-wonder-1.0` 加入同一白名单，使目录开放的 `minimal` 原样下发。
+  Claude Code 本身没有 `minimal`（对所有型号映射为 `low`），Pi 原样透传。
+
+成员仍以 Gateway `/models` 为准：核验时本机 XD 价格缓存（2026-10-13）只有 `meta/muse-spark-1.3`，
+没有 Wonder，因此本批只是资料先行，Gateway 上架前选择器不会出现该型号。默认推荐、排序与默认显示均未改。
+revision 为 `2026-10-13T00:00:00.000Z`，与 Server 正本同内容。
+
+## Claude Haiku 5.5 与 Sonnet 5.5（2026-10-10）
+
+XD Gateway 已上架 `anthropic/claude-haiku-5-5`、`anthropic/claude-sonnet-5-5`，但 Registry 没有这两个型号；
+上游未实报 `reasoning` 时 `/models` 无档位可回落，客户端因而不显示思考强度。本批在 Server 正本与客户端
+离线 Registry 同步新增两者的公共资料与 Claude Code / Codex 官方路由（与 Opus 5.5 相同形态）：adaptive 思考、
+图片输入、1M 上下文、128K 输出、low / medium / high / xhigh / max，默认 medium（官方 API 默认 Haiku 5.5 为
+medium、Sonnet 5.5 为 high，此处沿用 Cindy 的 medium 优先）。排序紧接在 Haiku 4.5 / Sonnet 5 之前。
+参考价、Pi 显式成员与默认显示设置本批未改。revision 为 `2026-10-10T16:00:00.000Z`，与 Server 正本同内容。
+
+同批修正两处按名称猜型号的旧逻辑：Anthropic 动态发现在目录缺失时只把 Haiku 4 及更早当作 200K、
+不可调档（Haiku 5 起按当代模型处理）；导入本机 Claude Code 会话时不再把 Haiku 5.5 归为 Haiku 4.5、
+Sonnet 5.5 归为 Sonnet 5。依据：[模型总览](https://platform.claude.com/docs/en/about-claude/models/overview)、
+[Effort](https://platform.claude.com/docs/en/build-with-claude/effort)，核验日 2026-10-10。
+
 ## 第三方预设与服务端对齐（2026-09-26）
 
 依据各厂商官方文档（2026-09-26 核对）处理下线、别名与不存在的型号，并以线上服务端推荐清单为基础

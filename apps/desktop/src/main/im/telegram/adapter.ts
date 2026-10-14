@@ -21,7 +21,11 @@ import { decodeTelegramLaneUserId, decodeTelegramMessageId } from '@cindy/im';
 
 import type { ImChannelAdapter, ImOrchestratorConfig } from '../shared/types';
 import { ownerScopedImUserDataPath } from '../ownerScopedStorage';
-import { buildTelegramGroupContextPrefix, buildTelegramReplyContextBlock } from './groupWindow';
+import {
+  buildTelegramGroupContextPrefix,
+  buildTelegramHistoryMediaNote,
+  buildTelegramReplyContextBlock,
+} from './groupWindow';
 import { readTelegramPersona } from './behaviorStore';
 import { autoRegisterTelegramSpeaker } from './contactsAutoRegister';
 import { createTelegramGuestTurnPermissionPolicy } from './permissionPolicy';
@@ -147,6 +151,7 @@ export function buildTelegramAdapter(
         return {
           agentText: `${persona}${replyBlock}${event.text}`,
           contextSnapshot: captureImContext({ replyPrefix: replyBlock, replyMessageCount: 1 }),
+          ...(event.replyContext ? { replyContext: event.replyContext } : {}),
         };
       }
       const { messageId: triggerMessageId } = decodeTelegramMessageId(event.messageId);
@@ -158,6 +163,24 @@ export function buildTelegramAdapter(
         threadId: lane.threadId,
         cursorScope: lane.threadId,
         triggerMessageId,
+      });
+      // 「先发视频/图片、再单独 @bot」: 群上下文里纳入的那些消息带的附件一并补齐,
+      // 只进模型消息不落库(contextAttachments 语义, 与飞书群上下文同口径)。
+      // 下载失败不阻断本轮 — 说明块会把原因交给模型。ambient(全响应)轮次不补:
+      // 每条普通群消息都会起一轮, 逐轮下载群里的音视频代价过高, 仍只给文件名。
+      const historyMedia = event.ambient
+        ? { attachments: [], unavailable: [] }
+        : await telegramIm
+            .collectGroupHistoryMedia(
+              lane.chatId,
+              assembly.messageIds ?? [],
+              // 触发消息的相册成员与被引消息已随本轮附件送达, 由 transport 排除。
+              event.raw as Parameters<TelegramIM['collectGroupHistoryMedia']>[2],
+            )
+            .catch(() => ({ attachments: [], unavailable: [] }));
+      const historyMediaNote = buildTelegramHistoryMediaNote({
+        provided: historyMedia.attachments,
+        unavailable: historyMedia.unavailable,
       });
       // 记住每个人①: 群里说话的人自动登记进智能通讯录(尽力而为, 零阻塞)。
       if (event.speaker) {
@@ -178,13 +201,25 @@ export function buildTelegramAdapter(
         : '';
       // 顺序: 群窗口(较远的背景) → 引用块(直接相关) → 发言人 → 用户正文。
       return {
-        agentText: `${persona}${ambientBlock}${assembly.prefix}${replyBlock}${speakerLine}${event.text}`,
+        agentText: `${persona}${ambientBlock}${assembly.prefix}${historyMediaNote}${replyBlock}${speakerLine}${event.text}`,
         contextSnapshot: captureImContext({
           groupPrefix: assembly.prefix,
           groupMessageCount: assembly.messageCount,
           replyPrefix: replyBlock,
           replyMessageCount: 1,
         }),
+        ...(event.replyContext ? { replyContext: event.replyContext } : {}),
+        ...(historyMedia.attachments.length > 0
+          ? {
+              contextAttachments: historyMedia.attachments.map((att) => ({
+                kind: att.kind,
+                absPath: att.absPath,
+                originalName: att.originalName,
+                mimeType: att.mimeType,
+                ...(att.url ? { url: att.url } : {}),
+              })),
+            }
+          : {}),
         commit: async () => {
           await assembly.commit();
         },

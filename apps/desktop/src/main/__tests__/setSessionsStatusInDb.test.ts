@@ -94,6 +94,7 @@ vi.mock('../worktree/sessionRemovalRecycle.js', () => ({
 }));
 import {
   recycleSessionWorktreeForStatusChange,
+  scheduleWorktreeRecycleForStatusChange,
   setSessionWorktreeRecycle,
   setSessionRuntimeCleanup,
   setSessionsStatusInDb,
@@ -614,6 +615,24 @@ describe('setSessionsStatusInDb', () => {
 });
 
 describe('recycleSessionWorktreeForStatusChange', () => {
+  it('schedules the cleanup chain without making the status reply wait for it', async () => {
+    let finish!: () => void;
+    h.recycleWorktreeForRemovedSession.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    expect(scheduleWorktreeRecycleForStatusChange('s1', 'archived')).toBeUndefined();
+    try {
+      await vi.waitFor(() => expect(h.recycleWorktreeForRemovedSession).toHaveBeenCalledOnce());
+      expect(h.closeSession).toHaveBeenCalledWith('s1');
+    } finally {
+      finish?.();
+    }
+    await queueSessionWorktreeRecycle(async () => {});
+  });
+
   it('runs the full runtime cleanup chain for archived sessions', async () => {
     await recycleSessionWorktreeForStatusChange('s1', 'archived');
 

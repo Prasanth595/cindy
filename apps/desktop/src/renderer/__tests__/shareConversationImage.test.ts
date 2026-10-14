@@ -16,10 +16,12 @@ const {
   SHARE_SESSION_ATTR,
   SHARE_SOURCE_ATTR,
   ShareImageTooLargeError,
+  appendShareMessages,
   assertShareImageReadableSize,
   buildShareImageFooter,
   expandScrollableBlocks,
   inlineCloneImages,
+  prepareShareMessageClone,
   queryShareableMessageIds,
   redactTextNodes,
   stripCloneAnchors,
@@ -75,6 +77,114 @@ describe('stripMessageSources', () => {
     expect(el.textContent).not.toMatch(/张三|自动化|手机|Slack/);
     expect(el.textContent).toContain('帮我看下这个报错');
     expect(el.textContent).toContain('正文内容');
+  });
+});
+
+describe('prepareShareMessageClone', () => {
+  // 只发 $指令 的用户消息:气泡内只有插件标注行,气泡本身也打了来源标记。
+  const chipOnlyMessage = () =>
+    root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1" data-user-msg-id="m1">
+        <div class="bubble" ${SHARE_SOURCE_ATTR}>
+          <div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub 已调用</button></div>
+        </div>
+        <div ${SHARE_EXCLUDE_ATTR}><button>复制</button></div>
+      </div>
+    `).firstElementChild as HTMLElement;
+
+  it('清洗后没有内容的消息返回 null,不在图里留空白或空图', () => {
+    expect(prepareShareMessageClone(chipOnlyMessage())).toBeNull();
+  });
+
+  it('插件标注去掉后保留正文,且不改动原节点', () => {
+    const node = root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1">
+        <div class="bubble">
+          <div ${SHARE_SOURCE_ATTR} class="border-b"><button aria-expanded="false">GitHub</button></div>
+          <div>帮我过审这个 PR</div>
+        </div>
+      </div>
+    `).firstElementChild as HTMLElement;
+    const clone = prepareShareMessageClone(node);
+    expect(clone?.textContent?.trim()).toBe('帮我过审这个 PR');
+    expect(clone?.querySelector('.border-b')).toBeNull();
+    expect(clone?.hasAttribute(SHARE_MESSAGE_ATTR)).toBe(false);
+    expect(node.querySelector(`[${SHARE_SOURCE_ATTR}]`)).not.toBeNull();
+  });
+
+  it('只有音频播放器或分隔线等非文字内容的消息照常保留', () => {
+    for (const html of [
+      '<div><p><audio controls src="xdt-audio://a.mp3"></audio></p></div>',
+      '<div><div class="markdown"><hr /></div></div>',
+    ]) {
+      expect(prepareShareMessageClone(root(html).firstElementChild as HTMLElement)).not.toBeNull();
+    }
+  });
+
+  it('只有图片附件的消息照常保留', () => {
+    const node = root(`<div><img src="data:image/png;base64,AAAA" alt="" /></div>`)
+      .firstElementChild as HTMLElement;
+    expect(prepareShareMessageClone(node)).not.toBeNull();
+  });
+});
+
+describe('appendShareMessages', () => {
+  const message = (text: string | null) =>
+    root(
+      text === null
+        ? `<div><div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub</button></div></div>`
+        : `<div><p>${text}</p></div>`,
+    ).firstElementChild as HTMLElement;
+  // 序列里每项 = [消息在可选序列中的位置, 正文(null = 只剩插件标注)]
+  const assemble = (items: Array<[number, string | null]>) => {
+    const stage = document.createElement('div');
+    const ids = items.map(([index]) => `m${index}`);
+    const order = new Map(ids.map((id, i) => [id, items[i][0]]));
+    const count = appendShareMessages(
+      stage,
+      items.map(([, text]) => message(text)),
+      ids,
+      order,
+    );
+    const layout = Array.from(stage.children).map((child) =>
+      child.hasAttribute('data-share-gap') ? '⋯' : (child.textContent ?? '').trim(),
+    );
+    return { count, layout };
+  };
+
+  it('跳过空消息时,它之前的跳选断点延续到下一条有内容的消息', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [5, null],
+        [6, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', '⋯', 'B'] });
+  });
+
+  it('相邻选中、中间只是一条空消息时不加断点', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [2, null],
+        [3, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', 'B'] });
+  });
+
+  it('图首不放断点;全空时返回 0', () => {
+    expect(
+      assemble([
+        [1, null],
+        [5, 'B'],
+      ]).layout,
+    ).toEqual(['B']);
+    expect(
+      assemble([
+        [1, null],
+        [2, null],
+      ]),
+    ).toEqual({ count: 0, layout: [] });
   });
 });
 
@@ -263,38 +373,77 @@ describe('assertShareImageReadableSize', () => {
 });
 
 describe('expandScrollableBlocks', () => {
-  it('只对实际溢出的候选读取样式并展开', () => {
-    const el = root('<div class="fits"></div><div class="wide"></div>');
-    const fits = el.querySelector<HTMLElement>('.fits')!;
-    const wide = el.querySelector<HTMLElement>('.wide')!;
-    Object.defineProperties(fits, {
-      scrollWidth: { value: 100 },
-      clientWidth: { value: 100 },
-      scrollHeight: { value: 20 },
-      clientHeight: { value: 20 },
+  function withSize(
+    el: HTMLElement,
+    size: { scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number },
+  ): void {
+    Object.defineProperties(el, {
+      scrollWidth: { value: size.scrollWidth },
+      clientWidth: { value: size.clientWidth },
+      scrollHeight: { value: size.scrollHeight },
+      clientHeight: { value: size.clientHeight },
     });
-    Object.defineProperties(wide, {
-      scrollWidth: { value: 200 },
-      clientWidth: { value: 100 },
-      scrollHeight: { value: 20 },
-      clientHeight: { value: 20 },
-    });
-    const getComputedStyle = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
-      overflowX: 'auto',
-      overflowY: 'visible',
-    } as CSSStyleDeclaration);
+  }
 
+  function expandWithOverflow(
+    el: HTMLElement,
+    overflowByClass: Record<string, { overflowX: string; overflowY: string }>,
+  ): void {
+    const getComputedStyle = vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (target) =>
+        (overflowByClass[(target as HTMLElement).className] ?? {
+          overflowX: 'visible',
+          overflowY: 'visible',
+        }) as CSSStyleDeclaration,
+    );
     try {
       expandScrollableBlocks(el);
-      expect(getComputedStyle).toHaveBeenCalledTimes(1);
     } finally {
       getComputedStyle.mockRestore();
     }
+  }
 
-    expect(fits.style.overflowX).toBe('');
+  it('没溢出的表格滚动容器也去掉滚动,避免产物里冒出系统滚动条', () => {
+    const el = root('<div class="table-scroll"><table></table></div>');
+    const scroller = el.querySelector<HTMLElement>('.table-scroll')!;
+    withSize(scroller, { scrollWidth: 600, clientWidth: 600, scrollHeight: 120, clientHeight: 120 });
+
+    expandWithOverflow(el, { 'table-scroll': { overflowX: 'auto', overflowY: 'auto' } });
+
+    expect(scroller.style.overflowX).toBe('visible');
+    expect(scroller.style.overflowY).toBe('visible');
+    expect(scroller.style.width).toBe('');
+    expect(scroller.style.maxHeight).toBe('');
+  });
+
+  it('横向溢出时按内容宽度展开,且两轴同时改成 visible', () => {
+    const el = root('<div class="wide"></div><div class="plain"></div>');
+    const wide = el.querySelector<HTMLElement>('.wide')!;
+    const plain = el.querySelector<HTMLElement>('.plain')!;
+    withSize(wide, { scrollWidth: 200, clientWidth: 100, scrollHeight: 20, clientHeight: 20 });
+
+    expandWithOverflow(el, { wide: { overflowX: 'auto', overflowY: 'auto' } });
+
     expect(wide.style.overflowX).toBe('visible');
+    expect(wide.style.overflowY).toBe('visible');
     expect(wide.style.width).toBe('max-content');
     expect(wide.style.maxWidth).toBe('none');
+    expect(wide.style.maxHeight).toBe('');
+    expect(plain.style.overflowX).toBe('');
+  });
+
+  it('纵向溢出时解除固定高度与最大高度', () => {
+    const el = root('<pre class="tall"></pre>');
+    const tall = el.querySelector<HTMLElement>('.tall')!;
+    tall.style.height = '96px';
+    withSize(tall, { scrollWidth: 100, clientWidth: 100, scrollHeight: 400, clientHeight: 96 });
+
+    expandWithOverflow(el, { tall: { overflowX: 'visible', overflowY: 'scroll' } });
+
+    expect(tall.style.overflowY).toBe('visible');
+    expect(tall.style.height).toBe('auto');
+    expect(tall.style.maxHeight).toBe('none');
+    expect(tall.style.width).toBe('');
   });
 });
 

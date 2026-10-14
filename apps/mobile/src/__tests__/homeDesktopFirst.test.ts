@@ -230,7 +230,7 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toContain('</HomeChromeFrost>');
     expect(source).toContain('<HomeNativeStackHeader');
     expect(source).toContain('onProjectDragStart={displayedProjectOrder === \'custom\'');
-    expect(source).toContain('projectOrder={displayedProjectOrder}');
+    expect(source).toContain('projectOrder: displayedProjectOrder,');
     expect(source).toContain('resolveDisplayedProjectOrder(');
     expect(source).not.toContain('projectOrder={selectedDeviceId ? hostProjectOrder : projectOrder}');
     expect(source).toContain('<HomeGlassMenuPanel');
@@ -270,19 +270,23 @@ describe('mobile home desktop-first surface', () => {
     expect(chromeDrawer).toContain('GestureHandlerRootView');
     expect(chromeDrawer).not.toContain('remoteSettings');
     expect(source).toContain("guardedPush('/settings')");
-    expect(source).toContain('setChromeMenuCloseInstant(true)');
-    expect(source).not.toContain("pendingMenuActionRef.current = () => guardedPush('/settings')");
+    expect(source).not.toContain('setChromeMenuCloseInstant');
+    expect(source).toContain('onClosed={handleChromeMenuClosed}');
+    for (const route of ['/settings', '/devices/manage', '/plugins']) {
+      expect(source).not.toContain(`pendingMenuActionRef.current = () => guardedPush('${route}')`);
+      expect(source).toContain(`setChromeMenuOpen(false);\n          guardedPush('${route}');`);
+    }
+    const teammateHome = readSource('src/session/TeammateHomeScreen.tsx');
+    expect(teammateHome).toContain("onOpenSettings={() => openDrawerPage('/settings')}");
+    expect(teammateHome).toContain("onOpenAccounts={() => afterDrawer(() => setAccounts(true))}");
     const rootLayout = readSource('app/_layout.tsx');
-    expect(rootLayout).toContain('name="settings"');
-    expect(rootLayout).toContain("animation: 'slide_from_left'");
+    expect(rootLayout).not.toContain("animation: 'slide_from_left'");
     expect(source).toContain("label={t('devices.list.allConversations')}");
-    expect(source).toContain("label={t('devices.list.menu.groupByProject')}");
-    expect(source).toContain("label={t('devices.list.menu.groupDialogue')}");
+    // 显示菜单只有一份菜单模型(homeChromeMenus),原生下拉 / 自绘兜底都消费它,不再有平行的自绘面板。
+    expect(source).toContain('homeDisplayActionPatch(id, displayMenuState)');
+    expect(source).not.toContain('HomeDisplaySettingsModal');
     expect(source).not.toContain('testID="home.deviceMenu.remoteSettings"');
     expect(source).not.toContain('onOpenRemoteSettings');
-    expect(source).toContain('testID="home.deviceMenu.sort.priority"');
-    expect(source).toContain('testID="home.deviceMenu.projectOrder.custom"');
-    expect(source).toContain('testID="home.deviceMenu.status.archived"');
     // 注:首页分区构造逻辑(buildMixedHomeRows / buildGroupedHomeRows / buildHomeSections)
     // 已抽到 @/session/homeSections,并由 homeSections.test.ts 做行为测试,这里不再做源码字符串断言。
     expect(source).toContain('styles.sessionListRow');
@@ -399,7 +403,11 @@ describe('mobile home desktop-first surface', () => {
     expect(providerMarkSource).not.toContain('CLAUDE_AGENT_PATH');
     expect(providerMarkSource).not.toContain('CODEX_AGENT_FLOWER_PATH');
     expect(vendorIconSource).toContain("import { MobileAgentMark } from './MobileAgentMark';");
-    expect(vendorIconSource).toContain("agentKind={vendor === 'codex' || vendor === 'pi' ? vendor : 'claude-code'}");
+    // vendor → Agent mark 的映射要带上 pi,不能把 π 吞成 Claude 脸。
+    expect(vendorIconSource).toContain(
+      "const agentKind: AgentMarkKind = vendor === 'codex' || vendor === 'pi' ? vendor : 'claude-code';",
+    );
+    expect(vendorIconSource).toContain('<MobileAgentMark agentKind={agentKind} color={color} size={size} />');
     expect(vendorIconSource).not.toContain('viewBox="136 137 282 158"');
     expect(vendorIconSource).not.toContain('transform="translate(');
     expect(vendorIconSource).toContain('Easing.inOut(Easing.ease)');
@@ -411,7 +419,7 @@ describe('mobile home desktop-first surface', () => {
     expect((homeSource.match(/useRemoteHomeStatusVersion\(\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
     expect(homeSource).toContain('useRemoteSessionMessagePreview(item.session.id)');
     expect(homeSource).toContain('useRemoteMessageVersion(normalizedSearchQuery.length > 0)');
-    expect(homeSource).toContain('useMinuteNow();');
+    expect(readSource('src/session/HomeSessionInfoMeta.tsx')).toContain('useMinuteNow();');
     expect(homeSource).toContain('<RadioTower');
     expect(homeSource).toContain('<UsersRound');
     expect(homeSource).not.toContain('<Puzzle');
@@ -570,11 +578,16 @@ describe('mobile home desktop-first surface', () => {
     expect(sessionRowSource).toContain('`home.sessionRowTitle.${item.session.id}`');
     // 标签色球紧跟标题(与桌面侧栏一致):标题与色球同在一组,标题只取文字宽度,
     // 不能再用 flex: 1 把色球挤到行尾贴着时间。
-    const titleCluster = sessionRowSource.slice(
-      sessionRowSource.indexOf('<View style={styles.sessionTitleCluster}>'),
-      sessionRowSource.indexOf('{sourceLabel ? ('),
-    );
-    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\}/);
+    const titleClusterStart = sessionRowSource.indexOf('<View style={[styles.sessionTitleCluster, groupChevronVisible && styles.sessionTitleClusterGroupHit]}>');
+    expect(titleClusterStart).toBeGreaterThan(-1);
+    const titleCluster = sessionRowSource.slice(titleClusterStart, sessionRowSource.indexOf('{sourceLabel ? (', titleClusterStart));
+    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\} surfaceColor=\{colors\.surface\} \/>\s*<\/View>/);
+    // 自动化组展开箭头在标题组之外、作为标题行的不收缩子项:标签色球不收缩,放在组内会被挤出
+    // 父容器边界导致 44×44 热区被截(#5909 review);热区靠自身尺寸,不靠 hitSlop。
+    const groupChevron = titleCluster.slice(titleCluster.indexOf('</View>'));
+    expect(groupChevron).toContain('testID={`${testID}.automationGroupChevron`}');
+    expect(groupChevron).toContain('style={styles.sessionGroupChevronCell}');
+    expect(groupChevron).not.toContain('hitSlop={');
     const listStyles = readSource('src/session/HomeListVisuals.tsx');
     const titleStyle = listStyles.slice(listStyles.indexOf('  sessionTitle: {'), listStyles.indexOf('},', listStyles.indexOf('  sessionTitle: {')));
     expect(titleStyle).toContain('flexShrink: 1');
@@ -584,14 +597,17 @@ describe('mobile home desktop-first surface', () => {
     expect(sessionRowSource).toContain('buildRemoteSessionCardPreview(');
     expect(sessionRowSource).toContain('useRemoteSessionMessagePreview(item.session.id)');
     expect(sessionRowSource).toContain('testID={`home.sessionRowPreview.${item.session.id}`}');
-    expect(sessionRowSource).toContain('const showPreviewLine = !!group || !!preview?.trim() || showSchedule || showPinned;');
+    expect(sessionRowSource).toContain('const showPreviewLine = !textMode && (!!group || !!preview?.trim() || showSchedule || showPinned);');
     expect(sessionRowSource).toContain('!showPreviewLine && styles.sessionListRowSingleLine');
     expect(sessionRowSource).toContain('!showPreviewLine && styles.sessionIconCellSingleLine');
     expect(sessionRowSource).toContain('{showPreviewLine ? (');
     expect(sessionRowSource).not.toContain('numberOfLines={2}');
     // 相对时间下沉到独家订阅分钟心跳的叶子组件(行主体 memo 化后由它单独保鲜,风暴修复)
-    expect(sessionRowSource).toContain('<SessionRelativeTime lastActivityAt={item.lastActivityAt}');
-    expect(source).toContain('formatRemoteSessionSidebarTime(lastActivityAt)');
+    // 时间槽改由「任务信息」渲染,时间仍是其中独家订阅分钟心跳的叶子组件。
+    expect(sessionRowSource).toContain('<HomeSessionInfoMeta item={item} textStyle={styles.sessionTime} />');
+    const infoMeta = readSource('src/session/HomeSessionInfoMeta.tsx');
+    expect(infoMeta).toContain('<SessionRelativeTime lastActivityAt={item.lastActivityAt}');
+    expect(infoMeta).toContain('formatRemoteSessionSidebarTime(lastActivityAt)');
     expect(sessionRowSource).toContain('item.pendingInteractionCount');
     expect(sessionRowSource).toContain('item.scheduleInfo?.unreadCount');
     expect(sessionRowSource).toContain('item.session.pinnedAt');
@@ -632,7 +648,7 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toMatch(/startBoundedStartupRead\(\s*getCachedHomeListSnapshot\(homeCacheUserId\)/);
     expect(source).toContain('await syncInFlightRef.current;');
     expect(source).toMatch(/startBoundedStartupRead\(\s*loadDeviceIdentityCache\(\)/);
-    expect(source).toMatch(/startBoundedStartupRead<HomeViewPreferences \| null>\(\s*readHomeViewPreferences\(\)/);
+    expect(source).toMatch(/startBoundedStartupRead<HomeViewPreferences \| null>\(\s*readHomeViewPreferences\(preferenceOwnerRef\.current\)/);
     const preferenceHydration = source.slice(
       source.indexOf('// 冷启动恢复上次的首页视图偏好'),
       source.indexOf('// 卸载时取消所有延后中的 schedule-index hydration'),
@@ -793,14 +809,16 @@ describe('mobile home desktop-first surface', () => {
 describe('home menu native header ownership', () => {
   it('hosts the Duo top-left menu inside the native bar instead of under its touch surface', () => {
     const home = readSource('src/session/HomeSurface.tsx');
-    const header = readSource('src/platform/chrome/HomeNativeStackHeader.tsx');
+    const header = readSource('src/platform/chrome/HomeStackHeader.tsx');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('<HomeStackHeader');
     expect(home).toContain("nativeHomeHeader && homeGeometry.barEdge !== 'none'");
     expect(home).toContain('keepMenuTopLeft={keepMenuTopLeft}');
     expect(home).not.toContain('{keepMenuTopLeft ? (');
     const leftToolbar = header.split('<Stack.Toolbar placement="left">')[1].split('</Stack.Toolbar>')[0];
     expect(leftToolbar).toContain('<Stack.Toolbar.View hidesSharedBackground>');
     expect(leftToolbar).toContain('onPress={onOpenMenu}');
-    expect(leftToolbar).toContain('testID="home.chromeMenu"');
+    expect(leftToolbar).toContain('testID={menuTestID}');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('menuTestID="home.chromeMenu"');
     // Ordinary system toolbar actions keep their native adaptation.
     expect(leftToolbar).toContain('<Stack.Toolbar.Button');
   });

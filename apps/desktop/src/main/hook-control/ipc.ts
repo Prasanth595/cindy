@@ -21,6 +21,10 @@ import { isModelVisible, visibleModelUnion } from '@cindy/model-providers';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 
 import { createLogger } from '../logger.js';
+import { t } from '../i18n.js';
+import { buildOfficialBotCommandMenus } from '../im/shared/botCommands.js';
+import { stopSessionTurnExplicitly } from '../maker-ipc/register.js';
+import { onChannelTurn } from '../maker-ipc/channelTurnSignal.js';
 import { getMaker, restartCodexAfterAuthModeChange } from '../maker-host/index.js';
 import { shutdownCodexEnvironment } from '../mcp-integrations/codexEnvironment.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
@@ -305,9 +309,45 @@ function parseWorkspacePrefsWrite(payload: unknown): {
 
 const remotePrefsSnapshotGenerations = new Map<HookPrefsChannel, number>();
 
+function broadcastWorkspaceProviderSources(entries: ReturnType<typeof listWorkspaceProviderSources>): void {
+  // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed() && isAppContentWindow(w)) {
+      w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
+    }
+  }
+}
+
+/**
+ * server 快照落地可能清掉配对来源(applyIncomingServerWorkspacePrefs, issue #5912),
+ * 落地后把现有条目推给设置页; 给了落地前快照时只在有变化时推。
+ */
+function rebroadcastWorkspaceProviderSources(before?: string): void {
+  try {
+    const entries = listWorkspaceProviderSources();
+    if (before === undefined || JSON.stringify(entries) !== before) {
+      broadcastWorkspaceProviderSources(entries);
+    }
+  } catch (err) {
+    log.warn(
+      `workspace provider source broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function snapshotWorkspaceProviderSources(): string {
+  try {
+    return JSON.stringify(listWorkspaceProviderSources());
+  } catch {
+    return '';
+  }
+}
+
 function persistUnsolicitedServerPrefs(channel: HookPrefsChannel, prefs: HookWorkspacePrefs[]): void {
   try {
+    const sourcesBefore = snapshotWorkspaceProviderSources();
     applyIncomingServerWorkspacePrefs(channel, prefs);
+    rebroadcastWorkspaceProviderSources(sourcesBefore);
     remotePrefsSnapshotGenerations.set(
       channel,
       (remotePrefsSnapshotGenerations.get(channel) ?? 0) + 1,
@@ -367,6 +407,8 @@ const mirrorWorkspacePrefs = createWorkspacePrefsMirror({
   onLocalPrefsChanged: (channel) => {
     if (channel === 'slack') broadcastPrefs(slackLocalPrefsView());
     else broadcastProviderPrefs(providerLocalPrefsView(channel));
+    // 重连镜像同样经 applyIncomingServerWorkspacePrefs 落快照, 可能清掉配对来源(issue #5912)。
+    rebroadcastWorkspaceProviderSources();
   },
   onError: (channel, err) => {
     log.warn(
@@ -536,6 +578,9 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
         }
         await session.abort();
       },
+      // 渠道 /stop(task.cancel): 与桌面 Stop 同一套清理(撤续跑 / 取消恢复 / 暂停 Goal /
+      // 停输入队列并中止当前一轮), 见 docs/dev-rules/im-turn-flow.md 不变量 9。
+      stopSessionExplicitly: (sessionId) => stopSessionTurnExplicitly(sessionId),
       // session.archive 的归档出口: 与 device-link 远程归档同一条
       // patchSessionMetaInDb 路径(落库 + sessions:patched 广播, sidebar 即时移出)
       archiveSessionRow: async (sessionId) => {
@@ -546,10 +591,14 @@ function ensureInstances(): { store: SlackHookStore; manager: HookControlManager
       // 「用户在桌面端点了重试 / 继续任务」信号 -> 把那一轮接回渠道原消息
       // (turn.reopen, 协议阶段 18)。信号由 maker 的发送事务发布。
       subscribeUiContinuation: onUiContinuation,
+      subscribeChannelTurn: (listener) => onChannelTurn((session, phase, source) => listener(session.id, session.workDir, phase, source)),
       subscribeUiSessionIntervention: onUiSessionIntervention,
       subscribeUiTurnDispatching: onUiTurnDispatching,
       subscribeUiTurnUndispatched: onUiTurnUndispatched,
       accountInitiallyActive: false,
+      // 官方 Telegram 命令菜单以 desktop 注册表为准(telegram-commands-v1), 按 Telegram
+      // 用户语言各渲染一份。
+      telegramCommandMenus: () => buildOfficialBotCommandMenus((key, locale) => t(key, locale)),
       log,
     });
     manager = createHookControlManager({
@@ -1152,12 +1201,7 @@ export function registerHookControlIpc(): void {
         );
         throwIpcError('INTERNAL', 'failed to persist workspace provider source');
       }
-      // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed() && isAppContentWindow(w)) {
-          w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
-        }
-      }
+      broadcastWorkspaceProviderSources(entries);
       return { entries };
     },
   );

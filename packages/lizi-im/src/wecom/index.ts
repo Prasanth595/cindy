@@ -13,6 +13,7 @@ import {
   type WsFrame,
 } from "@wecom/aibot-node-sdk";
 
+import { classifyInboundAttachment } from "../inboundKind.js";
 import { BaseIM } from "../BaseIM.js";
 import type { ImFinalOutput, TextChannelIM } from "../channelIM.js";
 import type { Logger } from "../logger.js";
@@ -37,8 +38,9 @@ import {
   escapeWecomMarkdown,
 } from "./codec.js";
 import {
+  MAX_MEDIA_BYTES,
   mimeTypeForFilename,
-  persistWecomDownload,
+  stageWecomDownload,
   readWecomOutboundFile,
   resolveAllowedWecomOutboundFile,
   safeWecomFilename,
@@ -83,6 +85,12 @@ export interface WecomIMOptions {
 }
 
 /** Enterprise WeChat transport with durable chunked-text output. */
+/** 原生图片/视频消息的 MIME: 共用判据认出同类就用它, 否则按消息类型的默认容器。 */
+function nativeMediaMime(fileName: string, kind: "image" | "av", fallback: string): string {
+  const classified = classifyInboundAttachment(mimeTypeForFilename(fileName), fileName);
+  return classified.kind === kind ? classified.mimeType : fallback;
+}
+
 export class WecomIM extends BaseIM implements TextChannelIM {
   private readonly messageHandlers = new Set<MessageHandler>();
   private readonly statusHandlers = new Set<StatusHandler>();
@@ -91,7 +99,6 @@ export class WecomIM extends BaseIM implements TextChannelIM {
   private readonly pendingResponses = new Map<string, PendingResponse[]>();
   private readonly inboundTails = new Map<string, Promise<void>>();
   private readonly seenMessageIds = new Set<string>();
-  private readonly mediaDir: string;
   private readonly now: () => number;
   private client: WSClient | null = null;
   private status: IMStatus = { kind: "idle" };
@@ -106,12 +113,6 @@ export class WecomIM extends BaseIM implements TextChannelIM {
     private readonly options: WecomIMOptions = {},
   ) {
     super("wecom", host);
-    if (!host.paths.wecomMediaDir) {
-      throw new Error(
-        "IMHost.paths.wecomMediaDir is required to wire the WeCom channel",
-      );
-    }
-    this.mediaDir = host.paths.wecomMediaDir;
     this.now = options.now ?? Date.now;
   }
 
@@ -650,21 +651,77 @@ export class WecomIM extends BaseIM implements TextChannelIM {
     await this.emitInbound(frame, client, generation, async () => {
       const file = frame.body?.file;
       if (!file) return unsupportedPayload("file", "文件内容缺失");
+      // 文件名要下载后才知道, 三类去处都不可用时才免下载。
+      if (!this.host.files && !this.host.media) {
+        return unsupportedPayload("file:unsupported", "文件暂不支持");
+      }
       try {
         const downloaded = await client.downloadFile(file.url, file.aeskey);
         if (!this.isCurrent(client, generation)) {
           return unsupportedPayload("file:stale", "文件下载已取消");
         }
-        const persisted = await persistWecomDownload({
-          mediaDir: this.mediaDir,
+        // 去处只由共用判据决定: 以文件消息发来的图片/音视频同样只进媒体总仓, 总仓
+        // 不可用或拒收格式时标不支持, 不回落文件暂存(媒体统一由 cindy-media 记账与回收)。
+        const originalName = safeWecomFilename(downloaded.filename);
+        const classified = classifyInboundAttachment(mimeTypeForFilename(originalName), originalName);
+        if (classified.kind !== "file") {
+          // 与文件暂存同一入站上限(stageWecomDownload 的 MAX_MEDIA_BYTES), 媒体分支不得绕过。
+          if (downloaded.buffer.length > MAX_MEDIA_BYTES) {
+            return unsupportedPayload("file:oversize", `文件超过大小上限：${originalName}`);
+          }
+          const media = this.host.media;
+          const store =
+            classified.kind === "image"
+              ? media && ((params: Parameters<typeof media.cacheImage>[0]) => media.cacheImage({ ...params, staging: true }))
+              : media?.cacheMedia?.bind(media);
+          if (!store) {
+            return unsupportedPayload("file:unsupported-media", `媒体文件暂不支持：${originalName}`);
+          }
+          let stored: { absPath: string; url: string; mimeType?: string; discard?: () => Promise<void> };
+          try {
+            stored = await store({
+              integration: "wecom",
+              token: `${frame.body!.msgid}:file`,
+              buffer: downloaded.buffer,
+              mimeType: classified.mimeType,
+            });
+          } catch {
+            return unsupportedPayload("file:unsupported-media", `媒体格式暂不支持：${originalName}`);
+          }
+          if (!this.isCurrent(client, generation)) {
+            await this.discardStagedMedia(stored.discard);
+            return unsupportedPayload("file:stale", "文件下载已取消");
+          }
+          return {
+            text: "",
+            attachments: [
+              {
+                kind: classified.kind === "image" ? "image" : "file",
+                absPath: stored.absPath,
+                originalName,
+                mimeType: stored.mimeType ?? classified.mimeType,
+                url: stored.url,
+              },
+            ],
+            unsupported: [],
+            discard: stored.discard,
+          };
+        }
+        const files = this.host.files;
+        if (!files) {
+          return unsupportedPayload("file:unsupported", "文件暂不支持");
+        }
+        const { discard, ...staged } = await stageWecomDownload({
+          files,
           buffer: downloaded.buffer,
           filename: downloaded.filename,
           shouldKeep: () => this.isCurrent(client, generation),
         });
         return {
           text: "",
-          attachments: [{ kind: "file", ...persisted }],
+          attachments: [{ kind: "file", ...staged }],
           unsupported: [],
+          discard,
         };
       } catch (error) {
         this.log.warn("failed to stage inbound file", safeError(error));
@@ -695,7 +752,8 @@ export class WecomIM extends BaseIM implements TextChannelIM {
           integration: "wecom",
           token: `${frame.body!.msgid}:video`,
           buffer: downloaded.buffer,
-          mimeType: mimeTypeForFilename(originalName),
+          // 原生视频消息: 文件名无可识别扩展名时按消息类型取默认 MIME, 不交出 octet-stream。
+          mimeType: nativeMediaMime(originalName, "av", "video/mp4"),
         });
         if (!this.isCurrent(client, generation)) {
           await this.discardStagedMedia(stored.discard);
@@ -766,6 +824,7 @@ export class WecomIM extends BaseIM implements TextChannelIM {
       contextId: body.aibotid || this.botId,
       messageId: body.msgid,
       text: normalized.text,
+      invoked: body.chattype === "group",
       attachments: normalized.attachments,
       unsupported: normalized.unsupported,
       ...(body.chattype === "group"
@@ -842,42 +901,35 @@ export class WecomIM extends BaseIM implements TextChannelIM {
         },
       };
     }
+    // 图片只进 cindy-media 总仓; host 未提供时不下载, 不写 legacy 目录。
+    if (!this.host.media) return null;
     try {
       const downloaded = await client.downloadFile(image.url, image.aeskey);
       if (!this.isCurrent(client, generation)) return null;
       const filename = safeWecomFilename(downloaded.filename, ".jpg");
-      const mimeType = mimeTypeForFilename(filename);
-      if (this.host.media) {
-        const stored = await this.host.media.cacheImage({
-          integration: "wecom",
-          token,
-          buffer: downloaded.buffer,
-          mimeType,
-          staging: true,
-        });
-        if (!this.isCurrent(client, generation)) {
-          await this.discardStagedMedia(stored.discard);
-          return null;
-        }
-        return {
-          attachment: {
-            kind: "image",
-            absPath: stored.absPath,
-            originalName: filename,
-            mimeType,
-            url: stored.url,
-          },
-          discard: stored.discard,
-        };
-      }
-      const persisted = await persistWecomDownload({
-        mediaDir: this.mediaDir,
+      // 原生图片消息: 文件名无可识别扩展名(如 "image")时按消息类型取默认 MIME。
+      const mimeType = nativeMediaMime(filename, "image", "image/jpeg");
+      const stored = await this.host.media.cacheImage({
+        integration: "wecom",
+        token,
         buffer: downloaded.buffer,
-        filename,
-        fallbackExtension: ".jpg",
-        shouldKeep: () => this.isCurrent(client, generation),
+        mimeType,
+        staging: true,
       });
-      return { attachment: { kind: "image", ...persisted } };
+      if (!this.isCurrent(client, generation)) {
+        await this.discardStagedMedia(stored.discard);
+        return null;
+      }
+      return {
+        attachment: {
+          kind: "image",
+          absPath: stored.absPath,
+          originalName: filename,
+          mimeType: stored.mimeType ?? mimeType,
+          url: stored.url,
+        },
+        discard: stored.discard,
+      };
     } catch (error) {
       this.log.warn("failed to stage inbound image", safeError(error));
       return null;
@@ -1126,8 +1178,8 @@ function quoteContext(
       0);
   return {
     author: "引用消息",
-    text: text || "[附件]",
-    ...(attachmentCount ? { attachmentCount } : {}),
+    text: text || (attachmentCount ? "[引用包含附件，本轮未提供文件内容]" : "[引用正文不可用]"),
+    ...(attachmentCount ? { unavailableAttachments: [`引用消息的 ${attachmentCount} 个附件未提供文件内容`] } : {}),
   };
 }
 

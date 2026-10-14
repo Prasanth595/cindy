@@ -126,7 +126,7 @@
   "automatic": "Auto",
   "saver": "Data saver",
   "hd": "HD",
-  "qualityHint": "Auto keeps motion smooth and sharpens when your network allows. Data saver limits usage (up to 30 fps). HD keeps text sharp and lowers the frame rate when bandwidth is short.",
+  "qualityHint": "Automatic favors smoothness, Data saver uses less data, HD favors sharp text.",
   "resolution": "Computer resolution",
   "settingUnsupported": "This computer does not support this setting yet",
   "loadingSettings": "Loading…",
@@ -160,5 +160,8 @@
   "lockOnExitFailed": "Could not confirm that the computer locked. Check the computer before leaving it unattended.",
   "hostMute": "Mute remote computer",
   "hostMuteHint": "Mute the remote computer while connected",
-  "hostMuteFailed": "Couldn't change the remote computer's mute setting"
+  "hostMuteFailed": "Couldn't change the remote computer's mute setting",
+  "handoffEnded": "This input handoff has already finished, so there is no window to show.",
+  "handoffUnavailable": "This computer can't show just this window. Update Cindy on it, or turn on remote desktop there.",
+  "handoffWindow": "Input handoff · {{app}}"
 }

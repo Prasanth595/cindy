@@ -126,7 +126,7 @@
   "automatic": "自動",
   "saver": "省流量",
   "hd": "高清",
-  "qualityHint": "自動優先確保流暢，網路良好時盡量清晰；省流量會限制用量（最高 30 幀）；高清優先確保文字清晰，頻寬不足時會降低幀率。",
+  "qualityHint": "自動優先流暢，省流量減少用量，高清優先文字清晰。",
   "resolution": "電腦解析度",
   "settingUnsupported": "目前電腦端尚不支援此設定",
   "loadingSettings": "讀取中…",
@@ -160,5 +160,8 @@
   "lockOnExitFailed": "無法確認電腦已鎖定螢幕，請檢查電腦狀態。",
   "hostMute": "遠端電腦靜音",
   "hostMuteHint": "連線期間將遠端電腦靜音",
-  "hostMuteFailed": "無法修改遠端電腦的靜音狀態"
+  "hostMuteFailed": "無法修改遠端電腦的靜音狀態",
+  "handoffEnded": "這次代輸入已經結束，沒有可顯示的視窗。",
+  "handoffUnavailable": "這台電腦暫時無法只顯示這個視窗。請在那台電腦上更新 Cindy，或開啟遠端桌面。",
+  "handoffWindow": "代輸入 · {{app}}"
 }

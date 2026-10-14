@@ -4,6 +4,8 @@ import {
   releasePeerMedia,
 } from "./peerFileRegistry";
 import { withTransientRemoteRetry } from "./remoteRetry";
+import { expandGhostCommand, parseGhostCommandWord, splitGhostDirective } from '@cindy/maker-shared/ghost-command';
+import { composerPluginListSchema, isComposerPluginCatalogUnsupportedError, type ComposerPlugin } from '@/session/remoteComposerPlugins';
 import type { OrcaWorkerAgentKind, OrcaWorkerPermissionMode } from "@cindy/maker-shared/orca-team";
 import { fetchAgentCapabilities } from "@/session/agentCapabilitiesCache";
 import {
@@ -34,6 +36,8 @@ import {
 } from "@cindy/maker-shared/device-link-contract";
 import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
+  ORCA_EXECUTION_DEVICES_CHANNEL,
+  isSharedTaskPeer,
   readDeviceFile,
   FILE_PEER_MAX_BYTES,
   createDeviceFileOperations,
@@ -383,17 +387,31 @@ export interface MobileSessionModelPref {
 
 /**
  * 草稿「模型 effort/fast」写穿入参(隧道 maker:apply-new-maker-draft-pref,形状对齐被控端
- * APPLY_NEW_MAKER_DRAFT_PREF 校验)。手机只做非选中行双写(active 恒 false),被控端草稿
- * 默认随之更新,使「下次在被控端 / 桌面控制端选中该模型」拿到同一份 effort/fast。
+ * APPLY_NEW_MAKER_DRAFT_PREF 校验)。
+ *  - active=false:会话里非选中行双写,被控端草稿默认随之更新,使「下次在被控端 / 桌面控制端
+ *    选中该模型」拿到同一份 effort/fast(providerId 必填)。
+ *  - active=true:新建任务页的当前选择写回被控端新建任务默认(与桌面远程新建同一写法);
+ *    markModelChoice=true 表示用户明确选了这个模型,false 只同步档位 / Fast、不打选模标记。
  */
-export interface MobileNewMakerDraftPref {
-  agent: MobileAgentKind;
-  providerId: string;
-  modelId: string;
-  active: false;
-  effort?: string;
-  fast?: boolean;
-}
+export type MobileNewMakerDraftPref =
+  | {
+      agent: MobileAgentKind;
+      providerId: string;
+      modelId: string;
+      active: false;
+      effort?: string;
+      fast?: boolean;
+    }
+  | {
+      agent: MobileAgentKind;
+      /** '' = 跟随被控端默认来源。 */
+      providerId: string;
+      modelId: string;
+      active: true;
+      markModelChoice: boolean;
+      effort?: string;
+      fast?: boolean;
+    };
 
 /**
  * 工作端 maker:get-new-maker-defaults 回包的手机端消费子集。完整形状是被控端
@@ -463,6 +481,7 @@ export type MobileWorktreeCreateResult =
     };
 
 export interface MobileMakerTransport {
+  listComposerPlugins(workingDir?: string): Promise<ComposerPlugin[]>;
   /** 在被控端生成当前任务完成后的输入框推荐提示词。 */
   predictNextPrompt(request: {
     sessionId: string;
@@ -562,7 +581,11 @@ export interface MobileMakerTransport {
     providerId?: string,
     selection?: { effort: string | null; fastMode: boolean },
   ): Promise<{ deferred?: boolean; superseded?: boolean } | undefined>;
-  /** 登记跨 Agent 切换意图；真正切换在下一条消息发送时由 desktop main 执行。 */
+  /**
+   * 登记跨 Agent 切换意图；真正切换在下一条消息发送时由 desktop main 执行。
+   * 可选 options.agentDeviceId(远程 Agent)同时换 Agent 所在电脑:null = 改回被控电脑本机
+   * 运行;只在显式传入时作为第 7 个 wire 参数发送,缺省 = 位置不变(旧被控端忽略多余参数)。
+   */
   switchSessionAgent(
     sessionId: string,
     targetAgentKind: MobileAgentKind,
@@ -570,6 +593,7 @@ export interface MobileMakerTransport {
     providerId: string | null,
     effort?: string,
     fastMode?: boolean,
+    options?: { agentDeviceId?: string | null },
   ): Promise<MobileSessionAgentSwitchResult>;
   /** 读取 desktop main 的权威 pending intent，用于重连 / 重进页面恢复。 */
   getSessionAgentSwitchIntent(
@@ -719,6 +743,7 @@ export interface MobileMakerTransport {
     sourceSessionId: string,
     messageClientId: string,
   ): Promise<RemoteSession>;
+  forkStripEncrypted(sourceSessionId: string): Promise<RemoteSession>;
   rewindPreview(
     sessionId: string,
     clientId: string,
@@ -739,6 +764,7 @@ export interface MobileMakerTransport {
    * 写操作(enable / create / archive / disable)一律不自动重试:超时不代表被控端没执行。
    */
   orca: {
+    listExecutionDevices(): Promise<unknown>;
     /** 被控端协同插件开关(项目级 / 对话用户级);结果形状见 readOrcaCollabPolicy。 */
     getCollabPolicy(workingDir: string | undefined, workspaceKind: 'project' | 'dialogue'): Promise<unknown>;
     enable(leadSessionId: string, options: MobileOrcaEnableOptions): Promise<MobileOrcaEnableResult>;
@@ -819,7 +845,7 @@ export interface MobileMakerTransport {
     enqueue(
       sessionId: string,
       item: QueuedRemoteMessage,
-      opts?: { sendAtMs?: number },
+      opts?: { sendAtMs?: number; expectedClearBoundaryMs?: number | null },
     ): Promise<InputProjection>;
     compact(sessionId: string): Promise<InputProjection>;
     steer(
@@ -834,6 +860,8 @@ export interface MobileMakerTransport {
     resume(sessionId: string): Promise<InputProjection>;
     retryLastError(sessionId: string): Promise<InputProjection>;
     clearError(sessionId: string): Promise<InputProjection>;
+    /** 取消账号限额重置后的自动继续;老被控端没有该通道时会被拒(调用方只在投影带等待时显示入口)。 */
+    cancelUsageLimitWait(sessionId: string): Promise<InputProjection>;
     remove(sessionId: string, clientId: string): Promise<InputProjection>;
     updateText(
       sessionId: string,
@@ -841,6 +869,7 @@ export interface MobileMakerTransport {
       newText: string,
       sessionRefs?: MobileSessionReference[],
       trustedContexts?: MobileSessionReferenceContext[],
+      workingDir?: string,
     ): Promise<InputProjection>;
     /** 整条内容替换(文本+附件),排队消息复用 composer 编辑的保存入口;老桌面端无此通道会抛 CHANNEL_NOT_ALLOWED。 */
     updateContent(
@@ -880,7 +909,11 @@ export interface MobileMakerTransport {
       relPath: string,
       signal?: AbortSignal,
       beforeInvoke?: () => Promise<unknown>,
-      options?: { stream?: boolean },
+      options?: {
+        stream?: boolean;
+        /** Upload progress while the computer stages the file in cloud storage. */
+        onProgress?: (uploaded: number, total: number) => void;
+      },
     ): Promise<MobileRemoteMediaFetchResult>;
     caps(workdir: string): Promise<FileBrowserCapsResult>;
     /** 返回裸 entries(unknown),消费方用 normalizeRemoteOpDirEntries 归一化。 */
@@ -929,7 +962,11 @@ export interface MobileOrcaEnableOptions {
   fast?: boolean;
   providerId?: string;
   delegateTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
+  /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaEnableResult {
@@ -951,6 +988,10 @@ export interface MobileOrcaCreateWorkerInput {
   providerId?: string;
   workerPermissionMode: OrcaWorkerPermissionMode;
   initialTask?: string;
+  executionDeviceId?: string;
+  workingDir?: string;
+  /** Worker 的 Agent 所在电脑(远程供应商)；null = 被控电脑。只发给声明 supportsOrcaWorkerAgentDevice 的被控端。 */
+  agentDeviceId?: string | null;
 }
 
 export interface MobileOrcaCreateWorkerResult {
@@ -979,6 +1020,26 @@ export function createMobileMakerTransport({
     if (!deviceId)
       return Promise.reject(new Error("remote device id is required"));
     return invoke<T>(deviceId, channel, args);
+  };
+  const listComposerPlugins = async (workingDir?: string): Promise<ComposerPlugin[]> => {
+    if (!isCurrent()) throw new Error('Plugin catalog read superseded');
+    const result = await call('ghosts:composer-list', workingDir ? [workingDir] : []);
+    if (!isCurrent()) throw new Error('Plugin catalog read superseded');
+    return composerPluginListSchema.parse(result);
+  };
+  const expandPluginText = async (text: string, workingDir?: string): Promise<string> => {
+    if (isSharedTaskPeer(deviceId) || !parseGhostCommandWord(text) || splitGhostDirective(text)) return text;
+    try {
+      return expandGhostCommand(text, await listComposerPlugins(workingDir));
+    } catch (error) {
+      if (isComposerPluginCatalogUnsupportedError(error)) return text;
+      throw error;
+    }
+  };
+  const expandPluginItem = async (item: QueuedRemoteMessage): Promise<QueuedRemoteMessage> => {
+    const text = await expandPluginText(item.text, item.workingDir);
+    // Expand only agent-bound text; retain the original queue/history echo.
+    return text === item.text ? item : { ...item, text };
   };
   const fileOp = async <T>(args: Record<string, unknown>): Promise<T> => {
     if (isCurrent?.() === false) throw new Error("FILE_PEER_CANCELLED");
@@ -1085,6 +1146,7 @@ export function createMobileMakerTransport({
   };
 
   return {
+    listComposerPlugins,
     createSession: (opts) => call("maker:create-session", [opts]),
     getCapabilities: (agentKind) => fetchAgentCapabilities(deviceId, agentKind, () => {
       if (!isCurrent()) throw new Error("Capabilities read superseded");
@@ -1116,7 +1178,8 @@ export function createMobileMakerTransport({
     listMessages: (sessionId, opts) =>
       call("local-db:messages:list", [sessionId, opts]),
     readHistoryView: (sessionId, before) =>
-      call("local-db:messages:view", [sessionId, { before, lazyDetails: true }]),
+      // workLines: the Host projects running single-line activities and may send work patches.
+      call("local-db:messages:view", [sessionId, { before, lazyDetails: true, workLines: true }]),
     readWorkDetails: (sessionId, ref, after) =>
       call("local-db:messages:work-details", [sessionId, ref, { after }]),
     setHistoryExpanded: (sessionId, refs) =>
@@ -1125,8 +1188,22 @@ export function createMobileMakerTransport({
       call("local-db:messages:around", [sessionId, messageId, opts]),
     aroundMessagesByClientId: (sessionId, clientId, opts) =>
       call("local-db:messages:around-client-id", [sessionId, clientId, opts]),
-    send: (sessionId, message, createOpts, sendOpts) =>
-      call("maker:send", [sessionId, message, createOpts, sendOpts]),
+    send: async (sessionId, message, createOpts, sendOpts) => {
+      const content = typeof message === 'string' ? message : message.content;
+      const first = Array.isArray(content) ? content[0] : undefined;
+      const head = typeof content === 'string' ? content
+        : first?.type === 'text' && typeof first.text === 'string' ? first.text : null;
+      if (head && parseGhostCommandWord(head) && !splitGhostDirective(head) && !isSharedTaskPeer(deviceId)) {
+        const workingDir = createOpts?.workingDir ?? (await call<RemoteSession>('local-db:sessions:get', [sessionId]))?.workingDir;
+        const text = await expandPluginText(head, workingDir ?? undefined);
+        message = typeof message === 'string' ? text : {
+          ...message,
+          content: Array.isArray(content) ? [{ ...first, text }, ...content.slice(1)] : text,
+        };
+      }
+      if (!isCurrent()) throw new Error('Message send superseded');
+      return call("maker:send", [sessionId, message, createOpts, sendOpts]);
+    },
     listActiveSessions: () => call("maker:list-active", [{ summary: true, snapshotVersion: 2 }]),
     setModel: async (sessionId, model, providerId, selection) => {
       const wireArgs = selection
@@ -1159,15 +1236,22 @@ export function createMobileMakerTransport({
       providerId,
       effort,
       fastMode,
+      options,
     ) =>
-      call("maker:switch-session-agent", [
-        sessionId,
-        targetAgentKind,
-        model,
-        providerId,
-        effort,
-        fastMode,
-      ]),
+      call(
+        "maker:switch-session-agent",
+        options?.agentDeviceId !== undefined
+          ? [
+              sessionId,
+              targetAgentKind,
+              model,
+              providerId,
+              effort ?? null,
+              fastMode ?? null,
+              { agentDeviceId: options.agentDeviceId },
+            ]
+          : [sessionId, targetAgentKind, model, providerId, effort, fastMode],
+      ),
     getSessionAgentSwitchIntent: (sessionId) =>
       call("maker:get-session-agent-switch-intent", [sessionId]),
     setEffort: (sessionId, effort) =>
@@ -1293,6 +1377,8 @@ export function createMobileMakerTransport({
       call("maker:get-context-usage", [sessionId, createOpts]),
     fork: (sourceSessionId, messageClientId) =>
       call("maker:fork", [sourceSessionId, messageClientId]),
+    forkStripEncrypted: (sourceSessionId) =>
+      call("maker:fork-strip-encrypted", [sourceSessionId]),
     rewindPreview: (sessionId, clientId) =>
       call("maker:rewind:preview", [sessionId, clientId]),
     rewindCommit: (sessionId, clientId, opts) =>
@@ -1304,6 +1390,7 @@ export function createMobileMakerTransport({
       call("maker:message:delete", [sessionId, clientId]),
     closeSession: (sessionId) => call("maker:close-session", [sessionId]),
     orca: {
+      listExecutionDevices: () => call(ORCA_EXECUTION_DEVICES_CHANNEL),
       getCollabPolicy: (workingDir, workspaceKind) =>
         call("maker:plugins:get-state", ["collab", workingDir, workspaceKind]),
       enable: (leadSessionId, options) =>
@@ -1366,33 +1453,52 @@ export function createMobileMakerTransport({
     input: {
       getProjection: (sessionId) =>
         call("maker:input:get-projection", [sessionId]),
-      enqueue: (sessionId, item, opts) =>
-        call("maker:input:enqueue", [sessionId, item, opts]),
+      enqueue: async (sessionId, item, opts) => {
+        const expanded = await expandPluginItem(item);
+        if (!isCurrent()) throw new Error('Message enqueue superseded');
+        return call("maker:input:enqueue", [sessionId, expanded, opts]);
+      },
       compact: (sessionId) => call("maker:input:compact", [sessionId]),
-      steer: (sessionId, item, opts) =>
-        call("maker:input:steer", [sessionId, item, opts]),
+      steer: async (sessionId, item, opts) => {
+        const expanded = await expandPluginItem(item);
+        if (!isCurrent()) throw new Error('Message steer superseded');
+        return call("maker:input:steer", [sessionId, expanded, opts]);
+      },
       stop: (sessionId, opts) => call("maker:input:stop", [sessionId, opts]),
       resume: (sessionId) => call("maker:input:resume", [sessionId]),
       retryLastError: (sessionId) =>
         call("maker:input:retry-last-error", [sessionId]),
       clearError: (sessionId) => call("maker:input:clear-error", [sessionId]),
+      cancelUsageLimitWait: (sessionId) =>
+        call("maker:input:cancel-usage-limit-wait", [sessionId]),
       remove: (sessionId, clientId) =>
         call("maker:input:remove", [sessionId, clientId]),
-      updateText: (
+      updateText: async (
         sessionId,
         clientId,
         newText,
         sessionRefs,
         trustedContexts,
-      ) =>
-        call(
+        workingDir,
+      ) => {
+        const text = await expandPluginText(newText, workingDir);
+        if (!isCurrent()) throw new Error('Message update superseded');
+        // Legacy text edits also replace the persisted draft and history.
+        if (text !== newText) {
+          throw Object.assign(new Error('[CHANNEL_NOT_ALLOWED] Plugin edits require update-content'), { code: 'CHANNEL_NOT_ALLOWED' });
+        }
+        return call(
           "maker:input:update-text",
           sessionRefs
-            ? [sessionId, clientId, newText, sessionRefs, trustedContexts]
-            : [sessionId, clientId, newText],
-        ),
-      updateContent: (sessionId, clientId, item) =>
-        call("maker:input:update-content", [sessionId, clientId, item]),
+            ? [sessionId, clientId, text, sessionRefs, trustedContexts]
+            : [sessionId, clientId, text],
+        );
+      },
+      updateContent: async (sessionId, clientId, item) => {
+        const expanded = await expandPluginItem(item);
+        if (!isCurrent()) throw new Error('Message update superseded');
+        return call("maker:input:update-content", [sessionId, clientId, expanded]);
+      },
       move: (sessionId, clientId, targetIndex) =>
         call("maker:input:move", [sessionId, clientId, targetIndex]),
       setExpanded: (sessionId, expanded) =>
@@ -1428,7 +1534,7 @@ export function createMobileMakerTransport({
         });
         assertFileReadActive(signal);
         const fallback = () =>
-          exportDeviceFile(retryOp, workdir, relPath, signal);
+          exportDeviceFile(retryOp, workdir, relPath, signal, options?.onProgress);
         if (!caps.fileRead) {
           mobileDebugLog("debug", "files", "file export without direct read", {
             reason: "host-lacks-file-read",

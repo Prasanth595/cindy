@@ -40,9 +40,14 @@ export interface ChatFileFetchArgs {
   workdir: string;
   /** 目标文件在远端机器上的绝对路径。 */
   absPath: string;
+  /** Local IPC correlation for transfer progress; never forwarded to the remote device. */
+  requestId?: string;
   /** Optional generated-command evidence window, using timestamps from the owning device. */
   modifiedWindow?: { startMs: number; endMs: number | null };
 }
+
+/** Bound renderer-provided correlation IDs before repeating them in progress events. */
+export { fileTransferRequestId as chatFileProgressRequestId } from './transfer-progress.js';
 
 /**
  * 返回形态走规则 13 的 `{success}` 例外:失败时 renderer 需要按 code 分流降级
@@ -87,6 +92,7 @@ export interface ChatFileDeps {
     deviceId: string,
     url: string,
     signal?: AbortSignal,
+    onProgress?: FetchProgressFn,
   ): Promise<
     | { ossKey: string; size: number; inlineBase64?: string }
     | { ossKey: string; size: number; path: string; dispose(): Promise<void> }
@@ -317,6 +323,7 @@ export async function fetchChatFile(
       origin.deviceId,
       buildDevicePathUrl(absPath),
       signal,
+      onProgress,
     );
     if ('path' in fetched || fetched.inlineBase64 !== undefined) {
       try {

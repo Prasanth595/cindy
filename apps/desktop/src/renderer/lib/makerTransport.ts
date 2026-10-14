@@ -34,6 +34,13 @@ import * as sessionService from '@/lib/sessionService';
 import { extractIpcError } from '@/utils/ipcError';
 import type { TurnChangeSetUpdatedPayload } from '../../shared/turnChangeSet';
 import type { LocalPluginOauthRequest, LocalPluginSecretRequest, LocalPluginConnectionRequest } from '../../shared/pluginOauth';
+import {
+  INPUT_HANDOFF_ACTION_ID,
+  INPUT_HANDOFF_GHOST_ID,
+  type InputHandoffPicture,
+  type InputHandoffPresentation,
+  type InputHandoffSubmission,
+} from '@cindy/device-link';
 
 type FullMaker = typeof window.electronAPI.maker;
 
@@ -88,6 +95,77 @@ export function submitRemotePluginConnection(sessionId: string, request: Omit<Lo
   const deviceId = getStickySessionDeviceId(sessionId);
   if (!deviceId) return Promise.reject(new Error('Remote authorization unavailable'));
   return window.electronAPI.maker.submitRemotePluginConnection({ deviceId, ...request });
+}
+
+/**
+ * 代输入 values. Local tasks use the trusted local channel; tasks on another
+ * computer go through Main's signed relay. Never makerApiFor/device-link invoke.
+ */
+export function submitInputHandoff(
+  sessionId: string,
+  request: { submission: InputHandoffSubmission; presentation: InputHandoffPresentation },
+): Promise<{ accepted: boolean }> {
+  const deviceId = getStickySessionDeviceId(sessionId);
+  if (!deviceId)
+    return window.electronAPI.maker.submitInputHandoff(request.presentation.requestId, request.submission);
+  return window.electronAPI.maker.submitRemoteInputHandoff({
+    deviceId,
+    ghostId: INPUT_HANDOFF_GHOST_ID,
+    requestId: request.presentation.requestId,
+    actionId: INPUT_HANDOFF_ACTION_ID,
+    expectedRevision: request.submission.expectedRevision,
+    submission: request.submission,
+    presentation: request.presentation,
+  });
+}
+
+/** One opened 代输入 screenshot step: its picture, and one answer (or close). */
+export interface InputHandoffPictureSession {
+  picture: InputHandoffPicture;
+  answer(submission: InputHandoffSubmission): Promise<{ accepted: boolean }>;
+  close(): void;
+}
+
+/**
+ * The current screenshot step. On this computer Main hands it over directly;
+ * for a task on another computer it arrives inside the sealed v3 offer, and
+ * the answer goes back on the same exchange.
+ */
+export async function openInputHandoffPicture(
+  sessionId: string,
+  presentation: InputHandoffPresentation,
+): Promise<InputHandoffPictureSession> {
+  const deviceId = getStickySessionDeviceId(sessionId);
+  if (!deviceId) {
+    const picture = await window.electronAPI.maker.getInputHandoffPicture(presentation.requestId, presentation.revision);
+    if (!picture) throw new Error('INPUT_HANDOFF_UNAVAILABLE');
+    return {
+      picture,
+      answer: (submission) => window.electronAPI.maker.submitInputHandoff(presentation.requestId, submission),
+      close: () => undefined,
+    };
+  }
+  const opened = await window.electronAPI.maker.openRemoteInputHandoffPicture({
+    deviceId,
+    ghostId: INPUT_HANDOFF_GHOST_ID,
+    requestId: presentation.requestId,
+    actionId: INPUT_HANDOFF_ACTION_ID,
+    expectedRevision: presentation.revision,
+    presentation,
+  });
+  let open = true;
+  return {
+    picture: opened.picture,
+    answer: (submission) => {
+      open = false;
+      return window.electronAPI.maker.answerRemoteInputHandoffPicture(opened.token, submission);
+    },
+    close: () => {
+      if (!open) return;
+      open = false;
+      void window.electronAPI.maker.answerRemoteInputHandoffPicture(opened.token, null).catch(() => undefined);
+    },
+  };
 }
 
 /**
@@ -151,6 +229,7 @@ export interface RoutableMaker {
     | 'updateText'
     | 'updateContent'
     | 'clearError'
+    | 'cancelUsageLimitWait'
     | 'retryLastError'
     | 'clearSession'
     | 'persistTurnErrorDeferred'
@@ -265,6 +344,7 @@ function remoteMakerApi(deviceId: string): RoutableMaker {
       updateText: t('maker:input:update-text') as FullMaker['input']['updateText'],
       updateContent: t('maker:input:update-content') as FullMaker['input']['updateContent'],
       clearError: t('maker:input:clear-error') as FullMaker['input']['clearError'],
+      cancelUsageLimitWait: t('maker:input:cancel-usage-limit-wait') as FullMaker['input']['cancelUsageLimitWait'],
       retryLastError: t('maker:input:retry-last-error') as FullMaker['input']['retryLastError'],
       clearSession: t('maker:input:clear-session') as FullMaker['input']['clearSession'],
       // device-link:auth error 重试失败/放弃时在被控端落库,经隧道路由到被控端 main。
@@ -408,6 +488,23 @@ export function isSessionTurnRunningFor(sessionId: string): Promise<boolean> {
   const deviceId = getSessionDeviceId(sessionId);
   if (!deviceId) return Promise.resolve(false);
   return invokeRemote(deviceId, 'maker:session-in-turn', [sessionId]) as Promise<boolean>;
+}
+
+/**
+ * 「应用退出中断」横幅的运行态真值:时间戳来自哪台设备的 session 行,就问哪台设备。
+ * 远程会话的 turn 只在被控端跑,控制端本机 main 永远答「不在 turn 中」,拿它当真值会把
+ * 被控端正在跑的任务误判成中断。deviceId 由调用方显式传入(视图的粘滞归属),不在这里
+ * 重新解析易失的 session origin —— 重连窗口内退回本机同样会得到错误的 false。
+ */
+export async function getSessionTurnActiveOn(
+  sessionId: string,
+  deviceId: string | null | undefined,
+): Promise<boolean> {
+  if (!deviceId) {
+    const result = await window.electronAPI.maker.getSessionTurnActive(sessionId);
+    return result?.inTurn === true;
+  }
+  return (await invokeRemote(deviceId, 'maker:session-in-turn', [sessionId])) === true;
 }
 
 /**
@@ -889,6 +986,7 @@ export interface RoutableOrcaWorkflows {
   archiveWorker: FullOrca['archiveWorker'];
   endTeam: FullOrca['endTeam'];
   getCollaborationSettings: FullOrca['getCollaborationSettings'];
+  listExecutionDevices: FullOrca['listExecutionDevices'];
 }
 
 /**
@@ -934,6 +1032,7 @@ function remoteOrcaWorkflows(deviceId: string): RoutableOrcaWorkflows {
     getCollaborationSettings: t(
       'maker:collaboration-settings:get',
     ) as FullOrca['getCollaborationSettings'],
+    listExecutionDevices: t('maker:orca:execution-devices') as FullOrca['listExecutionDevices'],
   };
 }
 

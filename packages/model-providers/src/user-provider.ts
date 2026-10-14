@@ -354,7 +354,19 @@ function toCatalogModel(
           generationDefaults,
         )
       : pickModelMetadata(user);
-  return applyModelMetadata(model, resolved);
+  // 「未声明」与「明确无档位」要分开（#5535）：用户/运行时 reasoning、目录继承、发现或用户
+  // 元数据任一来源给过 efforts 就算已声明；都没有时 `efforts: []` 只是占位，打上
+  // effortsUnknown 让准入校验不要把显式档位判成 valid: none。
+  // Pi 例外：Pi 的 models.json 直接按本目录的 efforts 物化 reasoning（pi-host 里
+  // `reasoning: model.efforts.length > 0`），自定义 Pi 模型在显式开启前就是非推理模型，
+  // 放行未声明档位也不会生效，所以 Pi 不打「未知」标记，准入仍按明确无档位处理。
+  const effortsDeclared =
+    agent === "pi" ||
+    m.reasoning !== undefined ||
+    registryEfforts !== undefined ||
+    resolved.efforts !== undefined;
+  const projected = applyModelMetadata(model, resolved);
+  return effortsDeclared ? projected : { ...projected, effortsUnknown: true };
 }
 
 function defaultWireProtocol(agent: AgentKind): ProviderWireProtocol {
@@ -464,6 +476,8 @@ export function buildUserProvider(
       rt.piCatalogProviderId,
       rt.supportsImageGeneration,
     );
+    if (rt.imageApi === "openai-images") routing[agent]!.imageApi = rt.imageApi;
+    if (rt.videoApi === "xai-videos") routing[agent]!.videoApi = rt.videoApi;
     const followsPreset =
       presetRuntime &&
       withoutTrailingSlashes(resolvedBaseUrl) ===
@@ -600,9 +614,9 @@ export function buildUserProvider(
       const registry = options.modelRegistry ?? undefined;
       const resolveDeclaration = (source: ModelRegistry | undefined) => {
         const baseModel = findBaseModel(source, m.id);
-        const routeNativeApi = resolveModelNativeApi(source, config.id, m.id);
+        const routeNativeApi = resolveModelNativeApi(source, config.id, m.id, projected.mode);
         return routeNativeApi !== undefined ? routeNativeApi
-          : resolveCatalogModelNativeApi(source, baseModel?.id ?? m.id);
+          : resolveCatalogModelNativeApi(source, baseModel?.id ?? m.id, projected.mode);
       };
       const projected = toCatalogModel(
         m,
@@ -619,9 +633,10 @@ export function buildUserProvider(
       const declaration = currentDeclaration !== undefined ? currentDeclaration
         : projected.nativeApi !== undefined ? projected.nativeApi
         : resolveDeclaration(BUNDLED_CATALOG.modelRegistry);
-      const nativeApi = declaration === null || declaration === 'anthropic-messages'
-        || declaration === 'openai-responses' || declaration === 'openai-completions'
-        || declaration === 'google-generative-ai' ? declaration : undefined;
+      // Only an explicit user value may override the current media declaration.
+      // projected also contains discovery metadata, including stale protocol claims.
+      const nativeApi = providerMediaField(projected.mode) && storedModel.nativeApi !== undefined
+        ? storedModel.nativeApi : declaration;
       return {
         ...(imported?.cost ? { cost: imported.cost } : {}),
         ...projected,
@@ -696,12 +711,23 @@ export function buildUserProvider(
       "imageModels" | "videoModels" | "audioModels" | "embeddingModels"
     >
   > = {};
+  const imageAgents = agents.filter((agent) => routing[agent]?.imageApi === "openai-images");
+  const videoAgents = agents.filter((agent) => routing[agent]?.videoApi === "xai-videos");
   for (const [agent, list] of Object.entries(models)) {
     for (const model of list ?? []) {
       const field = providerMediaField(model.mode);
       if (!field) continue;
+      // Explicit Images membership owns media routing, independent of chat harness order.
+      // Keep the old projection for connections that have never opted into Images.
+      const owners = field === "imageModels" ? imageAgents : field === "videoModels" ? videoAgents : [];
+      if (owners.length && !owners.includes(agent as AgentKind)) continue;
       const items = (mediaLists[field] ??= []);
-      if (!items.some((item) => item.id === model.id))
+      const existing = items.find((item) => item.id === model.id);
+      if (existing && owners.length) {
+        // A legacy/manual config with two owners is ambiguous. Never pick a key by order.
+        delete existing.sourceAgent;
+      }
+      if (!existing)
         items.push({
           ...pickModelMetadata(model),
           id: model.id,

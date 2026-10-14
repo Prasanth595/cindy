@@ -7,6 +7,7 @@ import { AndroidUpdateSheet } from '@/update/AndroidUpdateSheet';
 import { PeerFileTransport } from '@/device-link/peerFileTransport';
 import { startLocalDiagnostics } from '@/debug/localDiagnostics';
 import { MobileOutboxBridge } from '@/session/MobileOutboxBridge';
+import { RemoteHistoryPrefetchBridge } from '@/session/RemoteHistoryPrefetchBridge';
 import {
   DarkTheme as NavigationDarkTheme,
   DefaultTheme as NavigationLightTheme,
@@ -134,7 +135,8 @@ function NavigationGate() {
   useEffect(() => {
     if (!auth.initialized) return;
     const inAuthGroup = segments[0] === '(auth)';
-    if (!auth.isAuthenticated && !inAuthGroup) {
+    // 供应商分享链接的提示页只说明「请在电脑上打开」,不读账号数据,未登录也直接显示。
+    if (!auth.isAuthenticated && !inAuthGroup && segments[0] !== 'provider-share') {
       router.replace('/login');
       return;
     }
@@ -200,8 +202,6 @@ function NavigationGate() {
           <Stack.Screen name="sessions/new" options={({ route }) => ({
             animation: readComposerEntry((route.params as { composerMorph?: string } | undefined)?.composerMorph) ? 'none' : 'default',
           })} />
-          {/* 设置从左侧抽屉进入:接着抽屉方向从左边推出,不要默认从右边盖上来。 */}
-          <Stack.Screen name="settings" options={{ animation: 'slide_from_left' }} />
           <Stack.Screen
             name="add-account"
             options={{ animation: 'fade', gestureEnabled: false }}
@@ -381,6 +381,7 @@ function RootAfterUpdateChannel({ channel }: { channel: UpdateChannel }) {
         <PeerFileTransport />
         <PrecreatedWorktreeRecoveryBridge />
         <MobileOutboxBridge />
+        <RemoteHistoryPrefetchBridge />
         <HomeEntryProvider>
           <NavigationGate />
         </HomeEntryProvider>

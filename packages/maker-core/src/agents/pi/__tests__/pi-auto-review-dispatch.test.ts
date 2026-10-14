@@ -201,6 +201,7 @@ vi.mock('../rpc-client.js', () => ({
 
 import {
   AUTO_REVIEW_SOURCE_CONTENT,
+  ASYNC_QUESTION_ANSWER,
   MAIN_OWNED_SEND_CONTEXT,
   PiManagedPackageMutationCancelledError,
   PiManagedPackageMutationFailedError,
@@ -464,6 +465,26 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     }) as Promise<PiTestSessionHandle>;
   }
 
+  it.each(['settled', 'replaced', 'aborted'] as const)('does not enqueue an async answer after its Pi execution is %s', async (action) => {
+    const handle = await start('bypassPermissions');
+    const controller = new AbortController();
+    try {
+      captured.onEvent?.({ type: 'agent_start' });
+      const send = handle.steer({ type: 'user', content: 'Async answer' }, {
+        signal: controller.signal, [ASYNC_QUESTION_ANSWER]: true,
+      });
+      // Interrupt while steer is awaiting prompt preparation / the RPC queue.
+      if (action === 'aborted') controller.abort();
+      else {
+        captured.onEvent?.({ type: 'agent_end', messages: [] });
+        captured.onEvent?.({ type: 'agent_settled' });
+        if (action === 'replaced') captured.onEvent?.({ type: 'agent_start' });
+      }
+      await expect(send).rejects.toThrow(/cancelled|No active Pi turn/);
+      expect(captured.requests.filter((request) => request.type === 'steer')).toHaveLength(0);
+    } finally { await handle.close(); }
+  });
+
   it('toggles welcome policy without filesystem writes or extra prompt RPCs', async () => {
     const handle = await start('bypassPermissions');
     const token = captured.env.CINDY_PI_TURN_TOOL_POLICY;
@@ -667,6 +688,23 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     expect(behaviorFlags).toHaveBeenCalledWith(expect.objectContaining({ spawnMode: mode }));
     expect(captured.env[mode === 'remote' ? 'CINDY_TEST_ROUTE' : 'VITEST_MAX_THREADS'])
       .toBe(mode === 'remote' ? 'remote' : '2');
+    await handle.close();
+  });
+
+  it.each(['local', 'remote'] as const)('gives only a local task\'s shell the 代输入 askpass variables (%s)', async (mode) => {
+    const deps = buildDeps();
+    const remoteTransport = deps.getRemotePiTransport!;
+    deps.getRemotePiTransport = async (host, options) => {
+      captured.env = options.env;
+      return remoteTransport(host, options);
+    };
+    deps.runtimeConfig.taskShellEnv = ({ sessionId }) => ({ CINDY_INPUT_HANDOFF_ROUTE: `route-${sessionId}` });
+    const agent = new PiAgent(deps);
+    const handle = await agent.startSession({ sessionId: 'askpass', workingDir: cwd, model: 'm',
+      ...(mode === 'remote' ? { remoteHostId: 'remote-1' } : {}),
+    });
+    // A remote computer's prompts must not reach this computer's owner.
+    expect(captured.env.CINDY_INPUT_HANDOFF_ROUTE).toBe(mode === 'local' ? 'route-askpass' : undefined);
     await handle.close();
   });
 
@@ -4361,6 +4399,21 @@ describe('pi auto-review dispatch & spawn config (mocked pi process)', () => {
     await waitForResponse('raw-channel');
     expect(JSON.stringify(review.mock.calls[0]?.[0].userIntent)).toContain('Do not send.');
     expect(JSON.stringify(review.mock.calls[0]?.[0].userIntent)).not.toContain('SEND THE REPORT');
+    await handle.close();
+  });
+
+  it.each(['send', 'steer'] as const)('%s carries Host references beside the authored channel text', async (method) => {
+    const review = vi.fn(async (_request: AutoReviewRequest) => ({ verdict: 'block' as const }));
+    const handle = await start('auto', review);
+    if (method === 'steer') await handle.send({ type: 'user', content: 'Inspect only.' });
+    const references = { attachments: { images: 1, files: 0 }, quotedMessages: [{ author: '群友', text: '[图片]', attachmentCount: 1 }] };
+    await handle[method]!({ type: 'user', content: '<reply_context>[群友] [图片]</reply_context>这啥情况' }, {
+      [MAIN_OWNED_SEND_CONTEXT]: { origin: { kind: 'im', channel: 'telegram' }, rawChannelText: '这啥情况', autoReviewReferences: references },
+    });
+    firePermissionRequest('references', 'unknown_sender', { action: 'search' });
+    await waitForResponse('references');
+    expect(review.mock.calls[0]?.[0].userIntent)
+      .toMatchObject({ currentUserMessage: '这啥情况', currentUserReferences: references });
     await handle.close();
   });
 

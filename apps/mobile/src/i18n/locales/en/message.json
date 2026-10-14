@@ -15,6 +15,7 @@
     "openForkOrigin": "Open fork source message",
     "viewForkOrigin": "View fork source",
     "emptyMessages": "No messages yet",
+    "historyNotCached": "No history cached on this phone. Connect to the computer to sync.",
     "syncing": "Syncing",
     "copyLinkHint": "Tap to copy message link",
     "sentTime": "Sent at {{time}}",
@@ -104,7 +105,8 @@
     "handoffContentDesc": "Handoff — context summary sent to the new engine when switching (not part of the chat transcript; shown only here)",
     "handoffContentDescEnglishSource": "Handoff — context summary sent to the new engine when switching (not part of the chat transcript; shown only here)",
     "openDiagramDetail": "Open diagram detail",
-    "sessionChipFallback": "Session {{id}}",
+    "sessionChipFallback": "A session",
+    "messageChipFallback": "Quoted message",
     "imageFallbackTitle": "Image",
     "mermaidExportFailedTitle": "Export failed",
     "mermaidRenderIncompleteBody": "The diagram isn't fully rendered yet or the export failed. Try again later.",
@@ -164,7 +166,10 @@
     "retryToolInput": "Couldn't load input. Retry",
     "toolResultCompacted": "Full tool output was trimmed (original size {{size}})",
     "mermaidEmpty": "Empty Mermaid diagram.",
-    "diffEditCount": "{{n}} edits"
+    "diffEditCount": "{{n}} edits",
+    "groupSentNamed": "Sent from group “{{name}}”",
+    "groupSent": "Sent from a group",
+    "sourceGroupId": "Group ID: {{id}}"
   },
   "actions": {
     "attachmentsPrefix": "Attachments: {{names}}",
@@ -204,6 +209,8 @@
     "withSource": "{{source}}: {{message}}",
     "retrySend": "Retry Send",
     "clearError": "Clear Error",
+    "usageLimitAutoContinueAt": "Continues automatically at {{time}}",
+    "usageLimitAutoContinueCancel": "Cancel Auto-Continue",
     "noRetryContent": "No content is available to resend. Clear the error and enter your input again.",
     "piImageInputUnsupported": "Image input is not enabled for the current Pi model. Switch to a model that supports images. For a custom model, enable “Supports image input” in provider settings, then start a new Pi task.",
     "codexResumeNotReady": "Codex can't resume this task right now. Try again in a little while.",
@@ -252,19 +259,36 @@
       "succeeded": "Reconnected",
       "failed": "Reconnect failed",
       "neutral": "Reconnect",
+      "usageReset": "Usage reset, continued automatically",
       "pending": "Reconnecting…",
       "pendingWithProgress": "Reconnecting {{attempt}}/{{total}}…",
+      "groupSwitchPending": "Switching to another computer…",
       "details": "Attempt {{attempt}}/{{total}} · {{count}} reconnects in this session",
       "detail": {
         "reason": "Interruption reason",
         "attempt": "Attempt {{attempt}}/{{total}}",
         "sessionTotal": "{{count}} reconnects in this session"
-      }
+      },
+      "agentSwitch": {
+        "usage-limit": "{{from}} hit its usage limit; continued on {{to}}",
+        "auth": "{{from}} is signed out; continued on {{to}}",
+        "unavailable": "Couldn’t reach {{from}}; continued on {{to}}",
+        "overload": "{{from}} was overloaded; continued on {{to}}",
+        "failed": "{{from}} ran into a problem; continued on {{to}}"
+      },
+      "agentReconnect": {
+        "named": "Reconnected to {{computer}}; continued there",
+        "unnamed": "Reconnected to the original computer; continued there"
+      },
+      "groupSwitch": "Continued on another computer automatically"
     },
     "modelLabel": "Model",
     "sessionLabel": "Session",
     "sessionResumed": "Resumed",
     "agentSwitch": "Switched from {{from}} to {{to}}",
+    "agentSwitchLocation": "Agent moved to {{device}}",
+    "agentSwitchLocationThisComputer": "Agent moved back to this computer",
+    "agentSwitchLocationOtherComputer": "Agent moved to another computer",
     "learnStarted": "Skill learning started",
     "learnStartedBody": "Distillation runs in the background on desktop. When it's done, review the skill draft on desktop.",
     "learnFailed": "Skill learning couldn't start",
@@ -297,7 +321,7 @@
       "steering": "Sending interjection",
       "orcaTitle": "Collaboration queue {{index}}",
       "title": "Queue {{index}}",
-      "orcaEditDisabled": "Collaboration messages can't be edited or sent as interjections.",
+      "orcaEditDisabled": "Collaboration messages can't be edited.",
       "busy": "Queue changes are syncing. Try again when syncing finishes.",
       "steeringDisabled": "The interjection is being sent to the current turn. Wait for the desktop response before changing it.",
       "editLocked": "This queued message is being edited. Try again when editing finishes.",

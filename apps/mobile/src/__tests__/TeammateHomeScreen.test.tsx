@@ -5,33 +5,54 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HomeMode, LastTeammateIdentity } from '@/session/homeViewPreferenceStore';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 const h = vi.hoisted(() => ({
-  realNavigation: false, stored: null as string | null, tasks: {} as any, dismissTo: vi.fn(), replace: vi.fn(),
+  styles: {}, t: (key: string) => key, realNavigation: false, stored: null as string | null, tasks: {} as any, dismissTo: vi.fn(), replace: vi.fn(),
   focused: true, drawer: {} as any, list: {} as any, accounts: {} as any, push: vi.fn(),
   auth: { user: { id: 'owner' }, accountGeneration: 1, logout: vi.fn(), beginAddAccount: vi.fn() },
   nav: { hydrated: true, lastTeammate: null as LastTeammateIdentity | null, mode: 'teammates' as HomeMode,
-    saveFailed: false, openTeammate: vi.fn(), setMode: vi.fn() },
+    saveFailed: false, openTeammate: vi.fn(), setMode: vi.fn(), chooseMode: vi.fn() },
+  modeMenu: {} as any, nativeMenus: true,
   roster: { createTargets: [], authoritative: true, items: [] as HostedRemoteCollectionItem[], loading: false, refreshing: false, error: null as string | null,
     isOnline: vi.fn(() => true), refresh: vi.fn(), groupTargets: [] as { deviceId: string; deviceName: string }[] },
-  groups: { items: [] as HostedRemoteCollectionItem[], supported: false, isOnline: () => true, refresh: vi.fn() },
+  groups: { loading: false, refreshing: false, error: null as string | null, items: [] as HostedRemoteCollectionItem[], supported: false, isOnline: () => true, refresh: vi.fn() },
   groupTargetsSeen: [] as unknown[],
-  create: {} as any,
+  create: {} as any, chrome: {} as any, titleArgs: [] as number[], nativeHeader: true, headerHeight: 106, barEdge: 'none',
 }));
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
   return { View: ({ children }: any) => el('div', {}, children), ActivityIndicator: () => null,
-    Keyboard: { dismiss() {} }, Alert: { alert: vi.fn() }, StyleSheet: { create: (value: unknown) => value } };
+    Pressable: ({ children, onPress }: any) => el('button', { onClick: onPress }, children),
+    Keyboard: { dismiss: vi.fn() }, Alert: { alert: vi.fn() }, useWindowDimensions: () => ({ width: 402, height: 874 }), StyleSheet: { create: (value: unknown) => value } };
+});
+vi.mock('@/platform/chrome/homeMenuIcon', () => ({ homeMenuAttentionSize: 6 }));
+vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
+vi.mock('react-native-reanimated', async () => {
+  const { useRef } = await import('react');
+  const { View } = await import('react-native');
+  return { default: { View }, useSharedValue: (value: number) => useRef({ value }).current,
+    useAnimatedStyle: (factory: () => unknown) => factory(), cancelAnimation: () => {},
+    withSpring: (target: number) => target };
 });
 vi.mock('expo-router', () => ({ Stack: { Screen: () => null }, useIsFocused: () => h.focused, useNavigation: () => ({ getState: () => ({ routes: [] }) }), useRouter: () => ({ dismissTo: h.dismissTo, replace: h.replace }) }));
+vi.mock('expo-router/react-navigation', () => ({ useHeaderHeight: () => h.headerHeight }));
+vi.mock('@/session/useOptionalHeaderHeight', () => ({ useOptionalHeaderHeight: () => h.headerHeight }));
+vi.mock('@/session/SessionHeaderNativeControls', () => ({ SessionHeaderNativeBlur: () => null }));
+vi.mock('@/platform/AdaptiveWindowContext', () => ({ useAdaptiveWindow: () => ({ width: 402, insets: { left: 0, right: 0 }, barEdge: h.barEdge }) }));
+vi.mock('@/platform/chrome/SimpleStackHeader', () => ({ usesNativeStackHeader: () => h.nativeHeader,
+  simpleScreenSafeAreaEdges: () => h.nativeHeader ? ['left', 'right', 'bottom'] : undefined }));
+vi.mock('@/platform/chrome/HomeStackHeader', () => ({ centeredHomeTitleWidth: (...args: number[]) => { h.titleArgs = args; return 226; }, HomeStackHeader: (props: any) => {
+  h.chrome = props; return createElement('div', { 'data-testid': 'native-home-bar' }, props.title, props.children);
+} }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'div' }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
-vi.mock('lucide-react-native', () => ({ Menu: () => null }));
-vi.mock('@/components/AppText', () => ({ Text: 'span' }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: h.t, i18n: { language: 'en' } }) }));
+vi.mock('lucide-react-native', () => ({ ChevronDown: () => null, Menu: () => null }));
+vi.mock('@/components/AppText', () => ({ Text: ({ children }: any) => createElement('span', null, children) }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => h.auth }));
-vi.mock('@/theme', () => ({ useThemedStyles: () => ({}), useTheme: () => ({ colors: {} }) }));
+vi.mock('@/theme', () => ({ useThemedStyles: () => h.styles, useTheme: () => ({ colors: {} }) }));
 vi.mock('@/utils/useGuardedPush', () => ({ useGuardedPush: () => h.push }));
 vi.mock('@/device-link/remoteStatus', () => ({ formatRemoteError: String }));
 vi.mock('@/session/TeammateCreateButton', () => ({ TeammateCreateButton: (props: any) => { if (props.appearance !== 'cta') h.create = props; return null; } }));
 vi.mock('@/session/HomeChromeDrawer', () => ({ HomeChromeDrawer: (props: unknown) => { h.drawer = props; return null; } }));
+vi.mock('@/platform/chrome', () => ({ NativePullDownMenu: (props: any) => { h.modeMenu = props; return props.children; }, usesNativePullDownMenu: () => h.nativeMenus }));
 vi.mock('@/session/AccountSwitcherSheet', () => ({ AccountSwitcherSheet: (props: unknown) => { h.accounts = props; return null; } }));
 vi.mock('@/session/HomeHeaderGlassButton', () => ({ HomeHeaderGlassButton: () => null }));
 vi.mock('@/session/TeammateList', () => ({ TeammateList: (props: unknown) => { h.list = props; return null; } }));
@@ -51,19 +72,23 @@ vi.mock('@/session/remoteSessionStore', () => ({
   useRemoteHomeSessions: () => [], useRemoteHomeStatusVersion: () => 0,
 }));
 import HomeScreen from '../../app/devices/index';
+import { HomeModeProgressContext } from '@/session/HomeModeTransition';
+import { Keyboard } from 'react-native';
 import { TeammateHomeScreen } from '@/session/TeammateHomeScreen';
 import { teammateIdentity } from '@/session/teammateNavigation';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const teammate: HostedRemoteCollectionItem = { key: 'mac:bot', host: { deviceId: 'mac', deviceName: 'Mac' },
   item: { ref: { collectionId: 'teammates', kind: 'bot', id: 'writer' }, revision: '1', display: { title: 'Writer' }, links: [] } };
 let root: Root | undefined;
-async function render() { root ??= createRoot(document.createElement('div')); await act(async () => root!.render(createElement(TeammateHomeScreen))); }
+async function render(active = true) { root ??= createRoot(document.createElement('div')); await act(async () => root!.render(createElement(TeammateHomeScreen, { active }))); }
 let serial = 0;
 beforeEach(() => {
   h.realNavigation = false; h.stored = null;
   h.auth.user = { id: `owner-${++serial}` }; h.auth.accountGeneration = serial;
   vi.clearAllMocks(); h.focused = true; h.nav.lastTeammate = teammateIdentity(teammate); h.roster.items = [teammate];
-  h.nav.mode = 'teammates'; h.roster.authoritative = true;
+  h.nav.mode = 'teammates'; h.nav.chooseMode.mockReset(); h.roster.authoritative = true;
+  h.modeMenu = {}; h.nativeMenus = true; h.nativeHeader = true; h.headerHeight = 106; h.barEdge = 'none'; h.chrome = {};
+  h.groups.loading = false; h.groups.refreshing = false; h.groups.error = null;
   h.roster.loading = false; h.roster.error = null; h.roster.isOnline.mockReturnValue(true);
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
@@ -93,6 +118,24 @@ describe('teammate home entry', () => {
     h.auth.logout.mockResolvedValue(undefined); await act(async () => h.drawer.onLogout()); expect(h.auth.logout).toHaveBeenCalledOnce();
     expect(h.replace).toHaveBeenCalledWith('/login');
   });
+  it('keeps a top mode menu available for returning to tasks', async () => {
+    await render();
+    await act(async () => h.modeMenu.onAction('tasks'));
+    expect(h.nav.chooseMode).toHaveBeenCalledWith('tasks');
+  });
+  it('dismisses search before opening the title fallback drawer and switching to tasks', async () => {
+    h.nativeMenus = false;
+    await render();
+    expect(h.drawer.open).toBe(false);
+    await act(async () => h.modeMenu.children.props.onPress());
+    expect(Keyboard.dismiss).toHaveBeenCalledOnce();
+    expect(h.drawer.open).toBe(true);
+    await act(async () => h.drawer.onModeChange('tasks'));
+    expect(h.nav.setMode).not.toHaveBeenCalled();
+    await act(async () => h.drawer.onClosed());
+    expect(h.nav.setMode).toHaveBeenCalledExactlyOnceWith('tasks');
+    expect(Keyboard.dismiss).toHaveBeenCalledOnce();
+  });
 });
 
 // Exercise the real page, shared preferences, mode panes and navigation together.
@@ -100,7 +143,8 @@ describe('teammate home entry', () => {
 describe('explicit sidebar entry through the home page', () => {
   async function renderHome() {
     root ??= createRoot(document.createElement('div'));
-    await act(async () => root!.render(createElement(HomeScreen)));
+    // The root ResidentHomeListProvider owns this clock in the app; its slide is covered by HomeModePanes.test.
+    await act(async () => root!.render(createElement(HomeModeProgressContext.Provider, { value: { value: 1 } as any }, createElement(HomeScreen))));
   }
   it.each([1, 2])('keeps a %i-companion roster open across refresh and remount until a row is chosen', async count => {
     h.realNavigation = true;
@@ -133,7 +177,7 @@ describe('explicit sidebar entry through the home page', () => {
 describe('group chats in the teammate list', () => {
   const group: HostedRemoteCollectionItem = { key: 'mac:g1', host: { deviceId: 'mac', deviceName: 'Mac' },
     item: { ref: { collectionId: 'bot-groups', kind: 'bot-group', id: 'g1' }, revision: '1', display: { title: '官网' }, links: [] } };
-  afterEach(() => { h.roster.groupTargets = []; h.groups = { items: [], supported: false, isOnline: () => true, refresh: vi.fn() }; h.create = {}; });
+  afterEach(() => { h.roster.groupTargets = []; h.groups = { loading: false, refreshing: false, error: null, items: [], supported: false, isOnline: () => true, refresh: vi.fn() }; h.create = {}; });
 
   it('leaves group chats out when no computer supports them (older desktops)', async () => {
     h.nav.lastTeammate = null; await render();
@@ -155,4 +199,74 @@ describe('group chats in the teammate list', () => {
     expect(h.push).toHaveBeenLastCalledWith({ pathname: '/companions/groups/[groupId]', params: { groupId: 'g2', deviceId: 'pc', deviceName: 'PC' } });
     expect(h.nav.openTeammate).not.toHaveBeenCalled();
   });
+});
+
+
+describe('server groups in the actual teammate home', () => {
+  it('shows group loading/failure and refreshes it even without any computer target', async () => {
+    h.roster.items = []; h.groups.items = []; h.groups.supported = true; h.groups.loading = true;
+    await render(); expect(h.list.loading).toBe(true);
+    h.groups.loading = false; h.groups.error = 'CHAT_LIST_FAILED';
+    await render(); expect(h.list.error).toBe('CHAT_LIST_FAILED');
+    await act(async () => h.list.onRefresh()); expect(h.groups.refresh).toHaveBeenCalledOnce();
+  });
+});
+
+describe('shared native home chrome', () => {
+  it('uses the measured bar inset once and opens the existing drawer from the shared menu', async () => {
+    await render();
+    expect(h.list.topInset).toBe(106);
+    expect(h.list.scrollInsetProps).toBeUndefined();
+    expect(h.chrome.menuTestID).toBe('teammates.navigation');
+    // Centered between mirrored margins for the single create item, whatever the task title does.
+    expect(h.titleArgs).toEqual([402, 1]);
+    expect(h.chrome.title.props.style.at(-1).width).toBe(226);
+    await act(async () => h.chrome.onOpenMenu());
+    expect(Keyboard.dismiss).toHaveBeenCalledOnce();
+    expect(h.drawer.open).toBe(true);
+    h.headerHeight = 84; await render();
+    expect(h.list.topInset).toBe(84);
+  });
+  it('does not register a native toolbar while the kept-alive pane is hidden', async () => {
+    await render(false);
+    expect(h.chrome).toEqual({});
+    await render(true);
+    expect(h.chrome.menuTestID).toBe('teammates.navigation');
+    h.chrome = {};
+    await render(false);
+    expect(h.chrome).toEqual({});
+  });
+  it('keeps the Duo top-left exception and the Android fallback', async () => {
+    h.barEdge = 'right'; await render();
+    expect(h.chrome.keepMenuTopLeft).toBe(true);
+    h.nativeHeader = false; h.chrome = {}; await render();
+    expect(h.chrome).toEqual({});
+    expect(h.list.topInset).toBeUndefined();
+  });
+});
+
+it('keeps native title and create toolbar stable through unrelated roster refreshes', async () => {
+  await render();
+  const title = h.chrome.title;
+  const actions = h.chrome.children;
+  h.roster.refreshing = true;
+  await render();
+  expect(h.chrome.title).toBe(title);
+  expect(h.chrome.children).toBe(actions);
+  h.roster.refreshing = false;
+});
+
+it('starts drawer page navigation during exit, while search still waits for the drawer to close', async () => {
+  await render();
+  await act(async () => h.chrome.onOpenMenu());
+  await act(async () => h.drawer.onOpenSettings());
+  expect(h.drawer.open).toBe(false);
+  expect(h.push).toHaveBeenCalledExactlyOnceWith('/settings');
+  await act(async () => h.drawer.onClosed());
+  expect(h.push).toHaveBeenCalledTimes(1);
+  await act(async () => h.chrome.onOpenMenu());
+  await act(async () => h.drawer.onOpenSearch());
+  expect(h.list.autoFocusSearch).toBe(false);
+  await act(async () => h.drawer.onClosed());
+  expect(h.list.autoFocusSearch).toBe(true);
 });

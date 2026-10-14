@@ -10,6 +10,7 @@
  */
 
 import type { WorkflowProgressEntry } from '@cindy/maker-shared/agent-task';
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import type { SubagentObservation } from '@cindy/maker-shared/subagent-observation';
 import {
   parseToolLoopErrorDetails,
@@ -69,6 +70,8 @@ export interface AgentErrorEventData {
   willRetry?: boolean;
   sdkError?: string;
   reason?: string;
+  /** 账号用量受限时上游给出的重置时刻(unix ms)；未知时省略。 */
+  usageResetAt?: number;
   /** Structured details for reason='tool_use_loop_detected'. */
   toolLoop?: ToolLoopErrorDetails;
   [key: string]: unknown;
@@ -315,6 +318,8 @@ export type InteractionRequest =
   | (InteractionRequestBase & {
       kind: 'ask_user_question';
       questions: AskUserQuestionItem[];
+      /** Optional question: the provider keeps running; absence means a blocking question. */
+      delivery?: 'async';
     })
   | (InteractionRequestBase & {
       kind: 'plan_review';
@@ -414,6 +419,8 @@ export interface UsageSnapshot {
   generationActive?: boolean;
   /** False when live TPS must be hidden. Omitted on placeholder status frames. */
   generationReliable?: boolean;
+  /** Host-measured live tok/s (Pi extension algorithm). Display only. */
+  tokenSpeed?: TokenSpeedSnapshot;
   /**
    * Host/bridge 自动 compact 已确定性失败，下次 send 应换干净原生窗口。
    * 只由 Claude Code / Pi 的 AutoCompactController 锁存。

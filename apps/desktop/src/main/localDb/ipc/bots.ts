@@ -1,3 +1,5 @@
+import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
+import type { TodoPatch } from '@cindy/maker-shared/teammate-todo';
 /** Cindy Bots 的 main-side 权威数据边界。
  *
  * Bot profile 与 Session 归属只在这里写入 SQLite；renderer 只读取投影，
@@ -63,16 +65,17 @@ import {
 import { syncBotProfileFromFolder } from '../../maker-ipc/botProfileFolderSync.js';
 import { requestBotRuntimeEpochRefresh } from '../../maker-ipc/botRuntimeEpochRefreshSignal.js';
 import { createLogger } from '../../logger.js';
+import { collectTaskResponsibilityScopes } from '../../maker-ipc/botTaskResponsibility.js';
 import {
   addBotWorkbenchDirectory,
   broadcastBotWorkbenchChanged,
   readBotWorkbench,
-  readBotWorkbenchDirectoryPaths,
   removeBotWorkbenchDirectory,
 } from '../../maker-ipc/botWorkbenchService.js';
 import {
   listBotWorkbenchCandidatesForOwner,
   readBotWorkbenchTaskForOwner,
+  readBotResponsibleSessionIds,
 } from '../../maker-ipc/botWorkbenchTools.js';
 import {
   NEW_BOT_DEFAULT_PI_EFFORT,
@@ -276,19 +279,21 @@ type CanonicalLinkReconciliation = {
 };
 
 let createBotCanonicalSessionImpl:
-  ((input: CreateBotCanonicalSessionInput) => Promise<CreateBotCanonicalSessionResult>) | null =
+  ((input: CreateBotCanonicalSessionInput, beforeCommit?: () => Promise<void>) => Promise<CreateBotCanonicalSessionResult>) | null =
   null;
 
 /** Main-side canonical creator shared by first creation, restore and missing-task repair. */
 export async function createBotCanonicalSession(
   input: CreateBotCanonicalSessionInput,
+  // Host-only guard, never accepted from the IPC payload or serialized to the worker.
+  beforeCommit?: () => Promise<void>,
 ): Promise<CreateBotCanonicalSessionResult> {
   if (!createBotCanonicalSessionImpl) {
     throwIpcError('PRECONDITION_FAILED', 'Bot 数据服务尚未初始化');
   }
   const owner = captureBotOperationOwner();
   owner.assertCurrent();
-  const result = await createBotCanonicalSessionImpl(input);
+  const result = await createBotCanonicalSessionImpl(input, beforeCommit);
   owner.assertCurrent();
   return result;
 }
@@ -593,12 +598,15 @@ function normalizeBotModelCapabilitiesOrThrow(
 /** How many candidate rows the preview query inspects (see below). */
 const CANONICAL_PREVIEW_SCAN = 100;
 
-/** The transcript also accepts persisted usage/cost as a legacy turn seal. */
+/** Explicit group deliveries are complete replies independent of the canonical turn.
+ * The transcript also accepts persisted usage/cost as a legacy turn seal. */
 function canonicalReplyCompleted() {
   return sql`(json_extract(${messages.agentMeta}, '$.turnCompleted') = 1
     OR json_extract(${messages.agentMeta}, '$.turnMoney.amount') > 0
     OR json_extract(${messages.agentMeta}, '$.turnCostUsd') > 0
-    OR json_type(${messages.agentMeta}, '$.turnUsageDetails') IS NOT NULL)`;
+    OR json_type(${messages.agentMeta}, '$.turnUsageDetails') IS NOT NULL
+    OR (json_type(${messages.agentMeta}, '$.sourceGroup.groupId') = 'text'
+      AND length(trim(json_extract(${messages.agentMeta}, '$.sourceGroup.groupId'))) > 0))`;
 }
 
 /** Visibility shared by the local unread count and remote reply watermark. */
@@ -1539,6 +1547,16 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     else delete nextConfig.gender;
   }
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
+  // Legacy chain-only profiles gain mirrored fields during normalization.
+  // Compare the same representation so unrelated edits do not validate stale routes.
+  if (botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig)) {
+    const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
+    owner.assertCurrent();
+    if (!primary || !await validateTaskModel(primary)) {
+      throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
+    owner.assertCurrent();
+  }
   if (JSON.stringify(previous.taskModelOverride ?? null) !== JSON.stringify(normalizedNextConfig.taskModelOverride ?? null)) {
     const taskModel = readBotTaskModelOverride(normalizedNextConfig.taskModelOverride);
     if (taskModel && !await validateTaskModel(taskModel)) {
@@ -1825,6 +1843,17 @@ export function registerBotIpc(): void {
 
   ipcMain.handle('local-db:bots:create', async (event, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
+    const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    if (body.prepareInvitation === true) {
+      const owner = captureBotOperationOwner();
+      const capabilities = body.capabilities && typeof body.capabilities === 'object' && !Array.isArray(body.capabilities)
+        ? body.capabilities as Record<string, unknown> : {};
+      const [primary] = await readEffectiveBotModelChain(capabilities);
+      owner.assertCurrent();
+      const available = primary && await validateTaskModel(primary);
+      owner.assertCurrent();
+      if (!available) throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
     return createBotProfile(raw);
   });
 
@@ -1835,6 +1864,7 @@ export function registerBotIpc(): void {
 
   const createBotCanonicalSessionUnlocked = async (
     input: CreateBotCanonicalSessionInput,
+    beforeCommit?: () => Promise<void>,
   ): Promise<CreateBotCanonicalSessionResult> => {
     const botId = readText(input.botId, 'botId', 128, true);
     const expectedCanonicalSessionId = input.expectedCanonicalSessionId;
@@ -1929,6 +1959,9 @@ export function registerBotIpc(): void {
     let canonicalSessionId: string | null = null;
     let archivedCanonicalSessionId: string | null = null;
     let created = false;
+    // Profile/model/workspace preparation can outlive the originating group
+    // grant. Revalidate immediately before committing the Session/link CAS.
+    await beforeCommit?.();
     owner.assertCurrent();
     const result = await client.tx<BotsReplaceCanonicalSessionResult>(
       'bots.replaceCanonicalSession',
@@ -2035,7 +2068,7 @@ export function registerBotIpc(): void {
     };
   };
 
-  const createBotCanonicalSessionPrepared = async (input: CreateBotCanonicalSessionInput) => {
+  const createBotCanonicalSessionPrepared = async (input: CreateBotCanonicalSessionInput, beforeCommit?: () => Promise<void>) => {
     const owner = captureBotOperationOwner();
     // Bring legacy pointer-only profiles into the link registry before any
     // create/replace CAS. Once a canonical link exists, the worker transaction
@@ -2043,13 +2076,13 @@ export function registerBotIpc(): void {
     await reconcileCanonicalLink(input.botId);
     owner.assertCurrent();
     const previousSessionId = input.expectedCanonicalSessionId;
-    if (!previousSessionId) return createBotCanonicalSessionUnlocked(input);
+    if (!previousSessionId) return createBotCanonicalSessionUnlocked(input, beforeCommit);
     return coordinateBotCanonicalReplacement(previousSessionId, () =>
-      createBotCanonicalSessionUnlocked(input),
+      createBotCanonicalSessionUnlocked(input, beforeCommit),
     );
   };
 
-  createBotCanonicalSessionImpl = async (input) => {
+  createBotCanonicalSessionImpl = async (input, beforeCommit) => {
     const owner = captureBotOperationOwner();
     /*
       解析主任务前先把家里的文件收进来。用户拿编辑器改完 SOUL.md、
@@ -2061,14 +2094,14 @@ export function registerBotIpc(): void {
     */
     const derived = await reconcileBotProfileFolder(input.botId);
     owner.assertCurrent();
-    if (!derived) return createBotCanonicalSessionPrepared(input);
+    if (!derived) return createBotCanonicalSessionPrepared(input, beforeCommit);
     // The host itself just folded the user's file edit into a new version. A caller
     // that saw the version before it is not racing a concurrent change; any other
     // mismatch still loses the create CAS.
     broadcastBotProfileChanged({ botId: input.botId, change: 'updated' });
     return createBotCanonicalSessionPrepared(input.expectedProfileVersion === derived.from
       ? { ...input, expectedProfileVersion: derived.to }
-      : input);
+      : input, beforeCommit);
   };
 
   ipcMain.handle('local-db:bots:create-canonical-session', async (event, raw: unknown) => {
@@ -2111,8 +2144,21 @@ export function registerBotIpc(): void {
     const owner = captureBotOperationOwner();
     const workbench = await readBotWorkbench(owner.userDataDir, botId);
     owner.assertCurrent();
-    return workbench;
+    const responsibleSessionIds = await readBotResponsibleSessionIds(owner.userDataDir, botId);
+    owner.assertCurrent();
+    return { ...workbench, responsibleSessionIds };
   });
+  for (const operation of ['list', 'update', 'act'] as const) {
+    ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      const owner = captureBotOperationOwner();
+      const access = await todoAccess(readText(rawBotId, 'botId', 128, true));
+      owner.assertCurrent();
+      const result = operation === 'list' ? await access.list() : operation === 'update' ? await access.patch(input as TodoPatch)
+        : await access.act((input as {id:string}).id, (input as {revision:number}).revision, (input as {requestId:string}).requestId,(input as {locale?:string}).locale);
+      owner.assertCurrent();return result;
+    });
+  }
   ipcMain.handle('local-db:bots:workbench:add-directory', async (event, rawBotId: unknown, rawPath: unknown) => {
     assertTrustedAppRendererEvent(event);
     const botId = readText(rawBotId, 'botId', 128, true);
@@ -2123,8 +2169,7 @@ export function registerBotIpc(): void {
     if (result.ok) broadcastBotWorkbenchChanged(botId);
     return result;
   });
-  // 侧栏「<伙伴>在跟进」:每个在用的本机伙伴接手了哪些项目。只给路径列表,不做文件系统探测,
-  // 也不带判断与会话内容;渲染层按任务的工作目录自己匹配。
+  // Exact per-task responsibility IDs from the current owner, without message bodies.
   ipcMain.handle('local-db:bots:workbench:follow-scopes', async (event) => {
     assertTrustedAppRendererEvent(event);
     const owner = captureBotOperationOwner();
@@ -2132,12 +2177,13 @@ export function registerBotIpc(): void {
       .select({ id: botProfiles.id })
       .from(botProfiles)
       .where(eq(botProfiles.status, 'active'));
-    const scopes = await Promise.all(bots.map(async (bot) => ({
-      botId: bot.id,
-      directories: await readBotWorkbenchDirectoryPaths(owner.userDataDir, bot.id),
-    })));
+    // Older renderers receive empty directories rather than claiming projects.
+    const scopes = await collectTaskResponsibilityScopes(
+      bots.map((bot) => bot.id),
+      (botId) => readBotResponsibleSessionIds(owner.userDataDir, botId),
+    );
     owner.assertCurrent();
-    return scopes.filter((scope) => scope.directories.length > 0);
+    return scopes;
   });
   // 工作台详情视图:只读一件任务的最近内容(有界)。范围限于该伙伴已接手的项目,
   // 外部会话只读转录尾部,不写库、不导入。

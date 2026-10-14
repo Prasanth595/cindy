@@ -135,6 +135,31 @@ export function stripCloneAnchors(root: HTMLElement): void {
   }
 }
 
+/**
+ * 纯布局容器标签:清洗后若只剩这些且没有文字,就是空壳。判空用「只剩容器」而不是
+ * 「有某几种媒体」—— 音频播放器、分隔线等非文字元素种类多且会增加,白名单漏一种
+ * 就会把整条有内容的消息误删。
+ */
+const SHARE_LAYOUT_ONLY_TAGS = new Set(['DIV', 'SPAN', 'P', 'SECTION', 'BR']);
+
+/**
+ * 克隆一条消息并做完全部清洗(交互件、来源标注、收起态、锚点)。清洗后没有文字、
+ * 也只剩纯布局容器时返回 null:例如只发了 `$指令` 的消息,插件标注被剥掉后只剩
+ * 空壳,留着会在图里占一段空白,单独分享时更会生成只有页脚的空图。
+ */
+export function prepareShareMessageClone(node: HTMLElement): HTMLElement | null {
+  const clone = node.cloneNode(true) as HTMLElement;
+  stripInteractiveElements(clone);
+  stripMessageSources(clone);
+  expandCollapsedMessages(clone);
+  stripCloneAnchors(clone);
+  if ((clone.textContent ?? '').trim().length > 0) return clone;
+  const hasNonLayoutElement = Array.from(clone.querySelectorAll('*')).some(
+    (el) => !SHARE_LAYOUT_ONLY_TAGS.has(el.tagName),
+  );
+  return hasNonLayoutElement ? clone : null;
+}
+
 const REDACTION_SCOPE_TAGS = new Set([
   'ADDRESS',
   'ARTICLE',
@@ -324,31 +349,50 @@ export function assertShareImageReadableSize(root: HTMLElement): void {
   }
 }
 
+function isScrollOverflow(value: string): boolean {
+  return value === 'auto' || value === 'scroll' || value === 'overlay';
+}
+
 /**
- * 让横向/纵向可滚动的块在产物里完整展开。
+ * 去掉产物里的所有滚动容器,并让溢出的块完整展开。
  *
- * 流内的宽表格、长代码行是 `overflow-x:auto` —— 用户能滚动看全。克隆进图片后
- * 滚动条不存在,右侧内容会被**静默裁掉**:接收方既看不到也不知道被裁了。所以
- * 导出时把这些容器改成按内容宽度展开,图会变宽但信息完整
- * (html-to-image 的画布宽取 `scrollWidth`,底色铺满整张画布,溢出区不会透明)。
+ * 流内的宽表格、长代码行是 `overflow-x:auto` —— 用户能滚动看全。图片里没法滚动,
+ * 溢出内容会被**静默裁掉**,所以溢出的容器按内容宽高展开(图会变宽但信息完整;
+ * html-to-image 的画布宽取 `scrollWidth`,底色铺满整张画布,溢出区不会透明)。
  *
+ * 没溢出的滚动容器也要改成 visible:html-to-image 会把 `overflow:auto` 连同固定
+ * 像素宽高一起内联进 SVG,却带不走应用的 `::-webkit-scrollbar` 样式。光栅化时只要
+ * 差出亚像素,就会画出系统默认滚动条(Windows 上尤其明显),表格最常见。
+ *
+ * 先读后写:边改样式边读 scrollWidth 会逐个元素强制重排。
  * 必须在克隆体挂进 document **之后**调用 —— getComputedStyle 对游离节点无效。
  */
 export function expandScrollableBlocks(root: HTMLElement): void {
+  const scrollers: { el: HTMLElement; widen: boolean; lengthen: boolean }[] = [];
   for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
-    const overflowsX = el.scrollWidth > el.clientWidth;
-    const overflowsY = el.scrollHeight > el.clientHeight;
-    if (!overflowsX && !overflowsY) continue;
-
     const style = window.getComputedStyle(el);
-    if (overflowsX && (style.overflowX === 'auto' || style.overflowX === 'scroll')) {
-      el.style.overflowX = 'visible';
+    const scrollsX = isScrollOverflow(style.overflowX);
+    const scrollsY = isScrollOverflow(style.overflowY);
+    if (!scrollsX && !scrollsY) continue;
+    scrollers.push({
+      el,
+      widen: scrollsX && el.scrollWidth > el.clientWidth,
+      lengthen: scrollsY && el.scrollHeight > el.clientHeight,
+    });
+  }
+
+  for (const { el, widen, lengthen } of scrollers) {
+    // 两轴必须一起改:只要另一轴仍是 auto,visible 会被重新计算成 auto。
+    el.style.overflowX = 'visible';
+    el.style.overflowY = 'visible';
+    if (widen) {
       // 只解除 overflow 不够:容器仍被父级宽度约束,内容照旧在边界处截断。
       el.style.width = 'max-content';
       el.style.maxWidth = 'none';
     }
-    if (overflowsY && (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
-      el.style.overflowY = 'visible';
+    if (lengthen) {
+      // 固定高度的容器解除裁剪后,内容会压到下方兄弟节点上。
+      el.style.height = 'auto';
       el.style.maxHeight = 'none';
     }
   }
@@ -366,6 +410,38 @@ export function expandCollapsedMessages(root: HTMLElement): void {
     }
   });
   root.querySelectorAll('button[aria-expanded]').forEach((element) => element.remove());
+}
+
+/**
+ * 按选中顺序把清洗后的消息放进 stage,返回实际放入的条数。
+ *
+ * 跳选断点按「选中序列」判定(orderInAll 为当前已渲染可选序列的位置);清洗后为空的
+ * 消息(本身是选中项)不放进图里,但它之前出现的断点要延续到下一条实际放进图里的
+ * 消息,不能被吞掉。图首不放断点标记:前面没有内容可与之区隔。
+ */
+export function appendShareMessages(
+  stage: HTMLElement,
+  sourceNodes: readonly HTMLElement[],
+  orderedSelectedIds: readonly string[],
+  orderInAll: ReadonlyMap<string, number>,
+): number {
+  let prevIndex: number | null = null;
+  let appendedCount = 0;
+  let gapPending = false;
+  for (const [i, node] of sourceNodes.entries()) {
+    const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
+    if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
+      gapPending = true;
+    }
+    prevIndex = currentIndex;
+    const clone = prepareShareMessageClone(node);
+    if (!clone) continue;
+    if (gapPending && appendedCount > 0) stage.appendChild(buildShareImageGapMarker());
+    gapPending = false;
+    stage.appendChild(clone);
+    appendedCount += 1;
+  }
+  return appendedCount;
 }
 
 /**
@@ -522,19 +598,8 @@ export async function buildShareImageBlob({
   const orderInAll = new Map(allIds.map((id, index) => [id, index]));
 
   try {
-    let prevIndex: number | null = null;
-    for (const [i, node] of sourceNodes.entries()) {
-      const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
-      if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
-        stage.appendChild(buildShareImageGapMarker());
-      }
-      stage.appendChild(node.cloneNode(true) as HTMLElement);
-      prevIndex = currentIndex;
-    }
-    stripInteractiveElements(stage);
-    stripMessageSources(stage);
-    expandCollapsedMessages(stage);
-    stripCloneAnchors(stage);
+    const appendedCount = appendShareMessages(stage, sourceNodes, orderedSelectedIds, orderInAll);
+    if (appendedCount === 0) throw new ShareImageNoContentError();
     redactTextNodes(stage);
 
     // 品牌素材是同源打包资源,html-to-image 本可自行内联;预先转掉是为了把

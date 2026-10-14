@@ -1,4 +1,6 @@
 import { setProviderPresentation, retainProviderPresentationAfterAuthChange } from '../maker-host/provider-presentation-store.js';
+import { pruneProviderGroupBindings } from '../provider-group/bindings.js';
+import { writeProviderGroup } from '../provider-group/store.js';
 /**
  * provider:* IPC handlers。
  *
@@ -410,6 +412,9 @@ export interface ProviderHandlerDeps {
    */
   setModelsDisabled(providerId: string, modelIds: readonly string[], disabled: boolean): void;
   setProviderDisabled(providerId: string, disabled: boolean): void;
+  /** Per-provider opt-in for remote Agent use; absent means disabled. */
+  getRemoteProviderInvocationEnabled?(providerId: string): boolean;
+  setRemoteProviderInvocationEnabled?(providerId: string, enabled: boolean): void;
   /**
    * 「恢复默认」= 删除该供应商的整组停用 override(供应商级 + 全部逐模型条目,含
    * 指向已下架模型的陈旧条目)。语义遵循 docs/dev-rules/configuration-and-overrides.md
@@ -1086,6 +1091,9 @@ export function registerProviderHandlers(
       }
       assertProviderMutationOwner(ownerAtIngress);
       const providerOrder = deps.getProviderOrder();
+      const remoteAccess = deps.getRemoteProviderInvocationEnabled
+        ? (providerId: string) => deps.getRemoteProviderInvocationEnabled!(providerId)
+        : null;
       // 运行期鉴权请求头(Authorization / x-api-key 等)一律不经 provider:list 下发任何
       // Renderer——即使本机主页面 trusted:任何 Renderer 注入(XSS)都能读走这些长期凭证
       // (codex review)。头凭证是 main-only 密文,renderer 从不回读:编辑时未显式改动
@@ -1093,7 +1101,12 @@ export function registerProviderHandlers(
       return {
         dataOwnerId,
         ownerGeneration: ownerAtIngress?.generation ?? 0,
-        providers: providers.map(withoutProviderHeaderCredentials),
+        providers: providers.map((provider) => {
+          const safe = withoutProviderHeaderCredentials(provider);
+          return remoteAccess
+            ? { ...safe, remoteInvocationEnabled: remoteAccess(provider.id) }
+            : safe;
+        }),
         providerOrder,
         modelVisibilityOverrides,
       };
@@ -1591,6 +1604,38 @@ export function registerProviderHandlers(
       return { ok: true };
     };
     return enqueueDisableWrite(run);
+  });
+
+  registry.handle(MAKER_INVOKE.PROVIDER_REMOTE_ACCESS_SET, async (event, input: unknown) => {
+    assertTrustedProviderMutationSender(event);
+    const ownerAtIngress = captureProviderOwnerSession();
+    if (!deps.getRemoteProviderInvocationEnabled || !deps.setRemoteProviderInvocationEnabled) {
+      throwIpcError('INTERNAL', 'remote provider access is not wired');
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throwIpcError('INVALID_PARAMS', 'invalid input');
+    }
+    const value = input as Record<string, unknown>;
+    if (typeof value.providerId !== 'string' || value.providerId.length === 0 || value.providerId.length > 256) {
+      throwIpcError('INVALID_PARAMS', 'providerId required');
+    }
+    if (typeof value.enabled !== 'boolean') throwIpcError('INVALID_PARAMS', 'enabled required');
+    const providers = await deps.listProviders({ allowSideEffects: false });
+    assertProviderMutationOwner(ownerAtIngress);
+    const provider = providers.find((item) => item.id === value.providerId);
+    if (!provider) throwIpcError('INVALID_PARAMS', `unknown providerId "${value.providerId}"`);
+    assertProviderMutationOwner(ownerAtIngress, 'active account changed before persisting remote provider access');
+    try {
+      deps.setRemoteProviderInvocationEnabled(value.providerId, value.enabled);
+    } catch (err) {
+      log.warn('remote provider access persist failed', {
+        providerId: value.providerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throwIpcError('INTERNAL', 'failed to persist remote provider access');
+    }
+    deps.broadcastChanged();
+    return { ok: true, enabled: value.enabled };
   });
 
   const parsePriceTarget = (value: unknown): ModelPriceOverrideTarget => {
@@ -2212,6 +2257,15 @@ export function registerProviderHandlers(
             await afterChange(codexHostPrepared, commitRouteMutation);
             assertProviderMutationOwner(ownerAtIngress);
             deps.broadcastPricingChanged();
+            // 删除连接即删除它的供应商组(provider-groups.md §3)：同名重建会得到同一个 id，不能让旧组复活。
+            await writeProviderGroup(providerId, null)
+              .then(() => pruneProviderGroupBindings(providerId, null))
+              .catch((error) => {
+                log.warn('provider group cleanup after provider deletion failed', {
+                  providerId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              });
           });
         };
         if (providerId === MANAGED_LLAMACPP_PROVIDER_ID) {

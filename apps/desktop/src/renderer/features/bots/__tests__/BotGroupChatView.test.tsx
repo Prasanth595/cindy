@@ -2,7 +2,9 @@
 
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
+import userEvent from '@testing-library/user-event';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
+import { MarkdownMermaidBlock } from '@/components/chat/MarkdownMermaidBlock';
 import { queryShareableMessageIds } from '@/lib/shareConversationImage';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +12,7 @@ import { clearDraft, getDraft } from '@/lib/composerDraftStore';
 import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../feature-context';
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
 import { botGroupAttachmentScope } from '../botGroupAttachments';
+import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
@@ -35,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   pushes: [] as Array<(payload: BotGroupChangedPayload, stamp?: unknown) => void>,
   toastError: vi.fn(),
   toastWarning: vi.fn(),
+  toastInfo: vi.fn(),
   /** Real paths the fake `getFilePath` knows; anything else is an in-memory bitmap. */
   filePaths: new Map<File, string>(),
   cacheImageFromBuffer: vi.fn(),
@@ -42,6 +46,7 @@ const mocks = vi.hoisted(() => ({
   controlledPush: null as null | ((payload: { controllers: Array<{ deviceId: string; name: string }> }) => void),
   getControlledState: vi.fn(),
   revoke: vi.fn(),
+  thread: vi.fn(),
 }));
 
 // Partial: the shared attachment pieces pull in the app i18n instance, which needs initReactI18next.
@@ -63,13 +68,18 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   isDataOwnerGenerationCurrent: () => true,
   isDataOwnerPushCurrent: () => true,
 }));
-vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning, info: mocks.toastInfo } }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
   useConfirmDialog: () => ({ confirm: vi.fn(async () => false) }),
+  useOptionalConfirmDialog: () => null,
 }));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({
   MarkdownRenderer: ({ content }: { content: string }) => <div data-markdown>{content}</div>,
 }));
+vi.mock('mermaid', () => ({ default: {
+  initialize: vi.fn(), parse: vi.fn().mockResolvedValue(true),
+  render: vi.fn().mockResolvedValue({ svg: '<svg viewBox="0 0 100 100"><text>Diagram</text></svg>' }),
+} }));
 vi.mock('../BotGroupPendingInteraction', () => ({
   BotGroupPendingInteraction: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="pending-interaction">{sessionId}</div>
@@ -256,6 +266,7 @@ beforeEach(() => {
   mocks.revoke.mockReset();
   mocks.navigate.mockReset();
   mocks.toastError.mockReset();
+  mocks.toastInfo.mockReset();
   mocks.pushes = [];
   mocks.getBotGroup.mockReset().mockResolvedValue({ ok: true, group: detail() });
   mocks.sendBotGroupMessage.mockReset().mockResolvedValue({ ok: true, messageId: 'u2' });
@@ -267,6 +278,12 @@ beforeEach(() => {
   mocks.retryBotGroupPlan.mockReset().mockResolvedValue({ ok: true });
   mocks.editBotGroupPlanStep.mockReset().mockResolvedValue({ ok: true });
   mocks.openPath.mockReset().mockResolvedValue({ success: true });
+  mocks.thread.mockReset().mockImplementation(async ({ rootId }: { rootId: string }) => ({
+    ok: true,
+    root: msg({ id: rootId, content: `Thread root ${rootId}` }),
+    replies: [msg({ id: `reply-${rootId}`, content: `Reply to ${rootId}` })],
+    hasMore: false,
+  }));
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -285,6 +302,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
+        chatServer: { thread: mocks.thread },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
@@ -306,9 +324,402 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('BotGroupChatView', () => {
+  function mockThreadMotion(duration: string) {
+    const style = document.createElement('style');
+    style.textContent = `aside { --motion-base: ${duration}; --motion-ease-move: linear; }`;
+    document.head.append(style);
+    const original = HTMLElement.prototype.animate;
+    const animations: Array<{ finished: Promise<void>; finish: () => void; cancel: ReturnType<typeof vi.fn> }> = [];
+    const animate = vi.fn(() => {
+      let finish!: () => void;
+      const finished = new Promise<void>(resolve => { finish = resolve; });
+      const animation = { finished, finish, cancel: vi.fn() };
+      animations.push(animation);
+      return animation;
+    });
+    Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: animate });
+    return { animate, animations, restore: () => {
+      style.remove();
+      if (original) Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: original });
+      else Reflect.deleteProperty(HTMLElement.prototype, 'animate');
+    } };
+  }
+
+  it.each(['200ms', '0ms'])('opens and closes with motion token %s, restoring focus and ignoring duplicate close', async duration => {
+    const motion = mockThreadMotion(duration);
+    try {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      const user = userEvent.setup();
+      renderView();
+      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+      await user.click(trigger);
+      const panel = screen.getByRole('complementary');
+      if (duration === '200ms') {
+        expect(motion.animate).toHaveBeenCalledWith([{ width: '0px' }, { width: '50%' }], { duration: 200, easing: 'linear', fill: 'forwards' });
+        await act(async () => motion.animations[0]!.finish());
+      }
+      await user.click(within(panel).getByRole('button', { name: 'bots.close' }));
+      expect(document.activeElement).toBe(trigger);
+      if (duration === '200ms') {
+        expect(panel.inert).toBe(true);
+        expect(screen.getByRole('complementary')).toBe(panel);
+        expect(motion.animate).toHaveBeenCalledTimes(2);
+        fireEvent.keyDown(trigger, { key: 'Escape' });
+        expect(motion.animate).toHaveBeenCalledTimes(2);
+        await act(async () => motion.animations[1]!.finish());
+      } else expect(motion.animate).not.toHaveBeenCalled();
+      expect(screen.queryByRole('complementary')).toBeNull();
+    } finally { cleanup(); motion.restore(); }
+  });
+
+  it('cancels an interrupted close and does not animate or later close the newly selected thread', async () => {
+    const motion = mockThreadMotion('200ms');
+    try {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      const user = userEvent.setup();
+      renderView();
+      const triggers = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+      await user.click(triggers[0]!);
+      await act(async () => motion.animations[0]!.finish());
+      await user.click(screen.getByRole('button', { name: 'bots.close' }));
+      const closing = motion.animations[1]!;
+      await user.click(triggers[1]!);
+      await screen.findByText('Reply to b1');
+      expect(closing.cancel).toHaveBeenCalled();
+      expect(motion.animate).toHaveBeenCalledTimes(2);
+      await act(async () => closing.finish());
+      expect(screen.getByRole('complementary').textContent).toContain('Reply to b1');
+      expect(screen.getByRole('complementary').inert).not.toBe(true);
+    } finally { cleanup(); motion.restore(); }
+  });
+
+  it('cancels closing when Enter reopens the same thread and restores its input and draft', async () => {
+    const motion = mockThreadMotion('200ms');
+    try {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      const user = userEvent.setup();
+      renderView();
+      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+      await user.click(trigger);
+      await act(async () => motion.animations[0]!.finish());
+      const panel = screen.getByRole('complementary');
+      const input = within(panel).getByRole('textbox');
+      await user.type(input, 'Still editing');
+      await user.keyboard('{Escape}');
+      const closing = motion.animations[1]!;
+      expect(panel.inert).toBe(true);
+      expect(document.activeElement).toBe(trigger);
+      await user.keyboard('{Enter}');
+      expect(closing.cancel).toHaveBeenCalled();
+      expect(panel.inert).toBe(false);
+      expect(document.activeElement).toBe(input);
+      expect(motion.animate).toHaveBeenCalledTimes(2);
+      await act(async () => closing.finish());
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await user.keyboard(' now');
+      expect((input as HTMLTextAreaElement).value).toBe('Still editing now');
+      await user.click(within(panel).getByRole('button', { name: 'bots.close' }));
+      await act(async () => motion.animations[2]!.finish());
+      expect(screen.queryByRole('complementary')).toBeNull();
+    } finally { cleanup(); motion.restore(); }
+  });
+
+  it('expands a sibling thread panel, keeps the group usable, switches threads and restores the layout on close', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const main = (await screen.findByText('周六 8:10 有票')).closest('main')!;
+    const composer = within(main).getByRole('textbox');
+    const triggers = within(main).getAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+    await user.click(triggers[0]!);
+    const panel = screen.getByRole('complementary', { name: 'bots.groupChat.server.topic' });
+    expect(panel.parentElement).toBe(main.parentElement);
+    expect(main.parentElement?.className).toContain('flex');
+    expect(main.className).toContain('flex-1');
+    expect(panel.className).not.toMatch(/fixed|absolute/);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(main.closest('[aria-hidden="true"]')).toBeNull();
+    await screen.findByText('Reply to u1');
+    await user.click(composer);
+    await user.type(composer, 'Group remains editable');
+    expect((composer as HTMLTextAreaElement).value).toBe('Group remains editable');
+    await user.click(triggers[1]!);
+    await screen.findByText('Reply to b1');
+    expect(screen.queryByText('Reply to u1')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'bots.close' }));
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.activeElement).toBe(triggers[1]);
+    expect(within(main).getByRole('textbox')).toBe(composer);
+    await user.click(triggers[0]!);
+    expect(await screen.findByText('Reply to u1')).toBeTruthy();
+  });
+
+  it('focuses the reply input without trapping Tab; closes by keyboard and ignores IME Escape', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    await user.click(trigger);
+    const panel = screen.getByRole('complementary');
+    const input = within(panel).getByRole('textbox');
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyDown(input, { key: 'Escape', isComposing: true, keyCode: 229 });
+    expect(screen.getByRole('complementary')).toBe(panel);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    for (const key of ['{Enter}', ' ']) {
+      await user.click(trigger);
+      const close = screen.getByRole('button', { name: 'bots.close' });
+      close.focus();
+      await user.tab({ shift: true });
+      expect(screen.getByRole('main').contains(document.activeElement)).toBe(true);
+      close.focus();
+      await user.keyboard(key);
+      expect(screen.queryByRole('complementary')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  });
+
+  it('closes the thread with Escape after clicking or tabbing into the main group, respecting IME and consumed events', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    const main = trigger.closest('main')!;
+    const composer = within(main).getByRole('textbox');
+    for (const path of ['click', 'tab']) {
+      await user.click(trigger);
+      const panel = screen.getByRole('complementary');
+      if (path === 'click') await user.click(composer);
+      else {
+        within(panel).getByRole('button', { name: 'bots.close' }).focus();
+        await user.tab({ shift: true });
+      }
+      const focused = document.activeElement!;
+      expect(main.contains(focused)).toBe(true);
+      fireEvent.keyDown(focused, { key: 'Escape', isComposing: true, keyCode: 229 });
+      expect(screen.getByRole('complementary')).toBe(panel);
+      const consumed = createEvent.keyDown(focused, { key: 'Escape', bubbles: true, cancelable: true });
+      consumed.preventDefault();
+      fireEvent(focused, consumed);
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  });
+
+  it('closes with Escape after clicking message text or empty timeline space, respecting IME and consumed events', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const message = await screen.findByText('周六 8:10 有票');
+    const main = message.closest('main')!;
+    const trigger = within(main).getAllByRole('button', { name: 'bots.groupChat.server.startTopic' })[0]!;
+    for (const target of [message, main]) {
+      await user.click(trigger);
+      const panel = screen.getByRole('complementary');
+      await user.click(target);
+      expect(document.activeElement).toBe(document.body);
+      fireEvent.keyDown(document.body, { key: 'Escape', isComposing: true, keyCode: 229 });
+      expect(screen.getByRole('complementary')).toBe(panel);
+      const consumed = createEvent.keyDown(document.body, { key: 'Escape', bubbles: true, cancelable: true });
+      consumed.preventDefault();
+      fireEvent(document.body, consumed);
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  });
+
+  it('keeps main composer focus and both drafts when leaving thread image sharing', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    const main = trigger.closest('main')!;
+    await user.click(trigger);
+    const panel = screen.getByRole('complementary');
+    await user.type(within(panel).getByRole('textbox'), 'Thread draft');
+    await user.click((await within(panel).findAllByRole('button', { name: 'chat.shareImage.entry' }))[0]!);
+    expect(within(panel).queryByRole('textbox')).toBeNull();
+    const composer = within(main).getByRole('textbox');
+    await user.type(composer, 'Main draft');
+    act(() => shareSelectionStore.exit());
+    expect(document.activeElement).toBe(composer);
+    expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Thread draft');
+    await user.keyboard(' continues');
+    expect((composer as HTMLTextAreaElement).value).toBe('Main draft continues');
+  });
+
+  it.each(['main', 'thread'])('lets %s image selection consume Escape before the thread', async scope => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    await user.click(trigger);
+    const panel = screen.getByRole('complementary');
+    await user.type(within(panel).getByRole('textbox'), 'Thread draft');
+    const owner = scope === 'main' ? screen.getByRole('main') : panel;
+    await user.click(within(owner).getAllByRole('button', { name: 'chat.shareImage.entry' })[0]!);
+    expect(shareSelectionStore.getActiveSessionId()).not.toBeNull();
+    await user.keyboard('{Escape}');
+    expect(shareSelectionStore.getActiveSessionId()).toBeNull();
+    expect(screen.getByRole('complementary')).toBe(panel);
+    expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Thread draft');
+    await user.click(within(panel).getByRole('textbox'));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('closes with Escape from the separate group header, yielding to consumed and IME events', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    const header = screen.getByTestId('content-header');
+    for (const button of within(header).getAllByRole('button')) {
+      await user.click(trigger);
+      const panel = screen.getByRole('complementary');
+      button.focus();
+      expect(panel.parentElement?.contains(button)).toBe(false);
+      if (button.getAttribute('aria-label') === 'bots.groupChat.settings.open') await screen.findByRole('tooltip');
+      fireEvent.keyDown(button, { key: 'Escape', isComposing: true, keyCode: 229 });
+      const consumed = createEvent.keyDown(button, { key: 'Escape', bubbles: true, cancelable: true });
+      consumed.preventDefault();
+      fireEvent(button, consumed);
+      expect(screen.getByRole('complementary')).toBe(panel);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    }
+  });
+
+  it.each(['image', 'text-trigger', 'text-control', 'text-body'])('lets %s attachment preview close first with Escape and retains the thread draft', async kind => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({
+      attachments: [{ id: 'attachment', name: kind === 'image' ? 'photo.png' : 'note.md', category: kind === 'image' ? 'image' : 'text',
+        mimeType: kind === 'image' ? 'image/png' : 'text/markdown', size: 10,
+        url: kind === 'image' ? 'cindy-media://blobs/photo.png' : null, path: kind === 'image' ? null : '/tmp/note.md' }],
+    })] }) });
+    Object.assign(window.electronAPI, { readTextFilePreview: vi.fn().mockResolvedValue({ success: true, data: 'Preview note content', size: 20 }) });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = screen.getByRole('complementary');
+    await user.type(within(panel).getByRole('textbox'), 'Unsent thread reply');
+    if (kind === 'image') fireEvent.load(screen.getByAltText('photo.png'));
+    await user.click(screen.getByRole('button', { name: kind === 'image' ? 'photo.png' : 'note.md' }));
+    const preview = kind === 'image' ? document.activeElement! : document.querySelector('[data-text-lightbox-overlay]')!;
+    if (kind !== 'image') {
+      await screen.findByText('Preview note content');
+      if (kind === 'text-control') within(preview as HTMLElement).getAllByRole('button', { name: 'chat.lightbox.close' })[0]!.focus();
+      else if (kind === 'text-body') {
+        await user.click(screen.getByText('Preview note content'));
+        expect(document.activeElement).toBe(document.body);
+      } else expect(screen.getByRole('main').contains(document.activeElement)).toBe(true);
+    }
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('complementary')).toBe(panel);
+    expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Unsent thread reply');
+    await waitFor(() => expect(document.contains(preview)).toBe(false));
+    within(panel).getByRole('textbox').focus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
+  });
+
+  it('lets the actual Mermaid preview consume Escape before the thread and preserves its draft', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
+    const main = trigger.closest('main')!;
+    await user.click(trigger);
+    const panel = screen.getByRole('complementary');
+    await user.type(within(panel).getByRole('textbox'), 'Unsent diagram reply');
+    const container = document.createElement('div');
+    main.append(container);
+    render(<MarkdownMermaidBlock raw="graph TD; A-->B" />, { container });
+    const diagram = await within(container).findByRole('button', { name: 'chat.mermaid.clickToZoom' });
+    await user.click(diagram);
+    await screen.findByRole('button', { name: 'chat.mermaidLightbox.close' });
+    expect(document.activeElement).toBe(diagram);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'chat.mermaidLightbox.close' })).toBeNull());
+    expect(screen.getByRole('complementary')).toBe(panel);
+    expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Unsent diagram reply');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary')).toBeNull();
+  });
+
+  it('lets Escape dismiss a portalled reaction picker without closing the thread', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const panel = screen.getByRole('complementary');
+    await user.click((await within(panel).findAllByRole('button', { name: 'bots.groupChat.server.addReaction' }))[0]!);
+    const reaction = await screen.findByRole('button', { name: '🎉' });
+    reaction.focus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('button', { name: '🎉' })).toBeNull();
+    expect(screen.getByRole('complementary')).toBe(panel);
+  });
+
+  it('keeps a newer push failure snapshot when a stale older-page request finishes later', async () => {
+    const latest = msg({ id: 'latest', sequence: 100, content: 'Latest question' });
+    const source = msg({ id: 'older', sequence: 4, content: 'Earlier question' });
+    const failure = { executionId: 'older', epoch: 1, sourceMessageId: source.id, botId: 'bot', botName: 'Bot', code: 'AUTH_REQUIRED' as const, planId: null };
+    let finish: ((result: { ok: true; group: BotGroupDetail }) => void) | undefined;
+    const pending = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finish = resolve; });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ messages: [latest], hasMoreBefore: true, executionFailures: [failure] }) })
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue({ ok: true, group: detail({ name: 'Fresh group', messages: [latest], executionFailures: [] }) });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'round' })));
+    await screen.findByText('Fresh group');
+    await act(async () => finish?.({ ok: true, group: detail({ messages: [source], executionFailures: [failure] }) }));
+    expect(screen.getByText('Earlier question')).toBeTruthy();
+    expect(screen.queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Bot')).toBeNull();
+  });
+
+  it.each([false, true])('clears retried failures on an older timeline page when the newest page is refreshed (initial failure: %s)', async initialFailure => {
+    const source = msg({ id: 'older-source', sequence: 4, content: 'Earlier question' });
+    const failure = { executionId: 'older', epoch: 1, sourceMessageId: source.id, botId: 'bot', botName: 'Bot', code: 'AUTH_REQUIRED' as const, planId: null };
+    const latest = msg({ id: 'latest-source', sequence: 100, content: 'Latest question' });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ messages: [latest], hasMoreBefore: true, executionFailures: initialFailure ? [failure] : [] }) })
+      .mockResolvedValueOnce({ ok: true, group: detail({ messages: [source], hasMoreBefore: false, executionFailures: [failure] }) })
+      .mockResolvedValue({ ok: true, group: detail({ messages: [latest], executionFailures: [] }) });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Bot');
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'round' })));
+    await waitFor(() => expect(screen.queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Bot')).toBeNull());
+    expect(screen.getByText('Earlier question')).toBeTruthy();
+    expect(screen.getByText('Latest question')).toBeTruthy();
+    expect(mocks.getBotGroup.mock.calls.at(-1)).toEqual(['g1', { sourceMessageIds: [source.id, latest.id] }]);
+  });
+
   it('shows another human as a named participant instead of the current user bubble', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
       msg({ id: 'guest', authorKind: 'user', isSelf: false, authorName: 'Invited human', content: 'Hello from another account' }),
@@ -425,6 +836,17 @@ describe('BotGroupChatView', () => {
     act(() => mocks.controlledPush?.({ controllers: [] }));
     expect(main.childElementCount).toBe(originalRows);
     expect(document.querySelector('[data-controlled-banner-chip]')).toBeNull();
+  });
+
+  it('renders a joined member as a localized system line without message actions', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [msg({ id: 'join', kind: 'notice',
+      authorKind: 'system', authorName: 'Taylor', authorBotId: null, noticeCode: 'member-joined', content: 'Fallback text' })] }) });
+    renderView();
+    const notice = await screen.findByText('bots.groupChat.notice.memberJoined:Taylor');
+    expect(notice.tagName).toBe('P');
+    expect(notice.closest('article')).toBeNull();
+    expect(screen.queryByText('Fallback text')).toBeNull();
+    expect(mocks.sendBotGroupMessage).not.toHaveBeenCalled();
   });
 
   it('renders user, teammate, notice and round-end rows with the header lockup', async () => {
@@ -547,6 +969,212 @@ describe('BotGroupChatView', () => {
     expect(mocks.sendBotGroupMessage).not.toHaveBeenCalled();
   });
 
+  it('keeps a selected target and its draft across roster removal and a rejected retry', async () => {
+    const namesakes = [
+      { ...detail().members[0]!, botId: 'picked', name: 'Ann' },
+      { ...detail().members[1]!, botId: 'other', name: 'Ann' },
+    ];
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes }) });
+    mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'MENTION_UNAVAILABLE', message: '' });
+    renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    const options = await screen.findAllByRole('option');
+    fireEvent.click(options[1]!);
+    expect(input.value).toBe('@Ann ');
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes.slice(1) }) });
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(attempt));
+      await waitFor(() => expect(input.value).toBe('@Ann '));
+      expect(mocks.sendBotGroupMessage.mock.calls.at(-1)![0].mentions).toEqual({ all: false, botIds: ['picked'] });
+    }
+    expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.errors.mentionUnavailable');
+    const originalClientId = mocks.sendBotGroupMessage.mock.calls[0]![0].clientId;
+    expect(mocks.sendBotGroupMessage.mock.calls[1]![0].clientId).toBe(originalClientId);
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    const remaining = await screen.findAllByRole('option');
+    fireEvent.click(remaining[1]!);
+    mocks.sendBotGroupMessage.mockResolvedValue({ ok: true, messageId: 'accepted' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(3));
+    expect(mocks.sendBotGroupMessage.mock.calls.at(-1)![0].mentions).toEqual({ all: false, botIds: ['other'] });
+    expect(mocks.sendBotGroupMessage.mock.calls.at(-1)![0].clientId).not.toBe(originalClientId);
+  });
+
+  it('drops a deleted selected mention before a namesake is manually mentioned again', async () => {
+    const namesakes = [
+      { ...detail().members[0]!, botId: 'picked', name: 'Ann' },
+      { ...detail().members[1]!, botId: 'other', name: 'Ann' },
+    ];
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes }) });
+    renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.click((await screen.findAllByRole('option'))[1]!);
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes.slice(1) }) });
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
+    fireEvent.change(input, { target: { value: 'hello', selectionStart: 5 } });
+    fireEvent.change(input, { target: { value: '@Ann hello', selectionStart: 10 } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+    expect(mocks.sendBotGroupMessage.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['other'] });
+  });
+
+  it.each(['picked', 'manual'])('removes only the %s token identity when same-name mentions coexist', async removed => {
+    const namesakes = [
+      { ...detail().members[0]!, botId: 'picked', name: 'Ann' },
+      { ...detail().members[1]!, botId: 'other', name: 'Ann' },
+    ];
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes }) });
+    mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'MENTION_UNAVAILABLE' });
+    renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: '  @', selectionStart: 3 } });
+    fireEvent.click((await screen.findAllByRole('option'))[1]!);
+    fireEvent.change(input, { target: { value: '  @Ann @Ann', selectionStart: 11 } });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ members: namesakes.slice(1) }) });
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
+    input.setSelectionRange(removed === 'picked' ? 2 : 6, removed === 'picked' ? 7 : 11);
+    fireEvent.select(input);
+    fireEvent.change(input, { target: { value: '  @Ann', selectionStart: removed === 'picked' ? 2 : 6 } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+    expect(mocks.sendBotGroupMessage.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: [removed === 'picked' ? 'other' : 'picked'] });
+  });
+
+  describe('while the timeline loads', () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+    /** The sidebar list as main reports it; the view only borrows the row for its header. */
+    async function listGroups(groups: BotGroupDetail[]) {
+      resetBotGroupStoreForTests();
+      window.electronAPI.maker.listBotGroups = vi.fn(async () => ({ ok: true as const, groups }));
+      refreshBotGroups();
+      await waitFor(() => expect(getBotGroupListSnapshot().loaded).toBe(true));
+    }
+    afterEach(() => resetBotGroupStoreForTests());
+
+    it('shows the listed header at once and a progress indicator only for a slow read', async () => {
+      await listGroups([detail({ messages: [] })]);
+      const read = deferred<{ ok: true; group: BotGroupDetail }>();
+      mocks.getBotGroup.mockReturnValue(read.promise);
+      renderView();
+      const header = screen.getByTestId('content-header');
+      expect(header.textContent).toContain('周末出游');
+      expect(header.textContent).toContain('咪咪');
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(await screen.findByRole('status', { name: 'ccAgent.common.loading' })).toBeTruthy();
+      await act(async () => read.resolve({ ok: true, group: detail() }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+      expect(screen.getByRole('textbox')).toBeTruthy();
+    });
+
+    it('never shows a fast read’s progress indicator', async () => {
+      await listGroups([detail()]);
+      renderView();
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+      await new Promise((done) => setTimeout(done, 250));
+      expect(screen.queryByTestId('bot-group-timeline-loading')).toBeNull();
+    });
+
+    it('keeps a quickly left group’s late timeline and header out of the next group', async () => {
+      await listGroups([detail(), detail({ id: 'g2', name: '读书会', members: [{ botId: 'ajie', name: '阿杰', avatar: '', avatarColor: 'green', status: 'active' }] })]);
+      const first = deferred<{ ok: true; group: BotGroupDetail }>();
+      const second = deferred<{ ok: true; group: BotGroupDetail }>();
+      mocks.getBotGroup.mockImplementation((id: string) => (id === 'g1' ? first.promise : second.promise));
+      const view = renderView();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      mocks.groupId = 'g2';
+      view.rerender(
+        <Tooltip.Provider>
+        <FeatureSidebarSlotProvider isCollapsed={false}>
+          <HeaderSlot />
+          <BotGroupChatView />
+        </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>,
+      );
+      const header = screen.getByTestId('content-header');
+      expect(header.textContent).toContain('读书会');
+      expect(header.textContent).not.toContain('周末出游');
+      await act(async () => first.resolve({ ok: true, group: detail() }));
+      expect(screen.queryByText('周六 8:10 有票')).toBeNull();
+      expect(header.textContent).not.toContain('周末出游');
+      await act(async () => second.resolve({ ok: true, group: detail({ id: 'g2', name: '读书会', messages: [msg({ id: 'r1', content: '这周读哪本' })] }) }));
+      expect(await screen.findByText('这周读哪本')).toBeTruthy();
+      expect(screen.queryByText('周六 8:10 有票')).toBeNull();
+    });
+
+    it('opens the route-owned settings from the loading header without re-reading the timeline', async () => {
+      await listGroups([detail()]);
+      mocks.getBotGroup.mockReturnValue(new Promise(() => {}));
+      renderView();
+      fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.settings.open' }));
+      expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/g1?groupSettings=1');
+      expect(mocks.getBotGroup).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows only the second visit’s read after A → B → A', async () => {
+      await listGroups([detail(), detail({ id: 'g2', name: '读书会' })]);
+      const reads: Array<{ id: string; resolve: (value: { ok: true; group: BotGroupDetail }) => void }> = [];
+      mocks.getBotGroup.mockImplementation((id: string) => new Promise((resolve) => { reads.push({ id, resolve }); }));
+      const view = renderView();
+      const rerender = (id: string) => {
+        mocks.groupId = id;
+        view.rerender(
+          <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+          </Tooltip.Provider>,
+        );
+      };
+      rerender('g2');
+      rerender('g1');
+      expect(reads.map((read) => read.id)).toEqual(['g1', 'g2', 'g1']);
+      await act(async () => reads[0]!.resolve({ ok: true, group: detail({ messages: [msg({ id: 'old', content: '第一次打开的旧回包' })] }) }));
+      await act(async () => reads[1]!.resolve({ ok: true, group: detail({ id: 'g2', name: '读书会', messages: [msg({ id: 'b', content: '读书会的回包' })] }) }));
+      expect(screen.queryByText('第一次打开的旧回包')).toBeNull();
+      expect(screen.queryByText('读书会的回包')).toBeNull();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      await act(async () => reads[2]!.resolve({ ok: true, group: detail() }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+    });
+
+    it('keeps the header with a retry when the first read fails', async () => {
+      await listGroups([detail()]);
+      mocks.getBotGroup.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT', message: '' });
+      renderView();
+      expect(await screen.findByText('bots.groupChat.loadFailedTitle')).toBeTruthy();
+      expect(screen.getByTestId('content-header').textContent).toContain('周末出游');
+      fireEvent.click(screen.getByRole('button', { name: /bots.retry/ }));
+      expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
+    });
+
+    it('shows no header for a group that is no longer listed, then the unavailable state', async () => {
+      await listGroups([]);
+      mocks.getBotGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+      renderView();
+      expect(screen.getByTestId('content-header').textContent).toBe('');
+      expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+      expect(screen.getByTestId('content-header').textContent).toBe('');
+    });
+  });
+
   it('refreshes on a push for this group and shows the unavailable state after delete', async () => {
     renderView();
     await screen.findByText('周六 8:10 有票');
@@ -556,6 +1184,328 @@ describe('BotGroupChatView', () => {
     await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
     act(() => mocks.pushes.forEach((push) => push({ groupId: 'g1', change: 'deleted' })));
     expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+  });
+
+  describe('引用回复', () => {
+    const quoteOf = (messageId: string, overrides: Partial<NonNullable<BotGroupMessageView['quote']>> = {}) => ({
+      messageId, authorName: '小满', authorKind: 'bot' as const, excerpt: '周六 8:10 有票', attachmentCount: 0, attachmentName: null, sequence: 2, ...overrides,
+    });
+    const quoteButton = async (id = 'b1') => {
+      await screen.findByText('周六 8:10 有票');
+      const row = document.querySelector(`[data-bot-group-message-id="${id}"]`) as HTMLElement;
+      return within(row).getByRole('button', { name: 'bots.groupChat.server.quoteReply' });
+    };
+    beforeEach(() => {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    });
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    it('quotes into the composer without opening a 话题, and removing it keeps the text', async () => {
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await quoteButton());
+      const preview = screen.getByTestId('bot-group-quote-preview');
+      expect(preview.textContent).toContain('bots.groupChat.quote.replyingTo:小满');
+      expect(preview.textContent).toContain('周六 8:10 有票');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      const composer = screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' });
+      expect(document.activeElement).toBe(composer);
+      await user.type(composer, '那就这班');
+      await user.click(within(preview).getByRole('button', { name: 'bots.groupChat.quote.remove' }));
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      expect((composer as HTMLTextAreaElement).value).toBe('那就这班');
+      expect(document.activeElement).toBe(composer);
+    });
+
+    it('Esc takes the quote off before anything else and keeps the draft', async () => {
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('草稿{Escape}');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      expect((screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement).value).toBe('草稿');
+    });
+
+    it('sends only the quoted id in the current timeline, with a new idempotency key per quote', async () => {
+      const user = userEvent.setup();
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' }).mockResolvedValue({ ok: true, messageId: 'u2' });
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      expect(lastSend()).toMatchObject({ groupId: 'g1', text: '就这班', quote: { messageId: 'b1' }, mentions: { all: false, botIds: [] } });
+      // A failed send puts the quote back with the text; the retry reuses the attempt.
+      await waitFor(() => expect(screen.getByTestId('bot-group-quote-preview')).toBeTruthy());
+      const failedId = lastSend().clientId;
+      await user.keyboard('{Enter}');
+      expect(lastSend()).toMatchObject({ clientId: failedId, quote: { messageId: 'b1' } });
+      await waitFor(() => expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull());
+      // The same words quoting another message are a different send.
+      await user.click(await quoteButton('u1'));
+      await user.keyboard('就这班{Enter}');
+      expect(lastSend()).toMatchObject({ quote: { messageId: 'u1' } });
+      expect(lastSend().clientId).not.toBe(failedId);
+    });
+
+    it('never attaches a failed send\'s quote to text typed while it was on its way', async () => {
+      const user = userEvent.setup();
+      let fail!: () => void;
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise((resolve) => {
+        fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' });
+      }));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledOnce());
+      const composer = screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement;
+      await user.type(composer, '另一件事');
+      await act(async () => fail());
+      expect(composer.value).toBe('另一件事');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
+    it('puts the text back without an unavailable quote', async () => {
+      const user = userEvent.setup();
+      mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.errors.quoteUnavailable'));
+      expect((screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement).value).toBe('就这班');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
+    it('offers no 引用回复 on a local group, a notice or a round divider', async () => {
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail() });
+      renderView();
+      await screen.findByText('周六 8:10 有票');
+      expect(screen.queryAllByRole('button', { name: 'bots.groupChat.server.quoteReply' })).toHaveLength(0);
+      cleanup();
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      renderView();
+      await screen.findByText('周六 8:10 有票');
+      // Only the two chat messages; the notice and the divider have no toolbar.
+      expect(screen.getAllByRole('button', { name: 'bots.groupChat.server.quoteReply' })).toHaveLength(2);
+    });
+
+    it('jumps to and highlights a loaded original', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [...base.messages,
+        msg({ id: 'q1', sequence: 5, content: '那就这班', quote: quoteOf('b1', { excerpt: 'snapshot text' }) })] } });
+      renderView();
+      const block = await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' });
+      // The loaded original wins over the stored snapshot.
+      expect(block.textContent).toContain('周六 8:10 有票');
+      expect(block.textContent).not.toContain('snapshot text');
+      await user.click(block);
+      const target = document.querySelector('[data-bot-group-message-id="b1"]') as HTMLElement;
+      await waitFor(() => expect(target.className).toContain('search-match-bg'));
+      expect(document.activeElement).toBe(target);
+      expect(screen.queryByRole('complementary')).toBeNull();
+    });
+
+    it('shows a deleted original without its snapshot and never jumps', async () => {
+      const base = detail({ serverBacked: true });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [
+        msg({ id: 'b1', sequence: 2, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', deleted: true, content: '（消息已删除）' }),
+        msg({ id: 'q1', sequence: 5, content: '那就这班', quote: quoteOf('b1', { excerpt: '私密的原文' }) })] } });
+      renderView();
+      const block = await screen.findByTestId('bot-group-quote');
+      expect(block.getAttribute('data-quote-state')).toBe('deleted');
+      expect(block.tagName).toBe('DIV');
+      expect(block.textContent).toContain('bots.groupChat.quote.deleted');
+      expect(document.body.textContent).not.toContain('私密的原文');
+    });
+
+    it('pages back to an original that is not loaded yet', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' })] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '很早的原文', sequence: 1 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect((document.querySelector('[data-bot-group-message-id="old1"]') as HTMLElement | null)?.className).toContain('search-match-bg'));
+      expect(mocks.getBotGroup).toHaveBeenCalledWith('g1', expect.objectContaining({ beforeSequence: 50 }));
+    });
+
+    it('re-reads an original on an older page before jumping, and stops when it was deleted meanwhile', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      let deleted = false;
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [deleted ? { ...original, deleted: true, content: '（消息已删除）' } : original] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '很早的原文', sequence: 1 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect((document.querySelector('[data-bot-group-message-id="old1"]') as HTMLElement | null)?.className).toContain('search-match-bg'));
+      // Deleted on another client after it was paged in: the push re-read leaves older pages as they were.
+      deleted = true;
+      await user.click(screen.getByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith('bots.groupChat.quote.deleted'));
+      expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', expect.objectContaining({ beforeSequence: 2 }));
+      expect(screen.getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted');
+      expect(document.body.textContent).not.toContain('很早的原文');
+    });
+
+    describe('quoted originals on older pages after a push', () => {
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      const latest = msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '快照摘要', sequence: 1 }) });
+      /** The server's current page for `beforeSequence`, and a way to run the page loader. */
+      function serve(older: () => Promise<BotGroupMessageView[]>) {
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+          ? { ok: true, group: { ...base, hasMoreBefore: false, messages: await older() } }
+          : { ok: true, group: { ...base, messages: [latest] } });
+      }
+      const quoteState = () => screen.getByTestId('bot-group-quote').getAttribute('data-quote-state');
+      const push = () => act(async () => { mocks.pushes.forEach((listener) => listener({ groupId: 'g1', change: 'messages' })); });
+
+      it('drops a deleted original from the quote on a push, without a click', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        expect(quoteState()).toBe('live');
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        expect(document.body.textContent).not.toContain('很早的原文');
+        expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', { beforeSequence: 2 });
+      });
+
+      it('follows an edited original on a push', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        server = [{ ...original, content: '改过的原文' }];
+        await push();
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('改过的原文'));
+        expect(quoteState()).toBe('live');
+      });
+
+      it('falls back to the snapshot and never jumps when the original cannot be re-read', async () => {
+        const user = userEvent.setup();
+        let fail = false;
+        serve(async () => { if (fail) throw new Error('offline'); return [original]; });
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        fail = true;
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('snapshot'));
+        expect(screen.getByTestId('bot-group-quote').textContent).toContain('快照摘要');
+        await user.click(screen.getByTestId('bot-group-quote'));
+        await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.timeline.loadEarlierFailed'));
+        expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
+      });
+
+      it('re-checks every quoted original across all opened pages on a single push', async () => {
+        const user = userEvent.setup();
+        const originals = [400, 300, 200, 100].map((sequence, index) => msg({ id: `o${index}`, sequence, authorKind: 'bot',
+          authorBotId: 'xiaoman', authorName: '小满', content: `原文${index}` }));
+        const quotes = originals.map((original, index) => msg({ id: `q${index}`, sequence: 501 + index, content: `回复${index}`,
+          quote: quoteOf(original.id, { excerpt: `快照${index}`, sequence: original.sequence }) }));
+        let server = originals;
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        // One message per page, so each original sits on its own opened page.
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => {
+          if (!options?.beforeSequence) return { ok: true, group: { ...base, messages: quotes } };
+          const page = server.filter((message) => message.sequence < options.beforeSequence!).slice(0, 1);
+          return { ok: true, group: { ...base, hasMoreBefore: page[0]!.sequence > 100, messages: page } };
+        });
+        renderView();
+        for (let page = 0; page < 4; page += 1) {
+          await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+          await screen.findByText(`原文${page}`, { selector: '[data-markdown]' });
+        }
+        server = originals.map((original, index) => index % 2 === 0
+          ? { ...original, deleted: true, content: '（消息已删除）' } : { ...original, content: `改过${index}` });
+        mocks.getBotGroup.mockClear();
+        await push();
+        await waitFor(() => expect(screen.getAllByTestId('bot-group-quote').map((block) => block.getAttribute('data-quote-state')))
+          .toEqual(['deleted', 'live', 'deleted', 'live']));
+        const blocks = screen.getAllByTestId('bot-group-quote');
+        expect(blocks[1]!.textContent).toContain('改过1');
+        expect(blocks[3]!.textContent).toContain('改过3');
+        expect(document.body.textContent).not.toMatch(/原文0|原文2/);
+        // One read for the latest page, then one per original's page; nothing beyond what was opened.
+        expect(mocks.getBotGroup.mock.calls.map(([, options]) => options?.beforeSequence).filter(Boolean)).toEqual([401, 301, 201, 101]);
+      });
+
+      it('shows a 话题 root\'s quote from the same verified messages', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        mocks.thread.mockImplementation(async () => ({ ok: true, root: latest, replies: [], hasMore: false }));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        const row = document.querySelector('[data-bot-group-message-id="q1"]') as HTMLElement;
+        await user.click(within(row).getByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+        const panel = await screen.findByRole('complementary');
+        await waitFor(() => expect(within(panel).getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted'));
+        expect(panel.textContent).not.toContain('快照摘要');
+      });
+
+      it('lets a newer push win over an older re-read that answers late', async () => {
+        const user = userEvent.setup();
+        const pending: Array<(page: BotGroupMessageView[]) => void> = [];
+        let paging = true;
+        serve(() => paging ? Promise.resolve([original]) : new Promise((resolve) => pending.push(resolve)));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        paging = false;
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(1));
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(2));
+        await act(async () => pending[1]!([{ ...original, deleted: true, content: '（消息已删除）' }]));
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        // The superseded read arrives last with the pre-deletion copy; it must not bring the text back.
+        await act(async () => pending[0]!([original]));
+        expect(quoteState()).toBe('deleted');
+        expect(document.body.textContent).not.toContain('很早的原文');
+      });
+    });
+
+    it('says the original is out of reach instead of jumping elsewhere', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [msg({ id: 'other', sequence: 3, content: '别的消息' })] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('gone', { excerpt: '看不到的原文', sequence: 2 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith('bots.groupChat.quote.unavailable'));
+      expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
+    });
+
+    it('keeps a quote draft inside its own group', async () => {
+      const user = userEvent.setup();
+      let view = renderView();
+      await user.click(await quoteButton());
+      expect(screen.getByTestId('bot-group-quote-preview')).toBeTruthy();
+      view.unmount();
+      mocks.groupId = 'g2';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2', serverBacked: true }) });
+      view = renderView();
+      await screen.findByText('周六 8:10 有票');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      await user.keyboard('x');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
   });
 
   describe('分工', () => {
@@ -584,6 +1534,32 @@ describe('BotGroupChatView', () => {
       );
       fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.plan.dismiss' }));
       await waitFor(() => expect(mocks.dismissBotGroupPlan).toHaveBeenCalledWith({ groupId: 'g1', planId: 'p1' }));
+    });
+
+    it.each([true, false])('renders a human-signed plan with organizer and controls (self=%s)', async (isSelf) => {
+      const group = withPlan(plan());
+      group.messages = group.messages.map(message => message.kind === 'plan'
+        ? { ...message, authorKind: 'user', authorBotId: null, authorName: 'Human creator', isSelf } : message);
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group });
+      renderView();
+      const card = await screen.findByTestId('bot-group-plan');
+      expect(card.closest('article')?.textContent).toContain('咪咪');
+      expect(card.closest('article')?.textContent).not.toContain('Human creator');
+      fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.plan.start' }));
+      await waitFor(() => expect(mocks.startBotGroupPlan).toHaveBeenCalledWith({ groupId: 'g1', planId: 'p1' }));
+      await waitFor(() => expect((screen.getByRole('button', { name: 'bots.groupChat.plan.dismiss' }) as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.plan.dismiss' }));
+      await waitFor(() => expect(mocks.dismissBotGroupPlan).toHaveBeenCalledWith({ groupId: 'g1', planId: 'p1' }));
+    });
+
+    it('keeps human-signed superseded plans visible and read-only', async () => {
+      const group = withPlan(plan({ status: 'superseded' }));
+      group.messages = group.messages.map(message => message.kind === 'plan' ? { ...message, authorKind: 'user', authorBotId: null } : message);
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group });
+      renderView();
+      expect(await screen.findByText('bots.groupChat.plan.superseded')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'bots.groupChat.plan.start' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'bots.groupChat.plan.dismiss' })).toBeNull();
     });
 
     it('explains a failed plan action and re-reads the group', async () => {

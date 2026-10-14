@@ -176,6 +176,7 @@ interface AgentIslandUserPromptDebugMeta {
 }
 
 export interface AgentIslandServiceDeps {
+  isCompletionHandledByTeammate?: (sessionId: string) => Promise<boolean>;
   getMainWindow: () => BrowserWindow | null;
   nativeHost?: AgentIslandNativeRenderer;
   /** Main-process upgrade window used to classify remote daemon shutdowns. */
@@ -267,6 +268,7 @@ function safeSessionActionSummary(snapshot: AgentIslandSessionSnapshot): string 
     if (snapshot.interactionKind === 'ask_user_question') return '等待用户回答';
     if (snapshot.interactionKind === 'plan_review') return '等待计划确认';
     if (snapshot.interactionKind === 'plugin_setup') return '等待插件配置';
+    if (snapshot.interactionKind === 'input_handoff') return '等待代输入';
     return '等待用户确认';
   }
   if (snapshot.phase === 'completed') return '运行已正常结束';
@@ -360,15 +362,16 @@ export class AgentIslandService {
     sessionId: string;
     request: Extract<InteractionRequest, { kind: 'permission' }>;
   }>();
-  private readonly sessionActivityRelay = new SessionActivityRelay((payload) => {
-    tapWindowBroadcast(SESSION_ACTIVITY_CHANNEL, payload);
-  });
+  private readonly sessionActivityRelay: SessionActivityRelay;
   private permissionResolver: ((requestId: string, decision: AgentIslandPermissionDecision) => boolean) | null = null;
   private shouldDeferCompletion: ((sessionId: string) => boolean) | null = null;
   private layoutPreferenceWriteTimer: ReturnType<typeof setTimeout> | null = null;
   private streamingPreviewPublishTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: AgentIslandServiceDeps) {
+    this.sessionActivityRelay = new SessionActivityRelay((payload) => {
+      tapWindowBroadcast(SESSION_ACTIVITY_CHANNEL, payload);
+    }, { isCompletionHandledByTeammate: deps.isCompletionHandledByTeammate });
     // lazy t() 闭包跟随 locale 运行时切换,注入一次即可(strings 仍每次 publish 重建)。
     setAgentIslandToolWording(this.state, createLocalizedToolRowWording());
     this.layoutPreferencesByDisplayId = readAgentIslandLayoutPreferences();
@@ -681,6 +684,10 @@ export class AgentIslandService {
     }
   }
 
+  waitForCompletionNotification(sessionId: string): Promise<boolean> | undefined {
+    return this.sessionActivityRelay.waitForCompletionNotification(sessionId);
+  }
+
   resetRuntimeState(): void {
     this.clearPublishTimer();
     this.clearStreamingPreviewPublishTimer();
@@ -839,6 +846,9 @@ export class AgentIslandService {
       }
     }
     const suppressCompletionAttention = this.isCompletionEventSilenced(hydrated.sessionId, event);
+    if (isCompletionDoneEvent(event) && event.type === 'status') {
+      this.sessionActivityRelay.awaitCompletionTerminal(hydrated.sessionId);
+    }
     const changed = applyAgentIslandEvent(this.state, hydrated, event, now, {
       suppressCompletionAttention,
       // Direct IM sends bypass handleUserPrompt. Running preserves unread in the
@@ -854,6 +864,9 @@ export class AgentIslandService {
     });
     if (suppressCompletionAttention) {
       this.mutedCompletionSoundSessionIds.add(hydrated.sessionId);
+    }
+    if (isCompletionDoneEvent(event) && event.type === 'done') {
+      this.sessionActivityRelay.completeTerminal(hydrated.sessionId);
     }
     if (!changed) return;
     this.ensureMetadata(hydrated.sessionId);
@@ -1071,10 +1084,12 @@ export class AgentIslandService {
     this.publish();
   }
 
+  /** Host-owned waits (plugin setup, input handoff) shown as attention until dismissed. */
   handlePluginSetupInteraction(
     sessionId: string,
     requestId: string,
     detail: string,
+    kind: 'plugin_setup' | 'input_handoff' = 'plugin_setup',
   ): void {
     const hydrated = this.hydrateMeta({ sessionId });
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
@@ -1089,7 +1104,9 @@ export class AgentIslandService {
     applyAgentIslandInteractionRequest(
       this.state,
       hydrated,
-      { kind: 'plugin_setup', requestId, detail },
+      kind === 'input_handoff'
+        ? { kind: 'input_handoff', requestId, detail }
+        : { kind: 'plugin_setup', requestId, detail },
       Date.now(),
     );
     this.ensureMetadata(hydrated.sessionId);
@@ -1455,7 +1472,8 @@ export class AgentIslandService {
 
   private isCompletionEventSilenced(sessionId: string, event: AgentEvent): boolean {
     if (!isCompletionDoneEvent(event)) return false;
-    return event.turnOrigin?.surface === 'im' || this.silencedSessionRunIds.has(sessionId);
+    return event.agentMeta?.botTaskCoordination === true
+      || event.turnOrigin?.surface === 'im' || this.silencedSessionRunIds.has(sessionId);
   }
 
   private hadAttentionBeforeSilencedRun(sessionId: string): boolean {

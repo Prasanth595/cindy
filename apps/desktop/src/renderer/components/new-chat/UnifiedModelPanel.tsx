@@ -1,7 +1,23 @@
 import { useRemoteModelFavorites } from '@/state/useRemoteModelFavorites';
+import {
+  parseProviderShareFavoriteSource,
+  providerShareFavoriteRegionsOf,
+  useProviderShareFavorites,
+  useProviderShareFavoriteSources,
+} from '@/state/providerShareFavorites';
+import {
+  agentDeviceOfFavorite,
+  LOCAL_MODEL_FAVORITE_STORE,
+  useAgentDeviceFavorites,
+} from '@/state/agentDeviceFavorites';
+import {
+  ensureProviderShareReceivedStarted,
+  requestProviderShareFavoriteRegions,
+} from '@/features/provider-share/providerShareStore';
+import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, Loader2, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -18,9 +34,12 @@ import type { Effort } from '@/lib/userPreferences.types';
 import { getModelEngineOverride, useModelEnginePrefsVersion } from '@/state/modelEnginePrefs';
 import { useModelFavorites, type ModelFavoriteItem } from '@/state/modelFavorites';
 import { useProviderModelMemoryVersion } from '@/state/providerModelMemory';
+import { useAgentDeviceModelMemoryVersion } from '@/state/agentDeviceModelMemory';
 
 import { flashScrollbar } from '@/lib/scrollbarAutoHide';
 import { MORPH_CONTENT_RESIZE_EVENT } from '@/components/ui/morph-popover';
+
+import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
 
 import { ModelConfigFlyout, type ModelConfigFlyoutState } from './ModelConfigFlyout';
 // ModelSelector 反过来也 import 本文件 —— ESM 循环 import 在这里安全:两边用到的都是
@@ -40,7 +59,7 @@ import {
   withMenuLabels,
 } from '@/components/ui/menu-row';
 import { ModelSourceUsageProvider } from './ModelSourceDetails';
-import type { ProviderUsageScope } from './useProviderWeeklyQuota';
+import type { ProviderGroupUsageOf, ProviderUsageScope } from './useProviderWeeklyQuota';
 import {
   anchorKey,
   favoriteMatchesSelection,
@@ -55,9 +74,13 @@ import {
   resolveFavoriteRowConfig,
   resolveUnifiedRowConfig,
   sameAnchor,
+  unavailableFavoriteEntry,
+  type ForeignFavoriteRow,
   type UnifiedAnchor,
+  type UnifiedListRow,
   type UnifiedEngine,
   type UnifiedRailFilter,
+  type UnifiedRailItem,
   type UnifiedRowConfig,
 } from './unifiedModelSelection';
 
@@ -71,6 +94,7 @@ const RAIL_ALL: UnifiedRailFilter = { kind: 'all' };
 /** 定宽 sizer 的行不接交互。 */
 const noop = (): void => {};
 const NO_FAVORITES: readonly ModelFavoriteItem[] = [];
+const NO_PROVIDERS: readonly ProviderView[] = [];
 
 export interface UnifiedSelectedRow {
   /** 该行**生效**引擎(推荐 ⊕ override ⊕ 会话内 pinnedEngine ⊕ 收藏副本)。 */
@@ -129,11 +153,21 @@ export interface UnifiedModelPanelProps {
   /** 价格 / 折扣查询。**modelId 传该引擎的 wire id**(报价表按 wire id 索引)。 */
   priceOf: (providerId: string, modelId: string, agent: AgentKind) => ModelPricePresentation | null;
   providerLabel: (providerId: string) => string;
+  /**
+   * 分组标题与左栏提示用的名字；缺省同 providerLabel。供应商组在这里带上台数
+   * (「Anthropic · 供应商组 · 3 台电脑」，provider-groups.md §10)，每行的来源名不带。
+   */
+  providerHeading?: (providerId: string) => string;
   effortLabelOf: (agent: AgentKind, effort: Effort) => string;
   listMaxHeight?: number;
   interactionDisabled?: boolean;
   /** Whose subscription accounts the directory may show: this desktop or its linked device. */
   providerUsage?: ProviderUsageScope | null;
+  /**
+   * 供应商组那一项的用量读谁(provider-groups.md §10):任务正经组在某台运行时读那台,还没分到电脑时
+   * 不显示某一台的配额。缺省 = 都按目录归属读。
+   */
+  providerGroupUsage?: ProviderGroupUsageOf;
   /** 保留付费模型为锁定展示行，并把点击交给统一付费提示。 */
   includePaymentRequired?: boolean;
   paymentRequiredLabel?: string;
@@ -248,6 +282,58 @@ export interface UnifiedModelPanelProps {
   panelElement: HTMLElement | null;
   overlayClassName?: string;
   /**
+   * 远程 Agent(仅新任务草稿):左侧栏在本机供应商之后列出其他电脑上的供应商。选中那台
+   * 电脑上的模型 = Agent 在那台电脑运行,任务和文件仍在本机。
+   *
+   * 面板只管栏位与选中态;列表数据(`providers` / `deviceId` 及各谓词)由调用方随
+   * `active` 切到那台电脑的目录 —— 所以 `ready` 为 false 的那几帧列表显示加载态,
+   * 绝不拿上一份目录按同名供应商筛出一份「看起来像远程」的列表。
+   */
+  remoteSources?: {
+    /** 本机格(★ / 全部 / 本机供应商)的栏位,按**本机**目录派生。 */
+    localRailItems: readonly UnifiedRailItem[];
+    localProviders: readonly ProviderView[];
+    localProviderLabel: (providerId: string) => string;
+    /** 每台电脑一段:有可用模型的供应商(按那台的目录顺序)。 */
+    groups: readonly {
+      deviceId: string;
+      providers: readonly ProviderView[];
+      providerIds: readonly string[];
+      /** 那台电脑可远程调用的模型行(收藏区按它解析那台电脑上的收藏)。 */
+      entries: readonly UnifiedModelEntry[];
+    }[];
+    /**
+     * 收藏存在哪一份列表里(model-selector-unified §1.5「远程收藏按被控电脑共享」):任务在被控电脑上
+     * 时是那台的 deviceId(经设备互联读写);不传 = 本机收藏。浏览其他电脑时,那台的收藏也读写这一份,
+     * 运行位置编进 providerId(见 state/agentDeviceFavorites)。
+     */
+    favoritesDeviceId?: string;
+    /** 任务所在电脑自己的设备 id(已知时):收藏里编码成它的条目按普通收藏处理。 */
+    homeDeviceId?: string | null;
+    /** 在列表里、但目录还在读取或读取失败的电脑:收藏区里它的收藏置灰列出,不丢。 */
+    unavailableDeviceIds?: readonly string[];
+    /**
+     * 浏览任务所在电脑的目录时,在收藏区里选中另一台电脑上的收藏 —— 结果与浏览那台电脑时选中它相同
+     * (Agent 在那台运行)。不传 = 收藏区不列其他电脑的收藏。
+     */
+    onSelectDeviceFavorite?: (selection: {
+      deviceId: string;
+      providerId: string;
+      /** 该行生效引擎的 wire id。 */
+      modelId: string;
+      effort: Effort | '';
+      config: UnifiedSelectedRow;
+    }) => void | boolean | Promise<void | boolean>;
+    labelOf: (deviceId: string, providerId: string) => string;
+    /** 正在浏览的远程供应商;null = 正在浏览本机目录。 */
+    active: { deviceId: string; providerId: string } | null;
+    /** 列表数据是否已经是 `active` 那台电脑的目录。 */
+    ready: boolean;
+    /** `active` 那台的目录读取失败时,列表区显示的提示(含重试)。 */
+    failure?: ReactNode;
+    onActivate: (target: { deviceId: string; providerId: string } | null) => void;
+  };
+  /**
    * 面板宽度是**绑在 trigger 上**的(field 形态,DESIGN.md §4 宽度铁则)。
    * 传 true 时关掉定宽 sizer —— 宽度由外部决定,量一份最宽视图既无用也白渲染一遍行
    * (见 widthSizerSections)。composer 的 `w-max` 面板不传 = 开启。
@@ -287,10 +373,12 @@ export function UnifiedModelPanel({
   agentFastModeCapable,
   priceOf,
   providerLabel,
+  providerHeading = providerLabel,
   effortLabelOf,
   listMaxHeight,
   interactionDisabled = false,
   providerUsage = null,
+  providerGroupUsage,
   includePaymentRequired = false,
   paymentRequiredLabel,
   paymentRequiredUnlockLabel,
@@ -309,15 +397,49 @@ export function UnifiedModelPanel({
   panelElement,
   overlayClassName,
   panelWidthFluid = false,
+  remoteSources,
 }: UnifiedModelPanelProps) {
   const { t } = useTranslation();
   const storedFavorites = useModelFavorites();
-  const remoteFavorites = useRemoteModelFavorites(deviceId);
-  const favorites = selectionPolicy === 'official' ? NO_FAVORITES : deviceId ? remoteFavorites.items : storedFavorites;
+  const isSharedProvider = isProviderShareAgentDeviceId(deviceId);
+  // 远程 Agent:收藏一律读写任务所在电脑那一份(§1.5),浏览其他电脑的目录时也不读那台自己的收藏;
+  // 其余入口照旧 —— 远程控制读被控电脑的列表,本机读本机。
+  const favoritesListDeviceId = remoteSources
+    ? remoteSources.favoritesDeviceId
+    : isSharedProvider ? undefined : deviceId;
+  const remoteFavorites = useRemoteModelFavorites(favoritesListDeviceId);
+  const sharedFavorites = useProviderShareFavorites(
+    deviceId,
+    storedFavorites,
+    remoteSources?.favoritesDeviceId ? remoteFavorites : undefined,
+  );
+  const sharedFavoriteSources = useProviderShareFavoriteSources();
+  const hasRemoteSources = !!remoteSources;
+  const favoritesHomeDeviceId = remoteSources?.homeDeviceId ?? null;
+  const agentDeviceFavorites = useAgentDeviceFavorites({
+    deviceId: remoteSources?.active && !isSharedProvider ? deviceId : undefined,
+    homeDeviceId: favoritesHomeDeviceId,
+    home: remoteSources?.favoritesDeviceId
+      ? remoteFavorites
+      : { items: storedFavorites, store: LOCAL_MODEL_FAVORITE_STORE },
+  });
+  useEffect(() => {
+    if (isSharedProvider || hasRemoteSources) ensureProviderShareReceivedStarted();
+  }, [isSharedProvider, hasRemoteSources]);
+  // 任务所在电脑收藏的跨区分享，本机可能从没加载过那个区域的名单：按它的区域补一次恢复。
+  const homeFavoriteItems = remoteSources?.favoritesDeviceId ? remoteFavorites.items : null;
+  useEffect(() => {
+    if (homeFavoriteItems) requestProviderShareFavoriteRegions(providerShareFavoriteRegionsOf(homeFavoriteItems));
+  }, [homeFavoriteItems]);
+  const favorites = selectionPolicy === 'official' ? NO_FAVORITES
+    : isSharedProvider ? sharedFavorites.items
+    : remoteSources ? agentDeviceFavorites.items
+    : deviceId ? remoteFavorites.items : storedFavorites;
   // 引擎 override / 深度 / Fast 三份 store 的版本号:任一变化都要重算行三元组与浮层
-  // (其它窗口的 storage 事件、device-link 推送同样经这两个版本号进来)。
+  // (其它窗口的 storage 事件、device-link 推送同样经这两个版本号进来)。远程 Agent 的档位记忆
+  // 是另一份 store,版本号并进 memoryVersion。
   const enginePrefsVersion = useModelEnginePrefsVersion();
-  const memoryVersion = useProviderModelMemoryVersion();
+  const memoryVersion = useProviderModelMemoryVersion() + useAgentDeviceModelMemoryVersion();
 
   const sessionAgent = sessionEngineFilter?.currentAgent;
 
@@ -401,17 +523,55 @@ export function UnifiedModelPanel({
     [providers, agentsKey, scope, sourceVersion, keepModelKey, includePaymentRequired],
   );
 
-  const railItems = useMemo(
-    () => buildUnifiedRail(entries, undefined, providerOrder),
-    [entries, providerOrder],
-  );
+  const localRailItems = remoteSources?.localRailItems;
+  const remoteGroups = remoteSources?.groups;
+  const railItems = useMemo<UnifiedRailItem[]>(() => {
+    if (!localRailItems) return buildUnifiedRail(entries, undefined, providerOrder);
+    // 远程 Agent:本机格按本机目录派生(此刻 entries 可能是某台电脑的目录),
+    // 其后每台电脑一段远程供应商格。
+    return [
+      ...localRailItems,
+      ...(remoteGroups ?? []).flatMap((group) =>
+        group.providerIds.map((providerId) => ({
+          kind: 'remote-provider' as const,
+          deviceId: group.deviceId,
+          providerId,
+        })),
+      ),
+    ];
+  }, [entries, providerOrder, localRailItems, remoteGroups]);
   // rail 上的筛选目标消失(供应商断开 / 收藏清空)时回落「全部」,避免停在空视图。
   useEffect(() => {
     if (rail.kind === 'all') return;
     if (railItems.some((item) => railItemKey(item) === railItemKey(rail))) return;
     setRail({ kind: 'all' });
   }, [rail, railItems]);
-  const effectiveRail = query.trim() ? RAIL_ALL : rail;
+  // 远程供应商格由调用方受控(它决定列表数据是哪台电脑的目录);本机格仍由面板自己记。
+  const remoteActiveDeviceId = remoteSources?.active?.deviceId ?? null;
+  const remoteActiveProviderId = remoteSources?.active?.providerId ?? null;
+  const remoteRail = useMemo<UnifiedRailFilter | null>(
+    () =>
+      remoteActiveDeviceId !== null && remoteActiveProviderId !== null
+        ? { kind: 'remote-provider', deviceId: remoteActiveDeviceId, providerId: remoteActiveProviderId }
+        : null,
+    [remoteActiveDeviceId, remoteActiveProviderId],
+  );
+  const effectiveRail = remoteRail ?? (query.trim() ? RAIL_ALL : rail);
+  // 切到另一台电脑的途中(或读取失败)列表数据还不是那台的目录:列表区只显示状态,不出行。
+  const remoteListPending = remoteRail !== null && !remoteSources?.ready;
+  const handleRailSelect = useCallback(
+    (item: UnifiedRailItem) => {
+      if (item.kind === 'remote-provider') {
+        setRail(RAIL_ALL);
+        remoteSources?.onActivate({ deviceId: item.deviceId, providerId: item.providerId });
+        return;
+      }
+      // ★ / 全部回到任务电脑的收藏列表；每条远程收藏按自身来源解析，不能把视图锁在刚浏览的分享。
+      if (remoteSources?.active) remoteSources.onActivate(null);
+      setRail(item);
+    },
+    [remoteSources],
+  );
 
   // ── 行配置合成 ────────────────────────────────────────────────────────────
   // 「正在用的引擎」的口径 = 上面推 keepModel 时用的那一个(liveEngineAgent),不另起一份。
@@ -604,11 +764,50 @@ export function UnifiedModelPanel({
     ],
   );
 
+  // ── 收藏区里其他电脑上的收藏(远程 Agent,浏览任务所在电脑的目录时)────────────────
+  // 它们与本目录的收藏存在同一份列表里(运行位置编进 providerId),这里按那台电脑的目录解析:
+  // 目录在且模型还在 → 正常行;目录还在读 / 读取失败 → 置灰占位行;目录里已经没有 → 本轮不显示(不删)。
+  const deviceFavoriteGroups = remoteSources?.groups;
+  const unavailableDeviceIds = remoteSources?.unavailableDeviceIds;
+  const deviceFavoritesEnabled =
+    !!remoteSources?.onSelectDeviceFavorite &&
+    !remoteSources.active &&
+    selectionPolicy === 'personalized';
+  const resolveDeviceFavorite = useMemo(() => {
+    if (!deviceFavoritesEnabled) return undefined;
+    return (item: ModelFavoriteItem): ForeignFavoriteRow | null => {
+      const shareDeviceId = sharedFavoriteSources.get(item.providerId);
+      const share = shareDeviceId ? parseProviderShareFavoriteSource(item.providerId) : null;
+      const source = share && shareDeviceId
+        ? { deviceId: shareDeviceId, providerId: share.providerId }
+        : agentDeviceOfFavorite(item.providerId, favoritesHomeDeviceId);
+      if (!source) return null;
+      const favorite: ModelFavoriteItem = { ...item, providerId: source.providerId };
+      const group = deviceFavoriteGroups?.find((candidate) => candidate.deviceId === source.deviceId);
+      if (group) {
+        const ofProvider = group.entries.filter((candidate) => candidate.providerId === source.providerId);
+        const entry =
+          ofProvider.find((candidate) => candidate.modelId === item.modelId) ??
+          ofProvider.find((candidate) => entryMatchesModelId(candidate, item.modelId));
+        return entry ? { entry, favorite, agentDeviceId: source.deviceId } : null;
+      }
+      return unavailableDeviceIds?.includes(source.deviceId)
+        ? {
+            entry: unavailableFavoriteEntry(favorite),
+            favorite,
+            agentDeviceId: source.deviceId,
+            unavailable: true,
+          }
+        : null;
+    };
+  }, [deviceFavoritesEnabled, favoritesHomeDeviceId, deviceFavoriteGroups, unavailableDeviceIds, sharedFavoriteSources]);
+
   const sections = useMemo(
     () =>
       buildUnifiedListSections({
         entries,
         favorites,
+        ...(resolveDeviceFavorite ? { resolveForeignFavorite: resolveDeviceFavorite } : {}),
         query,
         matchesQuery: (entry, q) => matchesModelName({
           id: entry.modelId, displayName: entry.displayName, description: entry.description,
@@ -620,7 +819,7 @@ export function UnifiedModelPanel({
           ? { recommendation: { agent: liveEngineAgent, ...selected } }
           : {}),
       }),
-    [entries, favorites, query, effectiveRail, effectiveEngineOf, providerOrder, t, scope, liveEngineAgent, selected.modelId, selected.providerId],
+    [entries, favorites, resolveDeviceFavorite, query, effectiveRail, effectiveEngineOf, providerOrder, t, scope, liveEngineAgent, selected.modelId, selected.providerId],
   );
 
   // 打开或切视图时，把模型本体的当前行对齐到可视高度 35% 处；收藏可以滚出顶部。
@@ -787,7 +986,10 @@ export function UnifiedModelPanel({
     optimistic: optimisticConfig,
     runExternal,
   } = useUnifiedRowActions({
-    favoriteStore: deviceId ? remoteFavorites.store : undefined,
+    favoriteStore: isSharedProvider
+      ? sharedFavorites.store
+      : remoteSources ? agentDeviceFavorites.store : deviceId ? remoteFavorites.store : undefined,
+    onFavoriteError: () => toast.error(t('newChat.modelSelector.unified.favoritesSaveFailed')),
     interactionDisabled,
     isLiveRow,
     // 两笔实时写入(深度 + Fast)里第二笔失败时回滚第一笔用的原值,以及收藏 live 判定
@@ -889,7 +1091,7 @@ export function UnifiedModelPanel({
       : section.kind === 'recommended'
         ? t('newChat.modelSelector.unified.recommended')
       : section.group
-        ? providerLabel(section.group.providerId)
+        ? providerHeading(section.group.providerId)
         : '';
 
   const rows = sections.flatMap((section) => section.rows);
@@ -944,6 +1146,95 @@ export function UnifiedModelPanel({
   );
 
   /**
+   * 收藏区里另一台电脑上的收藏(见 resolveDeviceFavorite)。与本目录的行刻意分开画:
+   *   - 来源名带那台电脑(同浏览那台时的「供应商 · 电脑」),图标 / 账号 / 用量都按那台的目录读,
+   *     不拿本目录同 id 的供应商顶替;
+   *   - 不出配置浮层 —— 浮层里的引擎 / 档位 / 价格都按当前目录解析,换到这里会画错;要调配置去那台
+   *     电脑的目录里调(同一条收藏在那里照样列出)。☆ 取消收藏照常可用;
+   *   - 选中交给调用方的 onSelectDeviceFavorite(Agent 在那台运行),不经本目录的选中 / 跨引擎链路。
+   * `sizer` = 定宽 sizer 里的那一份:只量宽,不接交互、不读用量。
+   */
+  const renderDeviceFavoriteRow = (row: UnifiedListRow, sizer: boolean): ReactNode => {
+    const rowDeviceId = row.agentDeviceId!;
+    const favorite = row.favorite!;
+    const group = remoteSources?.groups.find((candidate) => candidate.deviceId === rowDeviceId);
+    const rowProviders = group?.providers ?? NO_PROVIDERS;
+    const provider = rowProviders.find((candidate) => candidate.id === row.entry.providerId);
+    const label = remoteSources?.labelOf(rowDeviceId, row.entry.providerId) ?? row.entry.providerId;
+    // 档位与 Fast 只看那台目录的能力:本机引擎的 Fast 运行时能力与那台电脑无关。
+    const config = resolveFavoriteRowConfig({ entry: row.entry, item: favorite });
+    const key = anchorKey(row.anchor);
+    const rowElement = (
+      <UnifiedModelRow
+        key={key}
+        entry={row.entry}
+        anchor={row.anchor}
+        config={config}
+        sourceLabel={
+          row.unavailable
+            ? t('newChat.modelSelector.unified.remoteFavoriteUnavailable', { source: label })
+            : label
+        }
+        selected={false}
+        active={false}
+        isFavoriteRow
+        justFavorited={false}
+        configurationEnabled={configurationEnabled}
+        customizable={false}
+        interactionDisabled={sizer || interactionDisabled || actionPending || !!row.unavailable}
+        paymentRequired={row.entry.availability === 'requires_payment'}
+        {...(paymentRequiredLabel ? { paymentRequiredLabel } : {})}
+        {...(paymentRequiredUnlockLabel ? { paymentRequiredUnlockLabel } : {})}
+        {...(!sizer && onPaymentRequired ? { onPaymentRequired } : {})}
+        effortLabelOf={effortLabelOf}
+        providers={rowProviders}
+        onReveal={noop}
+        onRevealForKeyboard={noop}
+        onSelect={
+          sizer
+            ? noop
+            : () =>
+                void runExternal(() =>
+                  remoteSources?.onSelectDeviceFavorite?.({
+                    deviceId: rowDeviceId,
+                    providerId: row.entry.providerId,
+                    modelId: config.wireModelId ?? row.anchor.modelId,
+                    effort: config.effort ?? '',
+                    config: {
+                      engine: config.engine,
+                      fast: config.fast,
+                      favoriteUid: favorite.uid,
+                      rowModelId: row.anchor.modelId,
+                    },
+                  }),
+                )
+        }
+        onStar={
+          sizer
+            ? noop
+            : selectionPolicy === 'personalized'
+              ? () => removeFavorite(row.anchor, row.entry)
+              : undefined
+        }
+      />
+    );
+    if (sizer) return rowElement;
+    return (
+      <ModelSourceUsageProvider
+        key={key}
+        isolated
+        providers={provider ? [provider] : NO_PROVIDERS}
+        scope={{ deviceId: rowDeviceId }}
+        {...(providerGroupUsage
+          ? { groupUsageOf: (providerId: string) => providerGroupUsage(rowDeviceId, providerId) }
+          : {})}
+      >
+        {rowElement}
+      </ModelSourceUsageProvider>
+    );
+  };
+
+  /**
    * 定宽 sizer 的内容:**rail = 全部 + 空搜索**的完整 sections(Chris 2026-08-19 实测:
    * 「一次打开内切 rail 视图,面板弹开一些,感觉有点怪」)。
    *
@@ -965,13 +1256,14 @@ export function UnifiedModelPanel({
         ? buildUnifiedListSections({
             entries,
             favorites,
+            ...(resolveDeviceFavorite ? { resolveForeignFavorite: resolveDeviceFavorite } : {}),
             query: '',
             rail: RAIL_ALL,
             effectiveEngineOf,
             providerOrder,
           })
         : [],
-    [widthSizerActive, entries, favorites, effectiveEngineOf, providerOrder],
+    [widthSizerActive, entries, favorites, resolveDeviceFavorite, effectiveEngineOf, providerOrder],
   );
 
   const panelContent = (
@@ -981,12 +1273,24 @@ export function UnifiedModelPanel({
     >
       <UnifiedModelRail
         providerUsage={providerUsage}
+        {...(providerGroupUsage ? { providerGroupUsage } : {})}
         items={railItems}
         active={effectiveRail}
-        onSelect={setRail}
+        onSelect={handleRailSelect}
         providers={providers}
-        providerLabel={providerLabel}
+        providerLabel={providerHeading}
         interactionDisabled={interactionDisabled || actionPending}
+        {...(remoteSources
+          ? {
+              remoteSources: {
+                localProviders: remoteSources.localProviders,
+                localProviderLabel: remoteSources.localProviderLabel,
+                providersOf: (deviceId: string) =>
+                  remoteSources.groups.find((group) => group.deviceId === deviceId)?.providers ?? [],
+                labelOf: remoteSources.labelOf,
+              },
+            }
+          : {})}
       />
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -1070,8 +1374,18 @@ export function UnifiedModelPanel({
               </span>
             </div>
           )}
-          {deviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t('newChat.modelSelector.unified.favoritesSyncFailed')}</div> : null}
-          {!hasRows ? (
+          {favoritesListDeviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t('newChat.modelSelector.unified.favoritesSyncFailed')}</div> : null}
+          {remoteListPending ? (
+            remoteSources?.failure ?? (
+              <div
+                role="status"
+                className="flex items-center justify-center gap-1.5 px-3 py-6 text-13 text-[var(--text-tertiary)]"
+              >
+                <Loader2 size={13} className="shrink-0 animate-spinner motion-reduce:animate-none" />
+                {t('newChat.modelSelector.unified.remoteLoading')}
+              </div>
+            )
+          ) : !hasRows ? (
             <div className="px-3 py-6 text-center text-13 text-[var(--text-tertiary)]">
               {/* ★ 视图的空态是引导语,不是「没有匹配」(设计稿 favEmpty;★ 常驻后必经)。 */}
               {effectiveRail.kind === 'favorites' && !query.trim()
@@ -1095,6 +1409,7 @@ export function UnifiedModelPanel({
                   <span className="truncate">{sectionLabel(section)}</span>
                 </div>
                 {section.rows.map((row) => {
+                  if (row.agentDeviceId) return renderDeviceFavoriteRow(row, false);
                   const config = withOptimisticConfig(
                     row.anchor,
                     configOf(row.entry, row.favorite),
@@ -1173,6 +1488,7 @@ export function UnifiedModelPanel({
                   <span className="truncate">{sectionLabel(section)}</span>
                 </div>
                 {section.rows.map((row) => {
+                  if (row.agentDeviceId) return renderDeviceFavoriteRow(row, true);
                   const config = configOf(row.entry, row.favorite, RAIL_ALL);
                   const priceDisplay = priceDisplayOf(row.entry, config);
                   return (
@@ -1274,7 +1590,16 @@ export function UnifiedModelPanel({
     </div>
   );
   return (
-    <ModelSourceUsageProvider providers={providers} scope={providerUsage}>
+    <ModelSourceUsageProvider
+      providers={providers}
+      scope={providerUsage}
+      {...(providerGroupUsage
+        ? {
+            groupUsageOf: (providerId: string) =>
+              providerGroupUsage(remoteSources?.active?.deviceId ?? null, providerId),
+          }
+        : {})}
+    >
       {panelContent}
     </ModelSourceUsageProvider>
   );

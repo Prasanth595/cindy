@@ -17,7 +17,7 @@
  *      (i18n `effortLevels.*`),绝不把翻译过的文案回灌进配置。
  */
 
-import type { UnifiedAgentCapability, UnifiedModelEntry } from '@cindy/model-providers';
+import type { ProviderView, UnifiedAgentCapability, UnifiedModelEntry } from '@cindy/model-providers';
 
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import type { SelectableVendor } from '@/lib/agentVendors';
@@ -310,12 +310,32 @@ export type UnifiedRailItem =
   | { kind: 'favorites' }
   | { kind: 'engine'; agent: AgentKind }
   | { kind: 'all' }
-  | { kind: 'provider'; providerId: string };
+  | { kind: 'provider'; providerId: string }
+  /**
+   * 另一台电脑上的供应商(远程 Agent)。选它 = 列那台电脑这个供应商的模型；选中模型后
+   * Agent 在那台电脑运行。只在新任务草稿出现；列表数据由面板调用方切到那台电脑的目录，
+   * 所以在列表筛选上它与 `provider` 格等价。
+   */
+  | { kind: 'remote-provider'; deviceId: string; providerId: string };
 
 export type UnifiedRailFilter = UnifiedRailItem;
 
+/**
+ * 远程 Agent 只能用那台电脑开了「允许被远程调用」的供应商。没有该标记(旧数据)按未开放处理；
+ * 远程控制那台电脑时照常列全部，不经过这里。
+ */
+export function remoteAgentProviders(providers: readonly ProviderView[]): ProviderView[] {
+  return providers.filter((provider) => provider.remoteInvocationEnabled === true);
+}
+
+/** 该格按哪个供应商筛选(本机或远程供应商格);其余格不按供应商筛。 */
+export function railProviderFilterId(item: UnifiedRailItem): string | null {
+  return item.kind === 'provider' || item.kind === 'remote-provider' ? item.providerId : null;
+}
+
 export function railItemKey(item: UnifiedRailItem): string {
   if (item.kind === 'provider') return `provider:${item.providerId}`;
+  if (item.kind === 'remote-provider') return `remote:${item.deviceId}:${item.providerId}`;
   if (item.kind === 'engine') return `engine:${item.agent}`;
   return item.kind;
 }
@@ -361,6 +381,38 @@ export interface UnifiedListRow {
   entry: UnifiedModelEntry;
   /** 收藏区行才有;模型行为 undefined。 */
   favorite?: ModelFavoriteItem;
+  /**
+   * 收藏区里「在另一台电脑上运行」的收藏(远程 Agent):entry 来自那台电脑的目录,favorite 的
+   * providerId 已还原成那台的真实 id。没有这个字段 = 本目录的行。
+   */
+  agentDeviceId?: string;
+  /** 那台电脑的目录此刻读不到:行照常列出但不可选(entry 只是按收藏拼出的占位)。 */
+  unavailable?: true;
+}
+
+/** 收藏区里本目录之外的那一条:由调用方按那台电脑的目录解析(见 buildUnifiedListSections)。 */
+export interface ForeignFavoriteRow {
+  entry: UnifiedModelEntry;
+  favorite: ModelFavoriteItem;
+  agentDeviceId: string;
+  unavailable?: true;
+}
+
+/**
+ * 另一台电脑的目录还没读到时,按收藏条目拼一个只用来展示的行(名字 = 模型 id,引擎 = 收藏存的那个,
+ * 没有任何能力):行不可选,目录到了自然换成真条目。
+ */
+export function unavailableFavoriteEntry(item: ModelFavoriteItem): UnifiedModelEntry {
+  const agent = agentKindOfEngine(item.agent);
+  return {
+    providerId: item.providerId,
+    modelId: item.modelId,
+    displayName: item.modelId,
+    candidates: [agent],
+    recommended: agent,
+    nativeAgent: null,
+    capabilities: {},
+  };
 }
 
 export interface UnifiedListSection {
@@ -494,6 +546,12 @@ export function buildUnifiedListSections(args: {
   /** 供应商组间显示顺序(设置页拖动序);缺省 = 入参首见序。 */
   providerOrder?: readonly string[];
   recommendation?: { agent: AgentKind; providerId: string | null; modelId: string };
+  /**
+   * 远程 Agent 浏览任务所在电脑的目录时:收藏里在其他电脑上运行的那几条交给调用方按那台的目录解析。
+   * 返回 null = 本轮不显示(那台的目录里已经没有这个模型 / 不是这类收藏);**不删条目**。
+   * 这些行只出现在 ★ / 全部视图,按本机供应商筛选的视图不列。
+   */
+  resolveForeignFavorite?: (item: ModelFavoriteItem) => ForeignFavoriteRow | null;
 }): UnifiedListSection[] {
   const { entries, favorites, effectiveEngineOf } = args;
   const q = args.query.trim().toLowerCase();
@@ -507,6 +565,31 @@ export function buildUnifiedListSections(args: {
   // ── 收藏区 ── 恒置顶,在任何 rail 视图下都显示;按供应商筛选时只留该来源的收藏。
   const favRows: UnifiedListRow[] = [];
   for (const item of favorites) {
+    const foreign = args.resolveForeignFavorite?.(item);
+    if (foreign) {
+      if (railProviderFilterId(rail) !== null) continue;
+      if (
+        rail.kind === 'engine' &&
+        (effectiveEngineOf
+          ? effectiveEngineOf(foreign.entry, foreign.favorite)
+          : foreign.favorite.agent) !== engineOfAgentKind(rail.agent)
+      )
+        continue;
+      if (!matches(foreign.entry, q)) continue;
+      favRows.push({
+        anchor: {
+          kind: 'fav',
+          uid: item.uid,
+          providerId: foreign.favorite.providerId,
+          modelId: foreign.favorite.modelId,
+        },
+        entry: foreign.entry,
+        favorite: foreign.favorite,
+        agentDeviceId: foreign.agentDeviceId,
+        ...(foreign.unavailable ? { unavailable: true as const } : {}),
+      });
+      continue;
+    }
     // 老收藏可能存的是某个引擎的 wire id(合并行之前的行身份就是 wire id):先按归一化 id
     // 精确命中,失配再按「任一引擎的 wire id」扫一遍 —— 否则升级后老收藏会整条消失。
     const entry =
@@ -518,7 +601,8 @@ export function buildUnifiedListSections(args: {
     // 收藏指向的模型已不可路由(来源断开 / 目录下架)→ 本轮不显示;**不删条目**:
     // 连回来就该回来,静默删掉用户存过的配置是不可逆的。
     if (!entry) continue;
-    if (rail.kind === 'provider' && entry.providerId !== rail.providerId) continue;
+    const railProviderId = railProviderFilterId(rail);
+    if (railProviderId !== null && entry.providerId !== railProviderId) continue;
     // 同引擎视图:收藏按**解析后的生效引擎**过滤。收藏是配置快照,不是模型本体 ——
     // 只列点下去仍停在当前引擎的副本。判据只有这一个,不再先按条目自存的 item.agent
     // 硬排除(2026-08-19 review P2):两者在「条目引擎掉出候选」时会分叉 ——
@@ -554,10 +638,11 @@ export function buildUnifiedListSections(args: {
   // 同引擎视图的准入只有一条:候选里有当前引擎。生效引擎是排序优先级,不是隐藏条件
   // (Chris 2026-08-23 纠正 08-19「不显示」裁决):默认 / 用户选过本引擎的在前,其余兼容
   // 行在后。不把兼容行转换成当前引擎 —— 点下去仍按其落点走,落点在别处就走跨引擎确认。
+  const groupProviderId = railProviderFilterId(rail);
   const visible = entries.filter(
     (entry) =>
       matches(entry, q) &&
-      (rail.kind !== 'provider' || entry.providerId === rail.providerId) &&
+      (groupProviderId === null || entry.providerId === groupProviderId) &&
       (rail.kind !== 'engine' || entry.candidates.includes(rail.agent)),
   );
   const promoted = new Set<UnifiedModelEntry>();

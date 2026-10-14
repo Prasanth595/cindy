@@ -27,6 +27,8 @@ export const REMOTE_VIEWER = {
 export interface RemoteViewerTarget {
   deviceId: string;
   name: string;
+  /** 代输入 live view: only the window this waiting request is about (the host picks it). */
+  handoff?: string;
 }
 export interface RemoteViewerState {
   target: RemoteViewerTarget | null;

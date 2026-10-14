@@ -31,11 +31,35 @@
       "light": "淺色",
       "dark": "深色"
     },
-    "saveFailed": "顯示模式沒有儲存成功，重新開啟後會恢復之前的設定"
+    "saveFailed": "顯示模式沒有儲存成功，重新開啟後會恢復之前的設定",
+    "userBubble": {
+      "title": "我的訊息氣泡顏色",
+      "presets": "顏色",
+      "default": "預設",
+      "peach": "初稿",
+      "yellow": "晨光",
+      "sage": "靈感",
+      "blue": "夢境",
+      "lavender": "夜貓",
+      "red": "項圈",
+      "custom": "自訂顏色",
+      "hue": "色相",
+      "preview": "訊息預覽",
+      "sampleUser": "幫我整理一下今天的靈感。",
+      "sampleAssistant": "好的，我們一起把想法梳理清楚。",
+      "hint": "顏色會依淺色和深色模式自動調整明暗，確保文字清晰。僅儲存在此裝置。",
+      "customHint": "左右拖曳色帶選擇顏色。顏色會依淺色和深色模式自動調整明暗，確保文字清晰。僅儲存在此裝置。",
+      "saveFailed": "顏色已在本次使用中生效，但未能儲存。",
+      "retry": "重試",
+      "cancel": "取消",
+      "reset": "恢復預設",
+      "apply": "套用",
+      "hex": "色碼"
+    }
   },
   "language": {
     "title": "語言",
-    "hint": "僅影響應用介面。Agent 回覆語言由 Agent 自身決定。",
+    "hint": "介面和 AI 錯誤說明使用此語言；一般回覆依你的訊息或語言要求",
     "options": {
       "system": "跟隨系統",
       "zh-CN": "簡體中文",
@@ -91,7 +115,7 @@
   "about": {
     "sectionTitle": "關於這臺手機",
     "deviceName": "裝置名稱",
-    "deviceNameDetail": "電腦端授權列表會顯示這個名稱。",
+    "deviceNameDetail": "顯示在電腦的授權列表中",
     "platform": "平臺",
     "editAccessibility": "修改{{label}}"
   },
@@ -188,9 +212,9 @@
     "refresh": "重新整理",
     "refreshing": "重新整理中…",
     "refreshAccessibility": "重新整理詞典",
-    "readOnlyHint": "手機只能檢視，新增和刪除請回電腦操作。",
-    "offlineHint": "電腦當前都不線上，顯示的是上次同步到手機的內容。",
-    "noDesktops": "還沒有可同步的電腦。在電腦上登入同一帳號後，詞典會自動出現在這裡。"
+    "readOnlyHint": "手機僅供檢視，新增或刪除詞條請到電腦操作",
+    "offlineHint": "電腦不在線上，正在顯示上次同步的詞典",
+    "noDesktops": "在電腦上登入同一帳號，即可同步詞典"
   },
   "deviceNameEditor": {
     "screenTitle": "裝置名稱",
