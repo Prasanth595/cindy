@@ -210,7 +210,6 @@ describe('newSessionCreation pipeline', () => {
     recoveryStorage.clear();
     recoveryTesting.resetVolatileLedgers();
     remoteSessionStore.clear();
-    drainStashedNewSessionDraft();
     // 清残留 task(上个用例失败态)。
     for (const id of [
       's1',
@@ -248,9 +247,9 @@ describe('newSessionCreation pipeline', () => {
     expect(remoteSessionStore.getSessions().find(s => s.id === 's1')?.source).toBeUndefined();
     const onReady = vi.fn();
     await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady });
-    expect(drainStashedNewSessionDraft()).toMatchObject({ draft: DRAFT, attachments });
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toMatchObject({ draft: DRAFT, attachments });
     expect(getNewSessionCreationTask('s1')).toBeNull();
-    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac' });
+    expect(onReady).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', editSessionId: 's1' });
   });
 
   it.each([false, true])('keeps durable recovery bytes and only leaves after suspension is saved (save fails: %s)', async (fails) => {
@@ -278,7 +277,7 @@ describe('newSessionCreation pipeline', () => {
     expect(editOutbox.update).toHaveBeenCalledWith(record, expect.objectContaining({ suspended: true, state: 'failed' }));
     expect(record.item.text).toBe(DRAFT.firstMessage);
     expect(record.creation?.draft).toEqual(DRAFT);
-    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
   });
 
   it('lets the mounted composer stash its follow-ups before dismissing the task or navigating', async () => {
@@ -292,8 +291,9 @@ describe('newSessionCreation pipeline', () => {
     });
     const onReady = vi.fn(() => {
       expect(stashDraft).toHaveBeenCalledOnce();
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+      expect(drainStashedNewSessionDraft('s1', 'dev-1')?.draft.firstMessage).toBe('hello world\n\nfollow-up');
       expect(getNewSessionCreationTask('s1')).toBeNull();
-      expect(drainStashedNewSessionDraft()?.draft.firstMessage).toBe('hello world\n\nfollow-up');
     });
     await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, stashDraft, onReady });
     expect(onReady).toHaveBeenCalledOnce();
@@ -316,7 +316,7 @@ describe('newSessionCreation pipeline', () => {
     const recovery = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => current, onReady });
     await flushPipeline();
     expect(onReady).not.toHaveBeenCalled();
-    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
     expect(getNewSessionCreationTask('s1')).not.toBeNull();
     expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(true);
     retryNewSessionCreation('s1');
@@ -334,12 +334,13 @@ describe('newSessionCreation pipeline', () => {
       await recovery;
     }
     if (outcome === 'success' || outcome === 'leave') {
-      expect(drainStashedNewSessionDraft()?.draft.workingDir).toBe('/repo');
+      expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+      expect(drainStashedNewSessionDraft('s1', 'dev-1')?.draft.workingDir).toBe('/repo');
       expect(getNewSessionCreationTask('s1')).toBeNull();
       expect(remoteSessionStore.getSessions().find(s => s.id === 's1')).toBeUndefined();
       expect(onReady).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
     } else {
-      expect(drainStashedNewSessionDraft()).toBeNull();
+      expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
       expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
       expect(onReady).not.toHaveBeenCalled();
     }
@@ -377,8 +378,61 @@ describe('newSessionCreation pipeline', () => {
     } else {
       expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
     }
-    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
     expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('isolates a late background edit draft from another task (other form already claimed: %s)', async claimed => {
+    let finishCleanup!: (value: { discarded: boolean }) => void;
+    const makerA = makeMaker({ worktree: { discardPrecreated: vi.fn(() => new Promise(resolve => { finishCleanup = resolve; })) } });
+    const filesA = [{ id: 'a-file', name: 'a.txt', ext: '.txt', path: '/uploads/a.txt', category: 'file' as const, mimeType: 'text/plain', size: 1 }];
+    startNewSessionCreation(makeParams('s1', makerA, {
+      draft: { ...DRAFT, firstMessage: 'draft A', workingDir: '/repo/.cindy-worktrees/a' }, attachments: filesA,
+      precreatedWorktree: { path: '/repo/.cindy-worktrees/a', recoveryKey: 'recovery-a', originalWorkingDir: '/repo' },
+      confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }),
+    }));
+    await flushPipeline();
+    let currentA = true;
+    const onReadyA = vi.fn();
+    const recoveryA = returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => currentA, onReady: onReadyA });
+    await flushPipeline();
+    currentA = false;
+    const makerB = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s2', makerB, { draft: { ...DRAFT, firstMessage: 'draft B' } }));
+    await flushPipeline();
+    const onReadyB = vi.fn();
+    await returnNewSessionToEdit({ sessionId: 's2', deviceId: 'dev-1', isCurrent: () => true, onReady: onReadyB });
+    expect(onReadyB).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', editSessionId: 's2' });
+    const formB = claimed ? drainStashedNewSessionDraft('s2', 'dev-1') : null;
+    finishCleanup({ discarded: true });
+    await recoveryA;
+    expect(onReadyA).not.toHaveBeenCalled();
+    expect(drainStashedNewSessionDraft()).toBeNull();
+    expect(drainStashedNewSessionDraft('s1', 'another-device')).toBeNull();
+    expect((formB ?? drainStashedNewSessionDraft('s2', 'dev-1'))?.draft.firstMessage).toBe('draft B');
+    expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe(true);
+    expect(remoteSessionStore.getSessions().some(s => s.id === 's1')).toBe(true);
+    retryNewSessionCreation('s1');
+    expect(getNewSessionCreationTask('s1')?.status).toBe('create-failed');
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: onReadyA });
+    expect(makerA.worktree.discardPrecreated).toHaveBeenCalledTimes(1);
+    expect(onReadyA).toHaveBeenCalledWith({ deviceId: 'dev-1', deviceName: 'Mac', editSessionId: 's1' });
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toMatchObject({
+      draft: { firstMessage: 'draft A', workingDir: '/repo' }, attachments: filesA,
+    });
+    expect(getNewSessionCreationTask('s1')).toBeNull();
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
+  });
+
+  it('does not deliver a prepared draft to a different account or a later login generation', async () => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
+    setMobileAuthOwner('owner-b');
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
+    setMobileAuthOwner('owner-a');
+    expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
   });
 
   it('start 同步段即入 store:合成行带 pendingLocalCreation,首条消息以排队气泡上屏', () => {
@@ -826,7 +880,7 @@ describe('newSessionCreation pipeline', () => {
     });
 
     stashNewSessionDraftForEdit(prepared!);
-    expect(drainStashedNewSessionDraft()?.draft.workingDir).toBe('/repo');
+    expect(drainStashedNewSessionDraft('s13', 'dev-1')?.draft.workingDir).toBe('/repo');
   });
 
   it('带回创建期间后续消息时仍恢复预创建 worktree 的原项目目录', async () => {
@@ -849,6 +903,10 @@ describe('newSessionCreation pipeline', () => {
       firstMessageClientId: 'client-override',
     };
 
+    startNewSessionCreation({ ...makeParams('s13-override', makeMaker()),
+      draft: task.draft, precreatedWorktree: task.precreatedWorktree,
+      confirmUnauthenticated: async () => ({ unauthenticated: true, fresh: null }) });
+    await flushPipeline();
     stashNewSessionDraftForEdit(task, {
       draft: {
         ...task.draft,
@@ -856,7 +914,7 @@ describe('newSessionCreation pipeline', () => {
       },
     });
 
-    expect(drainStashedNewSessionDraft()?.draft).toMatchObject({
+    expect(drainStashedNewSessionDraft('s13-override', 'dev-1')?.draft).toMatchObject({
       workingDir: '/repo',
       firstMessage: 'hello world\n\nfollow up',
     });
@@ -1329,7 +1387,7 @@ describe('newSessionCreation pipeline', () => {
       expect(getNewSessionCreationTask('orca-edit')?.status).toBe('create-failed');
       const prepared = await prepareNewSessionCreationForEdit('orca-edit');
       stashNewSessionDraftForEdit(prepared!);
-      expect(drainStashedNewSessionDraft()?.collabDraft).toEqual(collabDraft);
+      expect(drainStashedNewSessionDraft('orca-edit', 'dev-1')?.collabDraft).toEqual(collabDraft);
     });
 
     it('starts collaboration after createSession and before the first message is queued', async () => {

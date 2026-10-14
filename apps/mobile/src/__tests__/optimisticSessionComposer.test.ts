@@ -321,9 +321,12 @@ describe('mobile optimistic composer while session is not ready', () => {
     expect(branch).toContain('stashDraft: prepared => {');
     const recovery = readSource('src/session/returnNewSessionToEdit.ts');
     const stash = recovery.indexOf('stashDraft(prepared);');
-    const dismiss = recovery.indexOf('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
     expect(stash).toBeGreaterThanOrEqual(0);
-    expect(dismiss).toBeGreaterThan(stash);
+    expect(recovery).toContain('editSessionId: sessionId');
+    expect(recovery).not.toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
+    const creation = readSource('src/session/newSessionCreation.ts');
+    const claim = creation.slice(creation.indexOf('export function drainStashedNewSessionDraft'));
+    expect(claim).toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
     expect(branch).toContain('outboxItemDraftText');
     // 装不下的中转对象回收 + 把「没能带回多少」随 stash 带到新建页。
     expect(branch).toContain('discardRecoveredAttachments(dropped);');

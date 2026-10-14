@@ -26,6 +26,7 @@
  *    会被 dedup 静默吞掉,丢消息比双发更糟)。
  */
 import { useSyncExternalStore } from 'react';
+import { getMobileAuthOwner, isMobileAuthOwnerCurrent, type MobileAuthOwnerGeneration } from '@/auth/authOwnerGeneration';
 import type { SlowSendPhase } from '@/session/SlowSendNotice';
 import * as ExpoCrypto from 'expo-crypto';
 import { isPreconditionFailedRemoteError } from '@cindy/maker-shared/device-link-contract';
@@ -143,6 +144,7 @@ export interface NewSessionCreationTask {
   readonly attachments: readonly RemoteSerializedAttachment[];
   readonly firstMessageClientId: string;
   readonly returningToEdit?: boolean;
+  readonly readyForEdit?: boolean;
   readonly collabDraft?: OrcaWorkerFormValue;
   readonly precreatedWorktree?: {
     path: string;
@@ -154,6 +156,8 @@ export interface NewSessionCreationTask {
 
 interface InternalTask extends NewSessionCreationTask {
   returningToEdit?: boolean;
+  readyForEdit?: boolean;
+  editDraft?: { owner: MobileAuthOwnerGeneration; value: StashedNewSessionDraft };
   startedAt: number;
   phase: SlowSendPhase;
   status: NewSessionCreationStatus;
@@ -326,7 +330,7 @@ export function startNewSessionCreation(params: NewSessionCreationParams): void 
 /** create-failed 的「重试」:同 sessionId 重跑管线(被控端幂等,安全)。 */
 export function retryNewSessionCreation(sessionId: string): void {
   const task = tasks.get(sessionId);
-  if (!task || task.status !== 'create-failed' || task.returningToEdit) return;
+  if (!task || task.status !== 'create-failed' || task.returningToEdit || task.readyForEdit) return;
   // Once createSession may have run against a managed path, retrying can create
   // another wrong-id session that shares it. Recovery must first prove the
   // exact pre-generated id was claimed; unknown/NOT_FOUND stays retain-only.
@@ -553,7 +557,7 @@ export function useNewSessionCreationTask(sessionId: string): NewSessionCreation
 }
 
 // ---------------------------------------------------------------------------
-// 「返回编辑」草稿暂存信箱:会话页 stash → 跳回新建页 → new.tsx 挂载时 drain 回填。
+// 返回编辑草稿留在原任务中，只有带匹配任务与设备标识的新建页可领取。
 // ---------------------------------------------------------------------------
 
 export interface StashedNewSessionDraft {
@@ -573,8 +577,6 @@ export interface StashedNewSessionDraft {
   collabDraft: OrcaWorkerFormValue | null;
 }
 
-let stashedDraft: StashedNewSessionDraft | null = null;
-
 /**
  * override 用于把「创建期间攒下的后续消息」并进带回新建页的草稿:那些消息此刻在会话页的
  * outbox 里,而合成会话行紧接着就被删掉,不并进来就再也找不回(review P1)。
@@ -587,13 +589,15 @@ export function stashNewSessionDraftForEdit(
     notice?: string | null;
   },
 ): void {
+  const current = tasks.get(task.sessionId);
+  if (!current || current.deviceId !== task.deviceId || !isTaskOwnerCurrent(current)) return;
   const baseDraft = task.precreatedWorktree
     ? {
         ...task.draft,
         workingDir: task.precreatedWorktree.originalWorkingDir,
       }
     : task.draft;
-  stashedDraft = {
+  const value: StashedNewSessionDraft = {
     deviceId: task.deviceId,
     deviceName: task.deviceName,
     draft: override?.draft
@@ -606,11 +610,18 @@ export function stashNewSessionDraftForEdit(
     notice: override?.notice ?? null,
     collabDraft: task.collabDraft ?? null,
   };
+  current.editDraft = { owner: getMobileAuthOwner(), value };
+  current.readyForEdit = true;
+  emit();
 }
 
-export function drainStashedNewSessionDraft(): StashedNewSessionDraft | null {
-  const value = stashedDraft;
-  stashedDraft = null;
+export function drainStashedNewSessionDraft(sessionId?: string, deviceId?: string): StashedNewSessionDraft | null {
+  if (!sessionId || !deviceId) return null;
+  const task = tasks.get(sessionId);
+  if (!task || task.deviceId !== deviceId || !isTaskOwnerCurrent(task)
+    || !task.editDraft || !isMobileAuthOwnerCurrent(task.editDraft.owner)) return null;
+  const { value } = task.editDraft;
+  dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
   return value;
 }
 

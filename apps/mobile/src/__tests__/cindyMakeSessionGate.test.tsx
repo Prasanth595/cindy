@@ -168,6 +168,17 @@ describe('mobile Cindy Make links', () => {
     expect(container.textContent).toBe('Composer');
   });
 
+  it('keeps a prepared draft reachable through edit without retrying its cancelled creation', async () => {
+    state.task = { ...failedCreation(), readyForEdit: true };
+    await renderGate();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationRetry"]')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="session.creationEdit"]')?.disabled).toBe(false);
+    await click('session.creationRetry');
+    expect(state.retryCreation).not.toHaveBeenCalled();
+    await click('session.creationEdit');
+    expect(state.returnToEdit).toHaveBeenCalledOnce();
+  });
+
   it('shows link failures and returns home when a cold link has no back stack', async () => {
     state.openLink.mockRejectedValue(new Error('offline'));
     state.router.canGoBack.mockReturnValue(false);

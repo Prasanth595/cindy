@@ -11,7 +11,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   sessionId: string;
   deviceId: string;
   isCurrent: () => boolean;
-  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string }) => void;
+  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void;
   stashDraft?: (task: NewSessionCreationTask) => void;
 }): Promise<void> {
   const owner = getMobileAuthOwner();
@@ -22,6 +22,10 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   if (!release) return;
   const taskCurrent = () => ownerCurrent() && getNewSessionCreationTask(sessionId) === task;
   try {
+    if (task.readyForEdit) {
+      if (isCurrent()) onReady({ deviceId, deviceName: task.deviceName, editSessionId: sessionId });
+      return;
+    }
     const prepared = await prepareNewSessionCreationForEdit(sessionId);
     // Cleanup may already have deleted the worktree. Leaving only cancels navigation,
     // not draft recovery or task dismissal; account changes still fence all writes.
@@ -39,8 +43,8 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
       return;
     }
     stashDraft(prepared);
-    dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
-    if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName });
+    // Keep the failed row reachable until the matching form takes ownership.
+    if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, editSessionId: sessionId });
   } finally {
     release();
   }
