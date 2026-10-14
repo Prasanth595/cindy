@@ -38,8 +38,15 @@ function coerceStringifiedJson(value: unknown): unknown {
 const OBJECT_HINT = '（传 JSON 对象本身，不要序列化成字符串）';
 
 export function jsonObjectArg(description: string) {
+  // .optional() 落在【pipe 外层】，不动内层 record 的描述落点。
+  // 为什么必须可选：入口 schema 曾把 args 列为必填，而「自身入参 schema 为空对象」的无参
+  // 工具（如 cindy_memory 的 memory_list / memory_review）会被模型按内层 schema 合理地
+  // 省略 args——入口 zod 校验直接 -32602 invalid_type，报错指向内部信封字段，模型无法
+  // 自纠（2026-10-14 实测：call_tool({name:'memory_list'}) 被拒，带参工具全部正常）。
+  // 省略后 args 为 undefined，所有消费方都是 registry.call(name, args ?? {}) /
+  // handleCallTool(name, args ?? {})，已容忍；stringify 兜底与坏串报错语义不变。
   return z.preprocess(
     coerceStringifiedJson,
     z.record(z.string(), z.unknown()).describe(`${description}${OBJECT_HINT}`),
-  );
+  ).optional();
 }
