@@ -262,6 +262,33 @@ describe('BotsSidebar group chats', () => {
     else expect(screen.getByText('周末出游')).toBeTruthy();
   });
 
+  it('restores focus to the archived-groups entry after keyboard archive moves a row', async () => {
+    mocks.groups = [managedGroup()];
+    const view = await renderSidebar();
+    const row = screen.getByText('周末出游').closest('button')!;
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    fireEvent.click(await screen.findByRole('menuitem', { name: archiveKey() }));
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+
+    mocks.groups = [managedGroup(true)];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('bot-archived-groups-toggle')));
+  });
+
+  it('restores focus to the moved group row after keyboard unarchive', async () => {
+    mocks.groups = [managedGroup(true)];
+    const view = await renderSidebar();
+    fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
+    const row = screen.getByText('周末出游').closest('button')!;
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    fireEvent.click(await screen.findByRole('menuitem', { name: archiveKey(true) }));
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+
+    mocks.groups = [managedGroup(false)];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('周末出游').closest('button')));
+  });
+
   it('keeps cancelled archives untouched and blocks old-account confirmations', async () => {
     mocks.groups = [managedGroup()];
     mocks.confirm.mockResolvedValueOnce(false);

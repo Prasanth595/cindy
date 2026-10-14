@@ -129,6 +129,8 @@ function BotsSidebarContent() {
   const menuOriginRef = useRef<HTMLButtonElement | null>(null);
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
+  const archivedGroupsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean } | null>(null);
 
   const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
     menuOriginRef.current = origin;
@@ -153,7 +155,10 @@ function BotsSidebarContent() {
         action: { type: 'archive', archived: !group.archived, expectedRevision: group.revision! } });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) setArchiveError(t(chatErrorKey(result.errorCode)));
-      else refreshBotGroups();
+      else {
+        pendingArchiveFocusRef.current = { groupId: group.id, archived: !group.archived };
+        refreshBotGroups();
+      }
     } catch {
       if (isDataOwnerGenerationCurrent(owner)) setArchiveError(t(chatErrorKey('REQUEST_FAILED')));
     } finally {
@@ -216,6 +221,51 @@ function BotsSidebarContent() {
   const archivedGroups = groups.filter(group => group.archived);
   const visibleArchivedGroups = archivedGroups.filter(matchesGroup)
     .sort((a, b) => (b.lastMessage?.createdAt ?? b.updatedAt) - (a.lastMessage?.createdAt ?? a.updatedAt));
+
+  useEffect(() => {
+    const pending = pendingArchiveFocusRef.current;
+    if (!pending) return;
+    const updatedGroup = groups.find(group => group.id === pending.groupId);
+    if (!updatedGroup || updatedGroup.archived !== pending.archived) return;
+
+    let timer: number | undefined;
+    let cancelled = false;
+    const restoreFocus = () => {
+      if (cancelled) return;
+      // The confirmation dialog keeps its AlertDialog mounted for its closing
+      // animation. Wait until Radix has released focus before moving it to the
+      // row that replaced the original trigger.
+      if (document.querySelector('[role="alertdialog"]')) {
+        timer = window.setTimeout(restoreFocus, 50);
+        return;
+      }
+
+      const row = Array.from(document.querySelectorAll<HTMLElement>('[data-bot-group-id]'))
+        .find(element => element.dataset.botGroupId === pending.groupId);
+      const rowIsVisible = pending.archived
+        ? showArchivedGroups && visibleArchivedGroups.some(group => group.id === pending.groupId)
+        : visibleGroups.some(group => group.id === pending.groupId);
+      if (row && rowIsVisible) {
+        pendingArchiveFocusRef.current = null;
+        row.focus({ preventScroll: true });
+        return;
+      }
+
+      // An archived group may be hidden behind the collapsed section or the
+      // current search. Keep keyboard focus on the recovery entry instead of
+      // allowing it to fall to document.body.
+      if (pending.archived && archivedGroups.length > 0) {
+        pendingArchiveFocusRef.current = null;
+        archivedGroupsToggleRef.current?.focus({ preventScroll: true });
+      }
+    };
+
+    timer = window.setTimeout(restoreFocus, 0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [archivedGroups.length, groups, showArchivedGroups, visibleArchivedGroups, visibleGroups]);
   const visibleChats = [
     ...visibleBots.map(bot => ({ kind: 'bot' as const, bot,
       pinned: 'pinnedAt' in bot && Boolean(bot.pinnedAt),
@@ -769,7 +819,8 @@ function BotsSidebarContent() {
               </div>
             ) : null}
             {archivedGroups.length > 0 && <div className="mt-3 border-t border-[var(--border-default)] pt-2">
-              <button type="button" aria-expanded={showArchivedGroups} aria-controls="archived-bot-groups"
+              <button type="button" ref={archivedGroupsToggleRef} data-testid="bot-archived-groups-toggle"
+                aria-expanded={showArchivedGroups} aria-controls="archived-bot-groups"
                 onClick={() => setShowArchivedGroups(value => !value)}
                 className="mb-1 flex min-h-8 w-full items-center gap-2 rounded-full px-2.5 text-12 text-[var(--sidebar-list-muted)] hover:bg-sidebar-item-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 <Archive size={14} aria-hidden="true" />

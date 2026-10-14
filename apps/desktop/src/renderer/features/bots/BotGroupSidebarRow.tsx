@@ -172,6 +172,7 @@ export function BotGroupSidebarRow({
     <button
       key={group.id}
       type="button"
+      data-bot-group-id={group.id}
       aria-current={selected ? 'page' : undefined}
       onClick={() => onOpenGroup(group.id)}
       onContextMenu={onContextMenu}
