@@ -76,7 +76,7 @@ import type { SkillhubAgentCallback } from './xdt-helper/skillhub.js';
 import type { SetCurrentSessionTitleDeps } from './xdt-helper/set_current_session_title.js';
 import type { RenameSessionsDeps } from './xdt-helper/rename_sessions.js';
 import type { ArchiveSessionsDeps } from './xdt-helper/archive_sessions.js';
-import type { SendToSessionCallback } from './xdt-helper/send_to_session.js';
+import type { SendToRemoteSessionCallback, SendToSessionCallback } from './xdt-helper/send_to_session.js';
 import type {
   AuthorizeSkillLearningCallback,
   StartSkillLearningCallback,
@@ -120,7 +120,7 @@ export type {
 
 const D_LIST_TOOLS =
   `探索当前任务获准使用的 ${BRAND_NAME} 辅助能力。` +
-  '不传 category 先取得可用类目；只在确有需要时查看一个类目，再用 call_tool 执行。';
+  '不传 category 先取得可用类目（含每类的用途与作用范围：本机 / 可跨电脑）；只在确有需要时查看一个类目，再用 call_tool 执行。';
 
 const D_CALL_TOOL =
   '调用 list_tools 为当前任务返回的一个具体工具。不要猜工具名，也不要把它当成通用命令入口。';
@@ -136,6 +136,23 @@ const CALL_TOOL_INPUT = {
 // list_tools 入口类目: cindy(自省) / control(会话控制面) / history(聊天历史) / feedback(官方反馈提交) / handoff(session 间 handoff)。
 // 协同 team 工具已拆到独立 cindy_orca server(插件开关 gate)。
 const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'handoff', 'skills', 'app_update', 'bots'] as const;
+
+/**
+ * 类目概览里每个类目的一句话用途 + 作用范围(本机 / 可跨电脑)。只陈述事实:模型在概览
+ * 阶段就要能判断「这件事有没有工具、管不管得到另一台电脑」,不能等点进某个工具的参数
+ * 说明才发现。改工具的作用范围时同步改这里(测试按类目全集守护)。
+ */
+export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number], string> = {
+  cindy: `${BRAND_NAME} 能力说明与当前任务信息；get_capabilities({key:"self-management"}) 是管理自己的任务、定时任务、项目、伙伴的工具索引。本机。`,
+  auth: '供应商授权登录（Grok 设备码）。本机。',
+  control: '管理任务与项目：改名、归档、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改。本机。',
+  history: '查询任务、工作目录、聊天记录与输入队列。任务列表、搜索、读取聊天记录可跨电脑（device 参数 / deviceId::sessionId）；其余本机。',
+  feedback: `向 ${BRAND_NAME} 官方提交反馈。`,
+  handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
+  skills: 'Skill 的搜索、发布与学习。本机与 SkillHub。',
+  app_update: `检查与安装本机的 ${BRAND_NAME} 更新。本机。`,
+  bots: '伙伴：资料、能力、工作台、待办、后台任务与伙伴间消息。伙伴间消息可跨电脑（list_agents / send_to_agent）；其余本机。',
+};
 
 interface SessionTaskCallbacks {
   startSessionTask(params: {
@@ -288,6 +305,7 @@ function registerListToolsEntry(
               categories: registry.listCategories().filter((c) => (counts[c] ?? 0) > 0).map((c) => ({
                 name: c,
                 tool_count: counts[c] ?? 0,
+                description: HELPER_CATEGORY_DESCRIPTIONS[c as (typeof CATEGORY_ENUM)[number]],
               })),
               hint: '用 list_tools({category}) 查看某类目下的工具列表',
             }),
@@ -766,6 +784,8 @@ export interface XdtHelperMcpDeps {
    * 路由的原语, 放在 essential 的 cindy_helper 下常开保证 skill 永不断。
    */
   sendToSession?: SendToSessionCallback;
+  /** 另一台电脑上的既有任务(send_to_session 的 deviceId::sessionId 目标)。 */
+  sendToRemoteSession?: SendToRemoteSessionCallback;
   /** Cindy-managed Learn flow; registered in the skills category when supplied by the host. */
   skillLearning?: StartSkillLearningCallback;
   /** Search catalogs and publish the current user's Skills through the host's SkillHub service. */
@@ -974,6 +994,7 @@ export function createXdtHelperMcpServer(
     registerSendToSessionTool(registry, {
       getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
       sendToSession: deps.sendToSession,
+      ...(deps.sendToRemoteSession ? { sendToRemoteSession: deps.sendToRemoteSession } : {}),
     });
   }
   if (deps.skillLearning && deps.authorizeSkillLearning) {

@@ -104,6 +104,8 @@ import {
   type ChatHistoryReaderDeps,
 } from './remoteChatHistory.js';
 import { botSessionLinks, sessions } from '../localDb/schema.js';
+import { createSchedulerRemoteDeps } from './schedulerDevices.js';
+import { createRemoteSessionHandoff } from './sessionHandoffRemote.js';
 import { isCindyLearnSkillEnabled } from '../skillhub/activationPreferences.js';
 import { botLearningTracker } from '../maker-ipc/botLearningTracker.js';
 import { getLearnController } from '../learn-host/index.js';
@@ -123,7 +125,12 @@ export interface DesktopMcpProvidersDeps {
   /** 按会话控制启用状态的 plugin registry。 */
   pluginRegistry: PluginRegistry;
   /** Device-link transport stays host-injected so provider tests do not load Electron runtime services. */
-  invokeRemote: ChatHistoryReaderDeps['invokeRemote'];
+  invokeRemote: (
+    deviceId: string,
+    channel: string,
+    args: unknown[],
+    options?: { preSend?: () => void },
+  ) => ReturnType<ChatHistoryReaderDeps['invokeRemote']>;
   historyRemote?: import('@cindy/mcps').HistoryRemoteDeps;
   /** 插件文件交接只认活跃 Session 的实时权限；缺失时由 ghost.ts fail closed。 */
   getLiveSessionGrantState?: (
@@ -200,6 +207,13 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         : { ok: false as const, errorCode: result.errorCode, message: result.message };
     },
   };
+
+  const remoteSessionHandoff = deps.historyRemote
+    ? createRemoteSessionHandoff({
+        captureAccess: deps.historyRemote.captureAccess,
+        invoke: deps.invokeRemote,
+      })
+    : null;
 
   const authorizeTaskToolCall = createTaskToolCallAuthorizer({
     getDb: () => (isAppSessionBoundaryPending() ? null : tryGetDbClient()),
@@ -346,6 +360,16 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       withAccountDataAccess,
       authorizeCall: authorizeTaskToolCall,
       getScheduler: () => getScheduler(),
+      // 其它电脑上的定时任务:与历史查询共用设备目录与 owner fence,走既有远程控制通道。
+      ...(deps.historyRemote
+        ? {
+            remote: createSchedulerRemoteDeps({
+              listDevices: deps.historyRemote.listDevices,
+              captureAccess: deps.historyRemote.captureAccess,
+              invoke: deps.invokeRemote,
+            }),
+          }
+        : {}),
       // 前置检查脚本统一安装服务:落盘路径/协议/自测与 UI「AI 生成」共用同一实现
       // (hook-script-generator)。lazy import:该链上有 electron app 依赖,且 maker
       // 仅 description 生成模式需要,tool-call 时才解引用。
@@ -699,6 +723,23 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: false, errorCode: 'INTERNAL', message };
         }
       },
+      // 目标在另一台电脑(deviceId::sessionId):交给那台电脑按它本机的同一条通路投递。
+      ...(remoteSessionHandoff
+        ? {
+            sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) =>
+              remoteSessionHandoff({ deviceId, sessionId }, {
+                message,
+                sender: async () => {
+                  const dbClient = tryGetDbClient();
+                  const [row] = dbClient
+                    ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
+                      .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
+                    : [];
+                  return { sessionId: dispatcherSessionId, ...(row?.title ? { title: row.title } : {}) };
+                },
+              }),
+          }
+        : {}),
       sendToSession: async ({
         targetSessionId,
         message,
@@ -712,6 +753,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         effort,
         fast,
       }) => {
+        // deviceId::sessionId → 目标在另一台电脑:交给那台电脑按它本机的同一条通路投递。
         const svc = tryGetOrcaCollabService();
         if (!svc) {
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'orca collab service not initialized' };

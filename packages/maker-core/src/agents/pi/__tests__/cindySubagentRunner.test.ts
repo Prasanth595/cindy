@@ -899,9 +899,14 @@ describe('Cindy durable PI Subagent runner', () => {
       const claimPath = path.join(fixture.root, first.runId, 'resume.claim');
       await writeFile(claimPath, '', { mode: 0o600 });
 
-      const attempt = resumePiSubagentRun(
-        fixture.root, first.runId, 'continue', resumeLaunch(fixture),
-      );
+      const attempt = Promise.allSettled([
+        resumePiSubagentRun(
+          fixture.root,
+          first.runId,
+          "continue",
+          resumeLaunch(fixture),
+        ),
+      ]);
       // The racer completes its write inside the re-read budget. Late enough
       // that a single-read implementation has certainly already given up on it,
       // early enough to land before the budget expires.
@@ -913,7 +918,13 @@ describe('Cindy durable PI Subagent runner', () => {
         { mode: 0o600 },
       );
 
-      await expect(attempt).rejects.toThrow(/already resuming this Subagent generation/i);
+      const [outcome] = await attempt;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status === "rejected") {
+        expect(() => {
+          throw outcome.reason;
+        }).toThrow(/already resuming this Subagent generation/i);
+      }
       // The decisive part: no second generation was launched over that session.
       const runs = await listPiSubagentRuns(fixture.root);
       expect(runs.filter((run) => run.taskId === first.taskId)).toHaveLength(1);

@@ -991,6 +991,7 @@ import {
   type HandoffWireMessage,
 } from './agentHandoff.js';
 import { sanitizeSourceName } from '@cindy/maker-shared/message-source';
+import { registerSessionHandoffIpc } from './sessionHandoffIpc.js';
 import { UI_ACTION_TRIGGER_PREFIX } from '@cindy/maker-shared/synthetic-trigger';
 import {
   createContextOverflowRollover,
@@ -11556,6 +11557,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
     if (!result.ok) throw new Error(`Input handoff continuation not accepted: ${result.errorCode}`);
   };
+
+  // 同账号另一台电脑上的任务发来的消息（Agent 的 send_to_session 传 deviceId::sessionId）。
+  registerSessionHandoffIpc({ send: (params) => sendToSessionInternal(params) });
 
   initializeBotAuthorizationHost(async (card, validate, assertAuthorizationCurrent) => {
     await inputCoordinator.ensureQueueRestored(card.sessionId);

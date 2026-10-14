@@ -259,6 +259,7 @@ import {
   useRemoteSessions,
 } from '@/session/remoteSessionStore';
 import {
+  isCrossDeviceSourceSessionId,
   shouldShowSourceDevice,
   type MessageSourceDevice,
   type MessageSourcePlugin,
@@ -3187,7 +3188,9 @@ function SessionOriginLabel({
       idText={sourceIdText(sourceMeta)
         ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
       label={sessionOriginLabel(origin)}
-      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      onPress={onOpen && senderSessionId && !isCrossDeviceSourceSessionId(senderSessionId)
+        ? () => onOpen(senderSessionId)
+        : undefined}
       openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
     />

@@ -42,24 +42,60 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
-  it.each(PROVIDER_GROUP_STRATEGIES)('keeps local task priority with the %s strategy despite higher usage, load and external pause', async (strategy) => {
-    const context = harness();
-    context.config.strategy = strategy;
-    const local = context.config.members[0];
-    const remote = context.config.members[1].key;
-    local.limit = 1;
-    local.paused = true;
-    context.usage.set(local.key, snapshot(85, 90));
-    context.usage.set(remote, snapshot(10, 20));
-    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: OPUS, localTask: true as const };
-    expect(await context.router.pick({ ...input, reserveFor: 'local-running' })).toMatchObject({ kind: 'member', member: { key: local.key } });
-    expect(context.router.running('anthropic', local.key)).toBe(1);
-    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: local.key } });
-    expect(context.readUsage.mock.calls.every(([member]) => member.kind === 'local')).toBe(true);
-    expect(await context.pick()).toMatchObject({ kind: 'member', member: { key: remote } });
+  it.each(PROVIDER_GROUP_STRATEGIES)('gives own tasks the same %s choice as incoming tasks, apart from the external pause', async (strategy) => {
+    const remote = harness().config.members[1].key;
+    const choose = async (localTask: boolean, paused: boolean, localUsage: [number, number]) => {
+      const h = harness();
+      h.config.strategy = strategy;
+      h.config.members[0].paused = paused;
+      h.usage.set('local', snapshot(...localUsage));
+      h.usage.set(remote, snapshot(12, 22));
+      const pick = await h.router.pick({
+        providerId: 'anthropic', agentKind: 'claude-code', model: OPUS, ...(localTask ? { localTask: true as const } : {}),
+      });
+      return pick.kind === 'member' ? pick.member.key : pick.kind;
+    };
+    // Quota comes first for every strategy: a clearly lower-usage computer wins for everyone.
+    expect(await choose(true, false, [85, 90])).toBe(remote);
+    expect(await choose(false, false, [85, 90])).toBe(remote);
+    // Similar usage leaves the choice to the strategy, which starts with this computer in group order.
+    expect(await choose(true, false, [10, 20])).toBe('local');
+    expect(await choose(false, false, [10, 20])).toBe('local');
+    expect(await choose(true, true, [10, 20])).toBe('local');
+    expect(await choose(false, true, [10, 20])).toBe(remote);
   });
 
-  it.each(PROVIDER_GROUP_STRATEGIES)('applies quota prefiltering to local task priority with the %s strategy', async (strategy) => {
+  it('applies this computer’s concurrency limit to own tasks', async () => {
+    const h = harness();
+    h.config.strategy = 'order';
+    h.config.members[0].limit = 1;
+    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: OPUS, localTask: true as const };
+    expect(await h.router.pick({ ...input, reserveFor: 's1' })).toMatchObject({ kind: 'member', member: { key: 'local' } });
+    expect(await h.router.pick({ ...input, reserveFor: 's2' }))
+      .toMatchObject({ kind: 'member', member: { key: h.config.members[1].key } });
+  });
+
+  it.each([false, true])('uses quota that is about to reset first (own task=%s)', async (own) => {
+    const h = harness();
+    const remote = h.config.members[1].key;
+    const win = (utilization: number, inMs: number) => ({ utilization, resetsAt: (NOW + inMs) / 1000 });
+    const pick = () => h.router.pick({
+      providerId: 'anthropic', agentKind: 'claude-code', model: OPUS, ...(own ? { localTask: true as const } : {}),
+    });
+    // Weekly quota resetting within 5 hours wins over lower usage elsewhere.
+    h.usage.set('local', snapshot(10, 20));
+    h.usage.set(remote, { ...snapshot(10, 70), sevenDay: win(70, 3 * 3_600_000) });
+    expect(await pick()).toMatchObject({ kind: 'member', member: { key: remote } });
+    // Without an expiring weekly window, a 5-hour window in its last hour comes next.
+    h.usage.set('local', { updatedAt: NOW, fiveHour: win(30, 20 * 60_000), sevenDay: win(20, 3 * 86_400_000) });
+    h.usage.set(remote, { updatedAt: NOW, fiveHour: win(5, 3 * 3_600_000), sevenDay: win(10, 3 * 86_400_000) });
+    expect(await pick()).toMatchObject({ kind: 'member', member: { key: 'local' } });
+    // Nothing about to reset: back to plain usage balancing.
+    h.usage.set('local', { updatedAt: NOW, fiveHour: win(30, 2 * 3_600_000), sevenDay: win(20, 3 * 86_400_000) });
+    expect(await pick()).toMatchObject({ kind: 'member', member: { key: remote } });
+  });
+
+  it.each(PROVIDER_GROUP_STRATEGIES)('applies quota prefiltering to own tasks with the %s strategy', async (strategy) => {
     const context = harness();
     context.config.strategy = strategy;
     context.config.members[0].paused = true;
@@ -73,8 +109,6 @@ describe('provider-group quota routing', () => {
     context.usage.set('local', { ...snapshot(10, 20), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: 80_000 }] });
     expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: remote } });
     expect(await context.router.pick({ ...input, model: SONNET })).toMatchObject({ kind: 'member', member: { key: 'local' } });
-    context.usage.set('local', null);
-    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: 'local' } });
   });
 
   it.each(PROVIDER_GROUP_STRATEGIES)('excludes an exhausted account for the %s strategy', async (strategy) => {

@@ -157,7 +157,7 @@ async function flush() {
 describe('own tasks after this computer becomes available again', () => {
   it.each([false, true].flatMap((paused) =>
     (['start', 'turn', 'before-send', 'healthy'] as const).map((phase) => ({ paused, phase })),
-  ))('prefers local only when another choice is needed ($phase, paused=$paused)', async ({ paused, phase }) => {
+  ))('reselects by the group strategy, not local first, when another choice is needed ($phase, paused=$paused)', async ({ paused, phase }) => {
     const h = harness({ members: [MINI, STUDIO, { ...LOCAL, paused }], offline: [LOCAL.key] });
     // 数据库读取返回快照，后续保存路由不会修改已经读出的行。
     h.deps.readSessionRow.mockImplementation(async () => ({ ...h.row }));
@@ -167,7 +167,7 @@ describe('own tasks after this computer becomes available again', () => {
 
     if (phase === 'start') {
       const next = await h.service.nextAfterStartFailure(context!, new Error('[REMOTE_AGENT_UNAVAILABLE] failed to start'));
-      expect(next?.member.key).toBe(LOCAL.key);
+      expect(next?.member.key).toBe(STUDIO.key);
     } else if (phase === 'turn') {
       await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
       expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
@@ -182,9 +182,9 @@ describe('own tasks after this computer becomes available again', () => {
       expect(h.deps.persistRoute).toHaveBeenCalledTimes(1);
       expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
     } else {
-      // 组顺序本来会选仍可用的 STUDIO；本机自用故障重选仍优先已恢复的本机。
-      expect(h.row).toMatchObject({ agentDeviceId: null, providerId: 'anthropic' });
-      expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+      // 本机任务与其他使用方同一套组策略：按组顺序选仍可用的 STUDIO，不因本机已恢复就回到本机。
+      expect(h.row).toMatchObject({ agentDeviceId: STUDIO.agentDeviceId, providerId: STUDIO.providerId });
+      expect(h.bindings.get('s1')?.memberKey).toBe(STUDIO.key);
       if (phase !== 'start') expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
     }
     expect(h.config.members[2].paused).toBe(paused);
@@ -205,11 +205,11 @@ describe('assignBeforeStart', () => {
     expect(incoming.kind === 'member' && incoming.member.key).toBe(MINI.key);
   });
 
-  it('prefers this computer for own tasks regardless of the group order', async () => {
+  it('follows the group order for own tasks instead of preferring this computer', async () => {
     const h = harness({ members: [MINI, LOCAL] });
     const context = await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL });
-    expect(context?.member.key).toBe('local');
-    expect(h.deps.persistRoute).not.toHaveBeenCalled();
+    expect(context?.member.key).toBe(MINI.key);
+    expect(h.deps.persistRoute).toHaveBeenCalledWith('s1', { agentDeviceId: 'mini', providerId: MINI.providerId });
   });
 
   it('falls back through the group when a paused local member cannot start its own task', async () => {

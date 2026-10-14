@@ -470,13 +470,12 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "usage": "用量均衡",
+      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例",
-        "usage": "按5小时和每周用量分配"
+        "weight": "按权重比例"
       }
     },
     "autoSwitch": {
@@ -5257,8 +5256,9 @@
           "descriptions": {
             "unsupported": "此保护仅在 macOS 上可用。",
             "disabled": "Cindy 运行期间阻止 Codex 连接 Work Louder 键盘；不会限制 Cindy 本身。",
-            "recovery-required": "保护已停止，但 NODE_OPTIONS 尚未安全恢复。请先重试恢复，再重新开启。",
-            "error": "Cindy 无法更新 Codex 保护；原有 NODE_OPTIONS 已保留或等待恢复。"
+            "paused": "此保护因影响其他应用已暂停。若应用仍异常，请退出旧版 Cindy，再完全退出并重新打开受影响应用。",
+            "recovery-required": "保护已暂停，但旧的启动设置尚未清理完成。请点击“恢复环境”，完成后完全退出并重新打开受影响应用。",
+            "error": "Cindy 无法读取或清理旧的保护设置；此保护仍保持暂停。"
           },
           "restartRequired": "请完全退出并重新打开 Codex 以生效"
         },
