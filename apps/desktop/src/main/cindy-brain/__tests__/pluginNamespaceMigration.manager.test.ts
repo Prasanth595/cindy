@@ -172,6 +172,39 @@ async function stampLegacyOrganizationInstall(id = 'hello', withSkill = false): 
 }
 
 describe('GhostManager namespace migration census', () => {
+  it.each([false, true])('repairs the same release in a migrated bare directory without changing storage identity (enabled=%s)', async (enabled) => {
+    const archive = vi.fn();
+    manager = createManager({ mutateSnapshot, onArchiveSourceState: archive });
+    await stampLegacyOrganizationInstall('hello', true);
+    await manager.setEnabled('hello', enabled);
+    const previous = manager.list()[0];
+    expect(manager.approvedInstallEvidence('hello')?.packageSha256).toBeNull();
+    const pkg = await makeCindy('hello', true);
+    const inspected = await manager.inspect(pkg);
+    if ('rejection' in inspected) throw new Error('expected valid market package');
+
+    const result = await manager.update(pkg, {
+      namespace: 'acme', expectedInstalledApproval: ghostInstallApprovalToken(previous.approval),
+      expectedPackageSha256: inspected.packageSha256,
+    });
+
+    expect(result).toMatchObject({ ghost: { dir: previous.dir, namespace: 'acme', enabled, manifest: { version: '1.0.0' } } });
+    const restored = manager.list()[0];
+    expect(installedGhostStoragePart(restored)).toBe(installedGhostStoragePart(previous));
+    expect(archive).not.toHaveBeenCalled();
+    expect(await manager.verifyApprovedSkillSnapshot(restored)).toBe(true);
+    const evidence = manager.approvedInstallEvidence('hello');
+    expect(evidence?.packageSha256).toBe(inspected.packageSha256);
+    expect(resolveGhostFirstPartyPrivilege({
+      ghostId: 'hello', namespace: 'acme', builtin: false, installOrigin: 'manual',
+      currentOrganization: { organizationId: 'org-acme', orgSlug: 'acme' },
+      marketRecord: {
+        scope: 'organization', organizationId: 'org-acme', source: 'market', installed: true,
+        sha256: inspected.packageSha256, approvedPackageSha256: evidence?.packageSha256 ?? null,
+      },
+    })).toMatchObject({ brokerEligible: true, basis: 'market-organization-current' });
+  });
+
   it('retries a failed first directory scan instead of persisting an empty census', async () => {
     await plantLegacyInstall('hello');
     const actualRead = fs.readdirSync;

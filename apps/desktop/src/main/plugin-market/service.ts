@@ -2530,11 +2530,31 @@ export class PluginMarketService {
       (!hasDeliveryNamespace(plugin) && plugin.scope === 'organization' &&
         local.ghosts.some((candidate) => candidate.manifest.id === plugin.ghostId &&
           hasDeliveryNamespace(candidate) && candidate.namespace !== null) && target === plugin));
+    // A recovered legacy route may already name the current release without
+    // having its approved package evidence. Reinstall through the verified
+    // market update transaction; neither the route nor the manifest grants trust.
+    let needsSourceRecovery = false;
+    if (matchesUpdateRoute && ghost?.approval.state === 'approved' && identity && record &&
+        record.releaseId === plugin.currentRelease.id &&
+        record.sha256 === plugin.currentRelease.sha256 &&
+        record.scope === 'organization') {
+      const user = getAuthState().user;
+      const manager = getGhostManager();
+      const physicalId = installedGhostPhysicalRelId(ghost);
+      const evidence = manager.approvedInstallEvidence(physicalId);
+      if (user?.membershipKind === 'org' && record.organizationId === user.orgId &&
+          evidence && manager.readApprovedInstallOriginStrict(physicalId) !== 'agent-forge' &&
+          installedIdentityMatchesManifest(identity, evidence.approvedManifest)) {
+        needsSourceRecovery = evidence.packageSha256 === null
+          ? evidence.legacyMigrated
+          : record.source === 'legacy-adopted' && evidence.packageSha256 === record.sha256;
+      }
+    }
     const installState: PluginMarketItem['installState'] = conflict
       ? 'conflict'
       : !matchesUpdateRoute
         ? 'not-installed'
-        : record?.releaseId === plugin.currentRelease.id
+        : record?.releaseId === plugin.currentRelease.id && !needsSourceRecovery
           ? 'installed'
           : 'update-available';
     const projectedTarget = matchesUpdateRoute && !hasDeliveryNamespace(target) &&
