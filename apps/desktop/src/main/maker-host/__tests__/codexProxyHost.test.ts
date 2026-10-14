@@ -4169,6 +4169,66 @@ describe('codex proxy host', () => {
     });
   });
 
+  it.each(['search', 'open_page', 'find_in_page'])(
+    'replays GPT-6.1 Sol %s history with native web_search on the Gateway route only',
+    async (actionType) => {
+      const host = await freshCodexProxyHost();
+      mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
+        url: 'http://127.0.0.1:43210',
+        dispose: vi.fn(async () => undefined),
+      });
+      await host.ensureCodexProxyReady();
+      const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
+      const input = [
+        { type: 'web_search_call', status: 'completed', action: { type: actionType } },
+        { role: 'user', content: 'Continue' },
+      ];
+      const ctx = { method: 'POST', url: '/responses', headers: { 'thread-id': 'search-history-thread' } };
+      const apply = (request: unknown): unknown => {
+        let current = request;
+        for (const transform of transforms) {
+          const next = transform(current, ctx);
+          if (next !== null && next !== undefined) current = next;
+        }
+        return current;
+      };
+
+      expect(apply({ model: 'openai-codex/gpt-6.1-sol', input, tools: [{ type: 'function', name: 'read_file' }] }))
+        .toMatchObject({ input, tools: [{ type: 'function', name: 'read_file' }, { type: 'web_search' }] });
+      expect(apply({ model: 'openai-codex/gpt-6.1-sol', input, tools: [{ type: 'web_search', external_web_access: false }] }))
+        .toMatchObject({ input, tools: [{ type: 'web_search', external_web_access: false }] });
+      expect(apply({ model: 'openai-codex/gpt-6.1-sol', input: [{ role: 'user', content: 'Hello' }] }))
+        .not.toHaveProperty('tools');
+      for (const status of ['in_progress', 'failed']) {
+        expect(apply({
+          model: 'openai-codex/gpt-6.1-sol',
+          input: [{ type: 'web_search_call', status, action: { type: actionType } }],
+        })).not.toHaveProperty('tools');
+      }
+      expect(apply({ model: 'openai-codex/gpt-6.1-luna', input })).not.toHaveProperty('tools');
+    },
+  );
+
+  it('does not add GPT-6.1 search declaration to the subscription OAuth route', async () => {
+    const host = await freshCodexProxyHost();
+    mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
+      url: 'http://127.0.0.1:43210',
+      dispose: vi.fn(async () => undefined),
+    });
+    await host.ensureCodexControlPlaneProxyReady('oauth-bearer');
+    const transforms = mockState.createAnthropicCompatProxy.mock.calls[0]?.[0]?.transformRequest ?? [];
+    let current: unknown = {
+      model: 'gpt-6.1-sol',
+      input: [{ type: 'web_search_call', status: 'completed', action: { type: 'search' } }],
+    };
+    const ctx = { method: 'POST', url: '/responses', headers: { 'thread-id': 'oauth-search-history-thread' } };
+    for (const transform of transforms) {
+      const next = transform(current, ctx);
+      if (next !== null && next !== undefined) current = next;
+    }
+    expect(current).not.toHaveProperty('tools');
+  });
+
   it('keeps the codex/ budget prefix on the wire for an explicit Gateway session (no silent tier rewrite)', async () => {
     const host = await freshCodexProxyHost();
     const { BUNDLED_CATALOG } = await import('@cindy/model-providers');

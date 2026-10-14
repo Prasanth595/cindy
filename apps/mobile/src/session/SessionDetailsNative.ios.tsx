@@ -111,7 +111,7 @@ export function SessionDetailsNative({
  */
 function useKeyboardOverlap(enabled: boolean) {
   const ref = useRef<View>(null);
-  const keyboard = useMobileKeyboardState();
+  const keyboard = useMobileKeyboardState(enabled);
   const { height: windowHeight } = useWindowDimensions();
   const [bottom, setBottom] = useState<number | null>(null);
   const measure = useCallback(() => {

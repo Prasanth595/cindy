@@ -864,10 +864,11 @@ function createProviderAwareGuardianReviewerTransform(
 }
 
 /**
- * Codex Code Mode 对部分 GPT-5.6 网关模型不会发出 Responses 原生搜索声明：
+ * Codex Code Mode 对部分网关模型不会发出 Responses 原生搜索声明：
  * 目录里的 `supports_search_tool` / `webSearch` 能力虽为 true，但 Gateway 只看最终
  * 请求的 `tools`。插件搜索是增强项，不能作为该基础能力的前置条件，因此在明确走
- * Cindy Gateway 的 GPT-5.6 请求中补回标准 `web_search` 工具；已有声明保持原样。
+ * Cindy Gateway 的 GPT-5.6 请求中补回标准 `web_search` 工具；GPT-6.1 Sol 仅在回放
+ * 已完成的搜索历史时补齐声明。已有声明保持原样。
  */
 function createGatewayNativeWebSearchTransform(frozenAuthInjection?: CodexProxyAuthInjection): RequestTransform {
   return (body, ctx) => {
@@ -885,7 +886,11 @@ function createGatewayNativeWebSearchTransform(frozenAuthInjection?: CodexProxyA
       ?? inferProviderIdForModel(model, 'codex')
       ?? rewrittenGatewayProviderId;
     const gatewayModel = stripCodexGatewayWirePrefix(model);
-    if (!/^gpt-5\.6(?:$|[-.])/.test(gatewayModel)) return null;
+    const replaysSearchHistory = Array.isArray(body.input) && body.input.some(
+      (item) => isPlainObject(item) && item.type === 'web_search_call' && item.status === 'completed',
+    );
+    if (!/^gpt-5\.6(?:$|[-.])/.test(gatewayModel)
+      && !(gatewayModel === 'gpt-6.1-sol' && replaysSearchHistory)) return null;
 
     // Match the effective auth context used by this proxy's routing transform. Another
     // app-server may change the global mode while a frozen OAuth proxy is still active.
