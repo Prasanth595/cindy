@@ -5465,6 +5465,10 @@ export class PiAgent extends BaseAgent {
         ...mcpEnv,
         // 视觉桥后端 env（层 C）：键含 API key 已纳入 piSecretEnvNames 剥离面。
         ...(visionBridgeEnv ? visionBridgeEnv : {}),
+        // Input handoff askpass, owner's own local tasks only (deterministic per session).
+        ...(!remote && !hosted && !reviewMode && opts.sessionId
+          ? this.deps.runtimeConfig.taskShellEnv?.({ sessionId: opts.sessionId })
+          : {}),
         [PI_SESSION_ID_ENV]: opts.sessionId ?? '',
         ...(proxySessionToken !== undefined ? { [PI_SESSION_TOKEN_ENV]: proxySessionToken } : {}),
         [PI_SECRET_ENV_NAMES_ENV]: JSON.stringify(piSecretEnvNames),

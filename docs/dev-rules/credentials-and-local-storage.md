@@ -37,6 +37,13 @@
   只写已声明的单个 user Secret，不读回、不批量同步、不开放账号 vault。值只短暂存在于
   输入组件/Main 调用中，不进入 Renderer store、Agent、普通远控、日志或历史。CLI PKCE
   的私有回调也只交给发起的可信 Node RPC，不能返回沙箱 main.js 或业务 stdout。
+- 代输入（[产品规则](../product-rules/input-handoff.md)）复用同一签名输入桥：每一步按
+  (requestId, revision) 绑定，主人填写的**所有**值（不只密码）只在 Main 执行输入那一下存在，
+  提交对象用后逐键删除；不进 Renderer store、续接消息、任务记录、数据库、日志、IM 或推送。
+  卡片快照只含界面结构与界面上显示的文字；截图像素只走本地受信 IPC 或加密 offer。
+  宿主注入任务 shell 的 askpass（`SUDO_ASKPASS` / `SSH_ASKPASS` / `GIT_ASKPASS`，经
+  `taskShellEnv`）只携带本机一次性路由，不携带秘密；口令只写回发起的那个进程。
+  设备码「复制代码」写入的是界面上本就显示的短期代码，不属于主人填写的值。
 - access token 等只需短期使用的秘密优先保留在内存中。日志、错误、遥测和调试输出不得
   包含凭证明文、完整鉴权头或可直接复用的授权材料。
 - 测试只使用明显无效的假凭证，不读取或复制开发者真实的 `HOME`、Agent home、

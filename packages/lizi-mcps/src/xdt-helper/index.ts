@@ -11,6 +11,7 @@
 export { registerGetCapabilitiesTool } from './get_capabilities.js';
 export { registerAppUpdateTools, type AppUpdateCallbacks } from './app_update.js';
 export { registerGrokLoginTools, type GrokLoginCallbacks, type GrokLoginState } from './grok_login.js';
+export { registerInputHandoffTool, type InputHandoffCallbacks, type InputHandoffToolRequest, type InputHandoffToolResult } from './input_handoff.js';
 export { registerSkillhubTools, type SkillhubAgentCallback, type SkillhubAgentRequest } from './skillhub.js';
 export {
   registerGetCurrentSessionIdTool,

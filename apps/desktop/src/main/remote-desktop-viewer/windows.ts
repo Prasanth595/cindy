@@ -97,13 +97,24 @@ export class RemoteDesktopViewerWindows {
       target.deviceId.length > 256 ||
       target.deviceId === getSelfDeviceId() ||
       typeof target.name !== 'string' ||
-      target.name.length > 256
+      target.name.length > 256 ||
+      (target.handoff !== undefined &&
+        (typeof target.handoff !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(target.handoff)))
     )
       throwIpcError('INVALID_PARAMS', 'Invalid remote desktop target');
-    let entry = [...this.entries].find((e) => e.connection.target?.deviceId === target.deviceId);
+    // A 代输入 window view is its own window, separate from a whole-desktop viewer.
+    let entry = [...this.entries].find(
+      (e) =>
+        e.connection.target?.deviceId === target.deviceId &&
+        e.connection.target.handoff === target.handoff,
+    );
     if (!entry) entry = [...this.entries].find((e) => !e.connection.target) ?? this.create();
     if (!entry.connection.active)
-      entry.connection.bind({ deviceId: target.deviceId, name: target.name });
+      entry.connection.bind({
+        deviceId: target.deviceId,
+        name: target.name,
+        ...(target.handoff ? { handoff: target.handoff } : {}),
+      });
     entry.controller.open(sender);
     // The spare shell is created off the next click path, never connects to a peer.
     this.prewarm();

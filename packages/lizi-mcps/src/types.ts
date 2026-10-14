@@ -553,6 +553,12 @@ export interface BrowserMcpDeps {
   supportsResourceDownloads?(): boolean;
   /** Whether the active backend accepts semantic element queries. */
   supportsSemanticQueries?(): boolean;
+  /**
+   * 代输入: true while the target tab still shows a page where the owner just
+   * typed a secret. Page-state reads (evaluate, requests, response bodies,
+   * console) are then refused.
+   */
+  pageReadsRestricted?(target: { profile?: string; targetId?: string }): Promise<boolean>;
   logger?: LiziMcpLogger;
   /**
    * Optional L2 (user-local) recipe layer. The host scans userData, parses with
@@ -653,6 +659,11 @@ export interface ComputerMcpDeps {
     args: Record<string, unknown>,
     context?: ComputerMcpCallContext,
   ): Promise<unknown>;
+  /**
+   * 代输入: whether typing would land in a password field — the element at a
+   * screen point of this app, or its focused element. Roles only, never values.
+   */
+  isSecureTarget?(target: { pid: number; point?: { x: number; y: number } }): Promise<boolean>;
   logger?: LiziMcpLogger;
 }
 

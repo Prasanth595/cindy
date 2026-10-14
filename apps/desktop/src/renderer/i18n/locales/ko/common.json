@@ -751,7 +751,10 @@
     "copy": "이 컴퓨터로 복사",
     "paste": "원격 컴퓨터에 붙여넣기",
     "clipboardSyncHint": "이 창이 전면에 있을 때 텍스트, 이미지, 서식 있는 텍스트를 양방향으로 동기화합니다.",
-    "credentialRequired": "Mac 암호를 확인하세요. 확인할 수 없으면 두 컴퓨터에서 Cindy를 업데이트하세요."
+    "credentialRequired": "Mac 암호를 확인하세요. 확인할 수 없으면 두 컴퓨터에서 Cindy를 업데이트하세요.",
+    "handoffEnded": "이 대리 입력은 이미 끝나서 표시할 창이 없습니다.",
+    "handoffUnavailable": "이 컴퓨터에서는 이 창만 표시할 수 없습니다. 해당 컴퓨터에서 Cindy를 업데이트하거나 원격 데스크톱을 켜세요.",
+    "handoffWindow": "대리 입력 · {{app}}"
   },
   "ipcError": {
     "DEVICE_LINK_BUSY": "원격 컴퓨터가 사용 중입니다. 잠시 후 다시 시도해 주세요.",
@@ -1637,6 +1640,7 @@
         "done": "완료됨 ✓",
         "error": "실행 실패",
         "needsReply": "답변이 필요합니다",
+        "inputHandoff": "대리 입력이 필요합니다",
         "externalDone": "Cindy · 세션 “{{title}}” 완료됨 ✓",
         "externalError": "Cindy · 세션 “{{title}}” 실행 실패",
         "externalNeedsReply": "Cindy · 세션 “{{title}}”에 답변이 필요합니다",
@@ -9264,7 +9268,11 @@
       "configure": "설정 열기",
       "empty_toolset": "이 실행 환경에 사용 가능한 내장 도구가 없습니다.",
       "empty_mcp": "사용자 지정 MCP 서버가 아직 추가되지 않았습니다.",
-      "empty_skill": "선택할 수 있는 스킬이 없습니다."
+      "empty_skill": "선택할 수 있는 스킬이 없습니다.",
+      "inputHandoff": {
+        "title": "대리 입력",
+        "description": "로그인 정보, 비밀번호, 인증 코드처럼 본인 입력이 필요할 때 이 동료가 어느 기기에서든 입력을 요청할 수 있습니다. 입력한 내용은 동료에게 전달되지 않습니다."
+      }
     },
     "guided": {
       "title": "파트너 만들기",
@@ -11619,7 +11627,8 @@
         "awaitingPermission": "승인 대기 중",
         "awaitingQuestion": "답장 대기 중",
         "awaitingPlan": "계획 검토 대기 중",
-        "awaitingPluginSetup": "플러그인 설정 대기 중"
+        "awaitingPluginSetup": "플러그인 설정 대기 중",
+        "awaitingInputHandoff": "대리 입력 대기 중"
       },
       "showAllSessions": "모두 표시 {{count}}개",
       "allSessions": "모든 세션",
@@ -13185,6 +13194,125 @@
       "allowDirs": "이 파일들의 폴더도 허용(이 세션에서 같은 폴더의 미디어 파일은 다시 묻지 않습니다)",
       "allow": "허용",
       "deny": "거부"
+    }
+  },
+  "inputHandoff": {
+    "originWarning": {
+      "insecure": "이 페이지는 보안 연결을 사용하지 않습니다. 입력한 내용이 다른 사람에게 노출될 수 있습니다.",
+      "ip-address": "이 페이지는 도메인 대신 IP 주소를 사용합니다. 예상한 사이트인지 확인하세요.",
+      "local-host": "이 페이지는 이 컴퓨터의 서비스에서 제공됩니다. 예상한 앱인지 확인하세요.",
+      "local-file": "이 페이지는 로컬 파일입니다. 예상한 내용인지 확인하세요.",
+      "punycode": "이 주소에는 특수 문자가 포함되어 다른 사이트를 사칭할 수 있습니다. 자세히 확인하세요.",
+      "embedded-frame": "입력란이 페이지에 삽입된 다른 사이트 안에 있습니다. 출처를 신뢰할 수 있는지 확인하세요."
+    },
+    "agentControlled": "이 화면은 Agent가 열었습니다. 입력하기 전에 실제로 로그인하려는 곳인지 확인하세요.",
+    "error": {
+      "decision": "요청이 전달되지 않았습니다. 다시 시도하세요.",
+      "stale": "화면이 바뀌었습니다. 최신 내용으로 진행하세요.",
+      "submit": "입력이 전달되지 않았습니다. 다시 시도하세요."
+    },
+    "terminal": {
+      "succeeded": "Agent에게 넘겼습니다.",
+      "cancelled": "대리 입력을 취소했습니다.",
+      "failed": "대리 입력이 종료되었습니다.",
+      "expired": "대기 시간이 너무 길어 대리 입력이 종료되었습니다."
+    },
+    "failure": {
+      "permission": "Cindy에 이 컴퓨터 화면을 읽을 권한이 없습니다. 시스템 설정의 손쉬운 사용에서 Cindy를 허용하세요.",
+      "target_gone": "대상 창이 닫혔습니다.",
+      "unreadable": "이 화면을 읽을 수 없습니다. 호스트 컴퓨터에서 직접 완료한 뒤 Agent에게 넘기세요.",
+      "action_failed": "방금 작업이 적용되지 않았습니다. 화면을 확인하고 다시 시도하세요.",
+      "timeout": "대기 시간이 너무 길어 대리 입력이 종료되었습니다.",
+      "unsupported": "이 컴퓨터는 아직 대리 입력을 지원하지 않습니다.",
+      "origin_changed": "입력하기 전에 페이지가 바뀌어 아무것도 입력하지 않았습니다. 현재 페이지를 확인한 후 다시 입력하세요.",
+      "picture_unavailable": "이 단계의 화면을 표시하지 못했습니다. 시스템 설정에서 Cindy의 화면 기록을 허용하고 윈도우가 최소화되지 않았는지 확인하세요.",
+      "screen_locked": "이 컴퓨터의 화면이 잠겨 있습니다(디스플레이가 잠자기 상태가 되어도 잠깁니다). 화면을 깨우고 잠금을 해제한 후 Agent에게 다시 시도하도록 요청하세요.",
+      "nothing_to_fill": "이 화면에는 입력할 내용이 없어 Agent가 이어서 진행합니다."
+    },
+    "phase": {
+      "reading": "화면을 읽는 중…",
+      "working": "입력하는 중…",
+      "finishing": "완료된 것 같습니다. {{count}}초 후 Agent에게 넘깁니다.",
+      "finishingNow": "완료된 것 같습니다. Agent에게 넘기는 중…"
+    },
+    "action": {
+      "stay": "아직 안 끝났어요",
+      "done": "Agent에게 넘기기",
+      "claim": "여기서 처리",
+      "picture": "화면 보기",
+      "backToForm": "양식으로 돌아가기",
+      "liveView": "실시간 화면",
+      "fill": "입력",
+      "skip": "건너뛰기",
+      "continue": "계속",
+      "close": "취소",
+      "showPassword": "암호 표시",
+      "hidePassword": "암호 숨기기",
+      "scan": "스캔"
+    },
+    "remoteUnavailable": "이 컴퓨터는 원격으로 입력을 받을 수 없습니다. 호스트 컴퓨터에서 이 단계를 완료한 뒤 Agent에게 넘기세요.",
+    "unnamedField": "입력란",
+    "passwordField": "비밀번호",
+    "codeField": "인증 코드",
+    "filledHint": "이미 내용이 있습니다. 비워 두면 그대로 유지됩니다.",
+    "record": {
+      "doneOn_one": "소유자가 {{device}}에서 {{count}}단계 입력을 마쳤습니다",
+      "doneOn_other": "소유자가 {{device}}에서 {{count}}단계 입력을 마쳤습니다",
+      "doneHost_one": "소유자가 호스트 컴퓨터에서 {{count}}단계 입력을 마쳤습니다",
+      "doneHost_other": "소유자가 호스트 컴퓨터에서 {{count}}단계 입력을 마쳤습니다",
+      "donePhone_one": "소유자가 휴대폰에서 {{count}}단계 입력을 마쳤습니다",
+      "donePhone_other": "소유자가 휴대폰에서 {{count}}단계 입력을 마쳤습니다",
+      "doneElsewhere_one": "소유자가 다른 기기에서 {{count}}단계 입력을 마쳤습니다",
+      "doneElsewhere_other": "소유자가 다른 기기에서 {{count}}단계 입력을 마쳤습니다",
+      "done": "대리 입력을 마쳤습니다",
+      "nothingToFill": "입력할 내용이 없어 Agent에게 넘겼습니다",
+      "cancelled": "대리 입력을 취소했습니다",
+      "expired": "대리 입력 시간이 초과되었습니다",
+      "failed": "대리 입력을 마치지 못했습니다"
+    },
+    "holder": {
+      "elsewhere": "{{device}}에서 처리 중입니다. 여기서 이어받을 수도 있습니다.",
+      "host": "호스트 컴퓨터",
+      "phone": "휴대폰",
+      "otherDevice": "다른 기기"
+    },
+    "agentNote": "Agent 메모: {{note}}",
+    "picture": {
+      "hint": "화면에서 위치를 탭하면 Cindy가 호스트 컴퓨터의 같은 위치를 클릭합니다.",
+      "open": "이 단계 화면 보기",
+      "alt": "대상 윈도우의 화면",
+      "loading": "화면을 가져오는 중…",
+      "error": "화면을 가져오지 못했습니다. 다시 시도하세요.",
+      "field": "선택된 입력란",
+      "type": "입력",
+      "typeEnter": "입력 후 Return"
+    },
+    "deviceCode": {
+      "prompt": "이 코드로 로그인",
+      "copy": "코드 복사",
+      "copied": "코드를 복사했습니다",
+      "copyFailed": "복사하지 못했습니다",
+      "open": "이 기기에서 열기",
+      "openFailed": "링크를 열지 못했습니다",
+      "then": "열린 페이지에 코드를 입력해 로그인을 마친 뒤 「Agent에게 넘기기」를 선택하세요."
+    },
+    "nothingLeft": "여기에는 입력할 항목이 없습니다.",
+    "dialogNote": "컴퓨터의 이 위치에만 입력됩니다. Agent에게 전달하거나 저장하지 않습니다.",
+    "qr": {
+      "open": "이 기기에서 {{site}} 열기",
+      "copyLink": "링크 복사",
+      "copyText": "내용 복사",
+      "copied": "복사했습니다.",
+      "copyFailed": "복사하지 못했습니다. 다시 시도하세요.",
+      "loading": "QR 코드를 가져오는 중…",
+      "scanned": "스캔했습니다. 휴대폰에서 확인하세요. 확인하면 자동으로 계속합니다.",
+      "hint": "휴대폰으로 이 코드를 스캔해 로그인하세요. 로그인하면 자동으로 계속합니다.",
+      "hintLink": "휴대폰으로 이 코드를 스캔하거나 이 기기에서 링크를 열어 로그인하세요. 로그인하면 자동으로 계속합니다.",
+      "copyImage": "이미지 복사",
+      "imageCopied": "이미지를 복사했습니다.",
+      "openFailed": "이 링크를 열 수 없습니다. 휴대폰으로 코드를 스캔하세요.",
+      "alt": "컴퓨터의 QR 코드. 클릭하면 컴퓨터의 같은 위치를 클릭합니다.",
+      "failed": "QR 코드를 가져오지 못했습니다. 클릭해 다시 시도하세요."
     }
   },
   "commandPalette": {

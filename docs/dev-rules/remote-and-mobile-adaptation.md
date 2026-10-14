@@ -40,6 +40,23 @@ Cindy 的产品形态不止本地桌面单机。同一个功能可能运行在�
    同步 topic 路由；不登记，手机／远程控制端就永远调不通。
 3. 手机版需不需要对应的入口／UI／交互？
 
+## 代输入的多端适配（2026-10-13）
+
+产品规则见 [`../product-rules/input-handoff.md`](../product-rules/input-handoff.md)。三种形态的落点：
+
+- **SSH 远程工作区**：不支持。目标窗口必须在执行代输入的这台电脑上；`request_input_handoff`
+  在带 `remoteHostId` 的任务里返回 `CAPABILITY_NOT_AVAILABLE`，由 Agent 改为直接告诉主人需要什么。
+- **设备互联远程控制**：卡片快照随既有交互推送（`kind: "input_handoff"`）到所有控制端；交还、取消、
+  停留、刷新、接手、看画面等**不带值**的决定走既有 `resolveInteraction`；**带值**的提交与截图只走插件
+  授权 v3 加密交换（`plugin-oauth:submit-input` / `plugin-oauth:open-input-picture` /
+  `plugin-oauth:answer-input-picture`），不新增明文 invoke。对端不支持 v3 时卡片显示「请更新」，不降级。
+- **手机版**：同一张卡（`src/inputHandoff/`），系统保密输入与 AutoFill 类型、截图点按、设备码
+  （`expo-clipboard` + `Linking`，无新原生依赖）与单窗口实时画面（远程桌面路由带 `handoff` 参数）。
+  推送深链回到所属任务。
+- 单窗口实时画面复用远程桌面通道：控制端只在 `start` 里带 `handoff: requestId`，由被控端按请求选窗口；
+  被控端以 `handoffWindow` 能力位声明支持，旧被控端不声明时控制端不展示入口。协议细节见
+  [`protocol-compatibility.md`](protocol-compatibility.md)「代输入」。
+
 ## 恢复动作先回答故障半径（device-link 共享链路）
 
 设备互联是 1:N 拓扑：被控端与 relay 之间只有一条连接，同账号的全部控制端共用它。
