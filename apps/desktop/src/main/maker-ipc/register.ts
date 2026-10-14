@@ -12001,15 +12001,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     onBeforeDelete: prepareCompanionImportDeletion,
     onDeleted: async (botId, assertOwner) => {
       assertOwner();
+      // Deleted on its home: other devices stop showing it. Started first and independently, so a
+      // local cleanup failure below never skips it; it records retirePending and retries itself.
+      // A demoted copy never retires the cloud companion.
+      void activeCompanionCloud()?.retire(botId).catch((error: unknown) => {
+        log.warn('companion cloud retire failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
+      });
       // Profile deletion has committed. Startup also purges orphaned routines
       // if this cleanup fails or the process stops before it finishes.
       await updateBotRoutineLifecycle(botId, 'delete');
       assertOwner();
       await finishCompanionEnvironmentRemoval(ownerScopedUserDataPath(), botId, assertOwner);
-      // Deleted on its home: other devices stop showing it. Best-effort; a demoted copy never retires the cloud companion.
-      void activeCompanionCloud()?.retire(botId).catch((error: unknown) => {
-        log.warn('companion cloud retire failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
-      });
     },
   });
   const delegationForRestore = botDelegationServiceHolder;
