@@ -104,7 +104,8 @@
       "RUNTIME_TIMEOUT": "{{name}}本次回复超时。\n请重新发送消息，或选择其他可用模型。",
       "RUNTIME_ERROR": "{{name}}这次没能回复。\n请重新发送消息；如果仍失败，请查看日志并反馈问题。"
     },
-    "runtimeFailureSetupHint": "如需调整模型或设置，请在伙伴所属电脑上处理。"
+    "runtimeFailureSetupHint": "如需调整模型或设置，请在伙伴所属电脑上处理。",
+    "retry": "重试"
   },
   "plan": {
     "intro_one": "这件事分 {{count}} 步，我这样分工：",
