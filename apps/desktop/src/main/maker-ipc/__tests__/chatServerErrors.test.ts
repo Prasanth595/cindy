@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { chatErrorDiagnostic, chatGroupFailure } from '../chatServerErrors.js';
+import { chatErrorDiagnostic, chatGroupFailure, isPermanentChatAttachmentError } from '../chatServerErrors.js';
 
 describe('chat group errors', () => {
+  it.each(['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE', 'INVALID_ATTACHMENT', 'INVALID_MEDIA_URL',
+    'ERR_INVALID_URL', 'ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ENOTDIR'])('recognizes permanent attachment error %s', code => {
+    expect(isPermanentChatAttachmentError(new Error(code))).toBe(true);
+    expect(isPermanentChatAttachmentError(Object.assign(new Error('private path and URL'), { code }))).toBe(true);
+  });
+  it.each(['MEDIA_UPLOAD_FAILED', 'FILE_PEER_TIMEOUT', 'ECONNRESET', 'REQUEST_TIMEOUT', 'AUTH_REQUIRED',
+    'RATE_LIMITED', 'OWNER_CHANGED', 'STALE_EXECUTOR', 'private path and URL'])('does not classify %s as a permanent attachment error', code => {
+    expect(isPermanentChatAttachmentError(new Error(code))).toBe(false);
+  });
+  it.each([400, 401, 403, 404, 429, 503])('does not classify HTTP %s alone as a permanent attachment error', status => {
+    expect(isPermanentChatAttachmentError(Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status }))).toBe(false);
+  });
   it.each([
     ['MENTION_UNAVAILABLE', 'MENTION_UNAVAILABLE'],
     ['MEMBER_UNAVAILABLE', 'MEMBER_UNAVAILABLE'], ['INVALID_ATTACHMENT', 'INVALID_ATTACHMENT'],
