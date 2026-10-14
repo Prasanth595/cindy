@@ -36,8 +36,8 @@ export interface CompanionCloudHost {
   listDevices?: () => Promise<DeviceLinkDeviceView[]>;
   /** Does that computer's Cindy support cloud companions (`maker:companion-cloud:caps`)? */
   probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
-  /** A turn is running (or queued) in the companion's main task. */
-  isTurnActive?: (sessionId: string) => boolean;
+  /** A turn is running (or queued) in any of the companion's tasks (main task, group lanes, delegations). */
+  isBotBusy?: (botId: string) => Promise<boolean>;
   /** Random id of this Cindy installation (per userData); absent disables the install guard. */
   installationId?: () => string;
   /** Owner-scoped persisted shadow set (demotion survives restarts, an offline server and a disabled feature). */
@@ -374,10 +374,7 @@ export function startCompanionCloud(input: {
   /** Everything the new home needs reaches the server, then the home moves and this copy is demoted. */
   async function handOver(actor: CompanionRuntimeActor, targetDeviceId: string): Promise<CompanionCloudActionResult> {
     // A running turn would keep working here (tools, files, replies) after the target took over.
-    const turnActive = async () => {
-      const sessionId = input.host.isTurnActive ? await input.host.canonicalSession(actor.externalId) : null;
-      return !!sessionId && input.host.isTurnActive!(sessionId);
-    };
+    const turnActive = async () => !!(await input.host.isBotBusy?.(actor.externalId));
     if (await turnActive()) return { ok: false, code: 'BUSY' };
     try { await flush(actor.externalId); }
     catch (error) {

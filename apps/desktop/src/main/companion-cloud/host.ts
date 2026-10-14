@@ -13,7 +13,7 @@ import { getDbClient } from '../localDb/client/current.js';
 import { createBotProfile, getBotMemoryService, setBotProfileAvatar, updateBotProfile } from '../localDb/ipc/bots.js';
 import { decodeBotAvatarImage } from '../localDb/ipc/botAvatarSelection.js';
 import { createMessage } from '../localDb/ipc/messages.js';
-import { botProfiles, messages } from '../localDb/schema.js';
+import { botProfiles, botSessionLinks, messages } from '../localDb/schema.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
 import { botProfileDir, botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
@@ -257,7 +257,12 @@ export function createCompanionCloudHost(input: {
     onLocalChange: onBotRemoteResourceChanged,
     materializer: createMaterializer(input),
     listDevices: input.listDevices,
-    ...(input.isTurnActive ? { isTurnActive: input.isTurnActive } : {}),
+    ...(input.isTurnActive ? { isBotBusy: async (botId: string) => {
+      // Every live task the companion runs in: its main task, group lanes and delegations.
+      const rows = await getDbClient().drizzle.select({ sessionId: botSessionLinks.sessionId }).from(botSessionLinks)
+        .where(and(eq(botSessionLinks.botId, botId), isNull(botSessionLinks.archivedAt)));
+      return rows.some(row => input.isTurnActive!(row.sessionId));
+    } } : {}),
     ...(input.probeCompanionCloud ? { probeCompanionCloud: input.probeCompanionCloud } : {}),
     installationId: companionInstallationId,
     shadows: companionShadowStore(),

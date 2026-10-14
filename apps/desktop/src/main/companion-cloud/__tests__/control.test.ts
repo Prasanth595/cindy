@@ -43,7 +43,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
     materializer: local.host, listDevices: async () => options.devices ?? [],
     ...(options.installationId ? { installationId: () => options.installationId! } : {}),
     ...(options.probe ? { probeCompanionCloud: options.probe } : {}),
-    ...(options.turnActive ? { isTurnActive: options.turnActive } : {}),
+    ...(options.turnActive ? { isBotBusy: async () => options.turnActive!() } : {}),
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
