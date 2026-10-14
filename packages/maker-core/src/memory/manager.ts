@@ -41,6 +41,9 @@ import type { Logger } from '../interfaces/logger.js';
 /** 工厂函数: 给一个绝对文件路径, 返回 better-sqlite3 Database 实例。host 注入。 */
 export type SqliteFactory = (filePath: string) => Database.Database;
 
+/** review 一次性调用预算: 一段 ≤200 词的建议, 给足 60s(LLM 冷启 + 长 dump)。 */
+const REVIEW_ONE_SHOT_OPTS = { maxTokens: 800, timeoutMs: 60_000 } as const;
+
 export interface MakerMemoryManagerDeps {
   /** Maker memory 文件根目录, host 注入 (e.g. <electron userData>/maker-memory) */
   basePath: string;
@@ -94,6 +97,18 @@ export interface MakerMemoryManagerDeps {
    * 缺席 = 不裁决(未接入停用设置的宿主)。
    */
   isOneShotRouteDisabled?: (agent: AgentKind) => Promise<boolean>;
+  /**
+   * memory_review 的一次性文本调用(host 注入)。返回 null / 空串 = 链上没产出,
+   * manager 回退 reviewAgent 的默认 oneShot 路由(既有行为不变)。
+   *
+   * desktop 注入的实现走共享辅助模型链: review agent 的默认模型(claude-haiku-4-5)
+   * 在部分供应商网关上不在账号可用清单内(403 user_model_access_denied), 硬编码
+   * 默认路由会让 memory_review 对这些账号 100% 失败(2026-10-14 实测)。
+   */
+  reviewOneShot?: (
+    prompt: string,
+    opts: { maxTokens: number; timeoutMs: number },
+  ) => Promise<string | null>;
   logger: Logger;
   /** 配置覆盖 */
   config?: Partial<MemoryConfig>;
@@ -892,10 +907,6 @@ export class MakerMemoryManager {
       return { suggestions: 'No memories in this workdir yet.' };
     }
     const reviewAgentKind = this.deps.reviewAgent ?? 'claude-code';
-    const agent = this.deps.agents[reviewAgentKind];
-    if (!agent) {
-      throw new Error(`runReview: review agent '${reviewAgentKind}' not registered`);
-    }
     if (await this.deps.isOneShotRouteDisabled?.(reviewAgentKind)) {
       throw new Error(
         `runReview: one-shot route for '${reviewAgentKind}' is disabled in settings`,
@@ -917,7 +928,21 @@ export class MakerMemoryManager {
       summary,
     ].join('\n');
 
-    const suggestions = await agent.oneShot(prompt, { maxTokens: 800, timeoutMs: 60_000 });
+    // host 注入的自定义一次性调用优先(共享辅助模型链); 返回 null / 空串 =
+    // 链上没产出, 回退 review agent 默认路由。agent 查找推迟到这里: 注入链能
+    // 产出时, 未注册 review agent 不该再把 review 硬拦死。
+    const custom = this.deps.reviewOneShot
+      ? await this.deps.reviewOneShot(prompt, REVIEW_ONE_SHOT_OPTS)
+      : null;
+    if (custom && custom.trim().length > 0) {
+      this.assertScopeUnchanged(scopeAtEntry);
+      return { suggestions: custom };
+    }
+    const agent = this.deps.agents[reviewAgentKind];
+    if (!agent) {
+      throw new Error(`runReview: review agent '${reviewAgentKind}' not registered`);
+    }
+    const suggestions = await agent.oneShot(prompt, REVIEW_ONE_SHOT_OPTS);
     // oneShot await 后、返回前复核 (review #2388 Codex 21st P1): 边界在 LLM
     // 调用期间发生则建议文本基于旧 owner 数据 — 不得向当前 session 报 ok。
     this.assertScopeUnchanged(scopeAtEntry);

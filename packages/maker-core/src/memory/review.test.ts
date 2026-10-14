@@ -1,0 +1,144 @@
+/**
+ * MakerMemoryManager.runReview 的 reviewOneShot 注入与回退语义回归。
+ *
+ * 背景: review agent (claude-code) 的默认模型 claude-haiku-4-5 在部分供应商网关上
+ * 不在账号可用清单内(403 user_model_access_denied), 硬编码默认路由会让 memory_review
+ * 对这些账号 100% 失败。manager 新增可选 reviewOneShot 注入点: host(desktop)走共享
+ * 辅助模型链; 链上没产出(null/空串)必须回退 review agent 默认路由, 不改变既有宿主行为。
+ */
+
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import DatabaseCtor from 'better-sqlite3';
+import type Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { BaseAgent } from '../agents/base-agent.js';
+import type { Logger } from '../interfaces/logger.js';
+import { MakerMemoryManager, type MakerMemoryManagerDeps } from './manager.js';
+
+const noopLogger: Logger = {
+  trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, fatal: () => {},
+  child: () => noopLogger,
+};
+
+const WORKDIR = '/repo/workdir';
+
+let root: string;
+
+beforeEach(async () => {
+  root = await mkdtemp(path.join(tmpdir(), 'memory-review-'));
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+const sqliteFactory = (filePath: string): Database.Database => new DatabaseCtor(filePath);
+
+function fakeAgent(text: string): BaseAgent {
+  return { oneShot: vi.fn(async () => text) } as unknown as BaseAgent;
+}
+
+async function makeManager(
+  agents: Partial<Record<string, BaseAgent>>,
+  reviewOneShot?: MakerMemoryManagerDeps['reviewOneShot'],
+): Promise<MakerMemoryManager> {
+  const manager = new MakerMemoryManager({
+    basePath: root,
+    sqliteFactory,
+    agents,
+    logger: noopLogger,
+    initialEnabled: true,
+    ownerScopeKey: () => 'test:owner:1',
+    reviewOneShot,
+  });
+  await manager.write(WORKDIR, {
+    type: 'user', name: 'pref', title: 'Preference',
+    description: 'Durable preference', body: 'Keep this preference.',
+  });
+  return manager;
+}
+
+describe('MakerMemoryManager.runReview · reviewOneShot 注入与回退', () => {
+  it('uses the injected reviewOneShot and does not touch the default agent route', async () => {
+    const agent = fakeAgent('default-route suggestion');
+    const reviewOneShot = vi.fn(async () => 'utility-chain suggestion');
+    const manager = await makeManager({ 'claude-code': agent }, reviewOneShot);
+    try {
+      const result = await manager.runReview(WORKDIR);
+      expect(result.suggestions).toBe('utility-chain suggestion');
+      expect(reviewOneShot).toHaveBeenCalledTimes(1);
+      // 注入生效时默认路由一次都不该被调用(它正是 403 的那条)。
+      expect(agent.oneShot).not.toHaveBeenCalled();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('forwards the review budget to the injected call', async () => {
+    const reviewOneShot = vi.fn(async () => 'ok');
+    const manager = await makeManager({}, reviewOneShot);
+    try {
+      await manager.runReview(WORKDIR);
+      expect(reviewOneShot).toHaveBeenCalledWith(expect.any(String), { maxTokens: 800, timeoutMs: 60_000 });
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('falls back to the review agent default route when the chain yields null', async () => {
+    const agent = fakeAgent('default-route suggestion');
+    const manager = await makeManager({ 'claude-code': agent }, async () => null);
+    try {
+      const result = await manager.runReview(WORKDIR);
+      expect(result.suggestions).toBe('default-route suggestion');
+      expect(agent.oneShot).toHaveBeenCalledTimes(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('falls back when the chain yields only whitespace', async () => {
+    const agent = fakeAgent('default-route suggestion');
+    const manager = await makeManager({ 'claude-code': agent }, async () => '   \n  ');
+    try {
+      const result = await manager.runReview(WORKDIR);
+      expect(result.suggestions).toBe('default-route suggestion');
+      expect(agent.oneShot).toHaveBeenCalledTimes(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('keeps the historical default route when no reviewOneShot is injected', async () => {
+    const agent = fakeAgent('default-route suggestion');
+    const manager = await makeManager({ 'claude-code': agent });
+    try {
+      const result = await manager.runReview(WORKDIR);
+      expect(result.suggestions).toBe('default-route suggestion');
+      expect(agent.oneShot).toHaveBeenCalledTimes(1);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('still short-circuits with no records to review', async () => {
+    const manager = new MakerMemoryManager({
+      basePath: root,
+      sqliteFactory,
+      agents: {},
+      logger: noopLogger,
+      initialEnabled: true,
+      ownerScopeKey: () => 'test:owner:1',
+      reviewOneShot: vi.fn(async () => 'should not run'),
+    });
+    try {
+      const result = await manager.runReview('/repo/empty');
+      expect(result.suggestions).toBe('No memories in this workdir yet.');
+    } finally {
+      manager.dispose();
+    }
+  });
+});
