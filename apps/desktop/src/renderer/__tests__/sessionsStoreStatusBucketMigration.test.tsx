@@ -136,6 +136,27 @@ describe('sessionsStore status bucket migration', () => {
     } finally { off(); offStore(); }
   });
 
+  it('keeps a task hidden when the hide push beats an in-flight list response', async () => {
+    const pending = deferred<Session[]>();
+    mocks.list.mockReturnValueOnce(pending.promise);
+    const loading = sessionsStore.ensureByFilter('active');
+    // Hidden before the first list response lands: nothing is cached yet.
+    sessionsStore.patchLocal('plugin-task', { hiddenAt: '2026-10-15T00:00:00.000Z' });
+    expect(sessionsStore.getByFilter('active')).toBeNull();
+    pending.resolve([session('keep'), session('plugin-task')]);
+    await loading;
+    expect(sessionsStore.getByFilter('active')?.map(({ id }) => id)).toEqual(['keep']);
+    // Local optimistic inserts do not bring it back either.
+    sessionsStore.prependCreated(session('plugin-task'));
+    expect(sessionsStore.findById('plugin-task')).toBeNull();
+
+    // Revealed: later list responses may include it again.
+    sessionsStore.patchLocal('plugin-task', { hiddenAt: null, updatedAt: '2026-10-15T00:01:00.000Z' });
+    mocks.list.mockResolvedValueOnce([session('plugin-task'), session('keep')]);
+    await sessionsStore.forceRefresh('active');
+    expect(sessionsStore.getByFilter('active')?.map(({ id }) => id)).toEqual(['plugin-task', 'keep']);
+  });
+
   it('moves a row with an authoritative timestamp into archived and all without querying', async () => {
     const target = session('archive-me', 'active', '2026-08-27T00:00:00.000Z');
     const keepActive = session('keep-active', 'active', '2026-08-27T00:30:00.000Z');

@@ -9,7 +9,7 @@ import { assertPluginWorkerDirectoryScope, resolvePluginWorkerDirectory } from '
 import { PluginWriteAccessGate } from './pluginWriteAccessGate.js';
 import { pluginWorkerCompletedAt } from './pluginWorkerCompletion.js';
 import { createPluginTaskStore } from './pluginTaskStore.js';
-import { createPluginBackgroundTaskHandlers, selectPluginHiddenTaskRows } from './pluginHiddenTasks.js';
+import { createPluginBackgroundTaskHandlers, revealAllPluginHiddenTasks } from './pluginHiddenTasks.js';
 import { setSessionHidden } from '../localDb/ipc/sessionHidden.js';
 import { isSessionHiddenSync } from '../localDb/hiddenSessionRegistry.js';
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
@@ -12514,9 +12514,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         await setSessionHidden({ sessionId: taskId, hidden, db: snapshot.client, assertCurrent: assertAllowed });
       },
       revealPluginTasks: async pluginId => {
-        for (const row of await selectPluginHiddenTaskRows(snapshot.client, pluginId)) {
-          await setSessionHidden({ sessionId: row.taskId, hidden: false, db: snapshot.client, assertCurrent });
-        }
+        // 不受详情页列表的展示上限约束：分批恢复全部，避免卸载撤销归属后仍有任务隐藏。
+        await revealAllPluginHiddenTasks(snapshot.client, pluginId, taskId =>
+          setSessionHidden({ sessionId: taskId, hidden: false, db: snapshot.client, assertCurrent }));
       },
       readSession: async taskId => {
         assertCurrent();

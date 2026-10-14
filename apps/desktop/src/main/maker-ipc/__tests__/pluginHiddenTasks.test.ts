@@ -6,7 +6,11 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DbClient } from '../../localDb/client/DbClient.js';
-import { createPluginBackgroundTaskHandlers, selectPluginHiddenTaskRows } from '../pluginHiddenTasks.js';
+import {
+  createPluginBackgroundTaskHandlers,
+  revealAllPluginHiddenTasks,
+  selectPluginHiddenTaskRows,
+} from '../pluginHiddenTasks.js';
 
 let sqlite: Database.Database;
 let db: DbClient;
@@ -41,6 +45,46 @@ describe('plugin background task rows', () => {
     expect((await selectPluginHiddenTaskRows(db, 'demo')).map((row) => row.taskId)).toEqual(['bg-new', 'bg-old']);
     expect((await selectPluginHiddenTaskRows(db, 'demo', { taskId: 'other' }))).toEqual([]);
     expect((await selectPluginHiddenTaskRows(db, 'elsewhere')).map((row) => row.taskId)).toEqual(['other']);
+  });
+});
+
+describe('revealing every plugin background task', () => {
+  const addHiddenTasks = (count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      sqlite.prepare("INSERT INTO sessions VALUES (?, 'Bulk', 'active', 'plugin', 5, ?)").run(`bulk-${i}`, 100 + i);
+      sqlite.prepare("INSERT INTO plugin_task_requests VALUES (?, 'bulk', 'create', '', ?, 'f', '{}', 0, 1)")
+        .run(`bulk-${i}`, `kb-${i}`);
+    }
+  };
+
+  it('reveals beyond one batch until nothing of this plugin stays hidden', async () => {
+    addHiddenTasks(5);
+    const reveal = vi.fn(async (taskId: string) => {
+      sqlite.prepare('UPDATE sessions SET hidden_at = NULL WHERE id = ?').run(taskId);
+    });
+    await revealAllPluginHiddenTasks(db, 'bulk', reveal, { batchSize: 2 });
+    expect(reveal).toHaveBeenCalledTimes(5);
+    expect(new Set(reveal.mock.calls.map(([id]) => id)).size).toBe(5);
+    expect(await selectPluginHiddenTaskRows(db, 'bulk')).toEqual([]);
+    // 其它插件的后台任务不受影响。
+    expect((await selectPluginHiddenTaskRows(db, 'demo')).map((row) => row.taskId)).toEqual(['bg-new', 'bg-old']);
+  });
+
+  it('throws instead of looping when a reveal does not take effect', async () => {
+    addHiddenTasks(5);
+    const reveal = vi.fn(async () => undefined);
+    await expect(revealAllPluginHiddenTasks(db, 'bulk', reveal, { batchSize: 2 })).rejects.toThrow('still hidden');
+    expect(reveal).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops at maxBatches', async () => {
+    addHiddenTasks(5);
+    const reveal = vi.fn(async (taskId: string) => {
+      sqlite.prepare('UPDATE sessions SET hidden_at = NULL WHERE id = ?').run(taskId);
+    });
+    await expect(revealAllPluginHiddenTasks(db, 'bulk', reveal, { batchSize: 2, maxBatches: 2 }))
+      .rejects.toThrow('after 2 batches');
+    expect(reveal).toHaveBeenCalledTimes(4);
   });
 });
 

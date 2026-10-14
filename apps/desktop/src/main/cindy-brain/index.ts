@@ -4923,6 +4923,39 @@ configureProviderMediaRuntime({
 });
 
 /**
+ * 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore)→ 快问快答的
+ * 供应商×agent×模型。每单现读;未选 = null = 跟随身份卡声明/系统辅助模型链。
+ */
+function getPluginOneshotModelSelection(
+  ghostId: string,
+): { providerId?: string; agentKind: AgentKind; model: string } | null {
+  const config = readPluginTaskConfig(ghostId);
+  if (!config.model) return null;
+  if (!config.agentKind || config.agentKind === 'pi') {
+    // 两种情况按目录解析一条快问快答可路由的 供应商×agent×模型:
+    // - 手改文件只写了 model;
+    // - 用户给插件选的是 Pi 路线(快问快答只有 codex / claude-code 通道):同一
+    //   供应商×模型换成可用通道执行。
+    // 用户显式选了供应商时钉死该供应商:解析结果落到别家(该供应商不可用/无通道)
+    // 一律不采用,绝不换另一家同名模型执行计费。解析不到或不一致都按用户显式选择
+    // 原样返回(执行侧推断不出即如实失败),不悄悄换回系统链。
+    const resolved = resolveOneshotCatalogModel(
+      getActiveCatalog(),
+      readModelDisableOverrides(),
+      config.model,
+      config.providerId ? [config.providerId, ...readProviderOrder()] : readProviderOrder(),
+      hasOneshotProviderCredential,
+    );
+    if (resolved && (!config.providerId || resolved.providerId === config.providerId)) return resolved;
+  }
+  return {
+    agentKind: config.agentKind === 'cc' ? 'claude-code' : (config.agentKind ?? 'codex'),
+    model: config.model,
+    ...(config.providerId ? { providerId: config.providerId } : {}),
+  };
+}
+
+/**
  * Plugin media and storage use the same process-local AppSession owner
  * boundary as the rest of the owner-scoped runtime.
  */
@@ -5005,30 +5038,7 @@ export function getGhostCindySlot(): GhostCindySlot {
       videoCapabilities: getGhostVideoCapabilities,
       // 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore);每单现读,
       // 未选 = null = 跟随身份卡声明/系统辅助模型链,辅助模型改动后自动跟随。
-      getOneshotModelSelection: (ghostId) => {
-        const config = readPluginTaskConfig(ghostId);
-        if (!config.model) return null;
-        if (!config.agentKind || config.agentKind === 'pi') {
-          // 两种情况按目录解析一条快问快答可路由的 供应商×agent×模型:
-          // - 手改文件只写了 model;
-          // - 用户给插件选的是 Pi 路线(快问快答只有 codex / claude-code 通道):同一
-          //   供应商×模型换成可用通道执行,用户所选供应商优先。
-          // 解析不到仍按用户显式选择钉死(执行侧推断不出即如实失败),不悄悄换回系统链。
-          const resolved = resolveOneshotCatalogModel(
-            getActiveCatalog(),
-            readModelDisableOverrides(),
-            config.model,
-            config.providerId ? [config.providerId, ...readProviderOrder()] : readProviderOrder(),
-            hasOneshotProviderCredential,
-          );
-          if (resolved) return resolved;
-        }
-        return {
-          agentKind: config.agentKind === 'cc' ? 'claude-code' : (config.agentKind ?? 'codex'),
-          model: config.model,
-          ...(config.providerId ? { providerId: config.providerId } : {}),
-        };
-      },
+      getOneshotModelSelection: getPluginOneshotModelSelection,
       getImageConfig: getCatalogImageConfig,
       getVideoConfig: getCatalogVideoConfig,
       getEmbedConfig: getCatalogEmbedConfig,

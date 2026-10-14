@@ -56,3 +56,60 @@ describe('ghosts:errand-prefs (plugin model & tasks)', () => {
     expect(source).not.toContain("'ghosts:cindy-prefs:set'");
   });
 });
+
+type OneshotSelection = { providerId?: string; agentKind: string; model: string } | null;
+
+const createSelection = createGhostProductionCallbacks<{
+  getPluginOneshotModelSelection: (ghostId: string) => OneshotSelection;
+}>({ functions: ['getPluginOneshotModelSelection'] });
+
+describe('getPluginOneshotModelSelection (plugin oneshot model pin)', () => {
+  function select(config: Record<string, unknown>, resolved: OneshotSelection): {
+    result: OneshotSelection;
+    resolve: ReturnType<typeof vi.fn>;
+  } {
+    const resolve = vi.fn(() => resolved);
+    const { getPluginOneshotModelSelection } = createSelection({
+      readPluginTaskConfig: () => config,
+      resolveOneshotCatalogModel: resolve,
+      getActiveCatalog: () => ({}),
+      readModelDisableOverrides: () => undefined,
+      readProviderOrder: () => ['xd', 'openai'],
+      hasOneshotProviderCredential: () => true,
+    });
+    return { result: getPluginOneshotModelSelection('writer'), resolve };
+  }
+
+  it('keeps the user-chosen provider when the Pi route only resolves on another provider', () => {
+    // 用户选的供应商没有快问快答通道,目录只在另一家解析到同名模型:不换供应商。
+    const { result, resolve } = select(
+      { agentKind: 'pi', providerId: 'my-relay', model: 'gpt-5.5' },
+      { providerId: 'openai', agentKind: 'codex', model: 'gpt-5.5' },
+    );
+    expect(resolve.mock.calls[0]?.[3]).toEqual(['my-relay', 'xd', 'openai']);
+    expect(result).toEqual({ agentKind: 'pi', model: 'gpt-5.5', providerId: 'my-relay' });
+  });
+
+  it('uses the resolved oneshot route when it stays on the user-chosen provider', () => {
+    const { result } = select(
+      { agentKind: 'pi', providerId: 'my-relay', model: 'gpt-5.5' },
+      { providerId: 'my-relay', agentKind: 'codex', model: 'gpt-5.5' },
+    );
+    expect(result).toEqual({ providerId: 'my-relay', agentKind: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('accepts any resolved provider when the user did not choose one', () => {
+    const { result } = select(
+      { model: 'gpt-5.5' },
+      { providerId: 'openai', agentKind: 'codex', model: 'gpt-5.5' },
+    );
+    expect(result).toEqual({ providerId: 'openai', agentKind: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('returns null when no model is chosen and pins explicit non-Pi selections as-is', () => {
+    expect(select({}, null).result).toBeNull();
+    const { result, resolve } = select({ agentKind: 'cc', providerId: 'anthropic', model: 'claude-sonnet' }, null);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result).toEqual({ agentKind: 'claude-code', model: 'claude-sonnet', providerId: 'anthropic' });
+  });
+});

@@ -19,7 +19,7 @@ const OWNED_RECEIPT_SQL = sql`(json_valid(${pluginTaskRequests.payload})
 export async function selectPluginHiddenTaskRows(
   db: DbClient,
   pluginId: string,
-  options: { taskId?: string } = {},
+  options: { taskId?: string; limit?: number } = {},
 ): Promise<Array<{ taskId: string; title: string; status: string; updatedAt: number }>> {
   return db.drizzle
     .select({
@@ -40,7 +40,35 @@ export async function selectPluginHiddenTaskRows(
       OWNED_RECEIPT_SQL,
     ))
     .orderBy(desc(sessions.updatedAt), desc(sessions.id))
-    .limit(PLUGIN_BACKGROUND_TASK_LIST_LIMIT);
+    .limit(options.limit ?? PLUGIN_BACKGROUND_TASK_LIST_LIMIT);
+}
+
+/**
+ * 卸载前把本插件的全部后台任务恢复显示（不受列表展示上限约束）：分批查询并逐条
+ * reveal，直到查不到隐藏任务。已恢复过的任务再次出现说明 reveal 没生效，直接抛错，
+ * 不死循环；maxBatches（默认 1000）再兜一层上限。
+ */
+export async function revealAllPluginHiddenTasks(
+  db: DbClient,
+  pluginId: string,
+  reveal: (taskId: string) => Promise<unknown>,
+  options: { batchSize?: number; maxBatches?: number } = {},
+): Promise<void> {
+  const batchSize = options.batchSize ?? PLUGIN_BACKGROUND_TASK_LIST_LIMIT;
+  const maxBatches = options.maxBatches ?? 1000;
+  const attempted = new Set<string>();
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const rows = await selectPluginHiddenTaskRows(db, pluginId, { limit: batchSize });
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      if (attempted.has(row.taskId)) {
+        throw new Error(`Plugin background task ${row.taskId} is still hidden after reveal`);
+      }
+      attempted.add(row.taskId);
+      await reveal(row.taskId);
+    }
+  }
+  throw new Error(`Plugin background tasks still hidden after ${maxBatches} batches`);
 }
 
 export interface PluginBackgroundTaskDeps {
