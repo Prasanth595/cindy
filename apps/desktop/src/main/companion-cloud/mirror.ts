@@ -4,6 +4,7 @@
  * deduplicated by local message id, resumed from a cursor after each successful import.
  */
 import { createHash } from 'node:crypto';
+import { isSubagentParentToolUseId } from '@cindy/maker-shared/message-render';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import type { CompanionCloudState } from './state.js';
 import { chatRejection, type CompanionApi } from './types.js';
@@ -72,7 +73,9 @@ export function mirrorMessageText(row: CompanionMirrorRow): string | null {
   // Private/coordination replies are hidden in the local timeline as well; so are progress
   // commentary and sub-agent output, which are never a reply (bots.ts canonicalReplyVisibility).
   if (row.role === 'assistant' && (meta.botPrivateReply === true || meta.assistantPhase === 'commentary'
-    || (meta.parentToolUseId ?? null) !== null || (meta.parent_tool_use_id ?? null) !== null)) return null;
+    || (meta.parentToolUseId ?? null) !== null || (meta.parent_tool_use_id ?? null) !== null
+    // Claude sub-agent rows; same predicate as the renderer (a legacy transcript link is not one).
+    || (typeof meta.parentUuid === 'string' && !!meta.parentUuid && isSubagentParentToolUseId(meta.parentUuid)))) return null;
   if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
   const text = visibleMessageText(row.role, row.content);
   // Attachments count on their own: an images-only message is still the owner's message.

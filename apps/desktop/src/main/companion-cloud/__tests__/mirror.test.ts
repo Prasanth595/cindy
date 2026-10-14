@@ -35,6 +35,7 @@ describe('mirrorMessageText', () => {
     ['progress commentary', reply('checking files', { agentMeta: JSON.stringify({ assistantPhase: 'commentary' }) })],
     ['sub-agent output', reply('sub result', { agentMeta: JSON.stringify({ parentToolUseId: 'toolu_1' }) })],
     ['sub-agent output (snake case)', reply('sub result', { agentMeta: JSON.stringify({ parent_tool_use_id: 'toolu_1' }) })],
+    ['Claude sub-agent output (parentUuid)', reply('sub result', { agentMeta: JSON.stringify({ parentUuid: 'toolu_subagent' }) })],
     ['input sent by another task or teammate', user('do this', { agentMeta: JSON.stringify({ origin: { kind: 'session', senderSessionId: 's' } }) })],
     ['input from an automation', user('scheduled', { agentMeta: JSON.stringify({ origin: { kind: 'scheduler', scheduleId: 'r' } }) })],
     ['input from a plugin', user('plugin says', { agentMeta: JSON.stringify({ sourcePlugin: { pluginId: 'p' } }) })],
