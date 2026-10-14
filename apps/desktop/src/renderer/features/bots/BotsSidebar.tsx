@@ -2,16 +2,21 @@ import { useNavigationAttention } from '@/lib/navigationAttentionStore';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { botRosterLabel } from '../../../shared/botCreation';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   Bot,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Eye,
   EyeOff,
   Pin,
   Search,
+  Settings,
   Trash2,
 } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -19,6 +24,9 @@ import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { cn } from '@/lib/utils';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import type { BotGroupSummary } from '../../../shared/botGroupChat';
 import * as sessionService from '@/lib/sessionService';
 import { isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
 import {
@@ -48,7 +56,9 @@ import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
-import { useBotGroupList } from './botGroupStore';
+import { refreshBotGroups, useBotGroupList } from './botGroupStore';
+import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
+import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap } from './botReadState';
 import { ChatJoinButton } from './ChatServerControls';
 import { isBotGroupLaneSession, withoutBotGroupLanes } from './botGroupLane';
@@ -83,6 +93,7 @@ const UNREAD_BADGE_CLASS =
 function BotsSidebarContent() {
   const { navigateToView } = useActiveMainView();
   const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
   const navigationCounts = useNavigationAttention();
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -103,9 +114,14 @@ function BotsSidebarContent() {
   const collapsed = useSidebarCollapsedState();
   const [query, setQuery] = useState('');
   const [showHidden, setShowHidden] = useState(false);
+  const [showArchivedGroups, setShowArchivedGroups] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const archiveBusyRef = useRef(false);
+  const [archiveError, setArchiveError] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const [contextMenu, setContextMenu] = useState<{
-    botId: string;
+    kind: 'bot' | 'group';
+    id: string;
     x: number;
     y: number;
   } | null>(null);
@@ -114,11 +130,36 @@ function BotsSidebarContent() {
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
 
-  const openBotContextMenu = (botId: string, origin: HTMLButtonElement, x: number, y: number) => {
+  const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
     menuOriginRef.current = origin;
     menuPointerDownRef.current = false;
     menuRestoreFocusRef.current = true;
-    setContextMenu({ botId, x, y });
+    setContextMenu({ kind, id, x, y });
+  };
+
+  const changeGroupArchive = async (group: BotGroupSummary) => {
+    if (archiveBusyRef.current) return;
+    archiveBusyRef.current = true;
+    setArchiveBusy(true);
+    setArchiveError('');
+    const owner = getDataOwnerGeneration();
+    const actionKey = 'bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive');
+    try {
+      const accepted = await confirm({ presentation: 'standard', title: t(actionKey),
+        description: t(actionKey + 'Hint'), confirmText: t(actionKey),
+        cancelText: t('bots.cancel'), confirmVariant: 'destructive' });
+      if (!accepted || !isDataOwnerGenerationCurrent(owner)) return;
+      const result = await window.electronAPI.maker.chatServer.manage({ groupId: group.id,
+        action: { type: 'archive', archived: !group.archived, expectedRevision: group.revision! } });
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      if (!result.ok) setArchiveError(t(chatErrorKey(result.errorCode)));
+      else refreshBotGroups();
+    } catch {
+      if (isDataOwnerGenerationCurrent(owner)) setArchiveError(t(chatErrorKey('REQUEST_FAILED')));
+    } finally {
+      archiveBusyRef.current = false;
+      setArchiveBusy(false);
+    }
   };
 
   /*
@@ -167,9 +208,14 @@ function BotsSidebarContent() {
     ...remoteBots.filter(bot => (!hasMultipleCindys || !isCindyDeviceBot(bot)) && (!normalizedQuery || `${bot.name} ${bot.description} ${bot.deviceName}`.toLocaleLowerCase().includes(normalizedQuery))),
   ];
   const rosterSize = groups.length + rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
-  const showSearch = rosterSize >= 8 || normalizedQuery.length > 0;
-  const visibleGroups = groups.filter(group => !normalizedQuery ||
-    `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery));
+  const showSearch = rosterSize >= 8 || normalizedQuery.length > 0 ||
+    (showArchivedGroups && groups.some(group => group.archived));
+  const matchesGroup = (group: BotGroupSummary) => !normalizedQuery ||
+    `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery);
+  const visibleGroups = groups.filter(group => !group.archived && matchesGroup(group));
+  const archivedGroups = groups.filter(group => group.archived);
+  const visibleArchivedGroups = archivedGroups.filter(matchesGroup)
+    .sort((a, b) => (b.lastMessage?.createdAt ?? b.updatedAt) - (a.lastMessage?.createdAt ?? a.updatedAt));
   const visibleChats = [
     ...visibleBots.map(bot => ({ kind: 'bot' as const, bot,
       pinned: 'pinnedAt' in bot && Boolean(bot.pinnedAt),
@@ -267,9 +313,9 @@ function BotsSidebarContent() {
   // 曾经这里还按 bot 逐个拉 `getBotHealth` 只为在行尾画一个状态图标。图标下线之后
   // 这一轮 N 次 IPC 也一起下线——列表不再为一个不显示的东西查询。
 
-  const renderBotContextMenu = (bot: BotProfile, selected: boolean) => (
+  const renderContextMenu = (kind: 'bot' | 'group', id: string, children: ReactNode) => (
     <DropdownMenu
-      open={contextMenu?.botId === bot.id}
+      open={contextMenu?.kind === kind && contextMenu.id === id}
       onOpenChange={(open) => { if (!open) setContextMenu(null); }}
     >
       <DropdownMenuTrigger asChild>
@@ -305,6 +351,12 @@ function BotsSidebarContent() {
           }
         }}
       >
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const renderBotContextMenu = (bot: BotProfile, selected: boolean) => renderContextMenu('bot', bot.id, <>
         <DropdownMenuItem onSelect={() => void setBotPinned(bot.id, !bot.pinnedAt)}>
           <Pin size={14} className="mr-2" />
           {t(bot.pinnedAt ? 'bots.list.unpin' : 'bots.list.pin')}
@@ -344,8 +396,35 @@ function BotsSidebarContent() {
           <Trash2 size={14} className="mr-2" />
           {t('bots.lifecycle.delete')}
         </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+  </>);
+
+  const renderGroupRow = (group: BotGroupSummary) => (
+    <BotGroupSidebarRow key={'group:' + group.id} group={group} bots={bots}
+      islandActivity={islandActivity} now={now} selected={group.id === groupId}
+      onOpenGroup={id => navigate('/bots/groups/' + encodeURIComponent(id))}
+      onContextMenu={event => {
+        event.preventDefault(); event.stopPropagation();
+        openContextMenu('group', group.id, event.currentTarget, event.clientX, event.clientY);
+      }}
+      onKeyDown={event => {
+        if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        openContextMenu('group', group.id, event.currentTarget, rect.left + 10, rect.bottom);
+      }}>
+      {renderContextMenu('group', group.id, <>
+        <DropdownMenuItem onSelect={() => navigate('/bots/groups/' + encodeURIComponent(group.id) + '?' + BOT_GROUP_SETTINGS_PARAM + '=1')}>
+          <Settings size={14} className="mr-2" />{t('bots.groupChat.settings.title')}
+        </DropdownMenuItem>
+        {group.serverBacked && group.members.some(member => member.isOwned && (member.role === 'owner' || member.role === 'admin')) && <>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={archiveBusy} onSelect={() => void changeGroupArchive(group)}>
+            {group.archived ? <ArchiveRestore size={14} className="mr-2" /> : <Archive size={14} className="mr-2" />}
+            {t('bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive'))}
+          </DropdownMenuItem>
+        </>}
+      </>)}
+    </BotGroupSidebarRow>
   );
 
   if (collapsed) {
@@ -406,6 +485,8 @@ function BotsSidebarContent() {
         </label>
       ) : null}
 
+      {archiveError && <p role="alert" className="mb-2 px-2.5 text-12 text-[var(--error-fg)]">{archiveError}</p>}
+
       <div className="min-h-0 flex-1 overflow-y-auto pb-3">
         {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && groups.length === 0 ? (
           <div className="px-3 py-3">
@@ -414,9 +495,7 @@ function BotsSidebarContent() {
         ) : (
           <div className="flex flex-col gap-1">
             {visibleChats.map(entry => {
-              if (entry.kind === 'group') return <BotGroupSidebarRow key={`group:${entry.group.id}`} group={entry.group}
-                bots={bots} islandActivity={islandActivity} now={now} selected={entry.group.id === groupId}
-                onOpenGroup={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />;
+              if (entry.kind === 'group') return renderGroupRow(entry.group);
               if (entry.kind === 'cindy') {
                 if (!currentCindy) return null;
                 const bot = currentCindy.bot;
@@ -437,13 +516,13 @@ function BotsSidebarContent() {
                   onSelect={option => navigate(option.route)}
                   onContextMenu={local ? event => {
                     event.preventDefault(); event.stopPropagation();
-                    openBotContextMenu(local.id, event.currentTarget, event.clientX, event.clientY);
+                    openContextMenu('bot', local.id, event.currentTarget, event.clientX, event.clientY);
                   } : undefined}
                   onKeyDown={local ? event => {
                     if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
                     event.preventDefault();
                     const rect = event.currentTarget.getBoundingClientRect();
-                    openBotContextMenu(local.id, event.currentTarget, rect.left + 10, rect.bottom);
+                    openContextMenu('bot', local.id, event.currentTarget, rect.left + 10, rect.bottom);
                   } : undefined}>
                   {local ? renderBotContextMenu(local, selected) : null}
                 </CindyDeviceRow>;
@@ -514,7 +593,7 @@ function BotsSidebarContent() {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      openBotContextMenu(bot.id, event.currentTarget, event.clientX, event.clientY);
+                      openContextMenu('bot', bot.id, event.currentTarget, event.clientX, event.clientY);
                     }}
                     onKeyDown={(event) => {
                       if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) {
@@ -522,7 +601,7 @@ function BotsSidebarContent() {
                       }
                       event.preventDefault();
                       const rect = event.currentTarget.getBoundingClientRect();
-                      openBotContextMenu(bot.id, event.currentTarget, rect.left + 10, rect.bottom);
+                      openContextMenu('bot', bot.id, event.currentTarget, rect.left + 10, rect.bottom);
                     }}
                     className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
@@ -689,6 +768,20 @@ function BotsSidebarContent() {
                 })}
               </div>
             ) : null}
+            {archivedGroups.length > 0 && <div className="mt-3 border-t border-[var(--border-default)] pt-2">
+              <button type="button" aria-expanded={showArchivedGroups} aria-controls="archived-bot-groups"
+                onClick={() => setShowArchivedGroups(value => !value)}
+                className="mb-1 flex min-h-8 w-full items-center gap-2 rounded-full px-2.5 text-12 text-[var(--sidebar-list-muted)] hover:bg-sidebar-item-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <Archive size={14} aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-left">{t('bots.groupChat.sidebar.archivedGroups')}</span>
+                <span className="tabular-nums">{archivedGroups.length}</span>
+                {showArchivedGroups ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+              </button>
+              {showArchivedGroups && <div id="archived-bot-groups" className="flex flex-col gap-1">
+                {visibleArchivedGroups.length > 0 ? visibleArchivedGroups.map(renderGroupRow)
+                  : <p className="px-2.5 py-2 text-12 text-[var(--sidebar-list-muted)]">{t('bots.groupChat.sidebar.noArchivedMatch')}</p>}
+              </div>}
+            </div>}
           </div>
         )}
 

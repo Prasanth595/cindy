@@ -8975,7 +8975,9 @@
         "planPlanning": "{{name}} is splitting the work…",
         "planStepDone": "{{name}} is done, waiting for you to continue",
         "planStepFailed": "{{name}} didn’t finish",
-        "planWaitingAnonymous": "Work split paused, waiting for you"
+        "planWaitingAnonymous": "Work split paused, waiting for you",
+        "archivedGroups": "Archived Groups",
+        "noArchivedMatch": "No archived groups match your search"
       },
       "create": {
         "title": "New Group Chat",
@@ -9229,8 +9231,9 @@
           "addCompanion": "Invite my companion",
           "leave": "Leave group",
           "leaveHint": "You and your companions will leave. Transfer ownership first if you own the group.",
-          "archive": "Archive group",
-          "archiveHint": "Keep history, stop new messages and companion activity.",
+          "soleOwnerHint": "You’re the only member left. Archive this group to keep its history and restore it later.",
+          "archive": "Archive Group",
+          "archiveHint": "Archiving stops new messages and teammate activity for everyone in this group. History is kept in Archived Groups, where you can unarchive it.",
           "confirm": "Confirm",
           "lastOwner": "Transfer ownership to another member before leaving or removing the current owner.",
           "conflict": "Someone updated this group. Refresh and try again.",
@@ -9240,8 +9243,8 @@
           "mentioned": "Only when mentioned",
           "auto": "Together",
           "sequential": "One at a time",
-          "unarchive": "Unarchive group",
-          "unarchiveHint": "Resume messages and companion activity.",
+          "unarchive": "Unarchive Group",
+          "unarchiveHint": "Unarchiving resumes messages and teammate activity for everyone in this group.",
           "archived": "This group is archived. History is still available.",
           "noneHint": "Only the companion’s owner can ask it to respond in this group.",
           "companionPermissions": "Companion permissions",

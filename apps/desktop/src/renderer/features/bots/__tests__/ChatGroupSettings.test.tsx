@@ -21,7 +21,37 @@ function group(owned = false): BotGroupSummary {
 }
 beforeEach(() => {
   vi.clearAllMocks(); mocks.manage.mockResolvedValue({ ok: true }); mocks.ownedBots.mockResolvedValue({ ok: true, bots: [] });
+  mocks.confirm.mockResolvedValue(true);
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { chatServer: mocks } } });
+});
+
+it('guides a sole owner to archive instead of offering an impossible leave', async () => {
+  const alone = group();
+  alone.members = [{ ...alone.members[0]!, role: 'owner' }];
+  render(<MemoryRouter><ChatGroupSettings group={alone} /></MemoryRouter>);
+  expect(screen.queryByRole('button', { name: key('leave') })).toBeNull();
+  expect(screen.getByText(key('soleOwnerHint'))).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: key('archive') }));
+  await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({ groupId: 'room',
+    action: { type: 'archive', archived: true, expectedRevision: 1 },
+  }));
+  expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+    description: key('archiveHint'), confirmText: key('archive'),
+  }));
+  expect(mocks.refresh).toHaveBeenCalledOnce();
+});
+
+it('keeps a sole archived owner in the group and offers restoring its history', async () => {
+  const alone = group();
+  alone.archived = true;
+  alone.members = [{ ...alone.members[0]!, role: 'owner' }];
+  render(<MemoryRouter><ChatGroupSettings group={alone} /></MemoryRouter>);
+  expect(screen.queryByRole('button', { name: key('leave') })).toBeNull();
+  expect(screen.queryByText(key('soleOwnerHint'))).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: key('unarchive') }));
+  await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({ groupId: 'room',
+    action: { type: 'archive', archived: false, expectedRevision: 1 },
+  }));
 });
 afterEach(cleanup);
 it('lets a member change their own nickname while keeping another owner’s grant read-only', async () => {

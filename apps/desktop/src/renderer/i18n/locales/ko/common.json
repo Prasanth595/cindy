@@ -8938,7 +8938,9 @@
         "planPlanning": "{{name}} 님이 역할을 나누는 중…",
         "planStepDone": "{{name}} 님이 마쳤어요. 다음 단계를 기다리는 중",
         "planStepFailed": "{{name}} 님이 끝내지 못했어요",
-        "planWaitingAnonymous": "역할 분담이 멈췄어요"
+        "planWaitingAnonymous": "역할 분담이 멈췄어요",
+        "archivedGroups": "보관된 그룹",
+        "noArchivedMatch": "검색과 일치하는 보관된 그룹이 없어요"
       },
       "create": {
         "title": "새 그룹 채팅",
@@ -9192,8 +9194,9 @@
           "addCompanion": "내 파트너 초대",
           "leave": "그룹 나가기",
           "leaveHint": "본인과 자신의 파트너가 그룹을 나갑니다. 소유자는 먼저 소유권을 이전해야 합니다.",
+          "soleOwnerHint": "그룹에 나만 남았어요. 그룹을 보관하면 기록을 유지하고 나중에 다시 사용할 수 있어요.",
           "archive": "그룹 보관",
-          "archiveHint": "기록을 보존하고 새 메시지와 파트너 실행을 중단합니다.",
+          "archiveHint": "그룹을 보관하면 모든 멤버의 새 메시지와 파트너 실행이 중지돼요. 기록은 “보관된 그룹”에서 볼 수 있으며 보관을 해제할 수 있어요.",
           "confirm": "확인",
           "lastOwner": "나가거나 소유자를 내보내기 전에 다른 멤버에게 소유권을 이전하세요.",
           "conflict": "다른 멤버가 설정을 변경했습니다. 새로 고침 후 다시 시도하세요.",
@@ -9204,7 +9207,7 @@
           "auto": "동시에 발언",
           "sequential": "차례로 발언",
           "unarchive": "그룹 보관 해제",
-          "unarchiveHint": "메시지와 파트너 실행을 재개합니다.",
+          "unarchiveHint": "보관을 해제하면 모든 멤버의 메시지와 파트너 실행이 재개돼요.",
           "archived": "보관된 그룹입니다. 기록은 계속 볼 수 있습니다.",
           "noneHint": "이 그룹에서는 동료의 소유자만 응답을 요청할 수 있습니다.",
           "companionPermissions": "동료 권한",

@@ -8938,7 +8938,9 @@
         "planPlanning": "{{name}}正在安排…",
         "planStepDone": "{{name}}做完了，等你繼續",
         "planStepFailed": "{{name}}沒做完",
-        "planWaitingAnonymous": "分工停下了，等你看看"
+        "planWaitingAnonymous": "分工停下了，等你看看",
+        "archivedGroups": "已封存群組",
+        "noArchivedMatch": "找不到符合搜尋條件的已封存群組"
       },
       "create": {
         "title": "新增群聊",
@@ -9192,8 +9194,9 @@
           "addCompanion": "邀請我的夥伴",
           "leave": "退出群組",
           "leaveHint": "你和你帶來的夥伴將退出群組。群主需要先轉讓身分。",
+          "soleOwnerHint": "群組裡只剩你。可以封存群組，保留歷史記錄，以後再恢復使用。",
           "archive": "封存群組",
-          "archiveHint": "封存後保留群聊記錄，停止新訊息和夥伴執行。",
+          "archiveHint": "封存會對所有成員停用本群組，停止新訊息和夥伴執行。歷史記錄保留，可在「已封存群組」中查看並取消封存。",
           "confirm": "確認",
           "lastOwner": "請先將群主轉讓給其他成員，再退出或移除目前的群主。",
           "conflict": "群組設定已更新，請重新整理後再試。",
@@ -9204,7 +9207,7 @@
           "auto": "同時發言",
           "sequential": "依序發言",
           "unarchive": "取消封存",
-          "unarchiveHint": "恢復新訊息與夥伴執行。",
+          "unarchiveHint": "取消封存後，本群組對所有成員恢復新訊息與夥伴執行。",
           "archived": "本群已封存，可繼續查看歷史記錄。",
           "noneHint": "本群只有夥伴的主人可以讓夥伴回應。",
           "companionPermissions": "夥伴權限",

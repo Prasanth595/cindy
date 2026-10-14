@@ -29,6 +29,7 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
   const me = group.members.find(m => m.isSelf);
   const owner = group.members.some(m => m.isOwned && m.role === 'owner');
   const manager = owner || group.members.some(m => m.isOwned && m.role === 'admin');
+  const soleOwner = me?.role === 'owner' && group.members.length === 1;
   const [name, setName] = useState(group.name);
   const [topic, setTopic] = useState(group.topic ?? '');
   const [description, setDescription] = useState(group.description ?? '');
@@ -68,9 +69,9 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
     } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); return false; }
     finally { busyRef.current = false; setBusy(false); }
   }
-  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false) {
+  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false, confirmText = t(key('confirm'))) {
     const owner = getDataOwnerGeneration();
-    if (await confirm({ presentation: 'standard', title, description: note, confirmText: t(key('confirm')),
+    if (await confirm({ presentation: 'standard', title, description: note, confirmText,
       cancelText: t('bots.cancel'), confirmVariant: 'destructive' }) && isDataOwnerGenerationCurrent(owner)) await mutate(action, exit);
   }
   const profileOpenChange = useCallback((open: boolean) => {
@@ -202,9 +203,12 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           options={addable.map(bot => ({ value: bot.actorId, label: bot.name }))}
           onValueChange={actorId => void mutate({ type: 'member', actorId, action: 'invite' })} />}
       </section>
-      <div className="flex flex-wrap gap-2 border-t border-[var(--border-default)] pt-5">
-        <Button variant="secondary" size="sm" disabled={busy || !me} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>
-        {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
+      <div className="space-y-3 border-t border-[var(--border-default)] pt-5">
+        {soleOwner && !group.archived && <p className="text-13 text-[var(--text-secondary)]">{t(key('soleOwnerHint'))}</p>}
+        <div className="flex flex-wrap gap-2">
+          {!soleOwner && <Button variant="secondary" size="sm" disabled={busy || !me} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>}
+          {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')), false, t(key(group.archived ? 'unarchive' : 'archive')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
+        </div>
       </div>
     </div>
     <ProfileEditDialog open={editingProfile} onOpenChange={profileOpenChange} />

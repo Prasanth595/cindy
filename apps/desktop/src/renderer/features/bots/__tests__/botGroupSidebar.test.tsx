@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,6 +39,18 @@ const mocks = vi.hoisted(() => ({
   laneSentinel: Symbol('lane'),
   ownedTitle: vi.fn(),
   getSession: vi.fn(),
+  confirm: vi.fn(),
+  manage: vi.fn(),
+  refreshGroups: vi.fn(),
+  ownerGeneration: 1,
+}));
+
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: mocks.confirm }),
+}));
+vi.mock('@/contexts/dataOwnerGeneration', () => ({
+  getDataOwnerGeneration: () => mocks.ownerGeneration,
+  isDataOwnerGenerationCurrent: (generation: number) => generation === mocks.ownerGeneration,
 }));
 
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [] }));
@@ -83,6 +95,7 @@ vi.mock('../botStore', () => ({
 }));
 vi.mock('../botGroupStore', () => ({
   useBotGroupList: () => ({ groups: mocks.groups, loaded: true }),
+  refreshBotGroups: mocks.refreshGroups,
 }));
 vi.mock('../BotDeleteDialog', () => ({ BotDeleteDialog: () => null }));
 vi.mock('../BotGroupCreateDialog', () => ({
@@ -160,6 +173,10 @@ beforeEach(() => {
   mocks.sendNotification.mockReset();
   mocks.ownedTitle.mockReset().mockResolvedValue(null);
   mocks.getSession.mockReset();
+  mocks.confirm.mockReset().mockResolvedValue(true);
+  mocks.manage.mockReset().mockResolvedValue({ ok: true });
+  mocks.refreshGroups.mockReset();
+  mocks.ownerGeneration = 1;
   mocks.params = {};
   mocks.groups = [];
   mocks.islandActivity = new Map();
@@ -171,13 +188,142 @@ beforeEach(() => {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     writable: true,
-    value: { localDb: { messages: { onCreated: () => () => undefined } } },
+    value: { localDb: { messages: { onCreated: () => () => undefined } }, maker: { chatServer: {
+      manage: mocks.manage, status: async () => ({ enabled: false }),
+    } } },
   });
 });
 
 afterEach(cleanup);
 
 describe('BotsSidebar group chats', () => {
+  it('hides archived groups by default, opens their history and restores their row on refresh', async () => {
+    mocks.groups = [group(), group({ id: 'saved', name: '已完成的旅行', archived: true })];
+    const view = await renderSidebar();
+    expect(screen.getByText('周末出游')).toBeTruthy();
+    expect(screen.queryByText('已完成的旅行')).toBeNull();
+    const entry = screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ });
+    expect(entry.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(entry);
+    expect(screen.getByRole('textbox', { name: 'bots.list.search' })).toBeTruthy();
+    fireEvent.click(screen.getByText('已完成的旅行'));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/saved');
+    fireEvent.click(entry);
+    expect(screen.queryByText('已完成的旅行')).toBeNull();
+    mocks.groups = mocks.groups.map(item => ({ ...item, archived: false }));
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    expect(screen.getByText('已完成的旅行')).toBeTruthy();
+  });
+
+  it('searches archived group names and members without showing them in the default list', async () => {
+    mocks.profiles = [];
+    mocks.groups = Array.from({ length: 8 }, (_, i) => group({ id: 'saved-' + i,
+      name: '历史群 ' + i, archived: true, members: i === 0 ? group().members : [],
+    }));
+    await renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
+    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
+    fireEvent.change(input, { target: { value: '历史群 0' } });
+    expect(screen.getByText('历史群 0')).toBeTruthy();
+    expect(screen.queryByText('历史群 1')).toBeNull();
+    fireEvent.change(input, { target: { value: '小满' } });
+    expect(screen.getByText('历史群 0')).toBeTruthy();
+    fireEvent.change(input, { target: { value: 'missing' } });
+    expect(screen.queryByText('历史群 0')).toBeNull();
+    expect(screen.getByText('bots.groupChat.sidebar.noArchivedMatch')).toBeTruthy();
+  });
+
+  const managedGroup = (archived = false) => group({ serverBacked: true, archived, revision: 7,
+    members: [{ ...group().members[0]!, isOwned: true, role: 'owner' }],
+  });
+  const archiveKey = (archived = false) => 'bots.groupChat.server.settings.' + (archived ? 'unarchive' : 'archive');
+  async function selectArchive(archived = false) {
+    fireEvent.contextMenu(screen.getByText('周末出游').closest('button')!, { clientX: 20, clientY: 30 });
+    fireEvent.click(await screen.findByRole('menuitem', { name: archiveKey(archived) }));
+  }
+
+  it.each([false, true])('confirms archive change (%s) with the current revision and waits for refresh', async archived => {
+    mocks.groups = [managedGroup(archived)];
+    const view = await renderSidebar();
+    if (archived) fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
+    await selectArchive(archived);
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({ groupId: 'g1', action: {
+      type: 'archive', archived: !archived, expectedRevision: 7,
+    } }));
+    expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: archiveKey(archived),
+      confirmText: archiveKey(archived),
+      description: 'bots.groupChat.server.settings.' + (archived ? 'unarchiveHint' : 'archiveHint'),
+    }));
+    expect(mocks.refreshGroups).toHaveBeenCalledOnce();
+    expect(screen.getByText('周末出游')).toBeTruthy();
+    mocks.groups = [managedGroup(!archived)];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    if (!archived) expect(screen.queryByText('周末出游')).toBeNull();
+    else expect(screen.getByText('周末出游')).toBeTruthy();
+  });
+
+  it('keeps cancelled archives untouched and blocks old-account confirmations', async () => {
+    mocks.groups = [managedGroup()];
+    mocks.confirm.mockResolvedValueOnce(false);
+    await renderSidebar();
+    await selectArchive();
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+    expect(mocks.manage).not.toHaveBeenCalled();
+    expect(screen.getByText('周末出游')).toBeTruthy();
+    mocks.confirm.mockImplementationOnce(async () => { mocks.ownerGeneration += 1; return true; });
+    await selectArchive();
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+    expect(mocks.manage).not.toHaveBeenCalled();
+    expect(mocks.refreshGroups).not.toHaveBeenCalled();
+  });
+
+  it('blocks duplicate archive triggers while a confirmation is pending', async () => {
+    mocks.groups = [managedGroup()];
+    let accept!: (value: boolean) => void;
+    mocks.confirm.mockImplementationOnce(() => new Promise(resolve => { accept = resolve; }));
+    await renderSidebar();
+    await selectArchive();
+    fireEvent.contextMenu(screen.getByText('周末出游').closest('button')!);
+    const action = await screen.findByRole('menuitem', { name: archiveKey() });
+    expect(action.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(action);
+    expect(mocks.confirm).toHaveBeenCalledOnce();
+    await act(async () => { accept(true); });
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+  });
+
+  it('shows archived history rather than stale speaking or plan prompts', async () => {
+    mocks.groups = [group({ archived: true, speakingBotIds: ['mimi'], openPlan: openPlan() })];
+    await renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
+    expect(screen.queryByTestId('bot-group-running')).toBeNull();
+    expect(screen.queryByText(/sidebar.planStepDone/)).toBeNull();
+    expect(screen.getByText('bots.groupChat.sidebar.preview:{"name":"阿布","text":"下午 有小概率阵雨"}')).toBeTruthy();
+  });
+
+  it('keeps failed archives visible and ignores old-account responses', async () => {
+    mocks.groups = [managedGroup()];
+    mocks.manage.mockResolvedValueOnce({ ok: false, errorCode: 'REVISION_CONFLICT' });
+    await renderSidebar();
+    await selectArchive();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('bots.groupChat.server.settings.conflict'));
+    expect(screen.getByText('周末出游')).toBeTruthy();
+    expect(mocks.refreshGroups).not.toHaveBeenCalled();
+    mocks.manage.mockImplementationOnce(async () => { mocks.ownerGeneration += 1; return { ok: true }; });
+    await selectArchive();
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledTimes(2));
+    expect(mocks.refreshGroups).not.toHaveBeenCalled();
+  });
+
+  it('offers settings but no archive for ordinary members, with keyboard access', async () => {
+    mocks.groups = [group({ serverBacked: true, revision: 1 })];
+    await renderSidebar();
+    fireEvent.keyDown(screen.getByText('周末出游').closest('button')!, { key: 'F10', shiftKey: true });
+    expect(screen.queryByRole('menuitem', { name: archiveKey() })).toBeNull();
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'bots.groupChat.settings.title' }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/g1?groupSettings=1');
+  });
+
   it('lists groups alongside teammates with an author preview and opens them', async () => {
     mocks.groups = [group(), group({ id: 'g2', name: '读书会', lastMessage: null, updatedAt: 1 })];
     mocks.params = { groupId: 'g1' };
