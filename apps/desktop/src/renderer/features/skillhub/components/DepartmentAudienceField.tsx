@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { Tip } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
@@ -87,9 +88,9 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
           {t(`skillhub.audience.${value}`)}
         </label>
         {value === 'departments' && mode === 'departments' && <div className="flex flex-col gap-2 pb-3 pl-8 pr-3">
-          <input aria-label={t('skillhub.audience.search')} placeholder={t('skillhub.audience.search')}
-            value={query} onChange={e => setQuery(e.target.value)}
-            className="rounded-full border border-[var(--cmd-palette-border)] bg-transparent px-3 py-2" />
+          <Input aria-label={t('skillhub.audience.search')} placeholder={t('skillhub.audience.search')}
+            value={query} onChange={setQuery}
+            surface="ivory" />
           <div className="flex flex-wrap gap-1">
             {selected.map(id => <Button key={id} variant="secondary" size="sm" type="button" onClick={() => toggle(id)}>
               {byId.get(id)?.name ?? t('skillhub.audience.unavailable')}
@@ -100,7 +101,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
             {rows.map(({ department: d, depth, hasChildren }) => {
               const included = departmentAncestors(d.id, parents).some(id => selectedIds.has(id));
               return <div key={d.id} className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16 }}>
-                {hasChildren && <Tip text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
+                {hasChildren && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
                   onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(d.id)) next.delete(d.id); else next.add(d.id); return next; })}>
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </Button></Tip>}
