@@ -9392,6 +9392,7 @@
       "transferred": "{{name}} を「{{device}}」に移しました",
       "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
       "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
+      "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移動してください",
       "transferFailed": "{{name}} を「{{device}}」に移せませんでした",
       "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
       "shadowTitle": "この仲間は「{{device}}」で動作しています",

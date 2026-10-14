@@ -38,7 +38,7 @@ export const EMPTY_COMPANION_CLOUD_SNAPSHOT: CompanionCloudSnapshot = Object.fre
   demotedBotIds: [],
 }) as CompanionCloudSnapshot;
 
-export type CompanionCloudFailureCode = 'HOME_CONFLICT' | 'OFFLINE' | 'NOT_ENABLED' | 'FAILED' | 'TARGET_UNAVAILABLE';
+export type CompanionCloudFailureCode = 'HOME_CONFLICT' | 'OFFLINE' | 'NOT_ENABLED' | 'FAILED' | 'TARGET_UNAVAILABLE' | 'BUSY';
 
 export type CompanionCloudActionResult =
   | { ok: true }

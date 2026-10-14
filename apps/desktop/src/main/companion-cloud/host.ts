@@ -233,6 +233,8 @@ export function createCompanionCloudHost(input: {
   deliverToCanonical: CompanionCloudHost['deliverToCanonical'];
   ensureCanonicalSession: (botId: string) => Promise<string>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
+  /** A turn is running (or queued) in this Session. */
+  isTurnActive?: (sessionId: string) => boolean;
   listDevices: () => Promise<DeviceLinkDeviceView[]>;
   probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
   log?: CompanionLog;
@@ -255,6 +257,7 @@ export function createCompanionCloudHost(input: {
     onLocalChange: onBotRemoteResourceChanged,
     materializer: createMaterializer(input),
     listDevices: input.listDevices,
+    ...(input.isTurnActive ? { isTurnActive: input.isTurnActive } : {}),
     ...(input.probeCompanionCloud ? { probeCompanionCloud: input.probeCompanionCloud } : {}),
     installationId: companionInstallationId,
     shadows: companionShadowStore(),

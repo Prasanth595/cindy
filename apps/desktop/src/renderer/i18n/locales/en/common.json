@@ -9429,6 +9429,7 @@
       "transferred": "{{name}} moved to “{{device}}”",
       "transferConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
       "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
+      "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
       "transferFailed": "Couldn’t move {{name}} to “{{device}}”",
       "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
       "shadowTitle": "This teammate now runs on “{{device}}”",

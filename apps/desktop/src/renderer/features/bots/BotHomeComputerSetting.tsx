@@ -25,6 +25,7 @@ const TRANSFER_ERROR_KEYS: Record<CompanionCloudFailureCode, string> = {
   NOT_ENABLED: 'bots.cloud.notEnabled',
   TARGET_UNAVAILABLE: 'bots.cloud.targetUnavailable',
   FAILED: 'bots.cloud.transferFailed',
+  BUSY: 'bots.cloud.transferBusy',
 };
 
 export function BotHomeComputerSetting({ bot }: { bot: { id: string; name: string } }) {

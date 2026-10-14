@@ -36,6 +36,8 @@ export interface CompanionCloudHost {
   listDevices?: () => Promise<DeviceLinkDeviceView[]>;
   /** Does that computer's Cindy support cloud companions (`maker:companion-cloud:caps`)? */
   probeCompanionCloud?: (deviceId: string) => Promise<boolean>;
+  /** A turn is running (or queued) in the companion's main task. */
+  isTurnActive?: (sessionId: string) => boolean;
   /** Random id of this Cindy installation (per userData); absent disables the install guard. */
   installationId?: () => string;
   /** Owner-scoped persisted shadow set (demotion survives restarts, an offline server and a disabled feature). */
@@ -371,6 +373,12 @@ export function startCompanionCloud(input: {
 
   /** Everything the new home needs reaches the server, then the home moves and this copy is demoted. */
   async function handOver(actor: CompanionRuntimeActor, targetDeviceId: string): Promise<CompanionCloudActionResult> {
+    // A running turn would keep working here (tools, files, replies) after the target took over.
+    const turnActive = async () => {
+      const sessionId = input.host.isTurnActive ? await input.host.canonicalSession(actor.externalId) : null;
+      return !!sessionId && input.host.isTurnActive!(sessionId);
+    };
+    if (await turnActive()) return { ok: false, code: 'BUSY' };
     try { await flush(actor.externalId); }
     catch (error) {
       input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
@@ -378,6 +386,8 @@ export function startCompanionCloud(input: {
       return [COMPANION_VALUE_TOO_LARGE, 'COMPANION_STILL_CHANGING', 'INVALID_AVATAR', 'AVATAR_UPLOAD_FAILED'].includes(code)
         ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
     }
+    // Checked again right before the move: a turn may have started during the flush.
+    if (await turnActive()) return { ok: false, code: 'BUSY' };
     try {
       await input.api(`/actors/${actor.id}`, 'PATCH', { homeDeviceId: targetDeviceId, expectedHomeDeviceId: input.selfDeviceId });
     } catch (error) {

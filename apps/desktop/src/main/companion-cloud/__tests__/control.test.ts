@@ -19,7 +19,8 @@ afterEach(() => { runtime?.dispose(); runtime = undefined; });
 
 function setup(options: { home: string | null; handler?: ApiHandler; devices?: DeviceLinkDeviceView[]; profiles?: string[];
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
-  readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void> }) {
+  readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void>;
+  turnActive?: () => boolean }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -42,6 +43,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
     materializer: local.host, listDevices: async () => options.devices ?? [],
     ...(options.installationId ? { installationId: () => options.installationId! } : {}),
     ...(options.probe ? { probeCompanionCloud: options.probe } : {}),
+    ...(options.turnActive ? { isTurnActive: options.turnActive } : {}),
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
@@ -224,6 +226,20 @@ describe('transfer', () => {
     expect(await failing.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'FAILED' });
     expect(failing.calls.some(call => call.method === 'PATCH')).toBe(false);
     expect(failing.state.isDemoted('bot_mia')).toBe(false);
+  });
+
+  it('does not move the home while a turn is still running, checked before and after the flush', async () => {
+    const busy = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => true });
+    expect(await busy.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'BUSY' });
+    expect(busy.calls.some(call => call.method === 'PATCH')).toBe(false);
+    busy.runtime.dispose();
+
+    // A turn starts while the backlog is flushed.
+    let checks = 0;
+    const late = setup({ home: 'desk', devices: [device('laptop')], turnActive: () => ++checks > 1 });
+    expect(await late.runtime.transfer('bot_mia', 'laptop')).toEqual({ ok: false, code: 'BUSY' });
+    expect(late.calls.some(call => call.method === 'PATCH')).toBe(false);
+    expect(late.state.isDemoted('bot_mia')).toBe(false);
   });
 
   it('does not move the home when a value is too large to upload', async () => {

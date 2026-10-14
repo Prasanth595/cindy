@@ -11548,6 +11548,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       onClosed: (id) => agentInputCoordinatorHolder?.onSessionClosed(id),
     });
   }
+  // A turn is running or queued in a companion's main task: no context rebuild, no hand-over.
+  const companionTurnActive = (sessionId: string) => !!maker.getSession(sessionId)?.isTurnRunning?.()
+    || inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0;
   const botGroupChatDeps: BotGroupChatServiceDeps = {
     ensureLane: async (input) => {
       try {
@@ -11641,14 +11644,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       },
       // Cloud history was added: rebuild like a restart, but never interrupt a turn.
       rebuildContext: async (sessionId) => {
-        if (maker.getSession(sessionId)?.isTurnRunning?.()
-          || inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0) return 'busy';
+        if (companionTurnActive(sessionId)) return 'busy';
         const scope = captureDataOwnerBroadcastScope();
         await restartBotCanonicalRuntime(sessionId, () => {
           if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('OWNER_CHANGED');
         });
         return 'rebuilt';
       },
+      isTurnActive: companionTurnActive,
       listDevices: listCompanionDevices,
       // Old clients answer CHANNEL_NOT_ALLOWED; unreachable ones time out. Neither may receive a companion.
       probeCompanionCloud: async (deviceId) => {
