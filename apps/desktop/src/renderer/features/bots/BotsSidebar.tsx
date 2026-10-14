@@ -257,7 +257,13 @@ function BotsSidebarContent() {
       if (pending.archived && archivedGroups.length > 0) {
         pendingArchiveFocusRef.current = null;
         archivedGroupsToggleRef.current?.focus({ preventScroll: true });
+        return;
       }
+
+      // The user may have changed the search while the request was in flight.
+      // Do not keep a stale request that could steal focus later when the filter
+      // is cleared.
+      pendingArchiveFocusRef.current = null;
     };
 
     timer = window.setTimeout(restoreFocus, 0);
