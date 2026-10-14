@@ -21,4 +21,4 @@ First publication adds `visibilityDepartmentIds` and `audienceMode` (`all` or `d
 
 Selecting a parent includes descendants and removes redundant selected descendants. Selecting all children does not promote the selection to their parent. The server validates live department ownership and canonicalizes the submitted selection. Authors retain management access outside their audience; organization administrators can manage organization skills. Editing visibility leaves automatic-install settings intact, and public-review transitions preserve the existing audience until approval.
 
-Deploy Auth department discovery, then Skill Hub API and worker, then Desktop. These additions require no schema migration or new environment variables. Existing clients retain their previous request semantics.
+Deploy Auth department discovery, then Skill Hub API and worker, then Desktop. The server requires an additive upload-queue enum migration before deploying its API and worker, so old workers cannot claim department-scoped jobs. No Desktop migration or new environment variables are required. Existing clients retain their previous request semantics.
