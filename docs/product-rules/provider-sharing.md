@@ -281,8 +281,13 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
      Skill、子代理、命令与说明文字不算）不随项目说明与个人配置在启动时同步，链接按真实目标判断；
    - 任务中读写凭证类文件、执行读取或打出凭证的命令，不论权限档（含完全访问）都要受邀者在本机确认卡上
      允许，默认只放行这一次。确认卡同时提供「本任务总是允许」（2026-10-12 用户确认）：受邀者明确选择后，
-     当前任务运行期间不再额外确认凭证操作，Pi 的搜索结果也可包含凭证内容；只在本机执行器内存里记住，
-     关闭、重新打开任务或切换权限档后恢复确认，不扩展到其他任务或供应商分享。原权限档的其他限制仍然生效，
+     当前任务不再额外确认凭证操作，Pi 的搜索结果也可包含凭证内容。授权按「任务 + 分享」只记在本机
+     主进程内存里（2026-10-13 用户裁决）：Agent 实例被系统回收后重建（如 Orca Worker 一轮结束后释放进程）
+     时，原始权限档与计划模式都和授权时相同才沿用（不按归并后的档位比，`default` 改 `ask` 也算变化）；
+     切换权限档或计划模式、退出应用后恢复确认，不扩展到其他任务或供应商分享。回收期间在 Desktop / 手机
+     远控的权限入口切走又切回，同样作废；Agent 正在重建、任务尚未对外可见时改权限档，已恢复到新执行器
+     的授权也一并收回。已知代价：归档后恢复的任务在本次应用运行期间沿用之前的授权；
+     回收期间经 IM 切走又切回原档位不会被识别（最终档位与授权时相同）。原权限档的其他限制仍然生效，
      启动同步仍排除凭证文件。确认卡说明内容会经过分享者或其安排的电脑，以及这项授权的范围与失效时机。
      确认卡与 Agent 的确认走同一通道，手机远控与 IM 也能处理；
    - 命令只能按命令文本识别（脚本里读的、编码后再解开的认不出来），是防误发，不是防恶意；
@@ -374,7 +379,7 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
      地址里的令牌、`Authorization` 头的取值、常见服务的令牌格式与私钥）、用 `<提交>:<路径>` 写出凭证类文件
      （`git show HEAD:.aws/credentials`）、`git credential fill` 这类打出保存的登录凭证的命令都要确认。
    同账号远程供应商不受影响：与本机一致，项目与个人配置里的符号链接一律跟随，不额外确认。
-   实现：`apps/desktop/src/main/remote-agent/{credentials.ts,executor/gate.ts,executor/executor.ts,executor/gitCredentials.ts,controller/projectFiles.ts}`；
+   实现：`apps/desktop/src/main/remote-agent/{credentials.ts,executor/gate.ts,executor/executor.ts,executor/gitCredentials.ts,executor/credentialGrants.ts,controller/projectFiles.ts}`；
    命令判定复用 `packages/maker-core/src/agents/shared/auto-review.ts` 的 `shellCommandReadsCredentials`，
    上面的命令放宽与 git 核实通过它只有分享任务才传的选项（`CredentialCommandOptions`）实现，不传时判定不变。
 

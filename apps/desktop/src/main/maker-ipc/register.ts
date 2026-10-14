@@ -27,6 +27,7 @@ import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
+import { forgetCredentialGrants } from '../remote-agent/executor/credentialGrants.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
   isProviderGroupReleased,
@@ -21799,6 +21800,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           throw error;
         }
+        // 分享供应商的「本任务总是允许」随权限档变化失效；Agent 实例被回收时执行器收不到这次切换。
+        if (row.permissionMode !== mode) forgetCredentialGrants(sessionId);
         broadcastSessionPatched(sessionId, { permissionMode: mode });
         if (remote) {
           const result = {};
@@ -21851,6 +21854,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           throw error;
         }
+        // 计划模式同属权限档：分享供应商的「本任务总是允许」随之失效(同上)。
+        if (!!row.planModeEnabled !== enabled) forgetCredentialGrants(sessionId);
         if (remote) {
           const result = {};
           markRemoteSettingPersistedInsideHandler(result);
