@@ -126,10 +126,12 @@ describe('issue #6015: saved connection protocol versus model protocol', () => {
 });
 
 
-it('shows catalog provenance for untouched preset snapshots with a read-only protocol', () => {
+it.each([false, true])('shows catalog provenance for a read-only preset (legacy Chat snapshot: %s)', legacy => {
   const preset = BUNDLED_CATALOG.presets!.find(item => item.id === 'opencode-go')!;
   const provider = { ...buildUserProvider({ id: 'preset-fixture', name: 'Preset fixture', runtimes: { pi: {
     ...structuredClone(preset.runtimes.pi!), catalogPresetId: preset.id,
+    ...(legacy ? { baseUrl: 'https://opencode.ai/zen/go/v1', wireProtocol: 'openai-chat' as const,
+      models: [{ id: 'qwen3.7-plus', name: 'Qwen', api: 'openai-completions' as const }] } : {}),
   } } }, { presets: BUNDLED_CATALOG.presets }), connected: true } as ProviderView;
   const model = provider.models.pi!.find(item => item.userModelConfig?.api || item.userModelConfig?.piApi)!;
   render(<ModelAdvancedDrawer provider={provider}

@@ -294,3 +294,42 @@ describe('preset protocol provenance (#6015)', () => {
       .toMatchObject({ source: 'catalog', customized: false });
   });
 });
+
+
+describe('catalog-corrected legacy protocol provenance (#6015)', () => {
+  const oldModel: ProviderRuntimeModelConfig = { id: 'qwen3.7-plus', name: 'Qwen',
+    api: 'openai-completions', piApi: 'openai-completions', contextWindow: 64000, defaultEnabled: false,
+    route: { baseUrl: 'https://opencode.ai/zen/go/v1', wireProtocol: 'openai-chat' },
+  };
+  it.each(['claude-code', 'codex', 'pi'] as const)('retains catalog provenance for a repaired %s import with or without current presets', agent => {
+    const config: CustomProviderConfig = { id: 'legacy-go', name: 'Legacy Go', runtimes: { [agent]: {
+      catalogPresetId: 'opencode-go', baseUrl: 'https://opencode.ai/zen/go/v1', wireProtocol: 'openai-chat',
+      models: [structuredClone(oldModel)],
+    } } };
+    const before = structuredClone(config);
+    for (const presets of [undefined, BUNDLED_CATALOG.presets]) {
+      const provider = buildUserProvider(config, { presets });
+      const model = provider.models[agent]![0]!;
+      expect(modelProtocolComparison(provider, { [agent]: model }).forAgent(agent))
+        .toMatchObject({ source: 'catalog', customized: false, outbound: 'anthropic-messages' });
+      expect(model.userModelConfig).toEqual(oldModel);
+      expect(model.defaultEnabled).toBe(false);
+      expect(config).toEqual(before);
+    }
+  });
+  it.each(['model path', 'connection path', 'custom host', 'other product', 'explicit non-Chat API'] as const)(
+    'does not label a protected %s override as catalog repair', kind => {
+      const runtime = { catalogPresetId: 'opencode-go', baseUrl: 'https://opencode.ai/zen/go/v1',
+        wireProtocol: 'openai-chat' as const, requestPath: undefined as string | undefined,
+        models: [structuredClone(oldModel)] };
+      if (kind === 'model path') runtime.models[0]!.route!.requestPath = '/custom/messages';
+      if (kind === 'connection path') runtime.requestPath = '/custom/messages';
+      if (kind === 'custom host') runtime.models[0]!.route!.baseUrl = 'https://custom.example.test';
+      if (kind === 'other product') runtime.baseUrl = 'https://opencode.ai/zen/v1';
+      if (kind === 'explicit non-Chat API') runtime.models[0]!.api = 'openai-responses';
+      const provider = buildUserProvider({ id: 'protected', name: 'Protected', runtimes: { pi: runtime } });
+      expect(modelProtocolComparison(provider, { pi: provider.models.pi![0]! }).forAgent('pi'))
+        .toMatchObject({ source: 'model', customized: true });
+    },
+  );
+});
