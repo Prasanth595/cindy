@@ -48,7 +48,14 @@ export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, child
   const [loaded, setLoaded] = useState<{ scope: string; source: string | null } | null>(null);
 
   useEffect(() => {
-    if (CINDY_MAKE_ENABLED || knownSource !== undefined || creationBlocked) return;
+    if (CINDY_MAKE_ENABLED) return;
+    if (knownSource !== undefined) {
+      // A mirror confirmation is as authoritative as a direct lookup. Preserve
+      // the latest source for this scope when reconnecting clears the mirror.
+      setLoaded({ scope, source: knownSource });
+      return;
+    }
+    if (creationBlocked) return;
     if (!sessionId || !deviceId) {
       setLookup({ key, status: 'failed' });
       return;

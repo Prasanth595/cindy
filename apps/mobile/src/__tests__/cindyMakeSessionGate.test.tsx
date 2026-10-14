@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement, type ReactNode } from 'react';
+import { act, createElement, useEffect, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CindyMakeSessionGate, SESSION_ENTRY_LOOKUP_TIMEOUT_MS } from '@/session/CindyMakeSessionGate';
@@ -216,6 +216,64 @@ describe('mobile Cindy Make links', () => {
     state.maker.getSession.mockReturnValueOnce(new Promise(() => {}));
     await renderGate();
     expect(container.textContent).toBe('Composer');
+  });
+
+  it.each(['pending', 'missing', 'failed', 'timeout'])('preserves mirror-confirmed content and its draft during a %s reconnect read', async result => {
+    vi.useFakeTimers();
+    const unmounted = vi.fn();
+    const Composer = () => {
+      useEffect(() => unmounted, []);
+      return <input defaultValue="unsent draft" />;
+    };
+    const render = () => act(async () => root.render(
+      <CindyMakeSessionGate sessionId="new-task" deviceId="device-a"><Composer /></CindyMakeSessionGate>,
+    ));
+    state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'desktop' }];
+    await render();
+    expect(state.maker.getSession).not.toHaveBeenCalled();
+    const input = container.querySelector('input')!;
+    input.value = 'draft edited before reconnect';
+    state.sessions = [];
+    state.connectionEpoch += 1;
+    if (result === 'missing') state.maker.getSession.mockResolvedValue(null);
+    else if (result === 'failed') state.maker.getSession.mockRejectedValue(new Error('offline'));
+    else state.maker.getSession.mockReturnValue(new Promise(() => {}));
+    await render();
+    if (result === 'timeout') await act(async () => vi.advanceTimersByTime(SESSION_ENTRY_LOOKUP_TIMEOUT_MS));
+    expect(unmounted).not.toHaveBeenCalled();
+    expect(container.querySelector('input')).toBe(input);
+    expect(input.value).toBe('draft edited before reconnect');
+  });
+
+  it.each(['account', 'device', 'task'])('does not reuse a mirror confirmation after switching %s', async changed => {
+    state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'desktop' }];
+    await renderGate();
+    expect(container.textContent).toBe('Composer');
+    state.sessions = [];
+    if (changed === 'account') state.accountGeneration += 1;
+    state.maker.getSession.mockReturnValue(new Promise(() => {}));
+    await act(async () => root.render(
+      <CindyMakeSessionGate sessionId={changed === 'task' ? 'next-task' : 'new-task'}
+        deviceId={changed === 'device' ? 'device-b' : 'device-a'} ownsSessionSubscription>
+        <Content />
+      </CindyMakeSessionGate>,
+    ));
+    expect(container.textContent).toContain('session.entry.loading');
+    expect(container.textContent).not.toContain('Composer');
+  });
+
+  it('remembers a newer Make mirror source over an earlier ordinary lookup', async () => {
+    state.maker.getSession.mockResolvedValue({ id: 'new-task', source: 'desktop' });
+    await renderGate();
+    expect(container.textContent).toBe('Composer');
+    state.sessions = [{ id: 'new-task', deviceLinkDeviceId: 'device-a', source: 'cindy-make' }];
+    await renderGate();
+    expect(container.textContent).toBe('redirect:/');
+    state.sessions = [];
+    state.connectionEpoch += 1;
+    state.maker.getSession.mockReturnValue(new Promise(() => {}));
+    await renderGate();
+    expect(container.textContent).toBe('redirect:/');
   });
 
   it('does not navigate after leaving a pending return-to-edit operation', async () => {
