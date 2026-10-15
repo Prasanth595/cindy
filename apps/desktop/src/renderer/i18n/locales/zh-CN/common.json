@@ -6335,6 +6335,8 @@
         "command": "对话指令 ${{command}}",
         "panelLeft": "面板「{{title}}」· 停靠主对话区左侧",
         "panelTab": "面板「{{title}}」· 插件页内打开",
+        "overlay": "在桌面显示透明浮窗",
+        "overlayMousePosition": "读取全局鼠标位置（仅浮窗显示期间）",
         "mainView": "可在 Cindy 侧边栏添加“{{title}}”入口",
         "mainViewDetail": "点击后将在插件沙箱中打开主视图，不会因此获得文件、网络或凭证访问权限。",
         "code": "可执行代码",

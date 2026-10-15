@@ -2712,6 +2712,41 @@ describe('ghost · 逐项权限清单', () => {
     expect(diff.removed).toEqual([]);
   });
 
+  it('overlay 权限只在声明时列出:恰有两条且顺序稳定', () => {
+    const without = fullChip();
+    expect(ghostPermissionItems(without).filter((i) => i.kind === 'overlay')).toEqual([]);
+
+    const declared: GhostManifest = { ...fullChip(), overlay: { html: 'overlay.html' } };
+    expect(ghostPermissionItems(declared).map((i) => i.key)).toEqual([
+      'cindy:image.generate',
+      'cindy:image.edit',
+      'tool:gen_image',
+      'tool:edit_image',
+      'command:画图',
+      'panel:left',
+      'overlay',
+      'overlay:mouse-position',
+      'code',
+    ]);
+    // 浮窗本体在前、鼠标位置在后,顺序稳定;kind 与 labelKey 与 panel/preview 同款结构。
+    expect(ghostPermissionItems(declared).filter((i) => i.kind === 'overlay')).toEqual([
+      { key: 'overlay', kind: 'overlay', labelKey: 'overlay' },
+      { key: 'overlay:mouse-position', kind: 'overlay', labelKey: 'overlayMousePosition' },
+    ]);
+  });
+
+  it('diff:overlay 声明视为新增权限(更新判定为需确认)', () => {
+    const previous = fullChip();
+    const next: GhostManifest = {
+      ...fullChip(),
+      version: '2.0.0',
+      overlay: { html: 'overlay.html' },
+    };
+    const diff = diffGhostPermissionItems(previous, next);
+    expect(diff.added.map((i) => i.key)).toEqual(['overlay', 'overlay:mouse-position']);
+    expect(diff.removed).toEqual([]);
+  });
+
   it('diff:同一凭证槽的内置直连 OAuth clientId 变化会标记授权失效风险', () => {
     const oauthManifest = (clientId: string): GhostManifest => ({
       schemaVersion: 2,

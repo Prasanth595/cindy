@@ -6335,6 +6335,8 @@
         "command": "채팅 명령 ${{command}}",
         "panelLeft": "패널 \"{{title}}\" · 채팅 왼쪽에 도킹",
         "panelTab": "패널 \"{{title}}\" · 플러그인 페이지에서 열기",
+        "overlay": "데스크톱에 투명한 오버레이 창 표시",
+        "overlayMousePosition": "전역 마우스 위치 읽기(오버레이가 표시되는 동안만)",
         "mainView": "Cindy 사이드바에 “{{title}}” 항목을 추가할 수 있음",
         "mainViewDetail": "클릭하면 플러그인 샌드박스에서 메인 보기가 열리며 파일, 네트워크 또는 자격 증명 접근 권한이 추가로 부여되지 않습니다.",
         "code": "실행 코드",

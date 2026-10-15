@@ -1850,7 +1850,8 @@ export interface GhostPermissionItem {
     | 'pick'
     | 'preview'
     | 'skill'
-    | 'workspace';
+    | 'workspace'
+    | 'overlay';
   /** i18n key 后缀,消费方拼 `settings.ghosts.perm.<labelKey>`。 */
   labelKey: string;
   /** i18n 插值参数(工具名、指令名、面板标题等)。 */
@@ -2241,6 +2242,17 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
       kind: 'panel',
       labelKey: position === 'tab' ? 'panelTab' : 'panelLeft',
       labelArgs: { title: manifest.panel.title ?? manifest.name },
+    });
+  }
+  // overlay 槽:桌面透明置顶浮窗。窗口本体与"读全局鼠标位置"分列两档——鼠标位置
+  // 只在浮窗显示期间由宿主经光标流读取,风险低半档但仍属宿主外能力,装入前必须
+  // 逐条知情;独立 key 也让更新加档时 diff 能单独把鼠标位置标为新增,不会漏扩权确认。
+  if (manifest.overlay) {
+    items.push({ key: 'overlay', kind: 'overlay', labelKey: 'overlay' });
+    items.push({
+      key: 'overlay:mouse-position',
+      kind: 'overlay',
+      labelKey: 'overlayMousePosition',
     });
   }
   if (manifest.mainView) {

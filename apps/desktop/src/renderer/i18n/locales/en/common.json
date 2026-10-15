@@ -6360,6 +6360,8 @@
         "command": "Chat command ${{command}}",
         "panelLeft": "Panel \"{{title}}\" · docked left of the chat",
         "panelTab": "Panel \"{{title}}\" · opens inside the Plugins page",
+        "overlay": "Display a transparent overlay window on the desktop",
+        "overlayMousePosition": "Read the global mouse position (only while the overlay is visible)",
         "mainView": "Can add a “{{title}}” entry to Cindy's sidebar",
         "mainViewDetail": "Opening it displays the main view in the plugin sandbox and does not grant file, network, or credential access.",
         "code": "Executable code",
