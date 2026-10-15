@@ -104,6 +104,9 @@ describe('shared verified downloads', () => {
   ] as const)(
     'interrupts stalled %s hashing (timeout=%s) and releases the slot',
     async (mode, timeout) => {
+      // Advance the deadline only after the test reaches the hash it intends to interrupt.
+      // Real time can expire during filesystem setup on a busy CI runner.
+      vi.useFakeTimers();
       const opts = options();
       if (mode === 'resume') partial(opts);
       else fs.writeFileSync(opts.targetPath, 'abcdef');
@@ -134,11 +137,16 @@ describe('shared verified downloads', () => {
       const rejected = expect(active).rejects.toMatchObject({
         code: timeout ? 'TIMEOUT' : 'ABORTED',
       });
-      await reading;
+      await Promise.race([reading, rejected]);
+      expect(fs.createReadStream).toHaveBeenCalled();
       const next = options('next');
       fetchMock.mockResolvedValueOnce(new Response('next'));
       const queued = download(next);
-      if (!timeout) controller.abort();
+      if (timeout) {
+        await vi.advanceTimersByTimeAsync(49);
+        expect(stalled.destroyed).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      } else controller.abort();
       await rejected;
       expect(stalled.destroyed).toBe(true);
       await expect(queued).resolves.toMatchObject({ size: 4 });
