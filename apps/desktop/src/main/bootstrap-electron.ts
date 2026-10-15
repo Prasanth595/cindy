@@ -1017,8 +1017,11 @@ import { createLinuxTrayController } from './linuxTrayLifecycle.js';
 import {
   applyLinuxMainWindowCloseBehavior,
   createCloseBehaviorPromptFallbackController,
+  hideToTrayWithFallback,
   isWaylandSession,
+  minimizeRequestMapsToTray,
   requestMainWindowCloseBehavior,
+  resolveLinuxKeepRunningSurface,
 } from './mainWindowCloseBehavior.js';
 import {
   isLinuxCloseBehavior,
@@ -3330,14 +3333,17 @@ function ensureWindowsTray(): boolean {
 }
 
 function hideMainWindowToWindowsTray(mainWindow: BrowserWindow): void {
-  if (ensureWindowsTray()) {
-    hideWindowToWindowsTray(mainWindow);
-    return;
-  }
-  dialog.showMessageBoxSync(mainWindow, {
-    type: 'error',
-    title: t('settings.windowBehavior.trayError.title'),
-    message: t('settings.windowBehavior.trayError.message'),
+  // 托盘图标不存在时只报错、不隐藏,窗口保持可触达(决策在 mainWindowCloseBehavior)。
+  hideToTrayWithFallback<BrowserWindow>(mainWindow, {
+    ensureTray: ensureWindowsTray,
+    hideToTray: hideWindowToWindowsTray,
+    reportTrayError: (window) => {
+      dialog.showMessageBoxSync(window, {
+        type: 'error',
+        title: t('settings.windowBehavior.trayError.title'),
+        message: t('settings.windowBehavior.trayError.message'),
+      });
+    },
   });
 }
 
@@ -3431,7 +3437,7 @@ const isLinuxWaylandSession = (): boolean =>
 const linuxCloseBehaviorActions = {
   quit: () => app.quit(),
   keepRunning: (window: BrowserWindow) => {
-    if (isLinuxWaylandSession()) {
+    if (resolveLinuxKeepRunningSurface(isLinuxWaylandSession()) === 'tray') {
       hideMainWindowToWindowsTray(window);
     } else {
       window.minimize();
@@ -5365,7 +5371,7 @@ const registerIpcHandlers = () => {
     if (!win) return;
     // 主窗的最小化意向在 Linux Wayland 上映射为隐藏到托盘: 合成器不响应最小化,
     // 副窗口维持原行为(out of scope)。这也覆盖 renderer 内选"最小化"关闭行为的路径。
-    if (isLinuxWaylandSession() && win === mainWindowRef) {
+    if (minimizeRequestMapsToTray(isLinuxWaylandSession(), win === mainWindowRef)) {
       hideMainWindowToWindowsTray(win);
       return;
     }
