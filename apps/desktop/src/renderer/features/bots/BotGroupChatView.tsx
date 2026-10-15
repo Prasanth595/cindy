@@ -67,6 +67,8 @@ import type {
 } from '../../../shared/botGroupChat';
 import { botGroupQuoteFromMessage, isBotGroupMessageQuotable, resolveBotGroupQuote } from '../../../shared/botGroupChat';
 import { useRegisterContentHeader } from '../feature-context';
+import { BotAiBadge } from './BotAiBadge';
+import { BotAiDisclosureGate } from './BotAiDisclosureDialog';
 import { BotAvatar } from './BotAvatar';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
@@ -426,6 +428,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             {names}
           </span>
         </button>
+        {/* 持续的 AI 身份公示:群聊同样是伙伴互动界面。 */}
+        <BotAiBadge />
         <div className="ml-auto flex shrink-0 items-center">
           {headerGroup.serverBacked && headerGroup.canInvite && <ChatInviteButton groupId={headerGroup.id} />}
           <Tip text={settingsLabel}>
@@ -781,6 +785,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         dropAttachments(event);
       }}
     >
+      {/* 首次进入伙伴互动前的一次性 AI 身份确认(设备级一次,之后靠 Badge 持续公示)。 */}
+      <BotAiDisclosureGate />
       <div
         ref={scrollRef}
         onScroll={(event) => {

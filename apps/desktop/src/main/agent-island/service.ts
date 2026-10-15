@@ -2533,6 +2533,7 @@ function buildAgentIslandStrings(): AgentIslandStrings {
     allowOnce: t('agentIsland.native.allowOnce'),
     alwaysAllowForSession: t('agentIsland.native.alwaysAllowForSession'),
     deny: t('agentIsland.native.deny'),
+    aiBadge: t('agentIsland.native.aiBadge'),
   };
 }
 

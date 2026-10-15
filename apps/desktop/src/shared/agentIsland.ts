@@ -426,6 +426,8 @@ export interface AgentIslandStrings {
   allowOnce: string;
   alwaysAllowForSession: string;
   deny: string;
+  /** 持续公示的 AI 身份标识(灵动岛上的「AI · 非真人」胶囊)。 */
+  aiBadge: string;
 }
 
 export const DEFAULT_AGENT_ISLAND_STRINGS: AgentIslandStrings = {
@@ -453,6 +455,7 @@ export const DEFAULT_AGENT_ISLAND_STRINGS: AgentIslandStrings = {
   allowOnce: 'Allow once',
   alwaysAllowForSession: 'Always allow',
   deny: 'Deny',
+  aiBadge: 'AI · Not human',
 };
 
 export const AGENT_ISLAND_MAX_EXPANDED_WIDTH = 640;
