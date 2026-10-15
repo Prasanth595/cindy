@@ -241,6 +241,7 @@ export async function pruneProviderGroupBindings(
   keepMemberKeys: ReadonlySet<string> | null,
   now: number = Date.now(),
 ): Promise<void> {
+  const owner = activeOwnerScopeKey();
   const released: string[] = [];
   await store.updateAtomic(({ value }) => {
     const sessions = { ...value.sessions };
@@ -253,6 +254,8 @@ export async function pruneProviderGroupBindings(
     }
     return released.length > 0 ? { sessions } : {};
   });
+  // 原子写落盘后的锁释放也会等待；旧账号的解除记录不能落到此时切入的新账号。
+  if (activeOwnerScopeKey() !== owner) return;
   await writeReleases(released, { providerId }, now);
 }
 

@@ -1492,7 +1492,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       run.relay = backend;
       try {
         const caps = await RemoteAgentRunClient.caps(connection.invoke);
-        if (caps.virtualWorkspace !== true || (current.sameAccount && caps.guestRelay !== true)) {
+        if (caps.virtualWorkspace !== true
+          || (current.sameAccount ? caps.guestRelay !== true : caps.reshareConsent !== true)) {
           throw new Error('[REMOTE_AGENT_PEER_TOO_OLD] the computer in the provider group cannot take shared tasks yet');
         }
         // 等 caps 期间任务已经结束(撤权、受邀者关闭)：不再打开(收尾已经放掉了这次尝试的负载)。
@@ -2170,6 +2171,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         if (runs.has(key(controller, request.runId))) {
           reserved?.release();
           return {};
+        }
+        // 查询供应商与续接归属期间主人可能已经撤回，而尚未登记的任务不会被 abortReshare 找到。
+        // 最后一次核对与 runs.set 之间不能 await；登记后撤回会走正常的任务收尾。
+        if (controllerTrust === 'guest' && relayKey && deps.reshare && !deps.reshare.allows(controller, reshareKey)) {
+          reserved?.release();
+          if (reshareKey) fail('REMOTE_AGENT_RESHARE_NOT_ALLOWED', 'the owner of this computer has not agreed to this user');
+          failProviderNotAllowed();
         }
         const run: Run = {
           id: request.runId,

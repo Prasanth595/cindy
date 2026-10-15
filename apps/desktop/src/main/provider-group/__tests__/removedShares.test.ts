@@ -70,4 +70,24 @@ describe('removing computers whose share is gone', () => {
     expect(await pruneRemovedShareMembers(env.deps)).toEqual([]);
     expect(env.writeGroup).not.toHaveBeenCalled();
   });
+
+  it('does not prune the new account bindings when the account changes while the group write completes', async () => {
+    const env = setup(new Set());
+    let owner = 'owner';
+    env.deps.ownerKey = () => owner;
+    env.writeGroup.mockImplementationOnce(async () => { owner = 'new-owner'; return null; });
+    expect(await pruneRemovedShareMembers(env.deps)).toEqual([]);
+    expect(env.deps.pruneBindings).not.toHaveBeenCalled();
+    expect(env.deps.changed).not.toHaveBeenCalled();
+  });
+
+  it('does not publish old account changes or continue with other groups after binding cleanup changes account', async () => {
+    const env = setup(new Set());
+    let owner = 'owner';
+    env.deps.ownerKey = () => owner;
+    env.deps.pruneBindings = vi.fn(async () => { owner = 'new-owner'; });
+    expect(await pruneRemovedShareMembers(env.deps)).toEqual([]);
+    expect(env.deps.pruneBindings).toHaveBeenCalledTimes(1);
+    expect(env.deps.changed).not.toHaveBeenCalled();
+  });
 });

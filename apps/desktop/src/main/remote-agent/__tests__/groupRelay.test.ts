@@ -59,6 +59,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
   endImmediately?: boolean;
   /** 转分享的同意(本机是分享者)。 */
   reshare?: Parameters<typeof createRemoteAgentHost>[0]['reshare'];
+  resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve'];
 }) {
   return createRemoteAgentHost({
     isAgentAvailable: () => true,
@@ -112,7 +113,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
     isControllerAuthorized: () => true,
     controllerTrust: options.trust,
     providerAccess: {
-      resolve: async (_kind, _model, providerId) => providerId ?? 'shared-provider',
+      resolve: options.resolveProvider ?? (async (_kind, _model, providerId) => providerId ?? 'shared-provider'),
       isAllowed: () => true,
     },
     ...(options.guestRelayCapable === false ? {} : {
@@ -833,7 +834,7 @@ describe('provider group reshare consent', () => {
   const C_AT_B = providerShareGuestPeer('b-share', 'c-member', 'c-device');
   const C_KEY = reshareKeyFor('b-share', 'c-member');
 
-  function memberHost(approved: Set<string>) {
+  function memberHost(approved: Set<string>, resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve']) {
     const started: Started[] = [];
     const sync = vi.fn(async (_controller: string, entries: readonly { key: string }[]) => ({
       entries: entries.map((entry) => ({ key: entry.key, state: approved.has(entry.key) ? 'approved' as const : 'pending' as const })),
@@ -841,6 +842,7 @@ describe('provider group reshare consent', () => {
     const host = fakeAgentHost('a', started, {
       trust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
       reshare: { sync, allows: (controller, key) => controller === B_GROUP && !!key && approved.has(key) },
+      resolveProvider,
     });
     const open = (payload: Record<string, unknown>) => host.handle(B_GROUP, {
       op: 'open',
@@ -894,12 +896,38 @@ describe('provider group reshare consent', () => {
     await env.host.abortAll();
   });
 
+  it.each([false, true])('does not register a relayed task after consent is withdrawn during provider lookup (resume: %s)', async (resume) => {
+    const approved = new Set([C_KEY]);
+    const resolveProvider = vi.fn(async () => 'shared-provider');
+    const env = memberHost(approved, resolveProvider);
+    const payload = { relay: relayKeyFor(C_AT_B), groupAssigned: true, reshareKey: C_KEY };
+    let resumeSessionId: string | undefined;
+    if (resume) {
+      await env.open(payload);
+      await waitFor(() => env.started.length === 1);
+      resumeSessionId = `sdk-a-${env.started[0].input.hostSessionId}`;
+      await env.host.abortAll();
+    }
+    let release!: () => void;
+    resolveProvider.mockImplementationOnce(() => new Promise<string>((resolve) => { release = () => resolve('shared-provider'); }));
+    const opening = env.open({ ...payload, ...(resumeSessionId ? { options: { resumeSessionId } } : {}) });
+    const rejected = expect(opening).rejects.toThrow(/REMOTE_AGENT_RESHARE_NOT_ALLOWED/);
+    await waitFor(() => !!release);
+    approved.delete(C_KEY);
+    await env.host.abortReshare((controller) => controller === B_GROUP, C_KEY);
+    release();
+    await rejected;
+    expect(env.host.runCount()).toBe(0);
+    expect(env.started).toHaveLength(resume ? 1 : 0);
+  });
+
   it('asks the group to pick only computers that agreed to this person, and tells a shared-in computer who it is', async () => {
     const SHARED_IN: GroupRelayMember = { memberKey: 'share:a-share:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: false };
     const opens: Array<Record<string, unknown>> = [];
     const env = setup({
       plans: [{ kind: 'member', ...SHARED_IN }, { kind: 'member', ...MEMBER_MINI }],
       intercept: async (_agentDeviceId, request, forward) => {
+        if (request.op === 'caps' && _agentDeviceId === 'studio') return { ...await forward() as object, reshareConsent: true };
         if (request.op === 'open') opens.push((request.payload as { json: Record<string, unknown> }).json);
         return forward();
       },
@@ -921,6 +949,7 @@ describe('provider group reshare consent', () => {
     const env = setup({
       plans: [{ kind: 'member', ...SHARED_IN }, { kind: 'member', ...MEMBER_MINI }],
       intercept: async (_agentDeviceId, request, forward) => {
+        if (request.op === 'caps' && _agentDeviceId === 'studio') return { ...await forward() as object, reshareConsent: true };
         if (request.op === 'open' && _agentDeviceId === 'studio') {
           throw new Error('[REMOTE_AGENT_RESHARE_NOT_ALLOWED] the owner of this computer has not agreed to this user');
         }
@@ -932,5 +961,52 @@ describe('provider group reshare consent', () => {
     expect(noteReshareDenied).toHaveBeenCalledWith('studio', C_KEY);
     expect(env.memberStarted.mini).toHaveLength(1);
     await client.close('close', 'navigation');
+  });
+
+  it('skips an old shared-in computer even when cached consent selected it', async () => {
+    const shared: GroupRelayMember = { memberKey: 'share:a:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: false };
+    const opened: string[] = [];
+    const env = setup({
+      plans: [{ kind: 'member', ...shared }, { kind: 'member', ...MEMBER_MINI }],
+      intercept: async (id, request, forward) => {
+        if (request.op === 'open') opened.push(id);
+        return forward();
+      },
+    });
+    const { client } = await openAsGuest(env, C_AT_B, openPayload(SESSION));
+    expect(opened).toEqual(['mini']);
+    expect(env.memberStarted.studio).toHaveLength(0);
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', shared, expect.objectContaining({ message: expect.stringContaining('REMOTE_AGENT_PEER_TOO_OLD') }));
+    await client.close('close', 'navigation');
+  });
+
+  it('checks consent capability again when resuming an existing relay binding after downgrade', async () => {
+    const shared: GroupRelayMember = { memberKey: 'share:a:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: false };
+    let capable = true;
+    let capsChecks = 0;
+    let opens = 0;
+    const env = setup({
+      plans: [{ kind: 'member', ...shared }],
+      intercept: async (id, request, forward) => {
+        if (request.op === 'caps' && id === 'studio') {
+          capsChecks += 1;
+          return { ...await forward() as object, ...(capable ? { reshareConsent: true } : {}) };
+        }
+        if (request.op === 'open' && id === 'studio') opens += 1;
+        return forward();
+      },
+    });
+    const first = await openAsGuest(env, C_AT_B, openPayload(SESSION));
+    const nativeId = first.started.id;
+    await first.client.close('close', 'navigation');
+    capable = false;
+    await expect(openAsGuest(env, C_AT_B, openPayload(SESSION, { options: { resumeSessionId: nativeId } })))
+      .rejects.toThrow(/REMOTE_AGENT_UNAVAILABLE/);
+    expect(capsChecks).toBe(2);
+    expect(opens).toBe(1);
+    expect(env.memberStarted.studio).toHaveLength(1);
+    // 续接使用已有绑定，没有经过 plan，仍必须挡住旧端。
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    await env.owner.abortAll();
   });
 });

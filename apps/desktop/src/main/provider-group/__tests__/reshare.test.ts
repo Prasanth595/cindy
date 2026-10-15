@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import { reshareKeyFor } from '../../remote-agent/host/groupRelay';
-import { createProviderGroupReshare, PROVIDER_GROUP_RESHARE_PENDING_POLL_MS } from '../reshare';
+import { createProviderGroupReshare, PROVIDER_GROUP_RESHARE_IDLE_POLL_MS, PROVIDER_GROUP_RESHARE_PENDING_POLL_MS, type ProviderGroupReshare } from '../reshare';
+
+const instances: ProviderGroupReshare[] = [];
 
 function member(key: string, kind: ProviderGroupMember['kind'], agentDeviceId: string | null): ProviderGroupMember {
   return { key, kind, agentDeviceId, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
@@ -51,27 +53,51 @@ function setup(options: {
     ? [owned([{ memberId: 'carol', displayName: 'Carol' }, { memberId: 'dave', displayName: 'Dave' }])]
     : options.shares;
   let states = { ...(options.states ?? {}) };
+  const cleanups: Record<string, string> = {};
+  let cleanupSeq = 0;
   const invoke = vi.fn(async (_agentDeviceId: string, request: unknown) => {
     const entries = (request as { entries: Array<{ key: string }> }).entries;
-    return { entries: entries.flatMap((entry) => (states[entry.key] ? [{ key: entry.key, state: states[entry.key] }] : [])) };
+    if (entries.length === 0) states = {};
+    return { entries: entries.map((entry) => ({ key: entry.key, state: states[entry.key] ?? 'pending' as const })) };
   });
   const readCaps = vi.fn(async () => options.caps ?? CAPS);
   const changed = vi.fn();
-  const reshare = createProviderGroupReshare({
+  const completeCleanup = vi.fn(async (device: string, token: string) => {
+    if (cleanups[device] === token) delete cleanups[device];
+  });
+  const deps = {
     listGroups: () => groups,
     ownedShares: () => shares,
+    pendingCleanups: () => cleanups,
+    completeCleanup,
     readCaps,
     invoke,
     changed,
     now: () => now,
     log: { warn: vi.fn() },
-  });
+  };
+  let reshare = createProviderGroupReshare(deps);
+  instances.push(reshare);
   return {
-    reshare,
+    get reshare() { return reshare; },
     invoke,
     readCaps,
     changed,
-    setGroups: (next: Record<string, ProviderGroupConfig>) => { groups = next; },
+    completeCleanup,
+    cleanups,
+    setGroups: (next: Record<string, ProviderGroupConfig>) => {
+      // 生产中由 writeProviderGroup 与移出组同一事务持久记下(真实落盘回归在 stores.test.ts)。
+      const shared = (configs: Record<string, ProviderGroupConfig>) => new Set(Object.values(configs)
+        .flatMap((config) => config.members.filter((m) => m.kind === 'share').map((m) => m.agentDeviceId!)));
+      const remaining = shared(next);
+      for (const device of shared(groups)) if (!remaining.has(device)) cleanups[device] = `cleanup-${++cleanupSeq}`;
+      groups = next;
+    },
+    restart: () => {
+      reshare.stop();
+      reshare = createProviderGroupReshare(deps);
+      instances.push(reshare);
+    },
     setShares: (next: ProviderShareOwned[] | null) => { shares = next; },
     setStates: (next: Record<string, 'pending' | 'approved' | 'rejected'>) => { states = { ...next }; },
     advance: (ms: number) => { now += ms; },
@@ -79,6 +105,7 @@ function setup(options: {
 }
 
 afterEach(() => {
+  for (const instance of instances.splice(0)) instance.stop();
   vi.useRealTimers();
 });
 
@@ -155,6 +182,98 @@ describe('provider group reshare (group computer side)', () => {
     expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
   });
 
+  it('retries an offline cleanup until confirmed without letting that computer reuse its approval', async () => {
+    vi.useFakeTimers();
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    env.setGroups({});
+    // 移出当下就拦住缓存里的同意，不等 debounce 或远端回包。
+    expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
+    env.invoke.mockRejectedValueOnce(new Error('offline'));
+    await env.reshare.sync('removed');
+    expect(env.cleanups['share:a1']).toBeDefined();
+    expect(env.completeCleanup).not.toHaveBeenCalled();
+    env.advance(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    expect(env.invoke).toHaveBeenCalledTimes(3);
+    expect(env.invoke).toHaveBeenLastCalledWith('share:a1', { op: 'reshare', entries: [] });
+    expect(env.cleanups).toEqual({});
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('resumes persisted cleanup after restart even before the owned share snapshot is available', async () => {
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    env.setGroups({});
+    env.invoke.mockRejectedValueOnce(new Error('offline'));
+    await env.reshare.sync('removed');
+    env.restart();
+    env.setShares(null);
+    await env.reshare.sync('startup');
+    expect(env.invoke).toHaveBeenLastCalledWith('share:a1', { op: 'reshare', entries: [] });
+    expect(env.cleanups).toEqual({});
+  });
+
+  it('clears old consent before reporting people after the same shared computer rejoins', async () => {
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    env.setGroups({});
+    env.invoke.mockRejectedValueOnce(new Error('offline'));
+    await env.reshare.sync('removed');
+    env.setGroups({ anthropic: { strategy: 'least', autoSwitch: true, members: [LOCAL, FRIEND] } });
+    env.restart();
+    await env.reshare.sync('rejoined');
+    expect(env.invoke.mock.calls.slice(2).map(([, request]) => request)).toEqual([
+      { op: 'reshare', entries: [] },
+      { op: 'reshare', entries: [{ key: CAROL, name: 'Carol' }, { key: DAVE, name: 'Dave' }] },
+    ]);
+    expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
+    expect(env.reshare.summary('anthropic', 'share:a1')?.guests[0].state).toBe('pending');
+  });
+
+  it('keeps a cleanup while the shared computer is downgraded and cannot confirm clearing its records', async () => {
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    env.setGroups({});
+    env.readCaps.mockResolvedValueOnce({ ...CAPS, reshareConsent: undefined });
+    await env.reshare.sync('removed');
+    expect(env.completeCleanup).not.toHaveBeenCalled();
+    expect(env.cleanups['share:a1']).toBeDefined();
+    expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
+  });
+
+  it('retains cleanup when the remote clear succeeds but saving its acknowledgement fails', async () => {
+    vi.useFakeTimers();
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    env.setGroups({});
+    env.completeCleanup.mockRejectedValueOnce(new Error('disk busy'));
+    await env.reshare.sync('removed');
+    expect(env.cleanups['share:a1']).toBeDefined();
+    expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
+    env.advance(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    expect(env.completeCleanup).toHaveBeenCalledTimes(2);
+    expect(env.cleanups).toEqual({});
+  });
+
+  it('does not send a stale report or restore consent when the computer leaves during capability lookup', async () => {
+    vi.useFakeTimers();
+    const env = setup({ states: { [CAROL]: 'approved' } });
+    await env.reshare.sync('initial');
+    let release!: () => void;
+    env.readCaps.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(CAPS); }));
+    const reporting = env.reshare.sync('view', { force: true });
+    env.setGroups({});
+    release();
+    await reporting;
+    expect(env.invoke).toHaveBeenCalledTimes(1);
+    expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(env.invoke).toHaveBeenLastCalledWith('share:a1', { op: 'reshare', entries: [] });
+    expect(env.cleanups).toEqual({});
+  });
+
   it('forgets an approval right away when the shared-in computer refuses the person, then re-checks', async () => {
     const env = setup({ states: { [CAROL]: 'approved' } });
     await env.reshare.sync('test');
@@ -201,5 +320,29 @@ describe('provider group reshare (group computer side)', () => {
     // 没有分享的人也报一份空的：清掉那台上可能留着的旧请求。
     expect(env.invoke).toHaveBeenCalledWith('share:a1', { op: 'reshare', entries: [] });
     expect(env.reshare.summary('anthropic', 'share:a1')).toBeNull();
+  });
+
+  it('does not poll a confirmed empty list after ten minutes', async () => {
+    vi.useFakeTimers();
+    const env = setup({ shares: [] });
+    await env.reshare.sync('initial');
+    expect(vi.getTimerCount()).toBe(0);
+    env.advance(PROVIDER_GROUP_RESHARE_IDLE_POLL_MS * 2);
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_RESHARE_IDLE_POLL_MS * 2);
+    expect(env.invoke).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retries an empty list that failed, even if an earlier empty list succeeded', async () => {
+    vi.useFakeTimers();
+    const env = setup({ shares: [] });
+    await env.reshare.sync('initial');
+    env.invoke.mockRejectedValueOnce(new Error('offline'));
+    await env.reshare.sync('view', { force: true });
+    expect(vi.getTimerCount()).toBe(1);
+    env.advance(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_RESHARE_PENDING_POLL_MS);
+    expect(env.invoke).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -41,7 +41,9 @@ export async function pruneRemovedShareMembers(deps: PruneRemovedShareMembersDep
     if (gone.length === 0) continue;
     const keep = config.members.filter((member) => !gone.includes(member));
     await deps.writeGroup(providerId, keep.length > 0 ? { ...config, members: keep } : null);
+    if (deps.ownerKey() !== owner) break;
     await deps.pruneBindings(providerId, keep.length > 0 ? new Set(keep.map((member) => member.key)) : null);
+    if (deps.ownerKey() !== owner) break;
     removed.push(...gone.map((member) => member.key));
     deps.changed(providerId);
   }

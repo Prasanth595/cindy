@@ -18,7 +18,7 @@ import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { pruneProviderGroupBindings } from './bindings.js';
 import { pruneRemovedShareMembers } from './removedShares.js';
 import { createProviderGroupReshare, type ProviderGroupReshare } from './reshare.js';
-import { listProviderGroups, writeProviderGroup } from './store.js';
+import { completeProviderGroupReshareCleanup, listProviderGroupReshareCleanups, listProviderGroups, writeProviderGroup } from './store.js';
 
 const log = createLogger('provider-group:reshare');
 
@@ -47,6 +47,12 @@ function reshareForActiveOwner(): ProviderGroupReshare {
   const reshare = createProviderGroupReshare({
     listGroups: () => (isCurrent() ? listProviderGroups() : {}),
     ownedShares: () => (isCurrent() ? getProviderShareHostLoadedSnapshot() : null),
+    pendingCleanups: () => (isCurrent() ? listProviderGroupReshareCleanups() : {}),
+    completeCleanup: async (agentDeviceId, token) => {
+      if (!isCurrent()) throw new Error('The account changed');
+      await completeProviderGroupReshareCleanup(agentDeviceId, token);
+      if (!isCurrent()) throw new Error('The account changed');
+    },
     readCaps: async (agentDeviceId) => parseRemoteAgentCaps(await invoke(agentDeviceId, { op: 'caps' })),
     invoke,
     changed: () => {
@@ -109,4 +115,5 @@ export function registerProviderGroupReshare(): void {
     pruneSoon();
     providerGroupReshare.kick('received');
   });
+  providerGroupReshare.kick('startup');
 }

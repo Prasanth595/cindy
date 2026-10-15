@@ -8,6 +8,7 @@
  * 结果只在内存里，以那台电脑为准：组或分享的人变化后马上报一次；还有人等着、或那台读不到时每分钟再问一次，
  * 其余每 10 分钟核对一次；那台拒绝了某个人的任务时马上重问。没问到之前一律当作没同意(不分给那台)。
  * 本机分享出去的人还没读到时不报：整体替换会把那台上已有的同意清掉。
+ * 移出全部组的清理与组设置一起持久保存，空名单确认后才删除；离线每分钟重试，重启与重新加入都先完成清理。
  */
 import {
   parseRemoteAgentReshareResult,
@@ -32,6 +33,9 @@ export interface ProviderGroupReshareDeps {
   listGroups(): Record<string, ProviderGroupConfig>;
   /** 本机分享出去的供应商与其成员；还没读到(或读不到)时为 null。 */
   ownedShares(): readonly ProviderShareOwned[] | null;
+  /** 与移出组一起持久保存的清理代次；重新加入也须先清空旧同意。 */
+  pendingCleanups(): Readonly<Record<string, string>>;
+  completeCleanup(agentDeviceId: string, token: string): Promise<void>;
   readCaps(agentDeviceId: string): Promise<RemoteAgentCaps>;
   /** 经远程 Agent 通道发给那台电脑(本机是那台的受邀者)，返回回包；失败抛错。 */
   invoke(agentDeviceId: string, request: unknown): Promise<unknown>;
@@ -50,6 +54,7 @@ interface DeviceState {
   sentSignature: string | null;
   checkedAt: number;
   failed: boolean;
+  cleanupToken?: string;
 }
 
 interface DesiredGuest {
@@ -121,22 +126,42 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
     return out;
   }
 
-  async function syncDevice(agentDeviceId: string, entries: RemoteAgentReshareEntry[]): Promise<boolean> {
-    const state = devices.get(agentDeviceId) ?? {
+  async function syncDevice(agentDeviceId: string, entries: RemoteAgentReshareEntry[], cleanupToken?: string): Promise<boolean> {
+    const state: DeviceState = devices.get(agentDeviceId) ?? {
       support: 'unknown', states: new Map(), sentSignature: null, checkedAt: 0, failed: false,
     } satisfies DeviceState;
     devices.set(agentDeviceId, state);
     const before = JSON.stringify([state.support, [...state.states]]);
     const signature = signatureOf(entries);
+    if (cleanupToken) {
+      state.cleanupToken = cleanupToken;
+      state.states.clear();
+      state.sentSignature = null;
+    }
     try {
       const caps = await deps.readCaps(agentDeviceId);
+      if (stopped) return false;
+      if (!cleanupToken && deps.pendingCleanups()[agentDeviceId]) return false;
       if (caps.reshareConsent !== true) {
         // 旧版本给不出同意：这台不分给受邀者，设置页提示那台需要更新。
         state.support = 'needs-update';
         state.states = new Map();
+        // 降级的电脑不能确认已清空；保留清理，升级或恢复后再报。
+        if (cleanupToken) throw new Error('The shared computer cannot confirm reshare cleanup yet');
       } else {
         const keys = new Set(entries.map((entry) => entry.key));
         const result = parseRemoteAgentReshareResult(await deps.invoke(agentDeviceId, { op: 'reshare', entries }), keys);
+        if (stopped) return false;
+        if (cleanupToken) {
+          await deps.completeCleanup(agentDeviceId, cleanupToken);
+          if (stopped) return false;
+          devices.delete(agentDeviceId);
+          return true;
+        }
+        if (deps.pendingCleanups()[agentDeviceId]) {
+          state.states.clear();
+          return true;
+        }
         state.support = 'supported';
         state.states = new Map(result.entries.map((entry) => [entry.key, entry.state]));
       }
@@ -169,10 +194,19 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
   }
 
   function nextDelay(want: Map<string, Map<string, DesiredGuest>> | null): number | null {
-    if (!want) return PROVIDER_GROUP_RESHARE_PENDING_POLL_MS;
-    let delay: number | null = null;
-    for (const [agentDeviceId, guests] of want) {
+    let delay: number | null = want ? null : PROVIDER_GROUP_RESHARE_PENDING_POLL_MS;
+    const cleanups = deps.pendingCleanups();
+    for (const [agentDeviceId, token] of Object.entries(cleanups)) {
       const state = devices.get(agentDeviceId);
+      const elapsed = state?.cleanupToken === token ? deps.now() - state.checkedAt : Infinity;
+      const remaining = Math.max(0, PROVIDER_GROUP_RESHARE_PENDING_POLL_MS - elapsed);
+      delay = delay === null ? remaining : Math.min(delay, remaining);
+    }
+    for (const [agentDeviceId, guests] of want ?? []) {
+      if (cleanups[agentDeviceId]) continue;
+      const state = devices.get(agentDeviceId);
+      // 空名单已确认后无须轮询；失败的空名单仍按一分钟重试。
+      if (guests.size === 0 && state?.sentSignature === signatureOf([]) && !state.failed) continue;
       const elapsed = state ? deps.now() - state.checkedAt : Infinity;
       const remaining = Math.max(0, intervalFor(agentDeviceId, guests) - elapsed);
       delay = delay === null ? remaining : Math.min(delay, remaining);
@@ -193,27 +227,37 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
 
   /** force：每台都现问(设置页打开、那台刚拒绝了人)；否则只问报上的人变了的、或到了核对时间的。 */
   async function runOnce(force: boolean): Promise<void> {
+    let changed = false;
+    // 清理先于重新报人；即使分享名单尚未读到，也能继续已持久保存的清理。
+    const cleanups = Object.entries(deps.pendingCleanups());
+    if (cleanups.length > 0) {
+      await Promise.all(cleanups.map(async ([agentDeviceId, token]) => {
+        const state = devices.get(agentDeviceId);
+        if (!force && state?.cleanupToken === token
+          && deps.now() - state.checkedAt < PROVIDER_GROUP_RESHARE_PENDING_POLL_MS) return;
+        if (await syncDevice(agentDeviceId, [], token)) changed = true;
+      }));
+    }
+    if (stopped) return;
     const want = desired();
     if (!want) {
+      if (changed) deps.changed?.();
       schedule(nextDelay(null));
       return;
     }
-    let changed = false;
-    // 已经不在任何组里的电脑：报一份空的，让那台的主人那边不再列着这些人；之后不再管它。
-    for (const [agentDeviceId, state] of [...devices]) {
-      if (want.has(agentDeviceId)) continue;
+    // 待清理的电脑必须继续留在调度里；其余已移出的缓存不再保留。
+    for (const agentDeviceId of devices.keys()) {
+      if (want.has(agentDeviceId) || deps.pendingCleanups()[agentDeviceId]) continue;
       devices.delete(agentDeviceId);
       changed = true;
-      if (state.sentSignature && state.sentSignature !== signatureOf([])) {
-        await deps.invoke(agentDeviceId, { op: 'reshare', entries: [] }).catch(() => undefined);
-      }
     }
     await Promise.all([...want].map(async ([agentDeviceId, guests]) => {
+      if (deps.pendingCleanups()[agentDeviceId]) return;
       const entries = [...guests.values()].map((guest) => guest.entry);
       const state = devices.get(agentDeviceId);
       const signature = signatureOf(entries);
       // 没有分享给任何人、空名单也已报过：没有要问的。
-      if (entries.length === 0 && state?.sentSignature === signature) return;
+      if (!force && entries.length === 0 && state?.sentSignature === signature && !state.failed) return;
       const due = force || !state || state.sentSignature !== signature
         || deps.now() - state.checkedAt >= intervalFor(agentDeviceId, guests);
       if (!due) return;
@@ -252,7 +296,7 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
 
   return {
     allows(agentDeviceId, reshareKey) {
-      if (!reshareKey) return false;
+      if (!reshareKey || deps.pendingCleanups()[agentDeviceId]) return false;
       return devices.get(agentDeviceId)?.states.get(reshareKey) === 'approved';
     },
     needsUpdate(agentDeviceId) {
@@ -264,7 +308,7 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
       const shares = owned.filter((share) => share.providerId === providerId);
       const people = shares.flatMap((share) => share.members.map((member) => ({ share, member })));
       if (people.length === 0) return null;
-      const state = devices.get(agentDeviceId);
+      const state = deps.pendingCleanups()[agentDeviceId] ? undefined : devices.get(agentDeviceId);
       return {
         support: state?.support ?? 'unknown',
         guests: people.map(({ share, member }): ProviderGroupReshareGuest => ({
