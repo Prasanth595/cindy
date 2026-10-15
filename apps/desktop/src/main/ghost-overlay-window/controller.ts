@@ -25,9 +25,10 @@ import type { InstalledGhost } from '../../shared/ghost.js';
 import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import type { Logger } from '../logger.js';
 import { clearGhostOverlayWebContents } from './registry.js';
+import type { GhostOverlayWindowHandle } from './window.js';
 
 export interface GhostOverlayWindowsControllerDeps {
-  createWindow: (ghostId: string) => Promise<BrowserWindow>;
+  createWindow: (ghostId: string) => Promise<GhostOverlayWindowHandle>;
   isGhostOverlayDeclared: (ghostId: string) => boolean;
   isUserEnabled: (ghostId: string) => boolean;
   broadcastState: (state: GhostOverlayWindowsState) => void;
@@ -274,8 +275,11 @@ export class GhostOverlayWindowsController {
 
   private async createSlot(ghostId: string, generation: number): Promise<WindowSlot | null> {
     let win: BrowserWindow;
+    let loadCompleted = false;
     try {
-      win = await this.deps.createWindow(ghostId);
+      const created = await this.deps.createWindow(ghostId);
+      win = created.win;
+      loadCompleted = created.loadCompleted === true;
     } catch (error) {
       this.deps.log.warn('ghost overlay window creation failed', {
         ghostId,
@@ -318,9 +322,11 @@ export class GhostOverlayWindowsController {
     this.slots.set(ghostId, slot);
     this.attachWindowListeners(ghostId, slot);
     // 工厂 createWindow 在返回前已 await loadURL:首次加载的 dom-ready/
-    // did-finish-load 早已发生,宿主监听器补收不到。这里按事件语义对“已加载
-    // 完成”的窗口直接推进双阶段就绪;后续 reload 仍由上面的监听器重新驱动。
-    if (!slot.win.isDestroyed() && !slot.win.webContents.isLoading()) {
+    // did-finish-load 早已发生,宿主监听器补收不到。工厂把“首次加载已完成”作为
+    // 返回值里的确定性信号交给这里——不再探测 isLoading(实机证明 loadURL resolve
+    // 后 isLoading 不可靠)。拿到信号直接推进双阶段就绪;后续 reload 仍由上面的
+    // 监听器重新驱动,未完成/其它来源的窗口保持事件驱动。
+    if (loadCompleted && !slot.win.isDestroyed()) {
       this.onDomReady(ghostId, slot);
       this.onDidFinishLoad(ghostId, slot);
     }

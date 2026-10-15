@@ -37,7 +37,6 @@ interface FakeWindow {
     send: ReturnType<typeof vi.fn>;
     on: ReturnType<typeof vi.fn>;
     isDestroyed: () => boolean;
-    isLoading: () => boolean;
   };
   emitClosed: () => void;
   emitWindowEvent: (event: string, ...args: unknown[]) => void;
@@ -46,13 +45,12 @@ interface FakeWindow {
 }
 
 let nextId = 1;
-function fakeWindow(opts: { initiallyLoaded?: boolean } = {}): FakeWindow {
+function fakeWindow(): FakeWindow {
   const id = nextId++;
   const winListeners = new Map<string, (...args: unknown[]) => void>();
   const wcListeners = new Map<string, (...args: unknown[]) => void>();
   let destroyed = false;
   let visible = false;
-  const loading = !(opts.initiallyLoaded ?? false);
   const wcOn = vi.fn((event: string, cb: (...args: unknown[]) => void) => {
     wcListeners.set(event, cb);
   });
@@ -87,7 +85,6 @@ function fakeWindow(opts: { initiallyLoaded?: boolean } = {}): FakeWindow {
       send: vi.fn(),
       on: wcOn,
       isDestroyed: () => destroyed,
-      isLoading: () => loading,
     },
     emitClosed: () => {
       destroyed = true;
@@ -130,7 +127,7 @@ function makeHarness(
     onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
     onAllWindowsDestroyed?: () => void;
   } = {},
-  opts: { createInitiallyLoaded?: boolean } = {},
+  opts: { createLoadCompleted?: boolean } = {},
 ) {
   let quitting = false;
   const created: Array<{ ghostId: string; win: FakeWindow }> = [];
@@ -146,13 +143,16 @@ function makeHarness(
 
   const deps: GhostOverlayWindowsControllerDeps = {
     createWindow: async (ghostId) => {
-      // 缺省为“仍在加载”(isLoading=true):就绪由测试手动驱动(IPC 或宿主事件)。
-      // createInitiallyLoaded 模拟真实工厂在返回前 await loadURL 的已加载态。
-      const win = fakeWindow({ initiallyLoaded: opts.createInitiallyLoaded ?? false });
+      // 缺省 loadCompleted=false:就绪由测试手动驱动(IPC 或宿主事件)。
+      // createLoadCompleted 模拟真实工厂在返回前 await loadURL 的已加载态。
+      const win = fakeWindow();
       // 对齐 Task 3 工厂:窗口创建后登记 webContentsId ↔ ghostId。
       markGhostOverlayWebContentsId(win.webContents.id, ghostId);
       created.push({ ghostId, win });
-      return win as unknown as BrowserWindow;
+      return {
+        win: win as unknown as BrowserWindow,
+        loadCompleted: opts.createLoadCompleted ?? false,
+      };
     },
     isGhostOverlayDeclared: (id) => declaredIds.has(id),
     isUserEnabled: (id) => userEnabledIds.has(id),
@@ -242,6 +242,9 @@ describe('host-driven ready (zero-bridge webContents events)', () => {
     await h.controller.show('a');
     const win = h.created[0].win;
 
+    // 工厂 loadCompleted=false 时不得直推:创建后未展示,就绪仍由事件驱动。
+    expect(win.showInactive).not.toHaveBeenCalled();
+
     // 零桥浮窗没有 preload 发就绪 IPC:宿主 webContents 事件驱动就绪。
     win.emitWebContentsEvent('dom-ready');
     expect(win.showInactive).not.toHaveBeenCalled(); // 只有 renderer-ready 不够
@@ -259,10 +262,10 @@ describe('host-driven ready (zero-bridge webContents events)', () => {
     });
   });
 
-  it('marks ready on create when the factory already awaited loadURL', async () => {
+  it('marks ready on create when the factory reports loadCompleted', async () => {
     // 真实工厂在返回前 await loadURL:首次 dom-ready/did-finish-load 已发生,
-    // controller 拿到的窗口是已加载态(isLoading=false),须按事件语义直接推进就绪。
-    const h = makeHarness(new Set(['a']), new Set(['a']), {}, { createInitiallyLoaded: true });
+    // 工厂返回 loadCompleted=true,controller 据此确定性直推双阶段就绪并 show。
+    const h = makeHarness(new Set(['a']), new Set(['a']), {}, { createLoadCompleted: true });
     await h.controller.show('a');
     const win = h.created[0].win;
 
@@ -600,8 +603,8 @@ describe('dispose', () => {
 
 describe('in-flight creation registry cleanup', () => {
   it('owner change during in-flight creation destroys the window and clears its registry binding', async () => {
-    let resolveCreate!: (win: BrowserWindow) => void;
-    const gate = new Promise<BrowserWindow>((resolve) => {
+    let resolveCreate!: (created: { win: BrowserWindow; loadCompleted: boolean }) => void;
+    const gate = new Promise<{ win: BrowserWindow; loadCompleted: boolean }>((resolve) => {
       resolveCreate = resolve;
     });
     const created: FakeWindow[] = [];
@@ -614,7 +617,7 @@ describe('in-flight creation registry cleanup', () => {
       fatal: vi.fn(),
     };
     const deps: GhostOverlayWindowsControllerDeps = {
-      createWindow: (): Promise<BrowserWindow> => {
+      createWindow: (): Promise<{ win: BrowserWindow; loadCompleted: boolean }> => {
         const win = fakeWindow();
         markGhostOverlayWebContentsId(win.webContents.id, 'a');
         created.push(win);
@@ -635,7 +638,7 @@ describe('in-flight creation registry cleanup', () => {
 
     controller.disposeAllForOwnerChange();
 
-    resolveCreate(win as unknown as BrowserWindow);
+    resolveCreate({ win: win as unknown as BrowserWindow, loadCompleted: false });
     await showPromise;
 
     expect(win.isDestroyed()).toBe(true);
@@ -697,7 +700,7 @@ describe('in-flight creation rejection cleanup', () => {
     const deps: GhostOverlayWindowsControllerDeps = {
       createWindow: async () => {
         calls += 1;
-        return brokenWindow();
+        return { win: brokenWindow(), loadCompleted: false };
       },
       isGhostOverlayDeclared: () => true,
       isUserEnabled: () => true,

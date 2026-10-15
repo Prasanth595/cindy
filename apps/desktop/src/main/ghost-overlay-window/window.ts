@@ -49,15 +49,27 @@ export interface GhostOverlayWindowDeps {
 }
 
 /**
+ * 工厂返回值:窗口 + 首次加载完成信号。
+ *
+ * controller 依据 loadCompleted 确定性直推双阶段就绪(不再探测
+ * webContents.isLoading(),实机证明 loadURL resolve 后该值不可靠)。
+ */
+export interface GhostOverlayWindowHandle {
+  win: BrowserWindow;
+  /** 首次 loadURL 是否已在工厂返回前完成(dom-ready/did-finish-load 已发生)。 */
+  loadCompleted: boolean;
+}
+
+/**
  * 创建一段意识的桌面浮窗。
  *
- * @returns 已加载 overlay 入口的 BrowserWindow(display 时机由 controller 控制)。
+ * @returns 已创建窗口及首次加载完成信号(display 时机由 controller 控制)。
  */
 export async function createGhostOverlayWindow(
   ghostId: string,
   decl: GhostOverlayDecl,
   deps: GhostOverlayWindowDeps,
-): Promise<BrowserWindow> {
+): Promise<GhostOverlayWindowHandle> {
   const { ensureProtocolRegistered, resolveGhostOverlaySession, resolveManifestId, log } =
     deps;
   const width = decl.width ?? GHOST_OVERLAY_DEFAULT_SIZE;
@@ -149,5 +161,5 @@ export async function createGhostOverlayWindow(
   }
 
   log.info('ghost overlay window created', { ghostId });
-  return win;
+  return { win, loadCompleted: true };
 }

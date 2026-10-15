@@ -160,6 +160,15 @@ describe('createGhostOverlayWindow', () => {
     expect(harness.windows[0].options).toMatchObject({ width: 64, height: 64 });
   });
 
+  it('returns the window handle with loadCompleted=true after a successful load', async () => {
+    const handle = await createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps());
+
+    // 工厂把“首次加载已完成”作为返回值的一部分交给 controller,供其确定性直推
+    // 双阶段就绪(不再探测 webContents.isLoading())。
+    expect(handle.win).toBe(harness.windows[0]);
+    expect(handle.loadCompleted).toBe(true);
+  });
+
   it('applies full security fields explicitly', async () => {
     await createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps());
 
