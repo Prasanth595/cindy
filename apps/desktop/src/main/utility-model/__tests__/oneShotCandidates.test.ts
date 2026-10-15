@@ -461,30 +461,58 @@ describe('utility one-shot candidates', () => {
     expect(result).toMatchObject({ ok: true, text: '答字案' });
   });
 
-  it('parts 数组只有思考段(无正文)→ 如实 empty_response,不拿思维链冒充答案', async () => {
+  it('parts 数组只有思考段(无正文)→ 放大预算重试后仍不拿思维链冒充答案', async () => {
     readKey.mockReturnValue('proxy-key');
-    fetchMock.mockResolvedValueOnce({
+    const thinkingOnly = {
       ok: true,
       json: async () => ({
         choices: [{ message: { content: [{ type: 'reasoning', text: '在想…' }] }, finish_reason: 'length' }],
       }),
-    } as never);
+    };
+    fetchMock
+      .mockResolvedValueOnce(thinkingOnly as never)
+      .mockResolvedValueOnce(thinkingOnly as never);
 
     const result = await requestUtilityText(makerMock(false), 'hello', { maxTokens: 10 });
     expect(result).toMatchObject({ ok: false, reason: 'empty_response' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBudget = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).max_tokens;
+    const retryBudget = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).max_tokens;
+    expect(retryBudget).toBeGreaterThan(firstBudget);
   });
 
-  it('思考烧光预算只留下 reasoning_content(content 空)→ 如实 empty_response,不拿思维链冒充答案', async () => {
+  it('思考烧光预算(content 空 + finish_reason=length)→ 放大预算重试一次拿到正文', async () => {
+    readKey.mockReturnValue('proxy-key');
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '', reasoning_content: '在想…' }, finish_reason: 'length' }],
+          usage: { completion_tokens: 800 },
+        }),
+      } as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '审阅结论' } }] }),
+      } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'hello', { maxTokens: 800 });
+    expect(result).toMatchObject({ ok: true, text: '审阅结论' });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).max_tokens).toBeGreaterThan(800);
+  });
+
+  it('非长度截断的空正文不重试(避免对真故障白白多打一次)', async () => {
     readKey.mockReturnValue('proxy-key');
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: '', reasoning_content: '在想…' }, finish_reason: 'length' }],
+        choices: [{ message: { content: null }, finish_reason: 'stop' }],
       }),
     } as never);
 
     const result = await requestUtilityText(makerMock(false), 'hello', { maxTokens: 10 });
     expect(result).toMatchObject({ ok: false, reason: 'empty_response' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('pinnedProfileId 钉住某一档时只用它,绕开默认链', async () => {
