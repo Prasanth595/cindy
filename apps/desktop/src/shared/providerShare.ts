@@ -141,7 +141,15 @@ export type ProviderShareCommand =
   | { action: 'send-request'; link: string }
   | { action: 'get-request'; requestId: string }
   | { action: 'withdraw'; requestId: string }
-  | { action: 'leave'; memberId: string };
+  | { action: 'leave'; memberId: string }
+  /** 受邀者：这个分享的任务里凭证类操作是否不再在本机确认(provider-sharing.md §9 第 7 条)。 */
+  | { action: 'get-credential-consent'; shareId: string }
+  | { action: 'set-credential-consent'; shareId: string; skip: boolean };
+
+/** 受邀者对一个分享的本机偏好：true = 凭证类操作不再确认。只对这台电脑生效。 */
+export interface ProviderShareCredentialConsentView {
+  skip: boolean;
+}
 
 export interface ProviderShareCommandResult {
   owned: ProviderShareOwnerState;
@@ -157,6 +165,8 @@ export interface ProviderShareCommandResult {
   'get-request': ProviderShareRequestState;
   withdraw: { ok: true };
   leave: { ok: true };
+  'get-credential-consent': ProviderShareCredentialConsentView;
+  'set-credential-consent': ProviderShareCredentialConsentView;
 }
 
 /** 任务记录里「Agent 在某个分享者的电脑上」的前缀(见 main/device-link/providerShareGuest)。 */

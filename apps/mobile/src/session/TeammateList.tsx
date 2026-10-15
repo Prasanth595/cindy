@@ -50,6 +50,11 @@ export interface TeammateListProps {
   error: string | null;
   isOnline(host: RemoteResourceHostTarget): boolean;
   connectionState?(host: RemoteResourceHostTarget): boolean | null;
+  /**
+   * The row's computer is the companion's main computer and the server keeps its cloud
+   * conversation: an offline row stays openable (docs/product-rules/cloud-companions.md §3.1).
+   */
+  cloudOpenable?(row: HostedRemoteCollectionItem): boolean;
   onRefresh(): void;
   onSelect(item: HostedRemoteCollectionItem): void;
   /** SheetSurface already owns the scroll view. */
@@ -85,7 +90,7 @@ function useAwaitingSessions(items: readonly HostedRemoteCollectionItem[]): Read
 }
 
 /** Identity list shared by home (with group chats) and the collection route. No host headings. */
-export function TeammateList({ items, loading, refreshing, error, isOnline, connectionState, onRefresh, onSelect,
+export function TeammateList({ items, loading, refreshing, error, isOnline, connectionState, cloudOpenable, onRefresh, onSelect,
   embedded = false, autoFocusSearch = false, onInteract, groups, emptyAction, scrollInsetProps, topInset, notice }: TeammateListProps) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
@@ -177,7 +182,9 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
     const timestamp = display.timestamp;
     const time = timestamp !== undefined && Number.isFinite(new Date(timestamp).getTime())
       ? formatRemoteSessionSidebarTime(new Date(timestamp).toISOString(), now) : '';
-    const connection = connected === false ? t('devices.resources.hostOffline') : connected === null ? t('devices.resources.connectionUnknown') : '';
+    const cloud = !online && !!cloudOpenable?.(row);
+    const connection = cloud ? t('devices.cloudCompanion.homeOffline', { device: row.host.deviceName })
+      : connected === false ? t('devices.resources.hostOffline') : connected === null ? t('devices.resources.connectionUnknown') : '';
     const prefix = attention || (waiting ? t('devices.companions.awaiting') : '');
     return <CompanionListRow key={`bot:${row.key}`} testID={`teammates.item.${row.host.deviceId}.${row.item.ref.id}`}
       accessibilityLabel={[title, ambiguous ? row.host.deviceName : '', connection, prefix, generating ? workingCopy : summary, time,

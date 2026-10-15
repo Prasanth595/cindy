@@ -35,6 +35,7 @@ import {
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
 } from './orcaRemoteWorker.js';
 import { TASK_MIGRATION_CHANNEL } from './taskMigration.js';
+import { COMPANION_CLOUD_CAPS_CHANNEL } from './companionCloud.js';
 import { SESSION_ACTIVITY_CHANNEL, SESSION_SYNC_CHANNEL } from './topics.js';
 import { REMOTE_DESKTOP_INVOKE_MS } from './remoteDesktopIce.js';
 import {
@@ -434,6 +435,9 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
   // 远程控制 Lead 所在电脑时，读取那台视角下可选的运行设备(只读，真相在被控端)。
   ORCA_EXECUTION_DEVICES_CHANNEL,
+  // 云端伙伴：交出伙伴前探测目标电脑是否支持接手(只读常量，无 sender 依赖、无本机 UI 副作用)。
+  // 老版本无 handler → CHANNEL_NOT_ALLOWED，交出方拒绝该目标。
+  COMPANION_CLOUD_CAPS_CHANNEL,
   // —— Rewind / Fork / Title / Context ——
   'maker:rewind:preview',
   'maker:rewind:commit',

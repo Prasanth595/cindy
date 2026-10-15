@@ -29,10 +29,14 @@ import { useTeammateRoster } from './useTeammateRoster';
 import { useBotGroupRoster } from './useBotGroupRoster';
 import { useTeammateNavigation } from './useTeammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
+import { cloudActorForRow, cloudCompanionRows } from '@/chat/cloudCompanion';
+import { useCloudCompanionHome } from '@/chat/useCloudCompanion';
+import { cloudCompanionRoute } from './teammateNavigation';
+import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
 /** The teammate home is the roster: launch and every entry land on the list, never inside a chat. */
 export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const auth = useAuth();
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -46,6 +50,17 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
   const ownGroups = useBotGroupRoster(ownRoster.groupTargets, focused && !sharedRoster);
   const roster = sharedRoster?.roster ?? ownRoster;
   const groups = sharedRoster?.groups ?? ownGroups;
+  // Main computers (cloud-companions.md): only with a server that declares companionHome.
+  const cloud = useCloudCompanionHome(focused);
+  // One row per companion, under its main computer (a row built from the cloud when none is listed).
+  const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
+    [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
+  const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && !roster.isOnline(row.host) ? cloudActorForRow(cloud.actors, row) : null;
+  // A companion moved by another device shows up as changed roster rows (a new row, or a cached
+  // row whose computer re-listed it): re-read the main computers then, not only on focus.
+  const listedCompanions = roster.items.map(row => `${row.key}\t${row.item.revision}`).sort().join('\n');
+  const refreshCloud = cloud.refresh;
+  useEffect(() => { if (cloud.supported) void refreshCloud(); }, [cloud.supported, listedCompanions, refreshCloud]);
   const counts = useHomeUnreadCounts();
   const [drawer, setDrawer] = useState(false);
   const [accounts, setAccounts] = useState(false);
@@ -142,14 +157,19 @@ export function TeammateHomeScreen({ active = true }: { active?: boolean }) {
       </View>
     </View>
     </>}
-    <TeammateList key={searchEpoch} {...roster}
+    <TeammateList key={searchEpoch} {...roster} items={items}
+      cloudOpenable={(row) => !!cloudActor(row)}
       topInset={nativeHeader ? headerHeight : undefined}
       notice={navigation.saveFailed ? <Text accessibilityRole="alert" style={styles.notice}>{t('devices.companions.preferenceSaveFailed')}</Text> : null} autoFocusSearch={searchEpoch > 0}
       loading={roster.items.length + groups.items.length === 0 && (roster.loading || groups.loading)}
       refreshing={roster.refreshing || groups.refreshing}
       error={groups.error ?? roster.error}
-      onRefresh={() => { void roster.refresh(); if (groups.supported) void groups.refresh(); }}
-      onSelect={(item) => { void navigation.openTeammate(item); }}
+      onRefresh={() => { void roster.refresh(); void cloud.refresh(); if (groups.supported) void groups.refresh(); }}
+      onSelect={(item) => {
+        const actor = cloudActor(item);
+        if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(item, actor.id, i18n.language)); }
+        else void navigation.openTeammate(item);
+      }}
       groups={groups.supported || groups.items.length > 0 ? {
         items: groups.items,
         isOnline: groups.isOnline,

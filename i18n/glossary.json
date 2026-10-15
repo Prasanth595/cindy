@@ -2438,6 +2438,19 @@
       },
       "checkCase": false,
       "note": "伙伴独立事务清单，含交办与获准信息中的主动发现；项目、执行任务与PR仅可选关联。不替代Session任务生命周期。"
+    },
+    {
+      "id": "companion-main-computer",
+      "status": "proposed",
+      "en": "Main computer",
+      "translations": {
+        "zh-CN": "主力电脑",
+        "zh-TW": "主力電腦",
+        "ja": "メインのパソコン",
+        "ko": "주 컴퓨터"
+      },
+      "checkCase": false,
+      "note": "云端伙伴运行的那台电脑（docs/product-rules/cloud-companions.md §3）：伙伴的 Agent、工作目录与连接只在这台电脑上，其他电脑与手机是查看和发消息的入口。手机与桌面同一叫法，伙伴设置行名、离线横幅与侧栏状态共用。英文行名用 Title Case（Main Computer），句中小写 main computer，故 checkCase 为 false。不要写成「主设备」「宿主机」或 home device（代码字段 homeDeviceId 不是界面用语）。先登记为 proposed，待桌面与手机实机走查后再定。"
     }
   ]
 }

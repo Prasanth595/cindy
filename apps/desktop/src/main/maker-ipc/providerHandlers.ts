@@ -1103,9 +1103,20 @@ export function registerProviderHandlers(
         ownerGeneration: ownerAtIngress?.generation ?? 0,
         providers: providers.map((provider) => {
           const safe = withoutProviderHeaderCredentials(provider);
+          const view = {
+            ...safe,
+            ...(safe.models ? {
+              models: Object.fromEntries(
+                Object.entries(safe.models).map(([agent, models]) => [
+                  agent,
+                  models?.map((model) => ({ ...model, effortsUnknown: model.effortsUnknown === true })),
+                ]),
+              ),
+            } : {}),
+          };
           return remoteAccess
-            ? { ...safe, remoteInvocationEnabled: remoteAccess(provider.id) }
-            : safe;
+            ? { ...view, remoteInvocationEnabled: remoteAccess(provider.id) }
+            : view;
         }),
         providerOrder,
         modelVisibilityOverrides,

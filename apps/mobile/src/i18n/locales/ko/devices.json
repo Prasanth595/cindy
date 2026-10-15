@@ -893,5 +893,22 @@
     "continue": "계속",
     "addTime": "시각 추가",
     "dateOnly": "날짜만"
+  },
+  "cloudCompanion": {
+    "homeOffline": "주 컴퓨터 '{{device}}' 오프라인",
+    "switchAction": "다른 컴퓨터에서 계속하기",
+    "composerHint": "주 컴퓨터가 오프라인입니다. 다른 컴퓨터로 바꾸면 계속할 수 있습니다.",
+    "readOnlyNote": "클라우드에 저장된 대화로, 보기만 할 수 있습니다.",
+    "empty": "아직 클라우드 대화가 없습니다.",
+    "loadFailed": "지금은 클라우드 대화를 불러올 수 없습니다.",
+    "loadOlder": "이전 메시지 불러오기",
+    "noTargets": "사용할 수 있는 다른 컴퓨터가 없습니다. 다른 컴퓨터에서 Cindy를 열고 같은 계정으로 로그인한 뒤 '동일 계정 기기의 이 컴퓨터 제어 허용'을 켜고 다시 시도하세요.",
+    "devicesFailed": "지금은 컴퓨터 목록을 불러올 수 없습니다. 잠시 후 다시 시도하세요.",
+    "preparing": "'{{device}}'에서 준비하는 중…",
+    "preparingHint": "그 컴퓨터가 클라우드 프로필로 팀원을 이어받고, 준비되면 자동으로 엽니다.",
+    "timeout": "'{{device}}'이(가) 아직 준비되지 않았습니다. 그 컴퓨터에서 Cindy가 열려 있고 온라인인지 확인한 뒤 다시 시도하세요.",
+    "conflict": "{{name}}은(는) 이미 '{{device}}'(으)로 옮겨졌습니다.",
+    "switchFailed": "지금은 주 컴퓨터를 바꿀 수 없습니다. 잠시 후 다시 시도하세요.",
+    "unknownDevice": "다른 컴퓨터"
   }
 }

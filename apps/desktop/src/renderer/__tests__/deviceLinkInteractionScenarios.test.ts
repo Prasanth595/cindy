@@ -63,7 +63,7 @@ import { getIssueConfirmDraft, saveIssueConfirmDraft } from '@/lib/issueConfirmD
 
 const TEST_OWNER_STAMP = { dataOwnerId: 'test-owner', ownerGeneration: 0 } as const;
 
-it('persists remote first selection after late catalogs and retries a failed write without overwriting a manual choice', async () => {
+it.each(['high', null] as const)('persists remote first selection with effort %s after late catalogs and retries without overwriting a manual choice', async (effort) => {
   vi.useFakeTimers();
   try {
   const source = readFileSync(resolve(process.cwd(), 'src/renderer/features/cc-agent/NewMakerDraftRoute.tsx'), 'utf8').replace(/\r\n/g, '\n');
@@ -74,7 +74,8 @@ it('persists remote first selection after late catalogs and retries a failed wri
   invoke.mockRejectedValueOnce(new Error('temporary disconnect'));
   const context = { catalogDeviceId: 'host-a', capabilities: {}, capabilitiesLoading: false,
     deviceDraftDefaultsReady: true, dlRuntimeTouchedRef: { current: false }, dlInitializationRef: { current: null },
-    resolveDeviceLinkDraftDefaults: () => ({ model: 'real-b', providerId: 'host-provider', effort: 'high' }),
+    resolveDeviceLinkDraftDefaults: vi.fn(() => ({ model: 'real-b', providerId: 'host-provider', effort })),
+    agentCatalogProviders: [{ id: 'host-provider' }],
     deviceDraftDefaults: { initialModelSelectionComplete: false, modelChosenByUser: false },
     capabilityAgentKind: 'pi', isDeviceLinkDraft: true, isAgentDeviceDraft: false,
     deviceProvidersLoading: true, deviceProvidersError: null, deviceProviders: [{ modelDiscoveryFailure: true }],
@@ -88,7 +89,9 @@ it('persists remote first selection after late catalogs and retries a failed wri
   expect(invoke).not.toHaveBeenCalled();
   context.deviceProviders = [];
   const cleanup = run();
-  expect(invoke).toHaveBeenCalledWith('host-a', 'maker:apply-new-maker-draft-pref', [expect.objectContaining({ modelId: 'real-b', initializeModelSelection: true, markModelChoice: false })]);
+  expect(invoke).toHaveBeenCalledWith('host-a', 'maker:apply-new-maker-draft-pref', [expect.objectContaining({ modelId: 'real-b', initializeModelSelection: true, markModelChoice: false, effort: effort ?? '' })]);
+  expect(context.resolveDeviceLinkDraftDefaults).toHaveBeenLastCalledWith(
+    context.capabilities, context.deviceDraftDefaults, undefined, 'pi', context.agentCatalogProviders);
   await vi.advanceTimersByTimeAsync(2_000);
   expect(invoke).toHaveBeenCalledTimes(2);
   run();

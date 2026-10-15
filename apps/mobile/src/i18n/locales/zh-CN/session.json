@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "打开任务",
+    "loading": "正在读取任务…",
+    "failed": "未能读取任务信息",
+    "missing": "这台电脑没有返回该任务的信息",
+    "timedOut": "读取任务信息超时",
+    "retry": "重新读取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "此前有自动运行失败。",
     "precheck": "自动检查暂时受阻。",

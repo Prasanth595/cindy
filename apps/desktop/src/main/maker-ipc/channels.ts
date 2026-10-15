@@ -806,6 +806,16 @@ export const MAKER_INVOKE = {
   BOT_GROUP_PLAN_RETRY: 'maker:bot-group:plan-retry',
   BOT_GROUP_PLAN_EDIT: 'maker:bot-group:plan-edit',
   BOT_LIFECYCLE_ACTION: 'maker:bot-lifecycle:action',
+  /** Where each companion runs (cloud-companions.md §3); read-only snapshot. */
+  COMPANION_CLOUD_STATE: 'maker:companion-cloud:state',
+  /** Make this computer the companion's home (cloud-companions.md §3.1). */
+  COMPANION_CLOUD_TAKE_OVER: 'maker:companion-cloud:take-over',
+  /** Hand the companion to another of the owner's computers. */
+  COMPANION_CLOUD_TRANSFER: 'maker:companion-cloud:transfer',
+  /** Read the companion's 1:1 room (works while its home is offline). */
+  COMPANION_CLOUD_TRANSCRIPT: 'maker:companion-cloud:transcript',
+  /** Computers a companion can be handed to. */
+  COMPANION_CLOUD_DEVICES: 'maker:companion-cloud:devices',
 } as const;
 
 /**
@@ -959,6 +969,8 @@ export const MAKER_PUSH = {
   BOT_DIRECT_MESSAGE_CHANGED: 'maker:bot-direct-message:changed',
   /** A Bot group, its members, messages or running round changed. */
   BOT_GROUP_CHANGED: 'maker:bot-group:changed',
+  /** Companion homes changed; payload is the full CompanionCloudSnapshot. */
+  COMPANION_CLOUD_CHANGED: 'maker:companion-cloud:changed',
   /** Bot 档案经主进程创建或更新后变化；renderer 收到后重拉伙伴列表。 */
   BOT_PROFILE_CHANGED: 'maker:bot-profile:changed',
   /** 伙伴工作台已接手的项目变化(payload: { botId });renderer 收到后重读项目列表。 */

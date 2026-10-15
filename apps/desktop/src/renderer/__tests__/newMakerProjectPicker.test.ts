@@ -1630,6 +1630,35 @@ describe('Shared create project picker', () => {
     expect((body.match(/resolveDeviceLinkDraftDefaults\(/g) ?? []).length).toBeGreaterThanOrEqual(
       3,
     );
+    expect((body.match(/freshProviders,/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(body).not.toContain('agentCatalogProviders');
+  });
+
+  it('uses the selected provider catalog for remote effort recalculation', () => {
+    const pushStart = newMakerDraftRouteSource.indexOf(
+      'const re = resolveDeviceLinkDraftDefaults(',
+    );
+    const pushBlock = newMakerDraftRouteSource.slice(
+      pushStart,
+      newMakerDraftRouteSource.indexOf('return { ...prev', pushStart),
+    );
+    const modelSwitchStart = newMakerDraftRouteSource.indexOf(
+      'const resolved = resolveDeviceLinkDraftDefaults(',
+    );
+    const modelSwitchBlock = newMakerDraftRouteSource.slice(
+      modelSwitchStart,
+      newMakerDraftRouteSource.indexOf('setDlSel((prev) =>', modelSwitchStart),
+    );
+    const unifiedStart = newMakerDraftRouteSource.indexOf('const baseline = capabilities');
+    const unifiedBlock = newMakerDraftRouteSource.slice(
+      unifiedStart,
+      newMakerDraftRouteSource.indexOf('// 能力与镜像都还没到', unifiedStart),
+    );
+
+    for (const block of [pushBlock, modelSwitchBlock, unifiedBlock]) {
+      expect(block).toContain('agentCatalogProviders,');
+    }
+    expect(unifiedBlock).toContain('providerId: selection.providerId,');
   });
 
   it('reapplies refreshed regional defaults only before remote runtime selection or initialization', () => {
@@ -1639,7 +1668,10 @@ describe('Shared create project picker', () => {
     );
     expect(seed).toContain('shouldReseedDeviceLinkDraftDefaults({');
     expect(seed).toContain('capabilitiesChanged,');
-    expect(seed).toContain('if (!capabilities || capabilitiesLoading');
+    expect(seed).toContain('!capabilities');
+    expect(seed).toContain('capabilitiesLoading');
+    expect(seed).toContain('!deviceDraftDefaultsReady');
+    expect(seed).toContain('!deviceProviderCatalogReady');
     // A pending first selection must survive catalog refresh just like an explicit choice.
     expect(seed).toContain('controllerTouched: dlRuntimeTouchedRef.current || dlInitializationRef.current?.key === key,');
     expect(seed).toContain('initialModelSelectionComplete: deviceDraftDefaults?.initialModelSelectionComplete,');
