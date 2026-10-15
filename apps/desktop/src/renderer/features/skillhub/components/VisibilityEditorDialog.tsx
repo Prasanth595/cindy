@@ -1,3 +1,4 @@
+import type { SkillAudienceDepartment } from '../../../../shared/skillhubAudience';
 import { DepartmentAudienceField } from './DepartmentAudienceField';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { Button } from '@/components/ui/button';
@@ -62,6 +63,7 @@ export function VisibilityEditorDialog({
   // loading 初始为 true,且关闭时复位 —— Dialog 在数据就绪前不挂载,
   // 避免"先弹出矮窗再撑开"的跳变(设计规范:拿到数据后一次成型)。
   const [loading, setLoading] = useState(true);
+  const [departments, setDepartments] = useState<SkillAudienceDepartment[]>();
   const [initialLoadFinished, setInitialLoadFinished] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,11 +80,18 @@ export function VisibilityEditorDialog({
     let cancelled = false;
     const owner = getDataOwnerGeneration();
     setTier(currentTier); setLoadError(null); setConflict(false); setLoading(true); setExpectedUpdatedAt(undefined);
-    void window.electronAPI.skillhub.getPublishedVisibility(skillName).then(result => {
+    void Promise.all([
+      window.electronAPI.skillhub.getPublishedVisibility(skillName),
+      currentOwnerIsTeam ? window.electronAPI.skillhub.getMyDepts() : Promise.resolve(undefined),
+    ]).then(([result, tree]) => {
       if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
       if (!result.success || (currentOwnerIsTeam && (!result.audienceSupported || !result.updatedAt))) {
         setLoadError(t('skillhub.audience.loadError')); return;
       }
+      if (currentOwnerIsTeam && (!tree?.success || !tree.audienceSupported || !tree.departments)) {
+        setLoadError(t('skillhub.audience.loadError')); return;
+      }
+      setDepartments(tree?.departments);
       setExpectedUpdatedAt(result.updatedAt);
       setSelected(result.visibleDepts ?? []);
       setAudienceMode(result.visibleDepts?.length ? 'departments' : 'all');
@@ -122,7 +131,7 @@ export function VisibilityEditorDialog({
   };
 
   const handleSave = async () => {
-    if (!isDataOwnerGenerationCurrent(dialogOwner)) return;
+    if (!isDataOwnerGenerationCurrent(dialogOwner) || conflict || loading || loadError) return;
     const publishVisibility = tier === 'team' ? 'DEPARTMENT_SCOPED' : tier.toUpperCase();
     if (!identityPolicy.allowedVisibilities.includes(publishVisibility as 'PUBLIC' | 'DEPARTMENT_SCOPED' | 'PRIVATE')) return;
     setSaving(true);
@@ -251,7 +260,7 @@ export function VisibilityEditorDialog({
                   </div>
                 </div>
 
-                {tier === 'team' && <DepartmentAudienceField mode={audienceMode} selected={selected}
+                {tier === 'team' && <DepartmentAudienceField initialDepartments={departments} mode={audienceMode} selected={selected}
                   disabled={readOnly || saving} onValidityChange={setAudienceValid}
                   onChange={(mode, ids) => { setAudienceMode(mode); setSelected(ids); }} />}
                 {conflict && <div role="alert">{t('skillhub.audience.conflict')}<Button variant="secondary" size="sm" type="button" onClick={() => setReload(n => n + 1)}>{t('skillhub.audience.reload')}</Button></div>}
@@ -288,7 +297,7 @@ export function VisibilityEditorDialog({
               compact
               loading={saving}
               type="button"
-              disabled={!isDataOwnerGenerationCurrent(dialogOwner) || loading || saving || (tier === 'team' && !audienceValid) || Boolean(loadError) || !tierAllowed || readOnly
+              disabled={!isDataOwnerGenerationCurrent(dialogOwner) || loading || saving || conflict || (tier === 'team' && !audienceValid) || Boolean(loadError) || !tierAllowed || readOnly
                 || (tier === 'public' && currentTier !== 'public' && publicReview?.status === 'pending')}
               onClick={() => void handleSave()}
             >

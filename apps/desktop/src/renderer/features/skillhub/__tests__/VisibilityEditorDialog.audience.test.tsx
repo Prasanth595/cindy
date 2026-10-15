@@ -38,6 +38,7 @@ it('retains the selection on conflict and provides explicit reload', async () =>
   await waitFor(() => expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }));
   await screen.findByText('skillhub.audience.conflict');
+  expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
   expect(close).not.toHaveBeenCalled();
   expect((screen.getByRole('checkbox', { name: 'Parent' }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'skillhub.audience.reload' }));
@@ -108,4 +109,16 @@ it.each(['retry', 'conflict'])('keeps the modal mounted during %s loading', asyn
   resolve({ success: true, audienceSupported: true, updatedAt, visibleDepts: ['p'], visibility: 'shared' });
   await screen.findByRole('checkbox', { name: 'Parent' });
   expect(screen.getByRole('dialog')).toBe(dialog);
+});
+
+it('waits for the department tree before displaying the initial modal', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof window.electronAPI.skillhub.getMyDepts>>) => void;
+  vi.mocked(window.electronAPI.skillhub.getMyDepts).mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  open();
+  await waitFor(() => expect(load).toHaveBeenCalled());
+  expect(screen.queryByRole('dialog')).toBeNull();
+  resolve({ success: true, ids: [], names: [], audienceSupported: true, departments: [{ id: 'p', name: 'Parent', parentId: null }] });
+  await screen.findByRole('dialog');
+  expect(screen.getByRole('checkbox', { name: 'Parent' })).toBeTruthy();
+  expect(window.electronAPI.skillhub.getMyDepts).toHaveBeenCalledTimes(1);
 });

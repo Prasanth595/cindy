@@ -8,6 +8,7 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import type { SkillAudienceDepartment } from '../../../../shared/skillhubAudience';
 
 type Props = {
+  initialDepartments?: SkillAudienceDepartment[];
   mode: 'all' | 'departments'; selected: string[]; disabled?: boolean;
   onChange: (mode: 'all' | 'departments', selected: string[]) => void;
   onValidityChange: (valid: boolean) => void;
@@ -20,15 +21,16 @@ export function departmentAncestors(id: string, parents: ReadonlyMap<string, str
   }
   return result;
 }
-export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange }: Props) {
+export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange, initialDepartments }: Props) {
   const { t } = useTranslation();
   const radioName = useId();
-  const [departments, setDepartments] = useState<SkillAudienceDepartment[]>([]);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [departments, setDepartments] = useState<SkillAudienceDepartment[]>(initialDepartments ?? []);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(initialDepartments ? 'ready' : 'loading');
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
+    if (initialDepartments) { setDepartments(initialDepartments); setStatus('ready'); return; }
     let cancelled = false;
     const owner = getDataOwnerGeneration();
     setStatus('loading');
@@ -38,7 +40,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
       setDepartments(result.departments); setStatus('ready');
     }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setStatus('error'); });
     return () => { cancelled = true; };
-  }, [attempt]);
+  }, [attempt, initialDepartments]);
   const { byId, parents, childrenByParent } = useMemo(() => {
     const byId = new Map(departments.map(d => [d.id, d]));
     const parents = new Map(departments.map(d => [d.id, d.parentId]));
@@ -84,7 +86,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
     <div className="rounded-xl border border-[var(--cmd-palette-border)] overflow-hidden">
       {(['all', 'departments'] as const).map(value => <div key={value} className={value === 'departments' ? 'border-t border-[var(--cmd-palette-border)]' : ''}>
         <label className="flex cursor-pointer items-center gap-2 p-3">
-          <input type="radio" name={radioName} checked={mode === value} onChange={() => onChange(value, selected)} />
+          <input className="accent-[var(--confirm-btn-primary-bg)]" type="radio" name={radioName} checked={mode === value} onChange={() => onChange(value, selected)} />
           {t(`skillhub.audience.${value}`)}
         </label>
         {value === 'departments' && mode === 'departments' && <div className="flex flex-col gap-2 pb-3 pl-8 pr-3">
@@ -106,7 +108,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </Button></Tip>}</span>
                 <label className="flex flex-1 items-center gap-2 cursor-pointer py-1">
-                  <input type="checkbox" checked={included || selected.includes(d.id)} disabled={disabled || included} onChange={() => toggle(d.id)} />
+                  <input className="accent-[var(--confirm-btn-primary-bg)]" type="checkbox" checked={included || selected.includes(d.id)} disabled={disabled || included} onChange={() => toggle(d.id)} />
                   {d.name}{included && <span className="text-xs text-[var(--cmd-palette-item-meta)]">{t('skillhub.audience.included')}</span>}
                 </label>
               </div>;
