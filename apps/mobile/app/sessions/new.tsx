@@ -1038,7 +1038,7 @@ export default function NewRemoteSessionScreen() {
   const initialWorkspaceKeyRef = useRef<string | null>(null);
   const appliedDefaultDeviceKeyRef = useRef<string | null>(null);
   // 上次 agent 的恢复进度(唯一写入者:下面的恢复 effect)。见 nextStoredAgentRestoreStep。
-  const storedAgentRestoreRef = useRef<StoredAgentRestoreState | null>(null);
+  const storedAgentRestoreRef = useRef<(StoredAgentRestoreState & { deviceId: string; ownerKey: string }) | null>(null);
   // 权限记忆只在偏好加载后恢复一次(之后由用户选择 / 切 agent 驱动),防止重复覆盖。
   const appliedPermissionMemoryRef = useRef(false);
   const userTouchedDeviceRef = useRef(false);
@@ -1476,11 +1476,12 @@ export default function NewRemoteSessionScreen() {
       ? modelSelectionMemory.runtime?.agentKind ?? newSessionPreferences?.agentKind : newSessionPreferences?.agentKind;
     if (!modelSelectionMemoryReady || !newSessionPreferencesLoaded || !storedAgentKind) return;
     if (userTouchedRuntimeRef.current) return;
-    const restored = storedAgentRestoreRef.current;
+    const restored = storedAgentRestoreRef.current?.deviceId === selectedDeviceId &&
+      storedAgentRestoreRef.current.ownerKey === modelSelectionOwner.accountKey ? storedAgentRestoreRef.current : null;
     if (!isStoredAgentRestorePending({
       storedAgentKind,
       appliedStoredAgentKind: restored?.phase === 'done' ? restored.agentKind : null,
-      expectedDeviceId: preferredDefaultDevice?.deviceId ?? '',
+      expectedDeviceId: modelSelectionMemory?.runtime ? selectedDeviceId : preferredDefaultDevice?.deviceId ?? '',
       selectedDeviceId,
     })) return;
     // agent 偏好一到就恢复;模型要等被控电脑的新建任务默认与目录,否则选不出模型。
@@ -1498,7 +1499,8 @@ export default function NewRemoteSessionScreen() {
     if (!step) return;
     mobileDebugLog('debug', 'new-session', 'stored agent restore', { step, agentKind: storedAgentKind });
     const previousRestore = restored;
-    const restoreState: StoredAgentRestoreState = { agentKind: storedAgentKind, phase: step === 'agent' ? 'agent' : 'done' };
+    const restoreState: StoredAgentRestoreState & { deviceId: string; ownerKey: string } = {
+      agentKind: storedAgentKind, phase: step === 'agent' ? 'agent' : 'done', deviceId: selectedDeviceId, ownerKey: modelSelectionOwner.accountKey };
     storedAgentRestoreRef.current = restoreState;
     // 现场按最新目录算该 agent 的默认运行配置(rows 与 ready 必须同一代,codex review P2)。
     const resolveStoredRuntime = (currentEffort: string) => {
@@ -1590,7 +1592,7 @@ export default function NewRemoteSessionScreen() {
     hostDefaultsSettled,
     hostDraftDefaults,
     hostRuntimeFor,
-    modelSelectionMemory, modelSelectionMemoryReady,
+    modelSelectionMemory, modelSelectionMemoryReady, modelSelectionOwner.accountKey,
     newSessionPreferences,
     newSessionPreferences?.agentKind,
     newSessionPreferencesLoaded,
@@ -1707,13 +1709,14 @@ export default function NewRemoteSessionScreen() {
   // Persist only after the actual draft has settled; stored-agent restoration uses this same path.
   useEffect(() => {
     if (!modelSelectionMemoryReady || modelSelectionMemory?.runtime || !selectedDeviceId ||
-      runtimeSettledDeviceId !== selectedDeviceId || !hostDefaultsSettled || hostDraftDefaults?.failed || !deviceProviders.ready ||
+      runtimeSettledDeviceId !== selectedDeviceId || !hostDefaultsSettled || hostDraftDefaults?.failed || (!deviceProviders.ready && !deviceProviders.unsupported) ||
+      !availableAgentKinds?.has(draft.agentKind) ||
       remoteAgentChoice || deviceProviders.providers.some(provider => provider.modelDiscoveryFailure)) return;
     const remembered: NewSessionRuntime = { agentKind: draft.agentKind, model: draft.model,
       providerId: draft.providerId, effort: draft.effort, initialModelSelectionComplete: true };
     setModelSelectionMemory({ ownerKey: getMobileAuthOwner().accountKey, deviceId: selectedDeviceId, runtime: remembered, pendingWrite: 'initialize' });
   }, [modelSelectionMemoryReady, modelSelectionMemory, selectedDeviceId, runtimeSettledDeviceId,
-    hostDefaultsSettled, hostDraftDefaults?.failed, deviceProviders.ready, deviceProviders.providers, remoteAgentChoice,
+    hostDefaultsSettled, hostDraftDefaults?.failed, deviceProviders.ready, deviceProviders.unsupported, deviceProviders.providers, remoteAgentChoice, availableAgentKinds,
     draft.agentKind, draft.model, draft.providerId, draft.effort, maker]);
 
   // A durable local initialization and its host write have separate success states.
@@ -2396,10 +2399,12 @@ export default function NewRemoteSessionScreen() {
     userTouchedDeviceRef.current = true;
     explicitProviderModelSelectionRef.current = null;
     browseSeqRef.current += 1;
-    // 换了电脑且用户没手动选过模型:丢掉上一台电脑自动选出的模型并重新等待,由新电脑的
-    // 最近任务 / 目录 / 能力表重新落定;都拿不到时留空让用户选,不拿旧电脑的模型去创建。
-    const clearAutoRuntime = option.deviceId !== selectedDeviceIdRef.current && !userTouchedRuntimeRef.current;
+    // 模型与供应商属于执行电脑：换电脑后恢复它自己的记忆，不沿用上一台的手选标记。
+    const clearAutoRuntime = option.deviceId !== selectedDeviceIdRef.current;
     if (clearAutoRuntime) {
+      userTouchedRuntimeRef.current = false;
+      storedAgentRestoreRef.current = null;
+      setAvailableAgentKinds(null);
       autoDefaultDeviceRef.current = null;
       setRuntimeSettledDeviceId(null);
     }
@@ -4479,14 +4484,14 @@ export default function NewRemoteSessionScreen() {
   // 切 agent:跟随被控电脑该 agent 的新建任务默认 → 否则该 agent 列表最上面 → 否则留空由用户选(见 pickAgentDefaultRuntime),
   // 同时 reconcile effort、来源跟随 model 同源(被控电脑默认来源校验后继承 / 首项行 provider / 兜底 null)。
   // 手动切 agent = 手动选运行配置 → 之后自动默认不再覆盖。
-  const switchAgent = useCallback((nextKind: NewSessionAgentKind) => {
+  const switchAgent = useCallback((nextKind: NewSessionAgentKind, userInitiated = true) => {
     setAgentPickerOpen(false);
     if (draft.agentKind === nextKind) return;
-    userTouchedRuntimeRef.current = true;
+    if (userInitiated) userTouchedRuntimeRef.current = true;
     explicitProviderModelSelectionRef.current = null;
     const seqAtTrigger = ++runtimeActionSeqRef.current;
     const ownerAtTrigger = getMobileAuthOwner();
-    void saveNewSessionPreferences({ agentKind: nextKind });
+    if (userInitiated) void saveNewSessionPreferences({ agentKind: nextKind });
     const storedPermissionMode = newSessionPreferences?.permissionModeByAgent[nextKind];
     const nextPermissionMode =
       storedPermissionMode ??
@@ -4539,7 +4544,8 @@ export default function NewRemoteSessionScreen() {
             : false,
         };
       });
-      requestHostChoiceWrite(true);
+      if (userInitiated) requestHostChoiceWrite(true);
+      else settleRuntime('available-agent', selectedDeviceId);
     });
   }, [draft.agentKind, draft.permissionMode, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostRuntimeFor, newSessionPreferences, selectedDeviceId, waitHostDraftDefaults, requestHostChoiceWrite]);
 
@@ -4548,9 +4554,13 @@ export default function NewRemoteSessionScreen() {
   useEffect(() => {
     if (!availableAgentKinds) return;
     if (availableAgentKinds.has(draft.agentKind)) return;
-    const fallback = NEW_SESSION_AGENT_OPTIONS.find((option) => availableAgentKinds.has(option.kind));
-    if (fallback && fallback.kind !== draft.agentKind) switchAgent(fallback.kind);
-  }, [availableAgentKinds, draft.agentKind, switchAgent]);
+    if (!modelSelectionMemoryReady || (!deviceProviders.ready && !deviceProviders.unsupported) || !hostDefaultsSettled) return;
+    const initial = deviceProviders.ready && !modelSelectionMemory?.runtime && !newSessionPreferences?.agentKind
+      ? pickInitialGroupAutoRuntime(deviceProviders.providers, availableAgentKinds, deviceProviders.modelVisibilityOverrides) : null;
+    const fallback = initial?.agentKind ?? NEW_SESSION_AGENT_OPTIONS.find((option) => availableAgentKinds.has(option.kind))?.kind;
+    if (fallback && fallback !== draft.agentKind) switchAgent(fallback, false);
+  }, [availableAgentKinds, draft.agentKind, switchAgent, modelSelectionMemoryReady, modelSelectionMemory,
+    deviceProviders.ready, deviceProviders.unsupported, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostDefaultsSettled, newSessionPreferences?.agentKind]);
 
   useEffect(() => {
     if (!selectedDeviceId || draft.workspaceKind !== 'project' || draft.workingDir.trim()) return;

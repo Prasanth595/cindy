@@ -141,6 +141,65 @@ it('retries local and host initialization writes without marking failed writes a
   } finally { vi.useRealTimers(); }
 });
 
+it('waits for the execution-device engine roster before persisting first initialization', () => {
+  const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const section = source.slice(source.indexOf('// Persist only after the actual draft has settled;'));
+  const body = section.match(/useEffect\(\(\) => \{([\s\S]*?)\n  \}, \[/)?.[1];
+  expect(body).toBeTruthy();
+  const setModelSelectionMemory = vi.fn();
+  const context = { modelSelectionMemoryReady: true, modelSelectionMemory: { runtime: null },
+    selectedDeviceId: 'device-b', runtimeSettledDeviceId: 'device-b', hostDefaultsSettled: true,
+    hostDraftDefaults: { failed: false }, deviceProviders: { ready: true, providers: [] }, remoteAgentChoice: null,
+    draft: { agentKind: 'pi', model: 'auto/base', providerId: 'provider-b', effort: '' },
+    availableAgentKinds: null as ReadonlySet<string> | null, getMobileAuthOwner: () => ({ accountKey: 'member-a' }), setModelSelectionMemory };
+  const compiled = ts.transpileModule(body!, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const run = () => new Function(...Object.keys(context), compiled)(...Object.values(context));
+  run();
+  expect(setModelSelectionMemory).not.toHaveBeenCalled();
+  context.availableAgentKinds = new Set(['codex']);
+  run();
+  expect(setModelSelectionMemory).not.toHaveBeenCalled();
+  context.availableAgentKinds = new Set(['pi']);
+  run();
+  expect(setModelSelectionMemory).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'device-b',
+    runtime: expect.objectContaining({ agentKind: 'pi', model: 'auto/base' }), pendingWrite: 'initialize' }));
+});
+
+it('scopes stored-agent restore progress to the current account and execution device', () => {
+  const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const start = source.indexOf('const restored = storedAgentRestoreRef.current?.deviceId');
+  const statement = source.slice(start, source.indexOf(';', start) + 1);
+  expect(start).toBeGreaterThan(-1);
+  const restore = new Function('storedAgentRestoreRef', 'selectedDeviceId', 'modelSelectionOwner', `${statement} return restored;`);
+  const progress = { current: { deviceId: 'device-a', ownerKey: 'member-a', agentKind: 'codex', phase: 'done' } };
+  expect(restore(progress, 'device-a', { accountKey: 'member-a' })).toBe(progress.current);
+  expect(restore(progress, 'device-b', { accountKey: 'member-a' })).toBeNull();
+  expect(restore(progress, 'device-a', { accountKey: 'member-b' })).toBeNull();
+  const target = source.match(/expectedDeviceId: (modelSelectionMemory\?\.runtime[^\n]*),/)?.[1];
+  expect(target).toBeTruthy();
+  const expectedDeviceId = new Function('modelSelectionMemory', 'selectedDeviceId', 'preferredDefaultDevice', `return (${target});`)
+    ({ runtime: { agentKind: 'pi' } }, 'device-b', { deviceId: 'device-a' });
+  expect(isStoredAgentRestorePending({ storedAgentKind: 'pi', appliedStoredAgentKind: null, expectedDeviceId, selectedDeviceId: 'device-b' })).toBe(true);
+});
+
+it('retains installed-engine fallback for legacy hosts while waiting for catalogs that are still loading', () => {
+  const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+  const marker = source.indexOf('if (!availableAgentKinds) return;');
+  const body = source.slice(marker, source.indexOf('\n  }, [', marker));
+  const compiled = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const switchAgent = vi.fn();
+  const context = { availableAgentKinds: new Set(['codex']), draft: { agentKind: 'pi' }, modelSelectionMemoryReady: true,
+    deviceProviders: { ready: false, unsupported: false, providers: [] }, hostDefaultsSettled: true,
+    modelSelectionMemory: { runtime: { agentKind: 'pi' } }, newSessionPreferences: { agentKind: 'pi' },
+    NEW_SESSION_AGENT_OPTIONS, pickInitialGroupAutoRuntime, switchAgent };
+  const run = () => new Function(...Object.keys(context), compiled)(...Object.values(context));
+  run();
+  expect(switchAgent).not.toHaveBeenCalled();
+  context.deviceProviders.unsupported = true;
+  run();
+  expect(switchAgent).toHaveBeenCalledWith('codex', false);
+});
+
 function modelRow(
   id: string,
   efforts: readonly string[] = [],
@@ -624,7 +683,10 @@ describe('isNewSessionRuntimePending', () => {
     const selectStart = source.indexOf('const selectDevice = useCallback(');
     const selectDevice = source.slice(selectStart, source.indexOf('const handleBack = useCallback(', selectStart));
     // 用户没手动选过模型时清掉旧电脑的自动选择并重新等待;手动选过的保留。
-    expect(selectDevice).toContain('option.deviceId !== selectedDeviceIdRef.current && !userTouchedRuntimeRef.current');
+    expect(selectDevice).toContain('const clearAutoRuntime = option.deviceId !== selectedDeviceIdRef.current;');
+    expect(selectDevice).toContain('userTouchedRuntimeRef.current = false;');
+    expect(selectDevice).toContain('storedAgentRestoreRef.current = null;');
+    expect(selectDevice).toContain('setAvailableAgentKinds(null);');
     expect(selectDevice).toContain('autoDefaultDeviceRef.current = null;');
     expect(selectDevice).toContain('setRuntimeSettledDeviceId(null);');
     expect(selectDevice).toContain("...(clearAutoRuntime ? { model: '', providerId: null, fastMode: false } : {}),");
