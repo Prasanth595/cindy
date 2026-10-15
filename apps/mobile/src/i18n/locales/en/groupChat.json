@@ -104,7 +104,8 @@
       "RUNTIME_TIMEOUT": "{{name}} did not reply before the timeout.\nSend your message again, or choose another available model.",
       "RUNTIME_ERROR": "{{name}} could not reply this time.\nSend your message again. If it still fails, check the logs and report the issue."
     },
-    "runtimeFailureSetupHint": "To change the model or settings, use the computer where this teammate runs."
+    "runtimeFailureSetupHint": "To change the model or settings, use the computer where this teammate runs.",
+    "retry": "Try again"
   },
   "plan": {
     "intro_one": "This takes {{count}} step. Here’s who does it:",

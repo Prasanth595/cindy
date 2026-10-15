@@ -20,6 +20,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { randomUUID } from 'expo-crypto';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
@@ -119,6 +120,8 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   const [settings, setSettings] = useState(false);
   const leaveAfterSettings = useRef(false);
   const [continuing, setContinuing] = useState(false);
+  const [retryingFailureId, setRetryingFailureId] = useState<string | null>(null);
+  const retryingFailureRef = useRef(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -197,6 +200,26 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     setContinuing(true);
     stickToBottom.current = true;
     try { await chat.act('continue'); } catch (error) { report(error, 'groupChat.timeline.continueFailed'); } finally { setContinuing(false); }
+  };
+
+  /**
+   * 重试一位伙伴这次失败的回复：把它当时要回应的用户消息原样只发给它。手机不重发附件
+   * （附件在电脑上），只重发正文；源消息没有正文时不给「重试」。
+   */
+  const retryFailure = async (notice: BotGroupMessageView, source: BotGroupMessageView) => {
+    const botId = notice.authorBotId;
+    if (!botId || retryingFailureRef.current) return;
+    retryingFailureRef.current = true;
+    setRetryingFailureId(notice.id);
+    stickToBottom.current = true;
+    try {
+      await chat.act('send', { text: source.content, mentions: { all: false, botIds: [botId] }, clientId: randomUUID() });
+    } catch (error) {
+      report(error, 'groupChat.composer.sendFailed');
+    } finally {
+      retryingFailureRef.current = false;
+      setRetryingFailureId(null);
+    }
   };
 
   /** 开始 / 不用了 / 继续 / 重试 / 结束分工; the computer pushes the change and the view re-reads. */
@@ -325,6 +348,8 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
           resolveMedia={resolveMedia} resolveServerMedia={chat.media}
           loadOlder={chat.loadOlder ? () => { stickToBottom.current = false; void chat.loadOlder!().catch(error => report(error, 'groupChat.loadFailedTitle')); } : undefined}
           loadingOlder={chat.loadingOlder} continuing={continuing} planPending={planPending}
+          retryingFailureId={retryingFailureId}
+          onRetryFailure={(notice, source) => void retryFailure(notice, source)}
           onContinue={() => void continueRound()}
           onPlanAction={(action, planId) => void runPlanAction(action, planId)}
           onEditStep={(planId, step, action, botId) => void editPlanStep(planId, step, action, botId)}
@@ -366,7 +391,7 @@ function followUpPending(action: PlanPending['action'] | null): BotGroupFollowUp
 }
 
 export function BotGroupTimeline({
-  group, deviceId, online, identityFor, resolveMedia, resolveServerMedia, loadOlder, loadingOlder, continuing, planPending, onContinue, onPlanAction, onEditStep, onInteractionError,
+  group, deviceId, online, identityFor, resolveMedia, resolveServerMedia, loadOlder, loadingOlder, continuing, planPending, retryingFailureId, onContinue, onRetryFailure, onPlanAction, onEditStep, onInteractionError,
 }: {
   group: BotGroupRemoteChatData;
   deviceId: string;
@@ -379,7 +404,10 @@ export function BotGroupTimeline({
   loadingOlder?: boolean;
   continuing: boolean;
   planPending: PlanPending | null;
+  retryingFailureId: string | null;
   onContinue(): void;
+  /** Re-send a failed member its source request; only the notice's own member is woken. */
+  onRetryFailure(notice: BotGroupMessageView, source: BotGroupMessageView): void;
   onPlanAction(action: BotGroupPlanAction, planId: string): void;
   onEditStep(planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string): void;
   onInteractionError(message: string | null): void;
@@ -400,6 +428,16 @@ export function BotGroupTimeline({
     ? group.round.speakers.filter((speaker) => memberById.has(speaker.botId))
     : [];
   const pendingFor = (planId: string | null) => planId && planPending?.planId === planId ? planPending.action : null;
+  const messageById = new Map(messages.map((message) => [message.id, message]));
+  /** 只有本机拥有一条已加载、可重发的用户消息的成员回复失败，才给「重试」。 */
+  const failureRetry = (message: BotGroupMessageView) => {
+    if (message.kind !== 'notice' || !isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) return undefined;
+    if (group.archived || message.planId !== null || !message.authorBotId) return undefined;
+    if (memberById.get(message.authorBotId)?.status !== 'active') return undefined;
+    const source = message.failureSourceMessageId ? messageById.get(message.failureSourceMessageId) : undefined;
+    if (!source || source.kind !== 'message' || source.authorKind !== 'user' || !source.content.trim()) return undefined;
+    return { retrying: retryingFailureId === message.id, onRetry: () => onRetryFailure(message, source) };
+  };
   return <>
     {group.hasMoreBefore && loadOlder ? <MainWindowActionButton action={{ label: t('groupChat.server.loadOlder'), busy: loadingOlder, onPress: loadOlder, testID: 'botGroup.loadOlder' }} /> : group.hasMoreBefore ? <Text style={styles.olderNote} testID="botGroup.olderOnComputer">{t('groupChat.timeline.olderOnComputer')}</Text> : null}
     {messages.length === 0 && !running ? <MainWindowEmptyState centered testID="botGroup.empty"
@@ -418,6 +456,7 @@ export function BotGroupTimeline({
           members={group.members} deviceId={deviceId} online={online} identityFor={identityFor} mentionLabels={mentionLabels}
           resolveMedia={resolveMedia} resolveServerMedia={resolveServerMedia}
           canContinue={message.id === continueId} continuing={continuing} onContinue={onContinue}
+          failureRetry={failureRetry(message)}
           plan={message.planId ? planById.get(message.planId) : undefined}
           planActionable={message.kind === 'plan' && openPlan?.id === message.planId && openPlan.status === 'proposed'}
           planReassignable={message.kind === 'plan' && openPlan?.id === message.planId && openPlan.status === 'waiting'}
@@ -445,7 +484,7 @@ export function BotGroupTimeline({
 }
 
 function BotGroupTimelineItem({
-  message, continued = false, quoteDisplay, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue,
+  message, continued = false, quoteDisplay, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue, failureRetry,
   plan, planActionable, planReassignable, planPending, onPlanAction, onEditStep,
 }: {
   message: BotGroupMessageView;
@@ -464,6 +503,8 @@ function BotGroupTimelineItem({
   canContinue: boolean;
   continuing: boolean;
   onContinue(): void;
+  /** Present only for a member-turn failure the host can re-issue. */
+  failureRetry?: { retrying: boolean; onRetry: () => void };
   /** Snapshot of the plan this message belongs to (安排卡, hand-off or plan end). */
   plan: BotGroupPlanView | undefined;
   planActionable: boolean;
@@ -486,9 +527,13 @@ function BotGroupTimelineItem({
   if (message.kind === 'notice' || message.authorKind === 'system') {
     const name = message.authorName.trim() || member?.name || '';
     if (isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) {
-      return <Text style={styles.runtimeFailureNotice} testID="botGroup.notice">{
-        `${t(`groupChat.notice.runtimeFailure.${message.runtimeFailureCode}`, { name })}\n${t('groupChat.notice.runtimeFailureSetupHint')}`
-      }</Text>;
+      return <View style={styles.failureNotice}>
+        <Text style={styles.runtimeFailureNotice} testID="botGroup.notice">{
+          `${t(`groupChat.notice.runtimeFailure.${message.runtimeFailureCode}`, { name })}\n${t('groupChat.notice.runtimeFailureSetupHint')}`
+        }</Text>
+        {failureRetry ? <MainWindowActionButton density="compact" hitSlop={BOT_GROUP_COMPACT_HIT_SLOP}
+          action={{ label: t('groupChat.notice.retry'), busy: failureRetry.retrying, disabled: !online, onPress: failureRetry.onRetry, testID: 'botGroup.noticeRetry' }} /> : null}
+      </View>;
     }
     const variant = botGroupNoticeVariant(message.noticeCode, message.planId !== null);
     return <Text style={styles.notice} testID="botGroup.notice">{variant ? t(`groupChat.notice.${variant}`, { name }) : message.content}</Text>;
@@ -562,6 +607,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   notice: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'center' },
   runtimeFailureNotice: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption,
     fontWeight: fontWeight.regular, textAlign: 'center' },
+  failureNotice: { alignItems: 'center', gap: spacing.sm },
   dividerText: { flexShrink: 1, color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'center' },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   // Full width so the bubble keeps its 86% cap and attachments their own size limits.

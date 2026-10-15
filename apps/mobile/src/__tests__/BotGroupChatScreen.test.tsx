@@ -381,6 +381,26 @@ describe('group timeline', () => {
     expect(text).not.toContain('groupChat.notice.memberFailed');
   });
 
+  it('re-sends the failed member its source request on retry, targeting only that member', async () => {
+    await render(group({ messages: [
+      message('m1', 1, { authorKind: 'user', content: '@咪咪 帮我做官网', mentions: { all: false, botIds: ['mimi'] } }),
+      message('failure', 2, { kind: 'notice', authorKind: 'system', authorBotId: 'mimi', authorName: '咪咪',
+        noticeCode: 'member-timeout', runtimeFailureCode: 'RUNTIME_TIMEOUT', failureSourceMessageId: 'm1' }),
+    ] }));
+    await click('botGroup.noticeRetry');
+    expect(h.chat.act).toHaveBeenCalledWith('send', {
+      text: '@咪咪 帮我做官网', mentions: { all: false, botIds: ['mimi'] }, clientId: expect.stringMatching(/^uuid-/),
+    });
+  });
+
+  it('does not offer a retry when the source message is missing', async () => {
+    await render(group({ messages: [
+      message('failure', 2, { kind: 'notice', authorKind: 'system', authorBotId: 'mimi', authorName: '咪咪',
+        noticeCode: 'member-timeout', runtimeFailureCode: 'RUNTIME_TIMEOUT', failureSourceMessageId: 'gone' }),
+    ] }));
+    expect(byId('botGroup.noticeRetry')).toBeNull();
+  });
+
   it('renders messages, notices, round ends and plan ends like the desktop timeline', async () => {
     await render();
     expect(byId('botGroup.message.user')?.textContent).toBe('@咪咪 帮我做官网');

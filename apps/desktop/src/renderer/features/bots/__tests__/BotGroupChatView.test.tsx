@@ -736,6 +736,27 @@ describe('BotGroupChatView', () => {
     expect(mocks.getBotGroup.mock.calls.at(-1)).toEqual(['g1', { sourceMessageIds: [source.id, latest.id] }]);
   });
 
+  it('re-sends the failed member its source request on retry, targeting only that member', async () => {
+    const failure = { executionId: 'run', epoch: 1, sourceMessageId: 'u1', botId: 'mimi', botName: '咪咪', code: 'RUNTIME_TIMEOUT' as const, planId: null };
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, executionFailures: [failure] }) });
+    renderView();
+    await screen.findByText('bots.groupChat.notice.runtimeFailure.RUNTIME_TIMEOUT:咪咪');
+    fireEvent.click(screen.getByRole('button', { name: 'commonUi.retry' }));
+    await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+    const send = lastSend();
+    expect(send).toMatchObject({ groupId: 'g1', text: '@小满 帮我查余票', mentions: { all: false, botIds: ['mimi'] } });
+    expect(send.clientId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(send.attachments).toBeUndefined();
+  });
+
+  it('does not offer a retry for a plan-step failure', async () => {
+    const failure = { executionId: 'run', epoch: 1, sourceMessageId: 'u1', botId: 'mimi', botName: '咪咪', code: 'RUNTIME_TIMEOUT' as const, planId: 'p1' };
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, executionFailures: [failure] }) });
+    renderView();
+    await screen.findByText('bots.groupChat.notice.runtimeFailure.RUNTIME_TIMEOUT:咪咪');
+    expect(screen.queryByRole('button', { name: 'commonUi.retry' })).toBeNull();
+  });
+
   it('shows another human as a named participant instead of the current user bubble', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
       msg({ id: 'guest', authorKind: 'user', isSelf: false, authorName: 'Invited human', content: 'Hello from another account' }),

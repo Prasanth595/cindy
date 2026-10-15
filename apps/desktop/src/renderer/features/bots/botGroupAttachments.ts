@@ -32,6 +32,21 @@ export function toBotGroupAttachmentInputs(files: readonly AttachedFile[]): BotG
 }
 
 /**
+ * A shown message's own attachments in the shape `sendBotGroupMessage` takes, for a retry of
+ * that request. Images go back by their `cindy-media://` address; files by their local
+ * absolute path. Anything else (a controller's signed URL, a missing file) is dropped — main
+ * would reject the whole batch, taking the retry's text down with it.
+ */
+export function toRetryAttachmentInputs(attachments: readonly BotGroupAttachment[]): BotGroupAttachmentInput[] {
+  return attachments.flatMap((attachment): BotGroupAttachmentInput[] => {
+    const mediaUrl = attachment.category === 'image' && attachment.url?.startsWith('cindy-media://') ? attachment.url : undefined;
+    if (mediaUrl) return [{ id: attachment.id, name: attachment.name, path: '', size: attachment.size, category: attachment.category, mimeType: attachment.mimeType, url: mediaUrl, ...(attachment.annotated ? { annotated: true } : {}) }];
+    if (attachment.path && /^(?:[A-Za-z]:[\\/]|[\\/])/.test(attachment.path)) return [{ id: attachment.id, name: attachment.name, path: attachment.path, size: attachment.size, category: attachment.category, mimeType: attachment.mimeType }];
+    return [];
+  });
+}
+
+/**
  * What the send's idempotency key covers besides the text: the same files with the
  * same annotations. Anything else is a different message and gets a new clientId.
  */
