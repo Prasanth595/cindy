@@ -522,6 +522,9 @@
       "sourceShare": "Shared by {{name}}",
       "shareComputer": "{{name}}'s computer",
       "shareComputerUnknown": "Shared computer",
+      "accountCount_one": "{{count}} account",
+      "accountCount_other": "{{count}} accounts",
+      "accountFallback": "Account {{index}}",
       "quota": {
         "loading": "Reading quota…",
         "unavailable": "Can’t read this computer’s quota right now",
@@ -605,6 +608,8 @@
     "toast": {
       "added_one": "Added {{count}} computer to the {{provider}} provider group",
       "added_other": "Added {{count}} computers to the {{provider}} provider group",
+      "addedAccounts_one": "Added {{count}} account to the {{provider}} provider group",
+      "addedAccounts_other": "Added {{count}} accounts to the {{provider}} provider group",
       "removed": "Removed {{name}} from the provider group",
       "deleted": "Deleted the {{provider}} provider group"
     }

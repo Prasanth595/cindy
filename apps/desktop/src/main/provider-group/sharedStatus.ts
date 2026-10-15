@@ -1,7 +1,15 @@
-/** 受邀者可见的组状态：白名单投影，不携带组员身份和用量，也不分配任务或改变冷却。 */
+/**
+ * 受邀者可见的组状态：白名单投影，不携带组员身份和用量，也不分配任务或改变冷却。
+ * 按电脑而不是按账号列(provider-groups.md §10，2026-10-15)：同一台电脑上的几个账号合成一项，受邀者看不出有几个账号。
+ */
 import type { ProviderShareGroupState, RemoteAgentCaps } from '@cindy/device-link';
 
-import type { ProviderGroupConfig, ProviderGroupGuestSupport, ProviderGroupMember } from '../../shared/providerGroup.js';
+import {
+  providerGroupPhysicalDeviceKey,
+  type ProviderGroupConfig,
+  type ProviderGroupGuestSupport,
+  type ProviderGroupMember,
+} from '../../shared/providerGroup.js';
 import type { ProviderGroupOwnerScope } from './runtime.js';
 
 export const SHARED_GROUP_STATUS_TIMEOUT_MS = 3_000;
@@ -124,5 +132,32 @@ export async function readSharedGroupStatus(deps: SharedGroupStatusDeps, provide
   }));
   // 读取期间换账号或编辑组时丢弃快照，避免将旧组状态贴到新组序号上。
   const latest = deps.readGroup(providerId);
-  return scope.isCurrent() && JSON.stringify(latest) === JSON.stringify(config) ? states : null;
+  return scope.isCurrent() && JSON.stringify(latest) === JSON.stringify(config)
+    ? sharedGroupComputerStates(config.members, states)
+    : null;
+}
+
+/**
+ * 一台电脑有几个账号时取最能接任务的那个状态：有一个能接就能接；都不能接时，还没确认的优先(不能断言不可用)，
+ * 其次是需要那台更新或会自己恢复的原因，最后才是暂停、不可用与离线。
+ */
+const COMPUTER_STATE_ORDER: readonly ProviderShareGroupState[] = [
+  'available', 'busy', 'unknown', 'needs-update', 'cooling', 'paused', 'unavailable', 'offline',
+];
+
+/** 按电脑合并账号状态，顺序是每台电脑第一个账号在组里的位置；项数与给受邀者的台数(`sharedProviderGroupSize`)一致。 */
+export function sharedGroupComputerStates(
+  members: readonly ProviderGroupMember[],
+  states: readonly ProviderShareGroupState[],
+): ProviderShareGroupState[] {
+  const computers = new Map<string, ProviderShareGroupState>();
+  members.forEach((member, index) => {
+    const key = providerGroupPhysicalDeviceKey(member);
+    const state = states[index] ?? 'unknown';
+    const current = computers.get(key);
+    if (current === undefined || COMPUTER_STATE_ORDER.indexOf(state) < COMPUTER_STATE_ORDER.indexOf(current)) {
+      computers.set(key, state);
+    }
+  });
+  return [...computers.values()];
 }

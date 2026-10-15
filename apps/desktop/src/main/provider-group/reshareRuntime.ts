@@ -11,12 +11,16 @@ import { activeOwnerScopeKey } from '../appSessionState.js';
 import { PROVIDER_GROUP_IPC } from '../../shared/providerGroup.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { broadcast, remoteBackgroundInvoke } from '../device-link/index.js';
-import { getConfirmedReceivedShareIds, onProviderShareReceivedChanged } from '../device-link/providerShareGuest.js';
+import {
+  getConfirmedReceivedShareIds,
+  getReceivedShares,
+  onProviderShareReceivedChanged,
+} from '../device-link/providerShareGuest.js';
 import { getProviderShareHostLoadedSnapshot, onProviderShareHostChanged } from '../device-link/providerShareHost.js';
 import { createLogger } from '../logger.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { pruneProviderGroupBindings } from './bindings.js';
-import { pruneRemovedShareMembers } from './removedShares.js';
+import { pruneRemovedShareMembers, recordShareHosts } from './removedShares.js';
 import { createProviderGroupReshare, type ProviderGroupReshare } from './reshare.js';
 import { completeProviderGroupReshareCleanup, listProviderGroupReshareCleanups, listProviderGroups, writeProviderGroup } from './store.js';
 
@@ -81,6 +85,12 @@ export const providerGroupReshare = {
 let registered = false;
 let pruning: Promise<void> | null = null;
 
+function groupChanged(providerId: string): void {
+  broadcastChanged(providerId);
+  // 同账号其他电脑的模型列表按本机目录里的组摘要收起组内电脑：组变化后让它们重读目录。
+  tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
+}
+
 function pruneSoon(): void {
   if (pruning) return;
   pruning = pruneRemovedShareMembers({
@@ -89,11 +99,7 @@ function pruneSoon(): void {
     writeGroup: writeProviderGroup,
     pruneBindings: pruneProviderGroupBindings,
     ownerKey: activeOwnerScopeKey,
-    changed: (providerId) => {
-      broadcastChanged(providerId);
-      // 同账号其他电脑的模型列表按本机目录里的组摘要收起组内电脑：组变化后让它们重读目录。
-      tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
-    },
+    changed: groupChanged,
   }).then((removed) => {
     if (removed.length > 0) {
       log.info('provider group: removed computers whose share is gone', { count: removed.length });
@@ -101,6 +107,16 @@ function pruneSoon(): void {
     }
   }).catch((error: unknown) => {
     log.warn('provider group: removing gone shares failed', { error: error instanceof Error ? error.message : String(error) });
+  }).then(() => recordShareHosts({
+    shareHosts: () => new Map(getReceivedShares().map((share) => [share.shareId, share.hostDeviceId])),
+    listGroups: listProviderGroups,
+    writeGroup: writeProviderGroup,
+    ownerKey: activeOwnerScopeKey,
+    changed: groupChanged,
+  })).then((updated) => {
+    if (updated.length > 0) log.info('provider group: recorded the computers of shared-in members', { count: updated.length });
+  }).catch((error: unknown) => {
+    log.warn('provider group: recording shared-in computers failed', { error: error instanceof Error ? error.message : String(error) });
   }).finally(() => {
     pruning = null;
   });

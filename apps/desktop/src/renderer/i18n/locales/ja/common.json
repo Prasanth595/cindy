@@ -519,6 +519,8 @@
       "sourceShare": "{{name}} からの共有",
       "shareComputer": "{{name}} のパソコン",
       "shareComputerUnknown": "共有されたパソコン",
+      "accountCount_other": "{{count}} 個のアカウント",
+      "accountFallback": "アカウント {{index}}",
       "quota": {
         "loading": "クォータを読み込み中…",
         "unavailable": "このパソコンのクォータを今は読み取れません",
@@ -597,6 +599,7 @@
     },
     "toast": {
       "added_other": "{{count}} 台のパソコンを {{provider}} のプロバイダーグループに追加しました",
+      "addedAccounts_other": "{{count}} 個のアカウントを {{provider}} のプロバイダーグループに追加しました",
       "removed": "{{name}} をプロバイダーグループから外しました",
       "deleted": "{{provider}} のプロバイダーグループを削除しました"
     }

@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupView } from '../../../../shared/providerGroup';
+import { toast } from '@/lib/toast';
 import zhCN from '../../../i18n/locales/zh-CN/common.json';
 import { memberStatusText, ProviderGroupSection } from '../ProviderGroupSection';
 import { __testing as localGroupsTesting, useLocalProviderGroupsState } from '../useLocalProviderGroups';
@@ -157,6 +158,8 @@ describe('ProviderGroupSection', () => {
     expect(saved.members.map((m) => m.key)).toEqual(['local', MINI.key]);
     expect(saved).toMatchObject({ strategy: 'least', autoSwitch: true });
     expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
+    // 一台组里原来没有的电脑：照旧说「N 台电脑」。
+    expect(toast.success).toHaveBeenCalledWith('providerGroup.toast.added:{"count":1,"provider":"Anthropic"}');
   });
 
   // 转分享(provider-sharing.md §4.3)：分享来的电脑的主人是否同意本机分享出去的人经组使用它。
@@ -307,6 +310,106 @@ describe('ProviderGroupSection', () => {
     expect(screen.getByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
     expect(screen.getByRole('radio', { name: '按顺序' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+  });
+
+  it('lists several accounts of one computer under that computer, each with its own settings', async () => {
+    const MINI_B = { ...MINI, key: 'device:mini:anthropic-b', providerId: 'anthropic-b', providerName: 'Claude B' };
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, { ...MINI, providerName: 'Claude A' }, MINI_B] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    const device = await screen.findByTestId('provider-group-device');
+    // 台数按电脑算：本机 + Mac mini = 2 台(组里 3 个账号)。
+    expect(screen.getByRole('heading', { name: 'providerGroup.section.title' }).nextElementSibling?.textContent).toBe('2');
+    const header = within(device).getByTestId('provider-group-device-header');
+    expect(header.textContent).toContain('Mac mini');
+    expect(header.textContent).toContain('providerGroup.member.sourceDevice');
+    expect(header.textContent).toContain('providerGroup.member.accountCount:{"count":2}');
+    const accounts = within(device).getAllByTestId('provider-group-member');
+    expect(accounts.map((row) => row.textContent?.includes('Mac mini'))).toEqual([false, false]);
+    expect(accounts[0].textContent).toContain('Claude A');
+    expect(accounts[1].textContent).toContain('Claude B');
+    // 只有一个账号的本机不分两层。
+    const rows = screen.getAllByTestId('provider-group-member');
+    expect(rows).toHaveLength(3);
+    expect(rows[0].closest('[data-testid="provider-group-device"]')).toBeNull();
+    // 开关与移出仍按账号：名字带上电脑，同一台的两个账号不重名。
+    fireEvent.click(within(accounts[1]).getByRole('switch', {
+      name: 'providerGroup.member.assignAria:{"name":"Mac mini · Claude B"}',
+    }));
+    await waitFor(() => expect(stored?.members.map((m) => m.paused)).toEqual([false, false, true]));
+    fireEvent.click(within(accounts[0]).getByRole('button', { name: 'providerGroup.member.remove' }));
+    await waitFor(() => expect(stored?.members.map((m) => m.key)).toEqual(['local', MINI_B.key]));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'providerGroup.member.removeConfirm.title:{"name":"Mac mini · Claude A"}',
+    }));
+    // 剩一个账号就回到一行。
+    await waitFor(() => expect(screen.queryByTestId('provider-group-device')).toBeNull());
+  });
+
+  it('offers the accounts of one computer under that computer when adding, and says how many accounts were added', async () => {
+    const candidates = [
+      { key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mac mini', providerName: 'Claude A' },
+      { key: 'device:mini:anthropic-b', kind: 'device', agentDeviceId: 'mini', providerId: 'anthropic-b', label: 'Mac mini', providerName: 'Claude B' },
+      { key: 'device:studio:anthropic', kind: 'device', agentDeviceId: 'studio', providerId: 'anthropic', label: 'Studio', providerName: 'Claude' },
+    ];
+    const base = command.getMockImplementation()!;
+    command.mockImplementation(async (cmd: { action: string }) => (cmd.action === 'candidates' ? candidates : base(cmd)));
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findByText(/providerGroup\.section\.empty/);
+    fireEvent.click(screen.getByRole('button', { name: 'providerGroup.section.addComputer' }));
+    const dialog = await screen.findByTestId('provider-group-add-dialog');
+    const device = await within(dialog).findByTestId('provider-group-candidate-device');
+    expect(device.textContent).toContain('Mac mini');
+    expect(device.textContent).toContain('providerGroup.member.accountCount:{"count":2}');
+    const accounts = within(device).getAllByTestId('provider-group-candidate');
+    expect(accounts.map((row) => row.textContent)).toEqual(['Claude A', 'Claude B']);
+    // 只有一个账号的电脑一行写完，不分两层。
+    const all = within(dialog).getAllByTestId('provider-group-candidate');
+    expect(all).toHaveLength(3);
+    expect(all[2].closest('[data-testid="provider-group-candidate-device"]')).toBeNull();
+    expect(all[2].textContent).toContain('Studio');
+    expect(all[2].textContent).toContain('Claude');
+    fireEvent.click(accounts[0]);
+    fireEvent.click(accounts[1]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'providerGroup.add.confirm' }));
+    await waitFor(() => expect(stored?.members.map((m) => m.key)).toEqual(['local', MINI.key, 'device:mini:anthropic-b']));
+    expect(stored?.members.map((m) => m.providerName)).toEqual(['Anthropic', 'Claude A', 'Claude B']);
+    // 同一台电脑的两个账号：说加了几个账号，不说「2 台电脑」。
+    expect(toast.success).toHaveBeenCalledWith('providerGroup.toast.addedAccounts:{"count":2,"provider":"Anthropic"}');
+  });
+
+  it('lists several shares from the same computer of one person under that computer, in the group and when adding', async () => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
+    const share = (id: string, providerName: string) => ({
+      key: `share:${id}:anthropic`, kind: 'share' as const, agentDeviceId: `share:${id}`, providerId: 'anthropic',
+      providerName, hostDeviceId: 'kai-pc', limit: 4, weight: 1, paused: false,
+    });
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, share('s1', 'Claude Pro'), share('s2', 'Claude Max')] };
+    const view = viewOf(stored);
+    view.members = view.members.map((m) => (m.kind === 'share' ? { ...m, ownerName: 'Kai', state: 'available' as const } : m));
+    const candidates = [
+      { key: 'share:s1:anthropic', kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic', label: 'Kai', providerName: 'Claude Pro', ownerName: 'Kai', hostDeviceId: 'kai-pc', blocked: 'member' },
+      { key: 'share:s2:anthropic', kind: 'share', agentDeviceId: 'share:s2', providerId: 'anthropic', label: 'Kai', providerName: 'Claude Max', ownerName: 'Kai', hostDeviceId: 'kai-pc', blocked: 'member' },
+    ];
+    command.mockImplementation(async (cmd: { action: string }) =>
+      (cmd.action === 'list' ? { anthropic: stored } : cmd.action === 'candidates' ? candidates : view));
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    const device = await screen.findByTestId('provider-group-device');
+    const header = within(device).getByTestId('provider-group-device-header');
+    expect(header.textContent).toContain('Kai 的电脑');
+    expect(header.textContent).toContain('来自 Kai 的分享');
+    expect(header.textContent).toContain('2 个账号');
+    const accounts = within(device).getAllByTestId('provider-group-member');
+    expect(accounts[0].textContent).toContain('Claude Pro');
+    expect(accounts[1].textContent).toContain('Claude Max');
+    // 本机 + Kai 的那台 = 2 台。
+    expect(screen.getByRole('heading', { name: '供应商组' }).nextElementSibling?.textContent).toBe('2');
+    fireEvent.click(screen.getByRole('button', { name: '添加电脑' }));
+    const dialog = await screen.findByTestId('provider-group-add-dialog');
+    const offered = await within(dialog).findByTestId('provider-group-candidate-device');
+    expect(offered.textContent).toContain('Kai 的电脑');
+    expect(within(offered).getAllByTestId('provider-group-candidate').map((row) => row.textContent))
+      .toEqual(['Claude Pro已在组里', 'Claude Max已在组里']);
   });
 
   it('shows the quota hint for a subscription group', async () => {

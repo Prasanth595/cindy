@@ -276,6 +276,8 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             : remembered === null ? quota.resetAtMs
             : quota.resetAtMs === null ? remembered : Math.max(remembered, quota.resetAtMs);
           const count = memberRunning(providerId, r);
+          // 那台电脑上这个供应商现在的显示名，读不到时用加入时的快照：同一台电脑有几个账号时界面按它区分。
+          const providerName = r.view?.name || r.member.providerName;
           const state = r.member.paused
             ? 'paused' as const
             : r.state !== 'ok'
@@ -289,6 +291,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             key: r.member.key,
             kind: r.member.kind,
             label: r.label,
+            ...(providerName ? { providerName } : {}),
             ...(r.ownerName ? { ownerName: r.ownerName } : {}),
             ...(r.appVersion ? { appVersion: r.appVersion } : {}),
             ...(guestSupport ? { guestSupport } : {}),

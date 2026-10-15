@@ -101,7 +101,7 @@ import {
   remoteProviderEntryKey,
   type RemoteProviderGroupEntry,
 } from '@/lib/remoteProviderGroups';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import { providerGroupDeviceCount, type ProviderGroupConfig } from '../../../shared/providerGroup';
 import { useLocalProviderGroups } from '@/features/provider-group/useLocalProviderGroups';
 import { readProviderShareGroupSize } from '@cindy/device-link';
 import { modelPriceDiscountLabelValues, modelPriceDetailRows } from '@/lib/modelPriceFormat';
@@ -1732,7 +1732,7 @@ function ModelSelectorContentView({
       return config
         ? t('newChat.modelSelector.unified.providerGroupLabel', {
           provider: label,
-          group: t('settings.providers.remote.groupBadge', { count: config.members.length }),
+          group: t('settings.providers.remote.groupBadge', { count: providerGroupDeviceCount(config.members) }),
         })
         : label;
     },
@@ -1752,9 +1752,9 @@ function ModelSelectorContentView({
         .find((group) => group.deviceId === targetDeviceId)
         ?.providers.find((entry) => entry.id === providerId);
       // 组只写有几台，不写是哪几台(2026-10-10 用户要求)；分享来的组目录里本来就只有台数。
-      const groupSize =
-        remoteProviderGroups.groups.get(remoteProviderEntryKey(targetDeviceId, providerId))?.members.length
-        ?? readProviderShareGroupSize(provider);
+      // 台数按电脑算：一台电脑上的几个账号算一台。
+      const groupMembers = remoteProviderGroups.groups.get(remoteProviderEntryKey(targetDeviceId, providerId))?.members;
+      const groupSize = groupMembers ? providerGroupDeviceCount(groupMembers) : readProviderShareGroupSize(provider);
       const values = {
         provider: provider ? providerDisplayName(provider, t) : providerId,
         device: device?.name || targetDeviceId,

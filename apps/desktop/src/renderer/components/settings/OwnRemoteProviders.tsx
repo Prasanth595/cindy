@@ -26,7 +26,7 @@ import { providerMonogram } from '@/lib/providerModels';
 import { collectRemoteProviderGroups, remoteProviderEntryKey } from '@/lib/remoteProviderGroups';
 import { cn } from '@/lib/utils';
 import { PROVIDER_SHARE_AGENT_DEVICE_PREFIX } from '../../../shared/providerShare';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import { providerGroupDeviceCount, type ProviderGroupConfig } from '../../../shared/providerGroup';
 
 import { ReadOnlyProviderModelSection, readOnlyProviderModels } from './ReadOnlyProviderModels';
 
@@ -174,7 +174,7 @@ export function OwnRemoteProviderRows({
               </span>
               <span className="shrink-0 select-none text-11 tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
                 {entry.group
-                  ? t('settings.providers.remote.groupBadge', { count: entry.group.members.length })
+                  ? t('settings.providers.remote.groupBadge', { count: providerGroupDeviceCount(entry.group.members) })
                   : t('settings.providers.models.modelCount', {
                       count: readOnlyProviderModels(entry.provider, entry.modelVisibilityOverrides).length,
                     })}

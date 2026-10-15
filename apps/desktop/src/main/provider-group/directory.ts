@@ -376,6 +376,8 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
           label: share.owner.displayName,
           providerName: share.providerLabel,
           ownerName: share.owner.displayName,
+          // 同一个人从同一台电脑分享的几个账号按一台电脑展示(不显示，也不用于连接)。
+          hostDeviceId: share.hostDeviceId,
         };
         if (memberKeys.has(key)) {
           candidates.push({ ...base, blocked: 'member' });

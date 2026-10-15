@@ -137,6 +137,7 @@ import {
 
 import { localCliDisplayName, type LocalCliDetection } from '../../../shared/localCliDetect';
 import { isBuiltinRefreshableProviderId } from '../../../shared/providerModelRefresh';
+import { providerGroupDeviceCount } from '../../../shared/providerGroup';
 import { applyProviderOrder } from '../../../shared/providerOrder';
 import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
 import { isCustomRoutedProvider, isOrganizationManagedProvider, storedCustomProviderId } from '@cindy/model-providers';
@@ -235,7 +236,7 @@ function RemoteProviderAccessRow({
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
         <ProviderShareEntryButton
-          groupSize={group ? group.members.length : null}
+          groupSize={group ? providerGroupDeviceCount(group.members) : null}
           pendingCount={pendingShareRequests}
           onOpen={onManageShare}
         />
@@ -1076,7 +1077,6 @@ function OpenAiHeader({
     refresh,
     triggerLogin,
     cancelLogin,
-    logout,
   } = useCodexAuth();
   const reconnectRequired = state.kind === 'reconnect-required';
   const loggingIn = state.kind === 'login-pending';

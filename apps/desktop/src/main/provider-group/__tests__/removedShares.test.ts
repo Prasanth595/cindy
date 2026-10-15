@@ -5,7 +5,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
-import { pruneRemovedShareMembers, type PruneRemovedShareMembersDeps } from '../removedShares';
+import {
+  pruneRemovedShareMembers,
+  recordShareHosts,
+  type PruneRemovedShareMembersDeps,
+  type RecordShareHostsDeps,
+} from '../removedShares';
 
 function member(key: string, kind: ProviderGroupMember['kind'], agentDeviceId: string | null): ProviderGroupMember {
   return { key, kind, agentDeviceId, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
@@ -88,6 +93,57 @@ describe('removing computers whose share is gone', () => {
     env.deps.pruneBindings = vi.fn(async () => { owner = 'new-owner'; });
     expect(await pruneRemovedShareMembers(env.deps)).toEqual([]);
     expect(env.deps.pruneBindings).toHaveBeenCalledTimes(1);
+    expect(env.deps.changed).not.toHaveBeenCalled();
+  });
+});
+
+// 旧组里分享来的电脑补记分享者那台电脑，同一台的几个分享才能按一台电脑展示与计数(provider-groups.md §10)。
+describe('recording the computer of shared-in members', () => {
+  function setupHosts(hosts: ReadonlyMap<string, string>) {
+    let groups: Record<string, ProviderGroupConfig> = {
+      anthropic: { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI, FROM_A, { ...FROM_D, hostDeviceId: 'host-d' }] },
+      openai: { strategy: 'least', autoSwitch: true, members: [{ ...LOCAL, providerId: 'openai' }] },
+    };
+    const writeGroup = vi.fn(async (providerId: string, config: unknown) => {
+      groups = { ...groups, [providerId]: config as ProviderGroupConfig };
+      return config;
+    });
+    const deps: RecordShareHostsDeps = {
+      shareHosts: () => hosts,
+      listGroups: () => groups,
+      writeGroup,
+      ownerKey: () => 'owner',
+      changed: vi.fn(),
+    };
+    return { deps, writeGroup, groups: () => groups };
+  }
+
+  it('fills in the computer of shares it can see and writes only the groups that change', async () => {
+    const env = setupHosts(new Map([['a1', 'host-a'], ['d1', 'host-d']]));
+    expect(await recordShareHosts(env.deps)).toEqual(['anthropic']);
+    expect(env.groups().anthropic.members.map((m) => m.hostDeviceId)).toEqual([undefined, undefined, 'host-a', 'host-d']);
+    expect(env.writeGroup).toHaveBeenCalledTimes(1);
+    expect(env.deps.changed).toHaveBeenCalledWith('anthropic');
+    // 再跑一次没有变化，不再写。
+    expect(await recordShareHosts(env.deps)).toEqual([]);
+    expect(env.writeGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves shares it cannot see yet as they are, and does nothing before the list is read', async () => {
+    const env = setupHosts(new Map([['d1', 'host-d']]));
+    expect(await recordShareHosts(env.deps)).toEqual([]);
+    expect(env.groups().anthropic.members[2].hostDeviceId).toBeUndefined();
+    const empty = setupHosts(new Map());
+    expect(await recordShareHosts(empty.deps)).toEqual([]);
+    expect(empty.writeGroup).not.toHaveBeenCalled();
+  });
+
+  it('stops when the account changes during the write', async () => {
+    const env = setupHosts(new Map([['a1', 'host-a']]));
+    let owner = 'owner';
+    env.deps.ownerKey = () => owner;
+    env.writeGroup.mockImplementationOnce(async () => { owner = 'new-owner'; return null; });
+    expect(await recordShareHosts(env.deps)).toEqual([]);
     expect(env.deps.changed).not.toHaveBeenCalled();
   });
 });

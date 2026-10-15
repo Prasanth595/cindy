@@ -519,6 +519,8 @@
       "sourceShare": "来自 {{name}} 的分享",
       "shareComputer": "{{name}} 的电脑",
       "shareComputerUnknown": "分享来的电脑",
+      "accountCount_other": "{{count}} 个账号",
+      "accountFallback": "账号 {{index}}",
       "quota": {
         "loading": "正在读取配额…",
         "unavailable": "暂时读不到这台电脑的配额",
@@ -597,6 +599,7 @@
     },
     "toast": {
       "added_other": "已把 {{count}} 台电脑加入 {{provider}} 的供应商组",
+      "addedAccounts_other": "已把 {{count}} 个账号加入 {{provider}} 的供应商组",
       "removed": "已把 {{name}} 移出供应商组",
       "deleted": "已删除 {{provider}} 的供应商组"
     }

@@ -519,6 +519,8 @@
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
       "shareComputerUnknown": "分享來的電腦",
+      "accountCount_other": "{{count}} 個帳號",
+      "accountFallback": "帳號 {{index}}",
       "quota": {
         "loading": "正在讀取配額…",
         "unavailable": "暫時讀不到這台電腦的配額",
@@ -597,6 +599,7 @@
     },
     "toast": {
       "added_other": "已把 {{count}} 臺電腦加入 {{provider}} 的供應商組",
+      "addedAccounts_other": "已把 {{count}} 個帳號加入 {{provider}} 的供應商組",
       "removed": "已把 {{name}} 移出供應商組",
       "deleted": "已刪除 {{provider}} 的供應商組"
     }
