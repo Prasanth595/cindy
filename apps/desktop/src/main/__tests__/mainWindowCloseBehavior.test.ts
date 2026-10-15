@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   applyLinuxMainWindowCloseBehavior,
   createCloseBehaviorPromptFallbackController,
+  isWaylandSession,
   requestMainWindowCloseBehavior,
+  type LinuxCloseBehaviorActions,
   type MainWindowClosePromptWindow,
 } from '../mainWindowCloseBehavior';
 
@@ -70,24 +72,50 @@ function createFallbackHarness<TBehavior>(initialBehavior: TBehavior | null, fal
 }
 
 describe('main window close behavior prompt', () => {
-  it('minimizes instead of quitting when Linux keeps the app running', () => {
-    const window = { minimize: vi.fn() };
-    const quit = vi.fn();
+  it('delegates the keep-running choice to the injected action on Linux', () => {
+    const window = { hide: vi.fn(), minimize: vi.fn() };
+    const actions: LinuxCloseBehaviorActions = {
+      quit: vi.fn(),
+      keepRunning: vi.fn(),
+    };
 
-    applyLinuxMainWindowCloseBehavior(window, 'minimize', quit);
+    applyLinuxMainWindowCloseBehavior(window, 'minimize', actions);
 
-    expect(window.minimize).toHaveBeenCalledTimes(1);
-    expect(quit).not.toHaveBeenCalled();
+    expect(actions.keepRunning).toHaveBeenCalledWith(window);
+    expect(actions.quit).not.toHaveBeenCalled();
   });
 
-  it('quits instead of minimizing when Linux is configured to exit', () => {
-    const window = { minimize: vi.fn() };
-    const quit = vi.fn();
+  it('quits via the injected action when Linux is configured to exit', () => {
+    const window = { hide: vi.fn(), minimize: vi.fn() };
+    const actions: LinuxCloseBehaviorActions = {
+      quit: vi.fn(),
+      keepRunning: vi.fn(),
+    };
 
-    applyLinuxMainWindowCloseBehavior(window, 'quit', quit);
+    applyLinuxMainWindowCloseBehavior(window, 'quit', actions);
 
-    expect(quit).toHaveBeenCalledTimes(1);
-    expect(window.minimize).not.toHaveBeenCalled();
+    expect(actions.quit).toHaveBeenCalledTimes(1);
+    expect(actions.keepRunning).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wayland session', { XDG_SESSION_TYPE: 'wayland' }],
+    ['wayland display fallback', { WAYLAND_DISPLAY: 'wayland-0' }],
+  ])('detects a %s', (_label, env) => {
+    expect(isWaylandSession(env)).toBe(true);
+  });
+
+  it.each([
+    ['x11 session', { XDG_SESSION_TYPE: 'x11' }],
+    ['session type unset without wayland display', {}],
+  ])('does not treat %s as Wayland', (_label, env) => {
+    expect(isWaylandSession(env)).toBe(false);
+  });
+
+  it('prefers XDG_SESSION_TYPE over WAYLAND_DISPLAY when both are set', () => {
+    expect(
+      isWaylandSession({ XDG_SESSION_TYPE: 'x11', WAYLAND_DISPLAY: 'wayland-0' }),
+    ).toBe(false);
   });
 
   it('restores and reveals the main window before requesting the custom dialog', () => {

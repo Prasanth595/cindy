@@ -2,19 +2,39 @@ import type { LinuxCloseBehavior } from '../shared/windowBehavior.js';
 
 /** BrowserWindow surface needed for Linux's keep-running close action. */
 export interface LinuxCloseBehaviorWindow {
+  hide(): void;
   minimize(): void;
+}
+
+/**
+ * How the "keep running" close choice keeps the app alive. On Linux Wayland most
+ * compositors (e.g. Hyprland) never act on toplevel minimize requests, so the
+ * window must hide to tray instead; X11 keeps the classic minimize.
+ */
+export interface LinuxCloseBehaviorActions {
+  quit(): void;
+  keepRunning(window: LinuxCloseBehaviorWindow): void;
+}
+
+/**
+ * True when running under a Wayland session. `XDG_SESSION_TYPE` is the primary
+ * signal; a set `WAYLAND_DISPLAY` covers display managers that leave it unset.
+ */
+export function isWaylandSession(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.XDG_SESSION_TYPE) return env.XDG_SESSION_TYPE === 'wayland';
+  return Boolean(env.WAYLAND_DISPLAY);
 }
 
 /** Apply the persisted Linux choice without coupling the policy to Electron globals. */
 export function applyLinuxMainWindowCloseBehavior(
   window: LinuxCloseBehaviorWindow,
   behavior: LinuxCloseBehavior,
-  quit: () => void,
+  actions: LinuxCloseBehaviorActions,
 ): void {
   if (behavior === 'minimize') {
-    window.minimize();
+    actions.keepRunning(window);
   } else {
-    quit();
+    actions.quit();
   }
 }
 
