@@ -320,6 +320,13 @@ describe('PublishDialog department preparation', () => {
     await waitFor(() => expect(screen.queryByText('skillhub.audience.loadError')).toBeNull());
     fireEvent.click(screen.getByRole('radio', { name: 'skillhub.audience.departments' }));
     expect(screen.getByRole('checkbox', { name: 'Engineering' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Engineering' }));
+    fireEvent.click(screen.getByText('skillhub.publishDialog.visibilityPublicTitle'));
+    chooseDepartments();
+    expect(screen.getByRole('checkbox', { name: 'Engineering' })).toBeTruthy();
+    expect(screen.queryByText('skillhub.audience.loadError')).toBeNull();
+    expect(screen.queryByText('skillhub.audience.loading')).toBeNull();
+    expect(mocks.getMyDepts).toHaveBeenCalledTimes(2);
   });
   it('discards a department response from the previous owner', async () => {
     let finish!: (result: unknown) => void;

@@ -11,6 +11,7 @@ import type { SkillAudienceDepartment } from '../../../../shared/skillhubAudienc
 type Props = {
   initialDepartments?: SkillAudienceDepartment[];
   initialError?: boolean;
+  onDepartmentsLoaded?: (departments: SkillAudienceDepartment[]) => void;
   mode: 'all' | 'departments'; selected: string[]; disabled?: boolean;
   onChange: (mode: 'all' | 'departments', selected: string[]) => void;
   onValidityChange: (valid: boolean) => void;
@@ -23,7 +24,7 @@ export function departmentAncestors(id: string, parents: ReadonlyMap<string, str
   }
   return result;
 }
-export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange, initialDepartments, initialError = false }: Props) {
+export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange, initialDepartments, initialError = false, onDepartmentsLoaded }: Props) {
   const { t } = useTranslation();
   const radioName = useId();
   const [departments, setDepartments] = useState<SkillAudienceDepartment[]>(initialDepartments ?? []);
@@ -41,9 +42,10 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
       if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
       if (!result.success || !result.audienceSupported || !result.departments) { setStatus('error'); return; }
       setDepartments(result.departments); setStatus('ready');
+      onDepartmentsLoaded?.(result.departments);
     }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setStatus('error'); });
     return () => { cancelled = true; };
-  }, [attempt, initialDepartments, initialError]);
+  }, [attempt, initialDepartments, initialError, onDepartmentsLoaded]);
   const { byId, parents, childrenByParent } = useMemo(() => {
     const byId = new Map(departments.map(d => [d.id, d]));
     const parents = new Map(departments.map(d => [d.id, d.parentId]));

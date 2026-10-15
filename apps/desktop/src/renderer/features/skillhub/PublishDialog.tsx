@@ -534,6 +534,9 @@ export function PublishDialog({
     });
     return () => { cancelled = true; };
   }, [open, identityPolicy.ownerType]);
+  const handleDepartmentsLoaded = useCallback((departments: SkillAudienceDepartment[]) => {
+    if (isDataOwnerGenerationCurrent(dialogOwner)) setAudiencePreparation({ finished: true, departments });
+  }, [dialogOwner]);
 
   // A name conflict can turn an update into a new publication under another name.
   const [renameAfterFailure, setRenameAfterFailure] = useState(false);
@@ -1219,6 +1222,7 @@ export function PublishDialog({
                   </div>
                   {form.visibility === 'DEPARTMENT_SCOPED' && <DepartmentAudienceField
                     initialDepartments={audiencePreparation.departments}
+                    onDepartmentsLoaded={handleDepartmentsLoaded}
                     initialError={audiencePreparation.finished && !audiencePreparation.departments}
                     mode={form.audienceMode ?? 'all'} selected={form.visibleDeptIds} disabled={isLocked}
                     onValidityChange={setAudienceValid}
