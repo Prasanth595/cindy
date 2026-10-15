@@ -2442,6 +2442,25 @@ describe('Agent Island error read semantics (已读以 App 内真实展示为准
 });
 
 describe('Agent Island 未读驻留 TTL(避免几小时前完成的任务无限期霸占展开列表)', () => {
+  it('preserves silent completion policy in the unread ledger after expiry and clears it on the next turn', () => {
+    const state = createAgentIslandState();
+    const meta = { sessionId: 'silent', title: 'Schedule' };
+    applyAgentIslandEvent(state, meta, doneEvent(), 2_000);
+    applyAgentIslandUserPrompt(state, meta, 'Scheduled check', 3_000);
+    applyAgentIslandEvent(state, meta, doneEvent(), 4_000, { suppressCompletionAttention: true, preserveCompletionAttention: true });
+    const afterExpiryAt = 4_000 + AGENT_ISLAND_UNREAD_TRANSIENT_TTL_MS + 1_000;
+    buildAgentIslandDisplayState(state, afterExpiryAt);
+    expect(state.sessions.has('silent')).toBe(false);
+    expect(buildAllSessionActivitySnapshots(state)).toEqual([
+      expect.objectContaining({ sessionId: 'silent', phase: 'completed', attention: true, completionNotification: 'silent' }),
+    ]);
+    applyAgentIslandUserPrompt(state, meta, 'Manual follow-up', afterExpiryAt + 1);
+    expect(buildAllSessionActivitySnapshots(state)[0].completionNotification).toBeUndefined();
+    applyAgentIslandEvent(state, meta, doneEvent(), afterExpiryAt + 2);
+    expect(buildAllSessionActivitySnapshots(state)[0]).toMatchObject({ phase: 'completed', attention: true });
+    expect(buildAllSessionActivitySnapshots(state)[0].completionNotification).toBeUndefined();
+  });
+
   it('unread completed 条目在 TTL 内仍然可见', () => {
     const state = createAgentIslandState();
     applyAgentIslandEvent(state, { sessionId: 'done', title: 'Schedule' }, doneEvent(), 2_000);

@@ -18,11 +18,12 @@ const state = vi.hoisted(() => ({
   owned: [] as ProviderShareOwned[],
   received: [] as ProviderShareReceived[],
   receivedError: false,
+  boundaryPending: false,
 }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.scope,
-  isAppSessionBoundaryPending: () => false,
+  isAppSessionBoundaryPending: () => state.boundaryPending,
   getActiveDataOwnerPushStamp: () => ({ dataOwnerId: state.scope, ownerGeneration: 1 }),
 }));
 vi.mock('../../authManager.js', () => ({
@@ -108,6 +109,7 @@ beforeEach(() => {
   state.owned = [];
   state.received = [];
   state.receivedError = false;
+  state.boundaryPending = false;
   vi.mocked(crossRegionLeave).mockReset().mockResolvedValue(false);
   vi.mocked(providerShareApi.leave).mockReset().mockImplementation(async (memberId) => {
     state.received = state.received.filter((entry) => entry.memberId !== memberId);
@@ -231,6 +233,18 @@ describe('provider share guest routing', () => {
     shareId: 'share-1', memberId: 'm1', providerId: 'anthropic', providerLabel: 'Anthropic', hostDeviceId: 'owner-mac',
     deviceName: "Magi's Mac Mini", owner: { displayName: 'Magi', avatarUrl: null, region: 'global' }, status,
     hostOnline: true, hostCapable: true,
+  });
+
+  it.each(['account', 'logout', 'boundary', 'stopped'])('does not expose a loaded snapshot after %s invalidation', async (reason) => {
+    state.received = [received('active')];
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot().received).toEqual(state.received);
+    if (reason === 'account') state.scope = 'cloud:other:2';
+    else if (reason === 'logout') state.authenticated = false;
+    else if (reason === 'boundary') state.boundaryPending = true;
+    else stopProviderShareGuest();
+    expect(getReceivedSharesSnapshot().received).toEqual([]);
   });
 
   it('keeps task ids within the device id limit and maps them to the owner computer', async () => {

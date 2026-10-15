@@ -18,6 +18,12 @@ import {
   refreshUpstreamMergeProjection,
 } from './cindy-make/upstreamMergeRuntime.js';
 import {
+  configurePersonalRemote,
+  actPersonalRemote,
+  actCindyMakeContribution,
+} from './cindy-make/personalRemoteRuntime.js';
+import { configurePersonalSync, actPersonalSync } from './cindy-make/personalSyncRuntime.js';
+import {
   configureMakeHistory,
   getCindyMakeHistory,
   actCindyMakeHistory,
@@ -296,6 +302,7 @@ import {
 import { createAccountDeletionIpcHandlers } from './accountDeletionIpc';
 import * as profileEdit from './profileEdit';
 import { uploadPublicAsset } from './ossPublicUpload';
+import { toSdrAvatarImage } from './hdrAvatarToSdr';
 import { removeRefs as removeMediaRefs } from './cindy-media/ledger';
 import {
   installWebviewHardener,
@@ -532,6 +539,7 @@ import {
   installVoiceInputPowerRelease,
 } from './voice-input/powerReleaseNotifier';
 import { reapClaudeOrphansSync } from './claude-orphan-reaper';
+import { reapCodexToolTreesSync } from './codex-tool-tree-reaper';
 import { startAgentProcessPriorityWatcher } from './agent-process-priority';
 import { registerProcessMonitorIpc } from './process-monitor/ipc.js';
 import { disposeWindowsProcessScanWorkers } from './process-monitor/windowsProcessScanWorkerClient.js';
@@ -1004,6 +1012,7 @@ import {
   popUpWindowsTrayMenu,
   requestWindowsTrayQuit,
 } from './windowsTrayLifecycle.js';
+import { createLinuxTrayController } from './linuxTrayLifecycle.js';
 import {
   applyLinuxMainWindowCloseBehavior,
   createCloseBehaviorPromptFallbackController,
@@ -1112,6 +1121,7 @@ import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
+import { StableOwnerPostCommitStep } from './stableOwnerPostCommit.js';
 import { registerPluginPublisherIpc } from './plugin-publisher/registerIpc.js';
 import { findCindyFileInArgv } from './cindy-brain/argv.js';
 import { handleIncomingCindyFile } from './cindy-brain/openFileInstall.js';
@@ -2459,29 +2469,55 @@ setAppSessionCommitBoundaryHook(() => {
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
 });
+const ownerBackgroundLog = createLogger('owner-background');
+const builtinPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'builtin-plugins', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+// Each package already has a 120s transport limit. This bounds our wait for
+// the entire batch (catalog/auth/locks included), not the lifetime of a write.
+const marketPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-market', timeoutMs: 180_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+const oauthPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-oauth', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
 authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId }) => {
-  const builtinOutcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+  const isCurrent = () => !isAppSessionBoundaryPending()
+    && activeOwnerScopeKey() === scopeKey
+    && getActiveAppSession().dataOwnerId === dataOwnerId;
+  if (!isCurrent()) return 'deferred';
+  const builtinOutcome = await builtinPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    const outcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+    return outcome === 'retry-pending' ? 'failed' : outcome;
+  });
   if (builtinOutcome === 'deferred') return builtinOutcome;
+  if (!isCurrent()) return 'deferred';
 
-  let needsRetry = builtinOutcome === 'retry-pending' || builtinOutcome === 'failed';
+  let needsRetry = builtinOutcome === 'failed';
   // Signed-out is a real stable scope for account-free bundled provisioning.
   // Market and OAuth are owner-private follow-ups and stay behind this gate.
   if (dataOwnerId === null) return needsRetry ? 'failed' : 'completed';
   let deferred = false;
-  const marketOutcome = await syncDefaultMarketPlugins();
+  const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    return syncDefaultMarketPlugins();
+  });
+  if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
   if (marketOutcome === 'deferred') deferred = true;
 
-  try {
+  const oauthOutcome = await oauthPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
     const oauthCompleted = await reconcileGhostOauthAccountsForActiveOwner();
-    if (!oauthCompleted) deferred = true;
-  } catch (error) {
-    createLogger('ghost-oauth-owner-reconcile').warn(
-      'OAuth account reconciliation for active owner failed',
-      { error: error instanceof Error ? error.message : String(error) },
-    );
-    needsRetry = true;
-  }
+    return oauthCompleted ? 'completed' : 'deferred';
+  });
+  if (!isCurrent()) return 'deferred';
+  if (oauthOutcome === 'failed') needsRetry = true;
+  if (oauthOutcome === 'deferred') deferred = true;
 
   return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';
 });
@@ -2990,7 +3026,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   if (mainWindow) {
     installApplicationMenu(mainWindow, currentApplicationMenuLocale);
   }
-  invalidateWindowsTrayMenu();
+  refreshDesktopTrayMenus();
   getAgentIslandService()?.refreshLocalization();
   refreshMenubarLocalization();
   return { ok: true };
@@ -3152,7 +3188,7 @@ const activeWindowsTrayMenus = new Set<Menu>();
 const windowsTrayLog = createLogger('windows-tray');
 const CLOSE_BEHAVIOR_PROMPT_FALLBACK_DELAY_MS = 2_000;
 
-function buildWindowsTrayMenu(): Menu {
+function buildDesktopTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     {
       label: t('settings.windowBehavior.trayMenu.show'),
@@ -3162,14 +3198,15 @@ function buildWindowsTrayMenu(): Menu {
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
-      click: () => quitFromWindowsTray(),
+      click: () => quitFromDesktopTray(),
     },
   ]);
 }
 
-/** 语言切换后丢弃缓存的菜单,下一次右键按新语言重建。 */
-function invalidateWindowsTrayMenu(): void {
+/** Windows rebuilds lazily on right-click; Linux must republish its native menu. */
+function refreshDesktopTrayMenus(): void {
   windowsTrayMenu = null;
+  linuxTray.refreshMenu();
 }
 
 function openWindowsTrayMenu(): void {
@@ -3183,7 +3220,7 @@ function openWindowsTrayMenu(): void {
   popUpWindowsTrayMenu<Menu>({
     tray: windowsTray,
     menu: windowsTrayMenu,
-    buildMenu: buildWindowsTrayMenu,
+    buildMenu: buildDesktopTrayMenu,
     retainMenu: (menu) => {
       windowsTrayMenu = menu;
     },
@@ -3204,7 +3241,7 @@ function openWindowsTrayMenu(): void {
   });
 }
 
-function quitFromWindowsTray(): void {
+function quitFromDesktopTray(): void {
   requestWindowsTrayQuit({
     hasActiveTurn: () => {
       try {
@@ -3234,6 +3271,26 @@ function destroyWindowsTray(): void {
   windowsTray = null;
   windowsTrayMenu = null;
 }
+
+const linuxTrayLog = createLogger('linux-tray');
+const linuxTray = createLinuxTrayController<Menu>({
+  createTray: () => {
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'icon.png')
+      : path.join(__dirname, '../../resources/icon.png');
+    const icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) throw new Error(`tray icon is empty: ${iconPath}`);
+    // Keep the source resolution: Linux panels choose their own icon size/scale.
+    return new Tray(icon);
+  },
+  buildMenu: buildDesktopTrayMenu,
+  showWindow: () => focusMainWindow(),
+  onError: (error) => {
+    linuxTrayLog.error('Linux tray operation failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
 
 function ensureWindowsTray(): boolean {
   if (windowsTray && !windowsTray.isDestroyed()) return true;
@@ -3398,6 +3455,7 @@ app.on('before-quit', () => {
   windowsClosePromptFallback.dispose();
   linuxClosePromptFallback.dispose();
   destroyWindowsTray();
+  linuxTray.dispose();
   disposeUpdatePresentationRecovery();
   authCredentialRecovery.dispose();
 });
@@ -3922,6 +3980,9 @@ const createWindow = () => {
   void ensureMainAppPresence('main-window-created', mainWindow);
   // Keep diagnostics reachable from the tray even before login or if the renderer fails.
   if (process.platform === 'win32') ensureWindowsTray();
+  // Tray construction is not proof that a Linux panel hosts the icon. Keep the
+  // existing minimize/quit close choices so an absent tray never strands a hidden window.
+  if (process.platform === 'linux') linuxTray.ensure();
 
   installApplicationMenu(
     mainWindow,
@@ -4238,7 +4299,10 @@ function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
   pluginMarketSyncInFlightScope = scope;
   lastPluginMarketSyncScope = scope;
   lastPluginMarketSyncAt = now;
-  void syncDefaultMarketPlugins().finally(() => {
+  void marketPostCommitStep.run(scope, async () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
+    return syncDefaultMarketPlugins();
+  }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
 }
@@ -5828,7 +5892,9 @@ const registerIpcHandlers = () => {
           },
         })
         .finally(() => authCredentialRecovery.request());
-      await authManager.ensureStableOwnerPostCommitTasks('auth-initialize');
+      // Plugin downloads/reconciliation retain their owner-scoped retries, but
+      // must not delay AuthContext starting the owner DB or showing the app.
+      authManager.requestStableOwnerPostCommit('auth-initialize');
       if (!app.isPackaged || isCindyVersionLaunchPending()) {
         recordDesktopDevAuthStartupResult(state, pendingCompletion, () =>
           authManager.getAuthState(),
@@ -5974,6 +6040,7 @@ const registerIpcHandlers = () => {
   const profileEditLog = createLogger('profileEdit');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
+    getAccountScopeKey: activeOwnerScopeKey,
     getServerProfile: () => authManager.getServerProfile(),
     showAvatarOpenDialog: async () => {
       const result = await dialog.showOpenDialog({
@@ -5983,6 +6050,11 @@ const registerIpcHandlers = () => {
       return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
     },
     readFile: (filePath) => fs.promises.readFile(filePath),
+    toSdrAvatar: toSdrAvatarImage,
+    decodeAvatarImage: ({ buffer }) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(buffer));
+      return image.isEmpty() ? null : image.getSize();
+    },
     uploadAvatar: async ({ buffer, mimeType }) => {
       const result = await uploadPublicAsset(
         {
@@ -7540,6 +7612,38 @@ const registerIpcHandlers = () => {
     assertTrustedAppRendererEvent(event);
     assertCindyMakeEnabled();
     return actUpstreamMerge(input);
+  });
+  // Local Settings only: binding this machine's GitHub fork has no device-link grant.
+  // A failure here must not prevent the remaining IPC handlers from registering.
+  try {
+    configurePersonalRemote();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal remote unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-personal-remote', async (event, action: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalRemote(action);
+  });
+  // One Sync for every personal version; local Settings only, no device-link grant.
+  try {
+    configurePersonalSync();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal sync unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-sync', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalSync(request);
+  });
+  ipcMain.handle('app:cindy-make-contribution', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actCindyMakeContribution(request);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {
     assertTrustedAppRendererEvent(event);
@@ -9681,6 +9785,8 @@ app.on('ready', async () => {
 // Sync 阶段: 同步触发, 不等结果。只放真正同步的清理 (释放本地句柄 / 取消定时器)。
 //   - reap-claude-children: 必须在 shutdown-maker 之前同步完成；SDK abort 掐掉
 //     claude.exe 后 Windows 上子进程会被 reparent 到 System, PPID 链断了就无法安全识别。
+//   - reap-codex-tool-trees: 同理须先于 shutdown-maker；app-server EOF 退出后,
+//     exec_command 起的工具后代(如 xcodebuild → swift-frontend)会挂到 launchd 继续跑(#6024)。
 //   - authManager / google auth: 同步释放定时器+回调引用。
 //     注意 token.dispose() 只清内存状态, 不删盘上的 refresh token (那是 logout 干的)。
 // interrupted-turn-resume:退出编排一启动就冻结「turn 在飞」标记的写入 —— 否则
@@ -9706,6 +9812,13 @@ onQuit(
   'reap-claude-children',
   () => {
     reapClaudeOrphansSync();
+  },
+  'sync',
+);
+onQuit(
+  'reap-codex-tool-trees',
+  () => {
+    reapCodexToolTreesSync();
   },
   'sync',
 );

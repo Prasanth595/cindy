@@ -1411,54 +1411,72 @@ async function requestLiteLlmText(input: {
   else input.signal?.addEventListener('abort', abortFromParent, { once: true });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (input.beforeDispatch && !(await input.beforeDispatch())) {
-      throw new UtilityTextExecutionError({ reason: 'request_failed' });
-    }
-    if (input.routeStillAllowed && !input.routeStillAllowed()) {
-      throw new UtilityTextExecutionError({ reason: 'request_failed' });
-    }
     const instructions = [input.systemPrompt, input.responseInstructions]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       .join('\n');
-    const response = await undiciFetch(joinProxyPath(input.baseUrl, '/v1/chat/completions'), {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: input.model,
-        ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
-        ...(input.disableReasoning
-          ? { thinking: { type: 'disabled' } }
-          : input.reasoningEffort
-            ? { reasoning_effort: input.reasoningEffort }
-            : {}),
-        messages: [
-          ...(instructions
-            ? [{
-                role: 'system',
-                content: instructions,
-              }]
-            : []),
-          { role: 'user', content: input.prompt },
-        ],
-      }),
-    });
+    let maxTokens = input.maxTokens;
+    const send = async () => {
+      if (input.beforeDispatch && !(await input.beforeDispatch())) {
+        throw new UtilityTextExecutionError({ reason: 'request_failed' });
+      }
+      if (input.routeStillAllowed && !input.routeStillAllowed()) {
+        throw new UtilityTextExecutionError({ reason: 'request_failed' });
+      }
+      return undiciFetch(joinProxyPath(input.baseUrl, '/v1/chat/completions'), {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: input.model,
+          ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+          ...(input.disableReasoning
+            ? { thinking: { type: 'disabled' } }
+            : input.reasoningEffort
+              ? { reasoning_effort: input.reasoningEffort }
+              : {}),
+          messages: [
+            ...(instructions
+              ? [{
+                  role: 'system',
+                  content: instructions,
+                }]
+              : []),
+            { role: 'user', content: input.prompt },
+          ],
+        }),
+      });
+    };
+    let response = await send();
     if (!response.ok) {
       // Do not retain or log upstream response bodies: gateways may echo request
       // metadata, while the HTTP status is sufficient for user recovery.
       await response.body?.cancel().catch(() => undefined);
       throw new UtilityTextExecutionError({ reason: 'http_error', httpStatus: response.status });
     }
-    const parsed = await response.json() as {
-      choices?: Array<{ message?: { content?: unknown } }>;
-    };
-    const text = (parsed.choices ?? [])
-      .map((choice) => chatCompletionContentText(choice.message?.content))
-      .join('')
-      .trim();
+    let parsed = await response.json() as ChatCompletionBody;
+    let text = chatCompletionChoicesText(parsed);
+    const retryBudget = !text && maxTokens !== undefined
+      && outputBudgetExhausted('chat-completions', parsed)
+      ? reasoningRetryBudget(parsed, maxTokens)
+      : 0;
+    if (retryBudget > 0) {
+      maxTokens = retryBudget;
+      log.warn('utility text reasoning burned the output budget, retrying larger', {
+        model: input.model,
+        from: input.maxTokens,
+        to: retryBudget,
+      });
+      const budgeted = await send();
+      if (budgeted.ok) {
+        parsed = await budgeted.json() as ChatCompletionBody;
+        text = chatCompletionChoicesText(parsed);
+      } else {
+        await budgeted.body?.cancel().catch(() => undefined);
+      }
+    }
     if (!text) {
       log.warn('utility text chat-completions empty content', chatCompletionEmptyFingerprint(parsed));
       throw new UtilityTextExecutionError({ reason: 'empty_response' });
@@ -1609,8 +1627,8 @@ async function requestProviderHttpText(input: {
           store: false,
           stream: true,
         } : {}),
-        ...(!minimal && input.maxTokens !== undefined && input.supportsMaxOutputTokens !== false
-          ? { max_output_tokens: input.maxTokens }
+        ...(!minimal && maxTokens !== undefined && input.supportsMaxOutputTokens !== false
+          ? { max_output_tokens: maxTokens }
           : {}),
         ...(!minimal && supportsRequestedReasoning
           ? { reasoning: { effort: reasoningEffort } }
@@ -1622,14 +1640,14 @@ async function requestProviderHttpText(input: {
           // Anthropic API 协议必填 max_tokens。缺省由调用方以模型目录声明的
           // maxOutput 兜底(模型自身输出能力);81920 只是模型不在目录时的最后
           // 回退,不是宿主承诺的输出上限。
-          max_tokens: input.maxTokens ?? 81_920,
+          max_tokens: maxTokens ?? 81_920,
           ...(instructions ? { system: instructions } : {}),
           ...(!minimal && input.disableReasoning ? { thinking: { type: 'disabled' } } : {}),
           messages: [{ role: 'user', content: input.prompt }],
         }
         : {
           model: input.model,
-          ...(!minimal && input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
+          ...(!minimal && maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
           ...(!minimal && input.disableReasoning
             ? ollamaReasoningOff
               ? { reasoning_effort: 'none' }
@@ -1643,6 +1661,7 @@ async function requestProviderHttpText(input: {
             { role: 'user', content: input.prompt },
           ],
         };
+    let maxTokens = input.maxTokens;
     const canDispatch = async (): Promise<boolean> => {
       if (input.routeStillCurrent && !input.routeStillCurrent()) return false;
       if (input.beforeDispatch && !(await input.beforeDispatch())) return false;
@@ -1651,9 +1670,16 @@ async function requestProviderHttpText(input: {
       if (input.beforeDispatch && !(await input.beforeDispatch())) return false;
       return !input.routeStillCurrent || input.routeStillCurrent();
     };
-    const send = async (minimal: boolean) => {
+    const send = async (minimal: boolean, raisedBudget?: number) => {
       if (!(await canDispatch())) {
         throw new UtilityTextExecutionError({ reason: 'request_failed' });
+      }
+      // 预算重试要带着放大后的预算, 又不能把已知不兼容的可选字段加回去 —— 最小体
+      // 把 max_tokens 一起丢了, 直接 send(true) 等于没放大。buildBody 每次返回新
+      // 对象, 在这一个字段上覆盖即可。
+      const body = buildBody(minimal) as Record<string, unknown>;
+      if (raisedBudget !== undefined) {
+        body[input.wire === 'responses' ? 'max_output_tokens' : 'max_tokens'] = raisedBudget;
       }
       return undiciFetch(input.endpoint, {
         method: 'POST',
@@ -1662,10 +1688,11 @@ async function requestProviderHttpText(input: {
           ...(input.headers ?? {}),
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(buildBody(minimal)),
+        body: JSON.stringify(body),
       });
     };
     let response = await send(false);
+    let minimalBody = false;
     if (
       !response.ok
       && (response.status === 400 || response.status === 422)
@@ -1675,25 +1702,45 @@ async function requestProviderHttpText(input: {
     ) {
       await response.body?.cancel().catch(() => undefined);
       response = await send(true);
+      minimalBody = true;
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       throw new UtilityTextExecutionError({ reason: 'http_error', httpStatus: response.status });
     }
 
-    const raw = await response.text();
-    const text = input.wire === 'responses'
-      ? parseCodexResponseText(raw)
-      : input.wire === 'anthropic-messages'
-        ? parseAnthropicResponseText(raw)
-        : parseChatCompletionText(raw);
+    let raw = await response.text();
+    const parsed = responseStructure(input.wire, raw);
+    let text = wireResponseText(input.wire, raw);
+    // thinking:disabled 只是请求侧建议,BYOM 网关可以无视;max_tokens 是含思考的
+    // 总预算,思考吃光就只剩空正文。放大预算重发一次,而不是直接丢掉这个候选。
+    const budgetIsSent = input.wire !== 'responses' || input.supportsMaxOutputTokens !== false;
+    const retryBudget = !text
+      && input.maxTokens !== undefined
+      && budgetIsSent
+      && outputBudgetExhausted(input.wire, parsed)
+      ? reasoningRetryBudget(parsed, input.maxTokens)
+      : 0;
+    if (retryBudget > 0) {
+      maxTokens = retryBudget;
+      log.warn('utility text reasoning burned the output budget, retrying larger', {
+        wire: input.wire,
+        model: input.model,
+        from: input.maxTokens,
+        to: retryBudget,
+      });
+      // 已被网关拒过的可选字段不重新加回去(原样重来只会再被拒一次)。
+      const budgeted = await send(minimalBody, retryBudget);
+      if (budgeted.ok) {
+        raw = await budgeted.text();
+        text = wireResponseText(input.wire, raw);
+      } else {
+        await budgeted.body?.cancel().catch(() => undefined);
+      }
+    }
     if (!text) {
       if (input.wire === 'chat-completions') {
-        try {
-          log.warn('utility text chat-completions empty content', chatCompletionEmptyFingerprint(JSON.parse(raw)));
-        } catch {
-          // 指纹尽力而为,解析不了就不记。
-        }
+        log.warn('utility text chat-completions empty content', chatCompletionEmptyFingerprint(parsed));
       }
       throw new UtilityTextExecutionError({ reason: 'empty_response' });
     }
@@ -1710,16 +1757,93 @@ async function requestProviderHttpText(input: {
   }
 }
 
+type ChatCompletionBody = { choices?: Array<{ message?: { content?: unknown } }> };
+
+/**
+ * 放大预算的硬上限。辅助调用是短输出任务(自动审查 384、记忆 review 800 tokens),
+ * 放大到几万 token 既不像这类调用该有的量级,也容易越过模型自身输出上限。
+ */
+const REASONING_RETRY_BUDGET_CEILING = 16_384;
+
+function chatCompletionChoicesText(parsed: ChatCompletionBody): string {
+  return (parsed.choices ?? [])
+    .map((choice) => chatCompletionContentText(choice.message?.content))
+    .join('')
+    .trim();
+}
+
 function parseChatCompletionText(raw: string): string {
   try {
-    const json = JSON.parse(raw) as { choices?: Array<{ message?: { content?: unknown } }> };
-    return (json.choices ?? [])
-      .map((choice) => chatCompletionContentText(choice.message?.content))
-      .join('')
-      .trim();
+    return chatCompletionChoicesText(JSON.parse(raw) as ChatCompletionBody);
   } catch {
     return '';
   }
+}
+
+function safeJsonParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 只供判据用的响应结构:缓冲 JSON 直接返回;responses wire 的正常形态是 SSE,
+ * 这里取最后一个带 response 对象的终止事件(response.completed / response.incomplete),
+ * 否则 SSE 会被当成「不是 JSON」而看不到截断原因。不读正文,也不记录内容。
+ */
+function responseStructure(wire: ProviderWire, raw: string): unknown {
+  const parsed = safeJsonParse(raw);
+  if (parsed !== null || wire !== 'responses') return parsed;
+  let terminal: unknown = null;
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const event = safeJsonParse(line.slice(5).trim()) as { response?: unknown } | null;
+    if (event?.response) terminal = event.response;
+  }
+  return terminal;
+}
+
+function wireResponseText(wire: ProviderWire, raw: string): string {
+  return wire === 'responses'
+    ? parseCodexResponseText(raw)
+    : wire === 'anthropic-messages'
+      ? parseAnthropicResponseText(raw)
+      : parseChatCompletionText(raw);
+}
+
+/**
+ * 空正文是否由「输出预算(含思考)被截断」造成——thinking:disabled 只是请求侧建议,
+ * 网关可以无视;此时放大预算重试一次就能拿到正文,不该直接丢掉候选。
+ * 判据只认「输出被长度上限截断」这一个形状(各 wire 的对应字段见下),不猜模型。
+ */
+function outputBudgetExhausted(wire: ProviderWire, parsed: unknown): boolean {
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  if (wire === 'responses') {
+    return (parsed as { incomplete_details?: { reason?: unknown } }).incomplete_details?.reason
+      === 'max_output_tokens';
+  }
+  if (wire === 'anthropic-messages') {
+    return (parsed as { stop_reason?: unknown }).stop_reason === 'max_tokens';
+  }
+  return chatCompletionEmptyFingerprint(parsed).finishReason === 'length';
+}
+
+/**
+ * 放大后的预算:网关给了 usage 就按它烧掉的量给(原值×2 与 观测值+余量 取大);
+ * 多数 BYOM 网关不给 usage,退回 max(原值×4, 4096) 的下限。
+ * 返回 0 = 没有增长空间,不重试:调用方本来就给的是大预算,翻倍会越过模型
+ * maxOutput 被 provider 拒,只会让用户多等一次。
+ */
+function reasoningRetryBudget(parsed: unknown, requested: number): number {
+  const usage = (parsed as { usage?: { completion_tokens?: unknown } } | null)?.usage;
+  const burned = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : 0;
+  const raised = burned > 0
+    ? Math.max(requested * 2, requested + burned + 512)
+    : Math.max(requested * 4, 4096);
+  const capped = Math.min(raised, REASONING_RETRY_BUDGET_CEILING);
+  return capped > requested ? capped : 0;
 }
 
 /**

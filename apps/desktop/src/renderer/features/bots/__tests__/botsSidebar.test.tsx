@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { useBotUnreadSync } from '../useBotUnreadSync';
 
+vi.mock('@/components/ui/confirm-dialog-provider', () => ({
+  useConfirmDialog: () => ({ confirm: vi.fn() }),
+}));
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -67,7 +71,8 @@ vi.mock('@/hooks/useSessionRunningStatus', () => ({
   },
 }));
 
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router-dom', async importOriginal => ({
+  ...await importOriginal<typeof import('react-router-dom')>(),
   useNavigate: () => mocks.navigate,
   useLocation: () => ({ pathname: mocks.pathname, search: '', hash: '' }),
   useParams: () => mocks.params,

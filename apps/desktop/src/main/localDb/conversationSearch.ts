@@ -331,6 +331,8 @@ async function listSearchableSessions(
   const agentCond = filters.agentKind === 'all' ? undefined : eq(sessions.agentKind, filters.agentKind);
   const sessionIdsCond = filters.sessionIds ? inArray(sessions.id, filters.sessionIds) : undefined;
   const workerCond = or(isNull(sessions.orcaRole), ne(sessions.orcaRole, 'worker'));
+  // 插件后台隐藏任务不进入任何会话搜索；用户从插件详情页「后台任务」查看与接手。
+  const visibleCond = isNull(sessions.hiddenAt);
   const activityCutoff = cutoffForLastActivity(filters.lastActivity);
   // 兼容存量 DB 行：旧版 touchUserSendInDb 只写 user_send_at 不 bump updated_at，
   // 侧栏排序用 max(userSendAt, updatedAt)，这里也同步用 OR 避免漏掉这些行。
@@ -346,6 +348,7 @@ async function listSearchableSessions(
       agentCond,
       sessionIdsCond,
       workerCond,
+      visibleCond,
       activityCond,
     ))
     .orderBy(desc(sessions.updatedAt));

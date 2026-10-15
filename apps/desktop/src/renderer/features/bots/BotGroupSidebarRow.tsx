@@ -10,7 +10,7 @@
  * 某一步进行中写「分工 k/n · 谁 正在做」，两者同样用运行中标记；安排待开始、做完一步
  * 等继续或没做完时，第二行换成对应的提示，提醒用户回来看看。
  */
-import type { ReactNode } from 'react';
+import type { KeyboardEventHandler, MouseEventHandler, ReactNode } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -54,6 +54,9 @@ export function BotGroupSidebarRow({
   now,
   selected,
   onOpenGroup,
+  onContextMenu,
+  onKeyDown,
+  children,
 }: {
   group: BotGroupSummary;
   bots: readonly BotProfile[];
@@ -61,6 +64,9 @@ export function BotGroupSidebarRow({
   now: number;
   selected: boolean;
   onOpenGroup: (groupId: string) => void;
+  onContextMenu?: MouseEventHandler<HTMLButtonElement>;
+  onKeyDown?: KeyboardEventHandler<HTMLButtonElement>;
+  children?: ReactNode;
 }) {
   const { t } = useTranslation();
 
@@ -88,6 +94,9 @@ export function BotGroupSidebarRow({
   };
 
   const renderSubtitle = (group: BotGroupSummary, mutedClass: string): ReactNode => {
+    if (group.archived) return <span className={cn('min-w-0 flex-1 truncate text-12 leading-4', mutedClass)}>
+      {previewText(group, null)}
+    </span>;
     // Several Bots may think at once in a broadcast round's first circle.
     const speakers = group.speakingBotIds
       .map((botId) => group.members.find((member) => member.botId === botId))
@@ -155,15 +164,20 @@ export function BotGroupSidebarRow({
 
   const mutedClass = selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]';
   const timestamp = formatBotListTimestamp(
-    group.speakingBotIds.length > 0 ? now : group.lastMessage?.createdAt ?? group.updatedAt,
+    !group.archived && group.speakingBotIds.length > 0 ? now : group.lastMessage?.createdAt ?? group.updatedAt,
     now,
   );
   return (
+    <div className="relative">
     <button
       key={group.id}
       type="button"
+      data-bot-group-id={group.id}
       aria-current={selected ? 'page' : undefined}
       onClick={() => onOpenGroup(group.id)}
+      onContextMenu={onContextMenu}
+      onKeyDown={onKeyDown}
+      aria-haspopup={onContextMenu ? 'menu' : undefined}
       className={cn(
         'group flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         selected
@@ -173,8 +187,9 @@ export function BotGroupSidebarRow({
     >
       <BotGroupDuoAvatar members={group.members} selected={selected} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="min-w-0 truncate text-14 leading-5" title={group.name}>
-          {group.name}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate text-14 leading-5" title={group.name}>{group.name}</span>
+          {group.archived && <span className={cn('shrink-0 text-11 leading-4', mutedClass)}>{t('bots.archived')}</span>}
         </span>
         <span className="flex min-w-0 items-center gap-2">{renderSubtitle(group, mutedClass)}</span>
       </span>
@@ -188,5 +203,7 @@ export function BotGroupSidebarRow({
         <NavigationCountBadge count={isBotGroupUnread(group) ? 1 : 0} label={t('sidebar.teammateUnreadCount', { count: 1 })} className="ml-auto mt-1 w-fit" />
       </span>
     </button>
+    {children}
+    </div>
   );
 }

@@ -50,6 +50,28 @@ describe('fetchRemoteAbsFileToUrl', () => {
       );
     }
   });
+  it('aborts an in-flight fetch once the caller cancels and does not retry', async () => {
+    const { deps, fetchRemoteMedia, presignGet } = makeDeps();
+    let cancelled = false;
+    let seenSignal: AbortSignal | undefined;
+    fetchRemoteMedia.mockImplementation(
+      (...args: unknown[]) =>
+        new Promise((_resolve, reject) => {
+          seenSignal = (args[1] as { signal?: AbortSignal } | undefined)?.signal;
+          seenSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const pending = fetchRemoteAbsFileToUrl(
+      { ...deps, stream: false, isCancelled: () => cancelled },
+      '/tmp/big.zip',
+    );
+    await vi.waitFor(() => expect(seenSignal).toBeDefined());
+    cancelled = true;
+    await expect(pending).rejects.toThrow();
+    expect(seenSignal?.aborted).toBe(true);
+    expect(fetchRemoteMedia).toHaveBeenCalledTimes(1);
+    expect(presignGet).not.toHaveBeenCalled();
+  });
   it('走 media:fetch 绝对路径通道并 presign 出下载地址', async () => {
     const { deps, fetchRemoteMedia, presignGet } = makeDeps();
     const url = await fetchRemoteAbsFileToUrl(deps, '/tmp/shot.png');

@@ -1845,11 +1845,23 @@
         "nameHint": "비워 두면 현재 이름이 유지됩니다",
         "changeAvatar": "아바타 변경",
         "resetAvatar": "기본 아바타로 복원",
+        "adjustAvatar": "아바타 조정",
         "save": "프로필 저장",
         "cancel": "취소",
         "syncHint": "이름과 아바타는 계정에 저장되고 모든 기기에 동기화됩니다.",
-        "avatarInvalid": "5MB 이하의 PNG / JPG / WebP 이미지를 선택해 주세요",
-        "saveFailed": "저장에 실패했습니다. 다시 시도해 주세요"
+        "avatarInvalid": "20MB 이하의 PNG / JPG / WebP 이미지를 선택해 주세요",
+        "saveFailed": "저장에 실패했습니다. 다시 시도해 주세요",
+        "crop": {
+          "title": "아바타 조정",
+          "description": "드래그해 위치를 조정하고, 스크롤하거나 핀치해 확대·축소하세요",
+          "done": "아바타 조정 완료",
+          "stageLabel": "아바타 표시 영역. 화살표 키로 이동하고 더하기 또는 빼기 키로 확대·축소합니다",
+          "zoomLabel": "확대/축소",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "확대",
+          "zoomOut": "축소",
+          "exportFailed": "조정한 아바타를 내보내지 못했습니다"
+        }
       }
     },
     "help": {
@@ -6341,6 +6353,8 @@
         "agentTasksRequest": "세션 권한 확인",
         "agentTasks": "이 플러그인의 Cindy 세션을 만들고 관리할 수 있음",
         "agentTasksDetail": "메시지를 보내고 결과를 읽으며 자신의 실행을 중지할 수 있습니다. 세션은 사용자에게 표시됩니다. 플러그인의 AI 설정을 사용하며 모델 비용이 발생할 수 있습니다. 다른 세션에 대한 접근 권한은 부여하지 않습니다.",
+        "agentHiddenTasks": "세션 목록에 표시되지 않는 백그라운드 세션을 만들 수 있음",
+        "agentHiddenTasksDetail": "이 플러그인이 만든 세션을 세션 목록, 검색, 알림에 표시하지 않을 수 있습니다. 플러그인 상세의 「백그라운드 세션」에서 언제든지 확인하고 열거나 세션 목록에 표시할 수 있으며, 플러그인을 제거하면 다시 표시됩니다.",
         "agentErrand": "작업을 만들고 실행하며 결과를 읽을 수 있습니다",
         "agentErrandDetail": "생성된 작업은 Cindy 작업 목록에 표시되며 진행 상황을 확인하고 대화를 이어갈 수 있습니다.",
         "agentSchedule": "자동화 새로 만들기를 요청할 수 있음",
@@ -6461,28 +6475,12 @@
         "infoVersion": "버전",
         "updateTitle": "버전 업데이트",
         "updateDesc": "새 .cindy 파일을 선택해 설치된 버전을 그 자리에서 교체합니다. 활성 상태와 패널 위치는 유지됩니다.",
-        "cindyPrefs": {
-          "title": "Cindy 능력",
-          "desc": "이 플러그인이 신청한 각 Cindy 대행 능력마다 사용할 모델을 지정할 수 있습니다. 기본값은 시스템(내장 프록시)을 따릅니다.",
-          "cap": {
-            "image.generate": "이미지 생성",
-            "image.edit": "이미지 편집",
-            "video.generate": "영상 생성",
-            "video.edit": "이미지로 영상",
-            "text.oneshot": "빠른 답변(텍스트)",
-            "embed.text": "텍스트 벡터 변환"
-          },
-          "defaultOption": "{{model}} (기본값)",
-          "defaultOptionDeclared": "{{model}}(플러그인 선언)",
-          "searchPlaceholder": "모델 또는 제공자 검색",
-          "budgetBadge": "할인",
-          "noModels": "사용 가능한 모델 없음"
-        },
         "errandPrefs": {
-          "title": "작업 설정",
-          "desc": "이 플러그인이 만드는 작업의 설정입니다. 새 작업은 호출한 작업의 모델을 사용하며, 패널에서 만들면 현재 새 작업의 선택을 사용합니다. 기존 작업은 자신의 모델을 유지합니다. 권한은 별도로 설정하며 일반 작업의 기본 권한을 사용합니다. 전체 접근 권한은 상속하지 않습니다.",
-          "legacyDesc": "이 플러그인이 만드는 작업의 설정입니다. 새 작업은 호출한 작업의 모델을 사용하며, 패널에서 만들면 현재 새 작업의 선택을 사용합니다. 기존 작업은 자신의 모델을 유지합니다. 기존 API는 원래 권한을 유지합니다. 권한을 선택하면 해당 설정을 사용합니다.",
+          "title": "모델 및 작업",
+          "desc": "이 플러그인의 빠른 답변과 플러그인이 만드는 작업에 사용할 모델입니다. 기본적으로 시스템 보조 모델을 따르며, 새 작업은 호출한 작업의 모델을 사용합니다.",
+          "descModelOnly": "이 플러그인의 빠른 답변에 사용할 모델입니다. 기본적으로 시스템 보조 모델을 따릅니다.",
           "legacyPermission": "기존 권한 유지",
+          "legacyPermissionHint": "기존 API는 원래 권한을 유지합니다. 권한을 선택하면 해당 설정을 사용합니다.",
           "agent": "Agent",
           "model": "모델",
           "permission": "쓰기 권한",
@@ -6491,8 +6489,8 @@
           "workdirDefault": "플러그인 전용 폴더(기본)",
           "workdirPick": "선택…",
           "workdirClear": "기본 폴더로 되돌리기",
-          "sourceDefault": "호출한 작업 따르기 · 아래는 패널의 기본 모델",
-          "sourceCustom": "이 플러그인용으로 선택한 모델 사용",
+          "followAuxiliary": "시스템 보조 모델 따르기 · {{model}}",
+          "followAuxiliaryUnset": "시스템 보조 모델 따르기",
           "restoreModel": "모델 초기화"
         },
         "toolsTitle": "Tools",
@@ -6547,6 +6545,22 @@
       "commandPaletteTag": "플러그인 명령",
       "commandPaletteSource": {
         "team": "팀 공유"
+      },
+      "backgroundTasks": {
+        "title": "백그라운드 세션",
+        "description": "이 플러그인이 백그라운드에서 실행하며 세션 목록에 표시되지 않는 세션입니다. 열어서 확인하거나 세션 목록에 표시해 평소처럼 사용할 수 있습니다.",
+        "refresh": "백그라운드 세션 새로 고침",
+        "loading": "백그라운드 세션을 불러오는 중…",
+        "loadFailed": "백그라운드 세션을 불러오지 못했습니다",
+        "empty": "백그라운드 세션이 없습니다",
+        "statusRunning": "실행 중",
+        "statusIdle": "대기 중",
+        "statusArchived": "보관됨",
+        "lastActive": "마지막 활동 {{time}}",
+        "open": "세션 열기",
+        "reveal": "세션 목록에 표시",
+        "revealed": "세션을 세션 목록에 표시했습니다",
+        "revealFailed": "세션을 세션 목록에 표시하지 못했습니다"
       },
       "library": {
         "title": "영구 라이브러리",
@@ -8717,7 +8731,9 @@
     "list": {
       "createMenu": "새로 만들기",
       "createTeammate": "새 파트너",
+      "joinWithLink": "초대 링크 입력…",
       "startChat": "대화 시작하기",
+      "selectChat": "파트너 또는 그룹 채팅을 선택해 대화를 시작하세요",
       "typing": "입력 중…",
       "unread": "읽지 않은 메시지 {{count}}개",
       "search": "파트너 또는 그룹 채팅 검색",
@@ -8732,7 +8748,8 @@
       "pinned": "고정됨",
       "needsAttention": "확인 필요",
       "duplicate": "동료 복제",
-      "moreActions": "{{name}} 추가 작업"
+      "moreActions": "{{name}} 추가 작업",
+      "noResults": "검색과 일치하는 파트너나 그룹이 없어요"
     },
     "cancel": "취소",
     "save": "저장",
@@ -9131,6 +9148,15 @@
       "files": {
         "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
       },
+      "addFromChat": {
+        "triggerFor": "{{name}}을(를) 그룹 채팅에 추가",
+        "addTo": "{{name}} 추가할 그룹",
+        "newGroup": "그룹 채팅 만들기…",
+        "existingGroup": "기존 그룹에 추가",
+        "added": "{{name}}을(를) \"{{group}}\"에 추가했습니다",
+        "openGroup": "그룹 열기",
+        "unavailable": "{{name}}은(는) 지금 그룹 채팅에 참여할 수 없습니다"
+      },
       "server": {
         "quoteReply": "인용 답글",
         "startTopic": "스레드 만들기",
@@ -9159,8 +9185,11 @@
         "copied": "초대 링크를 복사했습니다",
         "createLink": "초대 링크 만들기",
         "accept": "수락하고 참여",
-        "openGroup": "그룹 열기",
         "previewInvite": "초대 확인",
+        "linkDescription": "참여하면 그룹 구성원이 되어 대화 기록을 볼 수 있습니다.",
+        "loadingInvite": "초대를 불러오는 중…",
+        "retryInvite": "초대 다시 불러오기",
+        "malformedInvite": "초대 링크가 불완전하거나 형식이 올바르지 않습니다. 초대한 사람에게 새 링크를 요청하세요.",
         "invalidInvite": "유효하지 않거나 사용, 만료 또는 취소된 초대입니다. 새 링크를 받으세요.",
         "notAllowed": "현재 계정에 권한이 없습니다. 계정을 확인하거나 그룹 소유자에게 문의하세요.",
         "loginRequired": "현재 계정에 로그인한 후 다시 시도하세요.",
@@ -9201,8 +9230,9 @@
           "addCompanion": "내 파트너 초대",
           "leave": "그룹 나가기",
           "leaveHint": "본인과 자신의 파트너가 그룹을 나갑니다. 소유자는 먼저 소유권을 이전해야 합니다.",
+          "soleOwnerHint": "그룹에 나만 남았어요. 그룹을 보관하면 기록을 유지하고 나중에 다시 사용할 수 있어요.",
           "archive": "그룹 보관",
-          "archiveHint": "기록을 보존하고 새 메시지와 파트너 실행을 중단합니다.",
+          "archiveHint": "그룹을 보관하면 모든 멤버의 새 메시지와 파트너 실행이 중지돼요. 기록은 유지돼요. 그룹을 검색해 기록을 보거나 보관을 해제할 수 있어요.",
           "confirm": "확인",
           "lastOwner": "나가거나 소유자를 내보내기 전에 다른 멤버에게 소유권을 이전하세요.",
           "conflict": "다른 멤버가 설정을 변경했습니다. 새로 고침 후 다시 시도하세요.",
@@ -9213,7 +9243,7 @@
           "auto": "동시에 발언",
           "sequential": "차례로 발언",
           "unarchive": "그룹 보관 해제",
-          "unarchiveHint": "메시지와 파트너 실행을 재개합니다.",
+          "unarchiveHint": "보관을 해제하면 모든 멤버의 메시지와 파트너 실행이 재개돼요.",
           "archived": "보관된 그룹입니다. 기록은 계속 볼 수 있습니다.",
           "noneHint": "이 그룹에서는 동료의 소유자만 응답을 요청할 수 있습니다.",
           "companionPermissions": "동료 권한",
@@ -10829,7 +10859,8 @@
       "downloadExtracting": "압축 푸는 중…",
       "downloadUnsupported": "원격 컴퓨터가 아직 폴더 다운로드를 지원하지 않습니다. 해당 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
       "downloadNoSpace": "디스크 공간이 부족해 다운로드를 완료할 수 없습니다",
-      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다"
+      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다",
+      "cancelTransfer": "취소"
     },
     "mivoAction": {
       "promptPlaceholder": "프롬프트를 입력하고 Enter로 전송",
@@ -15114,7 +15145,8 @@
         "included": "실행 중인 버전에 포함됨",
         "notIncluded": "실행 중인 버전에 포함되지 않음",
         "unknown": "실행 중인 버전의 포함 여부 미확인"
-      }
+      },
+      "failedContinue": "공식에 비슷한 변경이 있는지 확인하지 못했지만 그대로 계속할 수 있습니다."
     },
     "title": "Cindy Make",
     "stepEnvironment": "1 · 환경 준비",
@@ -15509,7 +15541,8 @@
         "installerReady": "설치 파일 준비 완료"
       },
       "rounds_other": "수정 {{count}}회",
-      "files_other": "파일 {{count}}개 변경"
+      "files_other": "파일 {{count}}개 변경",
+      "generatePersonal": "개인 버전 생성"
     },
     "merge": {
       "getLatest": "최신 소스 동기화",
@@ -15552,7 +15585,265 @@
         "interrupted": "작업이 중단되었습니다. 변경 사항은 유지됩니다. 다시 시도해 주세요.",
         "startFailed": "해결 작업을 열지 못했습니다. 다시 시도해 주세요.",
         "cancelFailed": "업데이트를 취소하지 못했습니다. 다시 시도해 주세요. 개인 소스는 유지됩니다."
+      },
+      "combine": {
+        "taskTitle": "두 컴퓨터의 변경 사항 합치기",
+        "status": {
+          "fetching": "합칠 준비를 하는 중…",
+          "merging": "양쪽 변경 사항을 합치는 중…",
+          "conflict": "양쪽에서 같은 부분을 바꿔 처리가 필요합니다",
+          "resolving": "충돌을 해결하는 중",
+          "checking": "합친 결과를 확인하는 중…",
+          "merged": "양쪽 변경 사항을 합쳤습니다",
+          "failed": "합치기를 완료하지 못했습니다",
+          "cancelled": "합치기를 취소했습니다. 양쪽 개인 버전 모두 바뀌지 않았습니다."
+        },
+        "conflictConfirm": {
+          "title": "두 컴퓨터에서 같은 부분을 바꿨습니다",
+          "description": "확인하면 별도 작업이 만들어지고 Agent가 양쪽 변경 사항을 합쳐 양쪽 기능을 모두 유지합니다. 둘 다 유지할 수 없으면 먼저 물어봅니다. 취소하면 이번 합치기를 중단하며 양쪽 개인 버전은 바뀌지 않습니다.",
+          "confirm": "확인하고 해결",
+          "cancel": "합치기 취소"
+        }
       }
+    },
+    "storage": {
+      "title": "저장 위치",
+      "github": "내 GitHub · {{repository}}",
+      "localOnly": "이 컴퓨터에만",
+      "localOnlyHint": "GitHub에 연결하면 이 개인 버전을 다른 컴퓨터에서도 사용하고, 변경 사항을 공식에 제출할 수도 있습니다. 이 컴퓨터에만 있는 개인 버전은 컴퓨터를 바꾸거나 다시 설치하면 복구할 수 없습니다.",
+      "localChosenHint": "이 컴퓨터에만 두기로 선택했습니다. 이 컴퓨터에만 있는 개인 버전은 컴퓨터를 바꾸거나 다시 설치하면 복구할 수 없습니다.",
+      "disconnectedHint": "이 컴퓨터는 아직 GitHub에 연결되지 않았습니다. 동기화하려면 연결하세요.",
+      "unavailableHint": "지금은 GitHub 연결을 확인할 수 없습니다.",
+      "actionFailed": "작업을 완료하지 못했습니다. 다시 시도해 주세요.",
+      "running": {
+        "save": "내 GitHub에 저장하는 중",
+        "sync": "내 GitHub와 동기화하는 중",
+        "disconnect": "동기화를 중지하는 중"
+      },
+      "step": {
+        "waiting": "다른 소스 작업이 끝나기를 기다리는 중",
+        "preparing": "이 컴퓨터의 변경 사항을 정리하는 중",
+        "fork": "내 GitHub에 사본을 만드는 중",
+        "connecting": "내 GitHub에 연결하는 중",
+        "retrieving": "다른 컴퓨터의 변경 사항을 가져오는 중",
+        "uploading": "개인 버전을 업로드하는 중"
+      },
+      "status": {
+        "synced": "동기화됨",
+        "pendingBuild": "개인 버전을 생성한 뒤 동기화됩니다",
+        "retrieved": "다른 컴퓨터의 변경 사항을 가져왔습니다. 개인 버전을 생성하면 사용할 수 있습니다",
+        "pending": "아직 GitHub와 동기화되지 않았습니다",
+        "remoteAhead": "GitHub에 다른 컴퓨터의 새 변경 사항이 있습니다",
+        "diverged": "GitHub와 이 컴퓨터에 각각 새 변경 사항이 있어 지금은 자동으로 합칠 수 없습니다",
+        "account": "현재 연결된 GitHub 계정({{login}})은 이 저장소의 소유자가 아니어서 동기화를 일시 중지했습니다.",
+        "needsMerge": "GitHub와 이 컴퓨터에 각각 새 변경 사항이 있어 합쳐야 합니다",
+        "buildFirst": "먼저 생성한 뒤 동기화"
+      },
+      "errors": {
+        "github": "GitHub 연결이 더 이상 유효하지 않습니다. GitHub에 다시 연결하세요.",
+        "account": "현재 연결된 GitHub 계정이 저장 위치와 일치하지 않아 동기화를 일시 중지했습니다.",
+        "forkConflict": "내 GitHub에 Cindy 사본을 만들지 못했습니다. 같은 이름의 저장소가 공식 저장소의 사본이 아니어서 Cindy는 이를 변경하지 않았습니다.",
+        "forkUnavailable": "GitHub의 사본이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.",
+        "network": "GitHub에 연결할 수 없습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.",
+        "workflowScope": "현재 GitHub 권한으로는 워크플로 파일을 업로드할 수 없습니다. GitHub에 다시 연결한 뒤 다시 시도해 주세요.",
+        "source": "지금은 개인 버전 소스를 사용할 수 없습니다. 먼저 소스를 준비하세요.",
+        "gitOutdated": "이 컴퓨터의 Git 버전이 너무 오래되었습니다. 환경 준비에서 Git을 업데이트한 뒤 다시 시도해 주세요.",
+        "interrupted": "이전 작업이 중단되었으며 자동으로 이어서 진행하지 않았습니다.",
+        "failed": "동기화를 완료하지 못했습니다. 다시 시도해 주세요.",
+        "forkMissing": "개인 버전을 저장한 GitHub 저장소를 찾을 수 없습니다. 삭제되었을 수 있습니다. 다시 GitHub에 저장할 수 있습니다.",
+        "forkArchived": "개인 버전을 저장한 GitHub 저장소가 보관 처리되어 업로드할 수 없습니다. GitHub에서 보관을 해제한 뒤 다시 동기화하세요."
+      },
+      "card": {
+        "title": "개인 버전을 내 GitHub에 저장할까요?",
+        "intro": "GitHub 계정 {{login}}에 연결되어 있습니다. 저장하면:",
+        "otherComputers": "같은 GitHub 계정을 사용하는 다른 컴퓨터에서도 이 개인 버전을 사용할 수 있습니다",
+        "contribute": "나중에 변경 사항을 Cindy 공식에 제출할 수 있습니다",
+        "autoSync": "이후에는 자동으로 동기화됩니다",
+        "public": "내 GitHub 계정의 Cindy 사본(보통 {{repository}})에 저장됩니다. 공식 저장소의 공개 사본이므로 변경 사항을 GitHub에서 누구나 볼 수 있습니다.",
+        "unchanged": "이 컴퓨터의 개인 버전, 제작 기록, 진행 중인 제작은 바뀌지 않습니다.",
+        "existingTitle": "내 GitHub에 이미 개인 버전이 있습니다",
+        "existingIntro": "계정 {{login}}의 {{repository}}에 다른 컴퓨터에서 저장한 개인 버전이 있습니다. 저장하면 이 컴퓨터에서도 이를 사용하고 이후 자동으로 동기화됩니다.",
+        "existingKeeps": "이 컴퓨터에 아직 자체 변경 사항이 없으면 GitHub의 개인 버전을 그대로 사용합니다. 이 컴퓨터에 있는 변경 사항은 덮어쓰지 않습니다.",
+        "prepareFirst": "먼저 개인 버전 소스를 준비합니다. 몇 분 정도 걸립니다."
+      },
+      "actions": {
+        "connect": "GitHub 연결",
+        "reconnect": "GitHub 다시 연결",
+        "save": "GitHub에 저장",
+        "keepLocal": "이 컴퓨터에만 두기",
+        "syncNow": "지금 동기화",
+        "retry": "다시 시도",
+        "recheck": "다시 확인",
+        "view": "GitHub에서 보기",
+        "stop": "동기화 중지",
+        "useExisting": "이 컴퓨터에서 사용",
+        "saveAgain": "다시 GitHub에 저장",
+        "keepSeparate": "아니요, 이 컴퓨터에서 따로 만들기"
+      },
+      "stopConfirm": {
+        "title": "GitHub 동기화를 중지할까요?",
+        "description": "이 컴퓨터는 앞으로 개인 버전을 업로드하지 않습니다. GitHub의 저장소와 이 컴퓨터의 개인 버전은 모두 유지되며 나중에 다시 켤 수 있습니다.",
+        "confirm": "동기화 중지",
+        "cancel": "취소"
+      },
+      "needsMergeHint": "위의 「동기화」로 양쪽 변경 사항을 합치며 양쪽 기능이 모두 유지됩니다. 같은 부분을 바꿨다면 작업에서 자동으로 해결합니다.",
+      "buildFirstHint": "두 컴퓨터 모두 새 변경 사항이 있고, 이 컴퓨터의 변경 사항은 아직 생성되지 않았습니다. 개인 버전을 생성한 뒤 「동기화」하면 양쪽을 합칠 수 있습니다."
+    },
+    "contribution": {
+      "action": "공식에 제출",
+      "update": "제출 내용 업데이트",
+      "resubmit": "다시 제출",
+      "view": "GitHub에서 보기",
+      "submitted": "공식에 제출했습니다(#{{number}})",
+      "state": {
+        "submitted": "공식에 제출됨 #{{number}}",
+        "open": "공식에 제출됨 #{{number}} · 검토 대기 중",
+        "merged": "공식에 채택됨 #{{number}}",
+        "closed": "공식에 채택되지 않음 #{{number}}"
+      },
+      "dialog": {
+        "title": "공식에 제출",
+        "description": "이 변경 사항을 Pull Request로 정리해 Cindy 공식 저장소에 제출하고 메인테이너의 검토를 받습니다.",
+        "loading": "이 변경 사항을 준비하는 중…",
+        "existing": "이 변경 사항은 이미 제출되었습니다(#{{number}}). 다시 제출하면 업데이트됩니다.",
+        "reopen": "이전 제출 #{{number}}은(는) 닫혔습니다. 다시 제출하면 새로 만들어집니다.",
+        "prTitle": "제목",
+        "prTitleHint": "feat: 또는 fix: 같은 유형으로 시작하세요",
+        "body": "설명",
+        "bodyHint": "공식 템플릿으로 미리 채워 두었습니다. 자유롭게 수정하세요.",
+        "author": "서명",
+        "name": "이름",
+        "email": "이메일",
+        "nameRequired": "이름을 입력하세요",
+        "emailRequired": "올바른 이메일 주소를 입력하세요",
+        "authorHint": "이 변경 사항의 작성자와 서명으로 GitHub에 공개됩니다.",
+        "files": "파일 {{count}}개 포함",
+        "onlyThis": "이 변경 사항만 포함됩니다. 개인 버전의 다른 변경 사항은 포함되지 않습니다.",
+        "public": "내 GitHub 저장소 {{repository}}에서 제출되며 누구나 볼 수 있습니다.",
+        "uiNote": "이 변경 사항은 화면과 관련이 있습니다. 제출한 뒤 GitHub에서 스크린샷을 추가하고 근거가 된 디자인 규칙을 적어 주세요.",
+        "dco": "이 변경 사항을 직접 제출하며 {{name}} <{{email}}>(으)로 개발자 원산지 증명(DCO)에 서명함을 확인합니다.",
+        "submit": "제출",
+        "update": "제출 내용 업데이트",
+        "cancel": "취소",
+        "close": "닫기",
+        "files_other": "파일 {{count}}개 포함"
+      },
+      "errors": {
+        "notBound": "공식에 제출하려면 먼저 이 페이지 위쪽 「저장 위치」에서 개인 버전을 GitHub에 저장하세요.",
+        "github": "GitHub 연결이 더 이상 유효하지 않습니다. 설정에서 GitHub에 다시 연결한 뒤 시도해 주세요.",
+        "account": "연결된 GitHub 계정이 개인 버전을 저장한 계정과 다릅니다. 원래 계정으로 바꾼 뒤 다시 시도해 주세요.",
+        "unavailable": "이 컴퓨터에 이 변경 사항의 내용이 더 이상 없어 제출할 수 없습니다.",
+        "changed": "제출 내용을 다시 확인하세요. 이 창을 닫았다가 다시 열고 파일 목록을 확인한 후 제출하세요.",
+        "conflict": "이 변경 사항은 최신 공식 코드와 같은 부분에 걸쳐 있어 이 변경만 담은 제출로 자동 정리할 수 없습니다. 최신 개인 버전에서 이 변경을 다시 만든 뒤 제출하세요.",
+        "empty": "공식 최신 코드에 이미 이 변경 사항이 포함되어 있어 제출할 필요가 없습니다.",
+        "invalid": "제목, 이름, 이메일을 확인하세요. 제목은 한 줄로 입력해야 합니다.",
+        "network": "GitHub에 연결할 수 없습니다. 네트워크를 확인한 뒤 다시 시도해 주세요.",
+        "workflowScope": "이 변경 사항은 GitHub 워크플로 파일을 수정하므로 현재 GitHub 권한으로는 업로드할 수 없습니다. GitHub에 다시 연결한 뒤 시도해 주세요.",
+        "failed": "제출하지 못했습니다. 잠시 후 다시 시도해 주세요."
+      }
+    },
+    "summary": {
+      "personal": "개인 버전",
+      "latestLabel": "공식 최신",
+      "official": "공식 {{version}}",
+      "officialUnknown": "공식 버전",
+      "development": "공식 개발 중 버전",
+      "withChanges": "{{version}} ＋ 내 변경 사항 {{count}}개",
+      "withOwnChanges": "{{version}} ＋ 내 변경 사항",
+      "noChanges": "{{version}}, 아직 내 변경 사항 없음",
+      "latest": {
+        "release": "정식 버전 {{version}}",
+        "beta": "beta 버전 {{version}}",
+        "dev": "GitHub의 공식 최신 코드",
+        "unavailable": "지금은 확인할 수 없음",
+        "unknown": "아직 확인하지 않음"
+      },
+      "included": {
+        "upToDate": "개인 버전에 포함됨",
+        "updateAvailable": "개인 버전에 아직 포함되지 않음",
+        "unverified": "개인 버전에 포함되었는지 확인할 수 없음"
+      },
+      "technical": "개발자용 세부 정보",
+      "withChanges_other": "{{version}} ＋ 내 변경 사항 {{count}}개"
+    },
+    "sync": {
+      "action": "동기화",
+      "hint": "개인 버전을 공식 버전으로 업데이트합니다. GitHub에 저장한 경우 다른 컴퓨터의 변경 사항도 가져와 업로드합니다. 충돌은 작업에서 자동으로 해결합니다.",
+      "buildingHint": "개인 버전을 생성하는 중입니다. 완료되거나 중지된 뒤 동기화하세요.",
+      "step": {
+        "resuming": "지난 동기화를 이어서 진행하는 중…",
+        "github": "다른 컴퓨터의 변경 사항을 가져오는 중…",
+        "combine": "양쪽 변경 사항을 합치는 중…",
+        "official": "공식 버전으로 업데이트하는 중…",
+        "upload": "내 GitHub에 업로드하는 중…"
+      },
+      "done": "공식 {{ref}}(으)로 동기화했습니다",
+      "doneDevelopment": "공식 최신 코드로 동기화했습니다",
+      "held": "공식 {{ref}}이(가) 나왔지만 데이터 형식이 바뀝니다. 원본으로 전환해 Cindy를 업데이트한 뒤 동기화하면 포함됩니다.",
+      "errors": {
+        "busy": "다른 작업이 진행 중입니다. 잠시 후 다시 동기화하세요.",
+        "source": "개인 버전 소스가 준비되지 않았거나 방금 바뀌었습니다. 잠시 후 다시 동기화하세요.",
+        "github": "GitHub 연결에 문제가 있습니다. 아래 「저장 위치」에서 연결을 확인한 뒤 다시 동기화하세요.",
+        "network": "네트워크에 연결할 수 없습니다. 확인한 뒤 다시 동기화하세요.",
+        "diverged": "GitHub의 개인 버전과 이 컴퓨터의 개인 버전이 서로 관련 없는 공식 버전을 기반으로 해서 지금은 자동으로 합칠 수 없습니다.",
+        "unavailable": "지금은 공식 버전 정보를 확인할 수 없습니다. 잠시 후 다시 동기화하세요.",
+        "cancelled": "이번 합치기를 중단했습니다. 개인 버전과 GitHub의 버전 모두 바뀌지 않았습니다.",
+        "failed": "동기화를 완료하지 못했습니다. 다시 시도해 주세요.",
+        "changed": "동기화하는 동안 다른 컴퓨터가 새 변경 사항을 업로드했습니다. 다시 「동기화」하면 가져옵니다.",
+        "featurePending": "변경 기록의 변경 사항을 추가하거나 되돌리는 중입니다. 끝난 뒤 다시 동기화하세요.",
+        "gitOutdated": "이 컴퓨터의 Git이 너무 오래되어 GitHub와 동기화할 수 없습니다. Git을 2.36 이상으로 업데이트하세요.",
+        "forkMissing": "개인 버전을 저장한 GitHub 저장소를 찾을 수 없습니다. 삭제되었을 수 있습니다. 아래 「저장 위치」에서 다시 GitHub에 저장하세요.",
+        "forkArchived": "개인 버전을 저장한 GitHub 저장소가 보관 처리되어 업로드할 수 없습니다. GitHub에서 보관을 해제한 뒤 다시 동기화하세요."
+      },
+      "doneCurrent": "동기화했습니다",
+      "ahead": "개인 버전이 이 컴퓨터의 Cindy보다 새로운 공식 버전에 있습니다(다른 컴퓨터에서 가져옴). 전환할 때 호환되지 않는다고 나오면 먼저 원본으로 전환해 Cindy를 업데이트하세요.",
+      "abandon": {
+        "action": "이번 합치기 중단",
+        "title": "이 충돌 해결을 중단할까요?",
+        "description": "해결 작업이 멈추고 중간 결과가 삭제됩니다. 개인 버전과 GitHub에 저장된 버전은 그대로이며 나중에 다시 동기화할 수 있습니다.",
+        "confirm": "중단",
+        "cancel": "계속 진행"
+      },
+      "uploadAfterBuild": "이 컴퓨터의 변경 사항은 개인 버전을 생성하면 자동으로 GitHub에 업로드됩니다.",
+      "waiting": {
+        "working": {
+          "combine": "두 컴퓨터에서 같은 부분을 바꿨습니다. 작업에서 합치는 중이며, 끝나면 자동으로 동기화를 이어 갑니다.",
+          "official": "공식 업데이트와 내 변경 사항이 같은 부분에 걸쳐 있습니다. 작업에서 처리하는 중이며, 끝나면 자동으로 동기화를 이어 갑니다."
+        },
+        "input": "충돌을 처리하는 작업이 답변을 기다리고 있습니다. 작업을 열어 확인하세요.",
+        "interrupted": {
+          "task": "충돌을 처리하는 중에 Cindy가 종료되었습니다. 작업을 열고 「계속」이라고 말하면 이어서 처리합니다. 중단할 수도 있습니다.",
+          "start": "지난 동기화가 중단되었습니다. 중단한 뒤 다시 「동기화」하세요."
+        },
+        "missing": "결과에 없는 내 변경 사항: {{count}}개. 작업에서 되살리게 하거나, 필요 없다면 이 결과를 그대로 사용할 수 있습니다.",
+        "stale": "처리하는 동안 개인 버전이 바뀌어 이 결과는 오래되었습니다. 중단한 뒤 다시 동기화하세요.",
+        "failed": "이번 합치기를 완료하지 못했습니다. 작업을 열어 확인하거나, 중단한 뒤 다시 동기화하세요.",
+        "abandoning": "이번 합치기를 중단하는 중…",
+        "paused": "이번 합치기를 처리하던 작업이 없습니다. 「계속」을 누르면 새 작업으로 이어서 처리하며, 지금까지 한 작업은 유지됩니다.",
+        "otherAccount": "이번 합치기는 다른 계정으로 로그인했을 때 시작되었습니다. 그 계정으로 돌아가야 계속하거나 중단할 수 있습니다."
+      },
+      "waitingHint": "진행 중인 합치기를 먼저 끝내거나 중단하세요.",
+      "accept": {
+        "action": "그대로 사용",
+        "title": "이 결과를 그대로 사용할까요?",
+        "description": "결과에 없는 변경 사항 {{count}}개는 개인 버전에 포함되지 않습니다. 양쪽의 원래 버전은 백업으로 남습니다.",
+        "confirm": "그대로 사용",
+        "cancel": "다시 생각하기"
+      },
+      "buildFirst": "이 컴퓨터에 아직 생성하지 않은 변경 사항이 있습니다. 먼저 개인 버전을 생성하면 동기화로 다른 컴퓨터의 변경 사항을 가져올 수 있습니다.",
+      "needsGenerate": "개인 버전에 새 변경 사항이 있습니다. 생성하면 이 컴퓨터에서 사용할 수 있습니다.",
+      "keep": {
+        "hint": "양쪽 변경 사항을 합칠 수 없으면 한쪽을 남길 수 있습니다. 다른 쪽은 백업됩니다.",
+        "github": "GitHub의 개인 버전 남기기",
+        "local": "이 컴퓨터의 개인 버전 남기기",
+        "githubTitle": "GitHub의 개인 버전을 남길까요?",
+        "githubDescription": "이 컴퓨터는 GitHub의 개인 버전(다른 컴퓨터의 것)으로 바뀝니다. 이 컴퓨터의 현재 개인 버전은 백업되며, 변경 기록의 변경 사항은 나중에 다시 추가할 수 있습니다.",
+        "localTitle": "이 컴퓨터의 개인 버전을 남길까요?",
+        "localDescription": "GitHub의 개인 버전이 이 컴퓨터의 것으로 바뀝니다. 바꾸기 전에 GitHub 저장소에 백업 브랜치를 남기므로 다른 컴퓨터의 변경 사항은 거기서 되찾을 수 있습니다.",
+        "cancel": "다시 생각하기"
+      },
+      "resume": "계속",
+      "generateFirst": "개인 버전에 아직 생성하지 않은 변경 사항이 있습니다. 먼저 개인 버전을 생성한 뒤 공식 {{ref}}(으)로 동기화하세요."
     }
   },
   "taskTags": {

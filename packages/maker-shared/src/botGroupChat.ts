@@ -554,7 +554,8 @@ export type ChatGroupAction =
   | { type: 'archive'; archived: boolean; expectedRevision: number };
 export interface ChatServerApi {
   manage(input: { groupId: string; action: ChatGroupAction }): Promise<ChatServerResult<Record<never, never>>>;
-  ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; name: string }> }>>;
+  /** `botId` is the local teammate id behind each Chat Server actor. */
+  ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; botId?: string; name: string }> }>>;
   refreshProfile(): Promise<ChatServerResult<Record<never, never>>>;
   status(): Promise<{ enabled: boolean; connected: boolean }>;
   thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[] }): Promise<ChatServerResult<{

@@ -1,5 +1,5 @@
 import { chatErrorKey } from './chatError';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { ChatInviteDialog } from './ChatInviteDialog';
 import { UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -69,23 +69,13 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
   );
 }
 
-function InviteControl({ groupId, onJoined }: { groupId?: string; onJoined?: (id: string) => void }) {
+/** Group owners and admins create or revoke invitation links from the group header. */
+export function ChatInviteButton({ groupId }: { groupId: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const title = t(key(groupId ? 'invite' : 'join'));
+  const title = t(key('invite'));
   return <>
     <Tip text={title}><button type="button" className={iconClass} style={WINDOW_NO_DRAG_STYLE} aria-label={title} onClick={() => setOpen(true)}><UserPlus size={16} /></button></Tip>
-    {open && <ChatInviteDialog groupId={groupId} onClose={() => setOpen(false)} onJoined={onJoined} />}
+    {open && <ChatInviteDialog groupId={groupId} onClose={() => setOpen(false)} />}
   </>;
-}
-export const ChatInviteButton = InviteControl;
-export function ChatJoinButton({ onJoined }: { onJoined: (id: string) => void }) {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let disposed = false;
-    const read = () => { void window.electronAPI?.maker?.chatServer?.status().then(status => { if (!disposed) setEnabled(status.enabled); }).catch(() => undefined); };
-    read(); const timer = setInterval(read, 3000);
-    return () => { disposed = true; clearInterval(timer); };
-  }, []);
-  return enabled ? <InviteControl onJoined={onJoined} /> : null;
 }

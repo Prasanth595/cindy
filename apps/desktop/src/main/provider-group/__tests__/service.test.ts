@@ -1064,7 +1064,7 @@ describe('beforeSend', () => {
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       { agentKind: 'claude-code', model: MODEL, providerId: 'anthropic', agentDeviceId: null },
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
     expect(h.deps.continueSession).not.toHaveBeenCalled();
@@ -1107,7 +1107,7 @@ describe('beforeSend', () => {
     expect(reopen.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: null }),
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
 
     // 会话还开着：信缓存的状态，不现读。

@@ -58,7 +58,7 @@ export interface OwnRemoteProviderList {
 export function useOwnRemoteProviderList(): OwnRemoteProviderList {
   const devices = useControllableDevices();
   const deviceIds = useMemo(() => devices.map((device) => device.deviceId), [devices]);
-  const catalogs = useDevicesProviders(deviceIds);
+  const catalogs = useDevicesProviders(deviceIds, { retainDisplaySnapshot: true });
   // 本机自己建的组：组那一项就是本机的供应商(在上面本机那一段)，组里的远程供应商与分享同样收起。
   const localGroups = useLocalProviderGroups();
   return useMemo(() => {

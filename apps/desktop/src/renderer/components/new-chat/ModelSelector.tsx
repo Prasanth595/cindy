@@ -116,7 +116,7 @@ import {
 } from '@/lib/providerModels';
 import type { Effort } from '@/lib/userPreferences.types';
 import type { SessionRuntimeProfileProjection } from '@/lib/ccAgent.types';
-import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
+import { isProviderShareAgentDeviceId, providerShareIdOfAgentDeviceId } from '../../../shared/providerShare';
 import {
   CHATGPT_MODEL_PREFIX,
   XAI_MODEL_PREFIX,
@@ -657,6 +657,12 @@ export function resolveModelSelectorAgentIdentity(
 /** 远程 Agent 草稿里一次行选中的落点电脑;null = Agent 在本机。 */
 export type UnifiedSelectionAgentDevice = { deviceId: string; name: string } | null;
 
+/** 「配置模型」打开设置 → 模型供应商时直接选中的一项;不传 = 只打开供应商页。 */
+export interface ProvidersNavigationTarget {
+  /** 分享来的供应商:选中「分享给我的供应商」里的这一条(provider-sharing.md §5.2)。 */
+  shareId: string;
+}
+
 /** 已建任务里选中了另一台电脑(或本机)目录里的一行:连 Agent 的运行位置一起换。 */
 export interface RemoteAgentRelocation {
   providerId: string;
@@ -735,7 +741,8 @@ interface ModelSelectorProps {
    *   - currentProviderId:本会话当前显式选定的供应商 id(null = 跟随默认路由)。
    *   - onProviderChange:选某行(供应商, 模型)时调用,第 2 参为该行模型 id,第 3 参为该来源该模型的
    *     当前 effort(无 effort 档时为空串),由各调用方一次性落下 provider/model/effort。
-   *   - onNavigateToProviders:0 个可连来源时空态 CTA / 列表底部「连接来源」跳设置→供应商页。
+   *   - onNavigateToProviders:0 个可连来源时空态 CTA / 列表底部「配置模型」跳设置→供应商页;
+   *     正在看分享来的供应商时带上它(ProvidersNavigationTarget),设置页直接选中那一条。
    * 三者都不传 → 单栏纯列表(无供应商分段),选行只 onModelChange(老入口 / CreateWorkerPopover)。
    */
   currentProviderId?: string | null;
@@ -751,7 +758,7 @@ interface ModelSelectorProps {
     reconciledEffort?: Effort,
     reconciledFast?: boolean,
   ) => void | boolean | Promise<void | boolean>;
-  onNavigateToProviders?: () => void;
+  onNavigateToProviders?: (target?: ProvidersNavigationTarget) => void;
   /**
    * 会话显式选中的来源已断开(由 ChatInput 按 sessionId / deviceLink scoping 计算,见
    * isSelectedSourceDisconnected)。true → trigger 显示**真实选中来源** + 「已断开」错误态,
@@ -974,7 +981,7 @@ interface ModelSelectorContentProps {
     reconciledEffort?: Effort,
     reconciledFast?: boolean,
   ) => void | boolean | Promise<void | boolean>;
-  onNavigateToProviders?: () => void;
+  onNavigateToProviders?: (target?: ProvidersNavigationTarget) => void;
   /**
    * 可选「跟随会话」行(opt-in)。仅 scheduler 的 heartbeat(绑定会话)任务传入:
    * 在模型列表顶部加一行,选中 = model 留空(跟随绑定会话的模型 / 来源)。
@@ -1270,6 +1277,13 @@ function ModelSelectorContentView({
       : remoteBrowse
         ? remoteAgent.deviceModelMemory?.(remoteBrowse.deviceId)
         : remoteAgent.localModelMemory;
+  // 列表底部「配置模型」:本机目录照旧;分享来的供应商在本机设置里有详情页(provider-sharing.md §5.2),
+  // 带上分享直达那一条。被控电脑与自己其他电脑上的目录要到那台电脑上改,不显示。
+  const browsingShareId =
+    remoteAgent && !homeDeviceId ? providerShareIdOfAgentDeviceId(deviceId) : null;
+  const showProvidersEntry = !!onNavigateToProviders && (!deviceId || browsingShareId !== null);
+  const navigateToProviders = () =>
+    onNavigateToProviders?.(browsingShareId ? { shareId: browsingShareId } : undefined);
   // 列表样式试用开关(本机偏好):footer 的切换按钮 + 面板行样式共用。
   const constrainedListMaxHeight = modelListMaxHeightForRows(maxVisibleModelRows);
   const [paneElement, setPaneElement] = useState<HTMLDivElement | null>(null);
@@ -3187,7 +3201,7 @@ function ModelSelectorContentView({
           <button
             type="button"
             disabled={interactionDisabled}
-            onClick={onNavigateToProviders}
+            onClick={() => onNavigateToProviders()}
             className={cn(
               'flex h-[34px] w-full items-center justify-center rounded-[8px]',
               'bg-[var(--accent-cta-bg)] transition-opacity hover:opacity-90',
@@ -3734,13 +3748,13 @@ function ModelSelectorContentView({
               ? { overlayClassName: overlayContentClassName }
               : {})}
           />
-          {/* 连接来源入口只对本机展示。 */}
-          {onNavigateToProviders && !deviceId && (
+          {/* 「配置模型」只对本机目录与分享来的供应商展示(见 showProvidersEntry)。 */}
+          {showProvidersEntry && (
             <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--model-dropdown-border)] px-3.5 py-[9px]">
               <button
                 type="button"
                 disabled={interactionDisabled}
-                onClick={onNavigateToProviders}
+                onClick={navigateToProviders}
                 className={cn(
                   'flex min-w-0 items-center gap-1.5 text-13 text-[var(--text-secondary)]',
                   'transition-colors hover:text-[var(--text-primary)]',
@@ -3914,15 +3928,15 @@ function ModelSelectorContentView({
         </div>
       )}
 
-      {/* 连接来源入口只对本机展示。 */}
-      {onNavigateToProviders && !deviceId && (
+      {/* 「配置模型」只对本机目录与分享来的供应商展示(见 showProvidersEntry)。 */}
+      {showProvidersEntry && (
         <>
           <div className="mx-1 h-px bg-[var(--model-dropdown-border)]" />
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
               disabled={interactionDisabled}
-              onClick={onNavigateToProviders}
+              onClick={navigateToProviders}
               className={cn(
                 COMPOSER_MENU_ROW,
                 'flex min-w-0 items-center gap-1.5 px-3 py-2',

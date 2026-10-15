@@ -127,9 +127,17 @@ import {
   saveSessionScroll,
   type SessionScrollSnapshot,
 } from '@/lib/sessionScrollStore';
-import { SHARE_MESSAGE_ATTR, SHARE_SESSION_ATTR } from '@/lib/shareConversationImage';
+import {
+  SHARE_EXCLUDE_ATTR,
+  SHARE_MESSAGE_ATTR,
+  SHARE_SESSION_ATTR,
+} from '@/lib/shareConversationImage';
 import { ShareMessageCheckbox } from './ShareMessageCheckbox';
-import { isShareableMessage, useShareSelectionActive } from './shareSelectionStore';
+import {
+  isShareableMessage,
+  isShareableToolMedia,
+  useShareSelectionActive,
+} from './shareSelectionStore';
 import { parsePluginInstanceId, pluginStoragePart } from '../../../shared/pluginIdentity';
 import { isValidGhostId } from '../../../shared/ghost';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
@@ -2556,9 +2564,14 @@ function ToolMediaList({ items, sessionId }: { items: ToolMediaItem[]; sessionId
             </div>
           );
         }
+        // 视频 / 音频画不进静态分享图,克隆时剔除;同一行的图片照常进图。
         if (m.kind === 'video') {
           return (
-            <div key={mediaKey} className="flex flex-col gap-1.5">
+            <div
+              key={mediaKey}
+              {...{ [SHARE_EXCLUDE_ATTR]: '' }}
+              className="flex flex-col gap-1.5"
+            >
               <ChatVideoView
                 src={m.url}
                 filename={`tool-video-${i + 1}`}
@@ -2576,16 +2589,52 @@ function ToolMediaList({ items, sessionId }: { items: ToolMediaItem[]; sessionId
         // Track must be present (extractToolResultMedia synthesises
         // an empty one if only xdt_audio_urls came in defensively).
         if (m.audioTrack) {
-          if (m.audioTrack.kind === 'sound_effect') {
-            return (
-              <ChatSoundEffectCard key={mediaKey} track={m.audioTrack} sessionId={sessionId} />
-            );
-          }
-          return <ChatAudioCard key={mediaKey} track={m.audioTrack} sessionId={sessionId} />;
+          return (
+            <div key={mediaKey} {...{ [SHARE_EXCLUDE_ATTR]: '' }} className="contents">
+              {m.audioTrack.kind === 'sound_effect' ? (
+                <ChatSoundEffectCard track={m.audioTrack} sessionId={sessionId} />
+              ) : (
+                <ChatAudioCard track={m.audioTrack} sessionId={sessionId} />
+              )}
+            </div>
+          );
         }
         return null;
       })}
     </>
+  );
+}
+
+/**
+ * 工具产物行的分享壳:含图片时与消息行一样挂分享定位属性和复选框,否则 AI 截图、
+ * 出图等渲染在气泡外的图片永远选不进分享图。shareId 取 render item key,与消息
+ * clientId 不同形,不会撞号。复选框只在选择模式渲染,进出选择模式不重挂媒体。
+ */
+function ShareableToolMedia({
+  shareId,
+  renderItemKey,
+  items,
+  sessionId,
+  selectionActive,
+}: {
+  shareId: string;
+  renderItemKey?: string;
+  items: ToolMediaItem[];
+  sessionId?: string;
+  selectionActive: boolean;
+}) {
+  const shareable = Boolean(sessionId) && isShareableToolMedia(items);
+  return (
+    <div
+      {...(renderItemKey ? { 'data-render-item-key': renderItemKey } : {})}
+      {...(shareable && sessionId
+        ? { [SHARE_SESSION_ATTR]: sessionId, [SHARE_MESSAGE_ATTR]: shareId }
+        : {})}
+      className={cn('flex flex-col gap-2', shareable && 'relative')}
+    >
+      {shareable && selectionActive ? <ShareMessageCheckbox clientId={shareId} /> : null}
+      <ToolMediaList items={items} sessionId={sessionId} />
+    </div>
   );
 }
 
@@ -6438,7 +6487,12 @@ export function MessageStream({
                             sessionId={sessionId}
                           />
                           {item.media && item.media.length > 0 ? (
-                            <ToolMediaList items={item.media} sessionId={sessionId} />
+                            <ShareableToolMedia
+                              shareId={`${item.key}:media`}
+                              items={item.media}
+                              sessionId={sessionId}
+                              selectionActive={shareSelectionActive}
+                            />
                           ) : null}
                         </div>
                       );
@@ -6448,13 +6502,14 @@ export function MessageStream({
                       // tool-result-media: 跳出 tool_segment 折叠卡片,渲染体在
                       // ToolMediaList(与 ghost_card 回锚媒体共用单一来源)。
                       return (
-                        <div
+                        <ShareableToolMedia
                           key={item.key}
-                          data-render-item-key={item.key}
-                          className="flex flex-col gap-2"
-                        >
-                          <ToolMediaList items={item.items} sessionId={sessionId} />
-                        </div>
+                          renderItemKey={item.key}
+                          shareId={item.key}
+                          items={item.items}
+                          sessionId={sessionId}
+                          selectionActive={shareSelectionActive}
+                        />
                       );
                     }
 

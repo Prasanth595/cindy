@@ -35,6 +35,7 @@ import {
   crossRegionWithdraw,
   getCrossRegionReceived,
   getConfirmedCrossRegionReceivedRegions,
+  isCrossRegionReceivedReady,
   ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
   startProviderShareCrossRegion,
@@ -254,6 +255,12 @@ export function noteProviderShareAccessFailure(): void {
 
 export function getReceivedShares(): readonly ProviderShareReceived[] {
   return allReceived(runtime);
+}
+
+/** 首次本区及已标记跨区收到分享的拉取已完成；空列表只有在此状态下才代表真实的空结果。 */
+export function isReceivedSharesReady(): boolean {
+  const rt = runtime;
+  return !!rt && current(rt) && rt.fetchedAt > 0 && isCrossRegionReceivedReady();
 }
 
 export function getReceivedSharesSnapshot(recovery?: ProviderShareFavoriteRecovery): ProviderShareReceivedSnapshot {

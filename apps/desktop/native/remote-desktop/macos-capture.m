@@ -14,6 +14,7 @@
 #import <time.h>
 
 static _Atomic(time_t) lastRequest;
+static atomic_bool awaitingFrame;
 
 // Compatibility capture for an already logged-in macOS session. These public
 // legacy symbols are unavailable at compile time in SDK 15+, and may eventually
@@ -181,15 +182,28 @@ int main(int argc, const char *argv[]) {
     __block NSData *latest = nil;
     __block BOOL requested = NO;
     atomic_store(&lastRequest, time(NULL));
+    // The first system cursor read can block on WindowServer for many seconds.
+    // Frames never wait for it: each reply carries the latest completed read
+    // (null until one finishes) and starts the next read on the main queue.
+    __block NSDictionary *cursor = nil;
+    __block BOOL cursorReading = NO;
+    void (^refreshCursor)(void) = ^{
+      if (!separateCursor || cursorReading) return;
+      cursorReading = YES;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        NSDictionary *value = readCursor(onlyWindow ? windowBounds(onlyWindow) : CGDisplayBounds(display));
+        dispatch_async(queue, ^{
+          cursor = value;
+          cursorReading = NO;
+        });
+      });
+    };
     void (^reply)(void) = ^{
       if (!requested || !latest) return;
       requested = NO;
       NSData *data;
       if (overlay) {
-        __block NSDictionary *cursor = nil;
-        if (separateCursor) dispatch_sync(dispatch_get_main_queue(), ^{
-          cursor = readCursor(onlyWindow ? windowBounds(onlyWindow) : CGDisplayBounds(display));
-        });
+        refreshCursor();
         NSDictionary *frame = @{@"jpeg": [latest base64EncodedStringWithOptions:0], @"cursor": cursor ?: [NSNull null]};
         NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:frame options:0 error:NULL] mutableCopy];
         [line appendBytes:"\n" length:1];
@@ -205,6 +219,7 @@ int main(int argc, const char *argv[]) {
         if (count <= 0) _exit(0);
         bytes += count; remaining -= count;
       }
+      atomic_store(&awaitingFrame, false);
     };
     FrameHandler receiveFrame = ^(int32_t status, uint64_t timestamp, IOSurfaceRef surface, const void *update) {
         @autoreleasepool {
@@ -306,14 +321,18 @@ int main(int argc, const char *argv[]) {
         (__bridge CFDictionaryRef)@{(__bridge NSString *)*intervalKey: @(1.0/fps), (__bridge NSString *)*cursorKey: separateCursor ? @NO : @YES}, queue, receiveFrame);
       if (!stream || start(stream) != kCGErrorSuccess) return 5;
     }
+    if (overlay) dispatch_async(queue, refreshCursor);
     signal(SIGPIPE, SIG_IGN);
     // stdin is a private parent pipe: one byte asks for one latest frame. EOF
     // and a stalled parent both terminate capture without retaining any pixels.
+    // A parent still waiting for its first frame gets a longer bound; it
+    // normally gives up and kills this helper first.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
       char byte;
       while (read(STDIN_FILENO, &byte, 1) == 1) {
         if (byte != 'f') _exit(2);
         atomic_store(&lastRequest, time(NULL));
+        atomic_store(&awaitingFrame, true);
         dispatch_async(queue, ^{ requested = YES; reply(); });
       }
       _exit(0);
@@ -321,7 +340,9 @@ int main(int argc, const char *argv[]) {
     dispatch_source_t watchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(watchdog, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, 0);
     dispatch_source_set_event_handler(watchdog, ^{
-      if (time(NULL) - atomic_load(&lastRequest) > 5) _exit(0);
+      // A pending frame extends the idle limit beyond the parent's cold-start
+      // wait, but never indefinitely: a parent that stopped reading is stalled.
+      if (time(NULL) - atomic_load(&lastRequest) > (atomic_load(&awaitingFrame) ? 15 : 5)) _exit(0);
     });
     dispatch_resume(watchdog);
     dispatch_main();

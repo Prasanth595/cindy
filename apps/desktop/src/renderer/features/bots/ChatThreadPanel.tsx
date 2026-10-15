@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { SendButton } from '@/components/new-chat/SendButton';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/input';
 import { Tip } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
@@ -12,14 +12,20 @@ import { SHARE_SESSION_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationI
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
 import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
-import { resolveBotGroupMentions } from './botGroupMentions';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
+import {
+  BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
+  fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
+} from './botGroupComposerChrome';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
+const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
+  a.all === b.all && a.botIds.length === b.botIds.length && a.botIds.every((botId, index) => botId === b.botIds[index]);
 const api = () => window.electronAPI.maker.chatServer;
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
@@ -78,8 +84,18 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const request = useRef(0);
-  const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
+  const attempt = useRef<{ text: string; roster: BotGroupDetail['members']; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const allLabel = t('bots.groupChat.mention.all');
+  const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
+  // Same @ picker as the main composer.
+  const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
+    setText(value);
+    if (attempt.current?.text !== value) attempt.current = null;
+  } });
+  useLayoutEffect(() => { if (inputRef.current) fitBotGroupComposerInput(inputRef.current); }, [text, sharing]);
+  useRefitBotGroupComposerInputOnResize(inputRef, !sharing);
   const load = useCallback(async (before?: number) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
     const current = () => version === request.current && isDataOwnerGenerationCurrent(owner);
@@ -105,16 +121,19 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (group.archived || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
-    if (!attempt.current || attempt.current.text !== text) attempt.current = {
-      text, id: crypto.randomUUID(),
-      mentions: resolveBotGroupMentions(text, { members: group.members, allLabels: [t('bots.groupChat.mention.all'), '所有人', 'all', 'everyone'] }),
-    };
+    // A retry reuses the attempt only for the same text and the same targets (bot-group-chat.md).
+    // Targets are re-resolved against the attempt's own roster: a roster refresh alone changes nothing
+    // and the host still rejects a departed target; re-picking someone else gets a new clientId.
+    const previous = attempt.current;
+    const current = previous && previous.text === text && sameBotGroupMentions(mention.resolve(text, previous.roster), previous.mentions)
+      ? previous : { text, roster: group.members, id: crypto.randomUUID(), mentions: mention.resolve(text) };
+    attempt.current = current;
     try {
-      const result = await api().reply({ groupId: group.id, rootId, text: attempt.current.text, clientId: attempt.current.id,
-        mentions: attempt.current.mentions });
+      const result = await api().reply({ groupId: group.id, rootId, text: current.text, clientId: current.id,
+        mentions: current.mentions });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      setText(''); attempt.current = null; void loadRef.current(); refreshBotGroups();
+      setText(''); mention.reset(); attempt.current = null; void loadRef.current(); refreshBotGroups();
     } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(key('requestFailed'))); }
     finally { sending.current = false; setBusy(false); }
   }
@@ -135,16 +154,28 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           {projectBotGroupExecutionFailures(replies, executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message} onChanged={() => void loadRef.current()} />)}
         </div>
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className="space-y-3 border-t border-[var(--border-default)] p-4">
-          {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
-          <Textarea aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text} onChange={value => {
-            setText(value);
-            if (attempt.current?.text !== value) attempt.current = null;
-          }}
-            rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); void send(); }
-            }} />
-          <div className="flex justify-end"><Button variant="cta" size="sm" loading={busy} disabled={group.archived || !text.trim()} onClick={() => void send()}>{t(key('sendReply'))}</Button></div>
-        </div>}
+          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
+          {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
+          {/* Read-only also means no @ picks while sending. */}
+          {busy ? null : mention.list}
+          {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
+          <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
+            <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
+              {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
+              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+              }} />
+            <div className={BOT_GROUP_COMPOSER_FOOTER}>
+              {/* Send options for this reply go here, before the button. */}
+              <div className={BOT_GROUP_COMPOSER_FOOTER_START} />
+              <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
+                <Tip text={t(key('sendReply'))}>
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                </Tip>
+              </span>
+            </div>
+          </div>
+        </div></div>}
   </aside>;
 }

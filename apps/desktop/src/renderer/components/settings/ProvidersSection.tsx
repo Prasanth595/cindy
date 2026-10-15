@@ -125,7 +125,10 @@ import {
   pendingRequestCountByProvider,
   providerShareGate,
 } from '@/features/provider-share/providerShareFormat';
-import { PROVIDER_SHARE_MANAGE_PARAM } from '@/features/provider-share/providerShareNavigation';
+import {
+  PROVIDER_SHARE_MANAGE_PARAM,
+  PROVIDER_SHARE_RECEIVED_PARAM,
+} from '@/features/provider-share/providerShareNavigation';
 import {
   useProviderSharePendingRequests,
   useProviderShareReceived,
@@ -2444,7 +2447,7 @@ export function ProvidersSection() {
   // 选中本机供应商或登录引导时清空。
   const [selectedShareId, setSelectedShareId] = useState<string | null>(null);
   const [selectedRemoteKey, setSelectedRemoteKey] = useState<string | null>(null);
-  const { received: receivedShares } = useProviderShareReceived();
+  const { received: receivedShares, loaded: receivedSharesLoaded } = useProviderShareReceived();
   const selectedShare = selectedShareId
     ? receivedShares.find((share) => share.shareId === selectedShareId) ?? null
     : null;
@@ -2761,6 +2764,34 @@ export function ProvidersSection() {
     next.delete(PROVIDER_SHARE_MANAGE_PARAM);
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
+  // 分享来的供应商深链(?receivedShare=<shareId>，来自模型选择器底部「配置模型」)：等分享列表到了再消费
+  // 并从 URL 摘除；这条分享已不在列表里(刚被撤销或退出)时只停在供应商页。设备互联断开或换账号时 main
+  // 会先推一份空列表表示「暂时读不到」(providerShareStore 同一口径)，这时保留参数，等列表回来再选中；
+  // 等待期间用户自己改选了别的，就放弃这次跳转，不在列表回来时把右栏切走。
+  const selectionKey = `${selectedId ?? ''}\n${selectedShareId ?? ''}\n${selectedRemoteKey ?? ''}`;
+  const receivedShareWaitRef = useRef<string | null>(null);
+  useEffect(() => {
+    const target = searchParams.get(PROVIDER_SHARE_RECEIVED_PARAM);
+    if (!target) {
+      receivedShareWaitRef.current = null;
+      return;
+    }
+    const waiting = !receivedSharesLoaded || receivedShares.length === 0;
+    const userMoved = receivedShareWaitRef.current !== null && receivedShareWaitRef.current !== selectionKey;
+    if (waiting && !userMoved) {
+      receivedShareWaitRef.current ??= selectionKey;
+      return;
+    }
+    receivedShareWaitRef.current = null;
+    if (!userMoved && receivedShares.some((share) => share.shareId === target)) {
+      setShareManageProviderId(null);
+      setFocusedModel(null);
+      selectShare(target);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete(PROVIDER_SHARE_RECEIVED_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, receivedSharesLoaded, receivedShares, selectShare, selectionKey]);
   useEffect(() => {
     if (loading) return;
     const connect = searchParams.get('connect');

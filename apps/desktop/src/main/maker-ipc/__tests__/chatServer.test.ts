@@ -1378,6 +1378,12 @@ describe('Chat Server directed sends', () => {
     return entry === 'thread' ? service.chatServer!.reply({ ...input, rootId }) : service.sendMessage(input);
   };
 
+  it('maps each owned Chat Server actor back to its local teammate for entry points outside group settings', async () => {
+    const result = await service.chatServer!.ownedBots();
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.bots.some(bot => bot.botId === 'local-bot' && typeof bot.actorId === 'string')).toBe(true);
+  });
+
   it.each(['main', 'thread'])('rejects a selected bot that left before the %s send instead of posting empty mentions', async entry => {
     await service.chatServer!.ownedBots();
     members[1]!.state = 'left';

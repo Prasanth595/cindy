@@ -175,3 +175,9 @@ export const PROVIDER_SHARE_AGENT_DEVICE_PREFIX = 'share:';
 export function isProviderShareAgentDeviceId(value: string | null | undefined): boolean {
   return typeof value === 'string' && value.startsWith(PROVIDER_SHARE_AGENT_DEVICE_PREFIX);
 }
+
+/** 这个设备 id 指向的分享 id；不是分享时为 null。只拆前缀，不校验格式。 */
+export function providerShareIdOfAgentDeviceId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string' || !value.startsWith(PROVIDER_SHARE_AGENT_DEVICE_PREFIX)) return null;
+  return value.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length) || null;
+}

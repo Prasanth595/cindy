@@ -23,9 +23,9 @@ vi.mock('react-router-dom', () => ({
   useParams: () => mocks.params,
 }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ botUnreadBoundaryAt, onBotReadThrough, readOnly }: { botUnreadBoundaryAt?: number | null; onBotReadThrough?: (at: number) => void; readOnly?: boolean }) => {
+  CCAgentSessionView: ({ botUnreadBoundaryAt, onBotReadThrough, readOnly, botIdentity }: { botUnreadBoundaryAt?: number | null; onBotReadThrough?: (at: number) => void; readOnly?: boolean; botIdentity?: { canonicalChat?: boolean } }) => {
     mocks.read = onBotReadThrough;
-    return <div data-testid="chat" data-unread-boundary={botUnreadBoundaryAt ?? ''} data-readonly={readOnly ? 'yes' : 'no'} />;
+    return <div data-testid="chat" data-unread-boundary={botUnreadBoundaryAt ?? ''} data-readonly={readOnly ? 'yes' : 'no'} data-canonical-chat={String(botIdentity?.canonicalChat)} />;
   },
 }));
 
@@ -92,6 +92,8 @@ describe('Bot conversation read position', () => {
   it('waits for a rendered reply rather than marking a mounted chat read to wall-clock time', async () => {
     const view = render(<BotSessionView />);
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
+    // Private-chat actions (add to group) belong to the canonical chat only.
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('true');
     expect(getBotLastReadAt('bot-1')).toBeNull();
     act(() => mocks.read?.(3_000));
     expect(getBotLastReadAt('bot-1')).toBe(3_000);
@@ -114,6 +116,7 @@ describe('Bot conversation read position', () => {
     installElectronApi({ ...readyBot, sessions: [{ id: 'session-1', kind: 'chat', role: 'history', status: 'active' }] });
     const view = render(<BotSessionView />);
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('false');
     expect(mocks.read).toBeUndefined();
     expect(getBotLastReadAt('bot-1')).toBe(5_000);
   });
@@ -135,6 +138,7 @@ describe('a demoted copy', () => {
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(view.getByTestId('shadow-banner').textContent).toBe('bot-1');
     expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('yes');
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('false');
   });
 
   it('keeps an ordinary companion writable', async () => {
@@ -142,5 +146,6 @@ describe('a demoted copy', () => {
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(view.queryByTestId('shadow-banner')).toBeNull();
     expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('no');
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('true');
   });
 });

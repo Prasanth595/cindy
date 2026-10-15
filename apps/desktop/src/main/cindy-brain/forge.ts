@@ -246,10 +246,11 @@ type ForgeOutsideGrantOptions = {
   isCurrent?: () => boolean;
 };
 
-function staleOutsideForgeGrant(
+function staleForgeGrant(
   options?: ForgeOutsideGrantOptions,
 ): { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } | null {
-  if (!options?.allowOutsideWorkdir || !options.authorizedDir) return null;
+  // Live authority also guards in-workdir writes after async preparation.
+  if (!options?.isCurrent && (!options?.allowOutsideWorkdir || !options.authorizedDir)) return null;
   if (options.isCurrent?.() === true) return null;
   return { ok: false, errorCode: 'PERMISSION_DENIED', message: FORGE_OUTSIDE_GRANT_STALE_MESSAGE };
 }
@@ -615,7 +616,7 @@ export async function scaffoldGhostDir(
       message: '会话工作目录不存在,无法确定骨架输出位置',
     };
   }
-  const staleGrant = staleOutsideForgeGrant(options);
+  const staleGrant = staleForgeGrant(options);
   if (staleGrant) return staleGrant;
   let realTarget: string;
   try {
@@ -780,7 +781,7 @@ export async function scaffoldGhostDir(
       message: 'Forge scaffold stable-directory capability is unavailable',
     };
   }
-  const staleBeforeWrite = staleOutsideForgeGrant(options);
+  const staleBeforeWrite = staleForgeGrant(options);
   if (staleBeforeWrite) return staleBeforeWrite;
   const writeResult = await options.writeScaffold({
     parentDir,
@@ -1423,7 +1424,7 @@ export async function packGhostDir(
       message: 'The current session workdir does not exist',
     };
   }
-  const staleGrant = staleOutsideForgeGrant(options);
+  const staleGrant = staleForgeGrant(options);
   if (staleGrant) return staleGrant;
   let realSourceDir: string;
   try {
@@ -1480,7 +1481,7 @@ export async function packGhostDir(
     realSourceDir,
     `${built.manifest.id}-${built.manifest.version}.cindy`,
   );
-  const staleBeforeWrite = staleOutsideForgeGrant(options);
+  const staleBeforeWrite = staleForgeGrant(options);
   if (staleBeforeWrite) return staleBeforeWrite;
   try {
     await fs.promises.writeFile(cindyPath, built.buf);
@@ -1871,6 +1872,9 @@ Host 能力字段。v2 的 \`slots\` 只用于存量包兼容，新插件不得�
 要请用户新建一条**自动化**(让插件里的内容定期自己刷新),另写
 \`"agent": { "schedule": true }\`(可与前两项并存),见 §4.11.2。它只能打开预填好的
 创建面板,任务由用户选好模型后亲手保存才存在;详情页单列一档。
+用普通任务接口(§4.11.3)写 \`"agent": { "tasks": true }\`;需要把自己创建的任务放到后台
+(不进任务列表、搜索与通知)时再加 \`"hiddenTasks": true\`,它必须与 \`"tasks": true\` 同时
+出现,否则拒装;详情页单列一档。
 
 **node 工作进程详单**(声明 node 时必写,详见 §4.12):
 
@@ -2416,11 +2420,13 @@ const r = await cindy.send({
   标题同一条),不拉起 Agent、没有工具、碰不到用户文件、不进任何会话——
   要"干活"(读文件、查资料、多步操作)请用派活(§4.11.1);
 - 选型仍不在你手里(没有 tier/model 参数),但有两级偏好:**用户可在插件
-  详情页把这项能力钉到他供应商列表里的任意文本模型**(钉死,失败不回落);
-  你也可以在身份卡 \`cindy\` 里声明 \`"oneshotModel": "<目录模型 id>"\` 表达
-  偏好——主机目录解析得到(且用户没停用)就用它,解析不到按未声明处理。
-  优先级:用户钉档 > 你的声明 > 系统默认链。声明只表达意图,别拿它当可用性
-  保证;**更老的宿主会整份拒装含此字段的身份卡**(cindy 详单未知类目硬拒),
+  详情页「模型与任务」里给这个插件选一个模型**(插件只有这一个模型字段,快问
+  快答与你新建的任务共用;选了就钉死,失败不回落);你也可以在身份卡
+  \`cindy\` 里声明 \`"oneshotModel": "<目录模型 id>"\` 表达偏好——主机目录解析
+  得到(且用户没停用)就用它,解析不到按未声明处理。优先级:用户选的模型 >
+  你的声明 > 系统辅助模型链。出图/视频/向量没有逐插件选模,按 tier 与系统默认走。
+  声明只表达意图,别拿它当可用性保证;**更老的宿主会整份拒装含此字段的身份卡**
+  (cindy 详单未知类目硬拒),
   声明前确认目标用户群的主机版本;
 - \`errorCode:'NO_CANDIDATE'\` = 用户当前没有可用的快速通道(未配置或凭证
   不可用)。**这是正常失败面**:如实提示用户,不要重试轰炸;
@@ -3868,7 +3874,8 @@ const q = await cindy.agent.queryErrand({ jobId: r.jobId });
 主机强制的边界(都不是建议):
 
 - **任务只进普通 user 消息**,绝不进 system prompt;
-- errand 会话在**侧边栏可见**,用户可随时旁观、叫停——没有隐身会话;
+- errand 会话在**侧边栏可见**,用户可随时旁观、叫停——errand 不支持隐藏;普通任务的
+  后台隐藏只能经 §4.11.3 的 \`hiddenTasks\` 声明,且用户始终能在插件详情页查看与接手;
 - 这是旧版任务接口，不是插件全部 AI 能力。普通任务管理用 §4.11.3，继续用户任务用 §4.11，
   快问快答用 §4.0.2；不要把这些能力统一称为代办。
 - 新建任务共用插件详情「任务设置」中的模型组合（Agent、供应商、模型、推理强度、Fast）。
@@ -3983,13 +3990,13 @@ const r = await cindy.agent.requestSchedule({
 插件身份／业务关联在调用方保存，不把普通任务做成另一种产品对象。伙伴的完成回叫只属于伙伴自己的流程。
 
 声明 \`"agent": { "tasks": true }\` 后，逻辑页可使用 \`cindy.tasks\`。它是独立权限，
-旧 \`errand\` 声明不自动取得该权限；用户仍可在侧边栏查看和接手这些任务。
+旧 \`errand\` 声明不自动取得该权限。任务默认可见：出现在任务列表，用户可查看和接手。
 安装时已明确展示并确认的任务能力不重复询问；否则首次使用时通过现有宿主权限界面确认并记录独立批准。旧版保存的未知字段不会自动授权。
 用户拒绝或确认界面不可用时返回 \`PERMISSION_DENIED\`，不影响插件其它功能；不得自动循环重试确认。
 面板通过既有逻辑页通道调用，不获得新的 preload 或内部 IPC 权限。
 
 先调用 \`capabilities()\` 获取实际支持操作。当前仅支持本插件创建的本机普通任务：
-\`models\`、\`create\`、\`get\`、\`setModel\`、\`list\`、\`send\`、\`getRun\`、\`listRuns\`、\`readMessages\`、\`cancel\`。
+\`models\`、\`create\`、\`get\`、\`setModel\`、\`list\`、\`send\`、\`getRun\`、\`listRuns\`、\`readMessages\`、\`cancel\`、\`setHidden\`。
 可对自有任务调用 \`startTeam({taskId})\` 启用 Orca 主任务，并用 \`getTeam({taskId})\` 读取实际协同状态。协调主任务需经用户授权 Auto，Worker 自动沿用 Auto。
 这些任务及其 Worker 不提供 \`cindy_helper\` 的账号级历史或跨任务控制能力，\`cindy_memory.session_search\` 也拒绝历史检索；协调使用独立 Orca 工具，结果由插件通过 \`readMessages/getTeam\` 读取。旧 errand/workspace 不因来源标记受到限制；明确卸载撤销归属后，调用方已无正在执行的输入或已接受新真人输入时，保留的用户任务恢复普通 helper 与历史检索能力；仍执行旧插件输入时继续受限，自动回报和插件输入重试不构成真人接管。这不恢复插件控制权，也不保证停止已接受执行，不构成通用执行沙箱。
 在首次派发前调用 \`setTeamPlan({taskId,plan:{concurrency,task,items}})\`，每项包含
@@ -4007,6 +4014,26 @@ const r = await cindy.agent.requestSchedule({
 \`models()\` 返回统一目录可选项的完整 route、efforts 和 supportsFastMode。用户明确选择后将 route 原样传给 create，或用 \`setModel({taskId, expectedRevision, route})\` 修改已有自有任务。运行中按普通任务的安全边界切换，不修改应用默认。两方法使用前检查 capabilities.operations。
 暂不支持接管任意现有任务、远程/伙伴任务、其它配置修改、归档、队列暂停或事件订阅。
 旧 \`agent.errand\` 接口不变。
+
+**后台任务（可选，需声明 \`hiddenTasks\`）**。任务默认可见。只有身份卡写了
+\`"agent": { "tasks": true, "hiddenTasks": true }\`（详情页与安装/更新确认中单列一项权限），
+插件才能把**自己创建的**任务放到后台：不进任务列表、会话搜索、未结束提示、新任务通知与灵动岛，
+手机任务列表同样不显示。它不改变任务权限、模型或执行方式，也不授予其它任务的访问权。
+未声明时 \`create({hidden:true})\` 与 \`setHidden\` 返回 \`PERMISSION_DENIED\`；
+\`capabilities().hiddenTasks\` 表示当前插件是否已声明。用户始终可以在插件详情页「后台任务」
+看到这些任务、打开查看，或「显示到任务列表」接手；插件被卸载时它们会自动恢复显示。
+请把后台任务用于用户不需要逐条关注的批量/辅助工作，并在插件界面说明它们在哪里能找到。
+
+\`\`\`js
+const caps = await cindy.tasks.capabilities();
+const bg = await cindy.tasks.create({ requestKey: 'grade-42-create', title: '批改第 42 份作答',
+  hidden: caps.hiddenTasks === true });   // 未声明时退回默认的可见任务
+// bg.hidden === true；get/list 快照都带 hidden 布尔值。hidden 参与 requestKey 的幂等摘要。
+await cindy.tasks.send({ taskId: bg.taskId, expectedRevision: bg.revision,
+  requestKey: 'grade-42-send', text: '按评分标准批改并给出分数。' });
+// 出现需要用户处理的问题时，把它显示到任务列表（与用户在详情页点击效果相同）：
+await cindy.tasks.setHidden({ taskId: bg.taskId, hidden: false });
+\`\`\`
 
 \`\`\`js
 // requestWriteAccess({taskId, mode: 'auto'}) 请求宿主原生确认，不能替用户确认。
@@ -4890,6 +4917,7 @@ Cindy 统一归类、随机选择与排序，同批每个场景和每个插件�
 - keywords(已废弃字段,旧包兼容保留,新意识别写)有单字词 · kind 写了但不是 "chip"(可省略) · schemaVersion 不是 3 · 缺 minCindyVersion
 - cindy 详单格式错(已知类目的动作不是合法标识、空数组或重复动作)
 - agent 详单格式错(background / errand / schedule 存在但不是 true；基础点击触发请写 \`agent: {}\`)
+  · \`hiddenTasks\` 不是布尔值,或写了 \`hiddenTasks: true\` 却没有 \`tasks: true\`
 - node 详单格式错(entry 不是包内 CommonJS .js/.cjs、protocol 不在 json-rpc-stdio / mcp-stdio、
   resident 又写 idleTimeoutSeconds)；未知 command/args/shell/env 只保留，不传给进程启动器
 - id 用了 \`cindy-\` 前缀(平台保留,正式版用户通道拒装)。\`filo-\` / \`xd-\` 只是普通名称，不授予官方资格

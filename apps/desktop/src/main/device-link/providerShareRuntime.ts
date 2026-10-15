@@ -52,6 +52,7 @@ import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } 
 import {
   findReceivedShare,
   getReceivedShares,
+  isReceivedSharesReady,
   getReceivedSharesSnapshot,
   leaveProviderShare,
   previewProviderShare,
@@ -449,17 +450,25 @@ const LINK_TTL_SAFETY_MS = 5_000;
 /**
  * 手机(同账号)经被控电脑读取这台电脑收到的分享与各自的模型目录。目录由分享者电脑过滤为
  * 分享的那个供应商；读不到(离线、已暂停)时 catalog 为 null，不影响其他分享。
+ * `includeCatalog: false` 只返回分享元数据，供远控候选筛选使用，避免把完整目录读取的等待
+ * 传播到分享发现。
  */
-async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShareReceivedCatalog[] }> {
-  if (!running) return { shares: [] };
+async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shares: ProviderShareReceivedCatalog[] }> {
+  if (!running) return { ready: false, shares: [] };
   const invoke = shareInvoke;
   const listArgs = Array.isArray(args) ? args.slice(0, 1) : [];
-  const shares = getReceivedShares();
+  const includeCatalog = !(
+    listArgs[0] && typeof listArgs[0] === 'object' && !Array.isArray(listArgs[0])
+    && (listArgs[0] as { includeCatalog?: unknown }).includeCatalog === false
+  );
+  // 未全部就绪时也返回已加载的区域，但账号切换期间不得返回旧账号名单。
+  const shares = getReceivedSharesSnapshot().received;
   return {
+    ready: isReceivedSharesReady(),
     shares: await Promise.all(shares.map(async (share): Promise<ProviderShareReceivedCatalog> => {
       const agentDeviceId = `share:${share.shareId}`;
       let catalog: unknown = null;
-      if (invoke && share.status === 'active') {
+      if (includeCatalog && invoke && share.status === 'active') {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           const result = await Promise.race([

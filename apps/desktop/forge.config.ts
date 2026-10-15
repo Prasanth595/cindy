@@ -21,7 +21,9 @@ import {
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
 import { preparePackagedNodePty } from './forge-node-pty';
-import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
+import { prunePackagedRuntime, prunePackagedMigrationSnapshots } from './forge-prune-runtime';
+import { copyRuntimeDependencyTrees as copyRuntimeTrees } from './forge-runtime-deps';
+import { packagedResourcesPath, stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 import {
   swiftTargetTriple,
   swiftTargetTriplesForForgeArch,
@@ -312,40 +314,7 @@ function copyDiscordRuntimeDeps(destModules: string): void {
 }
 
 function copyRuntimeDependencyTrees(deps: readonly string[], destModules: string): void {
-  const seen = new Set<string>();
-  for (const dep of deps) {
-    copyDependencyTree(dep, destModules, undefined, seen);
-  }
-}
-
-function copyDependencyTree(
-  dep: string,
-  destModules: string,
-  fromDirs?: string[],
-  seen = new Set<string>(),
-): void {
-  const src = resolvePackageDir(dep, fromDirs);
-  const dst = path.join(destModules, dep);
-  const seenKey = `${dst}\0${src}`;
-  if (seen.has(seenKey)) return;
-  seen.add(seenKey);
-
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.rmSync(dst, { recursive: true, force: true });
-  fs.cpSync(src, dst, {
-    recursive: true,
-    dereference: true,
-    filter: (srcPath) => path.basename(srcPath) !== 'node_modules',
-  });
-  console.log(`[forge:afterCopy] bundled runtime dep tree: ${dep} <- ${src}`);
-
-  const pkg = JSON.parse(fs.readFileSync(path.join(src, 'package.json'), 'utf8')) as {
-    dependencies?: Record<string, string>;
-  };
-  const childDestModules = path.join(dst, 'node_modules');
-  for (const childDep of Object.keys(pkg.dependencies ?? {}).sort()) {
-    copyDependencyTree(childDep, childDestModules, [src], seen);
-  }
+  copyRuntimeTrees(deps, destModules, resolvePackageDir);
 }
 
 /**
@@ -463,6 +432,7 @@ async function rebuildNativeDepsInPackage(
   }
 
   console.log(`[forge:afterCopy] rebuild ok: ${sqliteNative}, ${ptyNative}`);
+  prunePackagedRuntime(buildPath);
 }
 
 const isDev =
@@ -1156,8 +1126,11 @@ function buildRemoteDesktopInput(platform: ForgePlatform, arch: ForgeArch): void
         if (location.error || location.status !== 0)
           throw new Error('Remote credentials output unavailable');
         outputs.push(path.join(location.stdout.trim(), 'cindy-macos-remote-credentials'));
-        fs.cpSync(path.join(location.stdout.trim(), 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
-          path.join(destDir, 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'), { recursive: true });
+        fs.cpSync(
+          path.join(location.stdout.trim(), 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
+          path.join(destDir, 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
+          { recursive: true },
+        );
       }
       const credential = path.join(destDir, 'cindy-macos-remote-credentials');
       if (outputs.length === 1) fs.copyFileSync(outputs[0], credential);
@@ -1924,6 +1897,16 @@ const config: ForgeConfig = {
     // 避免 Win/Mac release 都回写 package.json 引发 git 冲突。
     // 未设置时由 electron-packager 回落到 package.json 里的占位版本(仅 dev 用)。
     ...(process.env.APP_VERSION ? { appVersion: process.env.APP_VERSION } : {}),
+    afterCopyExtraResources: [
+      (buildPath, _electronVersion, platform, _arch, callback) => {
+        try {
+          prunePackagedMigrationSnapshots(packagedResourcesPath(buildPath, platform));
+          callback();
+        } catch (err) {
+          callback(err as Error);
+        }
+      },
+    ],
     afterCopy: [
       (buildPath, electronVersion, platform, arch, callback) => {
         (async () => {

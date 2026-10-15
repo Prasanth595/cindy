@@ -18,7 +18,50 @@ const INDEX_FILE_NAME = "index.json";
 const INDEX_TMP_NAME = "index.json.tmp";
 const SHARE_TMP_DIR_NAME = "remote-media-share";
 
-async function copyRemoteFile(url: string, target: File): Promise<File> {
+/**
+ * 可中止的 http 下载:新 API 的 File.downloadFileAsync 无法中途停止,这里沿用
+ * androidInstaller 的 legacy DownloadResumable + cancelAsync;取消后不等
+ * downloadAsync(cancelAsync 后它未必 settle),等 cancelAsync 结算后删掉半成品。
+ */
+async function downloadCancellable(
+  url: string,
+  target: File,
+  signal: AbortSignal,
+): Promise<File> {
+  const FileSystem = await import("expo-file-system/legacy");
+  const task = FileSystem.createDownloadResumable(url, target.uri);
+  let rejectStopped: (reason: Error) => void = () => undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    rejectStopped = reject;
+  });
+  const stop = () => {
+    rejectStopped(new Error("DOWNLOAD_CANCELLED"));
+    void task.cancelAsync().catch(() => undefined);
+  };
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    if (signal.aborted) throw new Error("DOWNLOAD_CANCELLED");
+    const result = await Promise.race([task.downloadAsync(), stopped]);
+    if (!result || result.status < 200 || result.status >= 300)
+      throw new Error("DOWNLOAD_FAILED");
+    return target;
+  } catch (error) {
+    // 先等原生任务确认停止再删,否则可能删后又被写回半成品(同 androidInstaller)。
+    await task.cancelAsync().catch(() => undefined);
+    await FileSystem.deleteAsync(target.uri, { idempotent: true }).catch(
+      () => undefined,
+    );
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", stop);
+  }
+}
+
+async function copyRemoteFile(
+  url: string,
+  target: File,
+  signal?: AbortSignal,
+): Promise<File> {
   if (url.startsWith("file://")) {
     await new File(url).copy(target);
     return target;
@@ -32,6 +75,7 @@ async function copyRemoteFile(url: string, target: File): Promise<File> {
     target.write(Uint8Array.from(atob(match[1]), (char) => char.charCodeAt(0)));
     return target;
   }
+  if (signal) return downloadCancellable(url, target, signal);
   return File.downloadFileAsync(url, target, { idempotent: true });
 }
 
@@ -39,11 +83,14 @@ async function copyRemoteFile(url: string, target: File): Promise<File> {
  * 一次性分享临时文件:超出磁盘缓存预算的对象走 store 会被 LRU 立即逐出,
  * lookup 拿不到 → 分享失败。这里绕开 LRU 直接下到独立临时目录,只服务本次
  * 分享;文件留在系统 cache 区,OS 低存储时统一回收(罕见路径,不做主动清理)。
+ * 传入 signal 时 http 下载可被「取消」真正中止(停止流量、删半成品);任何来源在
+ * 取消后都不留分享副本,返回 null。
  */
 export async function downloadRemoteMediaShareTemp(
   url: string,
   mimeType: string,
   fileName?: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   try {
     const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
@@ -61,7 +108,12 @@ export async function downloadRemoteMediaShareTemp(
     } else {
       target = new File(dir, `share-${unique}.${extOfMime(mimeType)}`);
     }
-    const file = await copyRemoteFile(url, target);
+    const file = await copyRemoteFile(url, target, signal);
+    // 直连 file:// 复制与 data: 写入无法中途停止:结束后已取消就删掉这份副本。
+    if (signal?.aborted) {
+      if (file.exists) file.delete();
+      return null;
+    }
     return file.exists ? file.uri : null;
   } catch {
     return null; // 分享失败由调用方兜底提示

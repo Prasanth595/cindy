@@ -2,9 +2,11 @@ import { useNavigationAttention } from '@/lib/navigationAttentionStore';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { botRosterLabel } from '../../../shared/botCreation';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   Bot,
   Copy,
@@ -12,13 +14,17 @@ import {
   EyeOff,
   Pin,
   Search,
+  Settings,
   Trash2,
 } from 'lucide-react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { cn } from '@/lib/utils';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import type { BotGroupSummary } from '../../../shared/botGroupChat';
 import * as sessionService from '@/lib/sessionService';
 import { isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
 import {
@@ -50,9 +56,10 @@ import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
-import { useBotGroupList } from './botGroupStore';
+import { refreshBotGroups, useBotGroupList } from './botGroupStore';
+import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
+import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap } from './botReadState';
-import { ChatJoinButton } from './ChatServerControls';
 import { isBotGroupLaneSession, withoutBotGroupLanes } from './botGroupLane';
 import {
   botListSubtitle,
@@ -85,10 +92,13 @@ const UNREAD_BADGE_CLASS =
 function BotsSidebarContent() {
   const { navigateToView } = useActiveMainView();
   const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
   const navigationCounts = useNavigationAttention();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { botId, sessionId, deviceId, groupId } = useParams();
+  // The registered sidebar slot can sit outside the group's route context.
+  const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
   const cloud = useCompanionCloud();
   const rosterRemoteBots = useRemoteBots();
   // One row per companion, on its main computer (offline rows for computers never listed here).
@@ -109,10 +119,15 @@ function BotsSidebarContent() {
   const archivedBots = bots.filter((bot) => bot.status === 'archived');
   const collapsed = useSidebarCollapsedState();
   const [query, setQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const archiveBusyRef = useRef(false);
+  const [archiveError, setArchiveError] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const [contextMenu, setContextMenu] = useState<{
-    botId: string;
+    kind: 'bot' | 'group';
+    id: string;
     x: number;
     y: number;
   } | null>(null);
@@ -120,12 +135,51 @@ function BotsSidebarContent() {
   const menuOriginRef = useRef<HTMLButtonElement | null>(null);
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const previousSelectedGroupRef = useRef(groups.find(group => group.id === selectedGroupId));
+  const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean; origin: HTMLElement | null } | null>(null);
 
-  const openBotContextMenu = (botId: string, origin: HTMLButtonElement, x: number, y: number) => {
+  const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
     menuOriginRef.current = origin;
     menuPointerDownRef.current = false;
     menuRestoreFocusRef.current = true;
-    setContextMenu({ botId, x, y });
+    setContextMenu({ kind, id, x, y });
+  };
+
+  const changeGroupArchive = async (group: BotGroupSummary) => {
+    if (archiveBusyRef.current) return;
+    archiveBusyRef.current = true;
+    setArchiveBusy(true);
+    setArchiveError('');
+    const owner = getDataOwnerGeneration();
+    const origin = menuOriginRef.current;
+    let focusArchived = !!group.archived;
+    const actionKey = 'bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive');
+    try {
+      const accepted = await confirm({ presentation: 'standard', title: t(actionKey),
+        description: t(actionKey + 'Hint'), confirmText: t(actionKey),
+        cancelText: t('bots.cancel'), confirmVariant: 'destructive' });
+      if (!accepted || !isDataOwnerGenerationCurrent(owner)) return;
+      const result = await window.electronAPI.maker.chatServer.manage({ groupId: group.id,
+        action: { type: 'archive', archived: !group.archived, expectedRevision: group.revision! } });
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      if (!result.ok) setArchiveError(t(chatErrorKey(result.errorCode)));
+      else {
+        focusArchived = !group.archived;
+        refreshBotGroups();
+      }
+    } catch {
+      if (isDataOwnerGenerationCurrent(owner)) setArchiveError(t(chatErrorKey('REQUEST_FAILED')));
+    } finally {
+      // Cancelled and failed confirmations also lose their menu-item opener.
+      // Recover to the unchanged row after the dialog releases focus.
+      if (isDataOwnerGenerationCurrent(owner)) {
+        pendingArchiveFocusRef.current = { groupId: group.id, archived: focusArchived, origin };
+      }
+      archiveBusyRef.current = false;
+      setArchiveBusy(false);
+    }
   };
 
   /*
@@ -174,9 +228,84 @@ function BotsSidebarContent() {
     ...remoteBots.filter(bot => (!hasMultipleCindys || !isCindyDeviceBot(bot)) && (!normalizedQuery || `${bot.name} ${bot.description} ${bot.deviceName}`.toLocaleLowerCase().includes(normalizedQuery))),
   ];
   const rosterSize = groups.length + rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
-  const showSearch = rosterSize >= 8 || normalizedQuery.length > 0;
-  const visibleGroups = groups.filter(group => !normalizedQuery ||
-    `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery));
+  const hasArchivedGroups = groups.some(group => group.archived);
+  const showSearch = searchFocused || rosterSize >= 8 || normalizedQuery.length > 0 ||
+    hasArchivedGroups;
+  const matchesGroup = (group: BotGroupSummary) => !normalizedQuery ||
+    `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery);
+  const visibleGroups = groups.filter(group =>
+    (!group.archived || normalizedQuery.length > 0) && matchesGroup(group));
+
+  useEffect(() => {
+    const previous = previousSelectedGroupRef.current;
+    previousSelectedGroupRef.current = groups.find(group => group.id === selectedGroupId);
+    // Settings can archive the selected group without going through the row
+    // menu. Reuse its recovery after the drawer and confirmation release focus.
+    if (previous && !previous.archived && !pendingArchiveFocusRef.current &&
+      (selectedGroupId === previous.id || pathname === '/bots/list') &&
+      groups.some(group => group.id === previous.id && group.archived)) {
+      pendingArchiveFocusRef.current = { groupId: previous.id, archived: true, origin: null };
+    }
+  }, [groups, selectedGroupId, pathname]);
+
+  useEffect(() => {
+    const pending = pendingArchiveFocusRef.current;
+    if (!pending) return;
+    const updatedGroup = groups.find(group => group.id === pending.groupId);
+    if (!updatedGroup || updatedGroup.archived !== pending.archived) return;
+
+    let timer: number | undefined;
+    let cancelled = false;
+    const restoreFocus = () => {
+      if (cancelled) return;
+      // The confirmation dialog keeps its AlertDialog mounted for its closing
+      // animation. Wait until Radix has released focus before moving it to the
+      // row that replaced the original trigger.
+      if (document.querySelector('[role="alertdialog"]')) {
+        timer = window.setTimeout(restoreFocus, 50);
+        return;
+      }
+
+      // Focus recovery is only for the original keyboard path. If the user
+      // has already moved focus to another row, the search field, or any
+      // other control while the refresh was in flight, leave that choice
+      // untouched. A body focus means the original row was unmounted.
+      const active = document.activeElement;
+      if (active !== pending.origin && active !== document.body) {
+        pendingArchiveFocusRef.current = null;
+        return;
+      }
+
+      const row = Array.from(document.querySelectorAll<HTMLElement>('[data-bot-group-id]'))
+        .find(element => element.dataset.botGroupId === pending.groupId);
+      const rowIsVisible = visibleGroups.some(group => group.id === pending.groupId);
+      if (row && rowIsVisible) {
+        pendingArchiveFocusRef.current = null;
+        row.focus();
+        return;
+      }
+
+      // Archived groups disappear from the default list and remain searchable.
+      // Keep focus on that visible recovery path when the row is removed.
+      if (pending.archived) {
+        pendingArchiveFocusRef.current = null;
+        const target = searchInputRef.current ?? sidebarRef.current?.querySelector<HTMLButtonElement>('button');
+        target?.focus();
+        return;
+      }
+
+      // The user may have changed the search while the request was in flight.
+      // Do not keep a stale request that could steal focus later when the filter
+      // is cleared.
+      pendingArchiveFocusRef.current = null;
+    };
+
+    timer = window.setTimeout(restoreFocus, 0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [groups, visibleGroups]);
   const visibleChats = [
     ...visibleBots.map(bot => ({ kind: 'bot' as const, bot,
       pinned: 'pinnedAt' in bot && Boolean(bot.pinnedAt),
@@ -274,9 +403,9 @@ function BotsSidebarContent() {
   // 曾经这里还按 bot 逐个拉 `getBotHealth` 只为在行尾画一个状态图标。图标下线之后
   // 这一轮 N 次 IPC 也一起下线——列表不再为一个不显示的东西查询。
 
-  const renderBotContextMenu = (bot: BotProfile, selected: boolean) => (
+  const renderContextMenu = (kind: 'bot' | 'group', id: string, children: ReactNode) => (
     <DropdownMenu
-      open={contextMenu?.botId === bot.id}
+      open={contextMenu?.kind === kind && contextMenu.id === id}
       onOpenChange={(open) => { if (!open) setContextMenu(null); }}
     >
       <DropdownMenuTrigger asChild>
@@ -312,6 +441,12 @@ function BotsSidebarContent() {
           }
         }}
       >
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const renderBotContextMenu = (bot: BotProfile, selected: boolean) => renderContextMenu('bot', bot.id, <>
         <DropdownMenuItem onSelect={() => void setBotPinned(bot.id, !bot.pinnedAt)}>
           <Pin size={14} className="mr-2" />
           {t(bot.pinnedAt ? 'bots.list.unpin' : 'bots.list.pin')}
@@ -351,13 +486,40 @@ function BotsSidebarContent() {
           <Trash2 size={14} className="mr-2" />
           {t('bots.lifecycle.delete')}
         </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+  </>);
+
+  const renderGroupRow = (group: BotGroupSummary) => (
+    <BotGroupSidebarRow key={'group:' + group.id} group={group} bots={bots}
+      islandActivity={islandActivity} now={now} selected={group.id === groupId}
+      onOpenGroup={id => navigate('/bots/groups/' + encodeURIComponent(id))}
+      onContextMenu={event => {
+        event.preventDefault(); event.stopPropagation();
+        openContextMenu('group', group.id, event.currentTarget, event.clientX, event.clientY);
+      }}
+      onKeyDown={event => {
+        if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        openContextMenu('group', group.id, event.currentTarget, rect.left + 10, rect.bottom);
+      }}>
+      {renderContextMenu('group', group.id, <>
+        <DropdownMenuItem onSelect={() => navigate('/bots/groups/' + encodeURIComponent(group.id) + '?' + BOT_GROUP_SETTINGS_PARAM + '=1')}>
+          <Settings size={14} className="mr-2" />{t('bots.groupChat.settings.title')}
+        </DropdownMenuItem>
+        {group.serverBacked && group.members.some(member => member.isOwned && (member.role === 'owner' || member.role === 'admin')) && <>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={archiveBusy} onSelect={() => void changeGroupArchive(group)}>
+            {group.archived ? <ArchiveRestore size={14} className="mr-2" /> : <Archive size={14} className="mr-2" />}
+            {t('bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive'))}
+          </DropdownMenuItem>
+        </>}
+      </>)}
+    </BotGroupSidebarRow>
   );
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 px-2 pt-3">
+      <div ref={sidebarRef} className="flex flex-col items-center gap-2 px-2 pt-3">
         {(pathname === '/bots' || pathname.startsWith('/bots/')) && (
           <SidebarIconButton
             icon={ArrowLeft}
@@ -391,7 +553,6 @@ function BotsSidebarContent() {
               {showHidden ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           ) : null}
-          <ChatJoinButton onJoined={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />
           <BotCreateMenu />
         </span>
       </div>
@@ -404,8 +565,11 @@ function BotsSidebarContent() {
             className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-[var(--sidebar-list-muted)]"
           />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
             placeholder={t('bots.list.searchPlaceholder')}
             aria-label={t('bots.list.search')}
             className="h-7 w-full rounded-lg border border-[var(--border-default)] bg-transparent pl-7 pr-2 text-11 text-[var(--sidebar-nav-text)] outline-none placeholder:text-[var(--sidebar-list-muted)] focus:border-[var(--focus-ring)]"
@@ -413,17 +577,18 @@ function BotsSidebarContent() {
         </label>
       ) : null}
 
+      {archiveError && <p role="alert" className="mb-2 px-2.5 text-12 text-[var(--error-fg)]">{archiveError}</p>}
+
       <div className="min-h-0 flex-1 overflow-y-auto pb-3">
-        {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && groups.length === 0 ? (
+        {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && visibleGroups.length === 0 ? (
           <div className="px-3 py-3">
-            <BotCreateMenu label={t('bots.add')} />
+            {normalizedQuery ? <p className="text-12 text-[var(--sidebar-list-muted)]">{t('bots.list.noResults')}</p>
+              : <BotCreateMenu label={t('bots.add')} />}
           </div>
         ) : (
           <div className="flex flex-col gap-1">
             {visibleChats.map(entry => {
-              if (entry.kind === 'group') return <BotGroupSidebarRow key={`group:${entry.group.id}`} group={entry.group}
-                bots={bots} islandActivity={islandActivity} now={now} selected={entry.group.id === groupId}
-                onOpenGroup={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />;
+              if (entry.kind === 'group') return renderGroupRow(entry.group);
               if (entry.kind === 'cindy') {
                 if (!currentCindy) return null;
                 const bot = currentCindy.bot;
@@ -444,13 +609,13 @@ function BotsSidebarContent() {
                   onSelect={option => navigate(option.route)}
                   onContextMenu={local ? event => {
                     event.preventDefault(); event.stopPropagation();
-                    openBotContextMenu(local.id, event.currentTarget, event.clientX, event.clientY);
+                    openContextMenu('bot', local.id, event.currentTarget, event.clientX, event.clientY);
                   } : undefined}
                   onKeyDown={local ? event => {
                     if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
                     event.preventDefault();
                     const rect = event.currentTarget.getBoundingClientRect();
-                    openBotContextMenu(local.id, event.currentTarget, rect.left + 10, rect.bottom);
+                    openContextMenu('bot', local.id, event.currentTarget, rect.left + 10, rect.bottom);
                   } : undefined}>
                   {local ? renderBotContextMenu(local, selected) : null}
                 </CindyDeviceRow>;
@@ -521,7 +686,7 @@ function BotsSidebarContent() {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      openBotContextMenu(bot.id, event.currentTarget, event.clientX, event.clientY);
+                      openContextMenu('bot', bot.id, event.currentTarget, event.clientX, event.clientY);
                     }}
                     onKeyDown={(event) => {
                       if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) {
@@ -529,7 +694,7 @@ function BotsSidebarContent() {
                       }
                       event.preventDefault();
                       const rect = event.currentTarget.getBoundingClientRect();
-                      openBotContextMenu(bot.id, event.currentTarget, rect.left + 10, rect.bottom);
+                      openContextMenu('bot', bot.id, event.currentTarget, rect.left + 10, rect.bottom);
                     }}
                     className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >

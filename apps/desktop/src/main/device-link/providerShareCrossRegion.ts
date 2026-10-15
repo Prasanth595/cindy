@@ -432,6 +432,17 @@ export function getConfirmedCrossRegionReceivedRegions(): Region[] {
   return rt && current(rt) ? [...rt.regions.values()].filter((state) => state.loaded).map((state) => state.region) : [];
 }
 
+/** 被启用的跨区标记对应的首次分享列表是否已完成。 */
+export function isCrossRegionReceivedReady(): boolean {
+  const rt = runtime;
+  // 未启动跨区 runtime 时，当前进程没有跨区分享需要等待。
+  if (!rt) return true;
+  if (!current(rt)) return false;
+  const region = peerRegion();
+  if (!readMarkers()[rt.account]?.includes(region)) return true;
+  return rt.regions.get(region)?.loaded === true;
+}
+
 function stateForShare(shareId: string): RegionState | null {
   for (const state of runtime?.regions.values() ?? []) {
     if (state.shares.some((share) => share.shareId === shareId)) return state;

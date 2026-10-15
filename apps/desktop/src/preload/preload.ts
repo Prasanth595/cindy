@@ -1042,22 +1042,6 @@ const appearanceSettingsInfo = ipcRenderer.sendSync(
   'appearance-settings:get-sync',
 ) as AppearanceSettings | null;
 
-type CindyMediaPreferenceOption = {
-  id: string;
-  label: string;
-  group: string;
-  providerId: string;
-  providerName: string;
-  modelId: string;
-  modelName: string;
-  routing?: import('@cindy/model-providers').Provider['routing'];
-};
-
-type CindyMediaPreferenceKind = {
-  options: CindyMediaPreferenceOption[];
-  defaultModel: CindyMediaPreferenceOption | null;
-};
-
 contextBridge.exposeInMainWorld('electronAPI', {
   modelFavoritesHost: {
     ready: () => ipcRenderer.send(FAVORITE_HOST_READY),
@@ -1314,54 +1298,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         expectedInstalledInstanceId: string;
       },
     ): Promise<{ ghost: unknown }> => ipcRenderer.invoke('ghosts:update', lizFilePath, opts),
-    cindyPrefsSync: (
+    /**
+     * 插件「模型与任务」配置(快问快答与插件新建任务共用;sendSync 首帧同帧渲染)。
+     * auxiliaryModelLabel = 当前系统辅助模型的显示名(未选模型时快问快答跟随它)。
+     */
+    errandPrefsSync: (
       id: string,
-    ): {
-      overrides: Record<string, string>;
-      /**
-       * 每类目一份下拉数据(能力键按类目取对应清单)。
-       * options 为空或 defaultModel 为 null = 目录没给该类目模型,能力暂不可用。
-       */
-      image: CindyMediaPreferenceKind;
-      imageEdit: CindyMediaPreferenceKind;
-      video: CindyMediaPreferenceKind;
-      videoEdit: CindyMediaPreferenceKind;
-      /** 文本类(快问快答):选项是当前供应商目录的全部文本模型(cat: 编码钉值,
-       *  带供应商/模型/徽标等结构化字段供富列表渲染);declaredModel = 身份卡声明
-       *  的偏好模型;utilityProfiles = 存量轻量档位钉的展示名表(老钉值回显用)。 */
-      text: {
-        options: Array<{
-          id: string;
-          label: string;
-          group: string;
-          providerId: string;
-          agentKind: string;
-          modelId: string;
-          modelName: string;
-          icon?: string;
-          budget: boolean;
-          subscription: boolean;
-          routing?: import('@cindy/model-providers').Provider['routing'];
-          agentSuffix?: string;
-        }>;
-        defaultModel: { id: string; label: string } | null;
-        declaredModel?: { id: string; label: string } | null;
-        utilityProfiles?: Array<{ id: string; label: string }>;
-      };
-      /** 向量类(文本转向量):同 image/video 走目录派生。 */
-      embed: {
-        options: Array<{ id: string; label: string }>;
-        defaultModel: { id: string; label: string } | null;
-      };
-    } => ipcRenderer.sendSync('ghosts:cindy-prefs', id),
-    setCindyPref: (
-      id: string,
-      capability: string,
-      model: string | null,
-    ): Promise<{ overrides: Record<string, string> }> =>
-      ipcRenderer.invoke('ghosts:cindy-prefs:set', id, capability, model),
-    /** 派活(errand)每插件配置(插件详情页「AI 代办」卡;sendSync 首帧同帧渲染)。 */
-    errandPrefsSync: (id: string): { config: Record<string, unknown> } =>
+    ): { config: Record<string, unknown>; auxiliaryModelLabel?: string | null } =>
       ipcRenderer.sendSync('ghosts:errand-prefs', id),
     setErrandConfig: (
       id: string,
@@ -1398,6 +1341,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval),
     requestTaskApproval: (id: string): Promise<{ granted: boolean }> =>
       ipcRenderer.invoke('ghosts:request-task-approval', id),
+    /** 详情页「后台任务」:本插件转入后台的任务(仅本机窗口,不进 device-link)。 */
+    listBackgroundTasks: (id: string): Promise<{
+      items: Array<{ taskId: string; title: string; status: 'active' | 'archived'; updatedAt: number; running: boolean }>;
+    }> => ipcRenderer.invoke('ghosts:background-tasks:list', id),
+    /** 「显示到任务列表」:与插件 cindy.tasks.setHidden 共用宿主写入口。 */
+    revealBackgroundTask: (id: string, taskId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:background-tasks:reveal', id, taskId),
     /** 目录级禁用清单(插件页项目范围视图;sendSync 保证切换同帧渲染)。 */
     workdirPrefsSync: (workdir: string): { disabled: string[] } =>
       ipcRenderer.sendSync('ghosts:workdir-prefs', workdir),
@@ -2173,12 +2123,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }> => ipcRenderer.invoke('profile:get-state'),
   profileChooseAvatar: (): Promise<{
     canceled: boolean;
-    filePath?: string;
     previewDataUrl?: string;
   }> => ipcRenderer.invoke('profile:choose-avatar'),
   profileUpdate: (params: {
     name: string | null;
-    avatar: { type: 'keep' } | { type: 'set'; filePath: string } | { type: 'reset' };
+    avatar:
+      | { type: 'keep' }
+      | { type: 'set'; data: Uint8Array; mimeType: 'image/png' | 'image/jpeg' }
+      | { type: 'reset' };
   }): Promise<{ ok: true }> => ipcRenderer.invoke('profile:update', params),
   onAuthStateChange: fanOutAuthStateChange,
   onAuthSessionExpired: fanOutAuthSessionExpired,
@@ -2989,6 +2941,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
           message?: string;
         }
     > => ipcRenderer.invoke('maker:chat-file:download', params),
+    /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
+    chatCancel: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -3842,6 +3797,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
     ) => void,
   ): (() => void) =>
@@ -3883,6 +3839,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         });
       } else if (p.type === 'chat-invite' && typeof p.token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(p.token)) {
         callback({ type: 'chat-invite', token: p.token });
+      } else if (p.type === 'chat-invite-malformed') {
+        callback({ type: 'chat-invite-malformed' });
       } else if (p.type === 'shared-task-join' && typeof p.invitation === 'string' && /^[A-Za-z0-9_-]{43}$/.test(p.invitation) && typeof p.server === 'string' && p.server.length <= 2048) {
         callback({ type: 'shared-task-join', invitation: p.invitation, server: p.server });
       } else if (
@@ -3923,6 +3881,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
     | { type: 'chat-invite'; token: string }
+    | { type: 'chat-invite-malformed' }
     | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
     | null
   > => ipcRenderer.invoke('deep-link:take-pending'),
@@ -4018,6 +3977,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     input: import('../shared/cindyMakeMerge').CindyMakeMergeRequest,
   ): Promise<import('../shared/cindyMakeMerge').CindyMakeMergeState | undefined> =>
     ipcRenderer.invoke('app:cindy-make-merge', input),
+  cindyMakePersonalRemote: (
+    action: import('../shared/cindyMakePersonalRemote').CindyMakePersonalRemoteAction,
+  ): Promise<import('../shared/cindyMakePersonalRemote').CindyMakePersonalRemoteState> =>
+    ipcRenderer.invoke('app:cindy-make-personal-remote', action),
+  cindyMakeContribution: (
+    request: import('../shared/cindyMakeContribution').CindyMakeContributionRequest,
+  ): Promise<unknown> => ipcRenderer.invoke('app:cindy-make-contribution', request),
+  cindyMakeSync: (
+    request: import('../shared/cindyMakeSync').CindyMakeSyncRequest,
+  ): Promise<import('../shared/cindyMakeSync').CindyMakeSyncState> =>
+    ipcRenderer.invoke('app:cindy-make-sync', request),
   getCindyMakeSettings: (): Promise<import('../shared/cindyMakeSettings').CindyMakeSettings> =>
     ipcRenderer.invoke('app:get-cindy-make-settings'),
   setCindyMakeSyncLatestBeforeBuild: (
@@ -7028,7 +6998,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       effort?: string,
       fastMode?: boolean,
       // 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。
-      options?: { agentDeviceId?: string | null },
+      options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ): Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';

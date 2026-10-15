@@ -538,16 +538,21 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   function panBounds(r) {
     const vw = viewportWidth(),
       vh = viewportHeight();
-    // Grow extra resting travel continuously from zero at fit to 180 screen
-    // points at maximum zoom. Never count the unused space of a fitting axis.
-    const clearance = 180 * zoomProgress(r);
-    const axis = (viewport, content) =>
-      content <= viewport
+    // Grow extra resting travel continuously from zero at fit to its full reach
+    // by 1.5x, so even a light zoom can pull edge content clear of the overlaid
+    // chrome. Never count the unused space of a fitting axis.
+    // Each axis reaches at most 240 points or 40% of its own viewport.
+    const ramp = Math.min(0.5, r.maxZoom - 1);
+    const grown = ramp > 0 ? clamp((zoom - 1) / ramp) : 0;
+    const axis = (viewport, content) => {
+      const clearance = grown * Math.min(240, viewport * 0.4);
+      return content <= viewport
         ? {
             min: (viewport - content) / 2 - clearance,
             max: (viewport - content) / 2 + clearance,
           }
         : { min: viewport - content - clearance, max: clearance };
+    };
     const x = axis(vw, r.width),
       y = axis(vh, r.height);
     const bounds = {

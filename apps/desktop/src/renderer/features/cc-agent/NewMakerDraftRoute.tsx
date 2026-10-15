@@ -966,16 +966,17 @@ export function NewMakerDraftRoute() {
    */
   // 供应商分享：别人分享给我的供应商(`share:<id>`)同样是落点，只并进模型选择器，不进设备切换器。
   const { devices: providerShareDevices } =
-    useProviderShareAgentDevices([effectiveAgentDeviceId]);
+    useProviderShareAgentDevices([effectiveAgentDeviceId], effectiveDeviceLinkDeviceId);
   const remoteAgentDevices = useMemo(() => {
     if (effectiveDeviceLinkDeviceId) {
-      // 建到被控电脑的任务:候选去掉被控电脑本身;本机收到的分享被控电脑用不了,不并入。
+      // 建到被控电脑的任务:候选去掉被控电脑本身，分享需在两端名单中可用。
       // 被控电脑不支持时不传,模型面板维持只列被控电脑的目录。
       return deviceLinkRemoteAgentSupported
         ? selectControlledTaskAgentDevices({
             devices: selectableDevices,
             controlledDeviceId: effectiveDeviceLinkDeviceId,
             keepDeviceIds: [effectiveAgentDeviceId],
+            shareDevices: providerShareDevices,
           })
         : undefined;
     }

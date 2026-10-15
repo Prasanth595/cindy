@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
+import { Session } from '@cindy/maker-core';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -114,6 +115,7 @@ function fixture() {
     fastMode: false,
   };
   const execution = { instanceId: 'native', generation: 1 };
+  const live = { instanceId: execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
   const deps: PluginTaskServiceDeps = {
     store,
     readPermissionMode: () => 'auto',
@@ -131,6 +133,7 @@ function fixture() {
       tasks.set(taskId, { taskId, title, resolvedConfig, revision: 1, status: 'active', permissionMode: 'plan' });
     }),
     readSession: async (id) => copy(tasks.get(id) ?? null),
+    readLiveSession: () => live,
     dispatch: vi.fn(async () => ({ ok: true })),
     inspect: vi.fn(async () => ({ execution: null, pending: [] })),
     cancel: vi.fn(async () => 'cancelled' as const),
@@ -160,6 +163,94 @@ function fixture() {
     },
   };
 }
+
+describe('plugin dispatch uses live Plan execution authority', () => {
+  it.each(['send', 'accept'] as const)('%s rejects consumed Pi intent while execution is active, unknown or switching', async entry => {
+    const f = fixture(), task = await f.create();
+    Object.assign(f.tasks.get(task.taskId)!, { permissionMode: 'auto', planModeEnabled: false });
+    let executionPlan: boolean | null = false;
+    let releaseEvents!: () => void, releaseSwitch!: () => void;
+    const eventsClosed = new Promise<void>(resolve => { releaseEvents = resolve; });
+    const switching = new Promise<void>(resolve => { releaseSwitch = resolve; });
+    const logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return logger; } };
+    const session = new Session({ id: task.taskId, sessionInstanceId: f.execution.instanceId,
+      agentKind: 'pi', workDir: '/answer', permissionMode: 'auto', logger,
+      capabilities: { planMode: { supported: true } } as never,
+      handle: { id: 'pi', agentKind: 'pi', model: 'test',
+        async *events() { await eventsClosed; }, async close() { releaseEvents(); }, setInteractionResolver() {},
+        getPlanMode: () => false, getExecutionPlanMode: () => executionPlan,
+        setPlanMode: async () => { await switching; },
+      } as never,
+    });
+    f.deps.readLiveSession = () => session;
+    const request = { taskId: task.taskId, expectedRevision: task.revision, requestKey: 'live-plan', text: 'continue' };
+    const queued = entry === 'accept' ? await f.service.send('p', request) : undefined;
+    vi.mocked(f.deps.dispatch).mockClear();
+    const invoke = () => entry === 'send' ? f.service.send('p', request)
+      : f.service.accept(task.taskId, { clientId: queued!.inputMessageId }, f.execution);
+    try {
+      for (const value of [true, null]) {
+        executionPlan = value;
+        expect(session.getPlanMode()).toBe(false);
+        await expect(invoke()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      }
+      executionPlan = false;
+      const pending = session.setPlanMode(true);
+      expect(session.stablePlanModeState).toBeNull();
+      await expect(invoke()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      expect(f.deps.dispatch).not.toHaveBeenCalled();
+      releaseSwitch();
+      await pending;
+      // Native/Host recovery to a stable non-plan state restores the same API.
+      if (entry === 'send') await expect(invoke()).resolves.toMatchObject({ status: 'queued' });
+      else await expect(invoke()).resolves.toBeUndefined();
+    } finally {
+      releaseSwitch();
+      await session.close();
+    }
+  });
+
+  it.each(['send', 'accept'] as const)('%s rechecks the same live session after async route and receipt work', async entry => {
+    for (const point of ['route', 'receipt', 'instance', 'generation']) {
+      const f = fixture(), task = await f.create();
+      Object.assign(f.tasks.get(task.taskId)!, { permissionMode: 'auto', planModeEnabled: false });
+      let live = { instanceId: f.execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
+      f.deps.readLiveSession = () => live;
+      const request = { taskId: task.taskId, expectedRevision: task.revision, requestKey: 'async-plan', text: 'continue' };
+      const queued = entry === 'accept' ? await f.service.send('p', request) : undefined;
+      vi.mocked(f.deps.dispatch).mockClear();
+      const change = () => {
+        if (point === 'instance') live = { ...live };
+        else if (point === 'generation') live.stablePlanModeState.generation++;
+        else live.stablePlanModeState.enabled = true;
+      };
+      if (point === 'receipt') {
+        const method = entry === 'send' ? 'insert' : 'save';
+        const original = f.deps.store[method];
+        f.deps.store[method] = async row => { await original(row); change(); };
+      } else f.deps.resolveRoute = async () => { change(); return f.route; };
+      const result = entry === 'send' ? f.service.send('p', request)
+        : f.service.accept(task.taskId, { clientId: queued!.inputMessageId }, f.execution);
+      if (entry === 'send' && point === 'receipt') await expect(result).resolves.toMatchObject({ status: 'failed' });
+      else await expect(result).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      expect(f.deps.dispatch).not.toHaveBeenCalled();
+    }
+  });
+
+  it('allows cold tasks to queue but requires the accepting live instance', async () => {
+    const f = fixture();
+    f.deps.readLiveSession = () => undefined;
+    const run = await f.send();
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    f.deps.readLiveSession = () => ({ instanceId: 'replacement', stablePlanModeState: { enabled: false, generation: 0 } });
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    const live = { instanceId: f.execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
+    f.deps.readLiveSession = () => live;
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution)).resolves.toBeUndefined();
+  });
+});
 
 it('serializes source archival behind creation and keeps old tasks inaccessible to the replacement', async () => {
   const fixtureState = fixture();
@@ -977,4 +1068,80 @@ it('registers a complete scope once and permits only identical replays', async (
  await f.service.setTeamPlan('p',task.taskId,plan);
  await expect(f.service.setTeamPlan('p',task.taskId,{...plan,task:'Publish'})).rejects.toThrow('immutable');
  await expect(f.service.setTeamPlan('p',task.taskId,{...plan,items:[{...plan.items[0]!,task:'Publish'}]})).rejects.toThrow('immutable');
+});
+
+describe('background tasks', () => {
+  const declaredFixture = () => {
+    const f = fixture();
+    let declared = true;
+    f.deps.assertHiddenTasksAllowed = () => {
+      if (!declared) throw new PluginTaskError('PERMISSION_DENIED', 'Background tasks require agent.hiddenTasks');
+    };
+    f.deps.createSession = vi.fn(async (_p, taskId, title, resolvedConfig, _isolated, _requested, onPersistenceStarted, _callId, hidden) => {
+      onPersistenceStarted();
+      f.tasks.set(taskId, { taskId, title, resolvedConfig, revision: 1, status: 'active', permissionMode: 'plan', hidden: hidden === true });
+    });
+    f.deps.setHidden = vi.fn(async (taskId: string, hidden: boolean, assertAllowed: () => void) => {
+      assertAllowed();
+      f.tasks.set(taskId, { ...f.tasks.get(taskId)!, hidden });
+    });
+    return { ...f, undeclare: () => { declared = false; } };
+  };
+
+  it('creates a hidden task in the same creation call and reports hidden in get/list snapshots', async () => {
+    const f = declaredFixture();
+    const task = await f.service.create('p', { requestKey: 'bg', title: 'Background', hidden: true });
+    expect(task.hidden).toBe(true);
+    expect(f.deps.createSession).toHaveBeenCalledWith('p', task.taskId, 'Background', f.route, undefined, undefined, expect.any(Function), undefined, true);
+    expect((await f.service.get('p', task.taskId)).hidden).toBe(true);
+    expect((await f.service.list('p')).items.map(item => item.hidden)).toEqual([true]);
+    // Exact replay reads the same task; the hidden flag is part of the request fingerprint.
+    expect((await f.service.create('p', { requestKey: 'bg', title: 'Background', hidden: true })).taskId).toBe(task.taskId);
+    await expect(f.service.create('p', { requestKey: 'bg', title: 'Background' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+
+  it('keeps visible creation unchanged: hidden=false snapshot and the legacy fingerprint', async () => {
+    const f = declaredFixture();
+    const task = await f.service.create('p', { requestKey: 'plain', title: 'Plain', hidden: false });
+    expect(task.hidden).toBe(false);
+    expect((await f.service.create('p', { requestKey: 'plain', title: 'Plain' })).taskId).toBe(task.taskId);
+    // Views without the field (older readers) are normalized to a boolean.
+    const legacy = fixture();
+    expect((await legacy.create()).hidden).toBe(false);
+  });
+
+  it('switches only its own task, rechecks the declaration and skips no-op writes', async () => {
+    const f = declaredFixture();
+    const task = await f.service.create('p', { requestKey: 'own', title: 'Own' });
+    expect((await f.service.setHidden('p', { taskId: task.taskId, hidden: true })).hidden).toBe(true);
+    expect((await f.service.setHidden('p', { taskId: task.taskId, hidden: true })).hidden).toBe(true);
+    expect(f.deps.setHidden).toHaveBeenCalledTimes(1);
+    expect((await f.service.setHidden('p', { taskId: task.taskId, hidden: false })).hidden).toBe(false);
+    await expect(f.service.setHidden('other', { taskId: task.taskId, hidden: true })).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+    await expect(f.service.setHidden('p', { taskId: 'missing', hidden: true })).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+    f.undeclare();
+    await expect(f.service.setHidden('p', { taskId: task.taskId, hidden: true })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    await expect(f.service.create('p', { requestKey: 'later', title: 'Later', hidden: true })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(f.deps.setHidden).toHaveBeenCalledTimes(2);
+  });
+
+  it('denies background tasks when the host has no declaration check wired', async () => {
+    const f = fixture();
+    await expect(f.service.create('p', { requestKey: 'bg', title: 'Background', hidden: true })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(f.deps.createSession).not.toHaveBeenCalled();
+  });
+
+  it('reveals background tasks before revoking ownership on uninstall, and aborts when reveal fails', async () => {
+    const f = declaredFixture();
+    const order: string[] = [];
+    f.deps.revealPluginTasks = vi.fn(async () => { order.push('reveal'); });
+    const revoke = vi.spyOn(f.deps.store, 'revokePlugin').mockImplementation(async () => { order.push('revoke'); });
+    await f.service.withUninstall('p', async () => { order.push('remove'); });
+    expect(order).toEqual(['reveal', 'revoke', 'remove']);
+    f.deps.revealPluginTasks = vi.fn(async () => { throw new Error('db'); });
+    const remove = vi.fn(async () => {});
+    await expect(f.service.withUninstall('p', remove)).rejects.toThrow('db');
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+  });
 });

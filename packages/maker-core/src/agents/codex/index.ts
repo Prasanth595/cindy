@@ -3319,15 +3319,15 @@ assertRouteCurrent();
         binaryPath,
         env,
         extraArgs,
-        onProcessSpawned: (pid) => {
-          this.deps.registerLocalCodexAppServerProcess?.({
-            pid,
-            role:
-              hostPurpose === 'control-plane'
-                ? 'control-plane-service'
-                : 'task-host',
-          });
-        },
+        // 必须把注销函数交回 transport：进程退出后登记要随之移除，
+        // 退出回收（codex-tool-tree-reaper）据此认领 PID，残留登记遇 PID 复用会误杀。
+        onProcessSpawned: (pid) => this.deps.registerLocalCodexAppServerProcess?.({
+          pid,
+          role:
+            hostPurpose === 'control-plane'
+              ? 'control-plane-service'
+              : 'task-host',
+        }),
       });
     }
 

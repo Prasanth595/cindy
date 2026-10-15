@@ -379,6 +379,7 @@ import {
 } from '@/session/sessionAgentSwitch';
 import { formatProviderAccountLabel, resolveSessionUsageAccount } from '@/session/sessionUsageAccount';
 import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { isProviderShareAgentDeviceId } from '@/session/providerShareAgentDevice';
 import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
   drainComposerAnnotationSubmissions,
@@ -2638,18 +2639,24 @@ function SessionScreenContent() {
   const composerSwitchesAgent = composerDisplayAgentKind !== sessionAgentKind;
   const sessionAgentSwitchSupported = !!currentSession
     && supportsMobileSessionAgentSwitch(currentSession, capabilities);
+  // Orca 的同引擎模型选择也只登记意图，保留当前执行单元直到下一次发送。
+  const orcaModelSelectionUsesIntent = !!currentSession?.orcaRole && sessionAgentSwitchSupported;
   // 远程 Agent:模型列表在被控电脑自己的供应商之外,另列同账号其他电脑上开放了远程调用的供应商
   // (与桌面同一套,2026-10-07 产品裁决)。选另一台电脑的模型 = 把 Agent 挪过去,先二次确认;
-  // 同一台电脑内换模型直接切。共享任务访客不能换电脑(被控端拒绝),SSH / Orca 任务不支持切换;
+  // 同一台电脑内换模型直接切。共享任务访客与 Orca 成员不能换电脑，SSH 不支持切换;
   // 旧被控端不投影 agentDeviceId 字段、也不认换位置参数,这些情况维持原有调用与展示。
   const agentLocationMovable = sessionAgentSwitchSupported
     && !isSharedTaskPeer(deviceId)
     && !!currentSession
+    && !currentSession.orcaRole
+    && !currentSession.orcaRemoteLead
     && Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId');
   /** Agent 现在所在的电脑(null = 被控电脑)。 */
   const currentAgentDeviceId = sessionAgentRunsOnOtherComputer(currentSession)
     ? currentSession!.agentDeviceId!
     : null;
+  // Orca 只禁换位置；Agent 已在其他电脑时，仍保留那台电脑的目录供原地选模。
+  const orcaRemoteAgentDeviceId = currentSession?.orcaRole ? currentAgentDeviceId : null;
   /** 下一条消息时 Agent 所在的电脑(挂着换位置的意图就按意图)。 */
   const nextAgentDeviceId = effectiveAgentDeviceId(currentSession, agentSwitchIntent);
   const remoteAgentKeepDeviceIds = useMemo(
@@ -2666,6 +2673,25 @@ function SessionScreenContent() {
     keepDeviceIds: remoteAgentKeepDeviceIds,
     keepOnly: !(agentLocationMovable && modelSheetOpen),
   });
+  const modelSheetRemoteCatalogs = useMemo(
+    () => orcaRemoteAgentDeviceId
+      ? remoteAgentCatalogs.filter((catalog) => catalog.deviceId === orcaRemoteAgentDeviceId)
+      : remoteAgentCatalogs,
+    [orcaRemoteAgentDeviceId, remoteAgentCatalogs],
+  );
+  // `share:<id>` is a virtual catalog owned by the controlled computer; it is
+  // not a device-link peer that the phone can open directly.
+  const modelCapabilitiesDeviceId = orcaRemoteAgentDeviceId
+    && !isProviderShareAgentDeviceId(orcaRemoteAgentDeviceId)
+    ? orcaRemoteAgentDeviceId
+    : deviceId;
+  const loadComposerAgentCapabilities = useCallback(
+    (agent: MobileSessionAgentKind, catalogDeviceId: string | null = orcaRemoteAgentDeviceId) =>
+      (catalogDeviceId && !isProviderShareAgentDeviceId(catalogDeviceId)
+        ? executionMakerForDevice(catalogDeviceId)
+        : maker).getCapabilities(agent),
+    [executionMakerForDevice, maker, orcaRemoteAgentDeviceId],
+  );
   // 供应商组(provider-groups.md §10):这个任务此刻归哪个组,选择器每次打开问一次被控电脑。归组的任务在组那一项里
   // 选模型 = 留在此刻运行的那台只换模型(不弹换电脑确认);挂着换电脑的意图时下一条消息就不在原处,不按组显示。
   const currentProviderId = currentSession?.providerId ?? null;
@@ -3568,9 +3594,9 @@ function SessionScreenContent() {
     setAlternateCapabilitiesAgentKind(targetAgentKind);
     // 跨 Agent 面板打开前就静默预取另一侧能力；缓存命中时当帧可浏览，miss 才显示
     // loading。与当前 Agent 共用同一代际缓存，登出 / device revision 后不会复活旧快照。
-    const cacheKey = buildAgentCapabilitiesCacheKey(deviceId, targetAgentKind);
-    const generation = getAgentCapabilitiesGeneration(deviceId);
-    const unsubscribe = subscribeAgentCapabilities(deviceId, targetAgentKind, (next) => {
+    const cacheKey = buildAgentCapabilitiesCacheKey(modelCapabilitiesDeviceId, targetAgentKind);
+    const generation = getAgentCapabilitiesGeneration(modelCapabilitiesDeviceId);
+    const unsubscribe = subscribeAgentCapabilities(modelCapabilitiesDeviceId, targetAgentKind, (next) => {
       if (cancelled) return;
       setAlternateCapabilitiesAgentKind(targetAgentKind);
       setAlternateCapabilities(next);
@@ -3587,30 +3613,30 @@ function SessionScreenContent() {
     }
     setAlternateCapabilitiesError(null);
     void withTransientRemoteRetry(async () => {
-      await openLink(deviceId);
-      return maker.getCapabilities(targetAgentKind);
+      await openLink(modelCapabilitiesDeviceId);
+      return loadComposerAgentCapabilities(targetAgentKind);
     })
       .then((result) => {
         if (alternateCapabilitiesLoadSeqRef.current !== seq) return;
         const normalized = normalizeMobileAgentCapabilities(result);
         if (normalized) {
-          commitAgentCapabilities(deviceId, targetAgentKind, generation, normalized);
+          commitAgentCapabilities(modelCapabilitiesDeviceId, targetAgentKind, generation, normalized);
         } else {
-          if (!isAgentCapabilitiesGenerationCurrent(deviceId, generation)) return;
+          if (!isAgentCapabilitiesGenerationCurrent(modelCapabilitiesDeviceId, generation)) return;
           if (!cached) setAlternateCapabilities(null);
           setAlternateCapabilitiesError(t('session.common.capabilitiesUnsupported'));
         }
       })
       .catch((err) => {
         if (alternateCapabilitiesLoadSeqRef.current !== seq) return;
-        if (!isAgentCapabilitiesGenerationCurrent(deviceId, generation)) return;
+        if (!isAgentCapabilitiesGenerationCurrent(modelCapabilitiesDeviceId, generation)) return;
         if (!cached) setAlternateCapabilities(null);
         setAlternateCapabilitiesError(formatRemoteError(err));
       })
       .finally(() => {
         if (
           alternateCapabilitiesLoadSeqRef.current === seq
-          && isAgentCapabilitiesGenerationCurrent(deviceId, generation)
+          && isAgentCapabilitiesGenerationCurrent(modelCapabilitiesDeviceId, generation)
         ) setAlternateCapabilitiesLoading(false);
       });
     return () => {
@@ -3626,6 +3652,8 @@ function SessionScreenContent() {
     openLink,
     sessionAgentKind,
     sessionAgentSwitchSupported,
+    modelCapabilitiesDeviceId,
+    loadComposerAgentCapabilities,
   ]);
 
   useEffect(() => {
@@ -8339,6 +8367,34 @@ function SessionScreenContent() {
     ]);
   }, [currentSession?.contextTokens, t]);
 
+  // Staging cannot rely on SET_MODEL reporting a window error: the actual switch
+  // runs on a later send. Reject a known pressured shrink before writing intent,
+  // and retain the legacy-host guard for unknown windows and Pi.
+  const canStageOrcaModelSelection = useCallback((
+    targetAgentKind: MobileSessionAgentKind,
+    targetContextWindow: number | undefined,
+    hostGuardSupported: boolean,
+  ): boolean => {
+    if (!orcaModelSelectionUsesIntent || targetAgentKind !== sessionAgentKind) return true;
+    const contextTokens = currentSession?.contextTokens;
+    const currentContextWindow = currentSession?.contextWindow;
+    const pressuredShrink =
+      typeof contextTokens === 'number' && Number.isFinite(contextTokens) &&
+      typeof targetContextWindow === 'number' && Number.isFinite(targetContextWindow) &&
+      targetContextWindow > 0 && contextTokens / targetContextWindow >= 0.9 &&
+      !(typeof currentContextWindow === 'number' && Number.isFinite(currentContextWindow) &&
+        currentContextWindow > 0 && targetContextWindow >= currentContextWindow);
+    if (pressuredShrink || shouldBlockLegacyRemoteModelWindowSwitch({
+      hostGuardSupported, agentKind: targetAgentKind, contextTokens,
+      currentContextWindow, targetContextWindow,
+    })) {
+      showRemoteModelWindowUnsupported(targetContextWindow);
+      return false;
+    }
+    return true;
+  }, [orcaModelSelectionUsesIntent, sessionAgentKind, currentSession?.contextTokens,
+    currentSession?.contextWindow, showRemoteModelWindowUnsupported]);
+
   const setComposerModel = useCallback(async (args: {
     model: string;
     providerId?: string;
@@ -8412,7 +8468,9 @@ function SessionScreenContent() {
         hostName: controlledComputerName,
       });
       if (!location) return;
-      if (modelSheetAgentKind !== sessionAgentKind || location.agentDeviceId !== undefined) {
+      if (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || location.agentDeviceId !== undefined) {
+        if (!canStageOrcaModelSelection(modelSheetAgentKind, row.model.contextWindow,
+          modelSheetCapabilities?.supportsModelWindowSwitchGuard === true)) return;
         await writeSessionAgentSwitchIntent({
           targetAgentKind: modelSheetAgentKind,
           model: next.model,
@@ -8461,6 +8519,8 @@ function SessionScreenContent() {
     modelSheetAgentKind,
     modelSheetCapabilities,
     modelSheetSelection,
+    orcaModelSelectionUsesIntent,
+    canStageOrcaModelSelection,
     remoteAgentDeviceName,
     runControlAction,
     sessionAgentKind,
@@ -8482,7 +8542,8 @@ function SessionScreenContent() {
       : composerDeviceProviders.providers;
     const capability = resolveAgentCapability(catalogProviders, config.providerId, config.modelId, config.agent);
     if (!capability) return false;
-    const targetCapabilities = normalizeMobileAgentCapabilities(await maker.getCapabilities(config.agent));
+    const targetCapabilities = normalizeMobileAgentCapabilities(
+      await loadComposerAgentCapabilities(config.agent, catalogDeviceId));
     if (!targetCapabilities || deviceIdRef.current !== deviceId) return false;
     if (config.fast && (!capability.supportsFastMode || !targetCapabilities.hasFastMode)) return false;
     // 与任务当前所在电脑不同 = 连 Agent 的运行位置一起换(先确认,下一条消息生效);
@@ -8506,8 +8567,10 @@ function SessionScreenContent() {
       if (applied) setModelSheetAgentKind(config.agent);
       return applied;
     }
-    if (relocates) {
-      // 同引擎换电脑:原生会话在原来那台、接不上,同样走下一条消息生效的切换意图。
+    if (relocates || orcaModelSelectionUsesIntent) {
+      // 同引擎换电脑或 Orca 换模型均走下一条消息生效的切换意图。
+      if (!canStageOrcaModelSelection(config.agent, capability.contextWindow,
+        targetCapabilities.supportsModelWindowSwitchGuard === true)) return false;
       const applied = await writeSessionAgentSwitchIntent({
         targetAgentKind: config.agent,
         model: config.modelId,
@@ -8535,7 +8598,7 @@ function SessionScreenContent() {
   }, [canUseRemoteSessionControls,currentSession,controlBusy,composerDeviceProviders.providers,maker,
     sessionAgentKind,sessionAgentSwitchSupported,agentSwitchIntent,writeSessionAgentSwitchIntent,
     runControlAction,setComposerModel,sessionId,deviceId,agentLocationMovable,remoteAgentCatalogs,
-    remoteAgentDeviceName,controlledComputerName]);
+    remoteAgentDeviceName,controlledComputerName,orcaModelSelectionUsesIntent,canStageOrcaModelSelection,loadComposerAgentCapabilities]);
 
   const selectComposerFlatModel = useCallback((option: MobileModelOption) => {
     setModelSheetOpen(false);
@@ -8561,7 +8624,9 @@ function SessionScreenContent() {
         hostName: controlledComputerName,
       });
       if (!location) return;
-      if (location.agentDeviceId !== undefined) {
+      if (location.agentDeviceId !== undefined || orcaModelSelectionUsesIntent) {
+        if (!canStageOrcaModelSelection(sessionAgentKind, option.contextWindow,
+          modelSheetCapabilities?.supportsModelWindowSwitchGuard === true)) return;
         await writeSessionAgentSwitchIntent({
           targetAgentKind: sessionAgentKind,
           model: option.id,
@@ -8586,7 +8651,7 @@ function SessionScreenContent() {
         },
       );
     })();
-  }, [agentLocationMovable, agentSwitchIntent, canUseRemoteSessionControls, controlledComputerName, currentSession, modelSheetAgentKind, modelSheetCapabilities, modelSheetSelection?.effort, modelSheetSelection?.fastMode, remoteAgentDeviceName, runControlAction, sessionAgentKind, setComposerModel, writeSessionAgentSwitchIntent]);
+  }, [agentLocationMovable, agentSwitchIntent, canUseRemoteSessionControls, controlledComputerName, currentSession, modelSheetAgentKind, modelSheetCapabilities, modelSheetSelection?.effort, modelSheetSelection?.fastMode, orcaModelSelectionUsesIntent, remoteAgentDeviceName, runControlAction, sessionAgentKind, setComposerModel, writeSessionAgentSwitchIntent, canStageOrcaModelSelection]);
   const browseComposerModelAgent = useCallback(async (next: MobileSessionAgentKind) => {
     if (next === modelSheetAgentKind) return true;
     if (next !== sessionAgentKind) {
@@ -8599,10 +8664,10 @@ function SessionScreenContent() {
   }, [agentSwitchIntent, modelSheetAgentKind, sessionAgentKind, sessionAgentSwitchSupported]);
   const changeComposerSelectedEffort = useCallback((effort: string) => {
     if (!canConfigureSessionModel) return;
-    // 跨引擎 intent,或已登记「改回被控电脑」的同引擎 intent:改 intent 本身(带着位置),
+    // 跨引擎、换位置或 Orca 同引擎 intent:改 intent 本身(保留已有位置),
     // 否则 setEffort 的值会在发送时被 intent 里的旧值盖回。
     if (
-      (modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
+      (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
       && agentSwitchIntent?.targetAgentKind === modelSheetAgentKind
     ) {
       void writeSessionAgentSwitchIntent({ ...agentSwitchIntent, effort });
@@ -8611,11 +8676,11 @@ function SessionScreenContent() {
     if (modelSheetAgentKind === sessionAgentKind) {
       void runControlAction(() => maker.setEffort(sessionId, effort), { effort });
     }
-  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
+  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, orcaModelSelectionUsesIntent, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
   const changeComposerSelectedFastMode = useCallback((enabled: boolean) => {
     if (!canConfigureSessionModel) return;
     if (
-      (modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
+      (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
       && agentSwitchIntent?.targetAgentKind === modelSheetAgentKind
     ) {
       void writeSessionAgentSwitchIntent({ ...agentSwitchIntent, fastMode: enabled });
@@ -8624,7 +8689,7 @@ function SessionScreenContent() {
     if (modelSheetAgentKind === sessionAgentKind) {
       void runControlAction(() => maker.setFastMode(sessionId, enabled), { fastMode: enabled });
     }
-  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
+  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, orcaModelSelectionUsesIntent, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
   const toggleComposerModelPicker = useCallback(() => {
     if (!canConfigureSessionModel) {
       setModelSheetOpen(false);
@@ -9860,19 +9925,19 @@ function SessionScreenContent() {
           <ModelPickerSheet
             unified={{
               currentSelection: { agentKind: sessionAgentKind, activeModelId: currentSession.model, selectedProviderId: currentSession.providerId ?? null, selectedEffort: currentSession.effort ?? '', selectedFastMode: !!currentSession.fastMode },
-              scope: JSON.stringify([auth.user?.id, deviceId]),
+              scope: JSON.stringify([auth.user?.id, deviceId, orcaRemoteAgentDeviceId]),
               agents: sessionAgentSwitchSupported ? ['claude-code','codex','pi'] : [sessionAgentKind],
               loadCapabilities: async agent => {
-                const result = normalizeMobileAgentCapabilities(await maker.getCapabilities(agent));
+                const result = normalizeMobileAgentCapabilities(await loadComposerAgentCapabilities(agent));
                 if (!result) throw new Error('Capabilities unavailable');
                 return result;
               },
               onSelect: selectUnifiedComposerModel,
               // 远程 Agent:其他电脑上开放了远程调用的供应商接在后面,每个供应商一段、标题带电脑名。
-              ...(agentLocationMovable
+              ...(agentLocationMovable || orcaRemoteAgentDeviceId
                 ? {
                   remote: {
-                    catalogs: remoteAgentCatalogs,
+                    catalogs: modelSheetRemoteCatalogs,
                     selectedDeviceId: nextAgentDeviceId,
                     // 供应商组:组里其他电脑收进组那一项;归组的任务在组那一项里选模型留在此刻运行的那台。
                     hostDeviceId: deviceId,
@@ -9895,15 +9960,15 @@ function SessionScreenContent() {
             apiKeyStatus={deviceApiKeyStatus}
             capabilities={modelSheetCapabilities}
             disabled={controlBusy || !canUseRemoteSessionControls}
-            emptyHint={composerDeviceProviders.error && !composerDeviceProviders.unsupported
+            emptyHint={!orcaRemoteAgentDeviceId && composerDeviceProviders.error && !composerDeviceProviders.unsupported
               ? humanizeRemoteError(composerDeviceProviders.error)
               : modelSheetCapabilitiesError ?? undefined}
-            flatOptions={modelSheetRuntimeOptions.modelOptions}
+            flatOptions={orcaRemoteAgentDeviceId ? [] : modelSheetRuntimeOptions.modelOptions}
             providersReady={composerDeviceProviders.ready}
-            providersUnsupported={composerDeviceProviders.unsupported}
+            providersUnsupported={orcaRemoteAgentDeviceId ? false : composerDeviceProviders.unsupported}
             modelVisibilityOverrides={composerDeviceProviders.modelVisibilityOverrides}
             keyboardAvoidingBehavior={nativeShellLayout.keyboardAvoidingBehavior}
-            loading={composerDeviceProviders.loading || modelSheetCapabilitiesLoading}
+            loading={(orcaRemoteAgentDeviceId ? currentAgentCatalog.loading : composerDeviceProviders.loading) || modelSheetCapabilitiesLoading}
             loadingHint={modelSheetCapabilitiesLoading
               ? t('session.screen.readingCapabilities', { agent: mobileAgentLabel(modelSheetAgentKind) })
               : undefined}
@@ -9918,7 +9983,7 @@ function SessionScreenContent() {
             permissionDisabled={controlBusy || !canUseRemoteSessionControls}
             permissionOptions={runtimeOptions.permissionOptions}
             pricing={deviceModelPricing}
-            providers={composerDeviceProviders.providers}
+            providers={orcaRemoteAgentDeviceId ? [] : composerDeviceProviders.providers}
             selectedEffort={modelSheetSelection.effort}
             selectedFastMode={modelSheetSelection.fastMode}
             selectedProviderId={modelSheetSelection.providerId}

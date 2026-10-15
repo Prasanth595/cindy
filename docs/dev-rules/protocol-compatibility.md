@@ -22,6 +22,20 @@ Gateway 边界对整块报价校验，非法或无有效币种即整体省略，
 模型快照投影，成功刷新缺字段会移除旧展示；没有新权限、数据库迁移或独立价格缓存。
 两端可独立升级，完整展示需两端支持。字段只用于报价展示，不参与账单或调用授权。
 
+## 群聊邀请公开链接
+
+device-link-server 的公开页 `<deviceLinkBase>/chat-invite/join#<token>[?app=cindy|cindycn|cindydev]`
+与 Desktop 粘贴解析共用同一规则：口令为 43 位 base64url，只放在 fragment；URL 无 query、无用户信息；
+fragment 只允许一个闭集 `app` 提示，不允许额外 `#` / `?` 段；协议为 https，仅本机回环地址允许 http。
+页面在电脑上唤起既有 `cindy://chat-invite/<token>`，手机不唤起。客户端解析见
+`packages/device-link/src/chatInvitation.ts`（`parseChatInvitationToken`），继续接受裸口令与
+`cindy://chat-invite/<token>`；链接主机只校验形状，从不作为请求地址，也不据此切换 Chat Server
+或登录区域，口令只以请求正文发给当前账号的 Chat Server。
+
+发布顺序：先发布接受 https 粘贴的客户端，并保留「伙伴 → + → 输入邀请链接…」；sh-dev、sh-prod、
+sgp-prod 都部署该页面后，才把 `createInvite` 生成的链接切换为 https。旧客户端点击 https 链接
+经页面转到 `cindy://` 仍可用，但粘贴 https 链接需要新版客户端。Chat Server API 不变。
+
 ## 手机直连群的设置管理
 
 现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
@@ -863,18 +877,20 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `agentDeviceId`(null = A)。共享任务访客不能换电脑。
   桌面远程控制 A 上的已建任务(2026-10-09)与手机同口径：A 投影的任务带 `agentDeviceId` 字段(含 null)才开放，
   控制端直接经 device-link 读第三台电脑的 `maker:provider:list`，A 自己的目录照远程控制列全部供应商，换位置同样
-  带 `agentDeviceId`(null = A)，换后档位记在控制端为那台电脑单独记的一份(改回 A 时写 A 的镜像)。A 收到的分享与
-  控制端自己作为新的落点暂不在桌面控制端列出；Agent 正在控制端读不到目录的位置上时维持原有的 A 目录列表。
-  例外(2026-10-10)：Agent 当前 / 挂着的位置是分享(`share:<id>`)、且控制端自己的已收到列表里也有这条(分享按账号
-  授予，同账号电脑收到的是同一份)时，控制端经自己的分享通道读那份目录与 Agent 能力，模型按钮按分享显示，候选里
-  只并进这一条分享；不经 A、不新增 channel。控制端没收到时维持原样。
+  带 `agentDeviceId`(null = A)，换后档位记在控制端为那台电脑单独记的一份(改回 A 时写 A 的镜像)。
+  同账号收到的可用分享全部列为候选(2026-10-14)，不要求任务已在分享上运行；已暂停或已移除的分享仅保留当前 /
+  待切换位置，沿用既有不可用提示。分享按账号授予，控制端复用自己的已收到列表、分享目录与 Agent 能力通道，
+  新落点再经既有 `maker:provider-share:received-catalogs` 核对被控端已加载且未暂停该分享；
+  跨区启用标记是设备本地状态，不能仅凭控制端名单放行，也不触发新的跨区授权。查询失败时仅保留当前 / 待切换位置。
+  创建、换位置和发送仍交给任务所在的 A 校验与执行，不新增 channel 或授权。控制端自己暂不作为新落点列出；
+  Agent 正在控制端读不到目录的位置上时维持原有的 A 目录列表。控制端尚未收到的分享不凭任务记录授予访问。
   实现见 `apps/desktop/src/renderer/lib/controlledTaskAgentLocation.ts`，回归见
   `controlledTaskRemoteAgentPanel.test.tsx` 与 `remoteAgentRelocationWiring.test.ts`。
   桌面远程控制下新建任务(建到 A 上，2026-10-09)同样开放：判据与手机新建相同(A 的 `maker:provider:list` 带
   `remoteInvocationEnabled` 布尔标记，共享任务访客与 SSH 不开放)，模型面板先列 A 的全部供应商、再列其他同账号电脑
   已开放的供应商；选中后草稿的模型目录改按那台，`maker:create-session` 带 `agentDeviceId`，权限档沿用 A 的草稿值，
   不把那台的模型写进 A 的新建草稿记忆；默认来源解析、提交的来源与协同 Worker 收窄都只用那台已开放的供应商。
-  落点范围与已建任务相同(A 收到的分享与控制端自己暂不列出)；协同草稿与它不互斥(与桌面本机新建一致)。回归见
+  落点范围与已建任务相同(包括同账号可用分享，控制端自己暂不列出)；协同草稿与它不互斥(与桌面本机新建一致)。回归见
   `controlledDraftRemoteAgentWiring.test.ts`。
   Mobile 新建任务(2026-10-08)同样列出这些供应商与分享来的供应商，选中后 `maker:create-session` 带
   `agentDeviceId`(与桌面新建同一参数，A 已接受)；只有 A 的 `maker:provider:list` 带 `remoteInvocationEnabled`
@@ -926,6 +942,18 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   无关；A 换目录后关闭空闲 handle，下次发送按新目录重建，B 上的会话记录原样续用。
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
+
+Orca 原地 Agent 切换补充边界：执行设备任务按既有 `orca_remote_lead` 判定，
+与 `orca_role` 一样拒绝用户换 Agent 位置，不新增 wire 字段或版本要求。
+Mobile 对已在另一台电脑运行的 Orca Agent，按所展示的模型目录所在电脑查询
+`maker:get-capabilities`；登记切换仍发给任务所在电脑。旧端保持原能力校验，
+不会因目标电脑未注册该 Harness 而回退到别的电脑执行。
+
+Desktop 本机 `maker:switch-session-agent` 的可选第 7 参增加
+`confirmedContextWindow`（正整数），仅供同 Agent 选模保留已核对的窗口。
+Renderer 与本机 Host 同包升级；不向 device-link 发送该字段，Host 对远程传入
+显式拒绝，沿用 SET_MODEL 的本机确认边界。无此字段仍可登记选择，但 Orca
+发送时若需要未确认的窗口重建，会保留意图并拒绝发送，用户可重新选择后确认。
 
 与上一节方向相反：协同的 Lead 与团队留在 A，单个 Worker 的任务、目录、命令与文件都在 B(运行设备)。
 B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 0124，JSON 见
@@ -1704,20 +1732,24 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 - 后续：若服务端放开主时间线 `replyToId`（能力协商后），客户端可同时写 `replyToId` 获得外键约束与
   删除感知，卡片继续承担快照与旧端兼容；两者并存时以 `replyToId` 为准。
 
-## 委派任务的完成通知归属
+## 委派任务与自动任务的完成通知策略
 
 既有 `SessionActivityPayload` 可选字段 `completionNotification` 影响远端桌面、手机与飞书完成通知：
-`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴；
+`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴，
+`silent` 表示本轮完成静默（即使保留历史未读，也不重新弹出、响铃或发外部通知）；
 缺省或未知值按普通任务完成通知处理。完成 phase、摘要和 attention 在 pending 阶段照常发送，
 回传决定通过同一活动通道更新；执行宿主等到真实 `done` 的回传边界再决定，前置
 `status: Done` 不能提前消费归属。本机外部通知共用这一决定；控制端的手机/飞书调用
-在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴则取消调用。已读、断开、
+在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴或本轮静默则取消调用。
+没有活动记录（例如静默完成的清除帧早于 renderer 的 done 回调）不能当作新完成的证据。
+`silent` 随未读账本和重连快照保留，新一轮运行清除；聊天过程与历史未读不受影响。已读、断开、
 新一轮运行、报错或待交互使旧完成调用失效，不延迟错误与待答通知，也不更改任何未读。
 控制端桌面仅对已观察运行的任务补发必要 fallback 一次，重连的
 基线终态不补发历史提醒。错误与待交互不受此字段影响。
 
-新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
-去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
+新控制端连接旧执行端时，明确的普通未读完成仍按原规则通知；旧控制端忽略该字段或未知枚举，
+仍可能发独立完成通知，完整远端去重和保留旧未读时的静默需要两端更新。
+手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
 
 ## 伙伴创建时选择模型

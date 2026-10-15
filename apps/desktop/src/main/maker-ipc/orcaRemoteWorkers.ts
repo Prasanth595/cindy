@@ -708,6 +708,7 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
             return {
               ok: true,
               mode: result.mode,
+              ...(result.mode !== 'queued' ? { agentKind: result.agentKind } : {}),
               clientId,
               dispatchOutcome:
                 result.mode === 'queued'

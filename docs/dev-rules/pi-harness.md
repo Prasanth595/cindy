@@ -64,9 +64,15 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   MCP 请求接入 Pi 的取消信号；Bun fetch 的独立空闲计时关闭，由既有请求期限统一约束响应头与
   正文。取消只中止本次 HTTP 等待，不承诺撤销服务端已执行的动作。网络错误只附白名单错误码，
   仅 JSON-RPC `-32602` 明确参数错误附 schema，工具业务错误保留原反馈。
-- **plan 模式**:挂 pi 自带 plan-mode 扩展,`/plan` toggle 驱动;Cindy 维护镜像态并在 resume
-  时从本机 session JSONL 校正（只打开启动时 `--session-dir` 真身内的普通文件，
-  并有字节/时间预算，超限回退 RPC）；远端仍走 `get_entries`。
+- **plan 模式**:自动挂载 Pi 分发包自带的 plan-mode 扩展，无需用户另装。UI 勾选是下一条
+  消息的一次性意图，与原生运行态分开；`StartSessionOptions.planMode` 设置起始档，
+  `SendOptions.planMode` 快照决定本轮，切档与 prompt 在同一 RPC 串行段执行。发送后消耗
+  勾选不关闭在途计划轮；下一条普通消息恢复普通工具。扩展缺失或切档失败时拒绝计划请求，
+  不悄悄按普通模式执行。缺失扩展不阻止会话启动，启动计划意图保留到发送时拒绝；
+  取消计划后普通消息仍可发送。resume 和原生 Execute/Refine 续轮从本机 session JSONL
+  校正运行态；远端仍走 `get_entries`。原生续轮校正期间 Host 写操作保持不可用。
+  启动校正失败且没有显式计划意图时，发送前重新读取原生状态；仍未知则拒绝发送及包变更，
+  读回后沿用原生档位并按正常接受边界消耗一次性计划意图，不默认关闭计划模式。
 
 > Cindy 自有子代理的委派、控制、结果收口与测试边界见 [Pi 子代理设计](../research/pi-subagent-delegation.md)。与 Orca 协作模式分别维护。
 

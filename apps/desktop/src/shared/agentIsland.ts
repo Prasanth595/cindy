@@ -24,6 +24,8 @@ export interface AgentIslandActivityLine {
  * Renderer-facing session snapshot for the macOS Agent Island overlay.
  */
 export interface AgentIslandSessionSnapshot {
+  /** This completion preserves older unread state without requesting a new alert. */
+  completionNotification?: 'silent';
   sessionId: string;
   title: string;
   projectName: string | null;
@@ -53,6 +55,7 @@ export interface AgentIslandPermissionActionSnapshot {
  */
 export interface AgentIslandSessionActivity
   extends Omit<SessionActivitySnapshot, 'phase' | 'interactionKind'> {
+  completionNotification?: 'silent';
   phase: AgentIslandSessionPhase;
   interactionKind?: AgentIslandInteractionKind;
   /** Compatibility/display alias; canonical probe field is currentActionSummary. */
@@ -754,7 +757,7 @@ export const AGENT_ISLAND_SET_REMOTE_SESSIONS_CHANNEL = 'agent-island:set-remote
  * 只含 running / needs-interaction / 未读终态;范围由 renderer 按侧栏「任务范围」裁剪。
  */
 export interface AgentIslandRemoteSessionInput {
-  completionNotification?: 'pending' | 'teammate';
+  completionNotification?: 'pending' | 'teammate' | 'silent';
   sessionId: string;
   deviceId: string;
   deviceName: string | null;
@@ -813,7 +816,7 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       workspaceKind: readBoundedString(record.workspaceKind, 64),
       agentKind: readBoundedString(record.agentKind, 64),
       phase: phase as AgentIslandSessionPhase,
-      ...(record.completionNotification === 'pending' || record.completionNotification === 'teammate'
+      ...(record.completionNotification === 'pending' || record.completionNotification === 'teammate' || record.completionNotification === 'silent'
         ? { completionNotification: record.completionNotification } : {}),
       detail: readBoundedString(record.detail, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH) ?? '',
       ...(workingPhase ? { workingPhase } : {}),

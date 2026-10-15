@@ -4011,6 +4011,61 @@ describe('AgentIslandService native publishing', () => {
     }
   });
 
+  it.each([false, true])('keeps scheduled completions silent on source and remote devices (oldUnread=%s)', async oldUnread => {
+    vi.useFakeTimers();
+    const { AgentIslandService } = await import('../service.js');
+    const sourcePublish = vi.fn((state: AgentIslandDisplayState) => state.visible);
+    const sourceSound = vi.fn(() => true);
+    const remotePublish = vi.fn((state: AgentIslandDisplayState) => state.visible);
+    const remoteSound = vi.fn(() => true);
+    const desktopEvent = vi.fn();
+    const source = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish: sourcePublish, playSound: sourceSound }, isCompletionHandledByTeammate: async () => false });
+    const remote = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish: remotePublish, playSound: remoteSound } });
+    const desktop = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish: () => false }, onDeviceSessionEvent: desktopEvent });
+    try {
+      syncEnabledForTest(source, sourcePublish);
+      syncEnabledForTest(remote, remotePublish);
+      for (const service of [source, remote]) service.setSoundSettings({ enabled: true, sounds: { ...DEFAULT_AGENT_ISLAND_SOUND_SETTINGS.sounds, complete: customSound('complete.wav') } });
+      mocks.tapWindowBroadcast.mockImplementation((channel, raw) => {
+        if (channel !== SESSION_ACTIVITY_CHANNEL) return;
+        const p = raw as { sessionId: string; phase: 'running' | 'needs-interaction' | 'completed' | 'error'; compactDetail: string; attention: boolean; completionNotification?: 'pending' | 'teammate' | 'silent' };
+        const keep = p.phase === 'running' || p.phase === 'needs-interaction' || p.attention;
+        const inputs = keep ? [{ sessionId: p.sessionId, deviceId: 'source', deviceName: 'Source', title: 'Task', workingDir: null, workspaceKind: 'conversation' as const, agentKind: 'cc' as const, phase: p.phase, detail: p.compactDetail, completionNotification: p.completionNotification }] : [];
+        remote.setDeviceSessions(inputs);
+        desktop.setDeviceSessions(inputs);
+      });
+      const meta = { sessionId: 'scheduled-silent', agentKind: 'codex' };
+      if (oldUnread) {
+        source.handleUserPrompt(meta, 'Earlier manual task');
+        source.handleAgentEvent(meta, doneEvent());
+        await vi.advanceTimersByTimeAsync(2000);
+      }
+      source.handleScheduleEvent({ type: 'silenced', scheduleId: 'schedule', runId: 'run', sessionId: meta.sessionId });
+      source.handleUserPrompt(meta, 'Scheduled check');
+      await vi.advanceTimersByTimeAsync(2000);
+      sourceSound.mockClear(); remoteSound.mockClear(); desktopEvent.mockClear();
+      source.handleAgentEvent(meta, doneEvent());
+      source.handleScheduleEvent({ type: 'completed', scheduleId: 'schedule', runId: 'run', sessionId: meta.sessionId, silenced: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sourceSound).not.toHaveBeenCalled();
+      expect(desktopEvent).not.toHaveBeenCalled();
+      expect(remoteSound).not.toHaveBeenCalled();
+      expect(remotePublish.mock.calls.at(-1)?.[0].pillSnapshot.unreadCompletedCount).toBe(oldUnread ? 1 : 0);
+
+      source.handleUserPrompt(meta, 'Manual follow-up');
+      await vi.advanceTimersByTimeAsync(2000);
+      source.handleAgentEvent(meta, doneEvent());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sourceSound).toHaveBeenCalledWith(customSound('complete.wav'));
+      expect(remoteSound).toHaveBeenCalledWith(customSound('complete.wav'));
+      expect(desktopEvent).toHaveBeenCalledWith(expect.objectContaining({ kind: 'done' }));
+    } finally {
+      source.resetRuntimeState(); remote.resetRuntimeState(); desktop.resetRuntimeState();
+      mocks.tapWindowBroadcast.mockReset();
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves older session attention without playing completion sound for a silenced run', async () => {
     vi.useFakeTimers();
     try {

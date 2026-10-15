@@ -484,7 +484,7 @@ describe('switching computers within a group on another computer', () => {
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ agentDeviceId: 'share:s1', providerId: 'anthropic' }),
-      { beforeSend: true },
+      { beforeSend: true, isCurrent: expect.any(Function) },
     );
     const healthy = bound();
     await healthy.service.beforeSend('s1');

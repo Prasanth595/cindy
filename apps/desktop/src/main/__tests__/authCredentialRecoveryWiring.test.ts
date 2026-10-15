@@ -88,7 +88,7 @@ describe('production credential recovery wiring', () => {
         },
         authManager: {
           initialize: () => (rejects ? Promise.reject(outcome) : Promise.resolve(outcome)),
-          ensureStableOwnerPostCommitTasks: vi.fn(async () => {}),
+          requestStableOwnerPostCommit: vi.fn(),
         },
         authCredentialRecovery: { request },
         app: { isPackaged: true },

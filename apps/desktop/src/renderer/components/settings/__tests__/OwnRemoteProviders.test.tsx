@@ -52,6 +52,20 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('useOwnRemoteProviders', () => {
+  it.each([
+    [true, false, 0],
+    [true, true, 1],
+    [false, true, 0],
+  ])('xAI connected=%s remoteInvocationEnabled=%s yields %s rows', (connected, remoteInvocationEnabled, count) => {
+    devices.value = [{ deviceId: 'mini-a', name: 'Mac', platform: 'darwin' }];
+    catalogs.value = new Map([['mini-a', {
+      providers: [provider('xai-account', { name: 'xAI', connected, remoteInvocationEnabled })],
+      loading: false, error: null,
+    }]]);
+    const { result } = renderHook(() => useOwnRemoteProviders());
+    expect(result.current).toHaveLength(count);
+  });
+
   it('lists the connected providers my online computers open for remote use', () => {
     devices.value = [
       { deviceId: 'mini-a', name: "Magi's Mac Mini", platform: 'darwin' },

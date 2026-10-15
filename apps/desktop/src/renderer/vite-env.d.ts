@@ -1121,22 +1121,6 @@ interface GoalStatusPayload {
   lastReason: string | null;
 }
 
-type CindyMediaPreferenceOption = {
-  id: string;
-  label: string;
-  group: string;
-  providerId: string;
-  providerName: string;
-  modelId: string;
-  modelName: string;
-  routing?: import('@cindy/model-providers').Provider['routing'];
-};
-
-type CindyMediaPreferenceKind = {
-  options: CindyMediaPreferenceOption[];
-  defaultModel: CindyMediaPreferenceOption | null;
-};
-
 type ElectronLocalDbSessionListOptions = {
   /** Local list continuation; does not change the default capped query. */
   before?: { updatedAt: number; id: string };
@@ -1343,55 +1327,14 @@ interface ElectronAPI {
       },
     ) => Promise<{ ghost: import('../shared/ghost').InstalledGhost }>;
     /**
-     * cindy 槽后端覆盖:首帧同步读(规则 7);overrides 键为 "image.generate"
-     * 等能力键;image/video 各一份下拉数据,defaultModel = 目录默认
-     * 选型的展示信息("默认(GPT Image 2)")。
-     * options 空 + defaultModel null = 目录没给该类目模型(能力暂不可用),
-     * 渲染层显示灰字而非下拉。
+     * 插件「模型与任务」配置:首帧同步读(规则 7);config 缺项 = 跟随默认。
+     * 模型字段同时用于快问快答与插件新建任务;auxiliaryModelLabel = 当前系统
+     * 辅助模型显示名(未选模型时快问快答跟随它;旧主进程缺省)。
      */
-    cindyPrefsSync: (id: string) => {
-      overrides: Record<string, string>;
-      image: CindyMediaPreferenceKind;
-      imageEdit: CindyMediaPreferenceKind;
-      video: CindyMediaPreferenceKind;
-      videoEdit: CindyMediaPreferenceKind;
-      /** 文本类(快问快答):选项是当前供应商目录的全部文本模型(cat: 编码钉值,
-       *  带供应商/模型/徽标等结构化字段供富列表渲染);declaredModel = 身份卡声明
-       *  的偏好模型(目录里解析得到才给,"跟随默认"行据此如实展示实际路由)。 */
-      text: {
-        options: Array<{
-          id: string;
-          label: string;
-          group: string;
-          providerId: string;
-          agentKind: string;
-          modelId: string;
-          modelName: string;
-          icon?: string;
-          budget: boolean;
-          subscription: boolean;
-          routing?: ProviderRoutingPayload;
-          agentSuffix?: string;
-        }>;
-        defaultModel: { id: string; label: string } | null;
-        declaredModel?: { id: string; label: string } | null;
-        /** 存量轻量档位钉(目录扩展前的合法钉值)的展示名表,老钉值回显友好名用。 */
-        utilityProfiles?: Array<{ id: string; label: string }>;
-      };
-      /** 向量类(文本转向量):同 image/video 走目录派生。 */
-      embed: {
-        options: Array<{ id: string; label: string }>;
-        defaultModel: { id: string; label: string } | null;
-      };
+    errandPrefsSync: (id: string) => {
+      config: Record<string, unknown>;
+      auxiliaryModelLabel?: string | null;
     };
-    /** 写/清一项覆盖(model=null 即恢复跟随默认);返回该意识最新覆盖表。 */
-    setCindyPref: (
-      id: string,
-      capability: string,
-      model: string | null,
-    ) => Promise<{ overrides: Record<string, string> }>;
-    /** 派活(errand)每插件配置:首帧同步读(规则 7);config 缺项 = 跟随默认。 */
-    errandPrefsSync: (id: string) => { config: Record<string, unknown> };
     /** 整卡替换派活配置(null / 空对象 = 全恢复跟随默认);返回清洗后的落盘值。 */
     setErrandConfig: (
       id: string,
@@ -1423,6 +1366,12 @@ interface ElectronAPI {
     acknowledgeRetirement: (id: string) => Promise<{ ok: true }>;
     setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string) => Promise<{ ok: true }>;
     requestTaskApproval: (id: string) => Promise<{ granted: boolean }>;
+    /** 详情页「后台任务」:本插件转入后台(hidden)且未删除的任务。 */
+    listBackgroundTasks: (id: string) => Promise<{
+      items: Array<{ taskId: string; title: string; status: 'active' | 'archived'; updatedAt: number; running: boolean }>;
+    }>;
+    /** 「显示到任务列表」:清除后台隐藏,任务重新出现在任务列表。 */
+    revealBackgroundTask: (id: string, taskId: string) => Promise<{ ok: true }>;
     /** 目录级禁用清单(插件页项目范围视图;sendSync 切换同帧渲染)。 */
     workdirPrefsSync: (workdir: string) => { disabled: string[] };
     /** 写/清一条目录级例外(disabled=false 即清除,回到跟随全局)。 */
@@ -2230,12 +2179,14 @@ interface ElectronAPI {
   }>;
   profileChooseAvatar: () => Promise<{
     canceled: boolean;
-    filePath?: string;
     previewDataUrl?: string;
   }>;
   profileUpdate: (params: {
     name: string | null;
-    avatar: { type: 'keep' } | { type: 'set'; filePath: string } | { type: 'reset' };
+    avatar:
+      | { type: 'keep' }
+      | { type: 'set'; data: Uint8Array; mimeType: 'image/png' | 'image/jpeg' }
+      | { type: 'reset' };
   }) => Promise<{ ok: true }>;
 
   // Slack 官方 MCP(slackOfficial)已于 2026-07-15 退役(能力迁入内置意识 cindy-slack);
@@ -2768,6 +2719,8 @@ interface ElectronAPI {
           message?: string;
         }
     >;
+    /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
+    chatCancel: (requestId: string) => Promise<void>;
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -2972,6 +2925,7 @@ interface ElectronAPI {
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => void,
@@ -2991,6 +2945,7 @@ interface ElectronAPI {
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
     | { type: 'chat-invite'; token: string }
+    | { type: 'chat-invite-malformed' }
     | { type: 'provider-share-join'; link: string }
     | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
     | null
@@ -3080,6 +3035,29 @@ interface ElectronAPI {
   cindyMakeMerge: (
     input: import('../shared/cindyMakeMerge').CindyMakeMergeRequest,
   ) => Promise<import('../shared/cindyMakeMerge').CindyMakeMergeState | undefined>;
+  /** Settings → Cindy Make: bind the personal version to the user's GitHub fork. */
+  cindyMakePersonalRemote: (
+    action: import('../shared/cindyMakePersonalRemote').CindyMakePersonalRemoteAction,
+  ) => Promise<import('../shared/cindyMakePersonalRemote').CindyMakePersonalRemoteState>;
+  /** The single Sync of the personal version: GitHub steps run only when shared there. */
+  cindyMakeSync?: (
+    request: import('../shared/cindyMakeSync').CindyMakeSyncRequest,
+  ) => Promise<import('../shared/cindyMakeSync').CindyMakeSyncState>;
+  /** Submit one Cindy Make change to the official repository as a pull request. */
+  cindyMakeContribution: {
+    (request: { action: 'status' }): Promise<
+      import('../shared/cindyMakeContribution').CindyMakeContributionView[]
+    >;
+    (request: { action: 'draft'; runId: string }): Promise<
+      import('../shared/cindyMakeContribution').CindyMakeContributionDraft
+    >;
+    (
+      request: Extract<
+        import('../shared/cindyMakeContribution').CindyMakeContributionRequest,
+        { action: 'submit' }
+      >,
+    ): Promise<import('../shared/cindyMakeContribution').CindyMakeContributionView>;
+  };
   getCindyMakeSettings: () => Promise<import('../shared/cindyMakeSettings').CindyMakeSettings>;
   setCindyMakeSyncLatestBeforeBuild: (
     enabled: boolean,
@@ -6333,7 +6311,7 @@ interface ElectronAPI {
       effort?: string,
       fastMode?: boolean,
       /** 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。 */
-      options?: { agentDeviceId?: string | null },
+      options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ) => Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';

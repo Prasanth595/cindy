@@ -327,6 +327,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('BotGroupChatView', () => {
+  it('keeps archived history readable and restores the composer only after the group is unarchived', async () => {
+    const archived = detail({ serverBacked: true, archived: true,
+      messages: [msg({ content: 'Preserved group history' })],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: archived });
+    renderView();
+    await screen.findByText('Preserved group history');
+    expect(screen.getByText('bots.groupChat.server.settings.archived')).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...archived, archived: false } });
+    act(() => { mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'updated' })); });
+    await screen.findByRole('textbox');
+    expect(screen.getByText('Preserved group history')).toBeTruthy();
+    expect(screen.queryByText('bots.groupChat.server.settings.archived')).toBeNull();
+  });
+
   function mockThreadMotion(duration: string) {
     const style = document.createElement('style');
     style.textContent = `aside { --motion-base: ${duration}; --motion-ease-move: linear; }`;

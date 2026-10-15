@@ -3,7 +3,8 @@
  * ---------------------------------------------------------------------------
  * URL 形态(scheme 单点在 shared/deepLinkSchemes.ts:生成一律主 scheme cindy://,
  * 解析主 + 历史 scheme 都认——存量消息里的 xdt-maker:// 老链接不能死):
- *   cindy://chat-invite/<token>            —— 预填群邀请，预览后由用户确认加入
+ *   cindy://chat-invite/<token>            —— 打开群邀请，自动预览后由用户确认加入;
+ *                                             口令残缺时只回报「链接无效」,不带链接内容
  *   cindy://session/<sessionId>             —— sessionId 直接是 string id
  *   cindy://project/<urlencoded-workingDir> —— workingDir 全路径 URL-encoded
  *   cindy://settings/providers[?connect=<providerId>] —— 打开设置「模型供应商」页,
@@ -67,6 +68,8 @@ export const OPEN_SHARE_FILE_FLAG = '--open-share-file';
 
 export type DeepLinkPayload =
   | { type: 'chat-invite'; token: string }
+  /** 点开的群邀请链接口令残缺或被改动：不带任何链接内容，只让 Renderer 明确告知。 */
+  | { type: 'chat-invite-malformed' }
   | { type: 'shared-task-join'; invitation: string; server: string }
   /** 供应商分享链接：原样交给 Renderer 的申请弹窗，由主进程命令再解析与核对区域。 */
   | { type: 'provider-share-join'; link: string }
@@ -115,7 +118,7 @@ export function parseDeepLink(url: string): DeepLinkPayload | null {
   const rest = url.slice(prefix.length);
   if (rest.startsWith('chat-invite/')) {
     const token = rest.slice('chat-invite/'.length);
-    return /^[A-Za-z0-9_-]{43}$/.test(token) ? { type: 'chat-invite', token } : null;
+    return /^[A-Za-z0-9_-]{43}$/.test(token) ? { type: 'chat-invite', token } : { type: 'chat-invite-malformed' };
   }
   // provider/import 是双段精确路径，必须在通用 type/value 解析前消费。
   if (rest.startsWith('provider/')) {
@@ -282,7 +285,7 @@ export function buildFocusDeepLink(source: string): string {
 //     直接 webContents.send,不进 pending
 let pendingDeepLink: DeepLinkPayload | null = null;
 // Invitation targets must survive unrelated navigation and login focus callbacks.
-const pendingChatInvitations: Array<Extract<DeepLinkPayload, { type: 'chat-invite' }>> = [];
+const pendingChatInvitations: Array<Extract<DeepLinkPayload, { type: 'chat-invite' | 'chat-invite-malformed' }>> = [];
 let mainWindowRef: BrowserWindow | null = null;
 
 export function setDeepLinkMainWindow(win: BrowserWindow | null): void {
@@ -440,8 +443,9 @@ function dispatchDeepLink(payload: DeepLinkPayload, shouldFocus = true): void {
   }
   const win = mainWindowRef;
   const windowReady = win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading();
-  if (payload.type === 'chat-invite') {
-    if (!pendingChatInvitations.some(invitation => invitation.token === payload.token)) {
+  if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
+    if (!pendingChatInvitations.some(invitation => invitation.type === payload.type
+      && (payload.type === 'chat-invite-malformed' || (invitation.type === 'chat-invite' && invitation.token === payload.token)))) {
       pendingChatInvitations.push(payload);
     }
     if (shouldFocus) focusMainWindow();

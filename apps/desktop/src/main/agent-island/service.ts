@@ -669,6 +669,11 @@ export class AgentIslandService {
   setDeviceSessions(inputs: readonly AgentIslandRemoteSessionInput[]): void {
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
     const result = syncAgentIslandDeviceSessions(this.state, inputs, Date.now());
+    for (const input of inputs) {
+      if (input.phase === 'completed' && input.completionNotification === 'silent') {
+        this.mutedCompletionSoundSessionIds.add(input.sessionId);
+      }
+    }
     for (const sessionId of result.baselineSessionIds) this.baselineSoundSessionIds.add(sessionId);
     if (result.changed) this.publish();
     if (this.isEnabled()) return;
@@ -1556,6 +1561,7 @@ export class AgentIslandService {
    */
   private buildSessionActivityPayload(): AgentIslandSessionActivity[] {
     return buildAllSessionActivitySnapshots(this.state).map((s) => ({
+      ...(s.completionNotification ? { completionNotification: s.completionNotification } : {}),
       ...projectSessionActivity({
         sessionId: s.sessionId,
         recordStatus: 'active',

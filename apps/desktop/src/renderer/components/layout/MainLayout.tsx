@@ -1,5 +1,5 @@
 import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
-import { ChatInviteHost, requestChatInvite } from '@/features/bots/ChatInviteHost';
+import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { buildSharedTaskInvitationLink } from '@cindy/device-link';
 import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
@@ -640,11 +640,16 @@ export function MainLayout() {
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
       if (payload.type === 'chat-invite') {
         requestChatInvite(payload.token);
+        return;
+      }
+      if (payload.type === 'chat-invite-malformed') {
+        reportMalformedChatInvite();
         return;
       }
       if (payload.type === 'provider-share-join') {
@@ -711,7 +716,7 @@ export function MainLayout() {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.onDeepLinkNavigate((payload) => {
-      if (payload.type === 'chat-invite') {
+      if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
         void pullChatInvitations();
         return;
       }

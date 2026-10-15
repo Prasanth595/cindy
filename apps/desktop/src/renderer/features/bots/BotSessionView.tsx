@@ -107,6 +107,12 @@ function BotSessionGateView() {
         : gateIdentity,
     [gateIdentity, liveName, liveAvatar, liveAvatarColor],
   );
+  // A read-only demoted copy offers no add-to-group entry, like its settings.
+  const canonicalChat = gate.kind === 'ready' && gate.isCanonical && !shadowed;
+  const chatIdentity = useMemo(
+    () => (gateIdentity ? { ...(identity ?? gateIdentity), canonicalChat } : null),
+    [gateIdentity, identity, canonicalChat],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -269,7 +275,7 @@ function BotSessionGateView() {
         <div className="min-h-0 flex-1">
           <CCAgentSessionView
             botMentions={gate.mentions}
-            botIdentity={identity ?? gate.identity}
+            botIdentity={chatIdentity ?? gate.identity}
             botUnreadBoundaryAt={gate.unreadBoundaryAt}
             onBotReadThrough={gate.isCanonical ? onReadThrough : undefined}
             {...(readOnly ? { readOnly: true } : {})}
