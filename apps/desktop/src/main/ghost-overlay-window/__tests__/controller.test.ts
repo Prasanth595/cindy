@@ -1,0 +1,473 @@
+// GhostOverlayWindowsController 生命周期状态机单测(DI only,不依赖 electron)。
+// 覆盖:双阶段就绪、5s 超时壳、hide 复用、用户禁用拒绝、unmount、reconcile、
+// owner 切换、崩溃恢复有界、多插件隔离、move/setInteractive 直通。
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BrowserWindow, WebContents } from 'electron';
+
+import type { GhostOverlayWindowsState } from '../../../shared/ghostOverlayWindow.js';
+import { GHOST_OVERLAY_WINDOW_VISIBILITY_CHANGED_CHANNEL } from '../../../shared/ghostOverlayWindow.js';
+import type { InstalledGhost, GhostManifest } from '../../../shared/ghost.js';
+import {
+  clearGhostOverlayWebContents,
+  isGhostOverlayWebContents,
+  markGhostOverlayWebContentsId,
+} from '../registry.js';
+import {
+  GhostOverlayWindowsController,
+  type GhostOverlayWindowsControllerDeps,
+} from '../controller.js';
+
+interface FakeWindow {
+  on: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+  showInactive: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  restore: ReturnType<typeof vi.fn>;
+  setPosition: ReturnType<typeof vi.fn>;
+  setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
+  isMinimized: () => boolean;
+  isVisible: () => boolean;
+  isDestroyed: () => boolean;
+  visible: boolean;
+  webContents: {
+    id: number;
+    send: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    isDestroyed: () => boolean;
+  };
+  emitClosed: () => void;
+  emitWindowEvent: (event: string, ...args: unknown[]) => void;
+  emitWebContentsEvent: (event: string, ...args: unknown[]) => void;
+  _id: number;
+}
+
+let nextId = 1;
+function fakeWindow(): FakeWindow {
+  const id = nextId++;
+  const winListeners = new Map<string, (...args: unknown[]) => void>();
+  const wcListeners = new Map<string, (...args: unknown[]) => void>();
+  let destroyed = false;
+  let visible = false;
+  const wcOn = vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+    wcListeners.set(event, cb);
+  });
+  const win: FakeWindow = {
+    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      winListeners.set(event, cb);
+    }),
+    destroy: vi.fn(() => {
+      destroyed = true;
+      visible = false;
+      winListeners.get('closed')?.();
+    }),
+    hide: vi.fn(() => {
+      visible = false;
+    }),
+    show: vi.fn(() => {
+      visible = true;
+    }),
+    showInactive: vi.fn(() => {
+      visible = true;
+    }),
+    focus: vi.fn(),
+    restore: vi.fn(),
+    setPosition: vi.fn(),
+    setIgnoreMouseEvents: vi.fn(),
+    isMinimized: () => false,
+    isVisible: () => visible,
+    isDestroyed: () => destroyed,
+    visible: false,
+    webContents: {
+      id,
+      send: vi.fn(),
+      on: wcOn,
+      isDestroyed: () => destroyed,
+    },
+    emitClosed: () => {
+      destroyed = true;
+      visible = false;
+      winListeners.get('closed')?.();
+    },
+    emitWindowEvent: (event, ...args) => {
+      if (event === 'hide') visible = false;
+      if (event === 'show') visible = true;
+      winListeners.get(event)?.(...args);
+    },
+    emitWebContentsEvent: (event, ...args) => wcListeners.get(event)?.(...args),
+    _id: id,
+  };
+  return win;
+}
+
+function ghost(id: string, opts: { enabled?: boolean; overlay?: boolean } = {}): InstalledGhost {
+  const manifest: GhostManifest = {
+    schemaVersion: 2,
+    id,
+    name: id,
+    version: '1.0.0',
+    kind: 'chip',
+    entry: 'main.js',
+    ...(opts.overlay !== false ? { overlay: { html: 'overlay.html' } } : {}),
+  };
+  return {
+    manifest,
+    dir: `/fake/${id}`,
+    enabled: opts.enabled ?? true,
+    approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
+  };
+}
+
+function makeHarness(declaredIds: Set<string>, userEnabledIds: Set<string> = declaredIds) {
+  let quitting = false;
+  const created: Array<{ ghostId: string; win: FakeWindow }> = [];
+  const broadcasts: GhostOverlayWindowsState[] = [];
+  const log = {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  };
+
+  const deps: GhostOverlayWindowsControllerDeps = {
+    createWindow: async (ghostId) => {
+      const win = fakeWindow();
+      // 对齐 Task 3 工厂:窗口创建后登记 webContentsId ↔ ghostId。
+      markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+      created.push({ ghostId, win });
+      return win as unknown as BrowserWindow;
+    },
+    isGhostOverlayDeclared: (id) => declaredIds.has(id),
+    isUserEnabled: (id) => userEnabledIds.has(id),
+    broadcastState: (s) => {
+      broadcasts.push(s);
+    },
+    isQuitting: () => quitting,
+    log,
+  };
+  const controller = new GhostOverlayWindowsController(deps);
+  return {
+    controller,
+    created,
+    broadcasts,
+    log,
+    setDeclared: (ghostId: string, declared: boolean) => {
+      if (declared) declaredIds.add(ghostId);
+      else declaredIds.delete(ghostId);
+    },
+    setUserEnabled: (ghostId: string, enabled: boolean) => {
+      if (enabled) userEnabledIds.add(ghostId);
+      else userEnabledIds.delete(ghostId);
+    },
+    setQuitting: (v: boolean) => {
+      quitting = v;
+    },
+  };
+}
+
+function markReady(controller: GhostOverlayWindowsController, win: FakeWindow): void {
+  controller.markRendererReady(win.webContents as unknown as WebContents);
+  controller.markPresentationReady(win.webContents as unknown as WebContents);
+}
+
+describe('prewarm', () => {
+  it('prewarm creates hidden window without showing or focusing', async () => {
+    const h = makeHarness(new Set(['a']));
+    h.controller.prewarm('a');
+    await vi.waitFor(() => expect(h.created).toHaveLength(1));
+    const win = h.created[0].win;
+    expect(win.showInactive).not.toHaveBeenCalled();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+    expect(h.controller.getState().a?.mounted).toBe(true);
+  });
+
+  it('prewarm is idempotent (no duplicate window while in flight)', async () => {
+    const h = makeHarness(new Set(['a']));
+    h.controller.prewarm('a');
+    h.controller.prewarm('a');
+    await vi.waitFor(() => expect(h.created).toHaveLength(1));
+    h.controller.prewarm('a');
+    await Promise.resolve();
+    expect(h.created).toHaveLength(1);
+  });
+});
+
+describe('two-phase ready', () => {
+  it('does not show before both ready phases, shows after presentation-ready', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    expect(win.showInactive).not.toHaveBeenCalled();
+
+    // 只有 renderer-ready 还不够:不得抢跑展示。
+    h.controller.markRendererReady(win.webContents as unknown as WebContents);
+    expect(win.showInactive).not.toHaveBeenCalled();
+
+    h.controller.markPresentationReady(win.webContents as unknown as WebContents);
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
+    expect(win.focus).not.toHaveBeenCalled(); // 浮窗永不抢焦点
+    expect(h.controller.getState().a).toEqual({
+      mounted: true,
+      visible: true,
+      interactive: false,
+    });
+  });
+});
+
+describe('show timeout (5s shell)', () => {
+  it('renderer ready but content pending at timeout: shows the mounted shell', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      await h.controller.show('a');
+      const win = h.created[0].win;
+      h.controller.markRendererReady(win.webContents as unknown as WebContents);
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(win.showInactive).toHaveBeenCalledTimes(1);
+      expect(win.focus).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renderer never ready at timeout: never shows blank, rebuilds bounded', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      await h.controller.show('a');
+      const win1 = h.created[0].win;
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // 壳未就绪:不得展示空白窗口,作废缓存并重建重开(有界恢复)。
+      expect(win1.isDestroyed()).toBe(true);
+      expect(h.created).toHaveLength(2);
+      expect(h.created[1].win.showInactive).not.toHaveBeenCalled();
+
+      // 恢复额度耗尽:重建窗口再次超时后不再重建,也不展示。
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(h.created).toHaveLength(2);
+      expect(h.created[1].win.showInactive).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('hide / reuse', () => {
+  it('hide keeps the renderer alive; show reuses the same window', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
+
+    h.controller.hide('a');
+    expect(win.hide).toHaveBeenCalled();
+    expect(win.isDestroyed()).toBe(false);
+    expect(win.webContents.send).toHaveBeenCalledWith(
+      GHOST_OVERLAY_WINDOW_VISIBILITY_CHANGED_CHANNEL,
+      { visible: false },
+    );
+
+    await h.controller.show('a');
+    expect(h.created).toHaveLength(1); // 不重建
+    expect(win.showInactive).toHaveBeenCalledTimes(2); // 复用同一 Renderer
+  });
+});
+
+describe('user disabled guard (fail closed)', () => {
+  it('refuses prewarm/show when user disabled', async () => {
+    const h = makeHarness(new Set(['a']), new Set());
+    h.controller.prewarm('a');
+    await h.controller.show('a');
+    expect(h.created).toHaveLength(0);
+    expect(h.controller.getState()).toEqual({});
+  });
+});
+
+describe('unmount', () => {
+  it('unmount destroys and clears registry', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(true);
+
+    h.controller.unmount('a');
+
+    expect(win.isDestroyed()).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
+  });
+});
+
+describe('reconcile', () => {
+  it('reconcile disposes windows of uninstalled or disabled ghosts', async () => {
+    const h = makeHarness(new Set(['gone', 'disabled', 'stays']));
+    await h.controller.show('gone');
+    await h.controller.show('disabled');
+    await h.controller.show('stays');
+    markReady(h.controller, h.created[0].win);
+    markReady(h.controller, h.created[1].win);
+    markReady(h.controller, h.created[2].win);
+
+    h.controller.reconcile([ghost('stays'), ghost('disabled', { enabled: false })]);
+
+    expect(h.created[0].win.isDestroyed()).toBe(true); // gone:已卸载
+    expect(h.created[1].win.isDestroyed()).toBe(true); // disabled:已停用
+    expect(h.created[2].win.isDestroyed()).toBe(false); // stays:保留
+    expect(h.controller.getState()).toEqual({
+      stays: { mounted: true, visible: true, interactive: false },
+    });
+  });
+
+  it('reconcile disposes windows whose overlay declaration is gone', async () => {
+    const h = makeHarness(new Set(['nolonger']));
+    await h.controller.show('nolonger');
+    markReady(h.controller, h.created[0].win);
+
+    h.controller.reconcile([ghost('nolonger', { overlay: false })]);
+
+    expect(h.created[0].win.isDestroyed()).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+  });
+});
+
+describe('owner change', () => {
+  it('owner change disposes every window', async () => {
+    const h = makeHarness(new Set(['a', 'b']));
+    await h.controller.show('a');
+    await h.controller.show('b');
+    markReady(h.controller, h.created[0].win);
+    markReady(h.controller, h.created[1].win);
+
+    h.controller.disposeAllForOwnerChange();
+
+    expect(h.created[0].win.isDestroyed()).toBe(true);
+    expect(h.created[1].win.isDestroyed()).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+  });
+});
+
+describe('crash recovery', () => {
+  it('recovers a crashed renderer at most once per stability window', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win1 = h.created[0].win;
+
+    win1.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+    await vi.waitFor(() => expect(h.created).toHaveLength(2));
+    expect(win1.isDestroyed()).toBe(true);
+
+    const win2 = h.created[1].win;
+    win2.emitWebContentsEvent('render-process-gone', {}, { reason: 'killed' });
+    await Promise.resolve();
+    expect(h.created).toHaveLength(2); // 额度耗尽,不再重建
+  });
+
+  it('resets the recovery quota after 30s of stability', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      await h.controller.show('a');
+      h.created[0].win.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.created).toHaveLength(2);
+
+      const replacement = h.created[1].win;
+      markReady(h.controller, replacement); // presentationReady 后进入稳定窗口
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      replacement.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed-again' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.created).toHaveLength(3); // 额度已恢复,再次重建
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('per-ghost isolation', () => {
+  it('keeps two ghosts in independent slots', async () => {
+    const h = makeHarness(new Set(['a', 'b']));
+    await h.controller.show('a');
+    await h.controller.show('b');
+    expect(h.created).toHaveLength(2);
+    const [winA, winB] = [h.created[0].win, h.created[1].win];
+
+    markReady(h.controller, winA);
+    expect(winA.showInactive).toHaveBeenCalledTimes(1);
+    expect(winB.showInactive).not.toHaveBeenCalled(); // b 尚未双阶段就绪
+
+    h.controller.hide('a');
+    expect(winA.hide).toHaveBeenCalled();
+    expect(winB.hide).not.toHaveBeenCalled();
+
+    h.controller.unmount('b');
+    expect(winB.isDestroyed()).toBe(true);
+    expect(winA.isDestroyed()).toBe(false);
+  });
+});
+
+describe('move / setInteractive', () => {
+  it('move forwards to setPosition', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    h.controller.move('a', 12, 34);
+    expect(h.created[0].win.setPosition).toHaveBeenCalledWith(12, 34);
+  });
+
+  it('setInteractive(true) captures mouse; false restores forward pass-through', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+
+    h.controller.setInteractive('a', true);
+    expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
+    expect(h.controller.getState().a?.interactive).toBe(true);
+
+    h.controller.setInteractive('a', false);
+    expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(true, { forward: true });
+    expect(h.controller.getState().a?.interactive).toBe(false);
+  });
+});
+
+describe('sender guard', () => {
+  it('markPresentationReady from a foreign sender is a no-op', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    h.controller.markPresentationReady({ id: 99999 } as unknown as WebContents);
+    expect(win.showInactive).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispose', () => {
+  it('dispose destroys every window and clears the registry', async () => {
+    const h = makeHarness(new Set(['a', 'b']));
+    await h.controller.show('a');
+    await h.controller.show('b');
+    const winA = h.created[0].win;
+
+    h.controller.dispose();
+
+    expect(winA.isDestroyed()).toBe(true);
+    expect(h.created[1].win.isDestroyed()).toBe(true);
+    expect(isGhostOverlayWebContents(winA.webContents.id)).toBe(false);
+    expect(h.controller.getState()).toEqual({});
+  });
+});
+
+// 清理跨用例的 registry 绑定,避免影响其它断言。
+beforeEach(() => {
+  for (let i = 1; i < nextId; i += 1) clearGhostOverlayWebContents(i);
+});
