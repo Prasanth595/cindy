@@ -799,6 +799,7 @@ const fanOutMakerSessionBackgroundActivityChanged = createIpcFanOut(
 const fanOutBotDelegationChanged = createIpcFanOut('maker:bot-delegation:changed');
 const fanOutBotDirectMessageChanged = createIpcFanOut('maker:bot-direct-message:changed');
 const fanOutBotGroupChanged = createIpcFanOut('maker:bot-group:changed');
+const fanOutCompanionCloudChanged = createIpcFanOut('maker:companion-cloud:changed');
 const fanOutBotProfileChanged = createIpcFanOut('maker:bot-profile:changed');
 const fanOutBotWorkbenchChanged = createIpcFanOut('maker:bot-workbench:changed');
 const fanOutBotLifecycleChanged = createIpcFanOut('maker:bot-lifecycle:changed');
@@ -6077,6 +6078,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<import('../shared/botGroupChat').BotGroupMutationResult> =>
       ipcRenderer.invoke('maker:bot-group:plan-edit', input),
     onBotGroupChanged: fanOutBotGroupChanged,
+    getCompanionCloudState: (): Promise<import('../shared/companionCloud').CompanionCloudSnapshot> =>
+      ipcRenderer.invoke('maker:companion-cloud:state'),
+    onCompanionCloudChanged: fanOutCompanionCloudChanged,
+    takeOverCompanion: (botId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:take-over', botId),
+    transferCompanion: (botId: string, targetDeviceId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:transfer', botId, targetDeviceId),
+    getCompanionTranscript: (botId: string, before?: string): Promise<import('../shared/companionCloud').CompanionTranscriptPage> =>
+      ipcRenderer.invoke('maker:companion-cloud:transcript', botId, before),
+    listCompanionTransferTargets: (): Promise<import('../shared/companionCloud').CompanionTransferTarget[]> =>
+      ipcRenderer.invoke('maker:companion-cloud:devices'),
     onBotProfileChanged: fanOutBotProfileChanged,
     onBotWorkbenchChanged: fanOutBotWorkbenchChanged,
     runBotLifecycleAction: (

@@ -37,8 +37,11 @@ import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal
 import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
+import { companionSnapshot, registerCompanionHomes } from '../companion-cloud/homes.js';
+import { startCompanionCloud, type CompanionCloudRuntime } from '../companion-cloud/runtime.js';
+import { DIRECT_ROOM_COMPLETION, deliverDirectRoomMessage, directRoomClientId } from '../companion-cloud/directRoom.js';
 
-interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null }
+interface Actor { id: string; kind: string; externalId: string; name: string; avatar?: string | null; avatarSource?: string | null; homeDeviceId?: string | null; disabled?: boolean }
 interface Member { id: string; kind: 'human' | 'bot' | 'integration'; name: string; state: string; role: 'owner' | 'admin' | 'member' | 'guest';
   displayName: string; avatar: string | null; nickname: string | null; ownerActorId: string; ownerName: string;
   guestAccess: 'none' | 'chat' | 'tools'; accessRevision: number }
@@ -49,7 +52,7 @@ interface Message {
 }
 interface Room {
   id: string; name: string; topic: string; description: string; response_mode: 'all' | 'mentioned'; speaking_mode: 'auto' | 'sequential';
-  created_at: string; updated_at: string; revision: number; archived: boolean; organizer_id?: string | null;
+  created_at: string; updated_at: string; revision: number; archived: boolean; organizer_id?: string | null; kind?: string;
 }
 interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string }
 interface Execution {
@@ -78,7 +81,7 @@ interface Running {
   releaseToolAuthority?: () => void;
 }
 class ChatResponseError extends Error {
-  constructor(code: string, readonly status: number, readonly retryAt?: number) { super(code); }
+  constructor(code: string, readonly status: number, readonly retryAt?: number, readonly details?: unknown) { super(code); }
 }
 const CHAT_AUTH_RETRY_MS = 60_000;
 /** Main-group messages kept as background for a Thread request (the Thread itself is read separately). */
@@ -163,11 +166,21 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
 function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceDeps, config: { baseUrl: string }): BotGroupChatService {
   const scope = deps.captureOwnerScope?.();
   let disposed = false;
+  // Demotion persisted for this owner applies before the server has answered.
+  if (deps.companionCloud?.shadows) deps.companionCloud.homes.setPersistedShadows(deps.companionCloud.shadows.read());
+  // What is on disk: a failed write is retried on the next publish, not taken as saved.
+  let savedShadows = JSON.stringify(deps.companionCloud?.homes.persistedShadows() ?? []);
   let connected = false;
   const current = () => !disposed && (!scope || !deps.isOwnerScopeCurrent || deps.isOwnerScopeCurrent(scope));
   const executorId = `desktop:${randomUUID()}`;
   let actors: Actor[] = [];
   let selfId = '';
+  // Cloud companions (cloud-companions.md): inert unless the server announces homes.
+  let selfDeviceId: string | null = null;
+  let companionHome = false;
+  let companion: CompanionCloudRuntime | undefined;
+  let companionSelf: string | null = null;
+  let actorsStale = false;
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -205,6 +218,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // explicit validation rejection, and keep the decision within this account/endpoint.
   let memberJoinedClaims = true;
   let registeredAt = 0;
+  // Per-companion name / avatar publish failures of the last pass: one broken avatar never blocks the rest.
+  let profileFailures = new Map<string, unknown>();
   let profileRefreshedAt = 0;
   const running = new Map<string, Running>();
   const metadata = new Map<string, Promise<void>>();
@@ -285,7 +300,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             if (res.statusCode === 401 && !retried && CHAT_REFRESHABLE_ERROR_CODES.has(code)) {
               if (await refreshRejectedToken(token) && current()) { resolve(api<T>(route, method, data, actorId, true, successStatus)); return; }
             }
-            if (status >= 400) throw new ChatResponseError(code, status, retryAt);
+            if (status >= 400) throw new ChatResponseError(code, status, retryAt, value?.error?.details);
             if (successStatus && status !== successStatus) throw new Error('CHAT_RESPONSE_INVALID');
             resolve(value);
           } catch (error) { reject(error); }
@@ -401,42 +416,113 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     return upgradedGroups.get(groupId) ?? groupId;
   };
+  /** Publish one companion's name and avatar to its actor (home copy only). */
+  async function publishActorProfile(profile: typeof profiles[number], found: Actor) {
+    // Only the confirmed home installation publishes (same predicate as claiming work).
+    if (companionHome && (found.homeDeviceId !== selfDeviceId || !!companion?.isShadowed(profile.id)
+      || !companion?.installConfirmed(profile.id))) return;
+    const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
+    let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
+    if (source && found.avatarSource !== source) {
+      const media = await readMedia(profile.avatar!);
+      if (media.buffer.length > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(media.mimeType)) throw new Error('INVALID_AVATAR');
+      if (!current()) throw new Error('OWNER_CHANGED');
+      const uploaded = await uploadPublicAsset({ fetchImpl: net.fetch, getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'), getToken: getAccessToken },
+        { scene: 'avatar', contentType: media.mimeType, body: media.buffer });
+      if (!uploaded.ok) throw new Error('AVATAR_UPLOAD_FAILED');
+      avatar = uploaded.publicUrl;
+    }
+    if (found.name === profile.displayName && (found.avatar ?? null) === avatar && (found.avatarSource ?? null) === source) return;
+    await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
+    Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
+  }
   async function register() {
     if (refreshActors) return refreshActors;
-    if (Date.now() - registeredAt < 5000) return;
+    if (Date.now() - registeredAt < 5000 && !actorsStale) return;
     refreshActors = (async () => {
+      actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; capabilities?: { groupDiscussionParity?: number } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean } }>('/me'); selfId = me.actor.id;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
+      selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
+      companionHome = !!deps.companionCloud && me.capabilities?.companionHome === true && !!selfDeviceId;
       // Refresh from the issuing auth server, never overwrite with a stale device cache.
       if (Date.now() - profileRefreshedAt > 60000) {
         await api('/profile/refresh', 'POST').then(() => { profileRefreshedAt = Date.now(); }).catch(() => undefined);
       }
       actors = await api<Actor[]>('/actors');
       for (const profile of profiles.filter(p => p.status === 'active')) {
-        let found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
-        if (!found) {
-          found = await api<Actor>('/actors', 'POST', { operationId: randomUUID(), kind: 'bot', externalId: profile.id, name: profile.displayName });
-          actors.push(found);
-        }
-        const source = profile.avatar?.startsWith('cindy-media://') ? createHash('sha256').update(profile.avatar).digest('hex') : null;
-        let avatar = source && found.avatarSource === source ? found.avatar ?? null : profile.avatar || null;
-        if (source && found.avatarSource !== source) {
-          const media = await readMedia(profile.avatar!);
-          if (media.buffer.length > 5 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(media.mimeType)) throw new Error('INVALID_AVATAR');
-          if (!current()) throw new Error('OWNER_CHANGED');
-          const uploaded = await uploadPublicAsset({ fetchImpl: net.fetch, getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'), getToken: getAccessToken },
-            { scene: 'avatar', contentType: media.mimeType, body: media.buffer });
-          if (!uploaded.ok) throw new Error('AVATAR_UPLOAD_FAILED');
-          avatar = uploaded.publicUrl;
-        }
-        if (found.name === profile.displayName && (found.avatar ?? null) === avatar && (found.avatarSource ?? null) === source) continue;
-        await api(`/actors/${found.id}/profile`, 'POST', { name: profile.displayName, avatar, avatarSource: source });
-        Object.assign(found, { name: profile.displayName, avatar, avatarSource: source });
+        if (actors.some(a => a.kind === 'bot' && a.externalId === profile.id)) continue;
+        actors.push(await api<Actor>('/actors', 'POST', { operationId: randomUUID(), kind: 'bot', externalId: profile.id, name: profile.displayName }));
       }
+      // Homes first: only the home's own copy may publish the companion's name and avatar.
+      await syncCompanionHomes();
+      const failures = new Map<string, unknown>();
+      for (const profile of profiles.filter(p => p.status === 'active')) {
+        const found = actors.find(a => a.kind === 'bot' && a.externalId === profile.id);
+        if (!found) continue;
+        try { await publishActorProfile(profile, found); } catch (error) {
+          if (!current()) throw error;
+          failures.set(profile.id, error);
+          deps.log?.warn('Companion name / avatar not published', { actorId: found.id, ...chatErrorDiagnostic(error) });
+        }
+      }
+      profileFailures = failures;
       registeredAt = Date.now();
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
+  }
+  /** Claim empty homes for this computer and publish where every companion runs. */
+  async function syncCompanionHomes() {
+    const host = deps.companionCloud;
+    if (!host || !current()) return;
+    if (!companionHome || !selfDeviceId) {
+      companion?.dispose(); companion = undefined;
+      host.homes.update(companionSnapshot({ enabled: false, selfDeviceId, humanActorId: selfId || null, actors: [] }));
+      return;
+    }
+    const self = selfDeviceId;
+    if (companion && companionSelf !== self) { companion.dispose(); companion = undefined; }
+    companionSelf = self;
+    companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
+      bots: () => actors.filter(a => a.kind === 'bot' && !a.disabled && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
+        && !companion?.isShadowed(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
+      actors: () => actors, refresh: refreshHomes, publish: publishHomes, syncProfile: syncActorProfiles });
+    const runtime = companion;
+    await registerCompanionHomes({ api, selfDeviceId: self, actors, log: deps.log,
+      botIds: profiles.filter(p => p.status === 'active').map(p => p.id), isDemoted: botId => runtime.state.isDemoted(botId) });
+    if (!current()) return;
+    runtime.reconcile(profiles.map(p => ({ id: p.id, status: p.status })));
+    publishHomes();
+  }
+  function publishHomes() {
+    const host = deps.companionCloud;
+    if (!host || !current() || !companionHome || !companion) return;
+    const shadows = companion.shadowIds();
+    // Persist demotion so it holds before the next /me, offline, and with the feature off.
+    const key = JSON.stringify(shadows);
+    if (key !== savedShadows) {
+      try { host.shadows?.write(shadows); savedShadows = key; } catch (error) { deps.log?.warn('Companion shadow list not saved', chatErrorDiagnostic(error)); }
+    }
+    if (key !== JSON.stringify(host.homes.persistedShadows())) host.homes.setPersistedShadows(shadows);
+    host.homes.update(companionSnapshot({ enabled: true, selfDeviceId, humanActorId: selfId, actors, demotedBotIds: shadows }));
+  }
+  /** Publish name and avatar now (before handing `botId` over); unlike refreshHomes, its failure surfaces. */
+  async function syncActorProfiles(botId: string) {
+    actorsStale = true;
+    // A pass already in flight may have read the profiles before the latest edit.
+    await refreshActors?.catch(() => undefined);
+    await register();
+    const failure = profileFailures.get(botId);
+    if (failure) throw failure;
+  }
+  /** Another device moved a companion: re-read actors now instead of after the throttle. */
+  async function refreshHomes() {
+    actorsStale = true;
+    // A refresh already in flight may have read the previous actor list.
+    await refreshActors?.catch(() => undefined);
+    if (!actorsStale || !current()) return;
+    await register().catch(error => deps.log?.warn('Companion home refresh failed', chatErrorDiagnostic(error)));
   }
   /**
    * Follow a room from a cursor whose state has already been read. A snapshot cursor skips
@@ -476,6 +562,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           }
           else {
             for (const change of event.changes ?? []) if (change.type === 'membership.changed') changed(change.entityId);
+            if (companionHome && (event.changes ?? []).some((change: { type?: unknown }) => change?.type === 'actor.changed')) void refreshHomes();
             changed('');
           }
           ws.send(JSON.stringify({ type: 'ack', scope: event.scope, cursor: event.cursor }));
@@ -864,6 +951,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           throw new Error('INVALID_EXECUTION_TRIGGER');
       }
       if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+      // A companion's own 1:1 room is not a group: hand the message to its main task instead.
+      const joined = new Set(s.members.filter(m => m.state === 'joined').map(m => m.id));
+      const ownDirectRoom = companionHome && (companion?.isDirectRoom(s.room.id)
+        || (s.room.kind === 'direct' && joined.size === 2 && joined.has(selfId) && joined.has(execution.bot_id)));
+      if (ownDirectRoom) { await runDirectExecution(run, bot.id, s.room.id); return; }
+      // Any other 1:1 room is never answered as a group.
+      if (s.room.kind === 'direct') throw new Error('INVALID_EXECUTION_TRIGGER');
       // Metadata only: the server remains the sole message store and scheduler.
       if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
         const client = getDbClient();
@@ -1053,6 +1147,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         outcome: 'error', resultText: '', failureCode: botGroupRuntimeFailureCode(error) }, true);
     }
   }
+  /**
+   * The owner wrote in the companion's room (e.g. from a phone while it was queued):
+   * deliver it to the canonical Session like a message from another device. The reply
+   * reaches the room through the conversation mirror, so the execution completes empty.
+   */
+  async function runDirectExecution(run: Running, botId: string, roomId: string) {
+    const { execution } = run;
+    if (!deps.companionCloud) throw new Error('MEMBER_UNAVAILABLE');
+    if (run.context?.kind !== 'message' || execution.plan_id) throw new Error('INVALID_EXECUTION_TRIGGER');
+    run.clientId = directRoomClientId(execution.id, execution.source_message_id);
+    await deliverDirectRoomMessage({ api, roomId, executionId: execution.id, sourceMessageId: id.parse(execution.source_message_id),
+      humanActorId: selfId, botId, deliver: deps.companionCloud.deliverToCanonical,
+      beforeDeliver: async () => {
+        await updateExecution(run, 'heartbeat');
+        if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
+        // Handed to another computer since the claim (the hand-over demotes this copy): never run it here.
+        if (companion?.isShadowed(botId) || !companion?.installConfirmed(botId)) throw new Error('MEMBER_UNAVAILABLE');
+      } });
+    run.accepted = true;
+    run.settlement = { terminal: { sessionId: '', activeInputClientId: run.clientId, outcome: 'done', resultText: '' },
+      payload: { ...DIRECT_ROOM_COMPLETION }, retryAt: 0 };
+    await deliverSettlement(run);
+    companion?.kickMirror(botId);
+    changed(roomId);
+  }
   let polling = false;
   let pollRetryAt = 0;
   let pollFailures = 0;
@@ -1066,6 +1185,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (!socket) connect();
       for (const actor of actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active')) {
         if (running.has(actor.id)) continue;
+        // Only the registered home runs a companion: skip while the home is elsewhere or not yet
+        // registered (an unset home would let any copy of the owner claim it).
+        if (companionHome && actor.homeDeviceId !== selfDeviceId) continue;
+        // Shadowed here (demoted, or run by another installation on this device), or this
+        // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
+        if (companionHome && (companion?.isShadowed(actor.externalId) || !companion?.installConfirmed(actor.externalId))) continue;
         let claim: { execution: Execution | null };
         const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
         try {
@@ -1328,7 +1453,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       let after: string | undefined;
       do {
         const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
-        const joined = page.filter(r => r.state === 'joined');
+        const joined = page.filter(r => r.state === 'joined' && r.kind !== 'direct');
         for (let i = 0; i < joined.length; i += 8)
           groups.push(...await Promise.all(joined.slice(i, i + 8).map(r => detail(r.id, undefined, true))));
         after = page.length === 100 ? page.at(-1)!.id : undefined;
@@ -1431,6 +1556,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
       disposed = true; clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); socket?.close();
+      companion?.dispose(); companion = undefined; deps.companionCloud?.homes.reset();
       for (const refresh of attachmentRefreshes.values()) clearTimeout(refresh);
       attachmentRefreshes.clear();
       for (const run of running.values()) {

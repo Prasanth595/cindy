@@ -194,7 +194,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('BotsSidebar group chats', () => {
   it('hides archived groups by default, opens their history and restores their row on refresh', async () => {
@@ -263,6 +266,7 @@ describe('BotsSidebar group chats', () => {
   });
 
   it('restores focus to the archived-groups entry after keyboard archive moves a row', async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
     mocks.groups = [managedGroup()];
     const view = await renderSidebar();
     const row = screen.getByText('周末出游').closest('button')!;
@@ -273,9 +277,12 @@ describe('BotsSidebar group chats', () => {
     mocks.groups = [managedGroup(true)];
     view.rerender(cloneElement(mocks.registered.node as ReactElement));
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('bot-archived-groups-toggle')));
+    // Let the browser reveal the entry when it is outside the sidebar viewport.
+    expect(focus).toHaveBeenLastCalledWith();
   });
 
   it('restores focus to the moved group row after keyboard unarchive', async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
     mocks.groups = [managedGroup(true)];
     const view = await renderSidebar();
     fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
@@ -287,6 +294,7 @@ describe('BotsSidebar group chats', () => {
     mocks.groups = [managedGroup(false)];
     view.rerender(cloneElement(mocks.registered.node as ReactElement));
     await waitFor(() => expect(document.activeElement).toBe(screen.getByText('周末出游').closest('button')));
+    expect(focus).toHaveBeenLastCalledWith();
   });
 
   it('does not steal search focus when unarchive moves a filtered-out group', async () => {

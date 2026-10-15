@@ -1405,6 +1405,7 @@ export function mobileCatalogSurfaces() {
     ['plugins', '插件目录、页面与原生交互', ['plugins.tsx']],
     ['companions.direct', '伙伴私聊回看', ['companions/direct/[threadId].tsx']],
     ['companions.groups', '伙伴群聊与分工', ['companions/groups/[groupId].tsx']],
+    ['companions.cloud', '云端伙伴：主力电脑离线时的对话与换电脑', ['companions/cloud/[actorId].tsx']],
     ['chat.session', '任务内容与输入', ['sessions/[sessionId].tsx']],
     ['chat.sharing', '共享任务邀请与成员；供应商分享链接提示', ['shared-session.tsx', 'provider-share.tsx']],
     ['chat.new', '新建任务', ['sessions/new.tsx']],
