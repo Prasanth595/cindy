@@ -6,6 +6,9 @@ import {
   GHOST_CINDY_EMBED_MAX_TEXTS,
   GHOST_MANIFEST_SUMMARY_MAX_CHARS,
   GHOST_MAIN_VIEW_ICONS,
+  GHOST_OVERLAY_DEFAULT_SIZE,
+  GHOST_OVERLAY_MAX_SIZE,
+  GHOST_OVERLAY_MIN_SIZE,
   changedBuiltinOauthClientSecretKeys,
   deriveGhostSessionContext,
   diffGhostPermissionItems,
@@ -2432,6 +2435,63 @@ describe('ghost · panel.position 校验', () => {
       expect(v.ok, JSON.stringify(extra)).toBe(false);
       expect(!v.ok && v.reason).toContain('仅停靠形态');
     }
+  });
+});
+
+describe('ghost · overlay 声明校验', () => {
+  it('html 必填且必须是安装目录内安全相对路径', () => {
+    const withOverlay = (overlay: unknown) => ({ ...goodManifest(), overlay });
+
+    const minimal = validateGhostManifest(withOverlay({ html: 'overlay.html' }));
+    expect(minimal.ok).toBe(true);
+    if (minimal.ok) expect(minimal.manifest.overlay).toEqual({ html: 'overlay.html' });
+
+    const missing = validateGhostManifest(withOverlay({}));
+    expect(missing.ok).toBe(false);
+    expect(!missing.ok && missing.reason).toContain('overlay.html');
+
+    const notObject = validateGhostManifest(withOverlay('overlay.html'));
+    expect(notObject.ok).toBe(false);
+    expect(!notObject.ok && notObject.reason).toContain('overlay 必须是对象');
+
+    // 路径穿越与对象保留键名（__proto__ / constructor / prototype）一律拒绝。
+    for (const bad of ['__proto__', '../x', 'a/../b']) {
+      const rejected = validateGhostManifest(withOverlay({ html: bad }));
+      expect(rejected.ok, bad).toBe(false);
+      expect(!rejected.ok && rejected.reason).toContain('overlay.html');
+    }
+  });
+
+  it('尺寸:32–512 的整数通过,越界/非整数/非数字一律拒;未声明时字段省略', () => {
+    const withSize = (size: unknown) => ({
+      ...goodManifest(),
+      overlay: { html: 'overlay.html', ...(size as Record<string, unknown>) },
+    });
+
+    for (const bad of [31, 513, 128.5, '128', true]) {
+      const width = validateGhostManifest(withSize({ width: bad }));
+      expect(width.ok, `width=${String(bad)}`).toBe(false);
+      expect(!width.ok && width.reason).toContain('overlay.width');
+
+      const height = validateGhostManifest(withSize({ height: bad }));
+      expect(height.ok, `height=${String(bad)}`).toBe(false);
+      expect(!height.ok && height.reason).toContain('overlay.height');
+    }
+
+    expect(GHOST_OVERLAY_MIN_SIZE).toBe(32);
+    expect(GHOST_OVERLAY_MAX_SIZE).toBe(512);
+    expect(GHOST_OVERLAY_DEFAULT_SIZE).toBe(128);
+    const bounds = validateGhostManifest(
+      withSize({ width: GHOST_OVERLAY_MIN_SIZE, height: GHOST_OVERLAY_MAX_SIZE }),
+    );
+    expect(bounds.ok).toBe(true);
+    if (bounds.ok) {
+      expect(bounds.manifest.overlay).toEqual({ html: 'overlay.html', width: 32, height: 512 });
+    }
+
+    const omitted = validateGhostManifest(goodManifest());
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) expect(omitted.manifest.overlay).toBeUndefined();
   });
 });
 
