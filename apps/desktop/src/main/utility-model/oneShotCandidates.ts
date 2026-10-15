@@ -1458,12 +1458,16 @@ async function requestLiteLlmText(input: {
     }
     let parsed = await response.json() as ChatCompletionBody;
     let text = chatCompletionChoicesText(parsed);
-    if (!text && maxTokens !== undefined && outputBudgetExhausted('chat-completions', parsed)) {
-      maxTokens = reasoningRetryBudget(parsed, maxTokens);
+    const retryBudget = !text && maxTokens !== undefined
+      && outputBudgetExhausted('chat-completions', parsed)
+      ? reasoningRetryBudget(parsed, maxTokens)
+      : 0;
+    if (retryBudget > 0) {
+      maxTokens = retryBudget;
       log.warn('utility text reasoning burned the output budget, retrying larger', {
         model: input.model,
         from: input.maxTokens,
-        to: maxTokens,
+        to: retryBudget,
       });
       const budgeted = await send();
       if (budgeted.ok) {
@@ -1666,9 +1670,16 @@ async function requestProviderHttpText(input: {
       if (input.beforeDispatch && !(await input.beforeDispatch())) return false;
       return !input.routeStillCurrent || input.routeStillCurrent();
     };
-    const send = async (minimal: boolean) => {
+    const send = async (minimal: boolean, raisedBudget?: number) => {
       if (!(await canDispatch())) {
         throw new UtilityTextExecutionError({ reason: 'request_failed' });
+      }
+      // 预算重试要带着放大后的预算, 又不能把已知不兼容的可选字段加回去 —— 最小体
+      // 把 max_tokens 一起丢了, 直接 send(true) 等于没放大。buildBody 每次返回新
+      // 对象, 在这一个字段上覆盖即可。
+      const body = buildBody(minimal) as Record<string, unknown>;
+      if (raisedBudget !== undefined) {
+        body[input.wire === 'responses' ? 'max_output_tokens' : 'max_tokens'] = raisedBudget;
       }
       return undiciFetch(input.endpoint, {
         method: 'POST',
@@ -1677,10 +1688,11 @@ async function requestProviderHttpText(input: {
           ...(input.headers ?? {}),
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(buildBody(minimal)),
+        body: JSON.stringify(body),
       });
     };
     let response = await send(false);
+    let minimalBody = false;
     if (
       !response.ok
       && (response.status === 400 || response.status === 422)
@@ -1690,6 +1702,7 @@ async function requestProviderHttpText(input: {
     ) {
       await response.body?.cancel().catch(() => undefined);
       response = await send(true);
+      minimalBody = true;
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -1697,25 +1710,27 @@ async function requestProviderHttpText(input: {
     }
 
     let raw = await response.text();
-    const parsed = safeJsonParse(raw);
+    const parsed = responseStructure(input.wire, raw);
     let text = wireResponseText(input.wire, raw);
     // thinking:disabled 只是请求侧建议,BYOM 网关可以无视;max_tokens 是含思考的
     // 总预算,思考吃光就只剩空正文。放大预算重发一次,而不是直接丢掉这个候选。
     const budgetIsSent = input.wire !== 'responses' || input.supportsMaxOutputTokens !== false;
-    if (
-      !text
+    const retryBudget = !text
       && input.maxTokens !== undefined
       && budgetIsSent
       && outputBudgetExhausted(input.wire, parsed)
-    ) {
-      maxTokens = reasoningRetryBudget(parsed, input.maxTokens);
+      ? reasoningRetryBudget(parsed, input.maxTokens)
+      : 0;
+    if (retryBudget > 0) {
+      maxTokens = retryBudget;
       log.warn('utility text reasoning burned the output budget, retrying larger', {
         wire: input.wire,
         model: input.model,
         from: input.maxTokens,
-        to: maxTokens,
+        to: retryBudget,
       });
-      const budgeted = await send(false);
+      // 已被网关拒过的可选字段不重新加回去(原样重来只会再被拒一次)。
+      const budgeted = await send(minimalBody, retryBudget);
       if (budgeted.ok) {
         raw = await budgeted.text();
         text = wireResponseText(input.wire, raw);
@@ -1744,6 +1759,12 @@ async function requestProviderHttpText(input: {
 
 type ChatCompletionBody = { choices?: Array<{ message?: { content?: unknown } }> };
 
+/**
+ * 放大预算的硬上限。辅助调用是短输出任务(自动审查 384、记忆 review 800 tokens),
+ * 放大到几万 token 既不像这类调用该有的量级,也容易越过模型自身输出上限。
+ */
+const REASONING_RETRY_BUDGET_CEILING = 16_384;
+
 function chatCompletionChoicesText(parsed: ChatCompletionBody): string {
   return (parsed.choices ?? [])
     .map((choice) => chatCompletionContentText(choice.message?.content))
@@ -1765,6 +1786,23 @@ function safeJsonParse(raw: string): unknown {
   } catch {
     return null;
   }
+}
+
+/**
+ * 只供判据用的响应结构:缓冲 JSON 直接返回;responses wire 的正常形态是 SSE,
+ * 这里取最后一个带 response 对象的终止事件(response.completed / response.incomplete),
+ * 否则 SSE 会被当成「不是 JSON」而看不到截断原因。不读正文,也不记录内容。
+ */
+function responseStructure(wire: ProviderWire, raw: string): unknown {
+  const parsed = safeJsonParse(raw);
+  if (parsed !== null || wire !== 'responses') return parsed;
+  let terminal: unknown = null;
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const event = safeJsonParse(line.slice(5).trim()) as { response?: unknown } | null;
+    if (event?.response) terminal = event.response;
+  }
+  return terminal;
 }
 
 function wireResponseText(wire: ProviderWire, raw: string): string {
@@ -1795,13 +1833,17 @@ function outputBudgetExhausted(wire: ProviderWire, parsed: unknown): boolean {
 /**
  * 放大后的预算:网关给了 usage 就按它烧掉的量给(原值×2 与 观测值+余量 取大);
  * 多数 BYOM 网关不给 usage,退回 max(原值×4, 4096) 的下限。
+ * 返回 0 = 没有增长空间,不重试:调用方本来就给的是大预算,翻倍会越过模型
+ * maxOutput 被 provider 拒,只会让用户多等一次。
  */
 function reasoningRetryBudget(parsed: unknown, requested: number): number {
   const usage = (parsed as { usage?: { completion_tokens?: unknown } } | null)?.usage;
   const burned = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : 0;
-  return burned > 0
+  const raised = burned > 0
     ? Math.max(requested * 2, requested + burned + 512)
     : Math.max(requested * 4, 4096);
+  const capped = Math.min(raised, REASONING_RETRY_BUDGET_CEILING);
+  return capped > requested ? capped : 0;
 }
 
 /**

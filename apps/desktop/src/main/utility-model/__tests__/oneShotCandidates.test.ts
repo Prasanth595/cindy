@@ -515,6 +515,107 @@ describe('utility one-shot candidates', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('responses 的 SSE 终止事件被 max_output_tokens 截断 → 也放大预算重试', async () => {
+    activeCatalog.mockReturnValue({
+      providers: [{
+        id: 'tapsvc',
+        name: 'Tap Service',
+        source: 'user',
+        agents: ['codex'],
+        auth: { method: 'apiKey' },
+        routing: {
+          codex: { upstream: 'https://custom.example/v1', authStrategy: 'api-key-header' },
+        },
+        models: { codex: [{ id: 'custom-mini', name: 'Custom Mini', contextWindow: 100_000 }] },
+      }],
+    } as never);
+    readCustomKey.mockReturnValue('custom-secret');
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'data: {"type":"response.incomplete","response":{"status":"incomplete",'
+          + '"incomplete_details":{"reason":"max_output_tokens"},"usage":{"completion_tokens":800}}}\n'
+          + 'data: [DONE]\n',
+      } as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'data: {"type":"response.output_text.delta","delta":"结论"}\ndata: [DONE]\n',
+      } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'review', {
+      providerId: 'tapsvc',
+      agentKind: 'codex',
+      model: 'custom-mini',
+      maxTokens: 800,
+    });
+
+    expect(result).toMatchObject({ ok: true, text: '结论' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(retryBody.max_output_tokens).toBeGreaterThan(800);
+  });
+
+  it('预算重试沿用最小请求体:已被网关拒过的可选字段不重新加回', async () => {
+    activeCatalog.mockReturnValue({
+      providers: [{
+        id: 'tapsvc',
+        name: 'Tap Service',
+        source: 'user',
+        agents: ['codex'],
+        auth: { method: 'apiKey' },
+        routing: {
+          codex: {
+            upstream: 'https://custom.example/v1',
+            wireProtocol: 'openai-chat',
+            authStrategy: 'api-key-header',
+          },
+        },
+        models: { codex: [{ id: 'custom-mini', name: 'Custom Mini', contextWindow: 100_000 }] },
+      }],
+    } as never);
+    readCustomKey.mockReturnValue('custom-secret');
+    const truncated = {
+      ok: true,
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: null }, finish_reason: 'length' }],
+      }),
+    };
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 400, body: { cancel: async () => undefined } } as never)
+      .mockResolvedValueOnce(truncated as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ choices: [{ message: { content: '答' } }] }),
+      } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'hello', {
+      providerId: 'tapsvc',
+      agentKind: 'codex',
+      model: 'custom-mini',
+      maxTokens: 800,
+    });
+
+    expect(result).toMatchObject({ ok: true, text: '答' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body));
+    expect(retryBody).not.toHaveProperty('thinking');
+    expect(retryBody.max_tokens).toBeGreaterThan(800);
+  });
+
+  it('原预算已高于放大上限时不再重试(避免越过模型 maxOutput 被拒)', async () => {
+    readKey.mockReturnValue('proxy-key');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '' }, finish_reason: 'length' }],
+      }),
+    } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'hello', { maxTokens: 64_000 });
+    expect(result).toMatchObject({ ok: false, reason: 'empty_response' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('pinnedProfileId 钉住某一档时只用它,绕开默认链', async () => {
     // 默认链(mock)是 codex-mini + litellm-mini;钉 deepseek 应当完全绕开它们,
     // 只解析出 deepseek 这一个候选(取自真实档位表,不受链 mock 影响)。
