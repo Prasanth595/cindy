@@ -3036,6 +3036,18 @@ class CindyMcpGateway {
     return this.disclosedSchemas.has(mcpGatewayKey(call.tool.serverName, call.tool.name));
   }
 
+  /** 该工具的 schema 是否自己要求字符串 name（Cindy 通用 call_tool 的 {name, args} 信封）。 */
+  private requiresNameEnvelope(tool: ConnectedMcpTool): boolean {
+    const schema = tool.inputSchema as {
+      required?: unknown;
+      properties?: Record<string, { type?: unknown } | undefined>;
+    } | null;
+    const name = schema?.properties?.name;
+    return Array.isArray(schema?.required)
+      && schema.required.includes('name')
+      && name?.type === 'string';
+  }
+
   list(serverName?: string): Array<{ server: string; name: string; description: string }> {
     return [...this.tools.values()]
       .filter((tool) => !this.botMemoryFacadeEnabled || tool.serverName !== 'cindy_memory')
@@ -3181,13 +3193,15 @@ class CindyMcpGateway {
   }> {
     const resolved = this.resolveCall(params);
     if (!resolved) throw new Error(this.unknownCallMessage(params));
-    if (resolved.tool.name === 'call_tool' && typeof recordInput(resolved.args).name !== 'string') {
-      // 所选工具就是通用 call_tool 时, 它的参数必须是 {name, args} 信封。弱模型常把内层字段
-      // 平铺进来(丢掉 name), 服务端只会回 expected string/name —— 工具名无法猜, 但正确形态
-      // 可以说清, 让模型一次自纠错, 也省掉一轮往返。
+    if (this.requiresNameEnvelope(resolved.tool) && typeof recordInput(resolved.args).name !== 'string') {
+      // 该工具的 schema 自己声明了必填的字符串 name(即 Cindy 通用 call_tool 的 {name, args}
+      // 信封), 而模型没给 —— 多半是把内层字段平铺进来了。工具名无法猜, 但正确形态可以一次
+      // 说清, 让模型自纠错, 也省掉一轮往返。判定只看 schema 而不是工具名: 用户自接的第三方
+      // MCP 里可能也有叫 call_tool 的工具, 信封形状不同, 不能按名字连坐。
       const keys = Object.keys(recordInput(resolved.args));
       throw new Error(
-        resolved.tool.serverName + '/call_tool expects the envelope {"name": <tool>, "args": {<its parameters>}}; ' +
+        resolved.tool.serverName + '/' + resolved.tool.name +
+        ' expects the envelope {"name": <tool>, "args": {<its parameters>}}; ' +
         (keys.length > 0
           ? 'you passed ' + JSON.stringify(keys) + ' directly — put the selected tool name in args.name.'
           : 'args.name is required.'),

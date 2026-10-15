@@ -2473,7 +2473,8 @@ it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-param
   const gateway = new context.Gateway();
   gateway.add('cindy_memory', client, [
     { name: 'list_tools', inputSchema: { type: 'object' } },
-    { name: 'call_tool', inputSchema: { type: 'object' } },
+    // 真实 cindy server 的 call_tool schema: 必填字符串 name (= {name, args} 信封)。
+    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   ]);
   const ordinary: any[] = [];
   gateway.register({ registerTool: (tool: unknown) => ordinary.push(tool) });
@@ -2528,7 +2529,8 @@ it('tells the model the call_tool envelope instead of forwarding a flattened env
   const gateway = new context.Gateway();
   gateway.add('cindy_memory', client, [
     { name: 'list_tools', inputSchema: { type: 'object' } },
-    { name: 'call_tool', inputSchema: { type: 'object' } },
+    // 真实 cindy server 的 call_tool schema: 必填字符串 name (= {name, args} 信封)。
+    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
   ]);
   gateway.register({ registerTool: () => undefined });
   await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
@@ -2544,4 +2546,61 @@ it('tells the model the call_tool envelope instead of forwarding a flattened env
   await gateway.listResult({ server: 'cindy_workspace', tool: 'status' });
   await gateway.executeCall({ server: 'cindy_workspace', tool: 'status', args: { args: ['x'], name: 'y' } });
   expect(requests[0].params).toEqual({ name: 'status', arguments: { args: ['x'], name: 'y' } });
+});
+
+it('does not apply the Cindy envelope rule to a third-party tool also named call_tool', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const requests: Array<{ method: string; params: any }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    requests.push({ method, params });
+    return { content: [{ type: 'text', text: 'ok' }] };
+  } };
+  const gateway = new context.Gateway();
+  // 用户自接的第三方 MCP: 工具同样叫 call_tool, 但信封是 {tool_name, arguments}。
+  gateway.add('third_party', client, [{
+    name: 'call_tool',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool_name: { type: 'string' },
+        arguments: { type: 'object', additionalProperties: true },
+      },
+      required: ['tool_name'],
+    },
+  }]);
+  gateway.register({ registerTool: () => undefined });
+  await gateway.listResult({ server: 'third_party', tool: 'call_tool' });
+  // 模型完全照检视到的 schema 调用: 必须放行到服务端, 不能被 Cindy 的信封规则连坐。
+  await gateway.executeCall({
+    server: 'third_party',
+    tool: 'call_tool',
+    args: { tool_name: 'inner', arguments: { a: 1 } },
+  });
+  expect(requests[0].params).toEqual({
+    name: 'call_tool',
+    arguments: { tool_name: 'inner', arguments: { a: 1 } },
+  });
+  // 同一 server 里, schema 要求字符串 name 的工具仍走信封自纠错 (判据是 schema 不是名字)。
+  gateway.add('mixed', client, [{
+    name: 'call_tool',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
+    },
+  }]);
+  await gateway.listResult({ server: 'mixed', tool: 'call_tool' });
+  await expect(gateway.executeCall({ server: 'mixed', tool: 'call_tool', args: { filename: 'x.md' } }))
+    .rejects.toThrow(/envelope \{"name": <tool>, "args"/);
+  expect(requests).toHaveLength(1);
 });
