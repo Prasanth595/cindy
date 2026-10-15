@@ -15,8 +15,9 @@
  *  - VISIBILITY_CHANGED 推送由 controller 直接发浮窗 webContents(见
  *    controller.sendVisibility),这里不另注册。
  *
- * SET_USER_ENABLED 写入后,关闭开关时若该浮窗当前可见立即 hide(即时反馈,
- * Task 7 review Minor 转本任务);重新开启不自动 show(由插件自己 mount)。
+ * SET_USER_ENABLED 关闭开关时先 hide 再落盘(用户意图优先):即使 store 写失败
+ * (损坏文件),已可见浮窗也已隐藏,不等待下次 mount/show/reconcile;重新开启不
+ * 自动 show(由插件自己 mount)。
  */
 
 import { ipcMain } from 'electron';
@@ -87,6 +88,8 @@ export function registerGhostOverlayWindowIpc(deps: GhostOverlayWindowIpcDeps): 
   // ── 双阶段就绪握手 ────────────────────────────────────────────────
   // 浮窗页零桥、不在信任 app renderer 集合内;身份只能靠 Task 3 registry 反查,
   // 未登记的 webContents 一律拒绝(fail closed),不接受 renderer 自报 ghostId。
+  // 现状:当前由宿主 webContents 事件(dom-ready/did-finish-load)驱动;本通道为
+  // 未来有桥形态预留、fail-closed。
 
   ipcMain.handle(GHOST_OVERLAY_WINDOW_RENDERER_READY_CHANNEL, (event) => {
     const ghostId = ghostIdForOverlayWebContents(event.sender.id);

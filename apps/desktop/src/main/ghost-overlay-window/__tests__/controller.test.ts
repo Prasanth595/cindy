@@ -564,6 +564,7 @@ describe('move / setInteractive', () => {
     const h = makeHarness(new Set(['a']));
     await h.controller.show('a');
     const win = h.created[0].win;
+    markReady(h.controller, win); // 可见期才受理"变交互"
 
     h.controller.setInteractive('a', true);
     expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(false);
@@ -571,6 +572,24 @@ describe('move / setInteractive', () => {
 
     h.controller.setInteractive('a', false);
     expect(win.setIgnoreMouseEvents).toHaveBeenCalledWith(true, { forward: true });
+    expect(h.controller.getState().a?.interactive).toBe(false);
+  });
+
+  it('setInteractive(true) while hidden is a no-op; next show stays pass-through', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+
+    // 隐藏期(尚未双阶段就绪)受理"变交互"时直接拒绝:不落 setIgnoreMouseEvents(false),
+    // 不改 interactive 状态,避免下次 show 以整矩形捕鼠状态出现。
+    h.controller.setInteractive('a', true);
+    expect(win.setIgnoreMouseEvents).not.toHaveBeenCalledWith(false);
+    expect(h.controller.getState().a?.interactive).toBe(false);
+
+    // 双阶段就绪后 show:窗口仍保持默认穿透(不拦截点击)。
+    markReady(h.controller, win);
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
+    expect(win.setIgnoreMouseEvents).not.toHaveBeenCalledWith(false);
     expect(h.controller.getState().a?.interactive).toBe(false);
   });
 });

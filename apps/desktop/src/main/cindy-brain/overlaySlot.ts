@@ -15,7 +15,8 @@
  * - `set-interactive`:interactive 必须是布尔(否则 INVALID_PARAMS)。
  * - 其余有状态 kind(unmount/show/hide/move/set-interactive/cursor-*)在
  *   "kind 合法且参数合法"但未 mount 时 → OVERLAY_NOT_MOUNTED。
- * - `displays`:只读查询,返回全部显示器的 { id, bounds, workArea, scaleFactor }。
+ * - `displays`:只读查询,返回全部显示器的 { id, bounds, workArea, scaleFactor };
+ *   不要求 mount,但必须在声明之内(fail closed)。
  * - `cursor-subscribe/unsubscribe`:本槽只定义转发接口(注入 deps),光标流本体
  *   在 Task 6、接线在 Task 7,这里不实现流。
  *
@@ -131,9 +132,12 @@ export function createGhostOverlaySlot(deps: GhostOverlaySlotDeps): GhostOverlay
   return {
     async handle(ghostId, kind, payload): Promise<GhostOverlaySlotResult> {
       try {
-        // displays 是只读查询:不要求 mount,也不要求声明(与 host-request 的
-        // app-context 同款"宿主只读信息"语义)。
+        // displays 是只读查询:不要求 mount(惰性查询合理),但必须声明 overlay
+        // 之后才可查(fail closed,与其它 kind 对齐)。
         if (kind === 'displays') {
+          if (!deps.isGhostOverlayDeclared(ghostId)) {
+            return fail('OVERLAY_NOT_DECLARED', '插件未声明 overlay 槽');
+          }
           return { ok: true, displays: deps.getAllDisplays() };
         }
 
@@ -211,7 +215,10 @@ export function createGhostOverlaySlot(deps: GhostOverlaySlotDeps): GhostOverlay
             return fail('INVALID_PARAMS', `未知的 overlay kind:${kind}`);
         }
       } catch (error) {
-        return fail('INTERNAL', error instanceof Error ? error.message : String(error));
+        // 意外异常兜成中性文案(其它槽同款):不向插件透传原始 error.message,
+        // 也不调用 String(error)(无原型对象可能再抛)。本槽无 log 依赖,不记录。
+        void error;
+        return fail('INTERNAL', 'overlay 请求处理失败');
       }
     },
   };

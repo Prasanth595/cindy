@@ -126,6 +126,8 @@ export async function createGhostOverlayWindow(
   win.setIgnoreMouseEvents(true, { forward: true });
   // floating 层 + relativeLevel 1,保持置顶但低于系统级覆盖物。
   win.setAlwaysOnTop(true, 'floating', 1);
+  // 未调用 setVisibleOnAllWorkspaces:Windows 上作用有限(无跨工作区置顶的可靠
+  // 语义),设计计划允许"可选、若实测无效则省略并注释说明",故此处省略。
 
   // ── 守卫(设计 §4.7)────────────────────────────────────────────────
   // 浮窗零弹窗:一律 deny,不转外链(与 secondary-windows 的 shell.openExternal 不同)。

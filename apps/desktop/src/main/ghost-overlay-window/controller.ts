@@ -156,6 +156,10 @@ export class GhostOverlayWindowsController {
   setInteractive(ghostId: string, interactive: boolean): void {
     const slot = this.slots.get(ghostId);
     if (!slot || slot.win.isDestroyed()) return;
+    // 隐藏期不得受理"变交互":setIgnoreMouseEvents(false) 会立即生效,随后 show
+    // 会以整矩形捕鼠状态出现,触犯"透明区域绝不挡点击"。复位请求(false)仍可
+    // 随时受理,保证再次 show 前窗口始终回到默认穿透。
+    if (interactive && !slot.visible) return;
     slot.interactive = interactive;
     if (interactive) {
       slot.win.setIgnoreMouseEvents(false);

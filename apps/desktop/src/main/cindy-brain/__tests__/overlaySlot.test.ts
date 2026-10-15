@@ -171,6 +171,19 @@ describe('overlaySlot · move 坐标校验与钳制', () => {
 });
 
 describe('overlaySlot · displays 查询', () => {
+  it('displays rejects when overlay not declared (fail closed)', async () => {
+    const getAllDisplays = vi.fn(() => makeDisplays());
+    const { slot } = makeSlot({
+      isGhostOverlayDeclared: () => false,
+      getAllDisplays,
+    });
+    await expect(slot.handle(GHOST_ID, 'displays', {})).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'OVERLAY_NOT_DECLARED',
+    });
+    expect(getAllDisplays).not.toHaveBeenCalled();
+  });
+
   it('displays returns all displays with workArea and scaleFactor', async () => {
     const { slot } = makeSlot();
     await expect(slot.handle(GHOST_ID, 'displays', {})).resolves.toEqual({
@@ -218,7 +231,7 @@ describe('overlaySlot · 其余 kind 转发与校验', () => {
     await expect(slot.handle(GHOST_ID, 'mount', {})).resolves.toMatchObject({
       ok: false,
       errorCode: 'INTERNAL',
-      message: 'boom',
+      message: 'overlay 请求处理失败',
     });
   });
 });
