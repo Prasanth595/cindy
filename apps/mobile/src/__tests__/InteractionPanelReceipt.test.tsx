@@ -23,6 +23,8 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invo
 vi.mock('@/device-link/useMobileMakerTransport', () => ({
   useMobileMakerTransport: () => ({ resolveInteraction }),
 }));
+// 代输入 card has its own tests; its native modules (clipboard, secure store) are out of scope here.
+vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null }));
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');

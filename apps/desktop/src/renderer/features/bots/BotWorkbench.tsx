@@ -55,7 +55,6 @@ import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import {
   BOT_WORKBENCH_MAX_DIRECTORIES,
   isCaseInsensitivePlatform,
-  findWorkbenchProject,
   parseWorkbenchTaskId,
   validateWorkbenchRef,
   type BotWorkbench as BotWorkbenchData,
@@ -88,8 +87,8 @@ import {
  *
  * - 没接手项目时:从已有项目里选一个 →「交给<伙伴>」,两次点击完成接手。接手 = 理解:
  *   只记下目录、告诉伙伴一声,不批量导入;伙伴随后读候选、写判断,条目随之出现。
- * - 接手后:项目胶囊、伙伴还在读时一行「正在了解…」、单列任务列表、最近产出。项目里最近
- *   30 天的 Cindy 任务(含主人自己开的)都在,随任务列表实时更新。列表按 等你 / 在做 / 待做 /
+ * - 接手后:项目胶囊、伙伴还在读时一行「正在了解…」、单列任务列表、最近产出。
+ *   由伙伴创建或逐件明确接手的 Cindy 任务在此显示,随任务列表实时更新。列表按 等你 / 在做 / 待做 /
  *   做完 分组(做完默认折叠),每条两层:完整标题 + 伙伴的意见(末尾可带 PR 状态标)。
  * - 推进:待做 / 等你 两组的「跟进」以主人身份让伙伴在左边接着干;点一条在本标签内打开详情:
  *   伙伴的判断、PR、最近内容、补一句让伙伴接着做。
@@ -229,17 +228,19 @@ function useWorkbenchData(botId: string): BotWorkbenchData | null {
       return;
     }
     let alive = true;
+    let request = 0;
     const load = () => {
+      const seq = ++request;
       const owner = getDataOwnerGeneration();
       void api
         .get(botId)
         .then((next) => {
-          if (alive && isDataOwnerGenerationCurrent(owner)) {
-            setData(next ? { directories: next.directories ?? [], tasks: next.tasks ?? {} } : EMPTY_WORKBENCH);
+          if (alive && seq === request && isDataOwnerGenerationCurrent(owner)) {
+            setData(next ? { directories: next.directories ?? [], tasks: next.tasks ?? {}, responsibleSessionIds: next.responsibleSessionIds ?? [] } : EMPTY_WORKBENCH);
           }
         })
         .catch(() => {
-          if (alive) setData((previous) => previous ?? EMPTY_WORKBENCH);
+          if (alive && seq === request && isDataOwnerGenerationCurrent(owner)) setData(EMPTY_WORKBENCH);
         });
     };
     setData(null);
@@ -250,9 +251,11 @@ function useWorkbenchData(botId: string): BotWorkbenchData | null {
       // 伙伴继续一条本机会话时会先把它导入;刷新任务列表,让新任务出现在格子里。
       emitRefresh();
     });
+    const offDelegation = window.electronAPI?.maker?.onBotDelegationChanged?.(() => load());
     return () => {
       alive = false;
       off?.();
+      offDelegation?.();
     };
   }, [botId]);
   return data;
@@ -323,9 +326,10 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
   const candidates = useExternalCandidates(botId, projectDirs.join('\n'));
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [listRevision, setListRevision] = useState(0);
+  const responsibleIds = useMemo(() => workbench?.responsibleSessionIds ?? [], [workbench]);
   const listScope = `${botId}:${projectDirs.join('\n')}:${listRevision}`;
-  const activePages = useWorkbenchSessionPages(listScope, 'active', Boolean(workbench));
-  const archivedPages = useWorkbenchSessionPages(listScope, 'archived', archivedOpen);
+  const activePages = useWorkbenchSessionPages(listScope, 'active', Boolean(workbench), responsibleIds);
+  const archivedPages = useWorkbenchSessionPages(listScope, 'archived', archivedOpen, responsibleIds);
   const sessionRows = activePages.rows;
   const refreshList = useCallback(() => { setListRevision(value => value + 1); emitRefresh(); }, []);
 
@@ -339,6 +343,7 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
     () =>
       buildWorkbenchTiles({
         sessions: sessionRows,
+        responsibleSessionIds: responsibleIds,
         hiddenIds,
         projectDirs,
         caseInsensitive,
@@ -352,6 +357,7 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
       }),
     [
       sessionRows,
+      responsibleIds,
       hiddenIds,
       projectDirs,
       caseInsensitive,
@@ -367,10 +373,10 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
 
   const listedIds = useMemo(() => new Set(tiles.filter(tile => tile.type === 'session').map(tile => tile.id)), [tiles]);
   const activeSessionRows = useMemo(() => sessionRows.filter(row => listedIds.has(row.id)), [sessionRows, listedIds]);
-  const delegationChildIds = useMemo(() => new Set(delegations.flatMap(row => row.childSessionId ? [row.childSessionId] : [])), [delegations]);
+  const responsibleIdSet = useMemo(() => new Set(responsibleIds), [responsibleIds]);
   const archivedSessionRows = useMemo(() => archivedPages.rows.filter(row =>
-    row.status === 'archived' && isWorkbenchCandidateSession({ ...row, status: 'active' }, hiddenIds, delegationChildIds)
-      && findWorkbenchProject(row.workingDir, projectDirs, caseInsensitive)), [archivedPages.rows, hiddenIds, projectDirs, caseInsensitive, delegationChildIds]);
+    row.status === 'archived' && isWorkbenchCandidateSession({ ...row, status: 'active' }, hiddenIds, responsibleIdSet)
+      && responsibleIdSet.has(row.id)), [archivedPages.rows, hiddenIds, responsibleIdSet]);
   const pageAction = (page: typeof activePages) => page.loading
     ? <Spinner size={14} className="mx-5 my-3" role="status" aria-label={t('ccAgent.common.loading')} />
     : page.error || page.hasMore ? <Button size="sm" variant="secondary" className="mx-4 my-2" onClick={() => void page.load()}>{t(page.error ? 'commonUi.retry' : 'settings.contacts.list.loadMore')}</Button> : null;
@@ -545,7 +551,7 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
         </>
       )}
 
-      {!picking && <>
+      {(!picking || responsibleIds.length > 0) && <>
         <WorkbenchSessionList sessions={activeSessionRows} onChanged={refreshList} />
         {pageAction(activePages)}
         <section className="pb-3 pt-2">

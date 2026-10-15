@@ -31,7 +31,31 @@
       "light": "Light",
       "dark": "Dark"
     },
-    "saveFailed": "Failed to save appearance mode. The previous setting will return after restart."
+    "saveFailed": "Failed to save appearance mode. The previous setting will return after restart.",
+    "userBubble": {
+      "title": "My message bubble color",
+      "presets": "Color",
+      "default": "Default",
+      "peach": "First Draft",
+      "yellow": "Daybreak",
+      "sage": "Spark",
+      "blue": "Dreamscape",
+      "lavender": "Night Cat",
+      "red": "Red Collar",
+      "custom": "Custom color",
+      "hue": "Hue",
+      "preview": "Message preview",
+      "sampleUser": "Help me organize today’s ideas.",
+      "sampleAssistant": "Sure, let’s work through your ideas together.",
+      "hint": "Colors adjust to light and dark mode so text stays easy to read. Saved on this device only.",
+      "customHint": "Drag along the color strip to choose a hue. Colors adjust to light and dark mode so text stays easy to read. Saved on this device only.",
+      "saveFailed": "The color is applied for now but could not be saved.",
+      "retry": "Retry",
+      "cancel": "Cancel",
+      "reset": "Reset to default",
+      "apply": "Apply",
+      "hex": "Color value"
+    }
   },
   "language": {
     "title": "Language",

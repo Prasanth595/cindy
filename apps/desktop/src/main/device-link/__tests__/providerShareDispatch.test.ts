@@ -2,7 +2,7 @@
  * 被控端对供应商分享受邀者(另一个账号)的入口：只建后台链路、只放行远程 Agent 与过滤后的供应商列表，
  * 订阅与其他通道一律拒绝；撤权后迟到的结果不再带出数据；撤权只会命中受邀者对端。
  */
-import { providerShareGuestPeer, PROVIDER_SHARE_RELAY_CAPABILITY, type DeviceLinkClient } from '@cindy/device-link';
+import { providerShareGuestPeer, PROVIDER_SHARE_RELAY_CAPABILITY, type DeviceLinkClient, type ProviderShareGroupState } from '@cindy/device-link';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ access: null as null | { shareId: string; memberId: string; providerId: string } }));
@@ -259,6 +259,46 @@ describe('provider share invoke', () => {
       setRemoteAgentHandler({ handle: vi.fn(), abortAll: vi.fn() });
       const old = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [] }) as { ok: true; result: { providers: Array<Record<string, unknown>> } };
       expect(old.result.providers[0]).not.toHaveProperty('guestRunning');
+    } finally {
+      registry.reset();
+    }
+  });
+
+  it('only reads anonymous group status on explicit requests, scoped to the authorized provider', async () => {
+    state.access = ACCESS;
+    const sharedGroupStatus = vi.fn(async (): Promise<ProviderShareGroupState[] | null> => ['busy', 'needs-update']);
+    setRemoteAgentHandler({ handle: vi.fn(), abortAll: vi.fn(), sharedGroupStatus });
+    setProviderGroupRemoteHandler({ handle: vi.fn(), decorateProviderList: (value) => value, sharedGroupSize: () => 2 });
+    const { __testing: registry } = await import('../invoke-registry');
+    registry.reset();
+    const provider = { id: 'anthropic', remoteInvocationEnabled: true, groupSize: 2, groupStatus: ['available', 'available'] };
+    registry.register('maker:provider:list', async () => ({ providers: [provider, { id: 'private-provider', remoteInvocationEnabled: true }] }));
+    try {
+      // Normal directory reads must not recursively query groups or trust injected status.
+      const normal = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [] });
+      expect(normal).toMatchObject({ ok: true, result: { providers: [{ id: 'anthropic', groupSize: 2 }] } });
+      expect(JSON.stringify(normal)).not.toContain('groupStatus');
+      expect(sharedGroupStatus).not.toHaveBeenCalled();
+      const explicit = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [{ includeSharedGroupStatus: true, providerId: 'private-provider' }] });
+      expect(explicit).toMatchObject({ ok: true, result: { providers: [{ id: 'anthropic', groupStatus: ['busy', 'needs-update'] }] } });
+      expect(sharedGroupStatus).toHaveBeenCalledWith('anthropic');
+      expect(JSON.stringify(explicit)).not.toContain('private-provider');
+
+      // An old host or failed status read still supplies its ordinary model catalog.
+      sharedGroupStatus.mockRejectedValueOnce(new Error('status read failed'));
+      const failed = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [{ includeSharedGroupStatus: true }] });
+      expect(failed.ok).toBe(true);
+      expect(JSON.stringify(failed)).not.toContain('groupStatus');
+      setRemoteAgentHandler({ handle: vi.fn(), abortAll: vi.fn() });
+      const old = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [{ includeSharedGroupStatus: true }] });
+      expect(old.ok).toBe(true);
+      expect(JSON.stringify(old)).not.toContain('groupStatus');
+      setRemoteAgentHandler({ handle: vi.fn(), abortAll: vi.fn(), sharedGroupStatus });
+
+      sharedGroupStatus.mockImplementation(async () => { state.access = null; return ['available', 'busy']; });
+      const revoked = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [{ includeSharedGroupStatus: true }] });
+      expect(revoked.ok).toBe(false);
+      expect(JSON.stringify(revoked)).not.toContain('groupStatus');
     } finally {
       registry.reset();
     }

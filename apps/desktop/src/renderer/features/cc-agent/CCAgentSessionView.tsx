@@ -1,4 +1,3 @@
-import { responseSpeedActivity, type ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
@@ -28,7 +27,9 @@ import {
   useState,
 } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
+import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import {
@@ -92,6 +93,7 @@ import { PermissionPrompt } from '@/components/new-chat/PermissionPrompt';
 import { IssueConfirmCard } from './IssueConfirmCard';
 import { RenameSessionsConfirmCard } from './RenameSessionsConfirmCard';
 import { GhostGrantConfirmCard } from './GhostGrantConfirmCard';
+import { InputHandoffCard } from '@/features/input-handoff/InputHandoffCard';
 import { RemoteDesktopConfirmationNotice } from './RemoteDesktopConfirmationNotice';
 import { AskUserQuestionPrompt } from '@/components/new-chat/AskUserQuestionPrompt';
 import { PluginSetupPrompt } from '@/components/new-chat/PluginSetupPrompt';
@@ -189,6 +191,7 @@ import {
   useRemoteSessionConnection,
 } from '@/features/cc-agent/hooks/useRemoteSessionConnection';
 import { useSessionTurnActiveTruth } from '@/features/cc-agent/hooks/useSessionTurnActiveTruth';
+import { useHistoryRecoveryNavigation } from '@/features/cc-agent/hooks/useHistoryRecoveryNavigation';
 import { useRemoteSessionLoading } from '@/features/cc-agent/hooks/useRemoteSessionLoading';
 import { RemoteSessionBanner } from './RemoteSessionBanner';
 import { decideRemoteSessionExit } from './remoteSessionExit';
@@ -279,6 +282,7 @@ import {
   resolveRunningUsageMeta,
 } from './lib/runningTokenUsage';
 import { RunningTokenRatePopover, useRunningTokenRateHistory } from './RunningTokenRatePopover';
+import type { TokenSpeedSnapshot } from './lib/runningTokenRateHistory';
 import { matchNavigationCommandName, tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import { extractIpcError } from '@/utils/ipcError';
 import { listActiveRunsForSession } from '@/features/learn/useLearnRun';
@@ -307,7 +311,7 @@ import { hasSplitGroupSessionType } from './splitGroupDnd';
 import { splitGroupStore } from './splitGroupStore';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import {
@@ -762,7 +766,16 @@ export function createWritableDirRemovalQueue() {
   };
 }
 
-export function CCAgentSessionView({
+export function CCAgentSessionView(props: CCAgentSessionViewProps) {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
+      <CCAgentSessionContent {...props} />
+    </CindyMakeSessionGate>
+  );
+}
+
+function CCAgentSessionContent({
   sessionIdProp,
   routeOwner,
   compact,
@@ -841,11 +854,16 @@ export function CCAgentSessionView({
   const setRightSidebarSessionId = outletContext?.setRightSidebarSessionId;
   const setRightSidebarWorkdir = outletContext?.setRightSidebarWorkdir;
   const { enabled: silentEncryptedRetryEnabled } = useSilentEncryptedRetry();
-  const [forkStripEncryptedRunning, setForkStripEncryptedRunning] = useState(false);
   // 从 Automations 的 RunHistoryCard 跳过来的 navigate 会带 state.from='automations'，
   // 在聊天区左上角显示一个返回按钮；点别的 session 入口（不带 state）时按钮自然消失。
-  const navState = location.state as { from?: string } | null;
+  const navState = location.state as { from?: string; sourceSessionId?: unknown } | null;
   const cameFromAutomations = navState?.from === 'automations';
+  // /review 审查任务不在任务列表里,从来源任务的审查卡片进入时带上来源 id,
+  // 左上角给出回到来源任务的返回按钮(侧栏收起时这是唯一的回路)。
+  const reviewSourceSessionId =
+    navState?.from === 'review-source' && typeof navState.sourceSessionId === 'string'
+      ? navState.sourceSessionId
+      : null;
   const handoffFrom = useMemo(() => parseHandoffState(location.state), [location.state]);
   const locationSearchJump = useMemo(() => parseSearchJumpState(location.state), [location.state]);
   const searchJump = searchJumpProp !== undefined ? searchJumpProp : locationSearchJump;
@@ -1775,6 +1793,7 @@ export function CCAgentSessionView({
     respondToRenameSessionsConfirm,
     pendingGhostGrantConfirm,
     pendingRemoteDesktopConfirmation,
+    pendingInputHandoff,
     respondToGhostGrantConfirm,
     lastExpandedPlanViewerState,
     updatePlanContent,
@@ -2058,6 +2077,18 @@ export function CCAgentSessionView({
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
   const { providers: localProviders } = useProviders();
   const { mode: authMode, user: authUser, dataOwnerId, deviceId: selfDeviceId } = useAuth();
+  const {
+    begin: beginHistoryRecovery,
+    invalidate: invalidateHistoryRecoveryNavigation,
+    isPending: isHistoryRecoveryPending,
+    pending: forkStripEncryptedRunning,
+  } =
+    useHistoryRecoveryNavigation({
+      source: `${dataOwnerId}:${remoteDeviceId ?? ''}:${sessionId}:${navigationMode}`,
+      running: agentStatus.isRunning || isStreaming || remoteTurnActive,
+      startedAt: session?.activeTurnStartedAt ?? null,
+      endedAt: session?.lastTurnEndedAt ?? null,
+    });
   // Agent 在另一台电脑运行的任务:模型目录同样以那台为准(任务本身在本机)。
   const agentDeviceId = remoteDeviceId ? undefined : (session?.agentDeviceId ?? undefined);
   // 远程 Agent:本机任务的模型面板也列出其他电脑的供应商(选中 = 把 Agent 挪过去,下一条消息
@@ -2388,7 +2419,8 @@ export function CCAgentSessionView({
     }
   }, [syntheticContinuationPending, errorTailBannerHiddenFor]);
   const handleErrorTailContinue = useCallback(async () => {
-    if (!sessionId || !errorTailMsg) return;
+    if (!sessionId || !errorTailMsg || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     setErrorTailBannerHiddenFor(errorTailMsg.clientId);
     try {
       // 隐藏的英文续跑指令([UI_ACTION_TRIGGER] 前缀,消息流不渲染)——用户视角
@@ -2420,6 +2452,8 @@ export function CCAgentSessionView({
   }, [
     errorTailKind,
     errorTailMsg,
+    invalidateHistoryRecoveryNavigation,
+    isHistoryRecoveryPending,
     markCurrentUnreadFailedScheduleRun,
     rebuildClaudeSubscriptionSessionBeforeRetry,
     sessionId,
@@ -3330,6 +3364,9 @@ export function CCAgentSessionView({
         !slashMatch && agentKind === 'pi' ? leadingSlashInvocation(message) : undefined;
       if (!slashMatch && !leading) return { handled: false, accepted: false, message };
       const cmdName = (slashMatch?.[1] ?? leading!.name).toLowerCase();
+      if (!CINDY_MAKE_ENABLED && (cmdName === 'cindy-make' || cmdName === 'cindy-make-doctor')) {
+        return { handled: true, accepted: false, message };
+      }
       const args = slashMatch?.[2] ?? '';
       const allowDesktopDispatch = options?.allowDesktopDispatch ?? true;
       const workingDir = options?.workingDirOverride ?? session?.workingDir;
@@ -3407,6 +3444,7 @@ export function CCAgentSessionView({
           return { handled: true, accepted: true, message };
         } catch (err) {
           const ipcError = extractIpcError(err);
+          if (ipcError?.code === 'MUTATION_CANCELLED') return { handled: true, accepted: false, message };
           toast.error(
             ipcError
               ? t('review.toast.failed')
@@ -3749,6 +3787,7 @@ export function CCAgentSessionView({
     ) => {
       if (readOnly) return false;
       if (cindyMakeInputLocked) return false;
+      invalidateHistoryRecoveryNavigation();
       const deliveryMode = opts?.deliveryMode ?? 'queue';
       const originalMessage = message;
       const navigationRequestVersion =
@@ -4018,6 +4057,7 @@ export function CCAgentSessionView({
     [
       maybeDispatchDesktopSlashCommand,
       maybeShowContextUsage,
+      invalidateHistoryRecoveryNavigation,
       folderPickerOpen,
       isCodex,
       canNavigateSession,
@@ -4223,12 +4263,14 @@ export function CCAgentSessionView({
   // useSessionRunningStatus 在 running 上升沿把 orphan 的 error 角标 explicit 清掉。
   // 失败路径则天然保留红点,与仍在展示的横幅一致。
   const handleRetry = useCallback(() => {
+    if (isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     void rebuildClaudeSubscriptionSessionBeforeRetry(errorReason)
       .then(() => retryLastError())
       .catch((error) => {
         log.warn('retryLastError failed', error);
       });
-  }, [errorReason, rebuildClaudeSubscriptionSessionBeforeRetry, retryLastError]);
+  }, [errorReason, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending, rebuildClaudeSubscriptionSessionBeforeRetry, retryLastError]);
 
   const handleSwitchToClaudeSubscription = useCallback(async (): Promise<void> => {
     if (!sessionId || !session || !canSwitchToClaudeSubscription) return;
@@ -4314,20 +4356,22 @@ export function CCAgentSessionView({
   }, [clearError, sessionId]);
 
   const handleForkStripEncrypted = useCallback(async () => {
-    if (!sessionId || session?.agentKind !== 'codex') return;
+    if (!sessionId || session?.agentKind !== 'codex' ||
+      isSharedTaskPeer(getSessionDeviceId(sessionId))) return;
     if (!canNavigateSession) {
       log.info('encrypted-session fork ignored by embedded sidebar view', { sessionId });
       return;
     }
+    const recovery = beginHistoryRecovery();
+    if (!recovery) return;
     const forkStripNavigationVersion = ++sessionNavigationVersionRef.current;
-    setForkStripEncryptedRunning(true);
     try {
       const newSession = await sessionService.forkStripEncrypted(sessionId);
       await refreshServerSession();
       // 远程会话:新会话在被控端,先重拉该设备会话列表注册新 sessionId 再 navigate(否则 404)。
       const deviceId = getSessionDeviceId(sessionId);
       if (deviceId) await refreshRemoteDeviceSessions(deviceId);
-      if (sessionNavigationVersionRef.current !== forkStripNavigationVersion) return;
+      if (sessionNavigationVersionRef.current !== forkStripNavigationVersion || !recovery.isCurrent()) return;
       onSessionNavigate?.(newSession.id, newSession.id);
       navigate(`/cc-agent/${newSession.id}`);
     } catch (err) {
@@ -4341,10 +4385,11 @@ export function CCAgentSessionView({
             : detail,
       );
     } finally {
-      setForkStripEncryptedRunning(false);
+      recovery.release();
     }
   }, [
     canNavigateSession,
+    beginHistoryRecovery,
     navigate,
     onSessionNavigate,
     refreshServerSession,
@@ -4757,6 +4802,10 @@ export function CCAgentSessionView({
   //   - /clear 之后留在空 ChatView 已经在用,体验没问题,本来就跟"空 session"等价
   // 现在所有空消息流/有消息流都走同一套布局(全高 scroll container + sticky bottom
   // overlay),自然消除 view 翻转带来的 layout shift。
+  if (!CINDY_MAKE_ENABLED && isCindyMakeSource(session?.source)) {
+    return <Navigate to="/cc-agent" replace />;
+  }
+
   const composerDir = composerWorkingDirPath({
     workingDir: session?.workingDir,
     liveWorktree,
@@ -4986,7 +5035,7 @@ export function CCAgentSessionView({
           // 意识面板拖来的产物(cindy-ghost:// 媒体地址,不带 files):落在聊天区
           // 任意位置都算数,与 ChatInput 自己的 onDrop 同一条引渡链路——
           // main 验归属后图片落图片附件、视频落路径引用的 file 附件(托盘可见)。
-          const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+          const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
           if (ghostMediaUri) {
             if (sessionId) void attachGhostMediaToSession(ghostMediaUri, sessionId, t);
             return;
@@ -5154,10 +5203,9 @@ export function CCAgentSessionView({
                   reconnectStatus={reconnectStatus}
                   tokenUsage={agentStatus.tokenUsage}
                   outputTokens={agentStatus.outputTokens ?? 0}
-                  responseSpeed={agentStatus.responseSpeed}
                   generationDurationMs={agentStatus.generationDurationMs ?? 0}
-                  generationActive={agentStatus.generationActive}
                   generationReliable={agentStatus.generationReliable ?? true}
+                  tokenSpeed={agentStatus.tokenSpeed}
                   startedAt={agentStatus.startedAt}
                   visible={composerRuntimeVisible || (!pendingPlanReview && activeReconnect !== null)}
                   inputWidth={inputWidth}
@@ -5216,7 +5264,8 @@ export function CCAgentSessionView({
                       pendingIssueConfirm ||
                       pendingRenameSessionsConfirm ||
                       pendingGhostGrantConfirm ||
-                      pendingRemoteDesktopConfirmation
+                      pendingRemoteDesktopConfirmation ||
+                      pendingInputHandoff
                     )
                   }
                   className="mb-0"
@@ -5299,7 +5348,7 @@ export function CCAgentSessionView({
                   }
                   silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
                   onForkStripEncrypted={
-                    !readOnly && canNavigateSession ? handleForkStripEncrypted : undefined
+                    !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                   }
                   forkStripEncryptedRunning={forkStripEncryptedRunning}
                   style={{ width: inputWidth }}
@@ -5376,7 +5425,7 @@ export function CCAgentSessionView({
                 errorSourceProviderId={liveErrorSourceProviderId}
                 silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
                 onForkStripEncrypted={
-                  !readOnly && canNavigateSession ? handleForkStripEncrypted : undefined
+                  !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                 }
                 forkStripEncryptedRunning={forkStripEncryptedRunning}
                 style={{ width: inputWidth }}
@@ -5440,7 +5489,8 @@ export function CCAgentSessionView({
                     pendingIssueConfirm ||
                     pendingRenameSessionsConfirm ||
                     pendingGhostGrantConfirm ||
-                    pendingRemoteDesktopConfirmation
+                    pendingRemoteDesktopConfirmation ||
+                    pendingInputHandoff
                   )
                 }
                 placeholder={
@@ -5517,6 +5567,13 @@ export function CCAgentSessionView({
                     key={pendingGhostGrantConfirm.requestId}
                     pending={pendingGhostGrantConfirm}
                     onRespond={respondToGhostGrantConfirm}
+                  />
+                ) : pendingInputHandoff && sessionId && !isSharedTaskPeer(remoteDeviceId ?? '') ? (
+                  <InputHandoffCard
+                    key={pendingInputHandoff.requestId}
+                    sessionId={sessionId}
+                    snapshot={pendingInputHandoff}
+                    remote={!!remoteDeviceId}
                   />
                 ) : pendingRemoteDesktopConfirmation ? (
                   <RemoteDesktopConfirmationNotice
@@ -5975,6 +6032,20 @@ export function CCAgentSessionView({
           <ArrowLeft size={18} strokeWidth={2} />
         </button>
       )}
+      {ownsWindowRoute && !cameFromAutomations && reviewSourceSessionId && (
+        <button
+          type="button"
+          onClick={() => navigate(`/cc-agent/${reviewSourceSessionId}`)}
+          aria-label={t('ccAgent.layout.backToReviewSource')}
+          title={t('ccAgent.layout.backToReviewSource')}
+          className={cn(
+            'absolute left-[14px] top-[14px] z-40 inline-flex items-center justify-center',
+            'text-[var(--settings-section-desc)] transition-colors hover:text-foreground',
+          )}
+        >
+          <ArrowLeft size={18} strokeWidth={2} />
+        </button>
+      )}
     </div>
   );
 }
@@ -6041,10 +6112,9 @@ function RunningStatusBar({
   reconnectStatus = null,
   tokenUsage,
   outputTokens = 0,
-  responseSpeed,
   generationDurationMs = 0,
-  generationActive,
   generationReliable = true,
+  tokenSpeed,
   startedAt,
   visible,
   inputWidth,
@@ -6064,10 +6134,10 @@ function RunningStatusBar({
   reconnectStatus?: string | null;
   tokenUsage: number;
   outputTokens?: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   generationDurationMs?: number;
-  generationActive?: boolean;
   generationReliable?: boolean;
+  /** Host-measured live tok/s; replaces the usage-counter estimate when present. */
+  tokenSpeed?: TokenSpeedSnapshot;
   startedAt: number | null;
   visible: boolean;
   inputWidth?: CSSProperties['width'];
@@ -6153,23 +6223,13 @@ function RunningStatusBar({
 
   const isHidden = suppressContent || (!showContent && !visible);
   const workflowWaiting = workflowStatus !== undefined;
-  const completedSpeed = !visible && responseSpeed?.phase === 'complete'
-    && !reconnecting && !sideTaskRunning && !backgroundTasksRunning && !workflowWaiting;
 
   // side-task / 后台子任务运行中永远当成进行态 (即便上一轮 LLM 留下的 status 文案
   // 是 "Done", 此时任务还在跑, 显示 ✓ 完成图标会让用户以为已经做完)。
-  const isDone = status === 'Done' && !responseSpeed?.outcome && !responseSpeed?.retrying && !reconnecting && !sideTaskRunning && !backgroundTasksRunning;
+  const isDone = status === 'Done' && !reconnecting && !sideTaskRunning && !backgroundTasksRunning;
   // 后台子任务模式的左段文案:上一轮残留的 status(多半是 "Done")在此语义下是
   // 误导信息,整体替换为后台运行提示。仅后台 Bash 时用带数量的专属文案 ——
   // 「模型用量仍在消耗」对不调模型的 bash 任务是错误陈述。
-  const speedActivity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
-  const speedStatusKey = speedActivity === 'failed' ? 'responseFailed'
-    : speedActivity === 'cancelled' ? 'responseCancelled'
-      : speedActivity === 'retrying' ? 'responseRetrying'
-        : speedActivity === 'waiting' || speedActivity === 'quiet' ? 'responsePending'
-      : speedActivity === 'tool' ? 'toolRunning'
-        : speedActivity === 'paused' ? 'generationPaused'
-          : speedActivity === 'generating' ? 'responseGenerating' : null;
   const displayStatus =
     reconnectStatus ??
     workflowStatus ??
@@ -6177,8 +6237,7 @@ function RunningStatusBar({
       ? backgroundBashOnlyCount > 0
         ? t('chat.backgroundActivity.bashStatus', { count: backgroundBashOnlyCount })
         : t('chat.backgroundActivity.status')
-      : speedStatusKey && !status.toLowerCase().startsWith('compact')
-        ? t(`chat.runningStatus.${speedStatusKey}`) : localizeAgentStatus(status, t));
+      : localizeAgentStatus(status, t));
   // F-COMPACT-1: when SDK is auto-summarizing the conversation, give the
   // status bar a distinct icon so the user can tell "Compacting..." apart
   // from "Thinking..." — both share the shimmer animation by design, but
@@ -6241,38 +6300,36 @@ function RunningStatusBar({
   const tokenCountText = t('chat.runningStatus.tokenCount', {
     tokens: formatRunningTokenCount(animatedTokens),
   });
+  // Host speed counts and times generation itself; usage counters stay the fallback.
+  const rateOutputTokens = tokenSpeed?.tokens ?? outputTokens;
+  const rateDurationMs = tokenSpeed?.elapsedMs ?? generationDurationMs;
+  const rateReliable = tokenSpeed ? true : generationReliable;
   const rateHistory = useRunningTokenRateHistory({
-    responseSpeed,
-    generationActive,
     sessionKey,
     startedAt,
     outputTokens,
     generationDurationMs,
+    tokenSpeed,
     generationReliable:
-      !responseSpeed && generationReliable &&
+      rateReliable &&
       !reconnecting &&
       !sideTaskRunning &&
       !backgroundTasksRunning &&
       !workflowWaiting,
   });
-  const latestRate = !responseSpeed && generationActive === false ? null : rateHistory.latestRate;
-  const legacyUsageMeta = resolveRunningUsageMeta({
-    outputTokens,
-    generationDurationMs,
-    generationReliable,
+  const latestRate = rateHistory.latestRate;
+  const usageMeta = resolveRunningUsageMeta({
+    outputTokens: rateOutputTokens,
+    generationDurationMs: rateDurationMs,
+    generationReliable: rateReliable,
     tokenUsage,
     latestRate,
   });
-  const usageMeta = responseSpeed
-    ? responseSpeed.averageRate !== null
-      ? { kind: 'rate' as const, rate: formatRecentOutputTokenRate(responseSpeed.averageRate) ?? '0' }
-      : { kind: 'none' as const }
-    : legacyUsageMeta;
   const latestRateText = latestRate !== null ? formatRecentOutputTokenRate(latestRate) : null;
   const rateText =
-    (!isHidden || completedSpeed) && !reconnecting && usageMeta.kind === 'rate'
+    !isHidden && !reconnecting && usageMeta.kind === 'rate'
       ? latestRateText !== null
-        ? t(responseSpeed && (responseSpeed.phase !== 'complete' || responseSpeed.estimated) ? 'chat.runningStatus.estimatedTokenRate' : 'chat.runningStatus.tokenRate', { rate: latestRateText })
+        ? t('chat.runningStatus.tokenRate', { rate: latestRateText })
         : null
       : null;
 
@@ -6285,19 +6342,17 @@ function RunningStatusBar({
     transition: isHidden ? 'none' : `opacity ${STATUS_BAR_FADE_MS}ms ease-out`,
     pointerEvents: isHidden ? 'none' : 'auto',
   };
-  const waitingText = responseSpeed?.phase === 'waiting'
-    ? t('chat.runningStatus.responseWaiting', { seconds: ((responseSpeed.waitingMs + Math.max(0, Date.now() - responseSpeed.sampledAt)) / 1000).toFixed(1) }) : null;
   const showRatePanel =
     !reconnecting &&
     (ratePanelPinned ||
       (!workflowWaiting &&
         !sideTaskRunning &&
         !backgroundTasksRunning &&
-        (Boolean(responseSpeed) || usageMeta.kind === 'rate')));
+        usageMeta.kind === 'rate'));
   // A pinned panel keeps its anchor mounted through idle and subsequent turns.
-  // 已完成测量保留原速度入口；没有测量的空闲任务仍收起。overlay 的 ResizeObserver 会在
+  // 空闲后真正收起,不再给输入框上方留下固定空行。overlay 的 ResizeObserver 会在
   // DOM 尺寸变化后补齐 MessageStream 的 bottomPadding,因此不靠硬编码高度制造跳变。
-  if (!rightLeadingSlot && (suppressContent || (isHidden && !ratePanelPinned && !completedSpeed))) return null;
+  if (!rightLeadingSlot && (suppressContent || (isHidden && !ratePanelPinned))) return null;
 
   // 两段式布局:左(运行状态) / 右(elapsed·tokens)。
   // - 左段 min-w-0(可收缩):status 并非短枚举 —— turn-start 文案带用户名(可含中文长句)、
@@ -6359,21 +6414,16 @@ function RunningStatusBar({
           走 LLM, 显示残留 token 计数会误导用户以为也耗了 token。 */}
       <div className="flex min-w-0 items-center justify-self-end gap-2">
         {rightLeadingSlot}
-        {(!suppressContent && (!isHidden || ratePanelPinned || completedSpeed)) && (
+        {(!suppressContent && (!isHidden || ratePanelPinned)) && (
           <div
             data-running-status-meta="true"
             className="flex min-w-0 items-center gap-[6px]"
-            style={ratePanelPinned || completedSpeed ? undefined : fadeStyle}
-            aria-hidden={isHidden && !ratePanelPinned && !completedSpeed}
+            style={ratePanelPinned ? undefined : fadeStyle}
+            aria-hidden={isHidden && !ratePanelPinned}
           >
             {showRatePanel && (
               <RunningTokenRatePopover
-                responseSpeed={responseSpeed}
-                elapsedText={completedSpeed
-                  ? t(responseSpeed?.outcome === 'failed' ? 'chat.runningStatus.responseFailed'
-                    : responseSpeed?.outcome === 'cancelled' ? 'chat.runningStatus.responseCancelled' : 'chat.runningStatus.lastGeneration')
-                  : speedActivity === 'retrying' ? t('chat.runningStatus.responseRetrying')
-                    : waitingText ?? (speedActivity === 'quiet' ? t('chat.runningStatus.responsePending') : elapsedText)}
+                elapsedText={elapsedText}
                 rate={latestRateText}
                 rateText={
                   workflowWaiting || sideTaskRunning || backgroundTasksRunning
@@ -6384,8 +6434,8 @@ function RunningStatusBar({
                 }
                 isTokenCount={usageMeta.kind === 'tokens'}
                 averageRate={usageMeta.kind === 'rate' ? usageMeta.rate : null}
-                outputTokens={responseSpeed?.outputTokens ?? outputTokens}
-                history={latestRate === rateHistory.latestRate ? rateHistory : { ...rateHistory, latestRate }}
+                outputTokens={rateOutputTokens}
+                history={rateHistory}
                 onPinnedChange={setRatePanelPinned}
               />
             )}

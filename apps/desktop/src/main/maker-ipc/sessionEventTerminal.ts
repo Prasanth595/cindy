@@ -656,21 +656,29 @@ export function finishSessionTerminalEvent(
       })();
       if (deps.botGroupChatServiceHolder) {
         const groupDoneData = event.data as { result?: unknown } | null;
-        void deps.botGroupChatServiceHolder
-          .settleLaneTurn({
+        const groupService = deps.botGroupChatServiceHolder;
+        const groupTerminal = {
+          sessionId: session.id,
+          activeInputClientId: groupLaneInputClientId,
+          outcome: isTerminalTurnErrorEvent(event) ? 'error' as const : 'done' as const,
+          resultText: typeof groupDoneData?.result === 'string' ? groupDoneData.result : '',
+          resultMessageClientId: turnAssistantPersistId,
+          ...(isTerminalTurnErrorEvent(event) ? { failureCode: botGroupRuntimeFailureCode(event.data) } : {}),
+        };
+        void (async () => {
+          // The fallback reader in both local and server groups needs the final
+          // streamed block on disk. Flush only queued that write; reading now can
+          // turn a real reply into NO_REPLY. Keep the captured input across the wait.
+          if (groupTerminal.outcome === 'done' && !groupTerminal.resultText.trim() && groupTerminal.resultMessageClientId) {
+            await drainPersistQueue();
+          }
+          await groupService.settleLaneTurn(groupTerminal);
+        })().catch((error) => {
+          deps.log.warn('Bot group lane terminal settlement failed', {
             sessionId: session.id,
-            activeInputClientId: groupLaneInputClientId,
-            outcome: isTerminalTurnErrorEvent(event) ? 'error' : 'done',
-            resultText: typeof groupDoneData?.result === 'string' ? groupDoneData.result : '',
-            resultMessageClientId: turnAssistantPersistId,
-            ...(isTerminalTurnErrorEvent(event) ? { failureCode: botGroupRuntimeFailureCode(event.data) } : {}),
-          })
-          .catch((error) => {
-            deps.log.warn('Bot group lane terminal settlement failed', {
-              sessionId: session.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            error: error instanceof Error ? error.message : String(error),
           });
+        });
       }
       if (providerGroupHeldWorkerTerminal) {
         // 已与 error 行一起暂存，由那次登记结算。

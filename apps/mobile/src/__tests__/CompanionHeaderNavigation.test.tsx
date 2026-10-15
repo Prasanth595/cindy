@@ -85,7 +85,7 @@ const source = ts.createSourceFile('screen.tsx', readFileSync(
   resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8',
 ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const page = source.statements.find((n): n is ts.FunctionDeclaration =>
-  ts.isFunctionDeclaration(n) && n.name?.text === 'SessionScreen')!;
+  ts.isFunctionDeclaration(n) && n.name?.text === 'SessionScreenContent')!;
 const statements = page.body!.statements;
 const declaration = (name: string) => statements.findIndex(n => ts.isVariableStatement(n)
   && n.declarationList.declarations.some(d => d.name.getText(source) === name));
@@ -119,6 +119,7 @@ function PageHost({ bindings }) {
   const companionSettingsRequest = bindings.companionSettingsRequest;
   const deviceName = 'PC', remoteUnavailableReason = null, sessionListDrawerOverlayMounted = false;
   ${statements.slice(stateStart, stateEnd).map(n => n.getText(source)).join('\n')}
+  ${statements[declaration('companionHeaderShown')].getText(source)}
   ${relevantJsx(header)}
   return <div data-testid="page-route">{headerNode}</div>;
 }`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;

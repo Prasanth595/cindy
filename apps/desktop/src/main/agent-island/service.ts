@@ -268,6 +268,7 @@ function safeSessionActionSummary(snapshot: AgentIslandSessionSnapshot): string 
     if (snapshot.interactionKind === 'ask_user_question') return '等待用户回答';
     if (snapshot.interactionKind === 'plan_review') return '等待计划确认';
     if (snapshot.interactionKind === 'plugin_setup') return '等待插件配置';
+    if (snapshot.interactionKind === 'input_handoff') return '等待代输入';
     return '等待用户确认';
   }
   if (snapshot.phase === 'completed') return '运行已正常结束';
@@ -1083,10 +1084,12 @@ export class AgentIslandService {
     this.publish();
   }
 
+  /** Host-owned waits (plugin setup, input handoff) shown as attention until dismissed. */
   handlePluginSetupInteraction(
     sessionId: string,
     requestId: string,
     detail: string,
+    kind: 'plugin_setup' | 'input_handoff' = 'plugin_setup',
   ): void {
     const hydrated = this.hydrateMeta({ sessionId });
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
@@ -1101,7 +1104,9 @@ export class AgentIslandService {
     applyAgentIslandInteractionRequest(
       this.state,
       hydrated,
-      { kind: 'plugin_setup', requestId, detail },
+      kind === 'input_handoff'
+        ? { kind: 'input_handoff', requestId, detail }
+        : { kind: 'plugin_setup', requestId, detail },
       Date.now(),
     );
     this.ensureMetadata(hydrated.sessionId);

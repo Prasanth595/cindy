@@ -1,6 +1,19 @@
 import { resolveRemoteText } from '@cindy/device-link';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 import type { LastTeammateIdentity } from './homeViewPreferenceStore';
+import type { RemoteSession } from './types';
+
+/** Presentation skeleton only; cacheSeeded blocks dispatch until host metadata replaces it. */
+export function teammateSessionPreview(hosted: HostedRemoteCollectionItem, userId: string, locale: string): RemoteSession | null {
+  const target = hosted.item.links.find(link => link.rel === 'conversation')?.target;
+  if (hosted.item.ref.kind !== 'bot' || target?.kind !== 'session' || !target.sessionId) return null;
+  return {
+    id: target.sessionId, userId, source: 'bot', title: resolveRemoteText(hosted.item.display.title, locale),
+    cacheSeeded: true, workingDir: null, workspaceKind: 'dialogue', model: '', effort: '',
+    permissionMode: 'ask', fastMode: false, agentKind: 'cc', status: 'active', userSendAt: null,
+    createdAt: '', updatedAt: '',
+  };
+}
 
 export function teammateIdentity(hosted: HostedRemoteCollectionItem): LastTeammateIdentity | null {
   return hosted.item.ref.kind === 'bot' ? {

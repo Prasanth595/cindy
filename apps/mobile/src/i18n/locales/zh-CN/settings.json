@@ -31,7 +31,31 @@
       "light": "浅色",
       "dark": "深色"
     },
-    "saveFailed": "显示模式没有保存成功，重新打开后会恢复之前的设置"
+    "saveFailed": "显示模式没有保存成功，重新打开后会恢复之前的设置",
+    "userBubble": {
+      "title": "我的消息气泡颜色",
+      "presets": "颜色",
+      "default": "默认",
+      "peach": "初稿",
+      "yellow": "晨光",
+      "sage": "灵感",
+      "blue": "梦境",
+      "lavender": "夜猫",
+      "red": "项圈",
+      "custom": "自定义颜色",
+      "hue": "色相",
+      "preview": "消息预览",
+      "sampleUser": "帮我整理一下今天的灵感。",
+      "sampleAssistant": "好的，我们一起把想法梳理清楚。",
+      "hint": "颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "customHint": "左右拖动色带选择颜色。颜色会按浅色和深色模式自动调整明暗，保证文字清晰。仅保存在此设备。",
+      "saveFailed": "颜色已在本次使用中生效，但未能保存。",
+      "retry": "重试",
+      "cancel": "取消",
+      "reset": "恢复默认",
+      "apply": "应用",
+      "hex": "颜色值"
+    }
   },
   "language": {
     "title": "语言",

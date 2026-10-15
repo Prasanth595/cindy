@@ -6,8 +6,8 @@
  * 输出两样东西:
  *  - 空状态的项目清单:复用任务列表的项目分组(`groupSessions`),合并本机 Claude Code /
  *    Codex 的可导入候选与项目里的自动化;
- *  - 已接手项目的任务列表:项目里最近 30 天的 Cindy 任务一律列出(含主人自己开的,不管伙伴判断过没有);
- *    本机外部会话与伙伴从项目素材里写下的 PR / issue / 建议只在伙伴判为「没做完 / 聊过没下文」时列出;
+ *  - 负责的任务列表:Cindy 任务只按创建凭据或明确逐任务责任列出,不依赖目录或旧判断;
+ *    外部会话保留为发现参考,不因旧判断上负责列表;PR / issue / 建议沿用既有素材条目;
  *    另有伙伴自己开的后台任务与自动化;状态用 `shared/botWorkbench.ts` 与主进程同一套规则推导,
  *    再由 `groupWorkbenchTiles` 分成 等你 / 在做 / 待做 / 做完 四组。
  */
@@ -22,7 +22,6 @@ import {
   deriveWorkbenchSessionState,
   findWorkbenchProject,
   importedSessionOrigin,
-  WORKBENCH_RECENT_WINDOW_MS,
   externalWorkbenchTaskId,
   isWorkbenchTaskSource,
   parseWorkbenchTaskId,
@@ -212,8 +211,8 @@ export function isWorkbenchCandidateSession(
   if (session.remoteHostId || session.deviceLinkDeviceId) return false;
   if (hiddenIds.has(session.id) || session.source === 'bot') return false;
   if (!isWorkbenchTaskSource(session.source) || session.orcaRole === 'worker') return false;
-  if (!session.workingDir) return false;
   if (delegationChildIds.has(session.id)) return true;
+  if (!session.workingDir) return false;
   return session.userSendAt != null || (session._count?.messages ?? 0) > 0;
 }
 
@@ -380,12 +379,13 @@ function sessionLine(
 }
 
 /**
- * 已接手项目的条目:项目里最近 30 天的 Cindy 任务(含主人自己开的,不论有无判断)、伙伴开的后台任务、
- * 伙伴判为没做完 / 聊过没下文的本机外部会话与 PR / issue / 建议、项目里的自动化、伙伴自己的例行任务
+ * 责任条目：逐任务明确接手的 Cindy 任务、伙伴自己创建的任务（不限目录或最近活动）、
+ * PR / issue / 建议、项目里的自动化、伙伴自己的例行任务
  * (含导入来的自动化)。排列见 `workbenchTileRank`,分组见 `groupWorkbenchTiles`。
  */
 export function buildWorkbenchTiles(input: {
   sessions: readonly Session[];
+  responsibleSessionIds?: readonly string[];
   hiddenIds: ReadonlySet<string>;
   projectDirs: readonly string[];
   caseInsensitive: boolean;
@@ -397,10 +397,9 @@ export function buildWorkbenchTiles(input: {
   judgments?: Readonly<Record<string, WorkbenchTaskJudgment>>;
   /** 渲染层扫描到的本机会话,只用来补最近活动时间。 */
   candidates?: readonly ExternalSessionCandidate[];
-  /** 当前时间;只列最近 30 天活动过的 Cindy 任务(伙伴的后台任务不限)。 */
+  /** 保留旧调用方签名；逐任务责任不按活动时间排除。 */
   now?: number;
 }): WorkbenchTile[] {
-  const since = (input.now ?? Date.now()) - WORKBENCH_RECENT_WINDOW_MS;
   const judgments = input.judgments ?? {};
   const delegationByChild = new Map<string, WorkbenchDelegationInput>();
   for (const delegation of [...input.delegations].sort((a, b) => b.createdAt - a.createdAt)) {
@@ -409,11 +408,12 @@ export function buildWorkbenchTiles(input: {
     }
   }
   const delegationChildIds = new Set(delegationByChild.keys());
+  const responsibleIds = new Set(input.responsibleSessionIds ?? delegationChildIds);
   const tiles: WorkbenchTile[] = [];
 
   for (const session of input.sessions) {
-    if (!isWorkbenchCandidateSession(session, input.hiddenIds, delegationChildIds)) continue;
-    if (!findWorkbenchProject(session.workingDir, input.projectDirs, input.caseInsensitive)) continue;
+    if (!isWorkbenchCandidateSession(session, input.hiddenIds, responsibleIds)) continue;
+    if (!responsibleIds.has(session.id)) continue;
     const delegation = delegationByChild.get(session.id) ?? null;
     const activity = input.activity.get(session.id) ?? null;
     const interrupted = hasPendingSessionInterruption(session);
@@ -425,11 +425,8 @@ export function buildWorkbenchTiles(input: {
     });
     const judgment = judgments[session.id];
     const verdict = shownVerdict(judgment);
-    const live = state === 'running' || state === 'waiting' || state === 'queued';
     const lastActiveMs = Math.max(toMs(session.userSendAt), toMs(session.updatedAt), delegation?.updatedAt ?? 0);
-    // 项目里的 Cindy 任务(含主人自己开的)一律上工作台,不管伙伴判断过没有——它们是伙伴随时知道的
-    // 项目事务;只看最近 30 天,在跑 / 等你 / 排队的与伙伴的后台任务不受此限。
-    if (!live && !delegation && lastActiveMs < since) continue;
+    // Responsibility survives project moves and idle time; status remains host-derived.
     tiles.push({
       type: 'session',
       key: `session:${session.id}`,
@@ -447,12 +444,6 @@ export function buildWorkbenchTiles(input: {
     });
   }
 
-  const candidateUpdatedAt = new Map(
-    (input.candidates ?? []).map((candidate) => [
-      externalWorkbenchTaskId(candidate.source, candidate.id),
-      toMs(candidate.updatedAt),
-    ]),
-  );
   for (const [taskId, judgment] of Object.entries(judgments)) {
     const ref = parseWorkbenchTaskId(taskId);
     const verdict = shownVerdict(judgment);
@@ -478,20 +469,6 @@ export function buildWorkbenchTiles(input: {
       });
       continue;
     }
-    if (ref.kind !== 'external') continue;
-    tiles.push({
-      type: 'external',
-      key: `external:${taskId}`,
-      id: taskId,
-      title: judgment.title,
-      state: 'done',
-      origin: ref.source === 'claude' ? 'claude-code' : ref.source,
-      verdict,
-      next: judgment.next,
-      startedAtMs: null,
-      lastActiveMs: candidateUpdatedAt.get(taskId) ?? toMs(judgment.updatedAt),
-      line: { kind: 'none' },
-    });
   }
 
   for (const schedule of input.schedules) {

@@ -30,7 +30,6 @@ import {
   rubberBandLightboxScale,
   rubberBandLightboxTranslation,
   rubberBandLightboxVisualPan,
-  shouldCloseLightboxOnTap,
   shouldDismissLightbox,
   unrubberLightboxScale,
   unrubberLightboxTranslation,
@@ -252,16 +251,9 @@ describe('imageLightboxModel', () => {
     expect(shouldDismissLightbox(20, 100)).toBe(false);
   });
 
-  it('keeps tap-to-close slop tight enough that a pan is not a tap', () => {
+  it('keeps single-tap slop tight enough that a pan is not a tap', () => {
     expect(LIGHTBOX_TAP_MAX_DISTANCE).toBeGreaterThan(0);
     expect(LIGHTBOX_TAP_MAX_DISTANCE).toBeLessThan(40);
-  });
-
-  it('closes on tap only at 1x', () => {
-    expect(shouldCloseLightboxOnTap(1)).toBe(true);
-    expect(shouldCloseLightboxOnTap(1.005)).toBe(true);
-    expect(shouldCloseLightboxOnTap(LIGHTBOX_DOUBLE_TAP_SCALE)).toBe(false);
-    expect(shouldCloseLightboxOnTap(2)).toBe(false);
   });
 
   it('never dismisses while zoomed, even past distance or fling', () => {

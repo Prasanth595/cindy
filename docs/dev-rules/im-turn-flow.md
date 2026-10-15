@@ -21,7 +21,7 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |
 |---|---|---|---|
 | 入站 | 各渠道 adapter → `im/shared/messageHandler.ts`（微信经 `WechatTaskStore` 持久队列） | `hook-control/manager.ts` 收 `task.dispatch` → `dispatcher.handleDispatch` | 渠道适配（入站来源各自保留） |
-| 幂等与重投 | 无（个人连接无重投） | `ackHistory` / `inflightRequests` / `terminalLedger` | 渠道适配（服务端重投是 hook 的传输语义） |
+| 幂等与重投 | 各传输层处理；钉钉账号按账号 + 会话 + `message_id` 在入队前去重，不用投递的 `event_id`（见下文） | `ackHistory` / `inflightRequests` / `terminalLedger` | 渠道适配（按各渠道传输语义去重） |
 | 找任务 | `turnRunner.resolveRouteTarget`：通知回复 → `/ctr` 绑定 → 确定性 id 通道行（`sessionRepo.findActiveSession` 复活归档行） | `dispatcher.resolveTarget`：接管 sessionId → 绑定复用（每条消息按工作目录映射现场重算）→ 失效则换任务并交接 | 共用流程的「定位」骨架 + 渠道策略（台账第三节「绑定的任务失效后怎么接续」有意不同） |
 | 建任务 | `sessionRepo.createSession` 确定性 id upsert；`createFreshSession`（`/new` 轮换事务）；随后 `maker.createSession` —— 2026-10 起两处建行都经 `openChannelSession` → **`openSession`**（模型准入） | `session-runner` 新任务的 `maker.createSession`、`/new` 的 `desktopSessionStorage.create` —— 同样经 `openChannelSession` → **`openSession`** | **公共入口 `openSession`**（已完成，批次 2）；渠道专属建行在 commit 回调里。live session 仍各自 `maker.createSession`，未改用 register 内部的 `bootstrapSession`（会新增项目上下文 / Orca 指令注入等行为，见 §6） |
 | 默认配置 | `resolveImSessionDefaults(channel)` + 跟随渠道默认（`channelDefaultRouteSync`） | `resolveNewSessionConfig`（目录偏好 > 全局 IM 默认 > 清单首项；权限档规则见 `defaults.ts`） | 渠道策略（台账第三节「新会话的默认…从哪读」有意不同） |
@@ -31,11 +31,26 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | 用户消息落库 | 部分渠道提前落库（`persistInboundUserMessageEarly`），`onAccepted` 补 `imSource` | 只在 `onAccepted` 落库，`agentMeta.hookSource` | 共用流程（`onAccepted` 落库；提前落库保留为渠道能力） |
 | 发送 | `makerSession.send`，`MAIN_OWNED_SEND_CONTEXT.origin.kind='im'` | `session.send`，origin `hook`（Telegram/X）或 `im`（Slack） | 共用流程；Pi 管理命令授权来源按渠道各自声明（hook 不得伪装成本机命令） |
 | 观察事件 | `turnPresenter`（buffer-replace）+ 流式 handle | `turnObserver`（finalized-segments）+ 进度发射器 | 共用流程（presenter 已同源；两个正文累积引擎有意不同） |
+| 后台轮次回传（非 IM 入站） | `orchestrator` 的 `onChannelTurn` → `turnRunner` 转播（Agent 自己唤醒的轮次只同步标记已接线的会话） | `backgroundResults` → `turn.end(background: true)` | 已同源判据：`maker-ipc/channelTurnSignal.ts` 的开始信号与 `isRelayedChannelTurnSource`（其它任务来信、Agent 自己唤醒；scheduler 按 `turnOrigin`）；仍属原 IM 轮次的不另发 |
 | 表情 | `TurnState` 的 ack 句柄 | `ackReactions`（msg.op react） | 渠道适配（出站载体不同，档位语义同源） |
 | 交互 | `beginInteractionRoute` + `pendingInteractions` + 渠道卡片 | `beginInteractionRoute` + `interactions.ts`（30 分钟超时）+ 卡片发布器 | 共用流程（路由与语义层已同源；超时差异见台账缺口 2g） |
 | 收尾 | `handleTurnDoneAsync` / `handleTurnErrorAsync` → 流式 handle finalize | `execute` 收口 → `turnCarrier.publishFinal` → `turn.end`（持久出箱） | 共用流程的收口骨架 + 渠道出站载体 |
 | 停止 | `turnRunner.stopActiveTurn`：清 `sendQueue` + 撤自动续跑 + `abort()`；**不暂停 Goal、不停 coordinator** | `dispatcher.cancel` → `abortSession`：只 `abort()`；**不撤自动续跑、不暂停 Goal** | **公共入口：统一明确停止**（`stopSessionTurnExplicitly`，与桌面 Stop 同一套清理） |
 | 重启恢复 | 无（微信例外：`WechatTaskStore`） | 终稿持久出箱（`requestLedger`，24h） | 渠道适配（终稿必达是 hook 的保障；台账缺口 3） |
+
+钉钉账号的去重在 [`DingTalkDwsIM.accept`](../../packages/lizi-im/src/dingtalk-dws/index.ts)
+进入异步附件处理和 lane 队列前同步登记，重投即使更换或省略 `event_id` 也不再次派发。
+缓存沿用进程内 5 分钟 TTL、最多 2048 条，保留于事件流重连期间，不提供应用重启后的持久去重。
+相同文字但 `message_id` 不同仍是两条请求；不同账号、不同会话的编号互不影响。
+回归见 [`dingtalkDwsIM.test.ts`](../../packages/lizi-im/src/dingtalk-dws/__tests__/dingtalkDwsIM.test.ts)。
+
+钉钉账号出站仅对明确的 `RATE_LIMIT_ERROR` 延迟 5 / 15 / 30 秒重试，最多追加三次。
+每段文字、每个附件分别复用自己的幂等键，已发送的段落不重发；CLI 超时、无输出和其他
+结果不明的失败不自动重发。出站绑定发起时的 DWS profile、渠道代次及宿主账号，关闭渠道
+会取消等待中的重试，切号后不再续发。重试不是持久出箱，应用退出后不会补发。
+宿主 runner 从有界 stderr / stdout 中提取结构化错误码，同时检查退出码，不输出原始诊断。
+文字或附件最终发送失败向收尾层报告；设置页显示最近一次发送失败分类，成功发送或
+断开渠道后清除，不把消息正文、收件人或 CLI 诊断透传到界面。
 
 ## 2. 状态清单
 

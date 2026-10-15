@@ -433,7 +433,16 @@ describe('task image delivery', () => {
       if (kind === 'symlink') {
         const outside = path.join(state.root, 'private.png');
         await fs.writeFile(outside, PNG);
-        await fs.symlink(outside, source);
+        // Windows 目录 junction 无需文件软链权限，仍验证真实图片经链接逃出任务目录。
+        if (process.platform === 'win32') {
+          const link = path.join(work, 'linked');
+          await fs.symlink(state.root, link, 'junction');
+          source = path.join(link, 'private.png');
+        } else {
+          await fs.symlink(outside, source, 'file');
+        }
+        expect(await fs.realpath(source)).toBe(await fs.realpath(outside));
+        await expect(readTaskImage(source, [await fs.realpath(work)])).rejects.toThrow('task-image: outside task');
       } else await fs.writeFile(source, kind === 'not-image' ? Buffer.from('not png') : PNG);
       const row = insert(`![image](${source})`);
       expect(await restoreTaskImageRows(client, [row])).toEqual([row]);

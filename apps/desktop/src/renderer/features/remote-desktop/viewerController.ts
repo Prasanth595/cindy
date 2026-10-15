@@ -60,6 +60,8 @@ export interface ViewerSnapshot {
   credentialNotice: string | null;
   /** The picture was fitted to this window; restore and same-ratio sizes apply. */
   fittedDisplay: Size | null;
+  /** 代输入 window view: the one window shown (only it can be clicked or typed into). */
+  window?: { app: string; title?: string } | null;
 }
 
 const sameAspect = (display: Size, width: number, height: number) =>
@@ -402,6 +404,7 @@ export class DesktopViewerController {
         displayId: this.state.displayId || undefined,
         resume,
         takeover,
+        ...(this.scope.target?.handoff ? { handoff: this.scope.target.handoff } : {}),
         // Desktop always operates; a host with `autoControl` grants it with the lease.
         control: true,
         isCurrent: () => this.epoch === epoch && !this.disposed && this.scope.active,
@@ -411,7 +414,12 @@ export class DesktopViewerController {
         },
       });
       if (epoch !== this.epoch) return;
-      this.publish({ caps, displayId: lease.display.id, status: 'connecting' });
+      this.publish({
+        caps,
+        displayId: lease.display.id,
+        status: 'connecting',
+        window: lease.window ?? null,
+      });
       this.runtime.receive({
         type: 'init',
         epoch: lease.lease,

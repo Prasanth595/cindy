@@ -4,7 +4,7 @@ import type { HookSessionRunner } from './dispatcher';
 import type { HookBindingStore } from './bindings';
 import { providerForExternalKey } from './providerRouting.js';
 import { isSilencedSchedulerTurn } from '../scheduler-host/silent-output.js';
-import type { ChannelTurnSource } from '../maker-ipc/channelTurnSignal.js';
+import { isRelayedChannelTurnSource, type ChannelTurnSource } from '../maker-ipc/channelTurnSignal.js';
 
 /** Shares the normal observer/final attachment collector; no task replay or outbox. */
 export function createBackgroundResults(deps: {
@@ -32,7 +32,8 @@ export function createBackgroundResults(deps: {
       watches.set(sessionId, state);
       const detach = () => { if (watches.get(sessionId) === state) watches.delete(sessionId); };
       // Desktop input stays in the app. Scheduler turns are only known at terminal (turnOrigin);
-      // a silenced run then sends only its failure.
+      // a silenced run then sends only its failure. Other-task mail and harness wake-ups (no send)
+      // share the personal IM predicate. A wake-up inside the hook's own turn is owned above.
       let relay: 'all' | 'failure' | 'none' | null = null;
       state.cancel = deps.runner.watchContinuation({
         sessionId, workingDir,
@@ -41,7 +42,7 @@ export function createBackgroundResults(deps: {
         onSettling(origin) {
           relay ??= origin?.kind === 'scheduler'
             ? (isSilencedSchedulerTurn(origin) ? 'failure' : 'all')
-            : source === 'other-task' ? 'all' : 'none';
+            : isRelayedChannelTurnSource(source) ? 'all' : 'none';
           detach();
         },
         onAbandon: () => { state.active = false; detach(); },

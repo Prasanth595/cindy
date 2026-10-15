@@ -46,9 +46,11 @@ describe('conversationSearch source invariants', () => {
     expect(conversationSearchSource).toContain('title: row.title,');
   });
 
-  it('keeps ordinary task search on the desktop-visible source boundary by default', () => {
+  it('keeps ordinary task search on the task-list source boundary by default', () => {
+    // Same boundary as the sidebar: /review Reviewer tasks are opened from their
+    // source card, not found as ordinary tasks.
     expect(conversationSearchSource).toContain(
-      'hostScope.sessionSources === undefined\n    ? DESKTOP_VISIBLE_SESSION_SOURCES',
+      'hostScope.sessionSources === undefined\n    ? DESKTOP_TASK_LIST_SESSION_SOURCES',
     );
   });
 

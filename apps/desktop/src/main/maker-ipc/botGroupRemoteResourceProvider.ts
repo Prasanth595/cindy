@@ -191,6 +191,7 @@ export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteCh
       : message)),
     supportsAttachments: true,
     supportsMemberRemoval: detail.serverBacked === true,
+    supportsSettingsManagement: detail.serverBacked === true,
   };
 }
 
@@ -353,6 +354,17 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
       if (!groupId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
       // Every action re-checks that the phone may still see this group, and any teammate it names.
       const visibleGroup = await readVisibleGroup(groupId);
+      // New controllers bind a write to the snapshot they edited. Older controllers
+      // retain their existing actions; the server remains the final permission owner.
+      if (visibleGroup.serverBacked && input.expectedRevision !== undefined) {
+        if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== visibleGroup.revision)
+          throw new RemoteResourceRegistryError('INVALID_PARAMS', 'PRECONDITION_FAILED');
+      }
+      if (actionId === 'add-member') {
+        if (!visibleGroup.serverBacked || typeof input.botId !== 'string')
+          throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
+        await assertBotsVisible([input.botId]);
+      }
       const candidateId = actionId === 'update' ? input.organizerBotId : actionId === 'plan-edit' ? input.botId : undefined;
       if (typeof candidateId === 'string') {
         const member = visibleGroup.members.find(member => member.botId === candidateId);
@@ -392,6 +404,7 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
           for (const key of ['name', 'replyMode', 'speakingMode', 'organizerBotId'] as const) {
             if (input[key] !== undefined) patch[key] = input[key];
           }
+          if (input.expectedRevision !== undefined) patch.expectedRevision = input.expectedRevision;
           result = await current.updateGroup(patch);
           break;
         }
@@ -407,7 +420,17 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         case 'set-members':
           result = await current.setMembers({ groupId, botIds: botIdsInput() });
           break;
+        case 'add-member':
+          result = await current.setMembers({ groupId, botIds: [input.botId as string], addOnly: true });
+          break;
         case 'delete':
+          if (visibleGroup.serverBacked && input.expectedRevision !== undefined) {
+            if (!current.chatServer || !visibleGroup.members.some(member => member.isOwned && member.role === 'owner'))
+              throw new RemoteResourceRegistryError('INVALID_PARAMS', 'PERMISSION_DENIED');
+            const archived = await current.chatServer.manage({ groupId, action: { type: 'archive', archived: true, expectedRevision: visibleGroup.revision! } });
+            if (!archived.ok) refuse(chatGroupFailure(new Error(archived.errorCode)));
+            return { effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };
+          }
           result = await current.deleteGroup(groupId);
           if (!result.ok) refuse(result);
           return { effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };

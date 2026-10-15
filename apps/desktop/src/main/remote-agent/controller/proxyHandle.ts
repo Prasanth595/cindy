@@ -25,7 +25,9 @@ import type {
 } from '@cindy/maker-core';
 
 import type { ExecutorAction } from '../executor/gate';
+import type { ExecutorConfirmation } from '../executor/executor';
 import type { ExecutorWorkspace } from '../executor/workspace';
+import { isProviderShareCredentialSessionApproval } from '../../../shared/providerShareCredentialConsent';
 import { encodeSendOptions, encodeUserMessage } from '../wire';
 import { RemoteAgentRemoteError, type RemoteAgentRunClient } from './runClient';
 
@@ -206,9 +208,9 @@ export interface RemoteAgentHandleController {
   onClosed(reason: string, message?: string): void;
   /**
    * 本机自己发起的确认(不是 Agent 发来的)：走与 Agent 确认同一个确认卡通道，桌面、手机远控与 IM 都能
-   * 处理。只认这一次「允许」，不接受「总是允许」；交互还没接上或任务已结束时按拒绝处理。
+   * 处理。只有本机提供了凭证授权建议的确认卡能返回会话级允许；交互还没接上或任务已结束时按拒绝处理。
    */
-  confirm(request: LocalConfirmation): Promise<boolean>;
+  confirm(request: LocalConfirmation): Promise<ExecutorConfirmation>;
 }
 
 export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHandleController {
@@ -443,7 +445,12 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     async confirm(request) {
       if (!resolver || disposed) return false;
       const decision = await resolver({ ...request, kind: 'permission', requestId: deps.newId() });
-      return !disposed && decision.kind === 'permission' && decision.behavior === 'allow';
+      if (disposed || decision.kind !== 'permission' || decision.behavior !== 'allow') return false;
+      // 只能从本机生成的凭证确认卡建立授权；对方的 interaction 回包不经过这里。
+      if (request.metadata?.hostOwnedConfirmation === 'shared_provider_credential'
+        && isProviderShareCredentialSessionApproval(request.suggestions)
+        && isProviderShareCredentialSessionApproval(decision.permissionUpdates)) return 'session';
+      return true;
     },
     onClosed(reason, message) {
       // 'superseded'：同一任务被重新打开、旧实例让位给新实例，不是错误，静默收起。
@@ -453,7 +460,9 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
           data: {
             message: message ?? `[REMOTE_AGENT_UNAVAILABLE] The agent on the other computer stopped (${reason}).`,
             isTerminal: true,
-            reason: 'remote_agent_closed',
+            // 拉不到那台(连续 2 分钟)只说明连接断了，那台本身可能没事：供应商组先等它恢复、恢复了留在原电脑继续；
+            // 其余(对方出错收尾、撤权、流不可信等)是那台那边的问题(provider-group/failurePolicy)。
+            reason: reason === 'unreachable' ? 'remote_agent_lost' : 'remote_agent_closed',
           },
           source: started.agentKind,
         });

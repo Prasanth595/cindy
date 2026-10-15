@@ -188,10 +188,12 @@ import { type HomeSuggestionId, homeSuggestionPromptKey } from './homeSuggestion
 import {
   buildHomeTaskCatalog,
   pluginSuggestionComposerText,
+  pluginSuggestionDisplayText,
   readPluginRecommendationSnapshot,
   type HomeTaskSuggestion,
 } from './pluginHomeSuggestions';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { installedGhostStoragePart } from '../../../shared/pluginIdentity.js';
 import {
   startPendingPluginSuggestion,
   takePendingPluginSuggestion,
@@ -215,7 +217,7 @@ import { cn } from '@/lib/utils';
 import { InvisibleWindowDragStrip } from '@/components/layout/windowDrag';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import { classifyUnclassifiedDroppedItems, getDroppedFileItems } from '@/lib/fileDrop';
@@ -1385,6 +1387,7 @@ export function NewMakerDraftRoute() {
     if (usesDeviceCatalog) return { model: chatPrefs.model, providerId: null };
     return calibrateDraftModel({
       providers: autoCalibrationProviders,
+      isModelEnabled,
       agent: capabilityAgentKind,
       model: chatPrefs.model,
       chosenByUser: draftModelChosenByUser,
@@ -1399,6 +1402,7 @@ export function NewMakerDraftRoute() {
     chatPrefs.providerId,
     draftModelChosenByUser,
     localProvidersLoading,
+    defaultVisibilityVersion,
   ]);
   const calibratedDraftModel = draftCalibration.model;
 
@@ -5334,9 +5338,9 @@ export function NewMakerDraftRoute() {
     });
     return true;
   }, []);
-  // 一条建议「点击后会填入的文字」的唯一计算:视觉预览与读屏描述都用它,点击填入走同一个
-  // pluginSuggestionComposerText。插件可用时带 $指令(或插件调用说明);需要先安装的插件
-  // 点击后走安装引导、不会立即填入,只显示建议本身。插件清单变化时随之重算。
+  // 一条建议的预览与读屏描述:内容与点击填入的 pluginSuggestionComposerText 一致,
+  // 只是同名限定符按输入框胶囊的规则收起。插件可用时带 $指令(或插件调用说明);需要
+  // 先安装的插件点击后走安装引导、不会立即填入,只显示建议本身。插件清单变化时随之重算。
   // 可用插件表按插件清单与工作目录缓存:filterGhostsForWorkdir 会同步查询目录禁用表,
   // 不能在每次渲染 / 每条建议上重复调用。
   const installedGhosts = useInstalledGhosts(!isDeviceLinkDraft);
@@ -5345,23 +5349,37 @@ export function NewMakerDraftRoute() {
       new Map(
         (isDeviceLinkDraft ? [] : filterGhostsForWorkdir(installedGhosts, effectiveWorkingDir))
           .filter((g) => g.enabled)
-          .map((g) => [g.manifest.id, g]),
+          .map((g) => [installedGhostStoragePart(g), g]),
       ),
     [isDeviceLinkDraft, effectiveWorkingDir, installedGhosts],
   );
-  const suggestionComposerText = useCallback(
-    (suggestion: HomeTaskSuggestion) => {
+  const suggestionSourceLabels = useMemo(
+    () => ({ team: t('settings.ghosts.commandPaletteSource.team') }),
+    [t],
+  );
+  // 悬停预览与读屏描述是纯文本,不经过输入框胶囊:按与胶囊同一条判定收起同名
+  // 限定符(读屏另补「团队共享」);点击填入仍走 pluginSuggestionComposerText,
+  // 保留限定符供发送期消歧。同名判定用完整安装清单(含停用实例),填入后再启用
+  // 同名插件,已插入的指令仍能精确命中;能否选择仍只看 usableSuggestionGhosts。
+  const suggestionDisplayText = useCallback(
+    (suggestion: HomeTaskSuggestion, withTag: boolean) => {
       const ghost = suggestion.pluginId
         ? usableSuggestionGhosts.get(suggestion.pluginId)
         : undefined;
-      return ghost ? pluginSuggestionComposerText(suggestion.prompt, ghost, t) : suggestion.prompt;
+      return ghost
+        ? pluginSuggestionDisplayText(suggestion.prompt, ghost, t, installedGhosts, suggestionSourceLabels, withTag)
+        : suggestion.prompt;
     },
-    [t, usableSuggestionGhosts],
+    [installedGhosts, suggestionSourceLabels, t, usableSuggestionGhosts],
+  );
+  const suggestionDescriptionText = useCallback(
+    (suggestion: HomeTaskSuggestion) => suggestionDisplayText(suggestion, true),
+    [suggestionDisplayText],
   );
   const handleSuggestionPreview = useCallback(
     (suggestion: HomeTaskSuggestion | null) =>
-      setSuggestionPreview(suggestion ? suggestionComposerText(suggestion) : null),
-    [suggestionComposerText],
+      setSuggestionPreview(suggestion ? suggestionDisplayText(suggestion, false) : null),
+    [suggestionDisplayText],
   );
 
   const handleHomeSuggestion = useCallback(
@@ -5427,15 +5445,16 @@ export function NewMakerDraftRoute() {
           toast.info(t('newChat.pluginSuggestions.changed'));
           return;
         }
-        const ghost = window.electronAPI.ghosts
-          .listSync()
-          .ghosts.find((g) => g.manifest.id === suggestion.pluginId);
+        const installedGhosts = window.electronAPI.ghosts.listSync().ghosts;
+        const ghost = installedGhosts.find((g) => installedGhostStoragePart(g) === suggestion.pluginId);
+        const usableGhosts = filterGhostsForWorkdir(installedGhosts, request.workingDir)
+          .filter((g) => g.enabled);
         const usable =
-          ghost && ghost.enabled && filterGhostsForWorkdir([ghost], request.workingDir).length > 0;
+          ghost && usableGhosts.includes(ghost);
         if (!usable) {
           let route: string;
           if (ghost) {
-            route = `/plugins?ghost=${encodeURIComponent(ghost.manifest.id)}`;
+            route = `/plugins?ghost=${encodeURIComponent(installedGhostStoragePart(ghost))}`;
           } else {
             const market = await window.electronAPI.pluginMarket.snapshot();
             if (!stillCurrent() || readPluginRecommendationSnapshot().ownerId !== request.ownerId)
@@ -5458,8 +5477,8 @@ export function NewMakerDraftRoute() {
         // 填进输入框而不是直接发送;ChatInput 发送时会自己展开 $command。无指令插件发送时
         // 识别不出所用插件,所以选中插件建议并成功填入即记一次最近使用(有指令的插件发送时
         // 还会再记一次,只刷新时间,不影响排序语义)。
-        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t))) {
-          void window.electronAPI.ghosts.markUsed(ghost.manifest.id).catch(() => undefined);
+        if (fillComposerWithSuggestion(pluginSuggestionComposerText(suggestion.prompt, ghost, t, installedGhosts))) {
+          void window.electronAPI.ghosts.markUsed(installedGhostStoragePart(ghost)).catch(() => undefined);
         }
       } catch {
         if (pluginSuggestionMounted.current)
@@ -5544,7 +5563,7 @@ export function NewMakerDraftRoute() {
           setPageDragOver(false);
           // .cindy / .cshare 已被窗口级 capture 接管(装入 / 导入链路),不当附件消费。
           if (isGlobalDropIntercepted(e.nativeEvent)) return;
-          const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+          const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
           if (ghostMediaUri) {
             e.preventDefault();
             e.stopPropagation();
@@ -5932,7 +5951,7 @@ export function NewMakerDraftRoute() {
                     includePlugins={!isRemoteProjectDraft && !isDeviceLinkDraft}
                     onPluginSelect={handlePluginSuggestion}
                     onPreviewChange={handleSuggestionPreview}
-                    composerTextFor={suggestionComposerText}
+                    composerTextFor={suggestionDescriptionText}
                   />
                 )}
                 {/* 首页「新建目标」弹窗:无 sessionId → onCreate 建会话并 setGoal(见 handleCreateGoal)。

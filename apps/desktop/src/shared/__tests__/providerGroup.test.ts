@@ -8,7 +8,35 @@ import {
   PROVIDER_GROUP_MAX_LIMIT,
   normalizeProviderGroupConfig,
   providerGroupMemberKey,
+  parseProviderGroupRemoteRequest,
+  parseProviderGroupRemoteView,
 } from '../providerGroup';
+
+describe('group detail diagnostics compatibility', () => {
+  const config = { members: [{ kind: 'local' }] };
+  const payload = (extra: Record<string, unknown>) => ({ config, members: [{ key: 'local', state: 'available', ...extra }] });
+
+  it('preserves explicit diagnostic requests and ignores malformed options', () => {
+    expect(parseProviderGroupRemoteRequest({ action: 'view', providerId: 'anthropic', includeGuestSupport: true }))
+      .toEqual({ action: 'view', providerId: 'anthropic', includeGuestSupport: true });
+    expect(parseProviderGroupRemoteRequest({ action: 'view', providerId: 'anthropic', includeGuestSupport: 'true' }))
+      .toEqual({ action: 'view', providerId: 'anthropic' });
+  });
+
+  it('retains valid optional versions and support without changing the ordinary state', () => {
+    expect(parseProviderGroupRemoteView(payload({ appVersion: '0.1.104-beta', guestSupport: 'needs-update' }), 'anthropic').members[0])
+      .toMatchObject({ appVersion: '0.1.104-beta', guestSupport: 'needs-update', state: 'available' });
+  });
+
+  it.each([{}, { appVersion: 1, guestSupport: true }, { appVersion: 'secret hostname', guestSupport: 'all-good' }, { appVersion: '1.2.3-' + 'a'.repeat(65) }])(
+    'accepts old replies and drops malformed diagnostics: %j', (extra) => {
+      const member = parseProviderGroupRemoteView(payload(extra), 'anthropic').members[0];
+      expect(member.state).toBe('available');
+      expect(member.appVersion).toBeUndefined();
+      expect(member.guestSupport).toBeUndefined();
+    },
+  );
+});
 
 describe('providerGroupMemberKey', () => {
   it('keys the local member, same-account devices and received shares separately', () => {
@@ -19,6 +47,11 @@ describe('providerGroupMemberKey', () => {
 });
 
 describe('normalizeProviderGroupConfig', () => {
+  it('round-trips the opt-in usage strategy without changing the default', () => {
+    expect(normalizeProviderGroupConfig({ strategy: 'usage', members: [{ kind: 'local' }] }, 'anthropic')?.strategy).toBe('usage');
+    expect(normalizeProviderGroupConfig({ members: [{ kind: 'local' }] }, 'anthropic')?.strategy).toBe('least');
+  });
+
   it('keeps valid members, fills defaults and pins the local member to the group provider', () => {
     const config = normalizeProviderGroupConfig({
       strategy: 'round',

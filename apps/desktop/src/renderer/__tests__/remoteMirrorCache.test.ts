@@ -326,6 +326,43 @@ describe('冷缓存 hydrate', () => {
     }
   });
 
+  it('reads changed tasks ahead into the mirror after a refresh that may follow missed pushes', async () => {
+    const s = sid();
+    const old = dbMessage(s, 'old', 'cached reply', '2026-10-11T00:00:01.000Z');
+    const reply = dbMessage(s, 'new', 'reply written while away', '2026-10-11T00:00:09.000Z');
+    const historyView = encodeRemoteHistory({ items: projectHistoryView([{ ...old, clientId: old.clientId }], false),
+      details: new Map(), expanded: new Set(), ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: '2026-10-11T00:00:09.000Z' },
+    ] as never);
+    invoke.mockImplementationOnce((async (_deviceId: string, channel: string) => {
+      expect(channel).toBe('local-db:messages:view');
+      return { version: 1, items: projectHistoryView([old, reply], false), hasMore: false, nextCursor: null };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    try {
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+      const written = putMessages.mock.calls.at(-1)!;
+      expect(written.slice(0, 3)).toEqual([DEVICE_ID, s, []]);
+      expect(written[6]).toContain('reply written while away');
+      // The same version is not read again.
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+      // A cleared mirror entry invalidates that record.
+      clearCachedMessages(DEVICE_ID, s);
+      getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0 } as CachedRead);
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+    } finally {
+      getMessages.mockReset();
+      getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({
+        messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      }));
+    }
+  });
+
   it('restores the structured view through the actual offline session entry', async () => {
     const s = sid();
     const rows = [{ id: 'cached', clientId: 'cached', role: 'user', content: 'offline history', createdAt: '2026-09-17T00:00:00Z' }];

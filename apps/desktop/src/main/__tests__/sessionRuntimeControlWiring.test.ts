@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const mainRoot = resolve(__dirname, '..');
 const bootstrapSource = readFileSync(resolve(mainRoot, 'bootstrap-electron.ts'), 'utf8').replace(
@@ -276,7 +276,9 @@ describe('session runtime control wiring', () => {
     expect(grantUpdate).toContain('withSendToSessionLock(sessionId');
     expect(grantUpdate).toContain('applyRemoteDirectoryGrantUpdate(axis');
     expect(grantUpdate).toContain('persist: (patch) => persistSessionFields(sessionId, patch)');
-    expect(grantUpdate).toContain('terminate: () => maker.closeSession(sessionId)');
+    expect(grantUpdate).toMatch(
+      /terminate: \(\) => \(axis === 'extraDirs' && sess\?\.agentDeviceId && sess\.isTurnRunning\(\)\s*\? maker\.closeSessionIfCurrent\(sess, 'runtime-refresh', \{ afterCurrentTurn: true \}\)\s*: maker\.closeSession\(sessionId\)\)/,
+    );
     expect(grantUpdate).toContain('markRemoteSettingPersistedInsideHandler(result.dirs)');
     expect(grantUpdate).toContain('options.remote || route?.remoteHostId');
     expect(grantUpdate).toContain('isPersistedDirectoryGrantSubset(accepted, previousDirs)');
@@ -328,6 +330,39 @@ describe('session runtime control wiring', () => {
     expect(extraDirs).toContain('!isLibraryExtraDirSlot(dir)');
     expect(extraDirs).not.toContain('splitExtraDirSlots(persisted)');
     expect(extraDirs).not.toContain('[...requested, ...library]');
+  });
+
+  it.each([
+    ['extraDirs', true, true, true],
+    ['extraDirs', true, false, false],
+    ['extraDirs', false, true, false],
+    ['extraDirs', false, false, false],
+    ['writableDirs', true, true, false],
+    ['writableDirs', true, false, false],
+    ['writableDirs', false, true, false],
+    ['writableDirs', false, false, false],
+  ] as const)('directory rollback termination: %s, remote=%s, running=%s, deferred=%s', (axis, remote, running, deferred) => {
+    const grantUpdate = handlerBody(
+      registerSource,
+      'export function applyDirectoryGrants(',
+      'export async function applyLibraryReadonlyExtraDir(',
+    );
+    // Execute the actual injected callback: writable rollback must always stop
+    // immediately, while only a running remote read-only grant can wait.
+    const terminateExpression = grantUpdate.match(/terminate:\s*(\(\) => \([\s\S]*?\)),\n\s*\}\);/)?.[1];
+    expect(terminateExpression).toBeDefined();
+    const sessionId = 'directory-rollback';
+    const sess = { agentDeviceId: remote ? 'remote-device' : undefined, isTurnRunning: () => running };
+    const maker = { closeSession: vi.fn(), closeSessionIfCurrent: vi.fn() };
+    const terminate = new Function('axis', 'sess', 'maker', 'sessionId', `return (${terminateExpression});`)(axis, sess, maker, sessionId);
+    terminate();
+    if (deferred) {
+      expect(maker.closeSessionIfCurrent).toHaveBeenCalledExactlyOnceWith(sess, 'runtime-refresh', { afterCurrentTurn: true });
+      expect(maker.closeSession).not.toHaveBeenCalled();
+    } else {
+      expect(maker.closeSession).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(maker.closeSessionIfCurrent).not.toHaveBeenCalled();
+    }
   });
 
   it('guards local user model changes before parsing input while preserving trusted internal paths', () => {

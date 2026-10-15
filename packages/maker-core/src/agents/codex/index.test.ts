@@ -1836,6 +1836,29 @@ describe('CodexAgent permissions', () => {
     }
   });
 
+  it.each([false, true])('gives this task\'s shell the 代输入 askpass variables per thread (resume=%s)', async (resume) => {
+    const agent = new CodexAgent(createDeps({
+      taskShellEnv: ({ sessionId }) => ({ CINDY_INPUT_HANDOFF_ROUTE: `route-${sessionId}`, SUDO_ASKPASS: '/tmp/x/askpass' }),
+    }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'askpass-task',
+      model: 'gpt-6-astra',
+      workingDir: '/repo',
+      ...(resume ? { resumeSessionId: '11111111-1111-1111-1111-111111111111' } : {}),
+    });
+    try {
+      const params = host.request.mock.calls.find(
+        ([method]) => method === (resume ? Method.ThreadResume : Method.ThreadStart),
+      )?.[1] as { config: Record<string, unknown> };
+      // The app-server is shared by tasks, so the variables travel with the thread, not the process.
+      expect(params.config['shell_environment_policy.set.CINDY_INPUT_HANDOFF_ROUTE']).toBe('route-askpass-task');
+      expect(params.config['shell_environment_policy.set.SUDO_ASKPASS']).toBe('/tmp/x/askpass');
+    } finally {
+      await handle.close();
+    }
+  });
+
   it.each([
     { transport: 'absent', memoryConfig: undefined },
     { transport: 'stdio', memoryConfig: { command: 'memory-server', enabled: true } },
@@ -2000,8 +2023,9 @@ describe('CodexAgent permissions', () => {
         expect.objectContaining({ name: 'review_view_image' }),
       ]);
     } else {
-      expect(threadStart.config).not.toHaveProperty('project_doc_max_bytes');
       expect(threadStart).not.toHaveProperty('dynamicTools');
+      expect(threadStart.config).toHaveProperty('project_root_markers', []);
+      expect(threadStart.config).not.toHaveProperty('project_doc_max_bytes');
     }
     expect(threadStart.config).not.toHaveProperty(['windows.sandbox']);
     expect((threadStart.config as Record<string, unknown>)['skills.config']).toEqual([
@@ -7231,7 +7255,7 @@ describe('CodexAgent send', () => {
     await handle.close();
   });
 
-  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2'])(
+  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2', 'meta/muse-wonder-1.0', 'muse-wonder-1.0'])(
     'passes minimal effort through to turn/start for %s',
     async (model) => {
       const agent = new CodexAgent(createDeps());
@@ -7346,7 +7370,7 @@ describe('CodexAgent send', () => {
     await handle.close();
   });
 
-  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2'])(
+  it.each(['bytedance-seed/seed-2.1-pro', 'z-ai/glm-5.2', 'meta/muse-wonder-1.0', 'muse-wonder-1.0'])(
     'passes minimal effort through runtime settings and turn/start for %s',
     async (model) => {
       const agent = new CodexAgent(createDeps());
@@ -18385,8 +18409,6 @@ describe('CodexAgent MCP thread context hooks', () => {
         }
 
         now = 5_000;
-        handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'turn-ordering',
-          item: { id: 'ordering-reasoning', type: 'reasoning', summary: [], content: [] } });
         handlers.turnCompleted({
           threadId: 'start-thread-id',
           turn: { id: 'turn-ordering', status: 'completed' },
@@ -18396,151 +18418,10 @@ describe('CodexAgent MCP thread context hooks', () => {
         });
         const done = events.find((event) => event.type === 'done');
         expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs)
-          .toBeUndefined();
-        expect(events.findLast((event) => event.type === 'status')?.data.responseSpeed).toMatchObject({ outputTokens: 0, averageRate: null, firstResponseMs: expectedDurationMs });
+          .toBe(expectedDurationMs);
 
         await handle.close();
       } finally {
-        nowSpy.mockRestore();
-      }
-    },
-  );
-
-  it.each(['serial', 'parallel-tools', 'parallel-output'])('publishes paired tool phases and closes response time before delayed usage/turn completion (%s)', async (mode) => {
-    let now = 1_000;
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
-    const agent = new CodexAgent(createDeps());
-    const host = installFakeHost(agent);
-    const handle = await agent.startSession({ sessionId: 'session-speed-lifecycle', model: 'gpt-5.4', workingDir: '/repo' });
-    const handlers = host.getThreadHandlers()!;
-    const events: AgentEvent[] = [];
-    void (async () => { for await (const event of handle.events()) events.push(event); })();
-    const latestSpeed = () => events.findLast((event) => event.type === 'status')?.data.responseSpeed;
-    try {
-      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'speed-turn' } });
-      now = 2_000;
-      handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId: 'speed-turn', itemId: 'answer-1', delta: 'abcd' });
-      now = 3_000;
-      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-        item: { id: 'tool-1', type: 'commandExecution', command: 'pwd', cwd: '/repo', status: 'inProgress' } } as never);
-      await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'paused', toolActive: true, durationMs: 1_000 }));
-      // A duplicate start must not reopen generation during tool execution.
-      now = 3_100;
-      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-        item: { id: 'tool-1', type: 'commandExecution', command: 'pwd', cwd: '/repo', status: 'inProgress' } } as never);
-      await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'paused', durationMs: 1_000 }));
-      if (mode === 'parallel-tools') {
-        now = 4_000;
-        handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-          item: { id: 'tool-2', type: 'commandExecution', command: 'pwd', cwd: '/repo', status: 'inProgress' } } as never);
-        now = 8_000;
-        handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-          item: { id: 'tool-2', type: 'commandExecution', command: 'pwd', cwd: '/repo', status: 'completed' } } as never);
-        await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'paused', toolActive: true }));
-      }
-      if (mode === 'parallel-output') {
-        now = 8_000;
-        handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId: 'speed-turn', itemId: 'parallel-answer', delta: 'ijkl' });
-      }
-      now = 9_000;
-      handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-        item: { id: 'tool-1', type: 'commandExecution', command: 'pwd', cwd: '/repo', status: 'completed', aggregatedOutput: '/repo' } } as never);
-      await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: mode === 'parallel-output' ? 'generating' : 'waiting', toolActive: false, waitingMs: 0 }));
-      now = 11_000;
-      handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId: 'speed-turn', itemId: 'answer-2', delta: 'efgh' });
-      now = 13_000;
-      handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'speed-turn',
-        item: { id: 'answer-2', type: 'agentMessage', text: 'efgh' } } as never);
-      const observedMs = mode === 'parallel-output' ? 6_000 : 3_000;
-      await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'paused', durationMs: observedMs }));
-      now = 19_000;
-      handlers.tokenUsageUpdated!({ threadId: 'start-thread-id', turnId: 'speed-turn', tokenUsage: {
-        total: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 60, reasoningOutputTokens: 0, totalTokens: 70 },
-        last: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 60, reasoningOutputTokens: 0, totalTokens: 70 },
-      } } as never);
-      now = 25_000;
-      handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'speed-turn', status: 'completed', durationMs: 24_000 } });
-      await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
-      // Tool arguments are not a measured stream: the whole-turn 60 output
-      // tokens must not inflate these two/three observed character estimates.
-      const observedTokens = mode === 'parallel-output' ? 3 : 2;
-      expect(latestSpeed()).toMatchObject({ phase: 'complete', outputTokens: observedTokens,
-        durationMs: observedMs, averageRate: observedTokens * 1_000 / observedMs, estimated: true });
-      const usage = events.find((event) => event.type === 'done')?.data.usage;
-      expect(usage).toMatchObject({ completionTokens: 60 });
-      expect(usage?.durationMs).toBeUndefined();
-      now = 26_000;
-      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'next-speed-turn' } });
-      now = 26_100;
-      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'next-speed-turn', item: { id: 'reason-2', type: 'reasoning', summary: [], content: [] } } as never);
-      await waitForExpectation(() => expect(latestSpeed()?.outputTokens).toBe(0));
-    } finally {
-      await handle.close();
-      nowSpy.mockRestore();
-    }
-  });
-
-  it.each(['commandExecution', 'mcpToolCall', 'fileChange', 'plan'])(
-    'keeps tool-first %s turns approximate and restores calibration on the next text-only turn',
-    async (type) => {
-      let now = 1_000;
-      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
-      const agent = new CodexAgent(createDeps());
-      const host = installFakeHost(agent);
-      const handle = await agent.startSession({ sessionId: `session-tool-first-${type}`, model: 'gpt-5.4', workingDir: '/repo' });
-      const handlers = host.getThreadHandlers()!;
-      const events: AgentEvent[] = [];
-      void (async () => { for await (const event of handle.events()) events.push(event); })();
-      const latestSpeed = () => events.findLast(event => event.type === 'status')?.data.responseSpeed;
-      try {
-        handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'tool-first' } });
-        const item = type === 'commandExecution'
-          ? { id: 'first-tool', type, command: 'pwd', cwd: '/repo', status: 'inProgress' }
-          : type === 'mcpToolCall'
-            ? { id: 'first-tool', type, server: 'test', tool: 'lookup', arguments: { query: 'where' }, status: 'inProgress' }
-            : type === 'fileChange'
-              ? { id: 'first-tool', type, changes: [{ path: '/repo/example', kind: { type: 'update' }, diff: '+answer' }], status: 'completed' }
-              : { id: 'first-tool', type, text: 'Look up the answer' };
-        const execution = type === 'commandExecution' || type === 'mcpToolCall';
-        now = 2_000;
-        if (execution) {
-          handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'tool-first', item } as never);
-          await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'paused', toolActive: true, firstResponseMs: 1_000, durationMs: 0 }));
-          now = 8_000;
-        }
-        handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'tool-first', item: { ...item, status: 'completed' } } as never);
-        if (execution) await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'waiting', toolActive: false }));
-
-        const finishAnswer = async (turnId: string, start: number, cumulativeOutput: number, lastOutput: number) => {
-          now = start;
-          handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId, itemId: `${turnId}-answer`, delta: 'a'.repeat(40) });
-          now = start + 1_000;
-          handlers.agentMessageDelta!({ threadId: 'start-thread-id', turnId, itemId: `${turnId}-answer`, delta: 'b'.repeat(40) });
-          await waitForExpectation(() => expect(latestSpeed()).toMatchObject({ phase: 'generating', recentRate: 10 }));
-          now = start + 2_000;
-          handlers.itemCompleted!({ threadId: 'start-thread-id', turnId, item: { id: `${turnId}-answer`, type: 'agentMessage', text: 'a'.repeat(40) + 'b'.repeat(40) } } as never);
-          now = start + 3_000;
-          handlers.tokenUsageUpdated!({ threadId: 'start-thread-id', turnId, tokenUsage: {
-            total: { inputTokens: 20, cachedInputTokens: 0, outputTokens: cumulativeOutput, reasoningOutputTokens: 0, totalTokens: cumulativeOutput + 20 },
-            last: { inputTokens: 10, cachedInputTokens: 0, outputTokens: lastOutput, reasoningOutputTokens: 0, totalTokens: lastOutput + 10 },
-          } } as never);
-          handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: turnId, status: 'completed' } });
-          await waitForExpectation(() => expect(latestSpeed()?.phase).toBe('complete'));
-          return events.findLast(event => event.type === 'done')?.data.usage;
-        };
-        const mixedUsage = await finishAnswer('tool-first', 10_000, 150, 150);
-        expect(latestSpeed()).toMatchObject({ estimated: true, outputTokens: 20, durationMs: 2_000, averageRate: 10 });
-        expect(latestSpeed()?.samples.every((sample: { rate: number }) => sample.rate <= 10)).toBe(true);
-        expect(mixedUsage).toMatchObject({ completionTokens: 150 });
-        expect(mixedUsage?.durationMs).toBeUndefined();
-
-        now = 14_000;
-        handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'text-only' } });
-        const textUsage = await finishAnswer('text-only', 15_000, 190, 40);
-        expect(latestSpeed()).toMatchObject({ estimated: false, outputTokens: 40, durationMs: 2_000, averageRate: 20 });
-        expect(textUsage).toMatchObject({ completionTokens: 40, durationMs: 2_000 });
-      } finally {
-        await handle.close();
         nowSpy.mockRestore();
       }
     },
@@ -18619,10 +18500,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       });
       await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
       const done = events.find((event) => event.type === 'done');
-      // No root output/usage was observed: tool/interaction facts remain
-      // available, but cannot become a persisted token-rate denominator.
-      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBeUndefined();
-      expect(events.findLast((event) => event.type === 'status')?.data.responseSpeed).toMatchObject({ outputTokens: 0, averageRate: null, firstResponseMs: null });
+      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBe(3_000);
 
       await handle.close();
     } finally {
@@ -18711,9 +18589,7 @@ describe('CodexAgent MCP thread context hooks', () => {
         expect(events.some((event) => event.type === 'done')).toBe(true),
       );
       const done = events.find((event) => event.type === 'done');
-      // A last-only usage notification without a cumulative ledger cursor and
-      // no content stream cannot provide a calibrated generation rate.
-      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBeUndefined();
+      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBe(1_500);
 
       await handle.close();
     } finally {
@@ -18789,10 +18665,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       expect(handle.getUsageSnapshot().tokenUsage).toBe(540 - cachedInputTokens);
       handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'turn-1', status: 'completed' } });
       await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
-      // Real output exists, but no streamed text was observed: keep accounting
-      // and the legacy paired sample, while omitting an unobservable final TPS.
-      expect(events.find((event) => event.type === 'done')?.data.usage.durationMs).toBeUndefined();
-      expect(events.filter((event) => event.type === 'status').at(-1)?.data.responseSpeed).toMatchObject({ outputTokens: 500, averageRate: null });
+      expect(events.find((event) => event.type === 'done')?.data.usage.durationMs).toBe(5_000);
       expect(events.filter((event) => event.type === 'status').at(-1)?.data).toMatchObject({
         status: 'Done', outputTokens: 500, generationDurationMs: 5_000,
       });
@@ -19161,10 +19034,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       });
       await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
       const done = events.find((event) => event.type === 'done');
-      // No root output/usage was observed: tool/interaction facts remain
-      // available, but cannot become a persisted token-rate denominator.
-      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBeUndefined();
-      expect(events.findLast((event) => event.type === 'status')?.data.responseSpeed).toMatchObject({ outputTokens: 0, averageRate: null, firstResponseMs: 1_000 });
+      expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBe(3_000);
 
       await handle.close();
     } finally {
@@ -19242,10 +19112,7 @@ describe('CodexAgent MCP thread context hooks', () => {
         });
         await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
         const done = events.find((event) => event.type === 'done');
-        // No root output/usage was observed: tool/interaction facts remain
-        // available, but cannot become a persisted token-rate denominator.
-        expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBeUndefined();
-        expect(events.findLast((event) => event.type === 'status')?.data.responseSpeed).toMatchObject({ outputTokens: 0, averageRate: null, firstResponseMs: null });
+        expect((done?.data as { usage?: { durationMs?: number } }).usage?.durationMs).toBe(3_000);
 
         if (outcome === 'server-resolved') {
           decision.resolve({ kind: 'ask_user_question', answers: {} });
@@ -24691,7 +24558,7 @@ describe('CodexAgent.forkSdkSession', () => {
     else await expect(result).rejects.toBeInstanceOf(AgentNotAuthenticatedError);
   });
 
-  it.each([false, true])('requests Cindy recovery before forking indexed history (lazy=%s)', async (lazy) => {
+  it.each(['indexed', 'lazy', 'legacy-agent-cipher'])('requests Cindy recovery before native forking (%s)', async (format) => {
     const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-indexed-fork-'));
     try {
       const agent = new CodexAgent(createDeps());
@@ -24699,9 +24566,13 @@ describe('CodexAgent.forkSdkSession', () => {
       const dir = path.join(codexHome, 'sessions', '2026', '09', '05');
       await fs.mkdir(dir, { recursive: true });
       const source = path.join(dir, 'rollout-source-thread-id.jsonl');
-      const original = JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
-        id: 'source-thread-id', ...(lazy ? { history_base: { thread_id: 'parent' } } : {}),
-      } }) + '\n';
+      const original = format === 'legacy-agent-cipher'
+        ? JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', content: [
+            { type: 'encrypted_content', encrypted_content: 'child-ciphertext' },
+          ] } }) + '\n'
+        : JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
+            id: 'source-thread-id', ...(format === 'lazy' ? { history_base: { thread_id: 'parent' } } : {}),
+          } }) + '\n';
       await fs.writeFile(source, original);
       const host = installFakeHost(agent);
       await expect(agent.forkSdkSession({

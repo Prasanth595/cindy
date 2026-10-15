@@ -41,6 +41,7 @@ import { ImageLightbox } from './ImageLightbox';
 import { useImageClipboard } from './useImageClipboard';
 import { ModelLightbox } from './ModelLightbox';
 import { ImageMissingPlaceholder } from './ImageMissingPlaceholder';
+import { ChatLoadingImage } from './ChatLoadingImage';
 import { useRemoteMediaUrl } from '@/hooks/useRemoteMediaUrl';
 import { useRemoteMediaErrorRetry } from '@/hooks/useRemoteMediaErrorRetry';
 import { isRemoteMediaUrl } from '../../../shared/remoteMediaUrl';
@@ -190,7 +191,7 @@ export function ChatImageView({
 
   return (
     <>
-      <img
+      <ChatLoadingImage
         ref={previewTriggerRef}
         src={displaySrc}
         alt={filename}

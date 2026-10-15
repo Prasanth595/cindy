@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderShareReceived } from '@cindy/device-link';
@@ -109,6 +109,20 @@ describe('ProviderShareReceivedRailGroup', () => {
 });
 
 describe('ProviderShareReceivedDetail', () => {
+  it('shows anonymous status only for an active grouped share', async () => {
+    catalog.value.providers = [{ id: 'xd', groupSize: 2, models: {} }];
+    const invoke = vi.fn(async () => ({ providers: [{ id: 'xd', groupSize: 2, groupStatus: ['available', 'needs-update'] }] }));
+    Object.assign(window.electronAPI, { deviceLink: { invoke } });
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />); });
+    expect(screen.getByTestId('shared-provider-group-status')).toBeTruthy();
+    expect(screen.getByText('providerShare.received.groupStatus.state.needs-update')).toBeTruthy();
+    expect(screen.queryByText(share.deviceName)).toBeNull();
+    await act(async () => { view.rerender(<ProviderShareReceivedDetail share={share} />); });
+    expect(screen.queryByTestId('shared-provider-group-status')).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('explains a paused share without reading its models, and leaves after confirmation', async () => {
     render(<ProviderShareReceivedDetail share={share} />);
     expect(screen.getByText('providerShare.received.statusPaused')).toBeTruthy();

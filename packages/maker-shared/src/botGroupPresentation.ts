@@ -118,7 +118,8 @@ export type BotGroupErrorVariant =
   | 'notFound'
   | 'hostNotReady'
   | 'planOpen'
-  | 'planClosed';
+  | 'planClosed'
+  | 'quoteUnavailable';
 
 const ERROR_VARIANTS: ReadonlyMap<string, BotGroupErrorVariant> = new Map<BotGroupErrorCode, BotGroupErrorVariant>([
   ['INVALID_ATTACHMENT', 'invalidAttachment'],
@@ -139,6 +140,7 @@ const ERROR_VARIANTS: ReadonlyMap<string, BotGroupErrorVariant> = new Map<BotGro
   ['HOST_NOT_READY', 'hostNotReady'],
   ['PLAN_OPEN', 'planOpen'],
   ['PLAN_CLOSED', 'planClosed'],
+  ['QUOTE_UNAVAILABLE', 'quoteUnavailable'],
 ]);
 
 /** Specific error copy when the host names a cause the user can act on. */

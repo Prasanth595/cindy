@@ -191,7 +191,9 @@ function BotSessionGateView() {
   const workbenchSessionId = gate.kind === 'ready' && gate.isCanonical ? sessionId : undefined;
   useEffect(() => {
     if (!botId || !workbenchSessionId) return;
-    void ensureBotWorkbenchTab(workbenchSessionId, botId).catch(() => undefined);
+    const controller = new AbortController();
+    void ensureBotWorkbenchTab(workbenchSessionId, botId, controller.signal).catch(() => undefined);
+    return () => controller.abort();
   }, [botId, workbenchSessionId]);
 
   const onReadThrough = useCallback((at: number) => {

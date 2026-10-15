@@ -520,6 +520,10 @@ describe('DingTalkDwsIM outbound', () => {
       '--yes',
       '-f',
       'json',
+      '--profile',
+      'corp-1:agent-user',
+      '--idempotency-key',
+      expect.any(String),
     ]);
     await im.dispose();
   });
@@ -562,6 +566,168 @@ describe('DingTalkDwsIM outbound', () => {
     vi.mocked(runner.runJson).mockRejectedValueOnce(new DwsCommandError('x', 'boom'));
     const absPath = process.platform === 'win32' ? 'C:\\a.txt' : '/a.txt';
     await expect(im.sendFile('owner-open', absPath)).resolves.toEqual({ ok: false, reason: 'SEND_FAIL' });
+    await im.dispose();
+  });
+});
+
+describe('DingTalkDwsIM delivery retries', () => {
+  const rateLimit = () => new DwsCommandError('RATE_LIMIT_ERROR', 'rate limited');
+
+  it('retries only the rejected chunk, keeping its profile and idempotency key', async () => {
+    const { im, runner } = await connected();
+    vi.useFakeTimers();
+    const run = vi.mocked(runner.runJson).mockClear();
+    run.mockResolvedValueOnce({ success: true }).mockRejectedValueOnce(rateLimit());
+    const pending = im.sendText('owner-open', 'a'.repeat(4_000));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls[2]).toEqual(run.mock.calls[1]);
+    expect(run.mock.calls[0][0].at(-1)).not.toBe(run.mock.calls[1][0].at(-1));
+    expect(run.mock.calls[2][0]).toContain('corp-1:agent-user');
+    await im.dispose();
+  });
+
+  it('reports failure after three retries and clears the hint after a successful send', async () => {
+    const { im, runner } = await connected();
+    vi.useFakeTimers();
+    const run = vi.mocked(runner.runJson).mockClear().mockRejectedValue(rateLimit());
+    const assertion = expect(im.sendText('owner-open', 'hello')).rejects.toMatchObject({
+      code: 'RATE_LIMIT_ERROR',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(im.getPublicState().lastSendError).toBeNull();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(new Set(run.mock.calls.map(([args]) => args.at(-1))).size).toBe(1);
+    expect(im.getPublicState().lastSendError).toBe('rate_limited');
+    run.mockResolvedValueOnce({ success: true });
+    await im.sendText('owner-open', 'next reply');
+    expect(im.getPublicState().lastSendError).toBeNull();
+    await im.dispose();
+  });
+
+  it.each(['FORBIDDEN', 'empty_output', 'invalid_output', 'process_failed'])(
+    'does not retry a permanent or ambiguous failure: %s',
+    async (code) => {
+      const { im, runner } = await connected();
+      vi.useFakeTimers();
+      const run = vi
+        .mocked(runner.runJson)
+        .mockClear()
+        .mockRejectedValueOnce(new DwsCommandError(code, 'failed'));
+      await expect(im.sendText('owner-open', 'hello')).rejects.toMatchObject({ code });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(im.getPublicState().lastSendError).toBe('failed');
+      await im.dispose();
+      expect(im.getPublicState().lastSendError).toBeNull();
+    },
+  );
+
+  it('retries a file without resending the preceding final text', async () => {
+    const { im, runner } = await connected();
+    vi.useFakeTimers();
+    const run = vi.mocked(runner.runJson).mockClear();
+    run.mockResolvedValueOnce({ success: true }).mockRejectedValueOnce(rateLimit());
+    const absPath = process.platform === 'win32' ? 'C:\\media\\a.png' : '/media/a.png';
+    const pending = im.commitFinal({
+      userId: 'owner-open',
+      text: 'done',
+      terminal: 'done',
+      mediaAbsPaths: [absPath],
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls[0][0]).toContain('--markdown');
+    expect(run.mock.calls[1][0]).toContain('--file');
+    expect(run.mock.calls[2]).toEqual(run.mock.calls[1]);
+    await im.dispose();
+  });
+
+  it('propagates final attachment failure instead of marking delivery complete', async () => {
+    const { im, runner } = await connected();
+    vi.mocked(runner.runJson)
+      .mockResolvedValueOnce({ success: true })
+      .mockRejectedValueOnce(new DwsCommandError('FORBIDDEN', 'failed'));
+    const absPath = process.platform === 'win32' ? 'C:\\media\\a.png' : '/media/a.png';
+    await expect(
+      im.commitFinal({
+        userId: 'owner-open',
+        text: 'done',
+        terminal: 'done',
+        mediaAbsPaths: [absPath],
+      }),
+    ).rejects.toThrow('DINGTALK_DWS_FILE_SEND_FAILED');
+    expect(im.getPublicState().lastSendError).toBe('failed');
+    await im.dispose();
+  });
+
+  it('cancels a waiting retry when the channel stops', async () => {
+    const { im, runner } = await connected();
+    vi.useFakeTimers();
+    const run = vi.mocked(runner.runJson).mockClear().mockRejectedValueOnce(rateLimit());
+    const assertion = expect(im.sendText('owner-open', 'hello')).rejects.toThrow(
+      'DINGTALK_DWS_CONNECTION_REPLACED',
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await im.dispose();
+    await assertion;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not schedule a retry when the channel stops during the failed command', async () => {
+    const { im, runner } = await connected();
+    vi.useFakeTimers();
+    let reject!: (error: Error) => void;
+    const run = vi
+      .mocked(runner.runJson)
+      .mockClear()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, fail) => {
+            reject = fail;
+          }),
+      );
+    const assertion = expect(im.sendText('owner-open', 'hello')).rejects.toThrow(
+      'DINGTALK_DWS_CONNECTION_REPLACED',
+    );
+    await im.dispose();
+    reject(rateLimit());
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry or publish stale failure state into a different host account', async () => {
+    const { im, host, runner } = await connected();
+    let current = 'account-1';
+    host.accountScope = {
+      capture: () => current,
+      isCurrent: (token) => token === current,
+      run: async (_token, operation) => operation(),
+    };
+    vi.useFakeTimers();
+    const run = vi.mocked(runner.runJson).mockClear().mockRejectedValueOnce(rateLimit());
+    const assertion = expect(im.sendText('owner-open', 'hello')).rejects.toThrow('IM_NOT_READY');
+    await vi.advanceTimersByTimeAsync(0);
+    current = 'account-2';
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(im.getPublicState().lastSendError).toBeNull();
     await im.dispose();
   });
 });

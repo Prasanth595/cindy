@@ -40,7 +40,12 @@ import {
   stripSelfMention,
   type DwsInboundMessage,
 } from './events.js';
-import { DWS_NOT_INSTALLED, type DwsRunner, type DwsStreamProcess } from './runner.js';
+import {
+  DwsCommandError,
+  DWS_NOT_INSTALLED,
+  type DwsRunner,
+  type DwsStreamProcess,
+} from './runner.js';
 
 export { DwsCommandError, DWS_NOT_INSTALLED, parseDwsJsonOutput } from './runner.js';
 export type { DwsRunner, DwsStreamProcess } from './runner.js';
@@ -58,6 +63,8 @@ const OUTBOUND_CHUNK_SIZE = 3_500;
 const MAX_OUTBOUND_FILES = 4;
 const MAX_LINE_CHARS = 1_000_000;
 const SEND_TIMEOUT_MS = 60_000;
+// 只重试服务端明确拒绝的限流；回执未知或普通错误不重发，避免制造重复消息。
+const SEND_RETRY_DELAYS_MS = [5_000, 15_000, 30_000] as const;
 const MAX_INBOUND_IMAGES = 6;
 const MAX_INBOUND_FILES = 4;
 const MAX_CONTEXT_IMAGES = 6;
@@ -84,6 +91,8 @@ export interface DingTalkDwsPublicState {
   ownerName: string | null;
   /** 尚未绑定主人且已开启时的一次性配对码；主人私聊发送它完成绑定。 */
   pairingCode: string | null;
+  /** 最近一次发送失败；只公开分类，不含消息正文、目标或 CLI 诊断。 */
+  lastSendError?: 'rate_limited' | 'failed' | null;
 }
 
 export interface GroupHistoryMessage {
@@ -103,6 +112,10 @@ interface OwnerRecord {
 }
 
 type Target = { kind: 'direct'; openId: string } | { kind: 'group'; conversationId: string };
+type SendOperation = (
+  args: readonly string[],
+  options: { cwd?: string; timeoutMs?: number },
+) => Promise<unknown>;
 
 export class DingTalkDwsIM extends BaseIM {
   private readonly messageHandlers = new Set<(event: IMMessageEvent) => void>();
@@ -123,6 +136,8 @@ export class DingTalkDwsIM extends BaseIM {
   private generation = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
+  private readonly sendRetryWaits = new Set<() => void>();
+  private lastSendError: 'rate_limited' | 'failed' | null = null;
 
   constructor(
     host: IMHost,
@@ -187,6 +202,7 @@ export class DingTalkDwsIM extends BaseIM {
         : null,
       ownerName: owner ? owner.name : null,
       pairingCode: !owner && this.isEnabled() ? this.ensurePairingCode() : null,
+      lastSendError: this.lastSendError,
     };
   }
 
@@ -250,10 +266,18 @@ export class DingTalkDwsIM extends BaseIM {
   }
 
   async sendFile(userId: string, absPath: string): Promise<SendFileResult> {
+    return this.sendFileWith(userId, absPath, this.createSendOperation());
+  }
+
+  private async sendFileWith(
+    userId: string,
+    absPath: string,
+    send: SendOperation,
+  ): Promise<SendFileResult> {
     if (!path.isAbsolute(absPath)) return { ok: false, reason: 'NOT_FOUND' };
     try {
       // dws 只接受工作目录内的相对路径：以文件所在目录为 cwd，只传文件名。
-      await this.runner.runJson(
+      await send(
         [
           'chat',
           '+messages-send',
@@ -274,10 +298,12 @@ export class DingTalkDwsIM extends BaseIM {
   }
 
   async commitFinal(output: ImFinalOutput): Promise<void> {
-    await this.sendMarkdownText(output.userId, normalizeFinalText(output.text));
+    const send = this.createSendOperation();
+    await this.sendBody(output.userId, normalizeFinalText(output.text), '--markdown', send);
     const files = Array.from(new Set(output.mediaAbsPaths ?? [])).slice(0, MAX_OUTBOUND_FILES);
     for (const absPath of files) {
-      await this.sendFile(output.userId, absPath);
+      const result = await this.sendFileWith(output.userId, absPath, send);
+      if (!result.ok) throw new Error('DINGTALK_DWS_FILE_SEND_FAILED');
     }
   }
 
@@ -488,6 +514,9 @@ export class DingTalkDwsIM extends BaseIM {
 
   private async stop(): Promise<void> {
     this.generation += 1;
+    this.setLastSendError(null);
+    // 取消退避等待，唤醒后由发送闭包的代次检查拒绝；停渠道不留下迟到补发。
+    for (const finish of this.sendRetryWaits) finish();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.laneQueues.clear();
@@ -794,6 +823,7 @@ export class DingTalkDwsIM extends BaseIM {
       this.pairingCode = null;
     }
     if (previous && previous !== this.contextId) {
+      this.lastSendError = null;
       this.pendingReplies.rejectAll('DINGTALK_ACCOUNT_CHANGED');
       this.emitStateChange();
     }
@@ -839,15 +869,74 @@ export class DingTalkDwsIM extends BaseIM {
     userId: string,
     body: string,
     flag: '--text' | '--markdown',
+    send: SendOperation = this.createSendOperation(),
   ): Promise<{ messageId: string }> {
     const target = this.resolveTarget(userId);
     for (const chunk of chunkText(body)) {
-      await this.runner.runJson(
+      await send(
         ['chat', '+messages-send', ...targetArgs(target), flag, chunk, '--yes', '-f', 'json'],
         { timeoutMs: SEND_TIMEOUT_MS },
       );
     }
     return { messageId: `out:${Date.now().toString(36)}` };
+  }
+
+  private createSendOperation(): SendOperation {
+    const generation = this.generation;
+    const contextId = this.contextId;
+    const accountToken = this.host.accountScope?.capture();
+    const isCurrent = () =>
+      generation === this.generation &&
+      contextId === this.contextId &&
+      (!this.host.accountScope ||
+        (accountToken !== null && this.host.accountScope.isCurrent(accountToken)));
+    // 每一段 / 每个附件各有一个键，重试复用原键；显式绑定发起账号，避免 CLI 切号后错发。
+    return async (args, options) => {
+      if (!contextId) throw new Error('DINGTALK_DWS_NOT_CONNECTED');
+      const sendArgs = [...args, '--profile', contextId, '--idempotency-key', randomUUID()];
+      for (let attempt = 0; ; attempt += 1) {
+        if (generation !== this.generation || contextId !== this.contextId) {
+          throw new Error('DINGTALK_DWS_CONNECTION_REPLACED');
+        }
+        try {
+          const result = await this.runInCapturedAccountScope(accountToken, () =>
+            this.runner.runJson(sendArgs, options),
+          );
+          if (isCurrent()) this.setLastSendError(null);
+          return result;
+        } catch (error) {
+          const delay = SEND_RETRY_DELAYS_MS[attempt];
+          if (
+            !(error instanceof DwsCommandError) ||
+            error.code !== 'RATE_LIMIT_ERROR' ||
+            delay === undefined
+          ) {
+            if (isCurrent()) {
+              this.setLastSendError(
+                error instanceof DwsCommandError && error.code === 'RATE_LIMIT_ERROR'
+                  ? 'rate_limited'
+                  : 'failed',
+              );
+            }
+            throw error;
+          }
+          // stop 也可能发生在上一条命令尚未返回时，不能再挂上新的等待器。
+          if (generation !== this.generation || contextId !== this.contextId) {
+            throw new Error('DINGTALK_DWS_CONNECTION_REPLACED');
+          }
+          this.log.warn(`dingtalk dws send rate limited; retry=${attempt + 1}, delayMs=${delay}`);
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              clearTimeout(timer);
+              this.sendRetryWaits.delete(finish);
+              resolve();
+            };
+            const timer = setTimeout(finish, delay);
+            this.sendRetryWaits.add(finish);
+          });
+        }
+      }
+    };
   }
 
   private resolveTarget(userId: string): Target {
@@ -858,6 +947,12 @@ export class DingTalkDwsIM extends BaseIM {
   }
 
   // ── 状态 ────────────────────────────────────────────────────────────────
+
+  private setLastSendError(error: 'rate_limited' | 'failed' | null): void {
+    if (this.lastSendError === error) return;
+    this.lastSendError = error;
+    this.emitStateChange();
+  }
 
   private setStatus(status: IMStatus): void {
     this.status = status;

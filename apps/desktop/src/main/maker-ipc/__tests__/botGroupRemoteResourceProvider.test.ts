@@ -120,6 +120,57 @@ describe('bot group remote resources', () => {
 
   afterEach(() => h.sqlite?.close());
 
+  it('advertises revision-checked settings only for server groups', () => {
+    expect(botGroupRemoteChatData(detail()).supportsSettingsManagement).toBe(false);
+    expect(botGroupRemoteChatData(detail({ serverBacked: true, revision: 3 })).supportsSettingsManagement).toBe(true);
+  });
+
+  it('rejects a stale settings snapshot before calling the group service', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'update', resourceRef: ref('g1'), input: { name: 'Old draft', expectedRevision: 4 } })).rejects.toMatchObject({ message: 'PRECONDITION_FAILED' });
+    expect(service.updateGroup).not.toHaveBeenCalled();
+  });
+
+  it('passes the edited revision to the server and adds just one visible companion', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'update', resourceRef: ref('g1'), input: { name: 'New', expectedRevision: 5 } });
+    expect(service.updateGroup).toHaveBeenCalledWith({ groupId: 'g1', name: 'New', expectedRevision: 5 });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'add-member', resourceRef: ref('g1'), input: { botId: 'abu', expectedRevision: 5 } });
+    expect(service.setMembers).toHaveBeenCalledWith({ groupId: 'g1', botIds: ['abu'], addOnly: true });
+  });
+
+  it('does not invite a hidden companion through the new additive action', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'add-member', resourceRef: ref('g1'), input: { botId: 'ghost', expectedRevision: 5 } })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    expect(service.setMembers).not.toHaveBeenCalled();
+  });
+
+  it('archives with the edited revision and never turns a settings delete into leaving', async () => {
+    const group = detail({ serverBacked: true, revision: 5 }); group.members[0] = { ...group.members[0], isOwned: true, role: 'owner' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: { expectedRevision: 5 } });
+    expect(service.chatServer.manage).toHaveBeenCalledWith({ groupId: 'g1', action: { type: 'archive', archived: true, expectedRevision: 5 } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+    group.members[0].role = 'admin';
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: { expectedRevision: 5 } })).rejects.toMatchObject({ message: 'PERMISSION_DENIED' });
+  });
+
+  it('retains legacy delete delegation for a non-owner leaving a server group', async () => {
+    const group = detail({ serverBacked: true, revision: 5 });
+    group.members[0] = { ...group.members[0], isOwned: true, role: 'member' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: {} });
+    expect(service.deleteGroup).toHaveBeenCalledWith('g1');
+    expect(service.chatServer.manage).not.toHaveBeenCalled();
+  });
+
   it('includes server groups with people and companions on another computer', async () => {
     const group = summary({ serverBacked: true, members: [
       { botId: 'person', actorId: 'person', actorKind: 'human', isOwned: false, name: 'Guest', avatar: '', avatarColor: 'red', status: 'active' },

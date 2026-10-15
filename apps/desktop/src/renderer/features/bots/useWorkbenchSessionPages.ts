@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@/lib/ccAgent.types';
 import * as sessionService from '@/lib/sessionService';
 import {
@@ -16,7 +16,11 @@ export function useWorkbenchSessionPages(
   scope: string,
   status: 'active' | 'archived',
   enabled: boolean,
+  responsibleIds?: readonly string[],
 ) {
+  const idKey = responsibleIds === undefined ? undefined : JSON.stringify([...new Set(responsibleIds)].sort());
+  const ids = useMemo<string[] | undefined>(() => idKey === undefined ? undefined : JSON.parse(idKey), [idKey]);
+  const allowed = useMemo(() => ids ? new Set(ids) : null, [ids]);
   const [rows, setRows] = useState<Session[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -42,9 +46,11 @@ export function useWorkbenchSessionPages(
             ...(patch._count ? { _count: { ...current._count, ...patch._count } } : {}),
           });
       }
-      return [...next.values()].filter((row) => row.status === status);
+      return [...next.values()]
+        .filter((row) => row.status === status && (!allowed || allowed.has(row.id)))
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     },
-    [status],
+    [status, allowed],
   );
   const load = useCallback(
     async function readPages(refresh = false): Promise<void> {
@@ -68,11 +74,16 @@ export function useWorkbenchSessionPages(
         // Reconcile the already loaded window, not just its head: missing rows may
         // have been deleted or moved while disconnected. Never scan unseen history.
         for (; fetched < pages;) {
-          const page = await sessionService.list(PAGE_SIZE, status, { fresh: true, before });
+          let page: Session[];
+          if (ids?.length === 0) {
+            page = [];
+          } else {
+            page = await sessionService.list(PAGE_SIZE, status, { fresh: true, before, ...(ids ? { ids } : {}) });
+          }
+          more = page.length === PAGE_SIZE;
           if (version !== generation.current || !isDataOwnerGenerationCurrent(owner)) return;
           collected.push(...page);
           fetched++;
-          more = page.length === PAGE_SIZE;
           const tail = page.at(-1);
           if (tail) before = { updatedAt: Date.parse(tail.updatedAt), id: tail.id };
           if (!more) break;
@@ -105,7 +116,7 @@ export function useWorkbenchSessionPages(
         }
       }
     },
-    [status, applyMutations],
+    [status, applyMutations, ids],
   );
   useEffect(() => {
     const reset = () => {

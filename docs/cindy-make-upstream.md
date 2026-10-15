@@ -1,5 +1,34 @@
 # Cindy Make 上游 PR 查询
 
+## 当前可用性（2026-10-12）
+
+按用户裁决，Cindy Make 对所有用户关闭：桌面与手机不展示标签、设置、创建入口、
+制作任务或相关搜索结果；旧链接不能打开制作界面，已有制作与上游合并任务不能继续执行。
+主进程同时拒绝源码准备、生成、测试、版本切换和相关命令。已有源码、任务历史与个人版文件保留。
+
+官方客户端启动时忽略已保存的个人版选择，继续启动原版，并在取得现有实例锁后将选择持久化为
+`original`；不因个人版仍与当前协议或数据库兼容而自动交接到旧个人版。复用原有启动恢复流程，
+不提前等待异步注册表写入，不删除个人版文件。实现与回归见
+[versionStartup](../apps/desktop/src/main/cindy-make/versionStartup.ts) 与
+[versionStartup.test](../apps/desktop/src/main/cindy-make/__tests__/versionStartup.test.ts)。
+
+用量记录与总量统计继续保留；来自旧版电脑或旧同步缓存、尚未确认来源的任务不进入
+「最耗 token 的任务」排名，离线时也不通过缺失来源推定为普通任务。同步获得来源后，
+普通任务恢复参与排名，制作任务仍隐藏。本机任务元数据的兼容兜底不变。实现与回归见
+[UsageTaskTable](../apps/desktop/src/renderer/components/settings/usage/UsageTaskTable.tsx) 与
+[用量任务排名测试](../apps/desktop/src/renderer/components/settings/usage/__tests__/usageTaskTable.test.tsx)。
+
+历史制作与上游合并任务也不能通过普通分叉或剥离加密内容分叉转为可见普通任务。公共
+分叉函数在读取源任务的持久来源后、复制历史或原生线程及创建子任务前拒绝，旧控制端的
+既有 fork 通道同样受此门禁约束；普通任务流程不变。实现与回归见
+[fork](../apps/desktop/src/main/maker-orchestration/fork.ts) 与
+[fork.test](../apps/desktop/src/main/__tests__/fork.test.ts)。
+
+共享开关见 [cindyMakeFeature](../packages/maker-shared/src/cindyMakeFeature.ts)，
+执行边界见 [featureGate](../apps/desktop/src/main/cindy-make/featureGate.ts) 与
+[回归测试](../apps/desktop/src/main/maker-ipc/__tests__/cindyMakeFeatureGate.test.ts)。
+下文记录保留实现的行为，当前不作为开放入口的依据。
+
 查询目标是与用户需求相关、但当前运行的 Cindy 尚未确认包含的 PR，不是全部 Issue，
 也不是仅查询未合并或未发布内容。关键词命中只表示可能相关，不保证满足需求。
 

@@ -33,7 +33,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 import { ExecServerRelay } from '../controller/execServerRelay';
-import type { ExecutorAction, ExecutorGateDecision } from '../executor/gate';
+import { RemoteExecutor } from '../executor/executor';
+import { ExecutorGate, type ExecutorAction, type ExecutorGateDecision } from '../executor/gate';
 import { ExecutorWorkspace } from '../executor/workspace';
 
 let root: string;
@@ -83,6 +84,32 @@ function setup() {
 }
 
 describe('exec-server relay with confirmation on this computer', () => {
+  it('uses an explicit session consent for subsequent Codex credential requests', async () => {
+    const workspace = new ExecutorWorkspace({ workingDir: root });
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+    const confirm = vi.fn(async () => 'session' as const);
+    const executor = new RemoteExecutor({ workspace, gate, rgPath: 'unused', confirm });
+    const relay = new ExecServerRelay({
+      codexPath: 'codex', cwd: root, workspace,
+      authorize: (action) => executor.check(action),
+      confirm: (action) => executor.confirm(action),
+      push: async () => undefined,
+    });
+    try {
+      relay.handle({ t: 'ws', connId: 'credentials', kind: 'open', path: '/ws/exec-server' });
+      for (const [id, file] of [[1, '.env'], [2, '.env.production']] as const) {
+        relay.handle({
+          t: 'ws', connId: 'credentials', kind: 'message',
+          data: JSON.stringify({ id, method: 'fs/readFile', params: { path: path.join(root, file) } }),
+        });
+      }
+      await vi.waitFor(() => expect(spawned.lines.map((line) => JSON.parse(line).id)).toEqual([1, 2]));
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      relay.close();
+      await executor.close();
+    }
+  });
   it('passes ordinary messages straight through', () => {
     const { send, sentIds, pending } = setup();
     send({ id: 1, method: 'fs/readFile', params: { path: path.join(root, 'a.txt') } });

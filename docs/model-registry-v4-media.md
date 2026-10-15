@@ -80,6 +80,42 @@
 - 自定义型号表单可选择媒体类型或恢复继承；刷新选择器、确认和保存均保留显式类型。
 - 统一模型管理页展示上述类型，既有停用偏好同样作用于音频型号。
 
+### 第三方 API key 连接的语音目录
+
+通用发现保留接口显式返回的 `mode`（含 `model_info.mode`）和已认识的
+`nativeApi` / `native_api`，型号 ID 接受既有字段及 `model_id`。仅返回 ID 时，
+公共资料仍只按精确 ID／唯一 alias 匹配；不因名称含 `tts` 或 `speech` 就把未知私有
+型号改成语音模型。不提供类型的服务可在连接设置中手动指定「语音合成」；同一 ID
+可更新类型，「自动识别」删除类型覆盖，重新使用发现快照／目录资料。
+
+ElevenLabs 及兼容转发的[模型列表响应](https://elevenlabs.io/docs/api-reference/models/list)
+以匹配的 `model_id` 和布尔 `can_do_text_to_speech` 声明能力：`true` 归一为
+`audio_speech`；明确 `false` 归为 `other`，避免刷新继续保留旧 TTS 分类，也不推断
+聊天或语音识别能力。缺失／非法值不补类型，沿用已有缺项继承；接口显式 `mode` /
+`model_info.mode` 和用户类型覆盖仍优先。只解析能力，不推断 `nativeApi`。
+直连目录鉴权可复用自定义请求头 `xi-api-key`；没有新增凭证存储或 TTS 执行器。
+
+2026-10-12 同步 Server 公共 Registry：新增 OpenAI TTS-1 / HD 和 Mini TTS 日期快照、
+ElevenLabs、MiniMax Speech、Qwen TTS / Qwen Audio TTS、CosyVoice 共 30 个准确型号，
+连同原有 Mini TTS 共 31 个语音合成公共条目。每条只使用官方 API ID 的精确别名，
+带有官方文档链接；不同日期和变体保留各自身份，原始上游 ID 不被改写。
+流式语音合成仍声明 `audio_speech`，名称中的 `realtime` 不代表实时音频对话。
+Server 正本和本离线副本以相同 revision 整表同步；未增加供应商成员、路由、价格或协议
+声明，也不把官方旧型号收录等同于账号仍可调用。没有新 schema 或能力协商依赖，
+目录数据两端可独立合并；本记录不代表服务端已部署或对应 TTS 执行器已实现。
+
+显式媒体类型不套用聊天协议的名称前缀规则（例如 `gpt-*`）；语音协议缺失仍保持未知，
+不凭 `audio_speech` 推断具体厂商协议。模型的原生协议资料与连接的聊天 `wireProtocol`
+是两件事，保留资料不会新增语音合成执行器。
+
+纯非对话连接沿用「获取模型列表」检查目录访问并管理型号，不进行聊天探测；手动添加
+后可直接保存，无需先添加虚假的聊天模型。获取目录不代表语音合成、鉴权范围或计费
+调用已经验证。用户类型、名称、开关及协议覆盖刷新后保留，同 ID 的不同连接独立。
+本能力属于客户端的个人 API key／自定义连接，不扩展组织 BYOK 协议、Gateway 成员或权限。
+
+实现与回归：`modelDiscovery.ts`、`modelRegistry.ts`、`user-provider.ts`、
+`speechModelDiscovery.test.ts`、`ProviderConnectionDialog.tsx` 及其组件测试。
+
 ## 执行与兼容边界
 
 OpenAI 授权登录的图像能力统一显示为 **GPT Image Gen**，由托管 `image_generation` 工具选择底层型号，

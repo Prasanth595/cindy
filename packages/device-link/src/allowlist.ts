@@ -62,6 +62,13 @@ export const DL_UNSUBSCRIBE_CHANNEL = 'device-link:unsubscribe';
 export const DL_HISTORY_MESSAGES_CHANNEL = 'local-db:history:messages';
 /** Same-account, linked, read-only history discovery/search. No shared-task or unlinked access. */
 export const DL_HISTORY_QUERY_CHANNEL = 'local-db:history:query';
+/**
+ * 同账号另一台电脑上的任务，把一条消息发给本机的既有任务（Agent 的 send_to_session
+ * 传 `deviceId::sessionId`）。只投递到既有任务，不新建；来源由被控端按服务端认证的
+ * 控制端设备 id 盖章。不进 unlinked / shared-task 白名单。老被控端无此 channel →
+ * CHANNEL_NOT_ALLOWED，发送方明确报「对方版本不支持」。
+ */
+export const DL_SESSION_HANDOFF_CHANNEL = 'maker:session:handoff';
 
 /**
  * 会话引用消费能力探针。控制端在发送含引用快照的队列消息前必须先调用；
@@ -169,6 +176,7 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:close-session',
   'maker:abort-session',
   'maker:send',
+  DL_SESSION_HANDOFF_CHANNEL,
   'maker:steer',
   'maker:list-active',
   'maker:any-session-in-turn',
@@ -817,6 +825,9 @@ export const INVOKE_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   // 被控端先等 Lead history 最多 30s，再 resume/queue Worker；默认 30s 会与服务端
   // deadline 对撞，把边沿成功误报成 DEVICE_LINK_TIMEOUT。留出派发和回程余量。
   'maker:worker:dispatch-ui-assignment': 65_000,
+  // 被控端要等目标任务的发送锁、必要时恢复 Agent（冷启动 / SSH 就绪）后才回执；默认 30s 会把
+  // 已经送达的慢恢复报成「结果未知」，调用方重发就成了重复消息。
+  [DL_SESSION_HANDOFF_CHANNEL]: 65_000,
   // 运行设备准备工作目录并启动 Worker 的 Agent，可能超过默认 30s。
   [ORCA_REMOTE_WORKER_OPEN_CHANNEL]: ORCA_REMOTE_WORKER_OPEN_TIMEOUT_MS,
   // listing tier 轻量 DB 读:毫秒级查询,12s 仍等不到只能是链路问题,快速失败喂给熔断器。

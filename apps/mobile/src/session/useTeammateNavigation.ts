@@ -8,7 +8,8 @@ import type { HostedRemoteCollectionItem, RemoteResourceHostTarget } from '@/dev
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMode } from './useHomeMode';
 import type { HomeMode } from './homeViewPreferenceStore';
-import { homeDismissCount, teammateIdentity, teammateResourceRoute } from './teammateNavigation';
+import { homeDismissCount, teammateIdentity, teammateResourceRoute, teammateSessionPreview } from './teammateNavigation';
+import { remoteSessionStore } from './remoteSessionStore';
 import { readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 
 /** Push keeps the current chat/composer mounted; known teammates validate in the destination. */
@@ -61,6 +62,13 @@ export function useTeammateNavigation() {
         const cached = readRemoteCollectionCache(owner, identity.collectionId);
         // Seed presentation from the clicked row, never an authorization result.
         writeRemoteCollectionCache(owner, identity.collectionId, [hosted, ...cached.filter(row => row.key !== hosted.key)].slice(0, 200));
+        const preview = teammateSessionPreview(hosted, user?.id ?? '', i18n.language);
+        // The home task cache is bounded and may not contain this canonical task.
+        // Seed only missing local presentation, never replace real metadata or create a task.
+        if (preview && !remoteSessionStore.getSessions().some(session => session.id === preview.id)
+          && !remoteSessionStore.getSessionDeviceId(preview.id)) {
+          remoteSessionStore.upsertDeviceSession(hosted.host.deviceId, hosted.host.deviceName, preview);
+        }
         push(teammateResourceRoute(hosted, i18n.language));
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }

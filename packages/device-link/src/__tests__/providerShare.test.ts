@@ -161,6 +161,21 @@ describe('provider share identity scrubbing', () => {
     expect(readProviderShareGroupSize(null)).toBeNull();
   });
 
+  it('keeps only anonymous status enums and preserves positions for unknown or malicious entries', async () => {
+    const { readProviderShareGroupStatus, scrubSharedProvider } = await import('../providerShareCatalog.js');
+    const provider = {
+      id: 'anthropic', groupSize: 3, group: { members: [{ label: 'private-name' }] },
+      groupStatus: ['available', { state: 'busy', label: 'private-name', running: 7 }, 'private-device-id'],
+    };
+    expect(scrubSharedProvider(provider)).toEqual({ id: 'anthropic', groupSize: 3, groupStatus: ['available', 'unknown', 'unknown'] });
+    for (const groupStatus of [null, {}, ['available'], Array(513).fill('available')]) {
+      expect(readProviderShareGroupStatus({ groupSize: 3, groupStatus })).toBeNull();
+      expect(scrubSharedProvider({ groupSize: 3, groupStatus })).toEqual({ groupSize: 3 });
+    }
+    expect(readProviderShareGroupStatus({ groupStatus: ['available'] })).toBeNull();
+    expect(readProviderShareGroupStatus({ groupSize: 2, groupStatus: ['needs-update', 'busy'] })).toEqual(['needs-update', 'busy']);
+  });
+
   it('keeps only a sane guest running count', async () => {
     const { readProviderShareGuestRunning, scrubSharedProvider } = await import('../providerShareCatalog.js');
     expect(scrubSharedProvider({ id: 'anthropic', name: 'Anthropic', guestRunning: 0 }))

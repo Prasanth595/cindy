@@ -88,7 +88,9 @@ export function ProviderShareLinkDialog({
   const copy = useCallback(async () => {
     if (state.status !== 'ready' || expired) return;
     try {
-      await navigator.clipboard.writeText(state.link);
+      // Main verifies the write; on Linux/Wayland navigator.clipboard can
+      // resolve while the system clipboard stays empty.
+      await window.electronAPI.copyTextToClipboard({ text: state.link });
       setCopied(true);
       if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1600);

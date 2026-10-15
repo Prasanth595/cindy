@@ -13,6 +13,10 @@ import path from 'node:path';
 import { REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay';
+import { createProviderGroupExternalLoad } from '../../provider-group/externalLoad';
+import type { ProviderGroupRouter } from '../../provider-group/router';
+import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
@@ -144,8 +148,42 @@ async function waitFor(condition: () => boolean, ms = 3_000): Promise<void> {
   }
 }
 
+function readOwnerGuestIndex(): Record<string, { controller: string; forgetPending?: string[]; nativeIds: string[] }> {
+  return JSON.parse(fs.readFileSync(path.join(root, 'owner', 'guest-sessions.json'), 'utf8'));
+}
+
+async function waitForGuestPurge(controller: string, env: ReturnType<typeof setup>): Promise<void> {
+  for (
+    let requestIndex = 0;
+    requestIndex < env.relay.forget.mock.results.length;
+    requestIndex += 1
+  ) {
+    await Promise.allSettled([env.relay.forget.mock.results[requestIndex].value]);
+  }
+  // 远端删目录后还会写索引；等组所在电脑确认远端完成并落盘，避免 teardown 与后台写入竞争。
+  await waitFor(() =>
+    Object.values(readOwnerGuestIndex()).every((record) => record.controller !== controller),
+  );
+}
+
 const MEMBER_MINI: GroupRelayMember = { memberKey: 'device:mini:anthropic-2', agentDeviceId: 'mini', providerId: 'anthropic-2', sameAccount: true };
 const MEMBER_STUDIO: GroupRelayMember = { memberKey: 'device:studio:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: true };
+
+/** 真实组启动判定接到三端 harness，验证本机与中转启动入口确实服从任务错误和自动切换开关。 */
+function startFailurePolicy(autoSwitch: boolean) {
+  const router = { markCooling: vi.fn() } as unknown as ProviderGroupRouter;
+  const externalLoad = createProviderGroupExternalLoad({ now: Date.now });
+  return createProviderGroupGuestRelay({
+    scope: () => ({ router, externalLoad, isCurrent: () => true }),
+    readGroup: () => ({ strategy: 'order', autoSwitch, members: [
+      { key: 'local', kind: 'local', agentDeviceId: null, providerId: 'shared-provider', limit: 4, weight: 1, paused: false },
+      ...[MEMBER_MINI, MEMBER_STUDIO].map((m) => ({ key: m.memberKey, kind: 'device' as const, agentDeviceId: m.agentDeviceId, providerId: m.providerId, limit: 4, weight: 1, paused: false })),
+    ] }),
+    connect: () => { throw new Error('not used for failure decisions'); },
+    now: Date.now,
+    log: { warn: vi.fn() },
+  }).noteStartFailure;
+}
 
 function setup(options: {
   plans?: GroupRelayPlan[];
@@ -153,6 +191,8 @@ function setup(options: {
   switchWorthy?: (failure: RelayRunFailure) => boolean;
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
+  /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
+  owner?: { failStart?: boolean };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
   intercept?: (agentDeviceId: string, request: Record<string, unknown>, forward: () => Promise<unknown>) => Promise<unknown>;
 } = {}) {
@@ -184,7 +224,8 @@ function setup(options: {
       }
       return { invoke: poller.invoke, poller };
     }),
-    noteStartFailure: vi.fn(),
+    // 与本机任务同一个判定：默认换下一台(guestRelay 的判定见 provider-group/__tests__/guestRelay.test.ts)。
+    noteStartFailure: vi.fn<RemoteAgentGroupRelayDeps['noteStartFailure']>(() => true),
     noteRunFailure: vi.fn((_providerId: string, _member: GroupRelayMember, failure: RelayRunFailure) =>
       options.switchWorthy?.(failure) ?? true),
     trackRun: vi.fn(() => ({ setRunning: vi.fn(), release: vi.fn() })),
@@ -197,6 +238,7 @@ function setup(options: {
     trust: (controller) => (controller.startsWith('share-') ? 'guest' : 'owner'),
     purge: async () => undefined,
     groupRelay: relay,
+    ...options.owner,
   });
   return { owner, members, memberStarted, ownerStarted, relay };
 }
@@ -205,8 +247,8 @@ beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-group-relay-')));
 });
 
-afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 let runSeq = 0;
@@ -308,6 +350,45 @@ describe('provider group relay for shared users', () => {
     await client.close('close', 'navigation');
   });
 
+  it('moves on to the next computer when this computer was picked but its agent does not start', async () => {
+    const env = setup({ owner: { failStart: true }, plans: [{ kind: 'local' }, { kind: 'member', ...MEMBER_MINI }] });
+    const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+    expect(env.memberStarted.mini).toHaveLength(1);
+    // 与组内电脑接不下同一个判定；换下一台时不再回到本机这一台。
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', expect.objectContaining({ memberKey: 'local' }), expect.any(Error));
+    expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set(['local']) }));
+    await client.close('close', 'navigation');
+  });
+
+  it.each(['local', 'remote', 'old-peer'] as const)('关闭自动换电脑后 %s 启动失败不尝试下一台', async (kind) => {
+    const env = setup({
+      ...(kind === 'local' ? { owner: { failStart: true } } : { mini: { failStart: true } }),
+      ...(kind === 'old-peer' ? { miniCapable: false } : {}),
+      plans: [kind === 'local' ? { kind: 'local' } : { kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+    });
+    env.relay.noteStartFailure.mockImplementation(startFailurePolicy(false));
+    await expect(openAsGuest(env, GUEST_A, openPayload(SESSION))).rejects.toThrow();
+    expect(env.relay.noteStartFailure).toHaveBeenCalledTimes(1);
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    expect(env.memberStarted.studio).toHaveLength(0);
+  });
+
+  it.each(['INVALID_PARAMS', 'SESSION_RUNNING', 'PRECONDITION_FAILED'])(
+    '中转启动的 %s 任务错误不会逐台重试', async (code) => {
+      const env = setup({
+        plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+        intercept: async (_device, request, forward) => {
+          if (request.op === 'open') throw new Error(`[${code}] task cannot start`);
+          return forward();
+        },
+      });
+      env.relay.noteStartFailure.mockImplementation(startFailurePolicy(true));
+      await expect(openAsGuest(env, GUEST_A, openPayload(SESSION))).rejects.toThrow(code);
+      expect(env.relay.plan).toHaveBeenCalledTimes(1);
+      expect(env.memberStarted.studio).toHaveLength(0);
+    },
+  );
+
   it('runs locally when the group picks this computer, and refuses when no computer can run it', async () => {
     const local = setup({ plans: [{ kind: 'local' }] });
     const { client } = await openAsGuest(local, GUEST_A, openPayload(SESSION));
@@ -327,7 +408,8 @@ describe('provider group relay for shared users', () => {
     const homeB = env.memberStarted.mini[1].input.guestHome!;
     expect(fs.existsSync(homeA) && fs.existsSync(homeB)).toBe(true);
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
-    await waitFor(() => !fs.existsSync(homeA));
+    await waitForGuestPurge(GUEST_A, env);
+    expect(fs.existsSync(homeA)).toBe(false);
     expect(env.relay.forget).toHaveBeenCalledWith('mini', relayKeyFor(GUEST_A));
     expect(fs.existsSync(homeB)).toBe(true);
     // 另一个控制端拿着同一个 relay 键也清不掉别人的。
@@ -405,32 +487,97 @@ describe('provider group relay: starting, load and cleanup', () => {
     expect(env.memberStarted.studio).toHaveLength(1);
     await client.close('close', 'navigation');
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
-    await waitFor(() => env.relay.forget.mock.calls.length >= 2);
+    await waitForGuestPurge(GUEST_A, env);
     expect(env.relay.forget).toHaveBeenCalledWith('mini', relayKeyFor(GUEST_A));
     expect(env.relay.forget).toHaveBeenCalledWith('studio', relayKeyFor(GUEST_A));
+  });
+
+  it('waits for both computers to finish cleanup before polling the persisted guest index', async () => {
+    function cleanupGate() {
+      let release = () => {};
+      let enter = () => {};
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      return { pending, entered, release, enter };
+    }
+    const cleanups = { mini: cleanupGate(), studio: cleanupGate() };
+    const env = setup({
+      mini: { failStart: true },
+      plans: [
+        { kind: 'member', ...MEMBER_MINI },
+        { kind: 'member', ...MEMBER_STUDIO },
+      ],
+      intercept: async (agentDeviceId, request, forward) => {
+        if (request.op === 'forget') {
+          const cleanup = cleanups[agentDeviceId as keyof typeof cleanups];
+          cleanup.enter();
+          await cleanup.pending;
+        }
+        return forward();
+      },
+    });
+    const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+    await client.close('close', 'navigation');
+    await env.owner.purgeControllers((controller) => controller === GUEST_A);
+    await cleanups.studio.entered;
+
+    let outcome: 'purged' | Error | undefined;
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    const purged = waitForGuestPurge(GUEST_A, env).then(
+      () => {
+        outcome = 'purged';
+      },
+      (error: Error) => {
+        outcome = error;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(3_100);
+      const whileStudioPending = outcome;
+      vi.useRealTimers();
+      cleanups.studio.release();
+      await cleanups.mini.entered;
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+      await vi.advanceTimersByTimeAsync(3_100);
+      const whileMiniPending = outcome;
+      vi.useRealTimers();
+      cleanups.mini.release();
+      await purged;
+      for (const request of env.relay.forget.mock.results) await request.value;
+      await waitForGuestPurge(GUEST_A, env);
+
+      expect(whileMiniPending).toBeUndefined();
+      expect(whileStudioPending).toBeUndefined();
+      expect(outcome).toBe('purged');
+      expect(env.relay.forget).toHaveBeenCalledTimes(2);
+      expect(env.relay.forget).toHaveBeenCalledWith('mini', relayKeyFor(GUEST_A));
+      expect(env.relay.forget).toHaveBeenCalledWith('studio', relayKeyFor(GUEST_A));
+    } finally {
+      vi.useRealTimers();
+      cleanups.mini.release();
+      cleanups.studio.release();
+    }
   });
 
   it('keeps the computers it could not reach when deleting a shared user, and asks them again later', async () => {
     const env = setup();
     const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
     await client.close('close', 'navigation');
-    const index = (): Record<string, { forgetPending?: string[]; nativeIds: string[] }> => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(root, 'owner', 'guest-sessions.json'), 'utf8'));
-      } catch {
-        return {};
-      }
-    };
     env.relay.forget.mockRejectedValueOnce(new Error('DEVICE_OFFLINE'));
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
     await waitFor(() => env.relay.forget.mock.calls.length === 1);
-    await waitFor(() => Object.values(index()).some((record) => record.forgetPending?.includes('mini')));
+    await waitFor(() => Object.values(readOwnerGuestIndex()).some((record) => record.forgetPending?.includes('mini')));
     // 本机这边已经清掉，只留下还要通知的那台。
-    expect(Object.values(index()).every((record) => record.nativeIds.length === 0)).toBe(true);
+    expect(Object.values(readOwnerGuestIndex()).every((record) => record.nativeIds.length === 0)).toBe(true);
 
     await env.owner.purgeControllers((controller) => controller === GUEST_A);
     await waitFor(() => env.relay.forget.mock.calls.length === 2);
-    await waitFor(() => Object.keys(index()).length === 0);
+    await waitForGuestPurge(GUEST_A, env);
+    expect(Object.keys(readOwnerGuestIndex())).toHaveLength(0);
   });
 
   it('does not let a shared user get more tasks by filling in its own relay key', async () => {
@@ -548,6 +695,46 @@ describe('provider group "switch to another computer" for shared users', () => {
     await reopened.client.close('close', 'navigation');
   });
 
+  it.each([
+    { code: 'REMOTE_AGENT_UNAVAILABLE', autoSwitch: true, offersSwitch: true },
+    { code: 'INVALID_PARAMS', autoSwitch: true, offersSwitch: false },
+    { code: 'SESSION_RUNNING', autoSwitch: true, offersSwitch: false },
+    { code: 'REMOTE_AGENT_UNAVAILABLE', autoSwitch: false, offersSwitch: false },
+  ])('续接的 $code 错误，autoSwitch=$autoSwitch，是否发换电脑凭证=$offersSwitch', async ({ code, autoSwitch, offersSwitch }) => {
+    let failResume = false;
+    const env = setup({
+      intercept: async (_agentDeviceId, request, forward) => {
+        if (failResume && request.op === 'open') throw new Error(`[${code}] cannot reopen`);
+        return forward();
+      },
+      plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+    });
+    env.relay.noteStartFailure.mockImplementation(startFailurePolicy(autoSwitch));
+    const first = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
+    const nativeId = first.started.id as string;
+    await first.client.close('close', 'navigation');
+    await waitFor(() => env.members.mini.runCount() === 0);
+
+    failResume = true;
+    const poller = new RemoteAgentPoller(async (args) => jsonRoundTrip(await env.owner.handle(GUEST_A, jsonRoundTrip(args[0]))));
+    const stream: Array<Record<string, unknown>> = [];
+    const client = new RemoteAgentRunClient(runId(), poller, {
+      onEvent: () => undefined,
+      onState: (state) => { stream.push(state); },
+      onRequest: async () => ({ type: 'callback', value: undefined }),
+      onWs: () => undefined,
+      onClosed: () => undefined,
+    }, () => `33333333-3333-4333-8333-${String(runSeq).padStart(12, '0')}`);
+    await expect(client.open('claude-code', openPayload(SESSION, { acceptsGroupSwitch: true, options: { resumeSessionId: nativeId } })))
+      .rejects.toThrow();
+    // 续接只能回到原来那台：那台接不下时凭证排在启动失败前面，受邀者交接后作为全新任务重新打开，组换一台。
+    expect(stream.some((state) => typeof state.providerGroupSwitch === 'string')).toBe(offersSwitch);
+    expect(env.relay.plan).toHaveBeenCalledTimes(offersSwitch ? 2 : 1);
+    if (offersSwitch) {
+      expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
+    }
+  });
+
   it('accepts a token only once, and only from the shared user and task it was sent to', async () => {
     const env = setup({
       plans: [
@@ -598,6 +785,26 @@ describe('provider group "switch to another computer" for shared users', () => {
     expect(switchTokenIn(declared.stream)).toBeUndefined();
     expect(env.relay.plan).toHaveBeenCalledTimes(2);
     await declared.client.close('close', 'navigation');
+  });
+
+  it.each(['local', 'member'] as const)('forwards the Claude output limit from %s without offering another computer', async (kind) => {
+    const env = setup({
+      plans: [kind === 'local' ? { kind: 'local' } : { kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+      switchWorthy: (failure) => decideProviderGroupFailure(failure, 'run').action === 'switch',
+    });
+    const guest = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
+    const data = { sdkError: 'max_output_tokens', message: 'SDK request failed', isTerminal: true };
+    const record = kind === 'local' ? env.ownerStarted[0] : env.memberStarted.mini[0];
+    record.emit({ type: 'error', data } as AgentEvent);
+    await waitFor(() => guest.stream.some((item) => item.t === 'event' && item.event.type === 'error'));
+    expect(guest.stream).toContainEqual(expect.objectContaining({ t: 'event', event: expect.objectContaining({ type: 'error', data }) }));
+    expect(env.relay.noteRunFailure).toHaveBeenCalledWith(
+      'shared-provider', expect.anything(), expect.objectContaining({ sdkError: 'max_output_tokens' }),
+    );
+    expect(switchTokenIn(guest.stream)).toBeUndefined();
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    expect(env.memberStarted.studio).toHaveLength(0);
+    await guest.client.close('close', 'navigation');
   });
 
   it('also offers another computer when the group ran the task on the group computer itself', async () => {

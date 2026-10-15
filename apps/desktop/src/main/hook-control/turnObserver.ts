@@ -211,6 +211,11 @@ export function observeHookTurn(
         if (presenter.applyText(ev)) presenter.scheduleProgress();
         return;
       }
+      if (ev.type === 'status') {
+        // 只记头部 tok/s; 由进度 ticker 带出, 不为速度读数单独占用发帧配额。
+        presenter.applyStatus(ev);
+        return;
+      }
       if (ev.type === 'thinking') {
         // Desktop 不把 thinking 当 assistant block 边界: presenter 只投影思考活动
         // 本身、不 flush 正文; pushThinkingStep 变化时才刷帧。

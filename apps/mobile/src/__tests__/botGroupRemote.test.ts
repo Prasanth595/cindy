@@ -45,6 +45,13 @@ function chatData(overrides: Record<string, unknown> = {}) {
 }
 
 describe('parseBotGroupChatData', () => {
+  it('retains validated management roles, revisions and capability without granting them to old hosts', () => {
+    const parsed = parseBotGroupChatData(chatData({ revision: 3, supportsSettingsManagement: true,
+      members: [{ botId: 'mimi', name: 'Mimi', role: 'admin', isOwned: true }] }));
+    expect(parsed).toMatchObject({ revision: 3, supportsSettingsManagement: true, members: [{ role: 'admin', isOwned: true }] });
+    expect(parseBotGroupChatData(chatData({ revision: -1 }))?.revision).toBeUndefined();
+    expect(parseBotGroupChatData(chatData())?.supportsSettingsManagement).toBe(false);
+  });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('preserves only allowlisted runtime failure codes from the computer: %s', runtimeFailureCode => {
     const data = chatData({ messages: [{ id: 'failure', sequence: 1, kind: 'notice', authorKind: 'system',
       authorName: 'Bot', content: '', createdAt: 1, noticeCode: 'member-failed', runtimeFailureCode }] });
@@ -57,6 +64,28 @@ describe('parseBotGroupChatData', () => {
       members: [{ botId: 'human', actorId: 'actor', actorKind: 'human', isOwned: false, name: 'Person', status: 'active' }] }));
     expect(parsed).toMatchObject({ serverBacked: true, supportsMemberRemoval: true,
       members: [expect.objectContaining({ actorId: 'actor', actorKind: 'human', isOwned: false })] });
+  });
+
+  it('keeps a validated 引用回复 and the tombstone it degrades to', () => {
+    const quote = { messageId: '11111111-1111-4111-8111-111111111111', authorName: '咪咪', authorKind: 'bot',
+      excerpt: '好的，我看看', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    const reply = (id: string, value: unknown) => ({ id, sequence: 5, kind: 'message', authorKind: 'user', authorBotId: null,
+      authorName: '', content: '就这样', noticeCode: null, planId: null, files: [], createdAt: 50, quote: value });
+    const parsed = parseBotGroupChatData(chatData({ messages: [
+      { id: 'gone', sequence: 3, kind: 'message', authorKind: 'bot', authorBotId: 'mimi', authorName: '咪咪', content: '（消息已删除）', deleted: true, createdAt: 30 },
+      reply('q1', quote),
+      reply('q2', { ...quote, messageId: '../other-group' }),
+      reply('q3', { ...quote, authorKind: 'system' }),
+      reply('q4', { ...quote, originalDeleted: true }),
+    ] }))!;
+    const byId = new Map(parsed.messages.map(message => [message.id, message]));
+    expect(byId.get('gone')?.deleted).toBe(true);
+    expect(byId.get('q1')?.quote).toEqual(quote);
+    expect(byId.get('q2')?.quote).toBeUndefined();
+    expect(byId.get('q3')?.quote).toBeUndefined();
+    expect(byId.get('q4')?.quote).toEqual({ ...quote, originalDeleted: true });
+    // Older computers send neither field.
+    expect(parseBotGroupChatData(chatData())!.messages.every(message => !message.quote && !message.deleted)).toBe(true);
   });
 
   it('preserves a server join notice through the phone projection', () => {

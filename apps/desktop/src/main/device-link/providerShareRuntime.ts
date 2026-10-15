@@ -29,6 +29,7 @@ import {
   type ProviderPartyUsageView,
 } from '../../shared/providerShare.js';
 import { getDeviceId } from '../authManager.js';
+import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
@@ -37,6 +38,7 @@ import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
+import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   getControllerDisplayName,
@@ -48,6 +50,7 @@ import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
   getReceivedShares,
+  getReceivedSharesSnapshot,
   leaveProviderShare,
   previewProviderShare,
   refreshReceivedShares,
@@ -235,6 +238,14 @@ function parseCommand(raw: unknown): ProviderShareCommand {
     }
     case 'received':
       return { action: 'received' };
+    case 'received-snapshot': {
+      if (value.favoriteRecovery === undefined) return { action: 'received-snapshot' };
+      const recovery = value.favoriteRecovery as Record<string, unknown> | null;
+      if (!recovery || !isDataOwnerPushStamp(recovery.ownerStamp) || !Array.isArray(recovery.regions) ||
+          recovery.regions.length > 2 || !recovery.regions.every((region) => region === 'cn' || region === 'global'))
+        throwIpcError('INVALID_PARAMS', 'Invalid favorite recovery');
+      return { action: 'received-snapshot', favoriteRecovery: { ownerStamp: recovery.ownerStamp, regions: recovery.regions } };
+    }
     case 'preview':
     case 'send-request':
       return { action: value.action, link: text(value.link, 'link', 4096) };
@@ -289,6 +300,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
           models: await Promise.all((record?.models ?? []).map(async (model) => ({
             kind: model.kind,
             providerId: model.providerId,
+            memberKey: model.memberKey,
             model: model.model,
             turns: model.turns,
             inputTokens: model.inputTokens,
@@ -305,7 +317,7 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
 
 /** 这个供应商按使用方的用量：本机与同账号的其他电脑(provider-groups.md §7)。只读本机账本，不经分享服务。 */
 async function ownUsage(providerId: string, range: ProviderShareUsageRange): Promise<ProviderOwnUsageView> {
-  const { local, devices } = currentProviderPartyUsageStore().query(providerId, range);
+  const { local, devices, relays } = currentProviderPartyUsageStore().query(providerId, range);
   const lastKnownNames = readLastKnownDeviceNames();
   const view = async (party: ProviderPartyUsage): Promise<ProviderPartyUsageView> => ({
     deviceId: party.deviceId,
@@ -316,6 +328,7 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
     models: await Promise.all(party.models.map(async (model) => ({
       kind: model.kind,
       providerId,
+      memberKey: model.memberKey,
       model: model.model,
       turns: model.turns,
       inputTokens: model.inputTokens,
@@ -329,6 +342,7 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
     providerId,
     local: local ? await view(local) : null,
     devices: await Promise.all(devices.map(view)),
+    relays: await Promise.all(relays.map(view)),
   };
 }
 
@@ -356,7 +370,9 @@ async function createLink(providerId: string): Promise<ProviderShareLinkCreated>
   // 倒计时按本机收到响应的时刻计算：链接刚签发，服务端从签发起算 5 分钟。不拿服务端的绝对时间
   // 和本机时钟相减(两边时钟可能有偏差，偏快会一生成就显示已过期)，并留出请求往返的余量。
   const expiresAt = new Date(Date.now() + PROVIDER_SHARE_LINK_TTL_MS - LINK_TTL_SAFETY_MS).toISOString();
-  return { link: providerShareLinkFor(created.invitation), expiresAt };
+  const link = providerShareLinkFor(created.invitation);
+  rememberIssuedClipboardText(link, expiresAt);
+  return { link, expiresAt };
 }
 
 async function execute(command: ProviderShareCommand): Promise<unknown> {
@@ -386,6 +402,8 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'received':
       if (running) void refreshReceivedShares('ui');
       return getReceivedShares();
+    case 'received-snapshot':
+      return getReceivedSharesSnapshot(command.favoriteRecovery);
     case 'preview':
       return previewProviderShare(command.link);
     case 'send-request':
