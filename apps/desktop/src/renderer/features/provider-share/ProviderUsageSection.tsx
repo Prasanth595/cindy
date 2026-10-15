@@ -19,7 +19,7 @@ import { useLocalProviderGroups } from '@/features/provider-group/useLocalProvid
 import { formatModelShort } from '@/lib/usageFormat';
 import { cn } from '@/lib/utils';
 
-import { PROVIDER_GROUP_LOCAL_MEMBER_KEY } from '../../../shared/providerGroup';
+import { providerGroupPhysicalDeviceKey, PROVIDER_GROUP_LOCAL_MEMBER_KEY } from '../../../shared/providerGroup';
 import type {
   ProviderOwnUsageView,
   ProviderShareMemberView,
@@ -87,7 +87,11 @@ export function ProviderUsageSection({
   const ownerNameOf = useProviderShareOwnerNameOf();
   const group = useLocalProviderGroups()[providerId] ?? null;
   const memberKeys = useMemo(
-    () => group?.members.map((member) => member.key) ?? [PROVIDER_GROUP_LOCAL_MEMBER_KEY],
+    () => group ? [...new Set(group.members.map(providerGroupPhysicalDeviceKey))] : [PROVIDER_GROUP_LOCAL_MEMBER_KEY],
+    [group],
+  );
+  const memberKeyAliases = useMemo(
+    () => group ? new Map(group.members.map((member) => [member.key, providerGroupPhysicalDeviceKey(member)])) : undefined,
     [group],
   );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -145,7 +149,8 @@ export function ProviderUsageSection({
       if (memberKey === PROVIDER_GROUP_LOCAL_MEMBER_KEY) {
         return { name: t('providerGroup.member.local'), source: removed ?? selfDeviceName };
       }
-      const member = group?.members.find((item) => item.key === memberKey);
+      const member = group?.members.find((item) => item.key === memberKey)
+        ?? group?.members.find((item) => providerGroupPhysicalDeviceKey(item) === memberKey);
       const deviceId = member?.kind === 'device' ? member.agentDeviceId : deviceIdOfMemberKey(memberKey);
       if (deviceId) {
         return {
@@ -242,6 +247,7 @@ export function ProviderUsageSection({
               unavailable={party.key === 'self' && ownFailed && !own}
               totalTokens={summary.tokens}
               memberKeys={memberKeys}
+              memberKeyAliases={memberKeyAliases}
               showComputerCount={Boolean(group)}
               memberLabel={memberLabel}
               time={time}
@@ -270,6 +276,7 @@ function UsagePartyRow({
   unavailable,
   totalTokens,
   memberKeys,
+  memberKeyAliases,
   showComputerCount,
   memberLabel,
   time,
@@ -284,6 +291,8 @@ function UsagePartyRow({
   totalTokens: number;
   /** 组内电脑(按组里的顺序)；没有组时只有本机。 */
   memberKeys: readonly string[];
+  /** 同一台电脑上的多个账号映射到一个物理电脑键。 */
+  memberKeyAliases?: ReadonlyMap<string, string>;
   /** 收起时写「用了几台电脑」：没有组时只有本机一台，这句没有信息量。 */
   showComputerCount: boolean;
   memberLabel: (memberKey: string | null, inGroup: boolean) => MemberLabel;
@@ -293,7 +302,10 @@ function UsagePartyRow({
   const { t } = useTranslation();
   const totals = summarizeShareUsage(party.models);
   const share = totals.tokens > 0 && totalTokens > 0 ? Math.max(3, Math.round((totals.tokens / totalTokens) * 100)) : 0;
-  const breakdown = useMemo(() => groupUsageByMember(party.models, memberKeys), [memberKeys, party.models]);
+  const breakdown = useMemo(
+    () => groupUsageByMember(party.models, memberKeys, memberKeyAliases),
+    [memberKeyAliases, memberKeys, party.models],
+  );
   const usedOn = showComputerCount
     ? breakdown.filter((item) => item.memberKey !== null && summarizeShareUsage(item.models).tokens > 0).length
     : 0;

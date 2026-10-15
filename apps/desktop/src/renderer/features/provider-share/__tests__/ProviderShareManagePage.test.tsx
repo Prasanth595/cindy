@@ -216,8 +216,8 @@ describe('ProviderShareManagePage', () => {
     const members = within(self).getAllByTestId('provider-usage-member');
     expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
       'local',
-      'device:studio:xd-2',
-      'share:share-9:xd',
+      'device:studio',
+      'share:share:share-9',
     ]);
     expect(members[0]!.textContent).toContain('providerGroup.member.local');
     expect(members[0]!.textContent).toContain("Magi's Mac Mini");
@@ -232,8 +232,50 @@ describe('ProviderShareManagePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Lizi/ }));
     const lizi = screen.getAllByTestId('provider-usage-row')[1]!;
     const keys = within(lizi).getAllByTestId('provider-usage-member').map((member) => member.getAttribute('data-member-key'));
-    expect(keys).toEqual(['local', 'device:studio:xd-2', 'share:share-9:xd', '']);
+    expect(keys).toEqual(['local', 'device:studio', 'share:share:share-9', '']);
     expect(lizi.textContent).toContain('providerGroup.usage.unattributed');
+  });
+
+  it('counts usage from multiple accounts on one physical computer once', async () => {
+    localGroups = {
+      xd: {
+        ...xdGroup,
+        members: [
+          { ...xdGroup.members[0]! },
+          { ...xdGroup.members[1]! },
+          { ...xdGroup.members[2]!, hostDeviceId: 'kai-pc' },
+          {
+            ...xdGroup.members[2]!,
+            key: 'share:share-10:xd',
+            agentDeviceId: 'share:share-10',
+            hostDeviceId: 'kai-pc',
+          },
+        ],
+      },
+    };
+    const usage = ownUsage();
+    usage.local!.models.push(
+      usageModel('claude-sonnet-5', 2_000, 0.2, 'share:share-9:xd'),
+      usageModel('claude-sonnet-5', 3_000, 0.3, 'share:share-10:xd'),
+    );
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') return owned();
+      if (cmd.action === 'own-usage') return usage;
+      if (cmd.action === 'received') return [];
+      throw new Error('unexpected action');
+    });
+
+    renderPage();
+    const rows = await screen.findAllByTestId('provider-usage-row');
+    expect(rows[0]!.textContent).toContain('providerGroup.usage.computerCount:{\\"count\\":3}');
+    fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Magi/ }));
+
+    const members = within(screen.getAllByTestId('provider-usage-row')[0]!).getAllByTestId('provider-usage-member');
+    expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
+      'local',
+      'device:studio',
+      'share-host:kai-pc',
+    ]);
   });
 
   it('re-reads usage when the period changes', async () => {
