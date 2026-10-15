@@ -39,9 +39,17 @@ const KINDS: readonly RepeatableWireNoteKind[] = ['ui-language', 'client-environ
 
 export function createWireNoteMemory(): WireNoteMemory {
   const lastSent = new Map<string, Map<RepeatableWireNoteKind, string | null>>();
+  /**
+   * 每个会话的重置代次:plan 时记下,commit 时核对。发送在途(Pi 受理前可能先压缩)
+   * 期间发生 reset,代次已变,旧 plan 的 commit 不能把"已发过"写回去——否则下一轮
+   * 继续省略,而新原生上下文其实没看过这些说明。
+   */
+  const resetEpoch = new Map<string, number>();
+  const epochOf = (sessionId: string): number => resetEpoch.get(sessionId) ?? 0;
   return {
     plan(sessionId, notes, opts) {
       const previous = lastSent.get(sessionId);
+      const epoch = epochOf(sessionId);
       const planned: RepeatableWireNotes = {};
       for (const kind of KINDS) {
         const text = notes[kind] ?? null;
@@ -52,6 +60,8 @@ export function createWireNoteMemory(): WireNoteMemory {
       return {
         notes: planned,
         commit() {
+          // plan 之后 reset 过:这份计划面对的是旧上下文,不记为已发送,下一轮整体重发。
+          if (epochOf(sessionId) !== epoch) return;
           const next = new Map<RepeatableWireNoteKind, string | null>();
           for (const kind of KINDS) next.set(kind, notes[kind] ?? null);
           lastSent.set(sessionId, next);
@@ -60,6 +70,7 @@ export function createWireNoteMemory(): WireNoteMemory {
     },
     reset(sessionId) {
       lastSent.delete(sessionId);
+      resetEpoch.set(sessionId, epochOf(sessionId) + 1);
     },
   };
 }

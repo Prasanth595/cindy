@@ -56,6 +56,28 @@ describe('wireNoteMemory', () => {
       .toEqual({ 'ui-language': UI, 'client-environment': PHONE });
   });
 
+  it('a reset during an in-flight send invalidates the earlier plan so the next turn resends everything', () => {
+    const memory = createWireNoteMemory();
+    memory.plan('s1', { 'ui-language': UI, 'client-environment': PHONE }).commit();
+    // 第二轮内容没变 → 计划里什么都不发;发送在途时原生压缩触发 reset。
+    const inFlight = memory.plan('s1', { 'ui-language': UI, 'client-environment': PHONE });
+    expect(inFlight.notes).toEqual({});
+    memory.reset('s1');
+    inFlight.commit();
+    // 旧计划不能把"已发过"写回:新上下文没看过说明,下一轮必须整体重发。
+    expect(memory.plan('s1', { 'ui-language': UI, 'client-environment': PHONE }).notes)
+      .toEqual({ 'ui-language': UI, 'client-environment': PHONE });
+    // reset 之后新建的计划照常可以 commit。
+    const fresh = memory.plan('s1', { 'ui-language': UI });
+    fresh.commit();
+    expect(memory.plan('s1', { 'ui-language': UI }).notes).toEqual({});
+    // 另一个会话的 reset 不影响本会话的计划。
+    const other = memory.plan('s1', { 'ui-language': UI, 'client-environment': PC });
+    memory.reset('s2');
+    other.commit();
+    expect(memory.plan('s1', { 'ui-language': UI, 'client-environment': PC }).notes).toEqual({});
+  });
+
   it('keeps sessions independent', () => {
     const memory = createWireNoteMemory();
     memory.plan('s1', { 'ui-language': UI }).commit();
