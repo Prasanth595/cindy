@@ -276,14 +276,16 @@ describe('createGhostOverlayWindow', () => {
   });
 
   it('destroys the window and clears the registry when protocol registration fails', async () => {
+    let markedBeforeFailure = false;
     harness.ensureProtocolRegistered.mockImplementationOnce(async () => {
-      // mark 已在 ensureProtocolRegistered 之前完成:失败前 registry 应已登记。
-      expect(isGhostOverlayWebContents(harness.windows[0].overlayWebContentsId)).toBe(true);
+      markedBeforeFailure = isGhostOverlayWebContents(harness.windows[0].overlayWebContentsId);
       throw new Error('boom');
     });
     await expect(
       createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps()),
     ).rejects.toThrow('ghost overlay protocol failed for acme-overlay');
+    // 在 catch 包装路径之外断言，避免原始 AssertionError 被包装成预期错误。
+    expect(markedBeforeFailure).toBe(true);
 
     const win = harness.windows[0];
     expect(win.isDestroyed()).toBe(true);
