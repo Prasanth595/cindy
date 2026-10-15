@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // 信任断言 mock:默认放行,单个用例按需改成 throw 以模拟未信任 sender。
 const trustedMocks = vi.hoisted(() => ({
   assertTrustedAppRendererEvent: vi.fn(),
+  isTrustedAppRendererEvent: vi.fn(() => true),
 }));
 
 vi.mock('electron', () => {
@@ -19,6 +20,9 @@ vi.mock('electron', () => {
       handle: vi.fn((channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
         handlers.set(channel, fn);
       }),
+      on: vi.fn((channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
+        handlers.set(channel, fn);
+      }),
       __handlers: handlers,
     },
   };
@@ -26,6 +30,7 @@ vi.mock('electron', () => {
 
 vi.mock('../../security/trustedAppRenderer.js', () => ({
   assertTrustedAppRendererEvent: trustedMocks.assertTrustedAppRendererEvent,
+  isTrustedAppRendererEvent: trustedMocks.isTrustedAppRendererEvent,
 }));
 
 import { ipcMain } from 'electron';
@@ -40,11 +45,15 @@ import {
   ghostIdForOverlayWebContents,
   markGhostOverlayWebContentsId,
 } from '../registry.js';
-import { registerGhostOverlayWindowIpc } from '../ipc.js';
+import {
+  GHOST_OVERLAY_WINDOW_GET_USER_ENABLED_SYNC,
+  registerGhostOverlayWindowIpc,
+} from '../ipc.js';
 import type { GhostOverlayWindowsController } from '../controller.js';
 
 type OverlayControllerMock = GhostOverlayWindowsController & {
   getState: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
   markRendererReady: ReturnType<typeof vi.fn>;
   markPresentationReady: ReturnType<typeof vi.fn>;
   rendererReadyGhostIds: string[];
@@ -53,13 +62,16 @@ type OverlayControllerMock = GhostOverlayWindowsController & {
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
-function makeController(): OverlayControllerMock {
+function makeController(
+  state: Record<string, { mounted: boolean; visible: boolean; interactive: boolean }> = {
+    'ghost-a': { mounted: true, visible: false, interactive: false },
+  },
+): OverlayControllerMock {
   const rendererReadyGhostIds: string[] = [];
   const presentationReadyGhostIds: string[] = [];
   return {
-    getState: vi.fn(() => ({
-      'ghost-a': { mounted: true, visible: false, interactive: false },
-    })),
+    getState: vi.fn(() => state),
+    hide: vi.fn(),
     // 模拟真实 controller 的 slotForSender:按 registry 把 sender 映射回 ghostId,
     // 让 ready 通道的“映射到正确 ghostId”可观察(而不只是布尔闸通过)。
     markRendererReady: vi.fn((sender: { id: number }) => {
@@ -101,8 +113,11 @@ beforeEach(() => {
     }
   ).__handlers.clear();
   (ipcMain.handle as ReturnType<typeof vi.fn>).mockClear();
+  (ipcMain.on as ReturnType<typeof vi.fn>).mockClear();
   trustedMocks.assertTrustedAppRendererEvent.mockReset();
   trustedMocks.assertTrustedAppRendererEvent.mockImplementation(() => {});
+  trustedMocks.isTrustedAppRendererEvent.mockReset();
+  trustedMocks.isTrustedAppRendererEvent.mockImplementation(() => true);
   clearGhostOverlayWebContents(42);
   clearGhostOverlayWebContents(43);
 });
@@ -110,7 +125,11 @@ beforeEach(() => {
 describe('ghost overlay window IPC', () => {
   it('rejects GET_STATE from an untrusted sender', async () => {
     const controller = makeController();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn() });
+    registerGhostOverlayWindowIpc({
+      controller,
+      setUserEnabled: vi.fn(),
+      getUserEnabled: () => true,
+    });
 
     trustedMocks.assertTrustedAppRendererEvent.mockImplementation(() => {
       throw new Error('PERMISSION_DENIED: 只能从 Cindy 主页面发起');
@@ -123,7 +142,11 @@ describe('ghost overlay window IPC', () => {
 
   it('returns controller state for a trusted GET_STATE sender', async () => {
     const controller = makeController();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn() });
+    registerGhostOverlayWindowIpc({
+      controller,
+      setUserEnabled: vi.fn(),
+      getUserEnabled: () => true,
+    });
 
     const handler = handlerFor(MAKER_INVOKE.GHOST_OVERLAY_WINDOW_GET_STATE);
     await expect(invoke(handler, { sender: { id: 1 } })).resolves.toEqual({
@@ -134,7 +157,11 @@ describe('ghost overlay window IPC', () => {
 
   it('rejects ready channels from webContents that are not a registered overlay', async () => {
     const controller = makeController();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn() });
+    registerGhostOverlayWindowIpc({
+      controller,
+      setUserEnabled: vi.fn(),
+      getUserEnabled: () => true,
+    });
 
     const rendererReady = handlerFor(GHOST_OVERLAY_WINDOW_RENDERER_READY_CHANNEL);
     const presentationReady = handlerFor(GHOST_OVERLAY_WINDOW_PRESENTATION_READY_CHANNEL);
@@ -151,7 +178,11 @@ describe('ghost overlay window IPC', () => {
     markGhostOverlayWebContentsId(42, 'ghost-a');
     markGhostOverlayWebContentsId(43, 'ghost-b');
     const controller = makeController();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn() });
+    registerGhostOverlayWindowIpc({
+      controller,
+      setUserEnabled: vi.fn(),
+      getUserEnabled: () => true,
+    });
 
     const rendererReady = handlerFor(GHOST_OVERLAY_WINDOW_RENDERER_READY_CHANNEL);
     const presentationReady = handlerFor(GHOST_OVERLAY_WINDOW_PRESENTATION_READY_CHANNEL);
@@ -169,7 +200,7 @@ describe('ghost overlay window IPC', () => {
   it('SET_USER_ENABLED validates ghostId and boolean payload', async () => {
     const controller = makeController();
     const setUserEnabled = vi.fn();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled });
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled, getUserEnabled: () => true });
 
     const handler = handlerFor(MAKER_INVOKE.GHOST_OVERLAY_WINDOW_SET_USER_ENABLED);
 
@@ -189,7 +220,7 @@ describe('ghost overlay window IPC', () => {
   it('SET_USER_ENABLED rejects an untrusted sender', async () => {
     const controller = makeController();
     const setUserEnabled = vi.fn();
-    registerGhostOverlayWindowIpc({ controller, setUserEnabled });
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled, getUserEnabled: () => true });
 
     trustedMocks.assertTrustedAppRendererEvent.mockImplementation(() => {
       throw new Error('PERMISSION_DENIED: 只能从 Cindy 主页面发起');
@@ -200,5 +231,70 @@ describe('ghost overlay window IPC', () => {
       /PERMISSION_DENIED/,
     );
     expect(setUserEnabled).not.toHaveBeenCalled();
+  });
+
+  it('GET_USER_ENABLED_SYNC returns the persisted user enabled value', () => {
+    const controller = makeController();
+    const getUserEnabled = vi.fn(() => false);
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn(), getUserEnabled });
+
+    const handler = handlerFor(GHOST_OVERLAY_WINDOW_GET_USER_ENABLED_SYNC);
+    const event: { sender: { id: number }; returnValue?: unknown } = { sender: { id: 1 } };
+    handler(event, 'ghost-a');
+
+    expect(getUserEnabled).toHaveBeenCalledWith('ghost-a');
+    expect(event.returnValue).toBe(false);
+  });
+
+  it('GET_USER_ENABLED_SYNC returns default true for untrusted or invalid senders', () => {
+    const controller = makeController();
+    const getUserEnabled = vi.fn(() => false);
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled: vi.fn(), getUserEnabled });
+
+    const handler = handlerFor(GHOST_OVERLAY_WINDOW_GET_USER_ENABLED_SYNC);
+
+    trustedMocks.isTrustedAppRendererEvent.mockImplementation(() => false);
+    const untrustedEvent: { sender: { id: number }; returnValue?: unknown } = {
+      sender: { id: 1 },
+    };
+    handler(untrustedEvent, 'ghost-a');
+    expect(untrustedEvent.returnValue).toBe(true);
+    expect(getUserEnabled).not.toHaveBeenCalled();
+
+    trustedMocks.isTrustedAppRendererEvent.mockImplementation(() => true);
+    const invalidEvent: { sender: { id: number }; returnValue?: unknown } = {
+      sender: { id: 1 },
+    };
+    handler(invalidEvent, 'not a valid id');
+    expect(invalidEvent.returnValue).toBe(true);
+    expect(getUserEnabled).not.toHaveBeenCalled();
+  });
+
+  it('SET_USER_ENABLED false hides a visible overlay immediately', async () => {
+    const controller = makeController({
+      'ghost-a': { mounted: true, visible: true, interactive: false },
+    });
+    const setUserEnabled = vi.fn();
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled, getUserEnabled: () => true });
+
+    const handler = handlerFor(MAKER_INVOKE.GHOST_OVERLAY_WINDOW_SET_USER_ENABLED);
+    await invoke(handler, { sender: { id: 1 } }, 'ghost-a', false);
+
+    expect(setUserEnabled).toHaveBeenCalledWith('ghost-a', false);
+    expect(controller.hide).toHaveBeenCalledWith('ghost-a');
+  });
+
+  it('SET_USER_ENABLED true does not auto-show or hide', async () => {
+    const controller = makeController({
+      'ghost-a': { mounted: true, visible: false, interactive: false },
+    });
+    const setUserEnabled = vi.fn();
+    registerGhostOverlayWindowIpc({ controller, setUserEnabled, getUserEnabled: () => true });
+
+    const handler = handlerFor(MAKER_INVOKE.GHOST_OVERLAY_WINDOW_SET_USER_ENABLED);
+    await invoke(handler, { sender: { id: 1 } }, 'ghost-a', true);
+
+    expect(setUserEnabled).toHaveBeenCalledWith('ghost-a', true);
+    expect(controller.hide).not.toHaveBeenCalled();
   });
 });

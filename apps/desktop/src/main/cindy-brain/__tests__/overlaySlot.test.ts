@@ -73,6 +73,28 @@ describe('overlaySlot · mount 资格审', () => {
     expect(deps.prewarm).toHaveBeenCalledWith(GHOST_ID);
     expect(deps.show).toHaveBeenCalledWith(GHOST_ID);
   });
+
+  it('re-enabling does not auto-show until plugin mounts again', async () => {
+    let enabled = false;
+    const { slot, deps } = makeSlot({ isUserEnabled: () => enabled });
+
+    await expect(slot.handle(GHOST_ID, 'mount', {})).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'OVERLAY_USER_DISABLED',
+    });
+    expect(deps.prewarm).not.toHaveBeenCalled();
+    expect(deps.show).not.toHaveBeenCalled();
+
+    // 用户重新开启:只改变资格,不触发任何预热/展示。
+    enabled = true;
+    expect(deps.prewarm).not.toHaveBeenCalled();
+    expect(deps.show).not.toHaveBeenCalled();
+
+    // 插件自己再次 mount 才真正预热 + 展示。
+    await expect(slot.handle(GHOST_ID, 'mount', {})).resolves.toEqual({ ok: true });
+    expect(deps.prewarm).toHaveBeenCalledTimes(1);
+    expect(deps.show).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('overlaySlot · 未 mount 时 fail closed', () => {

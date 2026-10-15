@@ -744,6 +744,10 @@ import { GhostOverlayWindowsController } from './ghost-overlay-window/controller
 import { createGhostOverlayWindow } from './ghost-overlay-window/window.js';
 import { registerGhostOverlayWindowIpc } from './ghost-overlay-window/ipc.js';
 import { GhostOverlayCursorStream } from './ghost-overlay-window/cursor-stream.js';
+import {
+  readOverlayUserEnabled,
+  setOverlayUserEnabled,
+} from './ghost-overlay-window/user-prefs-store.js';
 import { createGhostOverlaySlot } from './cindy-brain/overlaySlot.js';
 import { ownerScopedGhostPartitionForInstalledGhost } from './cindy-brain/ghostWebviewPartition.js';
 import {
@@ -2334,16 +2338,12 @@ registerGhostPanelWindowIpc(ghostPanelWindowsController);
 
 // ── 桌面浮窗(ghost overlay window)───────────────────────────────────────
 // controller / cursorStream / overlay slot 单例化并接 IPC。浮窗无窗口级持久状态;
-// 用户开关的持久化在 Task 8,这里先落运行期占位 map(默认启用)。
+// 用户开关(kill switch)的 per-owner 持久化在 user-prefs-store(默认开启,owner
+// 切换隔离);关闭时的即时 hide 由 ipc.ts 的 SET_USER_ENABLED handler 执行。
 // cursorStream 经 let 变量引用:owner 切换时 dispose 是终态、不可复用,必须重建
 // 实例;controller 的钩子闭包读变量当前值,自动重新接上新实例。
-const overlayUserEnabled = new Map<string, boolean>();
 const isGhostOverlayUserEnabled = (ghostId: string): boolean =>
-  overlayUserEnabled.get(ghostId) !== false;
-const setGhostOverlayUserEnabled = (ghostId: string, enabled: boolean): void => {
-  overlayUserEnabled.set(ghostId, enabled);
-  // TODO(Task 8): 落盘 per-owner 持久化(read/setOverlayUserEnabled)。
-};
+  readOverlayUserEnabled(ghostId);
 
 // 资格判据与 reconcile 保持一致:已装 + 未停用 + 声明了 overlay。
 // 消除 disabled-but-declared 的窄竞态(停用广播尚未 reconcile 到位时的窗口)。
@@ -2410,7 +2410,8 @@ const ghostOverlayWindowsController = new GhostOverlayWindowsController({
 });
 registerGhostOverlayWindowIpc({
   controller: ghostOverlayWindowsController,
-  setUserEnabled: setGhostOverlayUserEnabled,
+  setUserEnabled: setOverlayUserEnabled,
+  getUserEnabled: readOverlayUserEnabled,
 });
 
 // overlay-request 守门 slot:经 setGhostOverlaySlot 挂回 cindy-brain 分发(未注入时
@@ -2582,9 +2583,8 @@ setAppSessionCommitBoundaryHook(() => {
   // cursorStream(终态),随后必须重建实例并把 controller 钩子接到新实例上。
   ghostOverlayWindowsController.disposeAllForOwnerChange();
   ghostOverlayCursorStream = createGhostOverlayCursorStream();
-  // 用户开关的运行期占位(Task 8 才 per-owner 落盘):切号时清空,避免旧 owner 的
-  // kill switch 泄漏到新 owner。
-  overlayUserEnabled.clear();
+  // 用户开关 per-owner 落盘(store 按 owner 数据目录解析路径,切号后下次读自动
+  // 切到新 owner 文件,无需清空运行期占位)。
   clearAllSessionProviders();
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
