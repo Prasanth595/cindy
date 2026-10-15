@@ -330,7 +330,9 @@ describe('注入接线(源码级守卫)', () => {
     // 注入链:normalized → withHandoff → withPlanReconcile → withGoalInactiveNote
     // → 来源说明 → 客户端说明(元信息都在交接段之前)。
     expect(source).toContain('prependNoteToWireUserMessage(withGoalInactiveNote as HandoffWireMessage, messageSourceNote)');
-    expect(source).toContain('prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, mobileClientNote)');
+    // 环境说明经 wireNoteMemory 去重后再前置(内容没变就不重复),链路位置不变。
+    expect(source).toContain("prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, plannedNotes['client-environment'])");
+    expect(source).toContain('deps.planRepeatableWireNotes?.(sessionId, repeatableNotes, { force: pendingHandoff !== null })');
     expect(source).toContain('readWireSourceDevice(so.sourceDevice)');
     expect(source).toContain('shouldPrependMobileClientPromptNote(normalized, sess.agentKind)');
     // 落库内容必须仍取 persistUserMessage.content —— 若改成 outgoing,提示语会写进
@@ -588,7 +590,9 @@ describe('排队 / 插入两条路径的接线(源码级守卫)', () => {
     expect(register).toContain("isMobileControllerInvoke() || so.fromMobileClient === true");
     expect(register).toContain('shouldPrependMobileClientPromptNote(normalized, sess.agentKind)');
     expect(register).toContain('prependNoteToWireUserMessage(normalized as HandoffWireMessage, steerSourceNote)');
-    expect(register).toContain('prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerNote)');
+    // steer 与 send 事务共用同一份环境说明去重记忆,投递成功后才记为已发送。
+    expect(register).toContain("prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerPlannedNotes['client-environment'])");
+    expect(register).toContain('steerNotePlan?.commit()');
     expect(register).toContain('readWireSourceDevice(so.sourceDevice)');
     expect(register).toContain('await sess.steer(steerPayload as never');
   });
