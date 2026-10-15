@@ -67,7 +67,7 @@ describe('Department audience selection', () => {
     render(<Fixture initial={many.map(d => d.id)} />);
     await screen.findByText('skillhub.audience.limit');
     await waitFor(() => expect(valid).toHaveBeenLastCalledWith(false));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Dept 500' }));
+    fireEvent.click(screen.getByRole('button', { name: /Dept 500/ }));
     await waitFor(() => expect(valid).toHaveBeenLastCalledWith(true));
     expect(screen.queryByText('skillhub.audience.limit')).toBeNull();
   });
@@ -80,4 +80,12 @@ describe('Department audience selection', () => {
     await screen.findByText('Parent', { selector: 'label' });
     await waitFor(() => expect(valid).toHaveBeenLastCalledWith(true));
   });
+});
+
+it('bounds mounted rows for thousands of matching departments', async () => {
+  load.mockResolvedValue({ success: true, audienceSupported: true, departments: Array.from({ length: 5000 }, (_, i) => ({ id: `d${i}`, name: `Dept ${i}`, parentId: null })) });
+  render(<Fixture />);
+  await waitFor(() => expect(valid).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Dept' } });
+  expect(screen.queryAllByRole('checkbox').length).toBeLessThan(100);
 });

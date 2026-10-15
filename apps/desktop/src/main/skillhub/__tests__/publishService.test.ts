@@ -390,7 +390,7 @@ describe('SkillPublishService', () => {
           };
         }
         if (apiPath === commitPath) {
-          if (mode === 'old-replica') throw new ServerApiError('NOT_FOUND', 404, 'not found');
+          if (mode === 'old-replica') throw new ServerApiError('NOT_FOUND', 404, '资源不存在');
           return {
             slug: 'lark-task',
             version: (opts?.body as { version: string }).version,

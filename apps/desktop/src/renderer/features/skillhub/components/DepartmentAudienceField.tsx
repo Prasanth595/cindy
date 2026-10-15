@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -76,6 +77,19 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
     (childrenByParent.get(null) ?? []).forEach(d => visit(d, 0));
     return result;
   }, [departments, expanded, query, parents, childrenByParent]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualized = rows.length > 100;
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    enabled: virtualized,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 36,
+    getItemKey: index => rows[index].department.id,
+    overscan: 5,
+  });
+  const visibleRows = virtualized
+    ? virtualizer.getVirtualItems().map(item => ({ ...rows[item.index], item }))
+    : rows.map(row => ({ ...row, item: undefined }));
   const toggle = (id: string) => {
     const next = selected.includes(id) ? selected.filter(value => value !== id)
       : [...selected.filter(value => !departmentAncestors(value, parents).includes(id)), id];
@@ -91,7 +105,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
         </label>
         {value === 'departments' && mode === 'departments' && <div className="flex flex-col gap-2 pb-3 pl-8 pr-3">
           <Input aria-label={t('skillhub.audience.search')} placeholder={t('skillhub.audience.search')}
-            value={query} onChange={setQuery}
+            value={query} onChange={value => { if (scrollRef.current) scrollRef.current.scrollTop = 0; setQuery(value); }}
             surface="ivory" />
           <div className="flex flex-wrap gap-1">
             {selected.map(id => <Button key={id} variant="secondary" size="sm" type="button" onClick={() => toggle(id)}>
@@ -99,10 +113,13 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
               <X size={12} aria-label={t('skillhub.audience.remove')} />
             </Button>)}
           </div>
-          <div className="max-h-52 overflow-y-auto">
-            {rows.map(({ department: d, depth, hasChildren }) => {
+          <div ref={scrollRef} className="max-h-52 overflow-y-auto">
+            <div className="relative" style={virtualized ? { height: virtualizer.getTotalSize() } : undefined}>
+            {visibleRows.map(({ department: d, depth, hasChildren, item }) => {
               const included = departmentAncestors(d.id, parents).some(id => selectedIds.has(id));
-              return <div key={d.id} className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16 }}>
+              return <div key={d.id} data-index={item?.index} ref={item ? virtualizer.measureElement : undefined}
+                className="flex items-center gap-1 py-1" style={{ paddingInlineStart: depth * 16,
+                  ...(item ? { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` } as const : {}) }}>
                 <span className="inline-flex h-7 w-7 shrink-0">{hasChildren && !query.trim() && <Tip contentClassName="z-[10001]" text={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}><Button variant="secondary" size="sm" className="w-7 px-0" type="button" aria-label={t(expanded.has(d.id) ? 'skillhub.audience.collapse' : 'skillhub.audience.expand')}
                   onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(d.id)) next.delete(d.id); else next.add(d.id); return next; })}>
                   {expanded.has(d.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -113,6 +130,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
                 </label>
               </div>;
             })}
+            </div>
           </div>
           {selected.length > 500 && <p role="alert">{t('skillhub.audience.limit')}</p>}
           {status === 'ready' && (missing.length > 0 || selected.length === 0) && <p role="status">{t(missing.length ? 'skillhub.audience.invalid' : 'skillhub.audience.choose')}</p>}

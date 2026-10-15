@@ -45,7 +45,8 @@ export async function skillhubApiFetch<T>(
 
 /** Versioned writes must fail closed on replicas that do not expose the route yet. */
 export function rethrowSkillAudienceWriteError(error: unknown): never {
-  if (error instanceof ServerApiError && error.statusCode === 404) {
+  if (error instanceof ServerApiError && error.statusCode === 404
+    && (error.code === 'HTTP_404' || (error.code === 'NOT_FOUND' && error.message === '资源不存在'))) {
     throw new ServerApiError('UNSUPPORTED_CAPABILITY', 503, 'Skill audience service is temporarily unavailable');
   }
   throw error;
