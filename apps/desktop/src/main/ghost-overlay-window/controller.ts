@@ -33,6 +33,11 @@ export interface GhostOverlayWindowsControllerDeps {
   broadcastState: (state: GhostOverlayWindowsState) => void;
   isQuitting: () => boolean;
   log: Logger;
+  /**
+   * 可选:浮窗可见性变化钩子(show/hide/unmount/dispose 等真实迁移时调用)。
+   * Task 7 接线为 cursorStream.setVisible;controller 不直接依赖 cursor-stream。
+   */
+  onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
 }
 
 const DEFAULT_SHOW_TIMEOUT_MS = 5000;
@@ -116,7 +121,7 @@ export class GhostOverlayWindowsController {
       return;
     }
     if (slot.presentationReady) {
-      this.showInactive(slot);
+      this.showInactive(ghostId, slot);
       return;
     }
     slot.pendingShow = true;
@@ -203,7 +208,7 @@ export class GhostOverlayWindowsController {
     entry.slot.presentationReady = true;
     this.scheduleRecoveryStabilityReset(entry.slot);
     if (entry.slot.pendingShow) {
-      this.showInactive(entry.slot);
+      this.showInactive(entry.ghostId, entry.slot);
     }
   }
 
@@ -317,12 +322,12 @@ export class GhostOverlayWindowsController {
     });
   }
 
-  private showInactive(slot: WindowSlot): void {
+  private showInactive(ghostId: string, slot: WindowSlot): void {
     this.clearShowTimeout(slot);
     slot.pendingShow = false;
     if (slot.win.isMinimized()) slot.win.restore();
     slot.win.showInactive();
-    slot.visible = true;
+    this.applyVisibility(ghostId, slot, true);
     this.sendVisibility(slot, true);
     this.broadcast();
   }
@@ -331,7 +336,7 @@ export class GhostOverlayWindowsController {
     this.clearShowTimeout(slot);
     slot.pendingShow = false;
     if (slot.win.isVisible()) slot.win.hide();
-    slot.visible = false;
+    this.applyVisibility(ghostId, slot, false);
     this.sendVisibility(slot, false);
     this.broadcast();
     this.deps.log.info('ghost overlay window hidden', { ghostId });
@@ -343,6 +348,21 @@ export class GhostOverlayWindowsController {
     } catch {
       // window may be torn down
     }
+  }
+
+  /** 通知宿主(如 cursor stream)可见性变化;钩子可选,缺席时静默。 */
+  private notifyVisibilityChanged(ghostId: string, visible: boolean): void {
+    this.deps.onVisibilityChanged?.(ghostId, visible);
+  }
+
+  /**
+   * 统一可见性迁移:仅真实变化时更新状态并通知宿主一次。
+   * 这样无论原生 show/hide 事件是同步还是异步到达,都只发一次钩子。
+   */
+  private applyVisibility(ghostId: string, slot: WindowSlot, visible: boolean): void {
+    if (slot.visible === visible) return;
+    slot.visible = visible;
+    this.notifyVisibilityChanged(ghostId, visible);
   }
 
   private onNativeVisibilityChanged(
@@ -359,13 +379,15 @@ export class GhostOverlayWindowsController {
       return;
     }
     if (slot.visible === visible && !slot.pendingShow) return;
-    slot.visible = visible;
+    this.applyVisibility(ghostId, slot, visible);
     if (visible) slot.pendingShow = false;
     this.sendVisibility(slot, visible);
     this.broadcast();
   }
 
   private onClosed(ghostId: string, slot: WindowSlot): void {
+    // 窗口销毁(含 unmount/reconcile/dispose 与外部关闭):光标流随之停止。
+    this.notifyVisibilityChanged(ghostId, false);
     this.clearTimeouts(slot);
     clearGhostOverlayWebContents(slot.webContentsId);
     if (this.slots.get(ghostId) !== slot) return;
@@ -389,7 +411,7 @@ export class GhostOverlayWindowsController {
         this.invalidateSlot(ghostId, slot, 'renderer readiness timed out');
         return;
       }
-      if (!slot.visible) this.showInactive(slot);
+      if (!slot.visible) this.showInactive(ghostId, slot);
     }, DEFAULT_SHOW_TIMEOUT_MS);
     slot.showTimeout.unref?.();
   }
@@ -419,7 +441,10 @@ export class GhostOverlayWindowsController {
     if (slot.win.isDestroyed()) return;
     const shouldRestore = slot.visible || slot.pendingShow;
     if (shouldRestore) slot.pendingShow = true;
-    if (slot.visible) slot.win.hide();
+    if (slot.visible) {
+      slot.win.hide();
+      this.applyVisibility(ghostId, slot, false);
+    }
     slot.rendererReady = false;
     slot.presentationReady = false;
     if (shouldRestore) this.scheduleShowFallback(ghostId, slot);
