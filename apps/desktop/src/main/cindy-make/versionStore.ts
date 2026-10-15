@@ -135,7 +135,11 @@ export function readOriginalVersion(profile: string): OriginalVersion | null {
   return value;
 }
 /** Publication facts outlive retired application files and still protect build rollback. */
-export function readPersonalVersionRecord(profile: string, id: string): PersonalVersion {
+function readPersonalVersionRecordChecked(
+  profile: string,
+  id: string,
+  allowArchitectureMismatch: boolean,
+): PersonalVersion {
   const directory = versionDirectory(profile, id);
   assertVersionDirectory(profile, directory);
   const item = readVersionJson<PersonalVersion>(path.join(directory, 'version.json'));
@@ -145,7 +149,8 @@ export function readPersonalVersionRecord(profile: string, id: string): Personal
     item.id !== id ||
     !sameVersionPath(item.profile?.userData ?? '', profile) ||
     item.platform !== process.platform ||
-    item.arch !== process.arch
+    typeof item.arch !== 'string' ||
+    (!allowArchitectureMismatch && item.arch !== process.arch)
   )
     throw versionError('unavailable');
   if (
@@ -171,6 +176,16 @@ export function readPersonalVersionRecord(profile: string, id: string): Personal
       throw versionError('unavailable');
   }
   return item;
+}
+export function readPersonalVersionRecord(profile: string, id: string): PersonalVersion {
+  return readPersonalVersionRecordChecked(profile, id, false);
+}
+/** Read retirement facts without requiring the current process to match the old CPU architecture. */
+export function readPersonalVersionRecordForCleanup(
+  profile: string,
+  id: string,
+): PersonalVersion {
+  return readPersonalVersionRecordChecked(profile, id, true);
 }
 export function readPersonalVersion(profile: string, id: string): PersonalVersion {
   const item = readPersonalVersionRecord(profile, id);

@@ -24,6 +24,9 @@ const h = vi.hoisted(() => ({
   hyprlandStop: vi.fn(),
   handlers: new Map<string, any>(),
   screenHandlers: new Map<string, any>(),
+  controlState: null as null | { peer: string; controlling: boolean },
+  rebindInput: vi.fn(),
+  startInput: vi.fn(async () => {}),
   geometryMatches: vi.fn(() => true),
   windows: [] as any[],
   deps: null as any,
@@ -46,10 +49,8 @@ const h = vi.hoisted(() => ({
   handoff: null as null | { windowId: number; pid: number },
   input: vi.fn(),
   viewHeartbeat: vi.fn(),
-  controllerState: null as null | { peer: string; controlling: boolean },
   controllerRequest: vi.fn(async (..._args: any[]): Promise<unknown> => ({})),
   hostInput: vi.fn(),
-  startInput: vi.fn(async () => {}),
   iceConfig: vi.fn(async (): Promise<any[]> => [
     { urls: ['turn:relay.example.test:3478'], username: 'temporary', credential: 'test-only' },
   ]),
@@ -103,7 +104,7 @@ vi.mock('../viewerDisplay', () => ({
 }));
 vi.mock('electron', () => ({
   app: { on: vi.fn() },
-  powerMonitor: { on: (name: string, fn: () => void) => h.powerHandlers.set(name, fn) },
+  powerMonitor: { on: (name: string, handler: () => void) => h.powerHandlers.set(name, handler) },
   shell: {},
   nativeImage: {},
   screen: {
@@ -166,7 +167,7 @@ vi.mock('../controller', () => ({
       h.deps = deps;
     }
     get state() {
-      return h.controllerState;
+      return h.controlState;
     }
     request = h.controllerRequest;
     displayId = '1';
@@ -213,6 +214,7 @@ vi.mock('../inputHost', () => ({
     stop = vi.fn();
     input = h.hostInput;
     start = h.startInput;
+    rebindForDesktopChange = h.rebindInput;
   },
   readDesktopDisplayModes: vi.fn(),
   setDesktopDisplayMode: vi.fn(),
@@ -277,6 +279,10 @@ beforeEach(() => {
   h.hyprlandStop.mockClear();
   h.handlers.clear();
   h.screenHandlers.clear();
+  h.powerHandlers.clear();
+  h.controlState = null;
+  h.rebindInput.mockClear();
+  h.startInput.mockClear();
   h.geometryMatches.mockReset().mockReturnValue(true);
   h.windows.length = 0;
   h.source = null;
@@ -308,6 +314,26 @@ it.each([false, true])('only stops on added displays with privacy masks active=%
   vi.spyOn(PrivacyScreen.prototype, 'active', 'get').mockReturnValue(active);
   h.screenHandlers.get('display-added')({}, { id: 2 });
   expect(h.stop).toHaveBeenCalledTimes(active ? 1 : 0);
+});
+
+it('keeps the Windows viewer control grant through lock/unlock and does not invoke password setup', async () => {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    await h.deps.startInput('1'); // No saved credential / credential identity.
+    expect(h.startInput).toHaveBeenCalledWith('1');
+    h.controlState = { peer: 'viewer', controlling: true };
+    for (const event of ['lock-screen', 'unlock-screen']) h.powerHandlers.get(event)!();
+    expect(h.rebindInput).toHaveBeenCalledTimes(2);
+    expect(h.releaseControl).not.toHaveBeenCalled();
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.controlState.controlling).toBe(true);
+    h.controlState.controlling = false;
+    h.powerHandlers.get('lock-screen')!();
+    expect(h.rebindInput).toHaveBeenCalledTimes(2);
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
 });
 
 it.each(['resolution', 'restoreResolution'])(
@@ -702,6 +728,27 @@ it.each(['darwin', 'win32'])(
   },
 );
 
+it('keeps Windows native capture when the authorized service needs an update', async () => {
+  vi.stubGlobal('process', { ...process, platform: 'win32' });
+  const { readWindowsDesktopSupport } = await import('../windowsHost');
+  vi.mocked(readWindowsDesktopSupport).mockResolvedValue('updateRequired');
+  expect((await h.deps.capabilities()).cursorOverlay).toBe(true);
+  const pending = h.deps.offer(
+    { lease: h.lease, display: { id: '1' } },
+    'sdp',
+    undefined,
+    true,
+    'attempt',
+  );
+  h.handlers.get(DESKTOP_LOCAL.REGISTER)(event());
+  await flush();
+  const command = h.owner.send.mock.calls[0][1];
+  expect(command.cursorOverlay).toBe(true);
+  expect(command.nativeCapture).toBe(true);
+  h.handlers.get(DESKTOP_LOCAL.REPLY)(event(), command.id, 'answer');
+  await pending;
+});
+
 it('holds native video across a display change and resumes it on the new display', async () => {
   vi.stubGlobal('process', { ...process, platform: 'darwin' });
   expect((await h.deps.capabilities()).liveDisplaySwitch).toBe(true);
@@ -974,7 +1021,7 @@ it('authorizes channel requests exactly like the relay and only for small contro
   await flush();
   h.handlers.get(DESKTOP_LOCAL.REPLY)(event(), h.owner.send.mock.calls[0][1].id, 'answer');
   await pending;
-  h.controllerState = { peer: 'phone', controlling: true };
+  h.controlState = { peer: 'phone', controlling: true };
   h.controllerRequest.mockResolvedValue({ controlling: true });
   const channel = h.handlers.get(DESKTOP_LOCAL.CHANNEL_REQUEST);
   const control = { op: 'control', lease: h.lease, enabled: true };
@@ -1010,7 +1057,7 @@ it('authorizes channel requests exactly like the relay and only for small contro
     'PERMISSION_DENIED',
   );
   await expect(channel(event(), 'other', control)).rejects.toThrow('PERMISSION_DENIED');
-  h.controllerState = null;
+  h.controlState = null;
 });
 
 it('advertises native Wayland geometry to existing viewers without a 16:9 placeholder', async () => {

@@ -25,7 +25,10 @@ import {
   listPersonalVersions,
   personalVersionId,
   readOriginalVersion,
+  readPersonalVersion,
+  readPersonalVersionRecordForCleanup,
   readVersionJson,
+  sameVersionPath,
   selectedVersion,
   versionDirectory,
   versionsRoot,
@@ -33,6 +36,7 @@ import {
   withVersionStore,
   writeVersionJson,
 } from './versionStore.js';
+import { uninstallWindowsDesktopSupportFrom } from '../remote-desktop/windowsHost.js';
 import { cleanupPersonalVersions } from './personalVersionCleanup.js';
 
 let makeBusy: () => boolean = () => true;
@@ -142,6 +146,39 @@ export async function actCindyVersion(action: unknown, id: unknown): Promise<Cin
         }
         const directory = versionDirectory(profile, targetId);
         assertVersionDirectory(profile, directory);
+        // Packaged personal versions hash a UUID-specific helper path into an
+        // independent AUTO_START service and harden that runtime tree. Remove
+        // must uninstall through that helper before deleting the runtime, or
+        // the old SYSTEM service stays running and the hardened files cannot
+        // be deleted. Incomplete snapshots may have no version.json or may
+        // retain it after their executable/resources have been removed.
+        let personal: ReturnType<typeof readPersonalVersion> | null = null;
+        try {
+          personal = readPersonalVersion(profile, targetId);
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code !== 'unavailable' && code !== 'ENOENT') throw error;
+          // A missing executable can make the full record unreadable even though
+          // the resources still contain the installed service helper. Validate
+          // that durable record and resource path before attempting that helper.
+          try {
+            const record = readPersonalVersionRecordForCleanup(profile, targetId);
+            const resources = path.join(directory, record.resources);
+            if (
+              sameVersionPath(
+                fs.realpathSync(resources),
+                path.join(fs.realpathSync(directory), record.resources),
+              )
+            )
+              personal = record;
+          } catch (recordError) {
+            const recordCode = (recordError as { code?: string }).code;
+            if (recordCode !== 'unavailable' && recordCode !== 'ENOENT') throw recordError;
+          }
+        }
+        if (personal) {
+          await uninstallWindowsDesktopSupportFrom(path.join(directory, personal.resources));
+        }
         const runtime = path.join(directory, 'runtime');
         if (fs.existsSync(runtime)) {
           assertVersionDirectory(profile, runtime);

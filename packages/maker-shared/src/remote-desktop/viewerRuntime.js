@@ -1519,6 +1519,28 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     commandKeys.clear();
   }
   listen(document, "keydown", (e) => {
+    // Mobile WebKit can emit both a real Digit/Key keydown and a committed
+    // input event for the same soft-keyboard tap. The focused textarea owns
+    // printable text, IME, Backspace and Enter; only shortcuts/navigation
+    // should use the hardware-key path there.
+    if (
+      !config.desktop &&
+      keyboardEnabled &&
+      (e.target === keyboardInput ||
+        document.activeElement === keyboardInput) &&
+      (composing ||
+        e.isComposing ||
+        (!e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey &&
+          (e.key?.length === 1 ||
+            e.key === "Process" ||
+            e.key === "Dead" ||
+            /^(Key[A-Z]|Digit[0-9])$/.test(e.code) ||
+            e.code === "Backspace" ||
+            e.code === "Enter")))
+    )
+      return;
     if (config.desktop) {
       if (e.ctrlKey && e.altKey && e.code === "Escape") {
         e.preventDefault();

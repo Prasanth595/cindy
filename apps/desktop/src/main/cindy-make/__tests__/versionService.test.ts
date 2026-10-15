@@ -26,8 +26,18 @@ vi.mock('../versionStartup.js', () => ({
   isCindyVersionSwitching: () => h.switching,
   startVersionHandoff: h.handoff,
 }));
+const uninstall = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../remote-desktop/windowsHost.js', () => ({
+  uninstallWindowsDesktopSupportFrom: uninstall,
+}));
 import { actCindyVersion, configureCindyVersions, getCindyVersions } from '../versionService';
-import { versionsRoot, versionDirectory, writeVersionJson } from '../versionStore';
+import {
+  readVersionJson,
+  runnableBundlePaths,
+  versionsRoot,
+  versionDirectory,
+  writeVersionJson,
+} from '../versionStore';
 import { CindyMakeManager } from '../manager';
 const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const latestId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -228,6 +238,7 @@ describe('version management main boundary', () => {
     await expect(actCindyVersion('remove', id)).rejects.toThrow('busy');
     configureCindyVersions(() => false);
     await actCindyVersion('remove', id);
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
     await expect(access(path.join(directory, 'runtime'))).rejects.toThrow();
     await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
     await expect(access(path.join(h.profile, 'keep.db'))).resolves.toBeUndefined();
@@ -250,6 +261,93 @@ describe('version management main boundary', () => {
     h.currentId = latestId;
     expect((await getCindyVersions()).personalUpdateAvailable).toBe(false);
   });
+  it('removes an incomplete personal snapshot missing its executable after uninstalling its surviving helper', async () => {
+    await seedPersonal(id, 'a'.repeat(40));
+    setPersonal();
+    const directory = versionDirectory(h.profile, id);
+    const runtime = path.join(directory, 'runtime');
+    await rm(path.join(runtime, 'Cindy.exe'), { recursive: true });
+    await mkdir(path.join(runtime, 'resources', 'tools', 'remote-desktop'), { recursive: true });
+    await writeFile(
+      path.join(runtime, 'resources', 'tools', 'remote-desktop', 'cindy-windows-desktop-host.exe'),
+      'native helper',
+    );
+    await writeFile(path.join(h.profile, 'keep.db'), 'keep data');
+
+    await expect(actCindyVersion('remove', 'personal')).resolves.toMatchObject({
+      versions: [{ id: 'original' }],
+    });
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
+    await expect(access(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
+    await expect(access(path.join(h.profile, 'keep.db'))).resolves.toBeUndefined();
+    expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({
+      id: null,
+    });
+  });
+  it('removes an incomplete personal snapshot from another CPU architecture after uninstalling its surviving helper', async () => {
+    await seedPersonal(id, 'a'.repeat(40));
+    setPersonal();
+    const directory = versionDirectory(h.profile, id);
+    const recordFile = path.join(directory, 'version.json');
+    const record = readVersionJson<Record<string, unknown>>(recordFile)!;
+    record.arch = process.arch === 'x64' ? 'arm64' : 'x64';
+    writeVersionJson(recordFile, record);
+    const runtime = path.join(directory, 'runtime');
+    await rm(path.join(runtime, 'Cindy.exe'), { recursive: true });
+    await mkdir(path.join(runtime, 'resources', 'tools', 'remote-desktop'), { recursive: true });
+    await writeFile(
+      path.join(runtime, 'resources', 'tools', 'remote-desktop', 'cindy-windows-desktop-host.exe'),
+      'native helper',
+    );
+
+    await expect(actCindyVersion('remove', 'personal')).resolves.toMatchObject({
+      versions: [{ id: 'original' }],
+    });
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
+    await expect(access(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
+    expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({
+      id: null,
+    });
+  });
+  it('removes an incomplete personal snapshot missing its resources without running its helper', async () => {
+    await seedPersonal(id, 'a'.repeat(40));
+    setPersonal();
+    const directory = versionDirectory(h.profile, id);
+    const runtime = path.join(directory, 'runtime');
+    await rm(path.join(runtime, 'resources'), { recursive: true });
+    await writeFile(path.join(h.profile, 'keep.db'), 'keep data');
+
+    await expect(actCindyVersion('remove', 'personal')).resolves.toMatchObject({
+      versions: [{ id: 'original' }],
+    });
+
+    expect(uninstall).not.toHaveBeenCalled();
+    await expect(access(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
+    await expect(access(path.join(h.profile, 'keep.db'))).resolves.toBeUndefined();
+    expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({
+      id: null,
+    });
+  });
+  it.each(['ENOENT', 'EACCES'])(
+    'retains the personal snapshot when service removal fails with %s',
+    async (code) => {
+      await seedPersonal(id, 'a'.repeat(40));
+      setPersonal();
+      const directory = versionDirectory(h.profile, id);
+      uninstall.mockRejectedValueOnce(Object.assign(new Error('Service removal failed'), { code }));
+
+      await expect(actCindyVersion('remove', 'personal')).rejects.toThrow('unavailable');
+
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
+      await expect(access(path.join(directory, 'runtime', 'Cindy.exe'))).resolves.toBeUndefined();
+      expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({ id });
+    },
+  );
   it.each(['personal', id])(
     'switches %s to the current personal slot, including old completion UUIDs',
     async (target) => {
@@ -264,5 +362,36 @@ describe('version management main boundary', () => {
     writeVersionJson(path.join(versionsRoot(h.profile), 'personal.json'), { id: null });
     await expect(actCindyVersion('switch', id)).rejects.toThrow('unavailable');
     expect(h.handoff).not.toHaveBeenCalled();
+  });
+  it('uninstalls the version-scoped lock-screen service before deleting a personal snapshot', async () => {
+    setPersonal();
+    const directory = versionDirectory(h.profile, id);
+    const runtimeName = process.platform === 'darwin' ? 'Cindy.app' : 'Cindy';
+    const runtime = path.join(directory, 'runtime', runtimeName);
+    const { resources, executable } = runnableBundlePaths(runtime, 'Cindy');
+    await mkdir(path.dirname(executable), { recursive: true });
+    await mkdir(resources, { recursive: true });
+    await writeFile(executable, 'executable');
+    await writeFile(path.join(resources, 'app.asar'), 'application');
+    writeVersionJson(path.join(directory, 'version.json'), {
+      protocol: 1,
+      id,
+      profile: { userData: h.profile, region: 'global', appName: 'Cindy', passive: false },
+      title: 'personal',
+      commit: 'a'.repeat(40),
+      builtAt: '2026-09-17T20:00:00.000+08:00',
+      platform: process.platform,
+      arch: process.arch,
+      executable: path.relative(directory, executable),
+      resources: path.relative(directory, resources),
+      executableHash: 'a'.repeat(64),
+      applicationHash: 'b'.repeat(64),
+      migrationHash: 'c'.repeat(64),
+    });
+    writeVersionJson(path.join(versionsRoot(h.profile), 'selected.json'), { id: 'original' });
+    await actCindyVersion('remove', id);
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(resources);
+    await expect(access(path.join(directory, 'runtime'))).rejects.toThrow();
+    await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
   });
 });
