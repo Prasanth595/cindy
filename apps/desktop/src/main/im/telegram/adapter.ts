@@ -129,6 +129,13 @@ export function buildTelegramAdapter(
     // DM(无 speaker)不挂, owner 私聊保持全速。
     turnPermissionPolicyFor: (event) => {
       if (!event.speaker) return undefined;
+      // 伙伴自有 bot(2026-10-16 Chris 裁决): 伙伴设置里的权限档是唯一开关。主人触发
+      // 的轮次不另挂策略; 成员 / 外部用户触发的轮次只在破坏性动作上要主人确认。
+      if (companion) {
+        return event.speaker.isOwner
+          ? undefined
+          : createTelegramGuestTurnPermissionPolicy(event.messageId, false);
+      }
       const policy = createTelegramGuestTurnPermissionPolicy(event.messageId, event.speaker.isOwner);
       if (event.speaker.isOwner) ownerGroupTurnPolicies.add(policy);
       return policy;
@@ -137,8 +144,11 @@ export function buildTelegramAdapter(
     // 冒泡到 host，逐轮强确认策略无法兑现；owner 触发时取缔策略，避免 provider
     // 启动前报不支持。非 owner 仍保留策略并 fail-closed，不能借同一群任务的
     // Full access 直接驱动工具。其它权限档与群上下文隔离都不受影响。
+    // 伙伴自有 bot: 完全访问是主人对这个伙伴的明确授权, 三种 Agent 在该档下都
+    // 无法兑现逐轮策略, 成员触发的轮次同样取缔策略而不是拒跑 —— 要成员动手前
+    // 必须确认, 把伙伴设成 Auto 或 Ask。
     turnPolicyOptionalForMode: (mode, policy) =>
-      mode === 'bypassPermissions' && ownerGroupTurnPolicies.has(policy),
+      mode === 'bypassPermissions' && (companion || ownerGroupTurnPolicies.has(policy)),
     groupHistoryAccessFor: (event): GroupHistoryAccessScope => {
       const lane = decodeTelegramLaneUserId(event.senderId);
       const provider = `telegram-personal:${event.contextId}`;

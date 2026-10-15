@@ -341,6 +341,31 @@ describe('feishu group lane adapter hooks', () => {
     expect(adapter.turnPolicyOptionalForMode?.('acceptEdits', policy!)).toBe(false);
   });
 
+  it('伙伴自有 bot: 主人轮次不挂策略, 成员轮次只对破坏性动作强确认, 完全访问取缔策略', () => {
+    const teammate = buildFeishuAdapter(fakeIm, CONFIG, { companionBotId: 'bot-mimi' });
+    const ownerPolicy = teammate.turnPermissionPolicyFor?.(
+      groupEvent({ speaker: { id: 'ou_owner', name: 'Owner', isOwner: true } }),
+    );
+    const guestPolicy = teammate.turnPermissionPolicyFor?.(
+      groupEvent({ messageId: 'om_guest', speaker: { id: 'ou_guest', name: 'Guest', isOwner: false } }),
+    );
+
+    expect(ownerPolicy).toBeUndefined();
+    expect(guestPolicy).toMatchObject({
+      origin: { kind: 'im', channel: 'feishu', taskId: 'om_guest' },
+      autoReviewContext: { requesterAuthority: 'guest', source: 'group' },
+      confirmationSurface: 'channel',
+    });
+    // 与 Telegram 同一份破坏性词表: rm 要确认, 普通 Write 交给伙伴自己的权限档。
+    expect(guestPolicy!.forceConfirmToolCall('Bash', { command: 'rm -rf dist' })).toBe(true);
+    expect(guestPolicy!.forceConfirmToolCall('Write', { file_path: 'a.md', content: 'x' })).toBe(false);
+    // 个人 bot 的飞书群策略仍是「非只读即确认」, 不受影响。
+    const personal = adapter.turnPermissionPolicyFor?.(groupEvent());
+    expect(personal!.forceConfirmToolCall('Write', { file_path: 'a.md', content: 'x' })).toBe(true);
+    expect(teammate.turnPolicyOptionalForMode?.('bypassPermissions', guestPolicy!)).toBe(true);
+    expect(teammate.turnPolicyOptionalForMode?.('auto', guestPolicy!)).toBe(false);
+  });
+
   it('prepareAgentTurnText: 群 lane 拉历史拼上下文前缀(带时间标注), 剔除触发消息', async () => {
     fetchChatHistoryPage.mockResolvedValueOnce(
       historyPage([

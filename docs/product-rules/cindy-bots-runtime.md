@@ -55,8 +55,12 @@ bot），凭证直接填在伙伴设置「消息平台」页，这个机器人�
 每位外部用户的私聊各一条隐藏的渠道专线 Session（`role = 'channel'`，
 `route_key = 'im:<channel>:<botContextId>:g:<chatId>[:t:<threadId>]'` / `…:dm:<userId>`），与主任务共享 Profile
 与 Home，不进入任务列表、主时间线、历史列表与未读。连接对外开放：任何人给这个机器人发消息都是在和伙伴对话。
-伙伴决定身份，说话的人决定权限：主人轮次按伙伴权限档，外部用户与群成员按渠道的访客策略（逐轮强确认、
-命令只认主人），连接不扩大任何权限。同一伙伴所有渠道共享记忆，不设每群记忆隔离。伙伴被删除时连接一并
+伙伴决定身份，伙伴设置里的权限档是唯一开关（2026-10-16 Chris 裁决，取代个人 bot 那套按渠道各写一份的群
+护栏）：主人触发的轮次完全按伙伴权限档执行，不另挂逐轮策略；外部用户与群成员触发的轮次只在破坏性动作
+（删除类工具与 shell 命令、不透明写、Pi 装包、定时任务执行类操作，词表见 `im/shared/channelToolPolicy.ts`
+的 `channelForceConfirmToolCall`）上要主人确认，Telegram 与飞书同一口径；命令只认主人，群历史只查本群。
+伙伴设为「完全访问」时三种 Agent 都无法兑现逐轮策略，成员触发的轮次同样按完全访问直接执行而不是被拒
+跑——要成员动手前必须确认，把伙伴设成 Auto 或 Ask。连接不扩大任何权限。同一伙伴所有渠道共享记忆，不设每群记忆隔离。伙伴被删除时连接一并
 停掉、清凭证、归档专线。连接记录是账号级设置（`bot-im-connections.json`），不含凭证。
 实现见 `im/shared/botImConnectionStore.ts`（记录）、`im/shared/botImConnectionRuntime.ts`（实例生命周期）、
 `im/shared/imBotBindingRuntime.ts` 与 `im/shared/turnRunner.ts`（落点解析）、`localDb/ipc/bots.ts`（专线创建）；

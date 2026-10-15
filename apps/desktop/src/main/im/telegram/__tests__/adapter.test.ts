@@ -87,6 +87,35 @@ describe('Telegram group history access scope', () => {
     expect(adapter.turnPolicyOptionalForMode?.('ask', ownerPolicy!)).toBe(false);
   });
 
+  it('teammate bot: owner turns carry no policy, guest turns confirm destructive calls only, Full access wins', () => {
+    const teammate = buildTelegramAdapter({ getOwnerUserId: () => '123' } as never, {} as never, {
+      companionBotId: 'bot-mimi',
+    });
+    const ownerPolicy = teammate.turnPermissionPolicyFor?.({
+      messageId: 'm-owner',
+      speaker: { id: 'owner', name: 'Owner', isOwner: true },
+    } as unknown as IMMessageEvent);
+    const guestPolicy = teammate.turnPermissionPolicyFor?.({
+      messageId: 'm-guest',
+      speaker: { id: 'guest', name: 'Guest', isOwner: false },
+    } as unknown as IMMessageEvent);
+
+    expect(ownerPolicy).toBeUndefined();
+    expect(guestPolicy).toMatchObject({
+      origin: { kind: 'im', channel: 'telegram', taskId: 'm-guest' },
+      autoReviewContext: { requesterAuthority: 'guest', source: 'group' },
+      confirmationSurface: 'channel',
+    });
+    // Destructive list only: Bash rm is confirmed, a plain Write is left to the teammate's own mode.
+    expect(guestPolicy!.forceConfirmToolCall('Bash', { command: 'rm -rf dist' })).toBe(true);
+    expect(guestPolicy!.forceConfirmToolCall('Write', { file_path: 'a.md', content: 'x' })).toBe(false);
+    // The teammate's permission setting is the only switch: Full access drops the guest policy
+    // instead of rejecting the turn; Auto / Ask keep it.
+    expect(teammate.turnPolicyOptionalForMode?.('bypassPermissions', guestPolicy!)).toBe(true);
+    expect(teammate.turnPolicyOptionalForMode?.('auto', guestPolicy!)).toBe(false);
+    expect(teammate.turnPolicyOptionalForMode?.('ask', guestPolicy!)).toBe(false);
+  });
+
   it('does not attach a group confirmation policy to DMs', () => {
     const groupEvent = {
       messageId: 'm-policy',
