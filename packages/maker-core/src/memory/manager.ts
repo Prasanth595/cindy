@@ -99,7 +99,8 @@ export interface MakerMemoryManagerDeps {
   isOneShotRouteDisabled?: (agent: AgentKind) => Promise<boolean>;
   /**
    * memory_review 的一次性文本调用(host 注入)。返回 null / 空串 = 链上没产出,
-   * manager 回退 reviewAgent 的默认 oneShot 路由(既有行为不变)。
+   * manager 不再回退 reviewAgent 的默认 oneShot 路由(那是本账号无权模型的死路),
+   * 直接以可读原因 fail-closed。
    *
    * desktop 注入的实现走共享辅助模型链: review agent 的默认模型(claude-haiku-4-5)
    * 在部分供应商网关上不在账号可用清单内(403 user_model_access_denied), 硬编码
@@ -928,11 +929,11 @@ export class MakerMemoryManager {
       summary,
     ].join('\n');
 
-    // host 注入的自定义一次性调用优先(共享辅助模型链); 返回 null / 空串 =
-    // 链上没产出, 回退 review agent 默认路由。agent 查找推迟到这里: 注入链能
-    // 产出时, 未注册 review agent 不该再把 review 硬拦死。
-    const custom = this.deps.reviewOneShot
-      ? await this.deps.reviewOneShot(prompt, REVIEW_ONE_SHOT_OPTS)
+    // host 注入的自定义一次性调用优先(共享辅助模型链); agent 查找推迟到这里: 注入链
+    // 缺席时未注册 review agent 才该把 review 硬拦死。
+    const injectedChain = this.deps.reviewOneShot !== undefined;
+    const custom = injectedChain
+      ? await this.deps.reviewOneShot!(prompt, REVIEW_ONE_SHOT_OPTS)
       : null;
     // 辅助链的 await 可能横跨账号边界(链因此中止并返回 null)。此时旧 owner 的
     // dump 一条都不能再发: 回落默认路由会读新账号凭据, 而末尾复核只能挡住返回,
@@ -940,6 +941,14 @@ export class MakerMemoryManager {
     this.assertScopeUnchanged(scopeAtEntry);
     if (custom && custom.trim().length > 0) {
       return { suggestions: custom };
+    }
+    // 宿主注入了链 = 用户显式指定了本次审查的路由。链上没产出时再回退 review agent
+    // 默认路由, 只会落到硬编码的 claude-haiku-4-5, 对没有 Anthropic 权限的账号必然
+    // 403, 用户看到的是与真实原因无关的死路(2026-10-14 实测)。改成一句可读原因。
+    if (injectedChain) {
+      throw new Error(
+        'runReview: auxiliary model chain produced no text; configure an available auxiliary model in Settings',
+      );
     }
     const agent = this.deps.agents[reviewAgentKind];
     if (!agent) {

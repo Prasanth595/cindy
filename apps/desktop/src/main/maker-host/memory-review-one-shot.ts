@@ -1,8 +1,9 @@
 /**
  * apps/desktop/src/main/maker-host/memory-review-one-shot.ts
  *
- * memory_review 的一次性文本调用 — 走共享辅助模型链, 链上没产出返回 null, 让
- * MakerMemoryManager 回退 review agent 的默认 oneShot 路由(既有行为)。
+ * memory_review 的一次性文本调用 — 走共享辅助模型链。链上没产出返回 null, 让
+ * MakerMemoryManager 以可读原因 fail-closed(不再回退 review agent 的默认
+ * oneShot 路由: 那是本账号无权模型, 只会给出与真实原因无关的 403)。
  *
  * 为什么需要这条链: review agent (claude-code) 的默认模型 claude-haiku-4-5 在部分
  * 供应商网关上不在账号可用清单内, 硬编码默认路由会让 memory_review 对这些账号
@@ -44,7 +45,7 @@ export type MemoryReviewOneShot = (
 
 /**
  * 生成注入给 MakerMemoryManager 的 reviewOneShot。任何「链上没产出」都返回 null
- * (不抛), 由 manager 决定回退默认路由 — 保持 fail-closed 的决策点在 manager 一侧。
+ * (不抛), 由 manager 决定如何收口 — 保持 fail-closed 的决策点在 manager 一侧。
  */
 export function createMemoryReviewOneShot(
   deps: Partial<MemoryReviewOneShotDeps> = {},

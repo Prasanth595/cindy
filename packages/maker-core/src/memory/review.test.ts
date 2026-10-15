@@ -4,7 +4,8 @@
  * 背景: review agent (claude-code) 的默认模型 claude-haiku-4-5 在部分供应商网关上
  * 不在账号可用清单内(403 user_model_access_denied), 硬编码默认路由会让 memory_review
  * 对这些账号 100% 失败。manager 新增可选 reviewOneShot 注入点: host(desktop)走共享
- * 辅助模型链; 链上没产出(null/空串)必须回退 review agent 默认路由, 不改变既有宿主行为。
+ * 辅助模型链; 注入后链上没产出(null/空串)必须 fail-closed 成可读原因, 不得回退
+ * 默认路由。未注入的宿主保持既有默认路由行为不变。
  */
 
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -88,25 +89,25 @@ describe('MakerMemoryManager.runReview · reviewOneShot 注入与回退', () => 
     }
   });
 
-  it('falls back to the review agent default route when the chain yields null', async () => {
+  it('fails closed with a readable reason when the chain yields null', async () => {
     const agent = fakeAgent('default-route suggestion');
     const manager = await makeManager({ 'claude-code': agent }, async () => null);
     try {
-      const result = await manager.runReview(WORKDIR);
-      expect(result.suggestions).toBe('default-route suggestion');
-      expect(agent.oneShot).toHaveBeenCalledTimes(1);
+      // 回退默认路由只会落到硬编码 claude-haiku-4-5, 对无 Anthropic 权限的账号
+      // 必然 403(2026-10-14 实测) — 不得回退, 必须点名真实原因。
+      await expect(manager.runReview(WORKDIR)).rejects.toThrow(/auxiliary model chain produced no text/);
+      expect(agent.oneShot).not.toHaveBeenCalled();
     } finally {
       manager.dispose();
     }
   });
 
-  it('falls back when the chain yields only whitespace', async () => {
+  it('fails closed when the chain yields only whitespace', async () => {
     const agent = fakeAgent('default-route suggestion');
     const manager = await makeManager({ 'claude-code': agent }, async () => '   \n  ');
     try {
-      const result = await manager.runReview(WORKDIR);
-      expect(result.suggestions).toBe('default-route suggestion');
-      expect(agent.oneShot).toHaveBeenCalledTimes(1);
+      await expect(manager.runReview(WORKDIR)).rejects.toThrow(/auxiliary model chain produced no text/);
+      expect(agent.oneShot).not.toHaveBeenCalled();
     } finally {
       manager.dispose();
     }
