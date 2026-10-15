@@ -213,4 +213,131 @@ describe('Codex standalone Images API', () => {
     await expect(c.generateImage(params)).rejects.toThrow('login required');
     expect(fetch).not.toHaveBeenCalled();
   });
+  it.each(['account', 'token'])('blocks a change to only the %s before dispatch', async (field) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const first = { accessToken: 'token-a', accountId: 'account-a' };
+    const second =
+      field === 'account'
+        ? { ...first, accountId: 'account-b' }
+        : { ...first, accessToken: 'token-b' };
+    const getAuth = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    await expect(channel(fetch, { getAuth }).generateImage(params)).rejects.toThrow(
+      'account changed',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('stops before reading credentials when the model is disabled initially', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const getAuth = vi.fn();
+    const beforeDispatch = () => {
+      throw new Error('disabled initially');
+    };
+    await expect(channel(fetch, { getAuth, beforeDispatch }).generateImage(params)).rejects.toThrow(
+      'disabled initially',
+    );
+    expect(getAuth).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('stops when cancelled during credential preparation, before fetch', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const getAuth = vi.fn(async () => {
+      controller.abort();
+      return { accessToken: 'test-token', accountId: 'test-account' };
+    });
+    await expect(
+      channel(fetch, { getAuth }).generateImage({ ...params, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not deliver a complete response if cancellation arrives while parsing it', async () => {
+    const controller = new AbortController();
+    const res = response();
+    vi.spyOn(res, 'json').mockImplementation(async () => {
+      controller.abort();
+      return { data: [{ b64_json: image }] };
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => res);
+    await expect(
+      channel(fetch).generateImage({ ...params, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unreadable and non-image references before sending any edit', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-image-invalid-'));
+    directories.push(dir);
+    const invalid = path.join(dir, 'not-an-image.png');
+    await fs.writeFile(invalid, '<html>not an image</html>');
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const c = channel(fetch);
+    await expect(c.editImage({ ...params, imagePaths: [invalid] })).rejects.toThrow('格式不支持');
+    await expect(
+      c.editImage({ ...params, imagePaths: [path.join(dir, 'missing.png')] }),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty edit input and wrong provider before obtaining credentials', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const getAuth = vi.fn();
+    const c = channel(fetch, { getAuth });
+    await expect(c.editImage({ ...params, imagePaths: [] })).rejects.toThrow('reference image');
+    for (const model of ['xd/gpt-image-2', 'openai/', 'openai/  ']) {
+      await expect(c.generateImage({ ...params, model })).rejects.toThrow('不支持模型');
+    }
+    expect(getAuth).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('omits an absent account header and gives independent requests distinct turn IDs', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => response());
+    const c = channel(fetch, {
+      getAuth: async () => ({ accessToken: 'test-token', accountId: null }),
+    });
+    await c.generateImage(params);
+    await c.generateImage(params);
+    const headers = fetch.mock.calls.map((call) => call[1]?.headers as Record<string, string>);
+    expect(headers[0]).not.toHaveProperty('ChatGPT-Account-Id');
+    expect(headers[0]['x-codex-image-turn-id']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(headers[0]['x-codex-image-turn-id']).not.toBe(headers[1]['x-codex-image-turn-id']);
+  });
+
+  it('retains multiple complete images and rejects a partially valid batch', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      response({ data: [{ b64_json: image }, { b64_json: image }] }),
+    );
+    expect((await channel(fetch).generateImage(params)).data).toHaveLength(2);
+    const incomplete = vi.fn<typeof globalThis.fetch>(async () =>
+      response({ data: [{ b64_json: image }, null] }),
+    );
+    await expect(channel(incomplete).generateImage(params)).rejects.toThrow('没有图片');
+    expect(incomplete).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'plain-text upstream failure',
+    '',
+    JSON.stringify({ error: { message: 'x'.repeat(1000) } }),
+  ])('bounds error detail without an auth callback (%#)', async (body) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body, { status: 502 }));
+    const error = await channel(fetch)
+      .generateImage(params)
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('HTTP 502');
+    expect((error as Error).message.length).toBeLessThan(550);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the HTTP failure if reading its body fails', async () => {
+    const res = new Response('', { status: 503 });
+    vi.spyOn(res, 'text').mockRejectedValue(new Error('body interrupted'));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => res);
+    await expect(channel(fetch).generateImage(params)).rejects.toThrow('HTTP 503');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
