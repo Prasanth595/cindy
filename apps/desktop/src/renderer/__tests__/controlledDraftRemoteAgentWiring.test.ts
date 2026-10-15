@@ -38,7 +38,7 @@ describe('草稿页:建到被控电脑的任务也能选第三台电脑', () => 
     expect(agentBlock).toContain('(!effectiveDeviceLinkDeviceId || deviceLinkRemoteAgentSupported)');
   });
 
-  it('候选电脑去掉被控电脑本身,不并入本机收到的分享;不支持时不传', () => {
+  it('候选电脑去掉被控电脑本身,并入同账号可用分享;不支持时不传', () => {
     const start = draftRouteSource.indexOf('const remoteAgentDevices = useMemo(() => {');
     expect(start).toBeGreaterThan(0);
     const branchEnd = draftRouteSource.indexOf(': undefined;', start);
@@ -46,7 +46,8 @@ describe('草稿页:建到被控电脑的任务也能选第三台电脑', () => 
     expect(controlledBranch).toContain('if (effectiveDeviceLinkDeviceId) {');
     expect(controlledBranch).toContain('selectControlledTaskAgentDevices({');
     expect(controlledBranch).toContain('controlledDeviceId: effectiveDeviceLinkDeviceId,');
-    expect(controlledBranch).not.toContain('providerShareDevices');
+    expect(controlledBranch).toContain('shareDevices: providerShareDevices,');
+    expect(draftRouteSource).toContain('useProviderShareAgentDevices([effectiveAgentDeviceId], effectiveDeviceLinkDeviceId)');
   });
 
   it('选了另一台电脑时模型目录跟着那台', () => {

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
-import { BOT_GROUP_LANE_SESSION, findSessionNotificationSession } from '@/lib/sessionEventNotification';
+import { BOT_GROUP_LANE_SESSION, findSessionNotificationSession, isBackgroundTaskNotificationTarget } from '@/lib/sessionEventNotification';
 import { isReviewSessionSource } from '../../../../shared/sessionSource';
 
 const source = ts.createSourceFile('sidebar.tsx', readFileSync(resolve(
@@ -44,6 +44,7 @@ type NotificationSession = {
   source: string;
   status?: 'active' | 'archived';
   deviceLinkDeviceId?: string;
+  hiddenAt?: string | null;
 };
 const send = vi.fn();
 const reviewTarget = vi.fn(async () => false);
@@ -67,6 +68,7 @@ function dispatcher(local: NotificationSession[], remote: NotificationSession[] 
     projectDraftSessionTitle,
     sendSessionEventNotification: send,
     isReviewSessionNotificationTarget: reviewTarget,
+    isBackgroundTaskNotificationTarget,
     botOwnedSessionNotificationTitle: botTitle,
     BOT_GROUP_LANE_SESSION,
     t: () => 'Unnamed task',
@@ -105,6 +107,14 @@ describe('disabled Make notification dispatch', () => {
     expect(send).toHaveBeenCalledWith('remote', 'Remote task', 'needs-reply', {
       remoteDevice: true, remoteDeviceId: 'host',
     });
+  });
+
+  it('suppresses plugin background tasks and notifies again once they are shown', () => {
+    dispatcher([{ id: 'bg', title: 'Background', source: 'plugin', hiddenAt: '2026-10-15T00:00:00.000Z' }])('bg', 'done');
+    expect(send).not.toHaveBeenCalled();
+    expect(reviewTarget).not.toHaveBeenCalled();
+    dispatcher([{ id: 'bg', title: 'Background', source: 'plugin', hiddenAt: null }])('bg', 'done');
+    expect(send).toHaveBeenCalledWith('bg', 'Background', 'done', { remoteDevice: false, remoteDeviceId: undefined });
   });
 
   it('preserves the unknown-task fallback', async () => {

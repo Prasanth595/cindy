@@ -40,17 +40,27 @@ export function findSessionNotificationSession<T extends { id: string; title?: u
 export const BOT_GROUP_LANE_SESSION: unique symbol = Symbol('bot-group-lane-session');
 
 /**
- * /review Reviewer tasks are omitted from the ordinary task list and never notify
- * on their own: the result is published to the source task, which is where the
- * user (and the source agent) continues.
+ * Tasks omitted from the ordinary task list never notify on their own:
+ * - /review Reviewer tasks publish their result to the source task, which is where
+ *   the user (and the source agent) continues;
+ * - plugin background tasks (`hiddenAt`) are disclosed on the plugin detail page
+ *   and notify again once the user shows them in the task list.
  */
 export async function isReviewSessionNotificationTarget(sessionId: string): Promise<boolean> {
   const row = await window.electronAPI.localDb.sessions.get(sessionId).catch(() => null);
   return (
     !!row
     && typeof row === 'object'
-    && isReviewSessionSource((row as { source?: unknown }).source)
+    && (
+      isReviewSessionSource((row as { source?: unknown }).source)
+      || isBackgroundTaskNotificationTarget(row as { hiddenAt?: unknown })
+    )
   );
+}
+
+/** Plugin background task: no OS / in-app completion notification while hidden. */
+export function isBackgroundTaskNotificationTarget(session: { hiddenAt?: unknown } | null | undefined): boolean {
+  return typeof session?.hiddenAt === 'string' && session.hiddenAt.length > 0;
 }
 
 /** Resolve Bot-owned tasks omitted from the ordinary desktop session list. */

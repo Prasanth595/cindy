@@ -108,7 +108,21 @@ export interface PluginTaskServiceDeps {
     requestedRoute: PluginTaskRoute | undefined,
     onPersistenceStarted: () => void,
     callId?: string,
+    /** Background task: the Session row is inserted with hidden_at set (never flashes into lists). */
+    hidden?: boolean,
   ): Promise<void>;
+  /**
+   * Re-checks `agent.hiddenTasks` (with tasks) for this plugin; throws PERMISSION_DENIED.
+   * The pipe checks first; the service re-checks behind its receipt queue.
+   */
+  assertHiddenTasksAllowed?(pluginId: string): void;
+  /**
+   * Shared Host writer for `sessions.hidden_at` (plugin setHidden and the detail-page reveal).
+   * `assertAllowed` runs synchronously right before the write.
+   */
+  setHidden?(taskId: string, hidden: boolean, assertAllowed: () => void): Promise<void>;
+  /** Uninstall fallback: reveal this plugin's background tasks before ownership is revoked. */
+  revealPluginTasks?(pluginId: string): Promise<void>;
   setModel?(taskId: string, route: PluginTaskRoute, assertCurrent: () => Promise<void>): Promise<{ status: string }>;
   readSession(taskId: string): Promise<PluginTaskView | null>;
   assertTeamPlanUnstarted?(taskId: string): Promise<void>;
@@ -153,6 +167,10 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     operations = Promise.all([operations, result.catch(() => undefined)]).then(() => undefined);
     return result;
   };
+  const assertHiddenTasksAllowed = (pluginId: string) => {
+    if (!deps.assertHiddenTasksAllowed) fail('PERMISSION_DENIED', 'Background tasks are unavailable');
+    deps.assertHiddenTasksAllowed!(pluginId);
+  };
   const assertDispatch = async (pluginId: string, taskId: string) => {
     const view = await ownTask(pluginId, taskId);
     deps.assertAuthorized(pluginId);
@@ -178,7 +196,7 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
       return fail('TASK_NOT_FOUND', 'Task not found');
     deps.assertCurrent();
     deps.assertAuthorized(pluginId);
-    return view;
+    return { ...view, hidden: view.hidden === true };
   };
   const ownRun = async (pluginId: string, runId: string) => {
     const row = await deps.store.get(runId);
@@ -240,6 +258,10 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     completeOperation,
     /** Retain receipts and user content, but never reuse an uninstalled installation's ownership. */
     withUninstall: (pluginId: string, remove: () => Promise<void>) => exclusive(async () => {
+      // Background tasks must never outlive the detail page that discloses them.
+      // Reveal first: a failure aborts the uninstall like a failed revocation.
+      await deps.revealPluginTasks?.(pluginId);
+      deps.assertCurrent();
       await deps.store.revokePlugin(pluginId);
       deps.assertCurrent();
       await remove();
@@ -254,11 +276,15 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     },
     create: (
       pluginId: string,
-      request: { requestKey: string; title: string; route?: PluginTaskRoute; isolatedWorkspace?: boolean; callId?: string },
+      request: { requestKey: string; title: string; route?: PluginTaskRoute; isolatedWorkspace?: boolean; callId?: string; hidden?: boolean },
     ) =>
       exclusive(async () => {
         deps.assertAuthorized(pluginId);
-        const input = [request.title, request.route ?? null, ...(request.isolatedWorkspace ? [true] : []), ...(request.callId ? [{ callId: request.callId }] : [])];
+        const hidden = request.hidden === true;
+        if (hidden) assertHiddenTasksAllowed(pluginId);
+        // hidden:false is the default; only a background request changes the fingerprint,
+        // so existing visible receipts replay unchanged.
+        const input = [request.title, request.route ?? null, ...(request.isolatedWorkspace ? [true] : []), ...(request.callId ? [{ callId: request.callId }] : []), ...(hidden ? [{ hidden: true }] : [])];
         const fingerprint = hash(input);
         let row = replay(
           await deps.store.find(pluginId, 'create', '', request.requestKey),
@@ -286,8 +312,16 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
         let persistenceStarted = false;
         try {
           deps.assertCurrent();
-          await deps.createSession(pluginId, taskId, request.title, route, request.isolatedWorkspace, request.route,
-            () => { persistenceStarted = true; }, request.callId);
+          const onPersistenceStarted = () => { persistenceStarted = true; };
+          // Visible creation keeps its original call shape; only background tasks add the flag.
+          if (hidden) {
+            assertHiddenTasksAllowed(pluginId);
+            await deps.createSession(pluginId, taskId, request.title, route, request.isolatedWorkspace, request.route,
+              onPersistenceStarted, request.callId, true);
+          } else {
+            await deps.createSession(pluginId, taskId, request.title, route, request.isolatedWorkspace, request.route,
+              onPersistenceStarted, request.callId);
+          }
         } catch (error) {
           // Once INSERT starts, even an error is ambiguous. Never free that key
           // or infer failure from a subsequently deleted/filtered Session.
@@ -335,6 +369,20 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
       return { ...result, task: await ownTask(pluginId, request.taskId) };
     }),
     get: (pluginId: string, taskId: string) => exclusive(() => ownTask(pluginId, taskId)),
+    /** Background/visible switch for this plugin's own local task; Workers and remote tasks are not plugin tasks. */
+    setHidden: (pluginId: string, request: { taskId: string; hidden: boolean }) => exclusive(async () => {
+      assertHiddenTasksAllowed(pluginId);
+      const task = await ownTask(pluginId, request.taskId);
+      if (!deps.setHidden) return fail('HOST_NOT_READY', 'Task visibility service is not ready');
+      if (task.hidden !== request.hidden) {
+        await deps.setHidden(request.taskId, request.hidden, () => {
+          deps.assertCurrent();
+          deps.assertAuthorized(pluginId);
+          assertHiddenTasksAllowed(pluginId);
+        });
+      }
+      return ownTask(pluginId, request.taskId);
+    }),
     list: (pluginId: string, after = '', limit = 50) =>
       exclusive(async () => {
         deps.assertAuthorized(pluginId);
@@ -344,7 +392,7 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
           // The store projects valid create payloads as empty to avoid loading plans.
           if (row.payload !== '' && !ownsTaskReceipt(row, pluginId)) continue;
           const view = await deps.readSession(row.id);
-          if (view && view.status !== 'deleted') items.push(view);
+          if (view && view.status !== 'deleted') items.push({ ...view, hidden: view.hidden === true });
         }
         return { items, nextCursor: rows.length === limit ? rows.at(-1)!.id : null };
       }),

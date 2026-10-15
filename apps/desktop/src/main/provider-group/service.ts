@@ -1730,12 +1730,13 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           const route = source.routeOf(pick.member, localProviderId);
           await deps.writeBinding(sessionId, bindingFor(source, binding.providerId, pick.member.key));
           try {
+            // 写绑定、交接期间用户停止(停止这次发送或「全部停止」)：交接在改动之前停下，留在原电脑。
             await deps.switchAgentLocation(sessionId, {
               agentKind: row.agentKind,
               model: row.model,
               providerId: route.providerId,
               agentDeviceId: route.agentDeviceId,
-            }, { beforeSend: true });
+            }, { beforeSend: true, isCurrent });
             deps.log.info('provider group: moved a task before sending', {
               sessionId,
               from: current.key,

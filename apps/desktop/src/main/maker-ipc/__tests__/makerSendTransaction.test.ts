@@ -14,6 +14,7 @@ import {
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
+import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { describe, expect, it, vi } from 'vitest';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../autoReviewUserIntent.js';
 import {
@@ -29,12 +30,22 @@ import {
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 import { CredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 import path from 'node:path';
+import os from 'node:os';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { createWorkingDirectoryRecovery } from '../workingDirectoryRecovery';
 import { createPreflightHarness, filesystemError } from './helpers/workingDirectoryPreflightHarness';
 import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
 import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
+import {
+  applyPendingAgentSwitchIfIdle,
+  createPendingAgentSwitchRegistry,
+  performSessionAgentSwitch,
+  type AgentSwitchSessionRow,
+  type MakerSessionAgentSwitchHandlerDeps,
+} from '../sessionAgentSwitchHandler';
 
 function uiLanguageNote(): string {
   return buildUiLanguageErrorNote(getResolvedMainLocale());
@@ -3331,6 +3342,148 @@ describe('session-agent-switch handoff injection', () => {
     expect(result).toMatchObject({ accepted: false, reason: 'cancelled-before-dispatch' });
     expect(getSession).not.toHaveBeenCalled();
     expect(bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  const remoteLead = JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'developer' });
+  const pendingGuardCases = [
+    { name: 'lead', orcaRole: 'lead', orcaRemoteLead: null, blocks: true },
+    { name: 'worker', orcaRole: 'worker', orcaRemoteLead: null, blocks: true },
+    { name: 'execution-device worker', orcaRole: null, orcaRemoteLead: remoteLead, blocks: true },
+    { name: 'released execution-device worker', orcaRole: null, orcaRemoteLead: JSON.stringify({ ...JSON.parse(remoteLead), releasedAt: 1 }), blocks: true },
+    { name: 'ordinary task with Orca input label', orcaRole: null, orcaRemoteLead: null, blocks: false },
+    { name: 'invalid remote binding', orcaRole: null, orcaRemoteLead: '{}', blocks: false },
+  ].flatMap((identity) => [true, false].flatMap((hasLive) =>
+    (['claude-code', 'codex', 'pi'] as const).map((targetAgentKind) => ({ ...identity, hasLive, targetAgentKind })),
+  ));
+  it.each(pendingGuardCases)(
+    'queue/resume retained switch guard: $name live=$hasLive target=$targetAgentKind',
+    async ({ orcaRole, orcaRemoteLead, blocks, hasLive, targetAgentKind }) => {
+      const register = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+      const start = register.indexOf('    applyPendingAgentSwitch: async (sessionId, options) => {');
+      expect(start).toBeGreaterThan(0);
+      const adapter = register.slice(start, register.indexOf('    prepareUnhealthySession:', start));
+      const pending = new Map([['session-1', { targetAgentKind }]]);
+      const beforeSend = vi.fn(async () => undefined);
+      const bindings = {
+        // UI-origin cross-engine preparation can return without clearing the intent.
+        applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
+        agentSwitchDeps: {}, agentSwitchPending: pending,
+        getSessionRowSnapshotStrict: vi.fn(async () => ({ orcaRole, orcaRemoteLead })),
+        parseOrcaRemoteLead,
+        throwIpcError: (code: string, message: string) => { throw Object.assign(new Error(message), { code }); },
+        providerGroupService: { beforeSend }, agentInputCoordinatorHolder: null,
+        log: { warn: vi.fn() },
+      };
+      const compiled = ts.transpileModule(`return ({${adapter}}).applyPendingAgentSwitch;`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      const applyPendingAgentSwitch = new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+      const { deps, session } = createDeps({ applyPendingAgentSwitch });
+      if (!hasLive) vi.mocked(deps.getSession).mockReturnValue(undefined);
+      const transaction = createMakerSendTransaction(deps);
+      const send = () => transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'Queued Orca input' },
+        { agentKind: 'codex', workingDir: 'C:/repo' }, {
+          origin: { kind: 'orca', senderLabel: 'Lead', displayText: 'Queued Orca input' },
+          persistUserMessage: { clientId: 'queued-orca-1', content: 'Queued Orca input' },
+        });
+      if (!blocks) {
+        await send();
+        expect(pending.has('session-1')).toBe(true);
+        expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+        return;
+      }
+      await expect(send()).rejects.toThrow('Agent switch is still pending');
+      expect(pending.has('session-1')).toBe(true);
+      expect(deps.getSession).not.toHaveBeenCalled();
+      expect(deps.bootstrapSession).not.toHaveBeenCalled();
+      expect(deps.createDbMessage).not.toHaveBeenCalled();
+      expect(session.send).not.toHaveBeenCalled();
+      expect(beforeSend).not.toHaveBeenCalled();
+      // Once recovery finishes, the very same queue/resume transaction can send.
+      bindings.applyPendingAgentSwitchIfIdle.mockImplementation(async () => { pending.clear(); });
+      await send();
+      expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+      expect(bindings.getSessionRowSnapshotStrict).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  const orcaAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const orcaSwitchCases = (['lead', 'worker'] as const).flatMap((role) =>
+    orcaAgentKinds.flatMap((from) => orcaAgentKinds.filter((to) => to !== from).flatMap((to) =>
+      [true, false].map((hasLive) => ({ role, from, to, hasLive, name: `${role}: ${from} → ${to}, live=${hasLive}` })),
+    )),
+  );
+  it.each(orcaSwitchCases)('Orca queued/cold-resume $name applies the real switch before sending with role and history', async ({ role, from, to, hasLive }) => {
+    const pendingSwitches = createPendingAgentSwitchRegistry();
+    const previous = createSession({ agentKind: from });
+    let current: MakerSendTransactionSession | undefined = hasLive ? previous : undefined;
+    let row: AgentSwitchSessionRow = {
+      id: 'session-1', agentKind: from === 'claude-code' ? 'cc' : from, model: 'source-model',
+      providerId: 'source-provider', status: 'active', remoteHostId: null,
+      orcaRole: role, sdkSessionId: 'source-native-session',
+    };
+    let handoff: string | null = null;
+    const switchDeps: MakerSessionAgentSwitchHandlerDeps = {
+      pendingSwitches,
+      getSessionRow: async () => ({ ...row }),
+      getLiveSession: () => current,
+      closeSession: vi.fn(async () => { current = undefined; }),
+      listMessagesForHandoff: async () => [{ role: 'user', content: 'Existing collaboration progress', createdAt: 1 }],
+      applyAgentSwitchToDb: vi.fn(async (_id, patch) => {
+        row = { ...row, ...patch, providerId: patch.providerId ?? null, sdkSessionId: patch.sdkSessionId ?? null };
+      }),
+      setSessionProvider: vi.fn(),
+      insertBoundaryMessage: vi.fn(async () => 'switch-boundary'),
+      applyResumeFallbackAtomically: vi.fn(async () => { throw new Error('fresh target has no parked session to recover'); }),
+      setPendingHandoff: (_id, text) => { handoff = text; },
+      bootstrapSwitchedSession: vi.fn(async () => { throw new Error('queue must bootstrap through the send transaction'); }),
+      withCloseSuppressed: (_id, fn) => fn(),
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    await performSessionAgentSwitch(switchDeps, {
+      sessionId: 'session-1', targetAgentKind: to, model: 'target-model', providerId: 'target-provider',
+    });
+    expect(switchDeps.closeSession).not.toHaveBeenCalled();
+    const { deps } = createDeps({
+      getSession: () => current,
+      applyPendingAgentSwitch: (id, options) => applyPendingAgentSwitchIfIdle(switchDeps, id, options),
+      reconcileCreateOptsWithDb: vi.fn(async (_id, opts) => {
+        opts.agentKind = row.agentKind === 'cc' ? 'claude-code' : row.agentKind as AgentKind;
+        opts.model = row.model ?? undefined;
+        opts.providerId = row.providerId;
+        opts.resumeSessionId = row.sdkSessionId ?? undefined;
+      }),
+      synthesizeOrcaVendorOptionsFromDb: vi.fn(async (_id, opts) => { opts.orcaRole = role; return true; }),
+      bootstrapSession: vi.fn(async (opts) => {
+        current = createSession({ agentKind: opts.agentKind as AgentKind, workDir: opts.workingDir });
+        return { session: current, didInjectOrcaInstructions: true, didInjectProjectContext: false };
+      }),
+      peekPendingHandoff: async () => handoff,
+      consumePendingHandoff: vi.fn(() => { handoff = null; }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    const origin = { kind: 'orca', senderLabel: role === 'worker' ? 'Lead' : 'Worker', displayText: 'Continue collaboration' } as const;
+    const result = await transaction.sendToAgentAccepted('session-1', { type: 'user', content: origin.displayText },
+      { agentKind: from, workingDir: path.join(os.tmpdir(), 'orca-switch-fixture'), resumeSessionId: 'source-native-session' }, {
+        origin, persistUserMessage: { clientId: 'orca-queued-input', content: origin.displayText },
+      });
+    expect(result).toMatchObject({ accepted: true });
+    expect(pendingSwitches.get('session-1')).toBeUndefined();
+    expect(previous.send).not.toHaveBeenCalled();
+    expect(current?.agentKind).toBe(to);
+    expect(row.orcaRole).toBe(role);
+    expect(deps.bootstrapSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      agentKind: to, model: 'target-model', providerId: 'target-provider', resumeSessionId: undefined, orcaRole: role,
+    }));
+    expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('session-1', role);
+    const sent = vi.mocked(current!.send).mock.calls[0];
+    expect((sent[0] as UserMessage).content).toContain('Existing collaboration progress');
+    expect((sent[0] as UserMessage).content).toContain(origin.displayText);
+    expect(sent[1]?.origin).toEqual(origin);
+    expect(deps.createDbMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      content: origin.displayText, agentMeta: expect.objectContaining({ origin }),
+    }), undefined);
+    expect(deps.consumePendingHandoff).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(handoff).toBeNull();
   });
 
   it('排队 drain 端到端:切换在派发时刻落实(关旧引擎)→ createOpts 按 DB 对齐新引擎 → 交接注入新引擎首条 + scheduler origin 透传', async () => {

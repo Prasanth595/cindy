@@ -80,6 +80,7 @@ import { assertRendererSessionSourceAllowed } from './sessionSourceGuard.js';
 import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
 import { notifyAgentIslandSessionPatch } from '../agentIslandSessionPatch';
+import { ensureHiddenSessionRegistryLoaded } from '../hiddenSessionRegistry.js';
 import { noteSessionClearBoundary } from '../../messagePersistBroadcaster';
 import {
   ackSessionTurnEndedDurable,
@@ -1257,6 +1258,8 @@ export function registerSessionIpc(
       // sidebar-card-mode: 首次 list(db 必然 ready)触发一次置顶摘要回填——
       // 老置顶会话没有 turn-done 触发点。模块内部 once 守卫 + 串行 + swallow。
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
+      // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
+      void ensureHiddenSessionRegistryLoaded();
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
@@ -1301,7 +1304,12 @@ export function registerSessionIpc(
         // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
         // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。/review 审查任务
         // 只从来源任务的审查卡片打开,不进普通任务列表(用量历史仍包含)。
-        const sourceFilter = inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES);
+        // 插件后台隐藏任务(hidden_at 非空)同样不进任务列表,只在插件详情页「后台任务」
+        // 查看与接手;手机/远控经 device-link 调同一 handler,口径一致。
+        const sourceFilter = and(
+          inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES),
+          isNull(sessions.hiddenAt),
+        );
         const statusWhere = () =>
           statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
         const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere(), ids ? inArray(sessions.id, ids) : undefined), cap, before);

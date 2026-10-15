@@ -682,7 +682,24 @@ describe('maker:event hot path ordering', () => {
     expect(resetSource).toContain('silentStopAutoResumeGuard.noteSessionReset(sessionId);');
     expect(resetSource).toContain('interruptedTurnAutoResumeGuard.noteSessionReset(sessionId);');
     expect(resetSource).toContain('autoResumeBookkeeping.teardown(sessionId);');
-    expect(source).toContain('noteSessionReset: resetAutomaticRecoveryForExplicitStop,');
+    // 「全部停止」：先撤自动续跑与退避簿记，再作废供应商组进行中的换电脑(#5880，provider-groups.md §6.1)。
+    const stopAllStart = source.indexOf(
+      'registerStopSessionBackgroundTasksHandler(createElectronIpcHandlerRegistry(), {',
+    );
+    const stopAllEnd = source.indexOf('\n  });', stopAllStart);
+    const stopAllSource = source.slice(stopAllStart, stopAllEnd);
+    const stopAllResetStart = stopAllSource.indexOf('    noteSessionReset: (sessionId) => {');
+    const stopAllResetSource = stopAllSource.slice(
+      stopAllResetStart,
+      stopAllSource.indexOf('\n    notifyGoalStop:', stopAllResetStart),
+    );
+    expect(stopAllStart).toBeGreaterThanOrEqual(0);
+    expect(stopAllResetStart).toBeGreaterThanOrEqual(0);
+    expectOrder(
+      stopAllResetSource,
+      'resetAutomaticRecoveryForExplicitStop(sessionId);',
+      'providerGroupService?.noteUserAction(sessionId);',
+    );
     expect(source).toContain('resetAutomaticRecoveryForExplicitStop(sid);');
 
     expectOrder(

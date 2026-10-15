@@ -145,7 +145,10 @@ describe('LoginPage browser redirect waiting state', () => {
     expect(screen.queryByRole('button', { name: 'sidebar.accountSwitcher.title' })).toBeNull();
   });
 
-  it('disables local entry while a login request is pending', () => {
+  // Back and Retry both reconnect to the login service. Disabling the escape
+  // entry for that wait trapped users on this screen whenever the service was
+  // unreachable, so it only follows the local-session switch itself.
+  it('keeps the error-step local entry available while a login request is pending', () => {
     loginHook.value = {
       isLoading: true,
       errorCode: null,
@@ -158,6 +161,6 @@ describe('LoginPage browser redirect waiting state', () => {
 
     expect(
       (screen.getByRole('button', { name: 'login.localModeEntry' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    ).toBe(false);
   });
 });

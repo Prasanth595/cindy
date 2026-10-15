@@ -100,6 +100,7 @@ import {
   botOwnedSessionNotificationTitle,
   findSessionNotificationSession,
   isReviewSessionNotificationTarget,
+  isBackgroundTaskNotificationTarget,
   sendSessionEventNotification,
 } from '@/lib/sessionEventNotification';
 import { isReviewSessionSource } from '../../../shared/sessionSource';
@@ -1175,6 +1176,8 @@ function ExpandedView({
       if (session && isOrcaWorkerSession(session)) return;
       // /review 审查任务不单独通知:结果回到来源任务,由来源任务的轮次收尾通知。
       if (session && isReviewSessionSource(session.source)) return;
+      // 插件后台隐藏任务不单独通知;显示到任务列表后恢复。
+      if (session && isBackgroundTaskNotificationTarget(session)) return;
       if (session) {
         const title = projectDraftSessionTitle(session.title, unnamedLabelRef.current);
         sendSessionEventNotification(sessionId, title, kind, {

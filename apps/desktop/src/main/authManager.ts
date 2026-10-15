@@ -358,14 +358,10 @@ const stableOwnerPostCommitCoordinator = new StableOwnerPostCommitCoordinator({
   warn: (message, meta) => log.warn(message, meta),
 });
 
-function requestStableOwnerPostCommit(reason: string): void {
+/** Queue optional owner-scoped provisioning without holding authentication or the app shell. */
+export function requestStableOwnerPostCommit(reason: string): void {
   if (isPassiveSharedUserDataInstance()) return;
   void stableOwnerPostCommitCoordinator.ensure(reason);
-}
-
-async function ensureStableOwnerPostCommit(reason: string): Promise<void> {
-  if (isPassiveSharedUserDataInstance()) return;
-  await stableOwnerPostCommitCoordinator.ensure(reason);
 }
 
 // ── Module-level state ──────────────────────────────────────────────────────
@@ -2622,7 +2618,7 @@ async function recoverAccountFreeOwnerAtStartup(
         commitActiveAppSession(mode);
       }
     }
-    await ensureStableOwnerPostCommit('owner-already-stable');
+    requestStableOwnerPostCommit('owner-already-stable');
     return;
   }
   await withAccountFreeOwnerCommit({
@@ -2862,11 +2858,6 @@ export function setProjectionRepairTeardown(teardown: ProjectionRepairTeardown |
 /** Register the owner-scoped work that must settle after the durable boundary is stable. */
 export function setStableOwnerPostCommitTask(task: StableOwnerPostCommitTask | null): void {
   stableOwnerPostCommitCoordinator.setTask(task);
-}
-
-/** Pull-based startup fallback for an owner that was already stable before registration. */
-export async function ensureStableOwnerPostCommitTasks(reason: string): Promise<void> {
-  await ensureStableOwnerPostCommit(reason);
 }
 
 // ── User-level API key sync ─────────────────────────────────────────────────
@@ -4538,7 +4529,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       commitCloudAppSession(currentUser.id);
     }
     await migrateLocalProviderBindingsAfterCloudCommit(currentUser.id);
-    await ensureStableOwnerPostCommit('auth-initialize-stable-cloud');
+    requestStableOwnerPostCommit('auth-initialize-stable-cloud');
     return snapshotAuthState();
   }
 

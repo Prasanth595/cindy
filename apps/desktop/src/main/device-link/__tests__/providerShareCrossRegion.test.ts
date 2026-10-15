@@ -85,13 +85,14 @@ import {
   crossRegionSendRequest,
   getCrossRegionReceived,
   getConfirmedCrossRegionReceivedRegions,
+  isCrossRegionReceivedReady,
   refreshProviderShareCrossRegion,
   isCrossRegionProviderShareTarget,
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
 } from '../providerShareCrossRegion';
 import { providerShareHostPeer } from '@cindy/device-link';
-import { getReceivedSharesSnapshot, refreshReceivedShares, startProviderShareGuest, stopProviderShareGuest } from '../providerShareGuest';
+import { getReceivedSharesSnapshot, isReceivedSharesReady, refreshReceivedShares, startProviderShareGuest, stopProviderShareGuest } from '../providerShareGuest';
 
 const share = {
   shareId: 'share-x', memberId: 'member-x', providerId: 'openai', providerLabel: 'OpenAI', hostDeviceId: 'owner-pc',
@@ -336,6 +337,7 @@ describe('cross-region provider share', () => {
     await refreshReceivedShares('test');
     await refreshProviderShareCrossRegion('global');
     const snapshot = getReceivedSharesSnapshot();
+    expect(isReceivedSharesReady()).toBe(false);
     expect(snapshot.confirmedRegions).toEqual([failed === 'local' ? 'global' : 'cn']);
     expect(snapshot.received.map((item) => item.shareId)).toEqual([failed === 'local' ? 'share-x' : 'share-local']);
   });
@@ -354,6 +356,37 @@ describe('cross-region provider share', () => {
     stopProviderShareCrossRegion();
     expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
   });
+
+  it.each([true, false])('waits for a marked peer region before reporting received shares ready (empty=%s)', async (empty) => {
+    expect(isCrossRegionReceivedReady()).toBe(true);
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    expect(isReceivedSharesReady()).toBe(false);
+    await refreshReceivedShares('test');
+    expect(isReceivedSharesReady()).toBe(true);
+    expect(state.calls).toEqual([]);
+    stopProviderShareGuest();
+
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    const session = deferred<unknown>();
+    state.responses.set('/session', session.promise);
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
+    expect(isCrossRegionReceivedReady()).toBe(false);
+    expect(isReceivedSharesReady()).toBe(false);
+    session.resolve({
+      credential: empty ? null : CREDENTIAL,
+      expiresAt: empty ? null : new Date(Date.now() + 86_400_000).toISOString(),
+      shares: empty ? [] : [share],
+    });
+    await refreshProviderShareCrossRegion('global');
+    expect(isCrossRegionReceivedReady()).toBe(true);
+    expect(isReceivedSharesReady()).toBe(true);
+    expect(getReceivedSharesSnapshot().received.map((item) => item.shareId))
+      .toEqual(empty ? ['share-local'] : ['share-local', 'share-x']);
+  });
+
   it('only accepts the two official regions', async () => {
     await expect(crossRegionOfIntent({ invitation: TOKEN, server: LOCAL }, LOCAL)).resolves.toBeNull();
     await expect(crossRegionOfIntent({ invitation: TOKEN, server: PEER }, LOCAL)).resolves.toBe('global');

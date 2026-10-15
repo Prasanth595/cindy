@@ -85,6 +85,7 @@ import {
   createPluginLogicalIdentity,
   findInstalledGhostByIdentity,
   findInstalledGhostByInstanceId,
+  resolveInstalledGhost,
 } from '../../../shared/pluginIdentity';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 import { shouldOpenTextLightboxForOrigin } from '@/lib/filePreview';
@@ -809,9 +810,17 @@ export function AgentActionRow({
       (namespace === null || (typeof namespace === 'string' && isValidPluginNamespace(namespace)))
       ? createPluginLogicalIdentity(namespace, gid)
       : null;
+    // 裸 ID 与 main 侧一样按唯一逻辑身份解析；实例键才按物理键精确查找。
+    const bareIdResult = namespace === undefined && isValidGhostId(gid)
+      ? resolveInstalledGhost(installedGhosts, gid)
+      : null;
     const hit = identity
       ? findInstalledGhostByIdentity(installedGhosts, identity)
-      : namespace === undefined ? findInstalledGhostByInstanceId(installedGhosts, gid) : undefined;
+      : bareIdResult?.status === 'unique'
+        ? bareIdResult.ghost
+        : namespace === undefined && !isValidGhostId(gid)
+          ? findInstalledGhostByInstanceId(installedGhosts, gid)
+          : undefined;
     return {
       name: hit?.manifest.name ?? (gid || 'ghost'),
       tool: typeof inp.tool === 'string' ? inp.tool : '',

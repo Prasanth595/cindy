@@ -1,29 +1,41 @@
 {
   "cindy-window": {
-    "delivery": "bundled",
+    "delivery": "cdn",
     "sha256": "10d72d8ab0f39a5ceec6f8746396c36bb6d7dd345ac18af209069678a90d010d",
     "bytes": 6091872,
     "width": 2304,
     "height": 1440,
     "fps": 24,
-    "duration": 12.041666666666666
+    "duration": 12.041666666666666,
+    "image": {
+      "sha256": "bfbb37f4a710e110d39596943bc5d68dfaf88d6989c1bc4e5adfbb2e48612d00",
+      "bytes": 1101332
+    }
   },
   "cindy-studio": {
-    "delivery": "bundled",
+    "delivery": "cdn",
     "sha256": "b33f9b527584ae8c8b085536a0823a346e4879fa845e62e5ac41ae1b7b0097b1",
     "bytes": 3606656,
     "width": 2304,
     "height": 1440,
     "fps": 24,
-    "duration": 12.041666666666666
+    "duration": 12.041666666666666,
+    "image": {
+      "sha256": "7d2af2acb2df6b7fcbb40030299b3518c8de81e138f638b95ca563521f374319",
+      "bytes": 1649522
+    }
   },
   "cindy-dream": {
-    "delivery": "bundled",
+    "delivery": "cdn",
     "sha256": "de9e0dc2235310bdbee30f1bf951d94ce8299b18ba674463df407b76bb162def",
     "bytes": 6312719,
     "width": 2304,
     "height": 1440,
     "fps": 24,
-    "duration": 12.041666666666666
+    "duration": 12.041666666666666,
+    "image": {
+      "sha256": "2a2043b9207c7dfaaed5951b567eba1eb24aeb192c3eb78a3c0ee9a46a732361",
+      "bytes": 1790734
+    }
   }
 }

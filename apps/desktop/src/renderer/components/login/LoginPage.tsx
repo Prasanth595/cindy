@@ -186,9 +186,14 @@ export function LoginPage({
    * 未勾选时先弹协议弹窗,同意后才进主界面。调用方一律用
    * `requireConsent(..., { deferConsentPersist: true })` 包裹:同意记录由**本函数**
    * 在会话切过去之后落,不能由 requireConsent 提前落(竞态原因见那里的注释)。
+   *
+   * 这里**不看 isLoading**:error 步的逃生入口在「返回 / 重试」请求进行中也必须可用,
+   * 否则登录服务连不上时每点一次就把用户锁到超时。main 的 enter-local 会推进
+   * loginFlowEpoch,在途登录动作迟到时以 AUTH_FLOW_SUPERSEDED 作废,不会回写状态。
+   * 面板内入口仍由按钮 disabled 与协议门的 busy 复验挡住 in-flight。
    */
   const openLocalMode = async () => {
-    if (isLoading || localModePendingRef.current || !enterLocalMode) return;
+    if (localModePendingRef.current || !enterLocalMode) return;
     markLocalModeTransition(true);
     try {
       // 必须走 AuthContext.enterLocalMode():它调同一条 IPC,并用返回值立刻改
@@ -234,6 +239,8 @@ export function LoginPage({
     stamp: ConsentStamp;
     // true = 同意时不在弹窗回调里落同意记录,由 action 自己落(见 requireConsent)
     deferConsentPersist: boolean;
+    // true = 续接复验不看 in-flight(见 requireConsent)
+    allowDuringLoginRequest: boolean;
   } | null>(null);
 
   /* 把「用户明示同意《隐私政策》」这个事实落到 main。
@@ -261,8 +268,15 @@ export function LoginPage({
    *   会当场发出 device_login),等 enter-local 完成再广播 allowed:false 已经晚了。
    *   于是「未登录态不上报」这条承诺在正式包上会被破一个窗口。让 openLocalMode
    *   先切会话、再落同意即可关掉这个窗口(此时 allowed 恒为 false)。
+   * @param options.allowDuringLoginRequest
+   *   true = 登录请求进行中也可过门续接。只有 error 步逃生入口用它:进入未登录状态
+   *   不是登录派发,「in-flight 时不追加并发派发」那条复验不适用;照常复验的话,
+   *   用户在重试转圈时点「跳过登录」并同意协议,动作会被静默丢弃。
    */
-  const requireConsent = (action: () => void, options?: { deferConsentPersist?: boolean }) => {
+  const requireConsent = (
+    action: () => void,
+    options?: { deferConsentPersist?: boolean; allowDuringLoginRequest?: boolean },
+  ) => {
     /* 会话切换进行中一律不接新的过门动作(codex 审查 P1 第二条,#907)。
        `auth:enter-local` 的 handler 要 await waitForSessionInvalidation() 与
        teardownAuthAccountBoundary(),这是一个真实可观测的窗口;窗口里 isLoading
@@ -274,6 +288,7 @@ export function LoginPage({
        杜绝了 persist 与派发 —— 会话都在切了,任何登录动作本来就该作废。 */
     if (localModePendingRef.current) return;
     const deferConsentPersist = options?.deferConsentPersist === true;
+    const allowDuringLoginRequest = options?.allowDuringLoginRequest === true;
     if (consentAccepted) {
       if (!deferConsentPersist) persistPrivacyConsent();
       action();
@@ -281,8 +296,13 @@ export function LoginPage({
     }
     pendingConsentAction.current = {
       action,
-      stamp: makeConsentStamp(loginState?.step, isLoading, loginState?.step === 'completed'),
+      stamp: makeConsentStamp(
+        loginState?.step,
+        allowDuringLoginRequest ? false : isLoading,
+        loginState?.step === 'completed',
+      ),
       deferConsentPersist,
+      allowDuringLoginRequest,
     };
     setConsentDialogOpen(true);
   };
@@ -299,7 +319,11 @@ export function LoginPage({
     if (!pending?.deferConsentPersist) persistPrivacyConsent();
     if (!pending) return;
     // 复验:弹窗期间 auth 状态被异步推进(登录完成/步骤切换/in-flight)则丢弃动作
-    const current = makeConsentStamp(loginState?.step, isLoading, loginState?.step === 'completed');
+    const current = makeConsentStamp(
+      loginState?.step,
+      pending.allowDuringLoginRequest ? false : isLoading,
+      loginState?.step === 'completed',
+    );
     if (canResumePendingConsent(pending.stamp, current)) pending.action();
   };
   const dismissConsent = () => {
@@ -335,6 +359,8 @@ export function LoginPage({
   }, [reportLoginPanelMounted, reportLoginPanelUnmounted]);
   // 「跳过登录」常驻入口在面板内(identifier 视图 SKIP_ENTRY 文字链);footer 仅保留
   // error 步的逃生入口——登录服务不可用时用户仍能进入本地模式(既有产品保证)。
+  // 「返回 / 重试」都要重新连登录服务,连不上时会一直等到超时;逃生入口不随这次
+  // 等待禁用,否则用户每点一次返回就被锁在这一屏。
   const showLocalModeFooter =
     !isAddAccount && loginState?.step === 'error' && !credentialStoreFailed;
   // 面板底部预留恒取全流程最大值(footer 124;协议行 48 被其覆盖):step 切换时
@@ -1395,9 +1421,14 @@ export function LoginPage({
         <button
           data-testid="login-local-mode"
           type="button"
-          disabled={localModePending || isLoading}
+          disabled={localModePending}
           // error 步逃生入口与面板内文字按钮同口径:过协议门(2026-07-29 拍板)
-          onClick={() => requireConsent(() => void openLocalMode(), { deferConsentPersist: true })}
+          onClick={() =>
+            requireConsent(() => void openLocalMode(), {
+              deferConsentPersist: true,
+              allowDuringLoginRequest: true,
+            })
+          }
           aria-describedby="login-local-mode-description"
           className="select-none rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-6 py-2.5 text-13 font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)] disabled:cursor-not-allowed disabled:opacity-60"
           style={{ minHeight: 40 }}

@@ -404,6 +404,35 @@ describe('consent guard(未勾选拦截个人登录链路)', () => {
     expect(screen.getByTestId('login-local-mode')).toBeTruthy();
   });
 
+  /* 「返回 / 重试」都要重新连登录服务,连不上时会一直等到超时。逃生入口若随这次
+     等待禁用,用户每点一次返回就被锁在 error 屏(0.1.104 实测:点返回 → 请稍候 →
+     超时 → 留在原地,期间跳过登录也点不了)。 */
+  it('error 步重连登录服务期间逃生入口仍可用;同意后不因 in-flight 被丢弃', async () => {
+    mount(errorState, { errorCode: 'NETWORK_ERROR', isLoading: true });
+    const escape = screen.getByTestId('login-local-mode') as HTMLButtonElement;
+    expect(escape.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(escape);
+    });
+    expect(screen.getByTestId('login-consent-dialog')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('login-consent-agree'));
+    });
+    expect(enterLocalMode).toHaveBeenCalledTimes(1);
+    expect(enterLocalMode.mock.invocationCallOrder[0]).toBeLessThan(
+      acceptPrivacyConsent.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('面板内「跳过登录」在登录请求进行中仍禁用(只放开 error 步逃生入口)', async () => {
+    mount(await identifierState('providers:cn-social'), { isLoading: true });
+    const entry = screen.getByTestId('login-skip-entry') as HTMLButtonElement;
+    expect(entry.disabled).toBe(true);
+    fireEvent.click(entry);
+    expect(screen.queryByTestId('login-consent-dialog')).toBeNull();
+    expect(enterLocalMode).not.toHaveBeenCalled();
+  });
+
   it('旧游客圆钮入口已删除(圆钮行不再渲染 login-social-guest)', async () => {
     mount(await identifierState('providers:cn-social'));
     expect(screen.queryByTestId('login-social-guest')).toBeNull();

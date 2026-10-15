@@ -109,7 +109,7 @@ async function seedSourceResources() {
   }), { skillSourceDir: path.join(root, from) });
   fs.mkdirSync(path.join(scope.dir, 'ghost-kv'));
   fs.writeFileSync(path.join(scope.dir, 'ghost-kv', from + '.json'), JSON.stringify({ private: 'org' }));
-  cindy.writeGhostCindyOverride(from, 'image.generate', 'org-model');
+  cindy.writeGhostCindyInflightLimit(from, 3);
   errand.writePluginTaskConfig(from, { permissionMode: 'auto', workingDir: '/org-workspace' });
   errand.writeGhostErrandSessionId(from, 'org-session');
   errand.writeGhostErrandSessionId(from, 'org-keyed-session', 'draft');
@@ -136,7 +136,7 @@ it('installs a same-name root without changing legacy data or UI references', as
   expect(fs.readFileSync(path.join(scope.dir, 'ghosts-install-state', from + '.json'), 'utf8')).toBe(receiptBefore);
   expect(fs.readFileSync(path.join(scope.dir, 'ghost-kv', from + '.json'), 'utf8')).toBe(JSON.stringify({ private: 'org' }));
   expect(fs.existsSync(path.join(scope.dir, 'ghost-kv', '_root__' + from + '.json'))).toBe(false);
-  expect(cindy.readGhostCindyOverrides(from)['image.generate']).toBe('org-model');
+  expect(cindy.readGhostCindyInflightLimit(from)).toBe(3);
   expect(errand.readPluginTaskConfig(from)).toMatchObject({ permissionMode: 'auto', workingDir: '/org-workspace' });
   expect(errand.readGhostErrandSessionId(from, 'draft')).toBe('org-keyed-session');
   expect(unread.readGhostUnread(from)).toMatchObject({ summary: 'org activity', at: 100 });

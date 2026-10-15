@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
@@ -46,6 +46,62 @@ describe('chat interaction controls', () => {
     render(<ChatThreadPanel group={{ ...group, archived: true }} rootId="root" onClose={vi.fn()} />);
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
+  });
+
+  it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
+    const observed: Array<{ target: Element; callback: () => void }> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe(target: Element) { observed.push({ target, callback: this.callback }); }
+      disconnect() {}
+    });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    let width = 400, contentHeight = 48;
+    Object.defineProperty(input, 'clientWidth', { configurable: true, get: () => width });
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => contentHeight });
+    fireEvent.change(input, { target: { value: 'A long reply that wraps onto several lines' } });
+    expect(input.style.height).toBe('48px');
+    const refit = observed.find(entry => entry.target === input)!.callback;
+    width = 200; contentHeight = 96;
+    refit();
+    expect(input.style.height).toBe('96px');
+    contentHeight = 120;
+    refit();
+    expect(input.style.height).toBe('96px');
+  });
+
+  it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
+    let settle: (value: { ok: true; messageId: string }) => void = () => {};
+    mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'In flight' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    expect(document.activeElement).toBe(input);
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(sendButton);
+    expect(mocks.reply).toHaveBeenCalledOnce();
+    settle({ ok: true, messageId: 'reply' });
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(input.readOnly).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('keeps the caret in the reply when the send button is pressed with the mouse', () => {
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') });
+    fireEvent.change(input, { target: { value: 'Clicked send' } });
+    input.focus();
+    // A cancelled mousedown is what stops Chromium moving focus onto the button.
+    expect(fireEvent.mouseDown(sendButton)).toBe(false);
+    input.blur();
+    expect(fireEvent.mouseDown(sendButton)).toBe(true);
   });
 
   it('closes from the square button surface outside the icon and retains the standard focus treatment', () => {
@@ -213,5 +269,215 @@ describe('chat interaction controls', () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(''));
     expect(mocks.reply.mock.calls[0][0].clientId).toBe(mocks.reply.mock.calls[1][0].clientId);
     expect(mocks.reply.mock.calls[0][0].rootId).toBe('root');
+  });
+
+  describe('thread @ picker', () => {
+    const namesakes = [
+      { botId: 'ann-chris', name: 'Ann', status: 'active' },
+      { botId: 'ann-dana', name: 'Ann', status: 'active' },
+      { botId: 'bo', name: 'Bo', status: 'active' },
+      { botId: 'gone', name: 'Annie', status: 'left' },
+    ];
+    const renderThread = () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      render(<ChatThreadPanel group={{ ...group, members: namesakes } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      expect(document.activeElement).toBe(input);
+      return input;
+    };
+    const type = (input: HTMLTextAreaElement, value: string, caret = value.length) =>
+      fireEvent.change(input, { target: { value, selectionStart: caret, selectionEnd: caret } });
+    const labels = () => screen.queryAllByRole('option').map(option => option.textContent);
+
+    it('opens on @ with the main composer candidates, filters, and picks a namesake by keyboard', async () => {
+      const input = renderThread();
+      type(input, '@');
+      const listbox = screen.getByRole('listbox', { name: 'bots.groupChat.mention.label' });
+      // Everyone first, then active teammates only (the departed one is not offered).
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Ann', 'Ann', 'Bo']);
+      expect(input.getAttribute('aria-controls')).toBe(listbox.id);
+      expect(input.getAttribute('aria-activedescendant')).toBe(screen.getAllByRole('option')[0]!.id);
+      type(input, '@an');
+      expect(labels()).toEqual(['Ann', 'Ann']);
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(screen.getAllByRole('option')[1]!.getAttribute('aria-selected')).toBe('true');
+      // Enter picks while the list is open; it never sends.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input.value).toBe('@Ann ');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(mocks.reply).not.toHaveBeenCalled();
+      type(input, '@Ann 看一下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0]).toMatchObject({ groupId: 'room', rootId: 'root', text: '@Ann 看一下', mentions: { all: false, botIds: ['ann-dana'] } });
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('picks by mouse in the middle of a draft, supports several @ and Everyone', async () => {
+      const input = renderThread();
+      type(input, '请  帮忙', 1);
+      type(input, '请 @ 帮忙', 3);
+      const bo = screen.getAllByRole('option')[3]!;
+      // Pressing the option keeps focus in the input.
+      expect(fireEvent.mouseDown(bo)).toBe(false);
+      fireEvent.click(bo);
+      expect(input.value).toBe('请 @Bo 帮忙');
+      expect(input.selectionStart).toBe(6);
+      type(input, '请 @Bo @ 帮忙', 7);
+      fireEvent.click(screen.getAllByRole('option')[0]!);
+      expect(input.value).toBe('请 @Bo @bots.groupChat.mention.all 帮忙');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: true, botIds: ['bo'] });
+    });
+
+    it('Escape closes only the list for that @; IME keys neither pick nor send', () => {
+      const input = renderThread();
+      type(input, '@');
+      const composing = createEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+      fireEvent(input, composing);
+      expect(input.value).toBe('@');
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      const escape = createEvent.keyDown(input, { key: 'Escape' });
+      fireEvent(input, escape);
+      // The thread panel's own Esc-to-close sees a handled key and stays open.
+      expect(escape.defaultPrevented).toBe(true);
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@A');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // Enter with the list closed sends as usual; a fresh @ opens it again.
+      type(input, '@A @');
+      expect(labels()).toHaveLength(4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the list closed while a reply is sending, so the read-only text cannot change', async () => {
+      const input = renderThread();
+      let settle: (value: { ok: true; messageId: string }) => void = () => {};
+      mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+      type(input, '@B');
+      expect(labels()).toContain('Bo');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(input.readOnly).toBe(true));
+      expect(screen.queryByRole('listbox')).toBeNull();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      expect(input.value).toBe('@B');
+      settle({ ok: true, messageId: 'reply' });
+      await waitFor(() => expect(input.value).toBe(''));
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('treats an e-mail address as text and forgets a pick once its name is edited', async () => {
+      const input = renderThread();
+      type(input, 'mail a@');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      type(input, '@An ', 3);
+      type(input, '@Ann ', 4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      // A retyped name is a manual @: both namesakes, as in the main composer.
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['ann-chris', 'ann-dana'] });
+    });
+
+    it('moves the caret past the space when a re-pick leaves the text unchanged, and does not pull it back later', () => {
+      const input = renderThread();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.selectionStart).toBe(5);
+      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      expect(input.selectionStart).toBe(5);
+      type(input, '@Ann ok', 7);
+      expect(input.selectionStart).toBe(7);
+    });
+
+    it('does not let a pick push the reply past its 8000-character limit', () => {
+      const input = renderThread();
+      const near = `${'x'.repeat(7996)} @`;
+      type(input, near);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      // `@Bo ` would make 8000 + 1 characters: the pick is refused, as typing past maxLength is.
+      expect(input.value).toBe(near);
+      type(input, `${'x'.repeat(7995)} @`);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      expect(input.value).toBe(`${'x'.repeat(7995)} @Bo `);
+      expect(input.value).toHaveLength(8000);
+    });
+
+    it('names only the picked companion whose name is a Thread 「所有人」 alias', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'all-bot', name: 'all', status: 'active' }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@al');
+      fireEvent.click(screen.getAllByRole('option').find(option => option.textContent === 'all')!);
+      expect(input.value).toBe('@all ');
+      // Typing after the pick keeps it.
+      type(input, '@all 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['all-bot'] });
+    });
+
+    it('never offers or resolves the current user, as on mobile', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'me', name: 'Dash', status: 'active', isSelf: true }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@');
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Bo']);
+      type(input, '@Da');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // A typed own name is plain text, not a target the host would drop to nothing.
+      type(input, '@Dash @Bo 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['bo'] });
+    });
+
+    // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
+    // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
+    // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving
+    // against the live roster fails the roster-refresh test above.
+    const pickAt = (input: HTMLTextAreaElement, caret: number, option: number) => {
+      // As a user would: click back into the box with the caret after the name, then pick.
+      act(() => { input.blur(); input.setSelectionRange(caret, caret); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[option]!);
+    };
+    it.each([
+      { row: 're-pick the other namesake', draft: (input: HTMLTextAreaElement) => { type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); },
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris'], second: ['ann-dana'], reused: false },
+      { row: 're-pick the same teammate for an earlier mention', draft: (input: HTMLTextAreaElement) => {
+        type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); type(input, '@Ann @', 6); fireEvent.click(screen.getAllByRole('option')[3]!);
+      }, edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 0), text: '@Ann @Bo ', first: ['ann-chris', 'bo'], second: ['ann-chris', 'bo'], reused: true },
+      { row: 'pick the same teammate for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Bo '),
+        // The typed query `Bo` also matches the untranslated 所有人 key here, so Bo is the second option.
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 3, 1), text: '@Bo ', first: ['bo'], second: ['bo'], reused: true },
+      { row: 'pick one namesake for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Ann '),
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris', 'ann-dana'], second: ['ann-dana'], reused: false },
+    ])('retries a failed reply after "$row" with reused clientId = $reused', async ({ draft, edit, text, first, second, reused }) => {
+      const input = renderThread();
+      mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
+      draft(input);
+      expect(input.value).toBe(text);
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await screen.findByRole('alert');
+      edit(input);
+      expect(input.value).toBe(text);
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+      const [one, two] = mocks.reply.mock.calls.map(call => call[0]);
+      expect(one.mentions).toEqual({ all: false, botIds: first });
+      expect(two.mentions).toEqual({ all: false, botIds: second });
+      expect(two.clientId === one.clientId).toBe(reused);
+    });
   });
 });

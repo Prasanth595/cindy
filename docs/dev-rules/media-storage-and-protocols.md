@@ -75,14 +75,24 @@
   不可再生用户内容，必须沿用现有 pin／引用流程转为不可按缓存回收。
 - 零引用入仓只适用于已有草稿或生成结果提交链路。新增零引用窗口时，必须证明内容在消息
   落库前不会被回收，并用测试覆盖成功、失败、取消和重试。
-- 三款官方壁纸的高清 WebP 与 2304×1440 MP4 均随包，清单标记 `delivery: bundled`，
-  不访问 OSS/CDN，不重复打包低清视频。未来显式标记 `delivery: cdn` 的条目才启用
-  客户端级 CDN 下载，按清单字节数与 SHA-256 校验后入仓；当前清单保留引用，
-  下载成功后回收已不在清单的客户端视频，失败回退随包视频。
-  发布脚本只上传 CDN 条目，始终跳过 bundled 条目。发布命令为
-  `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --directory=<视频目录> --region=global`；
-  中国大陆版显式用 `--region=cn`，发布两区时分别执行。可加 `--verify-only` 离线核验。
-  CDN 文件名为 `<壁纸编号>-hd.mp4`；`--verify-only` 同时校验仓内内置视频。
+- 三款官方壁纸改为 OSS/CDN 按需分发（2026-10-15 用户裁决，替代此前全部随包的决定）。
+  包内仅保留 `renderer/assets/wallpapers/previews/` 中的 640×400 WebP；原始高清图和
+  2304×1440 MP4 保留为发布输入，不进入 Renderer 资源依赖图。默认无壁纸和浏览设置列表不下载，
+  选中且可见时下载对应高清图，动态模式且未启用减少动态效果时再下载视频；下载或解码失败保留可用背景。
+  传输复用统一下载器并保留 guardedOutboundFetch 的来源校验，清单大小及 SHA-256 校验后入仓。
+  缓存位于既有 `userData/cindy-media/client-wallpaper/`，仅以内容哈希和扩展名寻址，
+  **不含应用版本或账号**；启动与升级先核对本地文件，有效即返回，不请求 CDN。
+  只有文件缺失、损坏或素材哈希变化才重新下载。
+  官方 WebP、MP4 与自定义媒体的引用合并保留；切换壁纸及常规升级不删除当前清单内已下载素材。
+  回归见 `main/__tests__/wallpaperVideo.test.ts` 的升级离线复用及损坏修复测试，
+  `customWallpaper.test.ts` 覆盖自定义媒体操作不误删官方图片和视频。
+  发布脚本默认核验仓内原始素材，`--directory` 也接受按 hash 命名的导出目录或旧 `-hd.mp4` 输入。
+  `node scripts/publish-wallpaper-videos.mjs --verify-only` 离线核验；
+  `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验线上六个文件；
+  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
+  中国大陆版显式用 `--region=cn`，两区分别发布并校验，资源先于客户端上线。
+  对象名为 `wallpapers/<sha256>.webp` / `.mp4`；缩略图可用
+  `node scripts/prepare-wallpaper-previews.mjs` 从原始图片重建，总预算 300 KiB。
   清单见 Desktop 的 `src/shared/wallpaper-video-manifest.json`。
 - 可再生 HTML 临时快照缓存是独立副本的例外：仅在快照已物化自己的文件、HTTP 服务不依赖
   媒体仓 blob、且该缓存不作为持久附件提交时，使用 `isCache: true` 和空引用入仓。

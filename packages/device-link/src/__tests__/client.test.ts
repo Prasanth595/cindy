@@ -2688,6 +2688,7 @@ describe('DeviceLinkClient', () => {
   });
 
   it('transport-timeout 通知首发失败后按退避重发;对端重开后仍同 seq 续传', async () => {
+    vi.useFakeTimers();
     const h = makeHarness({
       timing: {
         pingIntervalMs: 60_000,
@@ -2697,55 +2698,62 @@ describe('DeviceLinkClient', () => {
         transportMaxRetryAttempts: 2,
       },
     });
-    h.client.start();
-    await tick();
-    h.current().ack();
-    await establishInboundReliableLink(h, 'notify-retry-stream');
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(0);
+      h.current().ack();
+      const initialOpen = establishInboundReliableLink(h, 'notify-retry-stream');
+      await vi.advanceTimersByTimeAsync(0);
+      await initialOpen;
 
-    const firstSocket = h.current();
-    h.client.sendInvokeResult('dev-b', 'keep-me-2', { ok: true, result: [] });
-    const firstReliable = firstSocket.sent.find((env) => (
-      env.kind === 'invoke-result' && parseTransportPayload(env.payload)
-    ))!;
-    const firstMeta = parseTransportPayload(firstReliable.payload)!.meta;
+      const firstSocket = h.current();
+      h.client.sendInvokeResult('dev-b', 'keep-me-2', { ok: true, result: [] });
+      const firstReliable = firstSocket.sent.find((env) => (
+        env.kind === 'invoke-result' && parseTransportPayload(env.payload)
+      ))!;
+      const firstMeta = parseTransportPayload(firstReliable.payload)!.meta;
 
-    // 让 link-close 的首次发送失败(模拟 WebSocket 背压/发送异常),后续恢复
-    const originalSend = firstSocket.send.bind(firstSocket);
-    let failedOnce = false;
-    firstSocket.send = (data: string) => {
-      const env = JSON.parse(data) as Envelope;
-      if (env.kind === 'link-close' && !failedOnce) {
-        failedOnce = true;
-        throw new Error('simulated send backpressure');
-      }
-      originalSend(data);
-    };
+      // 让 link-close 的首次发送失败(模拟 WebSocket 背压/发送异常),后续恢复
+      const originalSend = firstSocket.send.bind(firstSocket);
+      let failedOnce = false;
+      firstSocket.send = (data: string) => {
+        const env = JSON.parse(data) as Envelope;
+        if (env.kind === 'link-close' && !failedOnce) {
+          failedOnce = true;
+          throw new Error('simulated send backpressure');
+        }
+        originalSend(data);
+      };
 
-    // 对端永不 ACK → 重试耗尽 → 首发通知失败 → 退避重发成功
-    await vi.waitFor(() => {
+      // 对端永不 ACK → 重试耗尽 → 首发通知失败 → 退避重发成功
+      await vi.advanceTimersByTimeAsync(100);
       expect(failedOnce).toBe(true);
       expect(firstSocket.sent.some((env) => (
         env.kind === 'link-close'
         && env.dst === 'dev-b'
         && (env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout'
       ))).toBe(true);
-    });
-    // 重发期间 relay 连接始终未被拆
-    expect(firstSocket.terminated).toBe(false);
-    expect(h.sockets).toHaveLength(1);
+      // 重发期间 relay 连接始终未被拆
+      expect(firstSocket.terminated).toBe(false);
+      expect(h.sockets).toHaveLength(1);
 
-    // 对端重开 → 保留的 live invoke-result 按原 seq 重放
-    const sentBefore = firstSocket.sent.length;
-    await establishInboundReliableLink(h, 'notify-retry-stream');
-    const replays = firstSocket.sent.slice(sentBefore).filter((env) => (
-      env.kind === 'invoke-result' && parseTransportPayload(env.payload)
-    ));
-    expect(replays).toHaveLength(1);
-    expect(parseTransportPayload(replays[0].payload)?.meta).toMatchObject({
-      streamId: firstMeta.streamId,
-      seq: firstMeta.seq,
-    });
-    h.client.stop();
+      // 只完成重开握手,不跨过下一次重传期限,避免慢机器把重传算作重放。
+      const sentBefore = firstSocket.sent.length;
+      const reopen = establishInboundReliableLink(h, 'notify-retry-stream');
+      await vi.advanceTimersByTimeAsync(0);
+      await reopen;
+      const replays = firstSocket.sent.slice(sentBefore).filter((env) => (
+        env.kind === 'invoke-result' && parseTransportPayload(env.payload)
+      ));
+      expect(replays).toHaveLength(1);
+      expect(parseTransportPayload(replays[0].payload)?.meta).toMatchObject({
+        streamId: firstMeta.streamId,
+        seq: firstMeta.seq,
+      });
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('入站方向 closeLink 不拆共享可靠层:在途出站请求不被拒、后续发送不报 LINK_NOT_OPEN、回包照常送达', async () => {

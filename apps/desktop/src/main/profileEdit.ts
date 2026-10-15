@@ -40,12 +40,19 @@ export const AVATAR_FILE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'];
 export interface ProfileEditDeps {
   /** 当前登录用户 id;未登录 null。 */
   getCurrentUserId(): string | null;
+  /**
+   * 当前账号会话的不透明标识(appSessionState.activeOwnerScopeKey):模式、账号或
+   * 区域任一切换都会变化,跨 await 的账号副作用前后比对它。
+   */
+  getAccountScopeKey(): string;
   /** 当前展示资料(authManager.getServerProfile,弹窗预填 + 改名去重用)。 */
   getServerProfile(): { name: string; avatar: string | null } | null;
   /** 弹系统文件选择器,返回所选路径;取消返回 null。 */
   showAvatarOpenDialog(): Promise<string | null>;
   /** 读文件字节(fs.promises.readFile)。 */
   readFile(filePath: string): Promise<Buffer>;
+  /** HDR 头像转 SDR(hdrAvatarToSdr.toSdrAvatarImage);SDR 原样返回。 */
+  toSdrAvatar(image: { buffer: Buffer; mimeType: string }): Promise<{ buffer: Buffer; mimeType: string }>;
   /** 头像直传 OSS(ossPublicUpload.uploadPublicAsset 的 avatar 场景特化)。 */
   uploadAvatar(params: { buffer: Uint8Array; mimeType: string }): Promise<
     | { ok: true; publicUrl: string }
@@ -99,6 +106,16 @@ function requireUserId(deps: ProfileEditDeps): string {
   return userId;
 }
 
+/**
+ * 保存过程中每次 await 之后、触达账号的副作用(上传 / PATCH)之前复查:上传与 PATCH
+ * 都按调用时的登录态取 token,中途切换账号(含同 id 换区域)会把资料写到新账号上。
+ */
+function requireSameAccount(deps: ProfileEditDeps, accountScope: string): void {
+  if (deps.getAccountScopeKey() !== accountScope) {
+    throwIpcError('PRECONDITION_FAILED', 'account changed while saving profile');
+  }
+}
+
 function parseAvatarAction(value: unknown): AvatarAction | null {
   if (value === null || typeof value !== 'object') return null;
   const action = value as { type?: unknown; filePath?: unknown };
@@ -121,7 +138,8 @@ export function getProfileEditState(deps: ProfileEditDeps): ProfileEditState {
 }
 
 /**
- * 选头像文件:系统选择器 → 扩展名 / 体积校验 → 返回路径 + 预览 data URL。
+ * 选头像文件:系统选择器 → 扩展名 / 体积校验 → HDR 转 SDR → 返回路径 + 预览 data URL。
+ * 预览即转换后的 SDR 像素,与「保存」时上传的字节一致。
  * 这里**不**上传——用户点「保存」才走 OSS 直传,取消弹窗零副作用。
  */
 export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAvatarResult> {
@@ -141,26 +159,33 @@ export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAva
   if (buffer.byteLength === 0 || buffer.byteLength > AVATAR_MAX_BYTES) {
     throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${buffer.byteLength}`);
   }
+  const preview = await deps.toSdrAvatar({ buffer, mimeType: mime });
+  // 选图阶段就拒绝转换后超限的头像，不让用户在保存时才看到失败。
+  if (preview.buffer.byteLength > AVATAR_MAX_BYTES) {
+    throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${preview.buffer.byteLength}`);
+  }
   return {
     canceled: false,
     filePath,
-    previewDataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+    previewDataUrl: `data:${preview.mimeType};base64,${preview.buffer.toString('base64')}`,
   };
 }
 
 /**
  * 保存资料:name 与 avatar 各自收敛成 PATCH 字段,一次提交服务端。
  *   - name:trim 后为空或与当前一致 → 不改;否则 displayName;
- *   - avatar keep:不动;set:校验 → OSS 直传拿 publicUrl;reset:avatarUrl null;
+ *   - avatar keep:不动;set:校验 → HDR 转 SDR → OSS 直传拿 publicUrl;reset:avatarUrl null;
  *   - 两个字段都没变化 → 直接成功返回,零网络请求。
  * 上传成功但 PATCH 失败时,已传对象成为孤儿(bucket 生命周期规则兜底清理,
  * 契约见 oss-server 文档),客户端无需补偿删除。
+ * 中途切换账号 → PRECONDITION_FAILED,不向新账号上传或 PATCH。
  */
 export async function updateProfile(
   deps: ProfileEditDeps,
   rawParams: unknown,
 ): Promise<{ ok: true }> {
   requireUserId(deps);
+  const accountScope = deps.getAccountScopeKey();
   const profile = deps.getServerProfile();
   if (!profile) throwIpcError('PRECONDITION_FAILED', 'not logged in');
 
@@ -200,7 +225,12 @@ export async function updateProfile(
     if (buffer.byteLength === 0 || buffer.byteLength > AVATAR_MAX_BYTES) {
       throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${buffer.byteLength}`);
     }
-    const uploaded = await deps.uploadAvatar({ buffer, mimeType: mime });
+    const image = await deps.toSdrAvatar({ buffer, mimeType: mime });
+    if (image.buffer.byteLength > AVATAR_MAX_BYTES) {
+      throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${image.buffer.byteLength}`);
+    }
+    requireSameAccount(deps, accountScope);
+    const uploaded = await deps.uploadAvatar(image);
     if (!uploaded.ok) {
       throwIpcError(
         'PROFILE_AVATAR_UPLOAD_FAILED',
@@ -216,6 +246,7 @@ export async function updateProfile(
   if (nextDisplayName === undefined && nextAvatarUrl === undefined) {
     return { ok: true };
   }
+  requireSameAccount(deps, accountScope);
   const patched = await deps.patchProfile({
     ...(nextDisplayName !== undefined ? { displayName: nextDisplayName } : {}),
     ...(nextAvatarUrl !== undefined ? { avatarUrl: nextAvatarUrl } : {}),

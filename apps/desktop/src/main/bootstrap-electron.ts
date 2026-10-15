@@ -18,6 +18,12 @@ import {
   refreshUpstreamMergeProjection,
 } from './cindy-make/upstreamMergeRuntime.js';
 import {
+  configurePersonalRemote,
+  actPersonalRemote,
+  actCindyMakeContribution,
+} from './cindy-make/personalRemoteRuntime.js';
+import { configurePersonalSync, actPersonalSync } from './cindy-make/personalSyncRuntime.js';
+import {
   configureMakeHistory,
   getCindyMakeHistory,
   actCindyMakeHistory,
@@ -296,6 +302,7 @@ import {
 import { createAccountDeletionIpcHandlers } from './accountDeletionIpc';
 import * as profileEdit from './profileEdit';
 import { uploadPublicAsset } from './ossPublicUpload';
+import { toSdrAvatarImage } from './hdrAvatarToSdr';
 import { removeRefs as removeMediaRefs } from './cindy-media/ledger';
 import {
   installWebviewHardener,
@@ -1113,6 +1120,7 @@ import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
+import { StableOwnerPostCommitStep } from './stableOwnerPostCommit.js';
 import { registerPluginPublisherIpc } from './plugin-publisher/registerIpc.js';
 import { findCindyFileInArgv } from './cindy-brain/argv.js';
 import { handleIncomingCindyFile } from './cindy-brain/openFileInstall.js';
@@ -2460,29 +2468,55 @@ setAppSessionCommitBoundaryHook(() => {
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
 });
+const ownerBackgroundLog = createLogger('owner-background');
+const builtinPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'builtin-plugins', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+// Each package already has a 120s transport limit. This bounds our wait for
+// the entire batch (catalog/auth/locks included), not the lifetime of a write.
+const marketPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-market', timeoutMs: 180_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+const oauthPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-oauth', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
 authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId }) => {
-  const builtinOutcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+  const isCurrent = () => !isAppSessionBoundaryPending()
+    && activeOwnerScopeKey() === scopeKey
+    && getActiveAppSession().dataOwnerId === dataOwnerId;
+  if (!isCurrent()) return 'deferred';
+  const builtinOutcome = await builtinPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    const outcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+    return outcome === 'retry-pending' ? 'failed' : outcome;
+  });
   if (builtinOutcome === 'deferred') return builtinOutcome;
+  if (!isCurrent()) return 'deferred';
 
-  let needsRetry = builtinOutcome === 'retry-pending' || builtinOutcome === 'failed';
+  let needsRetry = builtinOutcome === 'failed';
   // Signed-out is a real stable scope for account-free bundled provisioning.
   // Market and OAuth are owner-private follow-ups and stay behind this gate.
   if (dataOwnerId === null) return needsRetry ? 'failed' : 'completed';
   let deferred = false;
-  const marketOutcome = await syncDefaultMarketPlugins();
+  const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    return syncDefaultMarketPlugins();
+  });
+  if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
   if (marketOutcome === 'deferred') deferred = true;
 
-  try {
+  const oauthOutcome = await oauthPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
     const oauthCompleted = await reconcileGhostOauthAccountsForActiveOwner();
-    if (!oauthCompleted) deferred = true;
-  } catch (error) {
-    createLogger('ghost-oauth-owner-reconcile').warn(
-      'OAuth account reconciliation for active owner failed',
-      { error: error instanceof Error ? error.message : String(error) },
-    );
-    needsRetry = true;
-  }
+    return oauthCompleted ? 'completed' : 'deferred';
+  });
+  if (!isCurrent()) return 'deferred';
+  if (oauthOutcome === 'failed') needsRetry = true;
+  if (oauthOutcome === 'deferred') deferred = true;
 
   return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';
 });
@@ -4239,7 +4273,10 @@ function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
   pluginMarketSyncInFlightScope = scope;
   lastPluginMarketSyncScope = scope;
   lastPluginMarketSyncAt = now;
-  void syncDefaultMarketPlugins().finally(() => {
+  void marketPostCommitStep.run(scope, async () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
+    return syncDefaultMarketPlugins();
+  }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
 }
@@ -5829,7 +5866,9 @@ const registerIpcHandlers = () => {
           },
         })
         .finally(() => authCredentialRecovery.request());
-      await authManager.ensureStableOwnerPostCommitTasks('auth-initialize');
+      // Plugin downloads/reconciliation retain their owner-scoped retries, but
+      // must not delay AuthContext starting the owner DB or showing the app.
+      authManager.requestStableOwnerPostCommit('auth-initialize');
       if (!app.isPackaged || isCindyVersionLaunchPending()) {
         recordDesktopDevAuthStartupResult(state, pendingCompletion, () =>
           authManager.getAuthState(),
@@ -5975,6 +6014,7 @@ const registerIpcHandlers = () => {
   const profileEditLog = createLogger('profileEdit');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
+    getAccountScopeKey: activeOwnerScopeKey,
     getServerProfile: () => authManager.getServerProfile(),
     showAvatarOpenDialog: async () => {
       const result = await dialog.showOpenDialog({
@@ -5984,6 +6024,7 @@ const registerIpcHandlers = () => {
       return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
     },
     readFile: (filePath) => fs.promises.readFile(filePath),
+    toSdrAvatar: toSdrAvatarImage,
     uploadAvatar: async ({ buffer, mimeType }) => {
       const result = await uploadPublicAsset(
         {
@@ -7541,6 +7582,38 @@ const registerIpcHandlers = () => {
     assertTrustedAppRendererEvent(event);
     assertCindyMakeEnabled();
     return actUpstreamMerge(input);
+  });
+  // Local Settings only: binding this machine's GitHub fork has no device-link grant.
+  // A failure here must not prevent the remaining IPC handlers from registering.
+  try {
+    configurePersonalRemote();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal remote unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-personal-remote', async (event, action: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalRemote(action);
+  });
+  // One Sync for every personal version; local Settings only, no device-link grant.
+  try {
+    configurePersonalSync();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal sync unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-sync', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalSync(request);
+  });
+  ipcMain.handle('app:cindy-make-contribution', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actCindyMakeContribution(request);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {
     assertTrustedAppRendererEvent(event);
