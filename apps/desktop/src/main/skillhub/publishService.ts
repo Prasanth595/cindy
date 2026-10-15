@@ -1,3 +1,4 @@
+import { validateSkillAudience, type SkillAudienceInput } from '../../shared/skillhubAudience';
 /**
  * skillhub/publishService.ts — publish 端到端编排 (F-pub-5, M5)
  *
@@ -15,7 +16,7 @@ import path from 'node:path';
 import { net } from 'electron';
 import { ServerApiError } from '../serverApiClient';
 import { publishErrorDetail, serverPublishErrorCode, type SkillhubPublishErrorCode } from '../../shared/skillhubPublishErrors';
-import { skillhubApiFetch } from './hubApi';
+import { skillhubApiFetch, rethrowSkillAudienceWriteError } from './hubApi';
 import { computeFolderHash } from './folderHash';
 import { writeSnapshot } from './snapshot';
 import { pack } from './zipPacker';
@@ -34,7 +35,7 @@ export const PACK_TIMEOUT_MS = 45_000;
 
 // ── 类型 ─────────────────────────────────────────────────────────────────────
 
-export interface PublishParams {
+export interface PublishParams extends SkillAudienceInput {
   absolutePath: string;
   name: string;
   isFirstPublish: boolean;
@@ -219,6 +220,7 @@ export class SkillPublishService {
     errorCode?: string;
     error?: string;
   }> {
+    validateSkillAudience(params);
     // Capture before identity hydration: every await belongs to this publication's owner.
     const publishOwnerScope = activeOwnerScopeKey();
     const publishOwnerId = getCurrentDataOwnerId();
@@ -548,6 +550,10 @@ export class SkillPublishService {
             if (params.deptTeamSlug) commitBody.deptTeamSlug = params.deptTeamSlug;
             if (params.teamSlug) commitBody.teamSlug = params.teamSlug;
             if (params.visibleSlugs !== undefined) commitBody.visibleSlugs = params.visibleSlugs;
+            if (params.visibilityDepartmentIds !== undefined) {
+              commitBody.visibilityDepartmentIds = params.visibilityDepartmentIds;
+              commitBody.audienceMode = params.audienceMode;
+            }
           }
 
           log.debug(
@@ -555,9 +561,15 @@ export class SkillPublishService {
               `firstPublish=${params.isFirstPublish}`,
           );
 
-          await skillhubApiFetch('/api/skills-hub/skills/publish/commit', {
+          const commitPath = commitBody.visibilityDepartmentIds !== undefined
+            ? '/api/skills-hub/v2/skills/publish/commit'
+            : '/api/skills-hub/skills/publish/commit';
+          await skillhubApiFetch(commitPath, {
             method: 'POST',
             body: commitBody,
+          }).catch((error: unknown) => {
+            if (commitBody.visibilityDepartmentIds !== undefined) rethrowSkillAudienceWriteError(error);
+            throw error;
           });
 
           // ── 步骤 7: commit 成功 → 立刻确认本地 ───────────────────────────

@@ -24,7 +24,8 @@ const endpoint = vi.hoisted(() => vi.fn(() => 'https://skills.example.com'));
 vi.mock('../../clientEndpointsService', () => ({ getClientEndpoint: endpoint }));
 vi.mock('../../appCapabilities.js', () => ({ requireAppCapability: () => undefined }));
 
-import { skillhubApiFetch } from '../hubApi';
+import { ServerApiError } from '../../serverApiClient';
+import { skillhubApiFetch, rethrowSkillAudienceWriteError } from '../hubApi';
 
 describe('skillhubApiFetch', () => {
   beforeEach(() => {
@@ -61,4 +62,13 @@ describe('skillhubApiFetch', () => {
     await skillhubApiFetch('/api/skills-hub/skills/x', { logLabel: '/api/skills-hub/skills' });
     expect(mocks.serverApiFetch.mock.calls[0]?.[1]?.logLabel).toBe('/api/skills-hub/skills');
   });
+});
+
+it.each(['SKILL_NOT_FOUND', 'UPLOAD_NOT_FOUND', 'NOT_FOUND'])('preserves structured business 404 %s', (code) => {
+  const error = new ServerApiError(code, 404, 'Skill does not exist');
+  expect(() => rethrowSkillAudienceWriteError(error)).toThrow(error);
+});
+it.each([['HTTP_404', 'Not found'], ['NOT_FOUND', '资源不存在']])('normalizes missing route %s', (code, message) => {
+  try { rethrowSkillAudienceWriteError(new ServerApiError(code, 404, message)); }
+  catch (error) { expect(error).toMatchObject({ code: 'UNSUPPORTED_CAPABILITY', statusCode: 503 }); }
 });

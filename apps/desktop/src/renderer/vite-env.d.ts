@@ -3518,6 +3518,9 @@ interface ElectronAPI {
       previousCatalogScope?: 'market' | 'team';
       teamSlug?: string;
       visibleSlugs?: string[];
+      visibilityDepartmentIds?: string[];
+      audienceMode?: 'all' | 'departments';
+      expectedUpdatedAt?: string;
     }) => Promise<{
       success: boolean;
       result?: {
@@ -3533,6 +3536,9 @@ interface ElectronAPI {
       success: boolean;
       sharedTeams?: Array<{ id: number; slug: string; name: string }>;
       visibleDepts?: string[];
+      updatedAt?: string;
+      visibility?: 'private' | 'shared' | 'public';
+      audienceSupported?: boolean;
       error?: string;
       errorCode?: string;
     }>;
@@ -3584,6 +3590,8 @@ interface ElectronAPI {
       success: boolean;
       ids: string[];
       names: string[];
+      departments?: import('../shared/skillhubAudience').SkillAudienceDepartment[];
+      audienceSupported?: boolean;
       error?: string;
     }>;
     listCategories: (params?: {
@@ -7490,6 +7498,8 @@ interface SkillhubPublishParams {
   tags?: string[];
   visibility?: 'PUBLIC' | 'DEPARTMENT_SCOPED' | 'PRIVATE';
   visibleSlugs?: string[];
+  visibilityDepartmentIds?: string[];
+  audienceMode?: 'all' | 'departments';
   /** 发布者为部门时的部门归属(od- 开头的飞书部门 ID,Hub 端自动转部门团队) */
   deptTeamSlug?: string;
   /** 发布者为普通团队时的团队归属 slug */

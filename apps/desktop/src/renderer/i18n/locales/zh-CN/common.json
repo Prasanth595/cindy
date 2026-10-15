@@ -13985,6 +13985,25 @@
       "cleanupIncomplete": "“{{name}}”的卸载清理尚未完成。请重试；重开技能中心后也可继续。清理完成前无法重新安装。",
       "retryCleanup": "重试清理",
       "cleanupComplete": "清理完成"
+    },
+    "audience": {
+      "limit": "最多选择 500 个部门，请移除部分选择后保存。",
+      "label": "可见成员",
+      "all": "全部成员",
+      "departments": "指定部门",
+      "search": "搜索部门",
+      "included": "已包含",
+      "unavailable": "已失效部门",
+      "remove": "移除",
+      "expand": "展开",
+      "collapse": "收起",
+      "invalid": "部分部门已失效，请移除后重新选择",
+      "choose": "请选择至少一个部门",
+      "loading": "正在加载部门…",
+      "loadError": "无法加载可见范围，请重试",
+      "retry": "重试",
+      "conflict": "可见范围已被修改，请加载最新范围后重新确认",
+      "reload": "加载最新范围"
     }
   },
   "makerExperimental": {

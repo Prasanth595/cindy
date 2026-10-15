@@ -10,6 +10,7 @@ export type MarketActionErrorKey =
 
 export function marketActionErrorKey(error?: string, errorCode?: string): MarketActionErrorKey | null {
   const raw = `${errorCode ?? ''} ${error ?? ''}`.toLowerCase();
+  if (errorCode === 'UNSUPPORTED_CAPABILITY') return 'skillhub.marketErrors.managementApiUnavailable';
   if (errorCode === 'INVALID_VISIBILITY') return 'skillhub.marketErrors.invalidVisibility';
   if (raw.includes('403') || raw.includes('forbidden')) return 'skillhub.marketErrors.forbidden';
   if (!raw.includes('hub_404') && (raw.includes('404') || raw.includes('not found'))) return 'skillhub.marketErrors.notFound';

@@ -1,3 +1,4 @@
+import { DepartmentAudienceField } from './components/DepartmentAudienceField';
 import { Button } from '@/components/ui/button';
 /**
  * PublishDialog — 发布到市场的统一入口,合并了 Empty/Working/Failure 三种 state。
@@ -42,6 +43,7 @@ import {
   type PublishFormValues,
   type PublishVisibility,
 } from './lib/publishForm';
+import type { SkillAudienceDepartment } from '../../../shared/skillhubAudience';
 import type { MarketCategory } from '../../../shared/skillhubCategory';
 import { PlatformTagSelector } from './components/PlatformTagSelector';
 
@@ -513,6 +515,29 @@ export function PublishDialog({
   const dialogOwner = useMemo(() => getDataOwnerGeneration(), [open]);
   const isDialogOwnerCurrent = isDataOwnerGenerationCurrent(dialogOwner);
 
+  // Prepare the organization tree before showing the dialog, including updates
+  // that can become a first publication after a name conflict.
+  const [audiencePreparation, setAudiencePreparation] = useState<{
+    finished: boolean; departments?: SkillAudienceDepartment[];
+  }>({ finished: false });
+  useEffect(() => {
+    setAudiencePreparation({ finished: false });
+    if (!open || identityPolicy.ownerType !== 'organization') return;
+    let cancelled = false;
+    const owner = getDataOwnerGeneration();
+    void window.electronAPI.skillhub.getMyDepts().then(result => {
+      if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
+      setAudiencePreparation({ finished: true, departments:
+        result.success && result.audienceSupported ? result.departments : undefined });
+    }).catch(() => {
+      if (!cancelled && isDataOwnerGenerationCurrent(owner)) setAudiencePreparation({ finished: true });
+    });
+    return () => { cancelled = true; };
+  }, [open, identityPolicy.ownerType]);
+  const handleDepartmentsLoaded = useCallback((departments: SkillAudienceDepartment[]) => {
+    if (isDataOwnerGenerationCurrent(dialogOwner)) setAudiencePreparation({ finished: true, departments });
+  }, [dialogOwner]);
+
   // A name conflict can turn an update into a new publication under another name.
   const [renameAfterFailure, setRenameAfterFailure] = useState(false);
   const effectiveFirstPublish = isFirstPublish || renameAfterFailure;
@@ -630,10 +655,13 @@ export function PublishDialog({
     publisherMode: identityPolicy.ownerType === 'organization' ? 'team' : 'personal',
     ownerTeamSlug: '',
     visibleDeptIds: [],
+    audienceMode: 'all',
     sharedTeamSlugs: [],
     changelog: '',
     categorySlugs: [],
   }));
+
+  const [audienceValid, setAudienceValid] = useState(false);
 
   // Reset form when dialog opens or latestVersion loads (info API async)
   useEffect(() => {
@@ -648,6 +676,7 @@ export function PublishDialog({
         publisherMode: identityPolicy.ownerType === 'organization' ? 'team' : 'personal',
         ownerTeamSlug: '',
         visibleDeptIds: [],
+    audienceMode: 'all',
         sharedTeamSlugs: [],
         changelog: '',
         categorySlugs: [],
@@ -735,6 +764,7 @@ export function PublishDialog({
     !changelogRequired &&
     !changelogError &&
     visibilityAllowed &&
+    (!effectiveFirstPublish || form.visibility !== 'DEPARTMENT_SCOPED' || audienceValid) &&
     (effectiveFirstPublish ? visibilityScopeValidation.ok : true);
 
   const buildCurrentPublishParams = useCallback(
@@ -980,7 +1010,7 @@ export function PublishDialog({
     <>
       {/* ── Main PublishDialog (Empty / Working / Failure 共用) ───────────── */}
       <Dialog.Root
-        open={open && isDialogOwnerCurrent}
+        open={open && isDialogOwnerCurrent && (identityPolicy.ownerType !== 'organization' || audiencePreparation.finished)}
         onOpenChange={(v) => {
           if (!v) handleClose();
         }}
@@ -998,13 +1028,13 @@ export function PublishDialog({
             className={cn(
               'modal-panel fixed left-1/2 top-1/2 z-[10000] -translate-x-1/2 -translate-y-1/2',
               'w-full max-w-[480px]',
-              'max-h-[90vh] overflow-y-auto',
+              'max-h-[90vh] flex flex-col overflow-hidden',
             )}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             aria-describedby={undefined}
           >
             {/* ── Header ────────────────────────────────────────────────── */}
-            <div className="flex items-start justify-between px-5 pt-5">
+            <div className="flex shrink-0 items-start justify-between px-5 pt-5">
               <div className="flex flex-col gap-1.5 pl-0.5">
                 <Dialog.Title className="text-lg font-medium text-[var(--msg-assistant-text)]">
                   {t('skillhub.publishDialog.title')}
@@ -1029,7 +1059,7 @@ export function PublishDialog({
 
             {/* ── Form fields ── */}
             <div
-              className={cn('flex flex-col gap-4 px-5 pt-5 pb-1', isWorking && 'pointer-events-none opacity-50')}
+              className={cn('flex min-h-0 flex-col gap-4 overflow-y-auto px-5 pt-5 pb-1', isWorking && 'pointer-events-none opacity-50')}
             >
               {/* SkillName — available after a name conflict, including a deleted Skill. */}
               {canRename && (
@@ -1161,6 +1191,7 @@ export function PublishDialog({
                           ...f,
                           visibility: v,
                           visibleDeptIds: [],
+    audienceMode: 'all',
                           sharedTeamSlugs: [],
                         }))}
                       />
@@ -1189,6 +1220,13 @@ export function PublishDialog({
                       </div>
                     )}
                   </div>
+                  {form.visibility === 'DEPARTMENT_SCOPED' && <DepartmentAudienceField
+                    initialDepartments={audiencePreparation.departments}
+                    onDepartmentsLoaded={handleDepartmentsLoaded}
+                    initialError={audiencePreparation.finished && !audiencePreparation.departments}
+                    mode={form.audienceMode ?? 'all'} selected={form.visibleDeptIds} disabled={isLocked}
+                    onValidityChange={setAudienceValid}
+                    onChange={(audienceMode, visibleDeptIds) => setForm(f => ({ ...f, audienceMode, visibleDeptIds }))} />}
                 </div>
               )}
 
@@ -1252,7 +1290,7 @@ export function PublishDialog({
             )}
 
             {/* ── Footer buttons ──────────────────────────────────────── */}
-            <div className="flex items-center justify-end gap-2 p-4">
+            <div className="flex shrink-0 items-center justify-end gap-2 p-4">
               {isWorking ? (
                 <>
                   {pubState.phase !== 'scanning' && (

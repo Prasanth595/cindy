@@ -308,6 +308,25 @@ describe('SkillhubMarketService', () => {
     ]);
   });
 
+  it.each(['all', 'departments'] as const)('rejects explicit %s audience management without a version before fetching', async (audienceMode) => {
+    const fetch = vi.fn();
+    const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });
+    await expect(service.setPublishedVisibility({ name: 'demo', visibility: 'shared', audienceMode,
+      visibilityDepartmentIds: audienceMode === 'all' ? [] : ['dept-1'],
+    })).rejects.toThrow('Audience management requires a concurrency version');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('uses a versioned write and never falls back when an old replica rejects it', async () => {
+    const fetch = vi.fn().mockRejectedValue(new ServerApiError('NOT_FOUND', 404, '资源不存在'));
+    const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });
+    await expect(service.setPublishedVisibility({ name: 'demo', visibility: 'shared',
+      audienceMode: 'departments', visibilityDepartmentIds: ['dept-1'], expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
+    })).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY', statusCode: 503 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith('/api/skills-hub/v2/skills/demo/set-visibility', expect.anything());
+  });
+
   it('updates installed scope for immediate moves and public-review transitions', async () => {
     const updateRegistryCatalogScope = vi.fn(async () => undefined);
     const { fetch } = makeFetch([
@@ -372,6 +391,8 @@ describe('SkillhubMarketService', () => {
       success: true,
       ids: ['od-1'],
       names: ['Dept'],
+      departments: [],
+      audienceSupported: false,
     });
     expect(calls[1]).toEqual({
       path: '/api/skills-hub/users/departments',
