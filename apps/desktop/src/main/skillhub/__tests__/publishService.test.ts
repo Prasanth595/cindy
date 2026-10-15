@@ -360,7 +360,7 @@ describe('SkillPublishService', () => {
       ].join('\n'),
     );
 
-    const { serverApiFetch } = await import('../../serverApiClient');
+    const { ServerApiError, serverApiFetch } = await import('../../serverApiClient');
     const { computeFolderHash } = await import('../folderHash');
     const { writeSnapshot } = await import('../snapshot');
     const { pack } = await import('../zipPacker');
@@ -390,7 +390,7 @@ describe('SkillPublishService', () => {
           };
         }
         if (apiPath === commitPath) {
-          if (mode === 'old-replica') throw new Error('NOT_FOUND');
+          if (mode === 'old-replica') throw new ServerApiError('NOT_FOUND', 404, 'not found');
           return {
             slug: 'lark-task',
             version: (opts?.body as { version: string }).version,
@@ -418,7 +418,7 @@ describe('SkillPublishService', () => {
     );
 
     if (mode === 'old-replica') {
-      expect(result.success).toBe(false);
+      expect(result).toMatchObject({ success: false, errorCode: 'SERVICE_UNAVAILABLE' });
       expect(vi.mocked(serverApiFetch).mock.calls.some(([path]) => path === '/api/skills-hub/skills/publish/commit')).toBe(false);
       expect(writeSnapshot).not.toHaveBeenCalled();
       return;

@@ -200,6 +200,11 @@ describe('market management copy and errors', () => {
     )).toBe('Hub management API is not ready. Please try again later');
   });
 
+  it('maps unavailable audience writes to retry guidance', () => {
+    expect(marketActionErrorKey('Skill audience service is temporarily unavailable', 'UNSUPPORTED_CAPABILITY'))
+      .toBe('skillhub.marketErrors.managementApiUnavailable');
+  });
+
   it('does not hide real authorization failures behind missing endpoint copy', () => {
     expect(marketActionErrorKey(
       'skill hub POST /api/s2s/v1/skills/lark-calendar/set-visibility returned 403: forbidden',

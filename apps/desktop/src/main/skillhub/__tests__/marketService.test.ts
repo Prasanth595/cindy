@@ -313,7 +313,7 @@ describe('SkillhubMarketService', () => {
     const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });
     await expect(service.setPublishedVisibility({ name: 'demo', visibility: 'shared',
       audienceMode: 'departments', visibilityDepartmentIds: ['dept-1'], expectedUpdatedAt: '2026-10-14T00:00:00.000Z',
-    })).rejects.toThrow('not found');
+    })).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY', statusCode: 503 });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith('/api/skills-hub/v2/skills/demo/set-visibility', expect.anything());
   });

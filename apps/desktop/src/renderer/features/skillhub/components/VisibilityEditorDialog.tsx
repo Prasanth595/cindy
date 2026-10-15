@@ -62,6 +62,7 @@ export function VisibilityEditorDialog({
   // loading 初始为 true,且关闭时复位 —— Dialog 在数据就绪前不挂载,
   // 避免"先弹出矮窗再撑开"的跳变(设计规范:拿到数据后一次成型)。
   const [loading, setLoading] = useState(true);
+  const [initialLoadFinished, setInitialLoadFinished] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [audienceMode, setAudienceMode] = useState<'all' | 'departments'>('all');
@@ -73,7 +74,7 @@ export function VisibilityEditorDialog({
   const [tier, setTier] = useState<VisibilityTier>(currentTier);
 
   useEffect(() => {
-    if (!open) { setLoading(true); return; }
+    if (!open) { setLoading(true); setInitialLoadFinished(false); return; }
     let cancelled = false;
     const owner = getDataOwnerGeneration();
     setTier(currentTier); setLoadError(null); setConflict(false); setLoading(true); setExpectedUpdatedAt(undefined);
@@ -87,7 +88,7 @@ export function VisibilityEditorDialog({
       setAudienceMode(result.visibleDepts?.length ? 'departments' : 'all');
       if (result.visibility) setTier(result.visibility === 'shared' ? 'team' : result.visibility);
     }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setLoadError(t('skillhub.audience.loadError')); })
-      .finally(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setLoading(false); });
+      .finally(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) { setLoading(false); setInitialLoadFinished(true); } });
     return () => { cancelled = true; };
   }, [open, currentTier, currentOwnerIsTeam, skillName, reload, t]);
 
@@ -157,7 +158,7 @@ export function VisibilityEditorDialog({
   };
 
   return (
-    <Dialog.Root open={open && !loading} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
+    <Dialog.Root open={open && initialLoadFinished} onOpenChange={(v) => { if (!saving) onOpenChange(v); }}>
       <Dialog.Portal>
         <Dialog.Overlay
           className="modal-scrim fixed inset-0 z-[10000]"

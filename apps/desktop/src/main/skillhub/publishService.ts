@@ -16,7 +16,7 @@ import path from 'node:path';
 import { net } from 'electron';
 import { ServerApiError } from '../serverApiClient';
 import { publishErrorDetail, serverPublishErrorCode, type SkillhubPublishErrorCode } from '../../shared/skillhubPublishErrors';
-import { skillhubApiFetch } from './hubApi';
+import { skillhubApiFetch, rethrowSkillAudienceWriteError } from './hubApi';
 import { computeFolderHash } from './folderHash';
 import { writeSnapshot } from './snapshot';
 import { pack } from './zipPacker';
@@ -567,6 +567,9 @@ export class SkillPublishService {
           await skillhubApiFetch(commitPath, {
             method: 'POST',
             body: commitBody,
+          }).catch((error: unknown) => {
+            if (commitBody.visibilityDepartmentIds !== undefined) rethrowSkillAudienceWriteError(error);
+            throw error;
           });
 
           // ── 步骤 7: commit 成功 → 立刻确认本地 ───────────────────────────

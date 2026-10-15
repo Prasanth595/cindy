@@ -87,3 +87,25 @@ it('waits for initial visibility before opening the dialog', async () => {
   resolve({ success: true, audienceSupported: true, updatedAt, visibleDepts: [], visibility: 'shared' });
   await screen.findByRole('dialog');
 });
+
+it.each(['retry', 'conflict'])('keeps the modal mounted during %s loading', async (reason) => {
+  if (reason === 'retry') load.mockResolvedValueOnce({ success: false });
+  else save.mockResolvedValueOnce({ success: false, errorCode: 'SKILL_DISTRIBUTION_CONFLICT' });
+  open();
+  const dialog = await screen.findByRole('dialog');
+  if (reason === 'conflict') {
+    await waitFor(() => expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }));
+    await screen.findByText('skillhub.audience.conflict');
+  }
+  let resolve!: (value: unknown) => void;
+  load.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  fireEvent.click(screen.getByRole('button', { name: reason === 'retry' ? 'skillhub.audience.retry' : 'skillhub.audience.reload' }));
+  await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('dialog')).toBe(dialog);
+  expect(screen.getByRole('status').textContent).toBe('skillhub.audience.loading');
+  expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(true);
+  resolve({ success: true, audienceSupported: true, updatedAt, visibleDepts: ['p'], visibility: 'shared' });
+  await screen.findByRole('checkbox', { name: 'Parent' });
+  expect(screen.getByRole('dialog')).toBe(dialog);
+});

@@ -1,6 +1,6 @@
 import { validateSkillAudience, type SkillAudienceInput, type SkillAudienceDepartment } from '../../shared/skillhubAudience';
 import { ServerApiError, type ApiFetchOptions } from '../serverApiClient';
-import { skillhubApiFetch } from './hubApi';
+import { skillhubApiFetch, rethrowSkillAudienceWriteError } from './hubApi';
 import { mapHubSkillInfoToDesktopInfo, type HubSkillInfoForDesktop } from './infoMapping';
 import { buildSkillhubSyncResponse, type SkillhubBatchDetailResponse, type SkillhubSyncRef } from './syncMapping';
 import { assertSkillhubVisibilityAllowed, assertSkillhubWriteAllowed } from './identityPolicy';
@@ -271,7 +271,10 @@ export class SkillhubMarketService {
           ...(visibleSlugs !== undefined ? { visibleSlugs } : {}),
         },
       },
-    );
+    ).catch((error: unknown) => {
+      if (writePrefix === '/api/skills-hub/v2') rethrowSkillAudienceWriteError(error);
+      throw error;
+    });
     // A public-review request has already moved the user's management view to
     // the native record even while the old catalog visibility remains active.
     const targetVisibility = result.requestedVisibility ?? result.visibility;
