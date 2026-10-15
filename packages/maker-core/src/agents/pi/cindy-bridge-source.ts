@@ -3349,15 +3349,31 @@ class CindyMcpGateway {
     const resolved = this.resolveCall(params);
     if (!resolved) throw new Error(this.unknownCallMessage(params));
     if (!this.isSchemaDisclosed(resolved)) {
-      // 门只拦一次：拦下时按当前 schema 记账并放行（等价于内部重试一次），只在重试仍
-      // 失败时上报。旧行为把“重新披露”的责任完全交给模型，而披露记录会因 pi 升级
-      // 整片失效，于是模型只能反复撞同一堵墙直至放弃（2026-10-13 实测）。留一行审计
-      // 日志，工具面与权限面不受影响（工具解析成功即已知 gateway 工具）。
-      const recorded = this.markSchemaDisclosed(resolved);
+      // 拦一次，把路标递到模型手上，同时记账。
+      //
+      // 记账解决的是本 PR 的原问题：披露按 pi 版本存档时，pi 一升级整片作废，模型
+      // 反复撞同一堵墙直至放弃（2026-10-13 实测）。按 schema 指纹记账后，只有真正
+      // 新增或 schema 真变动的工具才拦，同一工具的第二次调用直接放行。
+      //
+      // 拦这一次的理由是零拦截实测出来的代价（2026-10-15）：模型没有任何信号知道
+      // 该去查 schema，参数名和信封层级只能靠服务端报错反推——实测把
+      // target_session_id 猜成 worker_id、把 args 里的字段平铺到调用根，连续撞
+      // -32602 后才放弃。回执里指名 server/tool，模型才会去 list_tools。
+      //
+      // 放行的语义是“这个工具的 schema 我见过了”，不是“这组参数是对的”：参数仍
+      // 由工具自身 inputSchema 校验。所以模型若无视路标直接原样重发，最坏结果与
+      // 零拦截现状相同（被 zod 拒），本改动不会让错参数通过，只是单调地多给一次
+      // 正确答案。
+      this.markSchemaDisclosed(resolved);
       console.warn(
         '[cindy-bridge] gateway tool auto-disclosed on first call: '
         + resolved.tool.serverName + '/' + resolved.tool.name
-        + (recorded ? ' (schema recorded)' : ' (schema unchanged)'),
+        + '; signposting inspection instead of staying silent',
+      );
+      throw new Error(
+        'Inspect this tool before execution by calling cindy_mcp_list_tools with '
+        + JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name })
+        + '. The current schema has already been recorded; re-send the same call to proceed.',
       );
     }
     return this.executeResolvedCall(resolved, signal);
