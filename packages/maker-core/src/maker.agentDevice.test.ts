@@ -304,6 +304,37 @@ describe('Maker: remote Claude keeps the last good sdkSessionId when a turn is l
     await task.maker.shutdown();
   });
 
+  it('keeps A when the remote stream crashes after reporting B', async () => {
+    const task = await openClaudeTask({ id: 'remote-crashed', remote: true, persistedSdkSessionId: SDK_A });
+    await task.create(SDK_A);
+
+    task.queues[0].push({ type: 'session_id', data: SDK_B, source: 'claude-code' });
+    task.queues[0].push({
+      type: 'error',
+      data: { message: 'stream crashed', isTerminal: true },
+      source: 'claude-code',
+    });
+    // 崩溃收尾：终止错误之后还会补一条 done(reason: sdk_stream_crashed)，它不能把 B 提交掉。
+    task.queues[0].push({ type: 'done', data: { reason: 'sdk_stream_crashed' }, source: 'claude-code' });
+    await task.settle();
+
+    expect((await task.store.get('remote-crashed'))?.sdkSessionId).toBe(SDK_A);
+    await task.maker.shutdown();
+  });
+
+  it('still commits B when the user stops the remote turn', async () => {
+    const task = await openClaudeTask({ id: 'remote-stopped', remote: true, persistedSdkSessionId: SDK_A });
+    await task.create(SDK_A);
+
+    task.queues[0].push({ type: 'session_id', data: SDK_B, source: 'claude-code' });
+    // Stop 之后 Claude 已写下这一轮的记录，下一轮要接着 B 走。
+    task.queues[0].push({ type: 'done', data: { reason: 'user_stop_unconfirmed_wake_tasks' }, source: 'claude-code' });
+    await task.settle();
+
+    expect((await task.store.get('remote-stopped'))?.sdkSessionId).toBe(SDK_B);
+    await task.maker.shutdown();
+  });
+
   it('commits B once the remote turn finishes', async () => {
     const task = await openClaudeTask({ id: 'remote-ok', remote: true, persistedSdkSessionId: SDK_A });
     await task.create(SDK_A);

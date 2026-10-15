@@ -101,6 +101,17 @@ describe('findLatestAssistantTranscriptUuid', () => {
     await expect(findLatestAssistantTranscriptUuid(SESSION)).resolves.toBe('uuid-top');
   });
 
+  it('keeps looking past a long run of sub-agent rows', async () => {
+    insertRow(sqlite, { clientId: 'a-top', role: 'assistant', createdAt: 100, agentMeta: { uuid: 'uuid-top' } });
+    for (let i = 0; i < 120; i += 1) {
+      insertRow(sqlite, {
+        clientId: `a-sub-${i}`, role: 'assistant', createdAt: 200 + i, agentMeta: { uuid: `uuid-sub-${i}`, parentUuid: 'tool-1' },
+      });
+    }
+
+    await expect(findLatestAssistantTranscriptUuid(SESSION)).resolves.toBe('uuid-top');
+  });
+
   it('ignores assistant rows from before the clear boundary', async () => {
     sqlite = createDb(250);
     insertRow(sqlite, { clientId: 'a-before', role: 'assistant', createdAt: 200, agentMeta: { uuid: 'uuid-before' } });

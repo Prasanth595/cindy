@@ -443,12 +443,25 @@ interface DeferredSdkSessionCommit {
   pending?: string;
 }
 
-/** 与对方电脑失联而结束的回合：对方那边可能根本没来得及写出这一轮 fork 出的对话记录。 */
-function isRemoteConnectionLostTurnEvent(evt: AgentEvent): boolean {
+/**
+ * 这一轮没有正常落地：与对方电脑失联，或对方的 Claude 流中途崩溃 / resume 失败。
+ * 这类回合里新 fork 出的编号可能还没有对话记录，不能写成持久编号。
+ * 用户主动 Stop 等其它收尾不在此列：Claude 已经收下输入并写了记录，下一轮应接着它走。
+ */
+const UNFINISHED_TURN_REASONS = new Set([
+  'remote_agent_closed',
+  'remote_agent_lost',
+  'sdk_stream_crashed',
+  'bridge_sdk_stream_crashed',
+  'resume_session_not_found',
+  'resume_session_recovery_failed',
+]);
+
+function isUnfinishedRemoteTurnEvent(evt: AgentEvent): boolean {
   const data = evt.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
   const { reason, message } = data as { reason?: unknown; message?: unknown };
-  if (reason === 'remote_agent_closed' || reason === 'remote_agent_lost') return true;
+  if (typeof reason === 'string' && UNFINISHED_TURN_REASONS.has(reason)) return true;
   return typeof message === 'string'
     && /\[REMOTE_AGENT_(EXPIRED|DEVICE_UNREACHABLE|NOT_FOUND|UNAVAILABLE)\]/.test(message);
 }
@@ -1130,11 +1143,11 @@ export class Maker {
         return;
       }
       if (!deferredSdkSessionCommit) return;
-      if (evt.type === 'done' && !isRemoteConnectionLostTurnEvent(evt)) {
+      if (evt.type === 'done' && !isUnfinishedRemoteTurnEvent(evt)) {
         void this.commitDeferredSdkSessionId(meta.id, deferredSdkSessionCommit).catch((e) => {
           this.logger.warn('failed to commit deferred sdkSessionId', { error: String(e) });
         });
-      } else if (evt.type === 'done' || (isTerminalAgentErrorEvent(evt) && isRemoteConnectionLostTurnEvent(evt))) {
+      } else if (evt.type === 'done' || (isTerminalAgentErrorEvent(evt) && isUnfinishedRemoteTurnEvent(evt))) {
         void this.discardDeferredSdkSessionId(meta.id, deferredSdkSessionCommit);
       }
     });
