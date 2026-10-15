@@ -186,14 +186,20 @@ describe('prewarm', () => {
     expect(h.controller.getState().a?.mounted).toBe(true);
   });
 
-  it('prewarm is idempotent (no duplicate window while in flight)', async () => {
+  it('prewarm is idempotent (keeps a single live window)', async () => {
     const h = makeHarness(new Set(['a']));
     h.controller.prewarm('a');
     h.controller.prewarm('a');
-    await vi.waitFor(() => expect(h.created).toHaveLength(1));
+    await vi.waitFor(() => {
+      const live = h.created.filter(({ win }) => !win.isDestroyed());
+      expect(live).toHaveLength(1);
+    });
     h.controller.prewarm('a');
-    await Promise.resolve();
-    expect(h.created).toHaveLength(1);
+    await vi.waitFor(() => {
+      const live = h.created.filter(({ win }) => !win.isDestroyed());
+      expect(live).toHaveLength(1);
+    });
+    expect(Object.keys(h.controller.getState())).toEqual(['a']);
   });
 });
 
@@ -464,6 +470,64 @@ describe('dispose', () => {
     expect(h.created[1].win.isDestroyed()).toBe(true);
     expect(isGhostOverlayWebContents(winA.webContents.id)).toBe(false);
     expect(h.controller.getState()).toEqual({});
+  });
+});
+
+describe('in-flight creation registry cleanup', () => {
+  it('owner change during in-flight creation destroys the window and clears its registry binding', async () => {
+    let resolveCreate!: (win: BrowserWindow) => void;
+    const gate = new Promise<BrowserWindow>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const created: FakeWindow[] = [];
+    const log = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+    };
+    const deps: GhostOverlayWindowsControllerDeps = {
+      createWindow: (): Promise<BrowserWindow> => {
+        const win = fakeWindow();
+        markGhostOverlayWebContentsId(win.webContents.id, 'a');
+        created.push(win);
+        return gate;
+      },
+      isGhostOverlayDeclared: () => true,
+      isUserEnabled: () => true,
+      broadcastState: () => {},
+      isQuitting: () => false,
+      log,
+    };
+    const controller = new GhostOverlayWindowsController(deps);
+
+    const showPromise = controller.show('a');
+    await vi.waitFor(() => expect(created).toHaveLength(1));
+    const win = created[0];
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(true);
+
+    controller.disposeAllForOwnerChange();
+
+    resolveCreate(win as unknown as BrowserWindow);
+    await showPromise;
+
+    expect(win.isDestroyed()).toBe(true);
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
+  });
+
+  it('dedup branch: duplicate in-flight creation destroys the extra window and clears its registry binding', async () => {
+    const h = makeHarness(new Set(['a']));
+    await Promise.all([h.controller.show('a'), h.controller.show('a')]);
+
+    expect(h.created).toHaveLength(2);
+    const [win1, win2] = h.created.map(({ win }) => win);
+    expect(win1.isDestroyed()).toBe(false);
+    expect(win2.isDestroyed()).toBe(true);
+    expect(isGhostOverlayWebContents(win1.webContents.id)).toBe(true);
+    expect(isGhostOverlayWebContents(win2.webContents.id)).toBe(false);
+    expect(Object.keys(h.controller.getState())).toEqual(['a']);
   });
 });
 
