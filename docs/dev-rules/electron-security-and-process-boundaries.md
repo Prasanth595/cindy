@@ -165,15 +165,16 @@ auth-server）+ origin 命中 `setLoginCaptchaOriginResolver` 注入的 auth 端
   形态要求，不豁免安全字段；
 - **置顶**：`setAlwaysOnTop(true, 'floating', 1)` 保持可见但不高于系统级覆盖物——
   形态要求，不豁免导航/权限闸；
-- **不可聚焦**：`focusable: false` + 展示一律 `showInactive()` + 默认
-  `setIgnoreMouseEvents(true, { forward: true })`，浮窗永不抢焦点——这也是「隐藏时
-  重置交互态」在无焦点窗口上的形态化实现；
+- **不可聚焦**：`focusable: false` + 展示一律 `showInactive()`，浮窗永不抢焦点；
+  默认 `setIgnoreMouseEvents(true, { forward: true })` 穿透鼠标。
 - **位置不持久化**：`resizable/movable: false`，位置由宿主控制、重启即重置，浮窗
   没有窗口级持久状态——因此「隐藏复用」保留 Renderer 而非窗口坐标。
 
 仍满足项：后台预热（`prewarm` 按需创建隐藏窗口并加载 Renderer）、双阶段就绪
 （`renderer-ready → presentation-ready`，5s 超时只展示已挂载壳）、隐藏复用
-（普通隐藏只 `hide()`，再次 `show()` 复用同一 Renderer）、有界恢复（每 ghostId
+（普通隐藏只 `hide()`，再次 `show()` 复用同一 Renderer）、隐藏时重置交互态
+（宿主在隐藏路径显式复位鼠标穿透 `setIgnoreMouseEvents(true, { forward: true })`，
+二次显示不继承拦截态，由插件页面重新判定命中）、有界恢复（每 ghostId
 独立计数，稳定 30s 后恢复额度）、sender 校验（就绪 IPC 经 registry 反查真实
 `webContents`，不接受自报 ghostId；管理 IPC 断言 Cindy 自有顶层 renderer）。
 

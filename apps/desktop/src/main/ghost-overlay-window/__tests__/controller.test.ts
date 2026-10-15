@@ -338,6 +338,40 @@ describe('hide / reuse', () => {
     expect(h.created).toHaveLength(1); // 不重建
     expect(win.showInactive).toHaveBeenCalledTimes(2); // 复用同一 Renderer
   });
+
+  it('hide resets interactive mouse capture so the next show does not block clicks', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+
+    h.controller.setInteractive('a', true);
+    expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    expect(h.controller.getState().a?.interactive).toBe(true);
+
+    h.controller.hide('a');
+    expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    expect(h.controller.getState().a?.interactive).toBe(false);
+
+    // 再显示:插件页面重新判定命中前,窗口保持默认穿透,不拦截点击。
+    await h.controller.show('a');
+    expect(h.controller.getState().a?.interactive).toBe(false);
+    expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+  });
+
+  it('native hide also resets interactive mouse capture', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+
+    h.controller.setInteractive('a', true);
+    expect(h.controller.getState().a?.interactive).toBe(true);
+
+    win.emitWindowEvent('hide');
+    expect(win.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    expect(h.controller.getState().a?.interactive).toBe(false);
+  });
 });
 
 describe('user disabled guard (fail closed)', () => {

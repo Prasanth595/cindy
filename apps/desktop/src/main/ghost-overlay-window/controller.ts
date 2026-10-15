@@ -383,9 +383,20 @@ export class GhostOverlayWindowsController {
     this.broadcast();
   }
 
+  /**
+   * 隐藏时复位鼠标穿透:交互态只在浮窗可见期间成立。再次显示时由插件页面重新
+   * 判定命中前,窗口必须回到默认穿透(forward 语义),否则会继续拦截下层点击。
+   */
+  private resetInteractiveOnHide(slot: WindowSlot): void {
+    if (slot.interactive !== true || slot.win.isDestroyed()) return;
+    slot.interactive = false;
+    slot.win.setIgnoreMouseEvents(true, { forward: true });
+  }
+
   private hideWindow(ghostId: string, slot: WindowSlot): void {
     this.clearShowTimeout(slot);
     slot.pendingShow = false;
+    this.resetInteractiveOnHide(slot);
     if (slot.win.isVisible()) slot.win.hide();
     this.applyVisibility(ghostId, slot, false);
     this.sendVisibility(slot, false);
@@ -432,6 +443,7 @@ export class GhostOverlayWindowsController {
     if (slot.visible === visible && !slot.pendingShow) return;
     this.applyVisibility(ghostId, slot, visible);
     if (visible) slot.pendingShow = false;
+    else this.resetInteractiveOnHide(slot);
     this.sendVisibility(slot, visible);
     this.broadcast();
   }
@@ -499,6 +511,7 @@ export class GhostOverlayWindowsController {
     if (slot.visible) {
       slot.win.hide();
       this.applyVisibility(ghostId, slot, false);
+      this.resetInteractiveOnHide(slot);
     }
     slot.rendererReady = false;
     slot.presentationReady = false;
