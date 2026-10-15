@@ -10,6 +10,7 @@ import type { SkillAudienceDepartment } from '../../../../shared/skillhubAudienc
 
 type Props = {
   initialDepartments?: SkillAudienceDepartment[];
+  initialError?: boolean;
   mode: 'all' | 'departments'; selected: string[]; disabled?: boolean;
   onChange: (mode: 'all' | 'departments', selected: string[]) => void;
   onValidityChange: (valid: boolean) => void;
@@ -22,16 +23,17 @@ export function departmentAncestors(id: string, parents: ReadonlyMap<string, str
   }
   return result;
 }
-export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange, initialDepartments }: Props) {
+export function DepartmentAudienceField({ mode, selected, disabled, onChange, onValidityChange, initialDepartments, initialError = false }: Props) {
   const { t } = useTranslation();
   const radioName = useId();
   const [departments, setDepartments] = useState<SkillAudienceDepartment[]>(initialDepartments ?? []);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(initialDepartments ? 'ready' : 'loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(initialDepartments ? 'ready' : initialError ? 'error' : 'loading');
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (initialDepartments) { setDepartments(initialDepartments); setStatus('ready'); return; }
+    if (initialError && attempt === 0) { setStatus('error'); return; }
     let cancelled = false;
     const owner = getDataOwnerGeneration();
     setStatus('loading');
@@ -41,7 +43,7 @@ export function DepartmentAudienceField({ mode, selected, disabled, onChange, on
       setDepartments(result.departments); setStatus('ready');
     }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setStatus('error'); });
     return () => { cancelled = true; };
-  }, [attempt, initialDepartments]);
+  }, [attempt, initialDepartments, initialError]);
   const { byId, parents, childrenByParent } = useMemo(() => {
     const byId = new Map(departments.map(d => [d.id, d]));
     const parents = new Map(departments.map(d => [d.id, d.parentId]));

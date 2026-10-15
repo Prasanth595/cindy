@@ -43,6 +43,7 @@ import {
   type PublishFormValues,
   type PublishVisibility,
 } from './lib/publishForm';
+import type { SkillAudienceDepartment } from '../../../shared/skillhubAudience';
 import type { MarketCategory } from '../../../shared/skillhubCategory';
 import { PlatformTagSelector } from './components/PlatformTagSelector';
 
@@ -513,6 +514,26 @@ export function PublishDialog({
   // preserve a dialog opened for the previous identity or its continuations.
   const dialogOwner = useMemo(() => getDataOwnerGeneration(), [open]);
   const isDialogOwnerCurrent = isDataOwnerGenerationCurrent(dialogOwner);
+
+  // Prepare the organization tree before showing the dialog, including updates
+  // that can become a first publication after a name conflict.
+  const [audiencePreparation, setAudiencePreparation] = useState<{
+    finished: boolean; departments?: SkillAudienceDepartment[];
+  }>({ finished: false });
+  useEffect(() => {
+    setAudiencePreparation({ finished: false });
+    if (!open || identityPolicy.ownerType !== 'organization') return;
+    let cancelled = false;
+    const owner = getDataOwnerGeneration();
+    void window.electronAPI.skillhub.getMyDepts().then(result => {
+      if (cancelled || !isDataOwnerGenerationCurrent(owner)) return;
+      setAudiencePreparation({ finished: true, departments:
+        result.success && result.audienceSupported ? result.departments : undefined });
+    }).catch(() => {
+      if (!cancelled && isDataOwnerGenerationCurrent(owner)) setAudiencePreparation({ finished: true });
+    });
+    return () => { cancelled = true; };
+  }, [open, identityPolicy.ownerType]);
 
   // A name conflict can turn an update into a new publication under another name.
   const [renameAfterFailure, setRenameAfterFailure] = useState(false);
@@ -986,7 +1007,7 @@ export function PublishDialog({
     <>
       {/* ── Main PublishDialog (Empty / Working / Failure 共用) ───────────── */}
       <Dialog.Root
-        open={open && isDialogOwnerCurrent}
+        open={open && isDialogOwnerCurrent && (identityPolicy.ownerType !== 'organization' || audiencePreparation.finished)}
         onOpenChange={(v) => {
           if (!v) handleClose();
         }}
@@ -1197,6 +1218,8 @@ export function PublishDialog({
                     )}
                   </div>
                   {form.visibility === 'DEPARTMENT_SCOPED' && <DepartmentAudienceField
+                    initialDepartments={audiencePreparation.departments}
+                    initialError={audiencePreparation.finished && !audiencePreparation.departments}
                     mode={form.audienceMode ?? 'all'} selected={form.visibleDeptIds} disabled={isLocked}
                     onValidityChange={setAudienceValid}
                     onChange={(audienceMode, visibleDeptIds) => setForm(f => ({ ...f, audienceMode, visibleDeptIds }))} />}

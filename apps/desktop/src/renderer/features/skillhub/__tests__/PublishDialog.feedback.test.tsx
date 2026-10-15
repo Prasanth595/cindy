@@ -5,14 +5,15 @@ import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(), refresh: vi.fn(), sync: vi.fn(), publish: vi.fn(), cancelPublish: vi.fn(),
-  renameLocal: vi.fn(), listCategories: vi.fn(),
+  renameLocal: vi.fn(), listCategories: vi.fn(), getMyDepts: vi.fn(),
+  user: { membershipKind: 'personal', orgSlug: null as string | null },
 }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
-vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: { membershipKind: 'personal', orgSlug: null } }) }));
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ user: mocks.user }) }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: mocks.confirm }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
 vi.mock('../hooks/useSkillhub', () => ({ refresh: mocks.refresh }));
@@ -33,6 +34,8 @@ const feedback: SkillhubPublishProgressEvent = {
 beforeEach(() => {
   vi.clearAllMocks();
   setDataOwnerGeneration('owner-a', 1);
+  mocks.user = { membershipKind: 'personal', orgSlug: null };
+  mocks.getMyDepts.mockReset().mockResolvedValue({ success: true, audienceSupported: true, departments: [{ id: 'dept-a', name: 'Engineering', parentId: null }] });
   mocks.refresh.mockReset().mockResolvedValue([]);
   mocks.confirm.mockResolvedValue(true);
   mocks.publish.mockResolvedValue({ success: true, result: { name: 'review-helper', version: '1.0.1' } });
@@ -43,6 +46,7 @@ beforeEach(() => {
     cancelPublish: mocks.cancelPublish,
     renameLocal: mocks.renameLocal,
     listCategories: mocks.listCategories,
+    getMyDepts: mocks.getMyDepts,
     onPublishProgress: (listener: typeof progress) => { progress = listener; return () => {}; },
   } });
 });
@@ -280,4 +284,50 @@ describe('PublishDialog result delivery', () => {
       expect(view.onScanResult).not.toHaveBeenCalled();
     },
   );
+});
+
+
+describe('PublishDialog department preparation', () => {
+  function mountOrganization() {
+    mocks.user = { membershipKind: 'org', orgSlug: 'example' };
+    return mountPublication({ isFirstPublish: true });
+  }
+  function chooseDepartments() {
+    fireEvent.click(screen.getByText('skillhub.publishDialog.visibilityTeamTitle'));
+    fireEvent.click(screen.getByRole('radio', { name: 'skillhub.audience.departments' }));
+  }
+  it('prepares the tree before displaying the dialog and reuses it when switching visibility', async () => {
+    let finish!: (result: unknown) => void;
+    mocks.getMyDepts.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    mountOrganization();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => finish({ success: true, audienceSupported: true,
+      departments: [{ id: 'dept-a', name: 'Engineering', parentId: null }] }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    chooseDepartments();
+    expect(screen.getByRole('checkbox', { name: 'Engineering' })).toBeTruthy();
+    expect(screen.queryByText('skillhub.audience.loading')).toBeNull();
+    expect(mocks.getMyDepts).toHaveBeenCalledOnce();
+  });
+  it('shows a retryable failure without automatically fetching again on selection', async () => {
+    mocks.getMyDepts.mockRejectedValueOnce(new Error('offline'));
+    mountOrganization();
+    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByText('skillhub.publishDialog.visibilityTeamTitle'));
+    expect(screen.getByRole('alert').textContent).toContain('skillhub.audience.loadError');
+    expect(mocks.getMyDepts).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'skillhub.audience.retry' }));
+    await waitFor(() => expect(screen.queryByText('skillhub.audience.loadError')).toBeNull());
+    fireEvent.click(screen.getByRole('radio', { name: 'skillhub.audience.departments' }));
+    expect(screen.getByRole('checkbox', { name: 'Engineering' })).toBeTruthy();
+  });
+  it('discards a department response from the previous owner', async () => {
+    let finish!: (result: unknown) => void;
+    mocks.getMyDepts.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const view = mountOrganization();
+    setDataOwnerGeneration('owner-b', 2);
+    await act(async () => finish({ success: true, audienceSupported: true, departments: [] }));
+    view.rerender();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
 });
