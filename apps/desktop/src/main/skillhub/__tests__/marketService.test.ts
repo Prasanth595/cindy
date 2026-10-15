@@ -308,6 +308,15 @@ describe('SkillhubMarketService', () => {
     ]);
   });
 
+  it.each(['all', 'departments'] as const)('rejects explicit %s audience management without a version before fetching', async (audienceMode) => {
+    const fetch = vi.fn();
+    const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });
+    await expect(service.setPublishedVisibility({ name: 'demo', visibility: 'shared', audienceMode,
+      visibilityDepartmentIds: audienceMode === 'all' ? [] : ['dept-1'],
+    })).rejects.toThrow('Audience management requires a concurrency version');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('uses a versioned write and never falls back when an old replica rejects it', async () => {
     const fetch = vi.fn().mockRejectedValue(new ServerApiError('NOT_FOUND', 404, '资源不存在'));
     const service = new SkillhubMarketService({ fetch, assertWriteAllowed: vi.fn(), assertVisibilityAllowed: vi.fn() });

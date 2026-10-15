@@ -257,6 +257,9 @@ export class SkillhubMarketService {
     await this.assertWriteAllowed();
     await this.assertVisibilityAllowed(visibility);
     validateSkillAudience(audience);
+    if (audience.visibilityDepartmentIds !== undefined && audience.expectedUpdatedAt === undefined) {
+      throw new Error('Audience management requires a concurrency version');
+    }
     const writePrefix = audience.visibilityDepartmentIds !== undefined || audience.expectedUpdatedAt !== undefined
       ? '/api/skills-hub/v2' : '/api/skills-hub';
     const result = await this.fetch<SkillVisibilityUpdateResult>(
