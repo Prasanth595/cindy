@@ -118,6 +118,7 @@ function BotsSidebarContent() {
   const archivedBots = bots.filter((bot) => bot.status === 'archived');
   const collapsed = useSidebarCollapsedState();
   const [query, setQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const archiveBusyRef = useRef(false);
@@ -225,7 +226,7 @@ function BotsSidebarContent() {
   ];
   const rosterSize = groups.length + rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
   const hasArchivedGroups = groups.some(group => group.archived);
-  const showSearch = rosterSize >= 8 || normalizedQuery.length > 0 ||
+  const showSearch = searchFocused || rosterSize >= 8 || normalizedQuery.length > 0 ||
     hasArchivedGroups;
   const matchesGroup = (group: BotGroupSummary) => !normalizedQuery ||
     `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery);
@@ -552,6 +553,8 @@ function BotsSidebarContent() {
             ref={searchInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
             placeholder={t('bots.list.searchPlaceholder')}
             aria-label={t('bots.list.search')}
             className="h-7 w-full rounded-lg border border-[var(--border-default)] bg-transparent pl-7 pr-2 text-11 text-[var(--sidebar-nav-text)] outline-none placeholder:text-[var(--sidebar-list-muted)] focus:border-[var(--focus-ring)]"

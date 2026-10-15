@@ -1,19 +1,32 @@
-import { useContext, useEffect } from 'react';
+import { useContext, useEffect, useRef } from 'react';
 import { MainViewHistoryContext } from '@/contexts/MainViewHistoryContext';
-import { Outlet, useOutletContext, useParams, useLocation } from 'react-router-dom';
+import { Outlet, useOutletContext, useParams, useLocation, useNavigate } from 'react-router-dom';
 
 import { useOwnTopNavScrollableRows } from '../feature-context';
 import { BotsSidebar } from './BotsSidebar';
 import { BotSettingsDrawer } from './BotSettingsDrawer';
 import { BotGroupSettingsDrawer } from './BotGroupSettingsDrawer';
 import { useBotProfiles } from './botStore';
+import { useBotGroupSummary } from './botGroupStore';
 
 export function BotsFeatureLayout() {
   useOwnTopNavScrollableRows(false);
   const history = useContext(MainViewHistoryContext);
-  const { botId, deviceId } = useParams();
+  const { botId, deviceId, groupId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const bots = useBotProfiles();
+  const selectedGroup = useBotGroupSummary(groupId ?? null);
+  const previousGroup = useRef(selectedGroup);
+  useEffect(() => {
+    const previous = previousGroup.current;
+    previousGroup.current = selectedGroup;
+    // Both archive entry points refresh this summary. Only clear a group that
+    // became archived while selected; opening archived history stays supported.
+    if (selectedGroup?.archived && previous?.id === selectedGroup.id && !previous.archived) {
+      navigate('/bots/list', { replace: true });
+    }
+  }, [selectedGroup, navigate]);
   useEffect(() => {
     if (!history || deviceId || !botId || history.current.ignoredLocationKey === location.key) return;
     const bot = bots.find(candidate => candidate.id === botId);

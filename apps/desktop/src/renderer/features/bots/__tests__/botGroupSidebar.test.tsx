@@ -311,6 +311,27 @@ describe('BotsSidebar group chats', () => {
     expect(focus).toHaveBeenLastCalledWith();
   });
 
+  it('keeps the search input focused when its last archived result is restored and the query is cleared', async () => {
+    mocks.profiles = [];
+    mocks.groups = [managedGroup(true)];
+    const view = await renderSidebar();
+    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
+    fireEvent.change(input, { target: { value: '周末' } });
+    await selectArchive(true);
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+    act(() => input.focus());
+    mocks.groups = [managedGroup(false)];
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.getByRole('textbox', { name: 'bots.list.search' })).toBe(input);
+    expect(document.activeElement).toBe(input);
+
+    const row = screen.getByText('周末出游').closest('button')!;
+    act(() => row.focus());
+    expect(screen.queryByRole('textbox', { name: 'bots.list.search' })).toBeNull();
+    expect(document.activeElement).toBe(row);
+  });
+
   it('does not steal search focus when unarchive moves a filtered-out group', async () => {
     mocks.groups = [managedGroup(true)];
     const view = await renderSidebar();
