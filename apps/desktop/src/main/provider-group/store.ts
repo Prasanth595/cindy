@@ -96,6 +96,31 @@ export async function writeProviderGroup(
   return next.groups[providerId] ?? null;
 }
 
+/** 在同一把写锁内基于最新组配置做最小更新；更新器返回 undefined 表示放弃写入。 */
+export async function updateProviderGroup(
+  providerId: string,
+  updater: (current: ProviderGroupConfig | null) => ProviderGroupConfig | null | undefined,
+): Promise<ProviderGroupConfig | null> {
+  if (!isProviderGroupProviderId(providerId)) throw new Error('Invalid provider id');
+  const next = await store.updateAtomic(({ value }) => {
+    const current = value.groups[providerId] ?? null;
+    const updated = updater(current);
+    if (updated === undefined) return {};
+    const normalized = updated === null ? null : normalizeProviderGroupConfig(updated, providerId);
+    if (updated !== null && !normalized) throw new Error('Invalid provider group config');
+    const groups = { ...value.groups };
+    if (normalized) groups[providerId] = normalized;
+    else delete groups[providerId];
+    const remaining = sharedDevices(groups);
+    const reshareCleanups = { ...value.reshareCleanups };
+    for (const device of sharedDevices(value.groups)) {
+      if (!remaining.has(device)) reshareCleanups[device] = randomUUID();
+    }
+    return { groups, reshareCleanups };
+  });
+  return next.groups[providerId] ?? null;
+}
+
 export function listProviderGroupReshareCleanups(): Readonly<Record<string, string>> {
   store.invalidateIfChanged();
   return store.read().reshareCleanups ?? {};

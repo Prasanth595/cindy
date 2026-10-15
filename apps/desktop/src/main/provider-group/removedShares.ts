@@ -57,7 +57,11 @@ export interface RecordShareHostsDeps {
   /** 本账号收到的分享：分享 id → 分享者那台电脑的设备 id。还没读到的分享不在里面(不要求名单完整)。 */
   shareHosts(): ReadonlyMap<string, string>;
   listGroups(): Record<string, ProviderGroupConfig>;
-  writeGroup(providerId: string, config: unknown): Promise<unknown>;
+  /** 在写锁内基于最新组配置更新，组已被删除时 updater 收到 null。 */
+  updateGroup(
+    providerId: string,
+    updater: (current: ProviderGroupConfig | null) => ProviderGroupConfig | null | undefined,
+  ): Promise<ProviderGroupConfig | null>;
   ownerKey(): string;
   changed(providerId: string): void;
 }
@@ -73,22 +77,34 @@ export async function recordShareHosts(deps: RecordShareHostsDeps): Promise<stri
   const updated: string[] = [];
   for (const providerId of Object.keys(deps.listGroups())) {
     if (deps.ownerKey() !== owner) break;
-    // 每个组写之前现读一次：前一个组的写入期间设置页可能改过这个组。
-    const config = deps.listGroups()[providerId];
-    if (!config) continue;
-    let dirty = false;
-    const members = config.members.map((member) => {
+    const listed = deps.listGroups()[providerId];
+    if (!listed || !listed.members.some((member) => {
       if (member.kind !== 'share' || member.agentDeviceId === null || !isProviderShareAgentDeviceId(member.agentDeviceId)) {
-        return member;
+        return false;
       }
       const host = hosts.get(member.agentDeviceId.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length));
-      if (!host || host === member.hostDeviceId) return member;
-      dirty = true;
-      return { ...member, hostDeviceId: host };
+      return host !== undefined && host !== member.hostDeviceId;
+    })) continue;
+    let changed = false;
+    const written = await deps.updateGroup(providerId, (config) => {
+      // 组可能在等待写锁时被用户删除；不要用旧快照把它重新创建。
+      if (!config) return undefined;
+      let dirty = false;
+      const members = config.members.map((member) => {
+        if (member.kind !== 'share' || member.agentDeviceId === null || !isProviderShareAgentDeviceId(member.agentDeviceId)) {
+          return member;
+        }
+        const host = hosts.get(member.agentDeviceId.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length));
+        if (!host || host === member.hostDeviceId) return member;
+        dirty = true;
+        return { ...member, hostDeviceId: host };
+      });
+      if (!dirty) return undefined;
+      changed = true;
+      return { ...config, members };
     });
-    if (!dirty) continue;
-    await deps.writeGroup(providerId, { ...config, members });
     if (deps.ownerKey() !== owner) break;
+    if (!changed || !written) continue;
     updated.push(providerId);
     deps.changed(providerId);
   }

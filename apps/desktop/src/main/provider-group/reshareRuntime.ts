@@ -22,7 +22,7 @@ import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { pruneProviderGroupBindings } from './bindings.js';
 import { pruneRemovedShareMembers, recordShareHosts } from './removedShares.js';
 import { createProviderGroupReshare, type ProviderGroupReshare } from './reshare.js';
-import { completeProviderGroupReshareCleanup, listProviderGroupReshareCleanups, listProviderGroups, writeProviderGroup } from './store.js';
+import { completeProviderGroupReshareCleanup, listProviderGroupReshareCleanups, listProviderGroups, updateProviderGroup, writeProviderGroup } from './store.js';
 
 const log = createLogger('provider-group:reshare');
 
@@ -110,7 +110,7 @@ function pruneSoon(): void {
   }).then(() => recordShareHosts({
     shareHosts: () => new Map(getReceivedShares().map((share) => [share.shareId, share.hostDeviceId])),
     listGroups: listProviderGroups,
-    writeGroup: writeProviderGroup,
+    updateGroup: updateProviderGroup,
     ownerKey: activeOwnerScopeKey,
     changed: groupChanged,
   })).then((updated) => {
