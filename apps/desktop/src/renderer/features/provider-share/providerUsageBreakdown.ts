@@ -17,12 +17,13 @@ function addMoney(a: ProviderShareMoney | null, b: ProviderShareMoney | null): P
  */
 export function mergeModelUsage(
   lists: ReadonlyArray<readonly ProviderShareModelUsageView[]>,
+  mergeAcrossProviders = false,
 ): ProviderShareModelUsageView[] {
   const merged = new Map<string, ProviderShareModelUsageView>();
   const mixedKeys = new Set<string>();
   for (const list of lists) {
     for (const row of list) {
-      const key = JSON.stringify([row.kind, row.providerId, row.model, row.memberKey]);
+      const key = JSON.stringify([row.kind, mergeAcrossProviders ? null : row.providerId, row.model, row.memberKey]);
       const existing = merged.get(key);
       if (!existing) {
         merged.set(key, { ...row, amount: row.amount ? { ...row.amount } : null });
@@ -75,15 +76,16 @@ export function groupUsageByMember(
   const groups: MemberUsageGroup[] = memberKeys.map((memberKey) => ({
     memberKey,
     inGroup: true,
-    models: mergeModelUsage([byKey.get(memberKey) ?? []]),
+    // 展开按物理电脑展示：同一台电脑上的多个账号，同一个 Agent/模型只保留一行。
+    models: mergeModelUsage([byKey.get(memberKey) ?? []], true),
   }));
   const known = new Set(memberKeys);
   for (const [memberKey, list] of byKey) {
     if (memberKey === null || known.has(memberKey)) continue;
-    groups.push({ memberKey, inGroup: false, models: mergeModelUsage([list]) });
+    groups.push({ memberKey, inGroup: false, models: mergeModelUsage([list], true) });
   }
   const unattributed = byKey.get(null);
-  if (unattributed?.length) groups.push({ memberKey: null, inGroup: false, models: mergeModelUsage([unattributed]) });
+  if (unattributed?.length) groups.push({ memberKey: null, inGroup: false, models: mergeModelUsage([unattributed], true) });
   return groups;
 }
 

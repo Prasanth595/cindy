@@ -48,6 +48,21 @@ describe('anonymous shared group status', () => {
     expect(await createGuestSupportReader(env.readCaps)(member)).toBe('needs-update');
   });
 
+  it('coalesces shared accounts that point to one physical computer', async () => {
+    const env = setup(['available', 'available']);
+    const base = env.view.config!.members[1]!;
+    const members = [
+      { ...base, kind: 'share' as const, agentDeviceId: 'share:s1', hostDeviceId: 'kai-pc' },
+      { ...base, kind: 'share' as const, agentDeviceId: 'share:s2', hostDeviceId: 'kai-pc' },
+    ];
+    env.readCaps.mockResolvedValue({ virtualWorkspace: true, reshareConsent: true } as RemoteAgentCaps);
+    const read = createGuestSupportReader(env.readCaps);
+
+    expect(await Promise.all(members.map((member) => read(member)))).toEqual(['supported', 'supported']);
+    expect(env.readCaps).toHaveBeenCalledTimes(1);
+    expect(env.readCaps).toHaveBeenCalledWith(members[0]);
+  });
+
   it('projects coarse states without identities, sources, limits, or usage', async () => {
     const env = setup();
     expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual([

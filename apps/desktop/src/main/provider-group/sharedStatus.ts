@@ -55,18 +55,18 @@ export function createGuestSupportReader(readCaps: SharedGroupStatusDeps['readCa
   }
   return async (member: ProviderGroupMember): Promise<ProviderGroupGuestSupport> => {
     if (!member.agentDeviceId) return 'supported';
+    const deviceKey = providerGroupPhysicalDeviceKey(member);
     const now = Date.now();
-    for (const [agentDeviceId, entry] of caps) {
-      if (entry.expiresAt <= now) caps.delete(agentDeviceId);
+    for (const [key, entry] of caps) {
+      if (entry.expiresAt <= now) caps.delete(key);
     }
-    let pending = caps.get(member.agentDeviceId);
+    let pending = caps.get(deviceKey);
     if (!pending) {
-      const agentDeviceId = member.agentDeviceId;
       const promise = new Promise<RemoteAgentCaps | null>((resolve) => {
         const cancel = () => {
           queued.delete(start);
           clearTimeout(timer);
-          caps.delete(agentDeviceId);
+          caps.delete(deviceKey);
           resolve(null);
         };
         const start = () => {
@@ -89,7 +89,7 @@ export function createGuestSupportReader(readCaps: SharedGroupStatusDeps['readCa
       const entry = { promise, expiresAt: Infinity };
       void promise.then(() => { entry.expiresAt = Date.now() + SHARED_GROUP_STATUS_CAPS_CACHE_MS; });
       pending = entry;
-      caps.set(member.agentDeviceId, pending);
+      caps.set(deviceKey, pending);
     }
     const promise = pending.promise;
     const capability = await readWithin(() => promise);

@@ -68,7 +68,10 @@ describe('groupUsageByMember', () => {
       ['share:kai-2:xd', 'share-host:kai-pc'],
     ]);
     const groups = groupUsageByMember(
-      [usage({ memberKey: 'share:kai-1:xd' }), usage({ memberKey: 'share:kai-2:xd', turns: 2, inputTokens: 20 })],
+      [
+        usage({ memberKey: 'share:kai-1:xd' }),
+        usage({ memberKey: 'share:kai-2:xd', providerId: 'xd-2', turns: 2, inputTokens: 20 }),
+      ],
       ['local', 'share-host:kai-pc'],
       aliases,
     );
