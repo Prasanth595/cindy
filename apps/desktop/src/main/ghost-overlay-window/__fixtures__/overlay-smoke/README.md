@@ -19,25 +19,30 @@ Cindy Core 新增的「插件桌面浮窗」能力（透明、置顶、不抢焦
 | --- | --- |
 | `ghost.json` | 最小合法清单（schemaVersion 3，`overlay` 声明 160×160） |
 | `main.js` | 电子脑：挂载浮窗、转发 `overlay-interactive` → `set-interactive` |
-| `overlay.html` | 零桥页面：画圆、命中判定、click 计数、显示状态块 |
+| `overlay.html` | 零桥页面：透明底 + 圆样式，通过 `<script src="overlay.js">` 加载命中逻辑（CSP 只允许同源外部脚本） |
+| `overlay.js` | 零桥脚本：命中判定、click 计数、显示状态块（同源外部脚本，避开 inline script CSP 限制） |
 
 ## 1. 打包成 `.cindy`
 
 `.cindy` 就是 zip。在**本目录**（`__fixtures__/overlay-smoke/`）打开 PowerShell 执行：
 
 ```powershell
-Compress-Archive -Path ghost.json,main.js,overlay.html -DestinationPath overlay-smoke-0.0.1.cindy
+Compress-Archive -Path ghost.json,main.js,overlay.html,overlay.js -DestinationPath overlay-smoke-0.0.2.cindy
 ```
 
-- 只打包这三个文件（README 不进包）。`ghost.json` 必须位于 zip 根目录。
+- 只打包这四个文件（README 不进包）。`ghost.json` 必须位于 zip 根目录。
 - 再次打包前若目标文件已存在，先删除旧 `.cindy`，或追加 `-Force` 覆盖。
 
 ## 2. 在 Cindy 本地安装
 
 1. 打开 Cindy，进入「插件」入口（Plugins）。
-2. 本地安装：把 `overlay-smoke-0.0.1.cindy` 拖入窗口，或从磁盘选择该文件。
+2. 本地安装：把 `overlay-smoke-0.0.2.cindy` 拖入窗口，或从磁盘选择该文件。
 3. 按确认框完成安装与授权（resident 常驻会多一行如实披露）。
 4. 确认插件已启用。启用的同时电子脑被拉起，圆应自动出现在屏幕上。
+
+> **更新已安装的旧版本**：Cindy 本地安装不会原地替换已装的同名插件；更新前请先在插件
+> 管理里**卸载旧版**（如 0.0.1），再安装新版（0.0.2），或按 Cindy 插件更新流程操作，
+> 否则可能仍加载旧包。
 
 ## 3. 人工验收清单（对照设计 §6.3 的 Core 项）
 
