@@ -64,15 +64,28 @@ describe('accounts on the same computer', () => {
         { kind: 'share', agentDeviceId: 'share:s2', providerId: 'openai-b', hostDeviceId: 'kai-pc' },
         // 还没补记那台电脑的旧组员：按分享各算一台。
         { kind: 'share', agentDeviceId: 'share:s3', providerId: 'openai' },
-        // 只有分享来的才记分享者那台电脑；格式不对的丢掉。
+        // 只有分享来的才记分享者那台电脑；设备 ID 是协议里的不透明值，允许任意字符。
         { kind: 'device', agentDeviceId: 'vm', providerId: 'openai', hostDeviceId: 'kai-pc' },
-        { kind: 'share', agentDeviceId: 'share:s4', providerId: 'openai', hostDeviceId: 'share:s1' },
+        { kind: 'share', agentDeviceId: 'share:s4', providerId: 'openai', hostDeviceId: 'phone:1' },
+        { kind: 'share', agentDeviceId: 'share:s5', providerId: 'openai', hostDeviceId: ' ' },
       ],
     }, 'openai')!;
-    expect(shares.members.map((m) => m.hostDeviceId)).toEqual([undefined, 'kai-pc', 'kai-pc', undefined, undefined, undefined]);
-    expect(providerGroupDeviceCount(shares.members)).toBe(5);
+    expect(shares.members.map((m) => m.hostDeviceId)).toEqual([undefined, 'kai-pc', 'kai-pc', undefined, undefined, 'phone:1', ' ']);
+    expect(providerGroupDeviceCount(shares.members)).toBe(6);
     expect(providerGroupSummaryForWire(shares).members.map((m) => m.hostDeviceId))
-      .toEqual([undefined, 'kai-pc', 'kai-pc', undefined, undefined, undefined]);
+      .toEqual([undefined, 'kai-pc', 'kai-pc', undefined, undefined, 'phone:1', ' ']);
+  });
+
+  it('accepts the full shared-task host device id domain and rejects only empty or oversized values', () => {
+    const config = normalizeProviderGroupConfig({
+      members: [
+        { kind: 'share', agentDeviceId: 'share:s1', providerId: 'openai', hostDeviceId: 'phone~1' },
+        { kind: 'share', agentDeviceId: 'share:s2', providerId: 'openai', hostDeviceId: '设备/手机' },
+        { kind: 'share', agentDeviceId: 'share:s3', providerId: 'openai', hostDeviceId: '' },
+        { kind: 'share', agentDeviceId: 'share:s4', providerId: 'openai', hostDeviceId: 'x'.repeat(129) },
+      ],
+    }, 'openai')!;
+    expect(config.members.map((member) => member.hostDeviceId)).toEqual(['phone~1', '设备/手机', undefined, undefined]);
   });
 
   it('keeps a valid account name snapshot and carries it to same-account computers', () => {

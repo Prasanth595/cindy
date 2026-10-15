@@ -45,7 +45,9 @@ interface SummaryMember {
   computer: string;
 }
 
-const HOST_DEVICE_ID = /^[A-Za-z0-9_.-]{1,128}$/;
+function isHostDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128;
+}
 
 /** 目录里某个供应商带的组摘要里的组员；没有组或格式不对返回 null(当作没有组)。 */
 function readSummaryMembers(provider: ProviderView): SummaryMember[] | null {
@@ -66,7 +68,7 @@ function readSummaryMembers(provider: ProviderView): SummaryMember[] | null {
       && (kind === 'share') === isProviderShareAgentDeviceId(agentDeviceId)
       && typeof providerId === 'string' && providerId.length > 0 && providerId.length <= 128
     ) {
-      const host = kind === 'share' && typeof hostDeviceId === 'string' && HOST_DEVICE_ID.test(hostDeviceId)
+      const host = kind === 'share' && isHostDeviceId(hostDeviceId)
         ? `share-host:${hostDeviceId}`
         : null;
       member = { agentDeviceId, providerId, computer: host ?? `${kind}:${agentDeviceId}` };

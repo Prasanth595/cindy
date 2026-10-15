@@ -269,7 +269,10 @@ function normalizeMember(raw: unknown, groupProviderId: string): ProviderGroupMe
 }
 
 function normalizeShareHostDeviceId(value: unknown): string | undefined {
-  return typeof value === 'string' && !isProviderShareAgentDeviceId(value) && DEVICE_ID_PATTERN.test(value)
+  // Provider-share host IDs use the shared-task device domain: any non-empty
+  // string up to 128 UTF-16 code units. They are opaque and never used as a
+  // connection address here, so do not apply the narrower local-device regex.
+  return typeof value === 'string' && value.length > 0 && value.length <= 128
     ? value
     : undefined;
 }
