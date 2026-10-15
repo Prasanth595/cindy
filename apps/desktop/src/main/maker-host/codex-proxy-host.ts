@@ -9,8 +9,10 @@ import {
 } from '@cindy/responses-chat-bridge';
 import {
   isCustomRoutedProvider,
+  isCodexGatewayWireModel,
   providerCatalogId,
   providerModelRecord,
+  stripCodexGatewayWirePrefix,
   type CatalogModel,
   type Effort,
   type Provider,
@@ -529,11 +531,11 @@ function providerContextForRequest(
 }
 
 /**
- * 网关折扣命名空间判定：`codex/` 是 Gateway wire model 的档位标识，请求必须送往
- * 网关换 key，且转发时原样保留。它不是 Codex 运行时 slug，也不参与 spawn_agent。
+ * 网关折扣命名空间判定：`openai-codex/` 与 `codex/` 都是 Gateway wire model 的档位标识，
+ * 请求必须送往网关换 key，且转发时原样保留。它不是 Codex 运行时 slug，也不参与 spawn_agent。
  */
 function gatewayProviderIdForRewrittenModel(model: string): string | null {
-  return model.startsWith('codex/') && model.length > 'codex/'.length ? 'xd' : null;
+  return isCodexGatewayWireModel(model) ? 'xd' : null;
 }
 
 /** Applies the locked Subagent effort while preserving unrelated reasoning fields. */
@@ -862,10 +864,11 @@ function createProviderAwareGuardianReviewerTransform(
 }
 
 /**
- * Codex Code Mode 对部分 GPT-5.6 网关模型不会发出 Responses 原生搜索声明：
+ * Codex Code Mode 对部分网关模型不会发出 Responses 原生搜索声明：
  * 目录里的 `supports_search_tool` / `webSearch` 能力虽为 true，但 Gateway 只看最终
  * 请求的 `tools`。插件搜索是增强项，不能作为该基础能力的前置条件，因此在明确走
- * Cindy Gateway 的 GPT-5.6 请求中补回标准 `web_search` 工具；已有声明保持原样。
+ * Cindy Gateway 的 GPT-5.6 请求中补回标准 `web_search` 工具；GPT-6.1 Sol 仅在回放
+ * 已完成的搜索历史时补齐声明。已有声明保持原样。
  */
 function createGatewayNativeWebSearchTransform(frozenAuthInjection?: CodexProxyAuthInjection): RequestTransform {
   return (body, ctx) => {
@@ -882,8 +885,12 @@ function createGatewayNativeWebSearchTransform(frozenAuthInjection?: CodexProxyA
     const routeProviderId = providerContext.providerId
       ?? inferProviderIdForModel(model, 'codex')
       ?? rewrittenGatewayProviderId;
-    const gatewayModel = model.startsWith('codex/') ? model.slice('codex/'.length) : model;
-    if (!/^gpt-5\.6(?:$|[-.])/.test(gatewayModel)) return null;
+    const gatewayModel = stripCodexGatewayWirePrefix(model);
+    const replaysSearchHistory = Array.isArray(body.input) && body.input.some(
+      (item) => isPlainObject(item) && item.type === 'web_search_call' && item.status === 'completed',
+    );
+    if (!/^gpt-5\.6(?:$|[-.])/.test(gatewayModel)
+      && !(gatewayModel === 'gpt-6.1-sol' && replaysSearchHistory)) return null;
 
     // Match the effective auth context used by this proxy's routing transform. Another
     // app-server may change the global mode while a frozen OAuth proxy is still active.
@@ -2087,7 +2094,7 @@ function isGptEncryptedHistoryModel(model: string | null | undefined): boolean {
  *
  * - 加密 compaction 仍替换成明文上下文缺失提示。
  * - 多 Agent 历史会在 agent_message.content 里夹带仅兼容 GPT Responses 上游可解的
- *   encrypted_content；ChatGPT 与版本化 gpt-* / namespace/gpt-* 模型原样透传。其它模型
+ *   encrypted_content；ChatGPT 与 GPT API 原样透传，记录线程的身份不能证明子消息的密文来源。其它模型
  *   只删除这些嵌套密文，保留可读正文与路由元数据；若消息只剩密文则整条丢弃。
  * - reasoning.encrypted_content 不属于本故障；继续交给后续供应商兼容层判断，
  *   不在这里扩大删除面。
@@ -2132,10 +2139,10 @@ export function createCrossProviderCompactionCompatTransform(): RequestTransform
     if (!ctx.upstreamBase) return null;
     const requestModel = isPlainObject(body) && typeof body.model === 'string' ? body.model : '';
     const providerContext = providerContextForRequest(ctx.headers, requestModel);
-    if (
-      isChatGptUpstreamBase(ctx.upstreamBase) ||
-      isGptEncryptedHistoryModel(providerContext.catalogModel)
-    ) return null;
+    // A subscription parent can receive messages from an independently routed API
+    // child. Native parent identity is not evidence that its ciphertext is invalid.
+    if (isChatGptUpstreamBase(ctx.upstreamBase)
+      || isGptEncryptedHistoryModel(providerContext.catalogModel)) return null;
     const replaced = rewriteCrossProviderHistoryItems(body);
     if (!replaced) return null;
     log.info('rewrote incompatible Codex history for non-GPT model', {

@@ -46,9 +46,11 @@ describe('conversationSearch source invariants', () => {
     expect(conversationSearchSource).toContain('title: row.title,');
   });
 
-  it('keeps ordinary task search on the desktop-visible source boundary by default', () => {
+  it('keeps ordinary task search on the task-list source boundary by default', () => {
+    // Same boundary as the sidebar: /review Reviewer tasks are opened from their
+    // source card, not found as ordinary tasks.
     expect(conversationSearchSource).toContain(
-      'hostScope.sessionSources === undefined\n    ? DESKTOP_VISIBLE_SESSION_SOURCES',
+      'hostScope.sessionSources === undefined\n    ? DESKTOP_TASK_LIST_SESSION_SOURCES',
     );
   });
 
@@ -121,6 +123,7 @@ function createSearchDb(): Database.Database {
       writable_dirs TEXT NOT NULL DEFAULT '[]',
       remote_host_id TEXT,
       agent_device_id TEXT,
+      orca_remote_lead TEXT,
       active_turn_started_at INTEGER,
       active_turn_pid INTEGER,
       last_turn_ended_at INTEGER,

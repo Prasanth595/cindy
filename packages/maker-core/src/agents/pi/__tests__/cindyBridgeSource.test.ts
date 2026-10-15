@@ -62,6 +62,7 @@ it('keeps text-only policy local and ordinary tools independent of host UI failu
   ).outputText;
   runInNewContext(compiled, {
     process: { env: { CINDY_PI_TURN_TOOL_POLICY: 'runtime-token' } },
+    guestToolGate: null,
     currentPermissionState: () => { permissionReads++; return { reviewOnly: false, mode: 'bypassPermissions' }; },
     pi: { on: (event: string, callback: (event: any, ctx: any) => any) => { handlers.set(event, callback); } },
   });
@@ -101,6 +102,47 @@ it('keeps text-only policy local and ordinary tools independent of host UI failu
   expect(await tool({ toolName: 'read' }, ctx)).toMatchObject({ block: true });
   handlers.get('agent_settled')!({}, ctx);
   expect(await tool({ toolName: 'ask_user_question' }, ctx)).toBeUndefined();
+});
+
+it('lets a shared user\'s Pi call only tools that Cindy extensions registered', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const gateStart = source.indexOf('function createCindyGuestToolGate');
+  const gateEnd = source.indexOf('\nconst PERMISSION_TITLE', gateStart);
+  const handlerStart = source.indexOf("  pi.on('tool_call'");
+  const handlerEnd = source.indexOf('\n  });', handlerStart) + '\n  });'.length;
+  // 子代理扩展的工具名在生成时写进源码。
+  expect(source).toContain('createCindyGuestToolGate(piApi, ["subagent"])');
+  const handlers = new Map<string, (event: any, ctx: any) => any>();
+  const registered: string[] = [];
+  const api = {
+    on: (event: string, callback: (event: any, ctx: any) => any) => { handlers.set(event, callback); },
+    registerTool(tool: { name: string }) { registered.push(tool.name); },
+    getActiveTools() { return ['read']; },
+  };
+  const compiled = ts.transpileModule(
+    source.slice(gateStart, gateEnd)
+      + '\nconst guestToolGate = createCindyGuestToolGate(api, ["subagent"]);\nconst pi = guestToolGate.pi;'
+      + '\npi.registerTool({ name: "read" });\npi.registerTool({ name: "cindy_mcp_call_tool" });\nresult = pi.getActiveTools();\ngate = guestToolGate;\n'
+      + source.slice(handlerStart, handlerEnd),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const sandbox: Record<string, unknown> = {
+    api, result: undefined, gate: undefined, Proxy, Reflect,
+    toolsDisabledForTurn: () => false,
+    currentPermissionState: () => ({ reviewOnly: false, mode: 'bypassPermissions' }),
+  };
+  runInNewContext(compiled, sandbox);
+  // 注册照常交给 Pi，其余 API 原样转发。
+  expect(registered).toEqual(['read', 'cindy_mcp_call_tool']);
+  expect(sandbox.result).toEqual(['read']);
+  const tool = handlers.get('tool_call')!;
+  const ctx = { ui: { confirm: async () => true }, isIdle: () => true };
+  for (const toolName of ['powershell', 'codemode', 'tool_search', 'mcp__local__run', 'future_builtin', undefined]) {
+    expect(await tool({ toolName, input: {} }, ctx)).toMatchObject({ block: true, reason: expect.stringMatching(/shared provider/) });
+  }
+  // Cindy 扩展注册的(含经 Pi 原名顶替的 read)与子代理工具放行，交给后面的权限门。
+  const gate = sandbox.gate as { blocks: (toolName: unknown) => boolean };
+  for (const toolName of ['read', 'cindy_mcp_call_tool', 'subagent']) expect(gate.blocks(toolName)).toBe(false);
 });
 
 const canLinkFile = (() => {
@@ -254,7 +296,7 @@ function loadBashPackageHomeHelper(): {
   };
 }
 
-function powerShellOverlayEnabled(platform: NodeJS.Platform, factory: unknown): boolean {
+function powerShellOverlayEnabled(platform: NodeJS.Platform, factory: unknown, guest = false): boolean {
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const start = source.indexOf('const createPowerShellTool =');
   const end = source.indexOf('// Cindy owns a separate Pi extension store.', start);
@@ -264,6 +306,7 @@ function powerShellOverlayEnabled(platform: NodeJS.Platform, factory: unknown): 
   return Boolean(runInNewContext(condition, {
     createPowerShellTool: factory,
     process: { platform },
+    guestToolGate: guest ? {} : null,
   }));
 }
 
@@ -1484,6 +1527,8 @@ describe('cindy-bridge extension source', () => {
   it('registers the native PowerShell overlay on Windows when Pi exports its factory', () => {
     expect(powerShellOverlayEnabled('win32', () => undefined)).toBe(true);
     expect(powerShellOverlayEnabled('win32', undefined)).toBe(false);
+    // 受邀者会话不注册：它在本机执行，设备托管没有对应的执行器。
+    expect(powerShellOverlayEnabled('win32', () => undefined, true)).toBe(false);
   });
 
   it.each(['darwin', 'linux'] as const)(
@@ -2322,6 +2367,11 @@ it('routes Bot shortcuts through the scoped helper entry without exposing them t
         properties: { at: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } },
       });
     }
+    if (name === 'start_session_task') {
+      expect(tool.description).toContain('A repository, multiple files, tools, or a deliverable alone is not a reason to delegate');
+      expect(tool.description).toContain('the user explicitly requests an independent task');
+      expect(tool.description).toContain('Follow up with message_session_task on the same task');
+    }
     if (name === 'send_to_agent') expect(tool.parameters.properties.target_id.maxLength).toBe(210);
     const resolved = gateway.resolveDirectHelperTool(name, args);
     expect(resolved.qualifiedName).toBe('mcp__cindy_helper__' + name);
@@ -2397,4 +2447,51 @@ it('applies native Fast only to the exact declared connection and fails closed o
     expect(await pending).toEqual(original);
   } finally { vi.useRealTimers(); }
   expect(original).not.toHaveProperty('service_tier');
+});
+
+// PR #6025 回归: cindy_mcp_call_tool 的 args 必须对模型可选 (无参工具按其内层
+// 空 schema 省略 args 时, 入口层不能再以 required 拦住)。同时锁死转发值: 省略
+// args 时发给 MCP server 的 arguments 必须是 {} (recordInput 归一), 而不是
+// undefined / 丢字段 — 否则 call_tool({name, args}) 入口 schema 又会 -32602。
+it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-parameter tools', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const requests: Array<{ method: string; params: any }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    requests.push({ method, params });
+    return { content: [{ type: 'text', text: 'ok' }] };
+  } };
+  const gateway = new context.Gateway();
+  gateway.add('cindy_memory', client, [
+    { name: 'list_tools', inputSchema: { type: 'object' } },
+    { name: 'call_tool', inputSchema: { type: 'object' } },
+  ]);
+  const ordinary: any[] = [];
+  gateway.register({ registerTool: (tool: unknown) => ordinary.push(tool) });
+  const callTool = ordinary.find((tool) => tool.name === 'cindy_mcp_call_tool');
+  expect(callTool).toBeDefined();
+  // 模型看到的契约: server/tool 必填, args 可选 (无参工具可省略)。
+  expect(callTool.parameters.required).toEqual(['server', 'tool']);
+  expect(callTool.parameters.required).not.toContain('args');
+  // 披露门: 先按 schema 检视一次再调用 (与生产路径同序)。
+  await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
+  await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool' });
+  expect(requests).toHaveLength(1);
+  expect(requests[0].method).toBe('tools/call');
+  expect(requests[0].params).toEqual({ name: 'call_tool', arguments: {} });
+  // 对照: 显式传 args 时仍原样转发 (既有行为不变)。
+  await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool', args: { name: 'memory_list', args: {} } });
+  expect(requests[1].params).toEqual({
+    name: 'call_tool',
+    arguments: { name: 'memory_list', args: {} },
+  });
 });

@@ -5,6 +5,8 @@ import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDev
 import { cn } from '@/lib/utils';
 import { useBotProfiles, useBotUnreadCounts } from './botStore';
 import { useRemoteBots } from './useRemoteBots';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudRemoteBots, withoutShadowedBots } from './companionCloudPresentation';
 import { cindyDeviceKey, cindyDeviceOptions, type CindyDeviceOption } from './cindyDeviceRoster';
 import { formatBotUnreadBadge } from './botListDisplay';
 import type { BotChatIdentity } from './BotSessionContentHeader';
@@ -28,7 +30,8 @@ export function CindyDevicePicker({
       label={t('bots.devicePicker.switchDevice', { device: current.label })}
       value={current.key}
       truncateOptions
-      className={cn('h-6 max-w-none px-2 text-11', className)}
+      className={cn('h-6 w-fit max-w-full px-2 text-11', className)}
+      contentClassName="w-64 max-w-[var(--radix-select-content-available-width)]"
       triggerAdornment={otherUnread ? (
         <span
           aria-label={t('bots.devicePicker.otherUnread')}
@@ -71,8 +74,11 @@ export function CindyDevicePicker({
 export function CindyHeaderDevicePicker({ bot }: { bot: BotChatIdentity }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const bots = useBotProfiles();
-  const remoteBots = useRemoteBots();
+  const cloud = useCompanionCloud();
+  // A demoted local Cindy is not the "local" option: she runs on her main computer.
+  const bots = withoutShadowedBots(useBotProfiles(), cloud);
+  // Copies other computers still list for a Cindy that runs elsewhere are not choices either.
+  const remoteBots = cloudRemoteBots(cloud, useRemoteBots());
   const devices = useDeviceLinkDeviceList();
   const unread = useBotUnreadCounts();
   const options = cindyDeviceOptions(
@@ -94,7 +100,7 @@ export function CindyHeaderDevicePicker({ bot }: { bot: BotChatIdentity }) {
       options={options}
       current={current}
       onSelect={(option) => navigate(option.route)}
-      className="w-44 max-w-full"
+      className="max-w-44 shrink"
     />
   );
 }

@@ -95,6 +95,8 @@ import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import type { MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
 import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
+import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import type { RemoteSession } from '@/session/types';
 import { fontWeight, lineHeight, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { iconSize, iconStroke, radius, spacing, typeScale } from '@/theme/tokens';
@@ -159,6 +161,15 @@ function avKindFor(pathOrName: string): 'video' | 'audio' | null {
 }
 
 export default function RemoteFilePreviewScreen() {
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={String(sessionId ?? '')} deviceId={readRouteString(deviceId) ?? undefined}>
+      <RemoteFilePreviewContent />
+    </CindyMakeSessionGate>
+  );
+}
+
+function RemoteFilePreviewContent() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -185,6 +196,7 @@ export default function RemoteFilePreviewScreen() {
   const router = useRouter();
   const systemBack = useSystemNavigationBack();
   const previewWindow = useAdaptiveWindow();
+  const pageInsets = useSafeAreaInsets();
   const [measuredPageWidth, setMeasuredPageWidth] = useState<number | null>(null);
   const pageWidth = measuredPageWidth ?? Math.max(1, previewWindow.width - previewWindow.insets.left - previewWindow.insets.right);
   const { openLink } = useDeviceLink();
@@ -273,17 +285,24 @@ export default function RemoteFilePreviewScreen() {
       return;
     }
     if (!deviceId || !sessionId) return;
+    let cancelled = false;
     void withTransientRemoteRetry(async () => {
       await openLink(deviceId);
       return maker.getSession(sessionId);
     })
       .then((loaded) => {
+        if (cancelled) return;
+        if (!CINDY_MAKE_ENABLED && isCindyMakeSource(loaded?.source)) {
+          router.replace('/');
+          return;
+        }
         setSession(loaded);
         // 清掉熔断 open 期间留下的错误快照,恢复后不再残留降级横幅。
         setError(null);
       })
-      .catch((err) => setError(formatRemoteError(err)));
-  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, recoveryEpoch, sessionId]);
+      .catch((err) => { if (!cancelled) setError(formatRemoteError(err)); });
+    return () => { cancelled = true; };
+  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, recoveryEpoch, router, sessionId]);
 
   // absPath 单文件模式:不列目录,直接以合成 item 装单页 pager。
   useEffect(() => {
@@ -558,6 +577,47 @@ export default function RemoteFilePreviewScreen() {
   }, [current, lightboxUrl]);
 
   if (!current || !siblings) {
+    const pendingPath = singleAbsPath ?? initialRelPath;
+    // HTML opens straight into the floating browser chrome; the classic header would flash first.
+    if (richTextKindOf(pendingPath) === 'html') {
+      const retry = () => { setError(null); setRecoveryEpoch((epoch) => epoch + 1); };
+      // Pending disables address editing and the menu, so these handlers stay unreachable.
+      const noop = () => {};
+      return (
+        <SafeAreaView edges={[]} style={styles.safeArea} testID="filePreview.screen">
+          <View style={styles.centerFill}>
+            {error ? <>
+              <Text style={styles.hintText}>{t('files.preview.readFailed')}</Text>
+              <MainWindowActionButton action={{ label: t('files.preview.retry'), onPress: retry }} />
+            </> : <ActivityIndicator color={colors.textTertiary} />}
+          </View>
+          <HtmlBrowserChrome
+            title={pathDisplayName(pendingPath)}
+            path={absolutePathOf(pendingPath)}
+            address={absolutePathOf(pendingPath)}
+            onNavigate={() => true}
+            top={pageInsets.top}
+            bottom={pageInsets.bottom}
+            left={pageInsets.left + spacing.md}
+            right={pageInsets.right + spacing.md}
+            canGoBack={false}
+            canGoForward={false}
+            source={false}
+            busy
+            pending
+            loading={!error}
+            onClose={() => goBackGuarded(router)}
+            onBack={noop}
+            onForward={noop}
+            onReload={retry}
+            onShare={noop}
+            onCopyPath={noop}
+            onAddToTask={noop}
+            onToggleSource={noop}
+          />
+        </SafeAreaView>
+      );
+    }
     return (
       <SafeAreaView style={styles.safeArea} testID="filePreview.screen">
         <SystemNavigationBack close label={t('files.preview.done')} onPress={() => goBackGuarded(router)} />

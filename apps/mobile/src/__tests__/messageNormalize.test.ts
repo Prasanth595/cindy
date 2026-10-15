@@ -1198,7 +1198,7 @@ describe('normalizeRemoteMessages', () => {
         agentMeta: {
           sourceDevice: { deviceId: 'phone-1', name: 'Dash 的\niPhone', platform: 'mobile' },
           sourcePlugin: { pluginId: 'plugin-1', name: '日报' },
-          sharedTaskAuthor: { displayName: '访客甲', memberId: 'm1' },
+          sharedTaskAuthor: { displayName: '访客甲', memberId: 'm1', accountId: 'acct-guest' },
         },
       }),
       message({
@@ -1220,6 +1220,8 @@ describe('normalizeRemoteMessages', () => {
         ['unknown-platform', undefined, undefined, undefined],
         ['assistant-ignored', undefined, undefined, undefined],
       ]);
+    // 作者账号只用于判断「是不是我的消息」(气泡配色),不作权限依据。
+    expect(items.map((item) => item.sharedAuthorAccountId)).toEqual(['acct-guest', undefined, undefined]);
   });
 
   it('reads the sending session of tool-sent and Orca messages without mixing it into automation', () => {
@@ -1603,4 +1605,18 @@ it.each(['steer', 'new', 'completion'])('pairs companion introduction across ste
   ], { preserveSourceOrder: true });
   const ids = rows.map((row) => row.source.id);
   expect(ids.indexOf('task') > ids.indexOf('intro')).toBe(kind === 'steer');
+});
+
+it('keeps durable coordination hidden on phone history without hiding user-facing inputs or results', () => {
+  const rows = [
+    message({ id: 'coordination', role: 'user', content: '[UI_ACTION_TRIGGER]File ownership agreement', agentMeta: { origin: { kind: 'session', senderSessionId: 'child' } } }),
+    message({ id: 'requested-status', role: 'user', content: 'Requested status', agentMeta: { origin: { kind: 'session', senderSessionId: 'child' } } }),
+    message({ id: 'result', role: 'assistant', content: 'Final result', agentMeta: { turnCompleted: true } }),
+  ];
+  const normalized = normalizeRemoteMessages(JSON.parse(JSON.stringify(rows)));
+  expect(normalized[0]).toMatchObject({ isSyntheticTrigger: true, body: '' });
+  const rendered = buildMobileMessageRenderItems(rows);
+  expect(JSON.stringify(rendered)).not.toContain('File ownership agreement');
+  expect(JSON.stringify(rendered)).toContain('Requested status');
+  expect(JSON.stringify(rendered)).toContain('Final result');
 });

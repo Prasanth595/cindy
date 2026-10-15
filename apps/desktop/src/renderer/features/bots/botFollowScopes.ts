@@ -1,8 +1,5 @@
-/**
- * 侧栏「<伙伴>在跟进」的数据:每个在用的本机伙伴接手了哪些项目。
- *
- * 整个窗口共享一份:第一次有任务行订阅时读一次,之后只在伙伴工作台变化或换账号时重读。
- * 任务行各自只做本地匹配(与工作台同一套项目归属规则 `findWorkbenchProject`),不各自发 IPC。
+/** Window-shared exact task responsibility IDs. Project discovery never implies ownership.
+ * Older hosts without task IDs produce no marks; changes and owner switches reload the snapshot.
  */
 import { useMemo, useSyncExternalStore } from 'react';
 
@@ -10,18 +7,14 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import type { Session } from '@/lib/ccAgent.types';
 import { createLogger } from '@/lib/logger';
 
-import {
-  findWorkbenchProject,
-  isCaseInsensitivePlatform,
-  isWorkbenchTaskSource,
-} from '../../../shared/botWorkbench';
+import { isWorkbenchTaskSource } from '../../../shared/botWorkbench';
 import { ensureBotProfilesLoaded, hasLoadedBotProfiles, useBotProfiles, type BotProfile } from './botStore';
 
 const log = createLogger('BotFollowScopes');
 
 export interface BotFollowScope {
   botId: string;
-  directories: readonly string[];
+  sessionIds?: readonly string[];
 }
 
 const EMPTY: readonly BotFollowScope[] = [];
@@ -61,6 +54,9 @@ function load(attempt = 0): void {
       emit();
     })
     .catch((error: unknown) => {
+      if (seq !== loadSeq || !isDataOwnerGenerationCurrent(loadOwner)) return;
+      scopes = EMPTY;
+      emit();
       log.warn('Bot follow scopes load failed', error);
       const delay = RETRY_DELAYS_MS[attempt];
       if (seq !== loadSeq || delay === undefined) return;
@@ -84,7 +80,8 @@ function subscribe(listener: () => void): () => void {
   if (!changeSubscribed) {
     // 窗口级订阅,不随任务行挂载 / 卸载反复增删(侧栏滚动时行会频繁重建)。
     const off = window.electronAPI?.maker?.onBotWorkbenchChanged?.(() => load());
-    changeSubscribed = off !== undefined;
+    const offDelegation = window.electronAPI?.maker?.onBotDelegationChanged?.(() => load());
+    changeSubscribed = off !== undefined || offDelegation !== undefined;
   }
   ensureOwner();
   if (!requested) {
@@ -110,24 +107,23 @@ function getSnapshot(): readonly BotFollowScope[] {
 
 /** 能被伙伴跟进的任务:本机、未归档、普通来源、不是伙伴自己的任务或 Orca worker。 */
 function isFollowableSession(session: Session): boolean {
-  if (session.status !== 'active' || !session.workingDir) return false;
+  if (session.status !== 'active') return false;
   if (session.remoteHostId || session.deviceLinkDeviceId) return false;
   if (session.source === 'bot' || session.orcaRole === 'worker') return false;
   return isWorkbenchTaskSource(session.source);
 }
 
-/** 正在跟进这件任务所在项目的伙伴(按名字排序;隐藏、停用的伙伴不显示)。 */
+/** 正在负责这件任务的伙伴(按名字排序;隐藏、停用的伙伴不显示)。 */
 export function useSessionFollowers(session: Session): BotProfile[] {
   const followScopes = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const profiles = useBotProfiles();
   const followable = isFollowableSession(session);
-  const workingDir = session.workingDir;
+  const sessionId = session.id;
   return useMemo(() => {
     if (!followable || followScopes.length === 0) return [];
-    const caseInsensitive = isCaseInsensitivePlatform(window.electronAPI?.platform);
     const following = new Set(
       followScopes
-        .filter((scope) => findWorkbenchProject(workingDir, scope.directories, caseInsensitive) !== null)
+        .filter((scope) => Array.isArray(scope.sessionIds) && scope.sessionIds.includes(sessionId))
         .map((scope) => scope.botId),
     );
     if (following.size === 0) return [];
@@ -135,7 +131,7 @@ export function useSessionFollowers(session: Session): BotProfile[] {
       .filter((bot) => following.has(bot.id) && bot.enabled && !bot.hiddenAt
         && (bot.status === undefined || bot.status === 'active'))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [followable, followScopes, profiles, workingDir]);
+  }, [followable, followScopes, profiles, sessionId]);
 }
 
 export const __testing = {

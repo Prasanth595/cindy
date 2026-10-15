@@ -192,6 +192,7 @@ vi.mock('../fbotTitle', () => ({
   generateAndPersistFbotTitle: mocks.generateAndPersistFbotTitle,
 }));
 
+import { getActiveInteractionRoute } from '../../../maker-ipc/interactionRouter';
 import { createTurnRunner, type ImRunAgentTurnArgs, type ImTurnRunner } from '../turnRunner';
 import {
   readGroupHistoryAccess,
@@ -1043,6 +1044,31 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
 
       h.emit({ type: 'done', data: {} });
       await waitForAssertion(() => expect(h.releaseTurnLease).toHaveBeenCalledOnce());
+    } finally {
+      await localRunner.disposeAllSessions();
+    }
+  });
+
+  it.each([
+    [true, 'owner'],
+    [undefined, 'unknown'],
+  ] as const)('stamps the channel owner check onto the interaction route (requesterIsOwner=%s)', async (requesterIsOwner, authority) => {
+    const h = setupSession(async () => ({ accepted: true }));
+    const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
+    try {
+      await localRunner.runAgentTurn({
+        botContextId: 'cli_test_bot',
+        userId: 'ou_user',
+        userMessageId: `msg-owner-${String(requesterIsOwner)}`,
+        text: '更新 Cindy',
+        attachments: [],
+        ...(requesterIsOwner ? { requesterIsOwner } : {}),
+      });
+      expect(getActiveInteractionRoute(h.session as never)).toMatchObject({
+        origin: { kind: 'im' },
+        requesterAuthority: authority,
+      });
+      h.emit({ type: 'done', data: {} });
     } finally {
       await localRunner.disposeAllSessions();
     }
@@ -3306,6 +3332,42 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       expect(handle.finalize).toHaveBeenCalledTimes(1);
     });
     expect(String(handle.finalize.mock.calls[0][0])).toContain('process exited with code 1');
+  });
+
+  it('shows live tok/s while running but drops it from the frozen failure card', async () => {
+    const handle = {
+      messageId: 'stream-fatal-rate',
+      append: vi.fn(),
+      replace: vi.fn(),
+      finalize: vi.fn(),
+      close: vi.fn(),
+    };
+    mocks.feishuIm.startStreamingText.mockResolvedValue(handle);
+    const h = setupSession(async () => ({ accepted: true }));
+    const { onTurnComplete } = await runDefaultTurn();
+
+    h.emit({
+      type: 'status',
+      data: {
+        status: 'Running',
+        isRunning: true,
+        tokenSpeed: { rate: 116.4, average: 110, tokens: 500, elapsedMs: 4_000, streaming: true },
+      },
+    });
+    h.emit({ type: 'tool_use', data: { toolName: 'Read', toolUseId: 'r1', input: { file_path: '/x/a.ts' } } });
+    await waitForAssertion(() => {
+      expect(String(handle.replace.mock.calls.at(-1)?.[0])).toContain('· 116 tok/s');
+    });
+
+    h.emit({ type: 'error', data: { message: 'process exited with code 1', isTerminal: true } });
+    await waitForAssertion(() => {
+      expect(onTurnComplete).toHaveBeenCalledTimes(1);
+      expect(handle.finalize).toHaveBeenCalledTimes(1);
+    });
+    // 失败收口保留过程区(用户能看到死在哪步), 但不能留一个已经不存在的速度。
+    const finalView = String(handle.finalize.mock.calls[0][0]);
+    expect(finalView).toContain('读取 a.ts');
+    expect(finalView).not.toContain('tok/s');
   });
 
   it('keeps streaming resumed-turn output into the same turn after a silentStop resume', async () => {

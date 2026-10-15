@@ -12,6 +12,7 @@ import {
   tierWorkbenchProjectOptions,
   workbenchGroupHasFollowUp,
   workbenchTileGroup,
+  workbenchItemNeedsLocalReference,
   type WorkbenchProjectOption,
   type WorkbenchDelegationInput,
 } from '../botWorkbenchProjection';
@@ -62,6 +63,7 @@ function delegation(childSessionId: string, status: WorkbenchDelegationInput['st
 }
 
 const base = {
+  responsibleSessionIds: ['running', 'asking', 'bg-queued', 'unjudged-idle', 'unjudged-errored', 'judged-unfinished', 'judged-done', 'claude-imported', 'kept', 'waiting', 'errored', 'queued-bg', 'judged', 'finished-bg', 'failed-bg'],
   hiddenIds: new Set<string>(),
   projectDirs: [ART],
   caseInsensitive: false,
@@ -74,6 +76,16 @@ const base = {
 };
 
 describe('buildWorkbenchTiles', () => {
+  it('keeps verified creations outside all projects and without a directory, then honors release', () => {
+    const input = {
+      ...base,
+      projectDirs: [],
+      responsibleSessionIds: ['created-across', 'created-without-dir'],
+      sessions: [session('created-across', { workingDir: CINDY }), session('created-without-dir', { workingDir: null, userSendAt: null, _count: { messages: 0 } })],
+    };
+    expect(buildWorkbenchTiles(input).map(tile => tile.id).sort()).toEqual(['created-across', 'created-without-dir']);
+    expect(buildWorkbenchTiles({ ...input, responsibleSessionIds: [] })).toEqual([]);
+  });
   it('derives each tile state from host signals only', () => {
     const tiles = buildWorkbenchTiles({
       ...base,
@@ -98,7 +110,7 @@ describe('buildWorkbenchTiles', () => {
     expect(byId.get('bg-queued')).toMatchObject({ state: 'queued', origin: 'delegated' });
   });
 
-  it('lists every recent Cindy task, but external sessions only when judged worth continuing', () => {
+  it('lists responsible Cindy tasks, never claiming external candidates from old judgments', () => {
     const judgment = (verdict: 'unfinished' | 'idea' | 'done', title: string, project = ART) => ({
       title,
       verdict,
@@ -130,12 +142,10 @@ describe('buildWorkbenchTiles', () => {
       candidates: [{ source: 'claude', id: 'ext-1', projectDir: ART, updatedAt: '2026-10-01T05:00:00.000Z', archived: false }],
     });
     const byId = new Map(tiles.map((tile) => [tile.id, tile]));
-    // Cindy 任务(含主人自己开的空闲任务、判为 done 的)都在;外部会话只留判为值得继续的。
+    // 逐任务负责的 Cindy 任务都在；旧外部判断不代表接手。
     expect([...byId.keys()].sort()).toEqual(
       [
         'claude-imported',
-        'claude:ext-1',
-        'codex:ext-2',
         'judged-done',
         'judged-unfinished',
         'running',
@@ -148,30 +158,25 @@ describe('buildWorkbenchTiles', () => {
     expect(byId.get('running')).toMatchObject({ title: '导出图标', verdict: null });
     expect(byId.get('judged-unfinished')).toMatchObject({ title: '补描边', verdict: 'unfinished', next: '补描边的下一步' });
     expect(byId.get('claude-imported')).toMatchObject({ verdict: 'idea', origin: 'claude-code' });
-    expect(byId.get('claude:ext-1')).toMatchObject({
-      type: 'external',
-      origin: 'claude-code',
-      verdict: 'unfinished',
-      lastActiveMs: Date.parse('2026-10-01T05:00:00.000Z'),
-    });
-    expect(byId.get('codex:ext-2')).toMatchObject({ type: 'external', origin: 'codex', verdict: 'idea' });
+    expect(byId.has('claude:ext-1')).toBe(false);
+    expect(byId.has('codex:ext-2')).toBe(false);
     // Live first, then unfinished, then ideas, then the rest.
     expect(tiles.slice(0, 5).map((tile) => ('verdict' in tile ? tile.verdict : null))).toEqual([
       null,
       'unfinished',
-      'unfinished',
       'idea',
-      'idea',
+      null,
+      null,
     ]);
     expect(groupWorkbenchTiles(tiles).map((group) => [group.key, group.tiles.map((tile) => tile.id).sort()])).toEqual([
       ['waiting', ['unjudged-errored']],
       ['running', ['running']],
-      ['todo', ['claude-imported', 'claude:ext-1', 'codex:ext-2', 'judged-unfinished'].sort()],
+      ['todo', ['claude-imported', 'judged-unfinished'].sort()],
       ['done', ['judged-done', 'unjudged-idle']],
     ]);
   });
 
-  it('shows Pi sessions and PR / issue / idea entries the Bot wrote down, labelled by kind', () => {
+  it('keeps PR / issue / idea materials while excluding old Pi discovery judgments', () => {
     const judgment = (verdict: 'unfinished' | 'idea' | 'done', title: string, extra: Record<string, unknown> = {}) => ({
       title,
       verdict,
@@ -193,8 +198,8 @@ describe('buildWorkbenchTiles', () => {
       },
     });
     const byId = new Map(tiles.map((tile) => [tile.id, tile]));
-    expect([...byId.keys()].sort()).toEqual(['idea:dark-icons', 'issue:me/art#7', 'pi:p1', 'pr:me/art#12']);
-    expect(byId.get('pi:p1')).toMatchObject({ type: 'external', origin: 'pi', verdict: 'unfinished' });
+    expect([...byId.keys()].sort()).toEqual(['idea:dark-icons', 'issue:me/art#7', 'pr:me/art#12']);
+    expect(byId.has('pi:p1')).toBe(false);
     expect(byId.get('pr:me/art#12')).toMatchObject({
       type: 'item',
       itemKind: 'pr',
@@ -211,6 +216,7 @@ describe('buildWorkbenchTiles', () => {
     const tiles = buildWorkbenchTiles({
       ...base,
       now,
+      responsibleSessionIds: ['stale-bg'],
       sessions: [
         session('just-opened', { userSendAt: '2026-10-01T23:59:00.000Z', updatedAt: '2026-10-01T23:59:00.000Z' }),
         session('stale', { userSendAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z' }),
@@ -219,8 +225,7 @@ describe('buildWorkbenchTiles', () => {
       delegations: [{ ...delegation('stale-bg', 'completed'), updatedAt: 1 }],
       candidates: [{ source: 'codex', id: 'unjudged', projectDir: ART, updatedAt: '2026-10-01T00:00:00.000Z', archived: false }],
     });
-    expect(tiles.map((tile) => tile.id).sort()).toEqual(['just-opened', 'stale-bg']);
-    expect(workbenchTileGroup(tiles.find((tile) => tile.id === 'just-opened')!)).toBe('done');
+    expect(tiles.map((tile) => tile.id).sort()).toEqual(['stale-bg']);
   });
 
   it('keeps Bot hidden sessions, other projects, drafts, remote, archived and non-task sources out', () => {
@@ -294,6 +299,7 @@ describe('buildWorkbenchTiles', () => {
     const tiles = buildWorkbenchTiles({
       ...base,
       projectDirs: [],
+      responsibleSessionIds: [],
       sessions: [session('kept')],
       routines: [{ id: 'r-1', name: '每日提醒', enabled: true, triggers: [], updatedAt: 1 }],
     });
@@ -381,6 +387,7 @@ describe('groupWorkbenchTiles', () => {
     const tiles = buildWorkbenchTiles({
       ...base,
       now,
+      responsibleSessionIds: Array.from({ length: 33 }, (_, i) => `t-${i}`),
       sessions: Array.from({ length: 33 }, (_, index) =>
         session(`t-${index}`, {
           updatedAt: new Date(now - (index + 1) * 60_000).toISOString(),
@@ -569,4 +576,41 @@ describe('project picker filtering and tiers', () => {
     });
     expect(cindy).toMatchObject({ name: 'cindy', isGitRepo: true });
   });
+});
+
+it('retains an entrusted legacy local reference entrance until equivalent migration', () => {
+  const tiles = buildWorkbenchTiles({
+    ...base,
+    projectDirs: [CINDY],
+    sessions: [],
+    judgments: {
+      'idea:local': {
+        project: CINDY,
+        title: '本地方案',
+        next: '查看文件',
+        verdict: 'idea',
+        ref: CINDY + '/notes.md',
+        updatedAt: new Date(base.now).toISOString(),
+      },
+      'idea:web': {
+        project: CINDY,
+        title: '网上方案',
+        next: '查看',
+        verdict: 'idea',
+        ref: 'https://example.test/notes',
+        updatedAt: new Date(base.now).toISOString(),
+      },
+      'idea:outside': {
+        project: CINDY,
+        title: '外部路径',
+        next: '查看',
+        verdict: 'idea',
+        ref: '/private/notes.md',
+        updatedAt: new Date(base.now).toISOString(),
+      },
+    },
+  });
+  const kept = tiles.filter((tile) => workbenchItemNeedsLocalReference(tile, [CINDY], false));
+  expect(kept.map((tile) => tile.id)).toEqual(['idea:local']);
+  expect(workbenchItemNeedsLocalReference(kept[0], [], false)).toBe(false);
 });

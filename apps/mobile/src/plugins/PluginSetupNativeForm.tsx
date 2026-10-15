@@ -11,13 +11,7 @@ import {
 import { useIsFocused } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import * as Clipboard from "expo-clipboard";
-import * as SecureStore from "expo-secure-store";
-import { pinMobilePluginIdentity } from "./pluginOauthPins";
-import { accountVaultKey } from "@cindy/auth-client";
-import {
-  PLUGIN_OAUTH_CHANNEL,
-  parsePluginOauthPeerIdentity,
-} from "@cindy/device-link";
+import { PLUGIN_OAUTH_CHANNEL } from "@cindy/device-link";
 import { useTranslation } from "react-i18next";
 import { Text, TextInput } from "@/components/AppText";
 import { useAuth } from "@/auth/AuthContext";
@@ -38,7 +32,8 @@ import {
   type ThemeColors,
 } from "@/theme";
 import { type MobilePluginSetupAction } from "./pluginSetupActions";
-import { authenticateMobilePluginOauth } from "./pluginOauthClient";
+import type { authenticateMobilePluginOauth } from "./pluginOauthClient";
+import { openMobilePluginOauthSession } from "./pluginOauthSession";
 import { pluginOauthPlatformCrypto } from "./pluginOauthPlatformCrypto";
 import { runMobilePluginAuthorization } from "./pluginAuthorizationController";
 
@@ -152,38 +147,14 @@ export default function PluginSetupNativeForm({
     let client:
       Awaited<ReturnType<typeof authenticateMobilePluginOauth>> | undefined;
     try {
-      const target = parsePluginOauthPeerIdentity(
-        await invoke({ op: "identity", version: 3 }),
-      );
-      assertCurrent();
-      if (
-        target.deviceId !== deviceId ||
-        target.membershipId !== owner.accountId ||
-        accountVaultKey(target.realm, target.membershipId) !== owner.accountKey
-      )
-        throw new Error("OAUTH_BRIDGE_UNAVAILABLE");
-      client = await authenticateMobilePluginOauth({
-        crypto: pluginOauthPlatformCrypto,
-        target,
+      client = await openMobilePluginOauthSession({
+        deviceId,
         peer: auth.deviceId,
+        owner,
         ghostId: action.ghostId,
         action: action.action,
-        assertCurrent,
         invoke,
-        trustIdentity: (identity, check) =>
-          pinMobilePluginIdentity(
-            {
-              get: (key) => SecureStore.getItemAsync(key),
-              set: (key, value) =>
-                SecureStore.setItemAsync(key, value, {
-                  keychainAccessible:
-                    SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-                }),
-            },
-            identity,
-            auth.deviceId!,
-            check,
-          ),
+        assertCurrent,
       });
       await runMobilePluginAuthorization({
         crypto: pluginOauthPlatformCrypto,

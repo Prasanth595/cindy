@@ -138,12 +138,12 @@ export function ComposerAttachmentTray({
                 style={({ pressed }) => [styles.thumbBusyOverlay, pressed && styles.pressed]}
                 testID={`${testIDPrefix}.attachmentPendingRetryButton`}
               >
-                <RefreshCw color={colors.ctaText} size={iconSize.md} strokeWidth={iconStroke.bold} />
+                <RefreshCw color={colors.swipeActionText} size={iconSize.md} strokeWidth={iconStroke.bold} />
                 <Text style={styles.thumbFailedText}>{t('composer.attachments.retry')}</Text>
               </Pressable>
             ) : (
               <View style={styles.thumbBusyOverlay}>
-                <ActivityIndicator color={colors.ctaText} size="small" />
+                <ActivityIndicator color={colors.swipeActionText} size="small" />
               </View>
             )}
           </View>
@@ -308,7 +308,8 @@ function makeTrayStyles(colors: ThemeColors) {
       backgroundColor: colors.surfaceChip,
       justifyContent: 'center' as const,
     },
-    // 上传中遮罩:深色 scrim 让缩略图「在但未就绪」,转圈用 ctaText(浅色主题为白)。
+    // 上传中遮罩:深色 scrim 让缩略图「在但未就绪」。scrim 两种模式都是深色,转圈用恒白
+    // swipeActionText;ctaText 在深色模式反相为近黑,压在深 scrim 上看不见。
     thumbBusyOverlay: {
       alignItems: 'center' as const,
       backgroundColor: colors.overlay,
@@ -320,9 +321,9 @@ function makeTrayStyles(colors: ThemeColors) {
       right: 0,
       top: 0,
     },
-    // 失败态遮罩上的「重试」文字(与转圈同用 ctaText,深 scrim 上跨主题可读)。
+    // 失败态遮罩上的「重试」文字(与转圈同用恒白 swipeActionText)。
     thumbFailedText: {
-      color: colors.ctaText,
+      color: colors.swipeActionText,
       fontSize: typeScale.micro,
       lineHeight: lineHeight.micro,
       fontWeight: fontWeight.semibold,
@@ -411,9 +412,9 @@ function makeTrayStyles(colors: ThemeColors) {
       right: 0,
       top: 0,
     },
-    // 与 thumbBusyOverlay 同精神:深色 scrim 上用 ctaText(浅色主题为白)。
+    // 与 thumbBusyOverlay 同精神:深色 scrim 上用恒白 swipeActionText。
     collapsedBadgeOverlayText: {
-      color: colors.ctaText,
+      color: colors.swipeActionText,
       fontSize: typeScale.micro,
       lineHeight: lineHeight.micro,
       fontWeight: fontWeight.semibold,

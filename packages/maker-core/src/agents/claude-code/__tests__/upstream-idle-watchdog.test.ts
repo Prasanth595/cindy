@@ -21,7 +21,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentDeps } from '../../base-agent.js';
+import type { AgentDeps, DeviceHostedSession } from '../../base-agent.js';
 import type { AuthAdapter } from '../../../interfaces/auth-adapter.js';
 import type { AgentEvent } from '../../../types/events.js';
 import type { Logger } from '../../../interfaces/logger.js';
@@ -143,7 +143,11 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
-async function startSessionWithStream(model = 'claude-opus-4-6', toolLoopReviewer?: ToolLoopReviewer) {
+async function startSessionWithStream(
+  model = 'claude-opus-4-6',
+  toolLoopReviewer?: ToolLoopReviewer,
+  hosted?: { providerId: string; deviceHosted: (workingDir: string) => DeviceHostedSession },
+) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const workingDir = await makeTempDir();
@@ -168,6 +172,7 @@ async function startSessionWithStream(model = 'claude-opus-4-6', toolLoopReviewe
     model,
     workingDir,
     permissionMode: 'acceptEdits',
+    ...(hosted ? { providerId: hosted.providerId, deviceHosted: hosted.deviceHosted(workingDir) } : {}),
   });
 
   const events: AgentEvent[] = [];
@@ -507,6 +512,57 @@ describe('Claude Code tool-loop guard runtime integration', () => {
       expect(toolLoopError(events)).toMatchObject({ data: {
         reason: 'tool_use_loop_detected', loopKind: 'consecutive', loopCount: 4,
       } });
+    } finally {
+      vi.useRealTimers();
+      stream.end();
+      await handle.close().catch(() => undefined);
+      await collected;
+    }
+  });
+
+  it('受邀者会话同样交本机辅助模型复核', async () => {
+    const reviewer = vi.fn<ToolLoopReviewer>(async () => 'continue');
+    const { handle, stream, events, collected } = await startSessionWithStream('shared/model-a', reviewer, {
+      providerId: 'shared-provider',
+      deviceHosted: (workingDir) => ({
+        workingDir,
+        extraDirs: [],
+        writableDirs: [],
+        platform: 'darwin',
+        shell: 'zsh',
+        isGitRepo: false,
+        tunnelUrl: 'http://127.0.0.1:4000/t/tok/',
+        tunnelToken: 'tok',
+        mcpServers: [],
+        mirrorRoot: path.dirname(workingDir),
+        guest: true,
+        guestProvider: { providerId: 'shared-provider', modelIds: ['shared/model-a'], routeToken: 'route' },
+      }),
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await handle.send({ type: 'user', content: 'wait for the run' });
+      for (let i = 0; i < 4; i++) {
+        const id = `guest-bash-${i}`;
+        stream.emit({
+          type: 'assistant', parent_tool_use_id: null,
+          message: { role: 'assistant', content: [{
+            type: 'tool_use', id, name: 'mcp__cindy_exec__Bash', input: { command: 'gh run view 1' },
+          }] },
+        });
+        stream.emit({
+          type: 'user', parent_tool_use_id: null,
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'in_progress' }] },
+        });
+        await pumpUntil(() => events.filter(e => e.type === 'tool_result_full').length === i + 1, 'bash delivered');
+      }
+      expect(reviewer).toHaveBeenCalledOnce();
+      expect(reviewer.mock.calls[0]?.[0]).toMatchObject({
+        agentKind: 'claude-code',
+        model: 'shared/model-a',
+        verdict: { reason: 'consecutive', count: 4 },
+      });
+      expect(toolLoopError(events)).toBeUndefined();
     } finally {
       vi.useRealTimers();
       stream.end();

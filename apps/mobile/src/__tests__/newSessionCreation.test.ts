@@ -12,8 +12,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
-import { isDurableOutboxSettled, type DurableOutboxRecord } from '@/session/durableOutbox';
+import { isDurableOutboxHandedOff, isDurableOutboxSettled, type DurableOutboxRecord } from '@/session/durableOutbox';
 import { buildOutboxItem, outboxItemAttachments } from '@/session/sessionOutbox';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 const recoveryStorage = vi.hoisted(() => new Map<string, string>());
 const persistCancelledDraft = vi.hoisted(() => vi.fn(async () => {}));
@@ -75,9 +76,21 @@ const DRAFT: NewSessionDraft = {
 const bridgeSource = ts.createSourceFile('MobileOutboxBridge.tsx', readFileSync(resolve(
   process.cwd(), 'src/session/MobileOutboxBridge.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let refreshSource = '';
+let reconciliationSource = '';
+let knownSessionSource = '';
+let hiddenSource = '';
 function findRefresh(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(bridgeSource) === 'knownSession') {
+    knownSessionSource = node.initializer!.getText(bridgeSource);
+  }
+  if (ts.isVariableDeclaration(node) && node.name.getText(bridgeSource) === 'hidden') {
+    hiddenSource = node.initializer!.getText(bridgeSource);
+  }
   if (ts.isVariableDeclaration(node) && node.name.getText(bridgeSource) === 'refreshLeases') {
     refreshSource = node.initializer!.getText(bridgeSource);
+  }
+  if (ts.isVariableDeclaration(node) && node.name.getText(bridgeSource) === 'needsReconciliation') {
+    reconciliationSource = node.initializer!.getText(bridgeSource);
   }
   ts.forEachChild(node, findRefresh);
 }
@@ -85,17 +98,23 @@ findRefresh(bridgeSource);
 if (!refreshSource) throw new Error('Missing outbox lease refresh callback');
 function outboxLeaseHarness(initial: DurableOutboxRecord[]) {
   let records = initial;
+  const visible = new Set<string>();
   const leases = new Map<string, ReturnType<typeof remoteSessionStore.acquireSessionMessageWork>>();
   const bindings = { isCurrent: () => true, mobileDurableOutbox: { getSnapshot: () => records },
-    isDurableOutboxSettled, remoteSessionStore, sessionFromCreateResult, outboxItemAttachments,
+    isDurableOutboxHandedOff, isDurableOutboxSettled, remoteSessionStore, sessionFromCreateResult, outboxItemAttachments,
+    CINDY_MAKE_ENABLED, isCindyMakeSource,
+    findRemoteHistoryView: (_deviceId: string, sessionId: string) => ({ isActive: () => visible.has(sessionId) }),
     dismissRecoveredPrecreatedSession, leases,
     leaseKey: (record: DurableOutboxRecord) => JSON.stringify([record.deviceId, record.item.sessionId]) };
   const compiled = ts.transpileModule(`function create(bindings) {
     const { ${Object.keys(bindings).join(', ')} } = bindings;
+    const needsReconciliation = ${reconciliationSource};
+    const knownSession = ${knownSessionSource};
+    const hidden = ${hiddenSource};
     return ${refreshSource};
   }`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const create = new Function(`${compiled}; return create;`)() as (values: typeof bindings) => () => void;
-  return { refresh: create(bindings), leases, setRecords: (next: DurableOutboxRecord[]) => { records = next; } };
+  return { refresh: create(bindings), leases, visible, setRecords: (next: DurableOutboxRecord[]) => { records = next; } };
 }
 function recoveryOutboxRecord(sessionId: string): DurableOutboxRecord {
   return { version: 1, accountId: 'owner-a', deviceId: 'dev-1', createdAt: 1, state: 'failed', uploads: [],
@@ -916,6 +935,44 @@ describe('newSessionCreation pipeline', () => {
     expect(getNewSessionCreationTask('s1')).not.toBeNull();
     await flushPipeline();
     dismissNewSessionCreation('s1');
+  });
+
+  it.each(['cindy-make', 'cindy-make-merge'])('releases only a disabled %s task lease while retaining its raw metadata', source => {
+    const hidden = recoveryOutboxRecord('legacy-make');
+    const ordinary = recoveryOutboxRecord('ordinary');
+    const session = sessionFromCreateResult({ sessionId: 'legacy-make' }, DRAFT);
+    remoteSessionStore.upsertDeviceSession('dev-1', 'PC', { ...session, source: 'cc' });
+    const bridge = outboxLeaseHarness([hidden, ordinary]);
+    bridge.refresh();
+    expect(bridge.leases.size).toBe(2);
+    const release = vi.spyOn(bridge.leases.get(JSON.stringify(['dev-1', 'legacy-make']))!, 'release');
+    remoteSessionStore.upsertDeviceSession('dev-1', 'PC', { ...session, source });
+    bridge.refresh();
+    expect(release).toHaveBeenCalledOnce();
+    expect(bridge.leases.size).toBe(1);
+    expect(bridge.leases.has(JSON.stringify(['dev-1', 'ordinary']))).toBe(true);
+    expect(remoteSessionStore.getSessions().find(row => row.id === 'legacy-make')?.source).toBe(source);
+    bridge.setRecords([]); bridge.refresh();
+  });
+
+  it('releases hidden accepted message windows and resumes handoff on reentry', () => {
+    const accepted = { ...recoveryOutboxRecord('accepted'), state: 'host-owned' as const, retrySafe: true };
+    const sending = recoveryOutboxRecord('sending');
+    const bridge = outboxLeaseHarness([accepted, sending]);
+    bridge.refresh();
+    expect(bridge.leases.size).toBe(1);
+    bridge.visible.add('accepted');
+    bridge.refresh();
+    expect(bridge.leases.size).toBe(2);
+    const release = vi.spyOn(bridge.leases.get(JSON.stringify(['dev-1', 'accepted']))!, 'release');
+    bridge.visible.clear();
+    bridge.refresh();
+    expect(release).toHaveBeenCalledOnce();
+    // An explicit cancel still needs remote reconciliation while the task is hidden.
+    bridge.setRecords([{ ...accepted, cancelRequested: true }]);
+    bridge.refresh();
+    expect(bridge.leases.has(JSON.stringify(['dev-1', 'accepted']))).toBe(true);
+    bridge.setRecords([]); bridge.refresh();
   });
 
   it('removes a cold-hydrated cancelled row and releases only its lease without resurrecting it', () => {

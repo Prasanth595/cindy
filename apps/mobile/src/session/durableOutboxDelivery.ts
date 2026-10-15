@@ -16,10 +16,12 @@ import type {
 
 export type DeliveryProjection = InputProjection &
   InputDeliveryProjection & { clearBoundaryMs?: number | null };
+export type OutboxSessionPolicy = 'deliver' | 'discard' | 'wait';
 export interface DurableOutboxDeliveryDeps {
   store: ReturnType<typeof createDurableOutbox>;
   isCurrent(): boolean;
   canRun(record: DurableOutboxRecord): boolean;
+  sessionPolicy?(record: DurableOutboxRecord): Promise<OutboxSessionPolicy>;
   projection(record: DurableOutboxRecord): Promise<DeliveryProjection>;
   session(record: DurableOutboxRecord): Promise<{ id: string; status: string } | null>;
   prepare(record: DurableOutboxRecord): Promise<QueuedRemoteMessage>;
@@ -28,8 +30,12 @@ export interface DurableOutboxDeliveryDeps {
     upload: DurableUpload,
   ): Promise<RemoteSerializedAttachment>;
   enqueue(record: DurableOutboxRecord): Promise<InputProjection>;
+  /** Recheck resource ownership before recording that an external write has started. */
+  beforeEnqueue?(record: DurableOutboxRecord): Promise<void>;
   cancel(record: DurableOutboxRecord): Promise<boolean>;
   history(record: DurableOutboxRecord): Promise<boolean>;
+  /** A remote row alone cannot release the local bubble before offline history owns it. */
+  cacheHistory?(record: DurableOutboxRecord): Promise<boolean>;
   applyProjection(
     record: DurableOutboxRecord,
     projection: InputProjection,
@@ -56,7 +62,17 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
   const current = (r: DurableOutboxRecord) =>
     !stopped && deps.isCurrent() && deps.store.getSnapshot().includes(r);
   const hasDurableOwnership = (r: DurableOutboxRecord) =>
-    r.state === "host-owned" && r.retrySafe === true;
+    r.state === "host-owned" && isDurableOutboxHandedOff(r);
+  const hasHistory = async (record: DurableOutboxRecord): Promise<boolean> => {
+    try {
+      return await deps.history(record);
+    } catch (error) {
+      // Pending and withdrawn inputs need not have a history row. Absence is
+      // not a delivery failure or proof of cancellation; host receipts decide.
+      if (isExplicitRemoteNotFoundError(error)) return false;
+      throw error;
+    }
+  };
   async function deliver(initial: DurableOutboxRecord) {
     let record = initial;
     due.set(id(record), Date.now() + 5_000);
@@ -76,7 +92,23 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
       due.delete(id(record));
       attempts.delete(id(record));
     };
+    const finishHistory = async () => {
+      if (!current(record)) return;
+      if (deps.cacheHistory && !await deps.cacheHistory(record)) {
+        // Even a legacy host has durably accepted this row. Retaining its local
+        // bubble must not block later sends or make the old message retryable.
+        if (current(record) && !record.historyConfirmed)
+          await update({ state: 'host-owned', historyConfirmed: true, error: undefined });
+        return;
+      }
+      if (current(record)) await finish();
+    };
     try {
+      if (deps.sessionPolicy && !isDurableOutboxSettled(record)) {
+        const policy = await deps.sessionPolicy(record);
+        if (!current(record) || policy === 'wait') return;
+        if (policy === 'discard') return await finish(isDurableOutboxUnsent(record));
+      }
       if (record.draftHandoff) {
         await deps.store.reconcileDrafts(record.item.sessionId);
         const reconciled = deps.store.getSnapshot().find((r) => id(r) === id(record));
@@ -141,8 +173,8 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
         } else if (state === "pending") {
           // Legacy hosts cannot seal a not-yet-arrived enqueue. Keep uncertain cancellation visible.
           await update({ state: "failed", error: deps.confirmationMessage });
-        } else if (await deps.history(record)) {
-          if (current(record)) await finish();
+        } else if (await hasHistory(record)) {
+          await finishHistory();
         } else if (current(record)) {
           await update({ state: "failed", error: deps.confirmationMessage });
         }
@@ -162,19 +194,19 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
       if (durableOwnership) {
         if (record.state !== "host-owned") await deps.accepted?.(record);
         if (!current(record)) return;
-        if (await deps.history(record)) {
-          if (current(record)) await finish();
+        if (await hasHistory(record)) {
+          await finishHistory();
           return;
         }
         if (!current(record)) return;
-        if (!hasDurableOwnership(record))
+        if (!hasDurableOwnership(record) || record.error)
           await update({ state: "host-owned", retrySafe: true, error: undefined });
         due.set(id(record), Date.now() + 5_000);
         return;
       }
       // Even old hosts may already have persisted a user row after the enqueue receipt was lost.
-      if ((record.prepared || state === "pending" || state === "accepted") && (await deps.history(record))) {
-        if (current(record)) await finish();
+      if ((record.prepared || state === "pending" || state === "accepted") && (await hasHistory(record))) {
+        await finishHistory();
         return;
       }
       if (!current(record) || record.state === "failed") return;
@@ -251,10 +283,13 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
           },
           retrySafe: projection.inputDeliveryVersion === 1,
           enqueueStarted: record.enqueueStarted ?? (record.sendAtMs === undefined ? false : undefined),
-          clearBoundaryMs: projection.clearBoundaryMs ?? record.clearBoundaryMs,
+          clearBoundaryMs: projection.clearBoundaryMs !== undefined
+            ? projection.clearBoundaryMs : record.clearBoundaryMs,
           sendAtMs: record.sendAtMs ?? Date.now(),
         });
       }
+      await deps.beforeEnqueue?.(record);
+      if (!current(record) || !deps.canRun(record)) return;
       // This write precedes every external enqueue. Crash recovery therefore knows it must reconcile.
       await update({ state: "sending", enqueueStarted: true, error: undefined });
       const result = await deps.enqueue(record);

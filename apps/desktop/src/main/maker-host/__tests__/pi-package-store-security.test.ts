@@ -361,8 +361,17 @@ describe('Pi package executable-code boundary', () => {
     runtime.listOutput = `${entries.join('\n')}\n`;
 
     const store = await import('../pi-package-store.js');
-    const result = await store.listPiPackages();
+    // 本用例只验证超长元数据的截断与总量上限；固定时钟，避免慢速 runner 触发
+    // 单包检查时限后降级成 inspection-limit 投影（名称即来源、不截断）。
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    let result: Awaited<ReturnType<typeof store.listPiPackages>>;
+    try {
+      result = await store.listPiPackages();
+    } finally {
+      clock.mockRestore();
+    }
     expect(result.packages).toHaveLength(128);
+    expect(result.packages.filter((pkg) => pkg.warning === 'inspection-limit')).toEqual([]);
     expect(result.packages.every((pkg) => pkg.name.endsWith('…'))).toBe(true);
     expect(result.packages.every((pkg) => pkg.version?.endsWith('…'))).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(128 * 1_024);

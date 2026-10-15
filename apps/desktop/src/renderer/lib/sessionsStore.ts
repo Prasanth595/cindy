@@ -114,6 +114,8 @@ let sessionSpendRevision = 0;
 type StoreChange = 'updated' | 'reset';
 
 const subs = new Set<(change: StoreChange) => void>();
+type SessionPatchListener = (id: string, patch: Partial<Session>, row: Session | null) => void;
+const patchSubs = new Set<SessionPatchListener>();
 
 function notify(change: StoreChange = 'updated'): void {
   subs.forEach((fn) => fn(change));
@@ -636,10 +638,16 @@ function applyAuthoritativeStatusSession(
     touched = true;
   }
   if (touched) notify();
+  patchSubs.forEach((fn) => fn(session.id, session, session));
   for (const filter of toBackfill) requestFilterBackfill(filter);
 }
 
 export const sessionsStore = {
+  /** Original list mutations, including rows outside a consumer's loaded window. */
+  subscribePatches(fn: SessionPatchListener): () => void {
+    patchSubs.add(fn);
+    return () => { patchSubs.delete(fn); };
+  },
   subscribe(fn: (change: StoreChange) => void): () => void {
     subs.add(fn);
     return () => {
@@ -1059,6 +1067,8 @@ export const sessionsStore = {
       }
     }
     if (touched) notify();
+    const patchedRow = migratedSession ?? this.findById(id);
+    patchSubs.forEach((fn) => fn(id, patch, patchedRow));
     if (
       pendingBeforePatch &&
       patch.status !== undefined &&
@@ -1086,6 +1096,8 @@ export const sessionsStore = {
     // never leak into the regular desktop Session cache through the optimistic
     // prepend path (the IPC list already excludes source='bot').
     if (session.source === 'bot') return;
+    // /review 审查任务同样不进普通任务列表,只从来源任务的审查卡片打开。
+    if (session.source === 'review') return;
     // 插入前叠乐观预览:createSession 往往先于 sessions:created 刷新返回,但预览
     // 必须在入库前就登记。若不在这里叠,第一帧仍是哨兵,用户会先看到「未命名任务」。
     const [withPreview] = applyAutoTitlePreviews([session]);

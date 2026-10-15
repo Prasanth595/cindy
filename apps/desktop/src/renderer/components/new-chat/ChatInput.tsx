@@ -18,6 +18,7 @@ import { buildLocalSkillPathRoute } from '@/features/skillhub/lib/localRoutes';
 import { Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
 import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
+import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { requiresFullAccessConfirmation } from '@cindy/maker-shared/permission-mode';
 import { isAnnotationBurnInError } from '@/lib/annotationBurnIn';
 import { AttachmentRejectionStrip, ThumbnailStrip } from './ComposerAttachments';
@@ -61,7 +62,9 @@ import { MentionDragCaretDecoration, setMentionDragCaret } from './MentionDragCa
 import {
   applyGhostCommandBackspace,
   GhostCommandDecoration,
+  ghostQualifierDisplay,
   setGhostCommandRoster,
+  type GhostSourceLabels,
 } from './GhostCommandDecoration';
 import {
   replaceSlashCommandRunWithText,
@@ -189,15 +192,17 @@ import { SlashCommandPalette } from './SlashCommandPalette';
 import {
   expandGhostCommand,
   findGhostByCommand,
-  parseGhostCommandWord,
+  formatGhostCommandToken,
+  parseGhostCommandToken,
 } from '@/cindy-brain/ghostCommand';
+import { findInstalledGhostByInstanceId, installedGhostStoragePart } from '../../../shared/pluginIdentity';
 import { filterGhostsForWorkdir, getWorkdirDisabledGhostIds } from '@/cindy-brain/ghostWorkdirFilter';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import { useRemoteComposerGhosts } from '@/cindy-brain/useRemoteComposerGhosts';
 import { projectGhostComposerEntries, type GhostCommandSource } from '../../../shared/ghostComposer';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { AtMentionPanel, type AtPanelState } from './AtMentionPanel';
 import { MentionChipNode, type MentionChipAttrs } from './MentionChipNode';
@@ -408,6 +413,7 @@ import { createWorkLouderCodexVoiceGesture } from '@/lib/workLouderCodexVoiceGes
 import { appendMentionChip } from './mentionChipInsertion';
 // device-link 远程会话:设置变更不落本地 DB(会 404),改写远程内存层 + 运行时隧道。
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
+import { readSessionProviderGroup } from '@/features/provider-group/sessionProviderGroup';
 import { makerApiFor, makerApiForDevice, makerApiForSticky, subscribeRemoteCredentialSwitchOutcome } from '@/lib/makerTransport';
 import { SESSION_LINK_DROP_MIME } from '@/lib/sessionLinkDrop';
 
@@ -1194,7 +1200,7 @@ export function ChatInput({
   onFastModeChange,
   onWorkingDirChange,
   disabled,
-  settingsLocked = false,
+  settingsLocked: settingsLockedProp = false,
   isStreaming = false,
   isAgentBusy,
   onStop,
@@ -1261,12 +1267,15 @@ export function ChatInput({
   // 预测守卫用原始值区分 null vs undefined,下游通路继续用 ?? undefined 归一化。
   const deviceLinkDeviceId = _deviceLinkDeviceId;
   const sharedGuest = isSharedTaskPeer(deviceLinkDeviceId ?? '');
+  // The host owns model, Agent and reasoning settings; guests can still send input.
+  const settingsLocked = settingsLockedProp || sharedGuest;
   const selfDeviceId = useOptionalAuthDeviceId();
   /**
    * 远程控制的被控电脑上的任务(已建任务,或建到被控电脑的新任务草稿),Agent 同样可以在第三台电脑
    * 运行(与手机同一套)。调用方只在被控电脑支持时才传 remoteAgentDevices;SSH 任务与共享任务访客
-   * 不走这条。已建任务里 Agent 现在或挂着的位置是本机读不到目录的地方(被控电脑收到的分享 / 本机
-   * 自己)时,维持原有的被控电脑列表;草稿的落点只会是 remoteAgentDevices 里的电脑。
+   * 不走这条。已建任务里 Agent 现在或挂着的位置是本机读不到目录的地方(本机没收到的分享 / 本机
+   * 自己)时,维持原有的被控电脑列表;草稿的落点只会是 remoteAgentDevices 里的电脑。分享只有在
+   * 调用方确认本机也收到、放进了 remoteAgentDevices 时才算读得到。
    */
   const deviceLinkAgentLocation =
     !!deviceLinkDeviceId &&
@@ -1278,6 +1287,7 @@ export function ChatInput({
         agentDeviceId: _agentDeviceId,
         pendingAgentDeviceId: makerChatStore.getAgentSwitchIntent(sessionId)?.agentDeviceId,
         selfDeviceId,
+        readableShareIds: new Set(remoteAgentDevices.map((device) => device.deviceId)),
       }));
   /** 这个任务的 Agent 位置由本机呈现与切换:本机任务,或上面那种被控电脑上的任务。 */
   const agentLocationAware = !deviceLinkDeviceId || deviceLinkAgentLocation;
@@ -1294,6 +1304,11 @@ export function ChatInput({
   /** 下一条消息时 Agent 所在的电脑(null = 任务所在电脑)。 */
   const effectiveAgentDeviceId =
     intentAgentDeviceId !== undefined ? intentAgentDeviceId : agentDeviceId;
+  /** 有过 Agent 回复:供应商组已为这个任务选好电脑(provider-groups.md §6)。 */
+  const taskStarted = useMemo(
+    () => !!sessionId && (messages ?? []).some((message) => message.role === 'assistant'),
+    [sessionId, messages],
+  );
   /** 模型目录所在的电脑:Agent 在另一台电脑运行时是那台;否则远程任务在被控电脑,本机任务在本机。 */
   const catalogDeviceId = effectiveAgentDeviceId ?? deviceLinkDeviceId ?? undefined;
   const { t } = useTranslation();
@@ -1756,7 +1771,9 @@ export function ChatInput({
     optimistic: pendingRemoteSwitch,
   });
   const activeModel = composerSelection.display.model;
-  const activeEffort = composerSelection.display.effort ?? 'low';
+  // null = 投影未知/不可调档:回落到会话已持久化的档位(与运行实况一致),不能兜底成
+  // 字面量 'low'——该值会随下一条发送作为用户选择下发,把假档位写成真档位。
+  const activeEffort = composerSelection.display.effort ?? initialEffort ?? 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 
@@ -3094,7 +3111,11 @@ export function ChatInput({
   const ghostsForCommand = pluginsForMenu;
   const pluginAvailableIds = useMemo(
     () =>
-      new Set(ghostsForCommand.filter((ghost) => ghost.enabled).map((ghost) => ghost.manifest.id)),
+      new Set(
+        ghostsForCommand
+          .filter((ghost) => ghost.enabled)
+          .map((ghost) => installedGhostStoragePart(ghost)),
+      ),
     [ghostsForCommand],
   );
   // 统一建议面板的插件条目(旧 `+` 菜单口径的并集):可用项可选,无指令或
@@ -3103,7 +3124,8 @@ export function ChatInput({
     return pluginsForMenu.map((ghost) => {
       const hasCommand = !!ghost.manifest.command;
       const hasComposerEntry = hasCommand;
-      const selectable = pluginAvailableIds.has(ghost.manifest.id) && hasComposerEntry;
+      const instanceId = installedGhostStoragePart(ghost);
+      const selectable = pluginAvailableIds.has(instanceId) && hasComposerEntry;
       const entryKey = ghost.manifest.command ?? '';
       return {
         item: {
@@ -3111,19 +3133,19 @@ export function ChatInput({
           name: ghost.manifest.name,
           relPath:
             ghost.manifest.command ??
-            `cindy://plugin/${ghost.manifest.id}`,
-          pluginId: ghost.manifest.id,
+            `cindy://plugin/${instanceId}`,
+          pluginId: instanceId,
           ...(ghost.iconDataUrl ? { iconDataUrl: ghost.iconDataUrl } : {}),
           sourceLabel: entryKey,
           _nameLower: `${ghost.manifest.name} ${entryKey}`.toLowerCase(),
-          _relPathLower: `${entryKey} ${ghost.manifest.id}`.toLowerCase(),
+          _relPathLower: `${entryKey} ${instanceId}`.toLowerCase(),
         },
         ...(selectable
           ? {}
           : {
               disabled: true,
               disabledReason: t(
-                !pluginAvailableIds.has(ghost.manifest.id)
+                !pluginAvailableIds.has(instanceId)
                   ? 'extraDirs.pluginDisabled'
                   : ghost.hasSkill
                     ? 'extraDirs.pluginAgentInvoked'
@@ -3133,9 +3155,13 @@ export function ChatInput({
       };
     });
   }, [deviceLinkDeviceId, pluginsForMenu, pluginAvailableIds, remoteHostId, t]);
+  const ghostSourceLabels = useMemo<GhostSourceLabels>(
+    () => ({ team: t('settings.ghosts.commandPaletteSource.team') }),
+    [t],
+  );
   useEffect(() => {
-    setGhostCommandRoster(editor, ghostsForCommand);
-  }, [editor, ghostsForCommand]);
+    setGhostCommandRoster(editor, ghostsForCommand, ghostSourceLabels);
+  }, [editor, ghostsForCommand, ghostSourceLabels]);
 
   const handleVoiceInputPermissionRequired = useCallback(async () => {
     const confirmed = await confirmDialog({
@@ -4112,9 +4138,7 @@ export function ChatInput({
     if (!draft) return;
 
     if (draft.pendingGhostId) {
-      const ghost = ghostsForCommand.find(
-        (candidate) => candidate.manifest.id === draft.pendingGhostId,
-      );
+      const ghost = findInstalledGhostByInstanceId(ghostsForCommand, draft.pendingGhostId);
       if (!ghost) return;
       saveComposerDraft(
         storageKey,
@@ -4125,7 +4149,7 @@ export function ChatInput({
         },
         { silent: true },
       );
-      placeGhostAtComposerStart(editor, ghost, installedGhosts);
+      placeGhostAtComposerStart(editor, ghost, ghostsForCommand);
       return;
     }
 
@@ -4139,7 +4163,7 @@ export function ChatInput({
       { silent: true },
     );
     focusComposerEndNextFrame(editor);
-  }, [editor, ghostsForCommand, installedGhosts, storageKey, deviceLinkDeviceId, remoteHostId]);
+  }, [editor, ghostsForCommand, storageKey, deviceLinkDeviceId, remoteHostId]);
 
   // browser-comment-chip:挂载 / 会话切换时从草稿恢复评论胶囊。
   useEffect(() => {
@@ -4396,15 +4420,27 @@ export function ChatInput({
     if (!isGhostSigil) return [];
     return ghostsForCommand
       .filter((g) => g.enabled && g.manifest.command !== undefined)
-      .map(
-        (g) =>
-          ({
-            kind: 'desktop',
-            name: g.manifest.command!,
-            description: `${g.manifest.name} · ${t('settings.ghosts.commandPaletteTag')}`,
-          }) as UnifiedCommand,
-      );
-  }, [ghostsForCommand, isGhostSigil, t]);
+      .map((g) => {
+        const token = formatGhostCommandToken(g, ghostsForCommand)!;
+        const team = typeof g.namespace === 'string' ? ` · ${ghostSourceLabels.team}` : '';
+        // 同名冲突时 token 带 `/slug` 或 `/@root` 限定符:插入文本保留它供发送期消歧,
+        // 菜单只显示指令词,企业实例在右侧标「团队共享」(与输入框胶囊同一条判定)。
+        const qualifier = ghostQualifierDisplay(
+          g,
+          token !== g.manifest.command,
+          ghostSourceLabels,
+          ghostsForCommand,
+        );
+        return {
+          kind: 'desktop',
+          name: token,
+          description: `${g.manifest.name} · ${t('settings.ghosts.commandPaletteTag')}${team}`,
+          ...(qualifier
+            ? { label: g.manifest.command, ...(qualifier.label ? { meta: qualifier.label } : {}) }
+            : {}),
+        } as UnifiedCommand;
+      });
+  }, [ghostSourceLabels, ghostsForCommand, isGhostSigil, t]);
   // 面板显示与键盘导航共用同一份命令源:$ 只列意识,/ 只列技能/命令。
   const paletteCommands = isGhostSigil ? ghostCommandItems : composerSlashCommands;
   const filteredCommands = useMemo(
@@ -4601,7 +4637,9 @@ export function ChatInput({
         },
       });
     }
-    if (onExtraDirsChange) {
+    // A new directory uses the existing Main-issued writable grant. The local
+    // picker cannot authorize paths on an SSH or device-link execution host.
+    if (onWritableDirsChange && writableGrantScope && !remoteHostId && deviceLinkDeviceId === null) {
       const currentExtraDirs = extraDirs ?? [];
       const currentWritableDirs = writableDirs ?? [];
       const totalDirs =
@@ -4611,44 +4649,7 @@ export function ChatInput({
         label:
           totalDirs >= MAX_EXTRA_DIRS
             ? t('extraDirs.atLimit', { max: MAX_EXTRA_DIRS })
-            : t('extraDirs.addReadOnly'),
-        disabled: composerMutationLocked || totalDirs >= MAX_EXTRA_DIRS,
-        run: () => {
-          void pickAndAddExtraDir({
-            extraDirs: currentExtraDirs,
-            otherDirs: currentWritableDirs,
-            workingDir,
-            onChange: onExtraDirsChange,
-            confirm: confirmDialog,
-            parentDirectoryConfirm: {
-              title: t('extraDirs.parentConfirmTitle'),
-              description: (path) => t('extraDirs.parentConfirmDescription', { path }),
-              confirmText: t('extraDirs.parentConfirmAccept'),
-              cancelText: t('extraDirs.parentConfirmCancel'),
-            },
-          });
-        },
-      });
-    }
-    // 远端已有授权仍通过 onWritableDirsChange 展示并可撤销；但这里调用的是控制端
-    // 原生目录选择器，只能在已确认本机会话中提供，不能把本机绝对路径发给 SSH/
-    // device-link 被控端。undefined 表示归属尚未解析，同样 fail closed。
-    if (
-      onWritableDirsChange &&
-      writableGrantScope &&
-      !remoteHostId &&
-      deviceLinkDeviceId === null
-    ) {
-      const currentExtraDirs = extraDirs ?? [];
-      const currentWritableDirs = writableDirs ?? [];
-      const totalDirs =
-        countUserExtraDirs(currentExtraDirs) + countUserExtraDirs(currentWritableDirs);
-      actions.push({
-        id: 'add-writable-dir',
-        label:
-          totalDirs >= MAX_EXTRA_DIRS
-            ? t('extraDirs.atLimit', { max: MAX_EXTRA_DIRS })
-            : t('extraDirs.addWritable'),
+            : t('extraDirs.add'),
         disabled: composerMutationLocked || totalDirs >= MAX_EXTRA_DIRS,
         run: () => {
           void pickAndAddExtraDir({
@@ -5062,8 +5063,9 @@ export function ChatInput({
       if (selectedItem.type === 'file-picker') return;
       if (selectedItem.type === 'plugin-command') {
         if (!selectedItem.pluginId) return;
-        const ghost = composerGhostsRef.current.find(
-          (candidate) => candidate.manifest.id === selectedItem.pluginId,
+        const ghost = findInstalledGhostByInstanceId(
+          composerGhostsRef.current,
+          selectedItem.pluginId,
         );
         if (!ghost?.enabled) return;
 
@@ -5350,6 +5352,7 @@ export function ChatInput({
           ? commentsBeforeOptimisticClear
           : sourceOwnedExtras.comments;
         if (
+          CINDY_MAKE_ENABLED &&
           classifyCindyMakeCommand(editorText, slashCommandsReady ? mergedCommands : null).kind !== 'none'
         ) {
           const isMakeSourceCurrent = () =>
@@ -5569,8 +5572,10 @@ export function ChatInput({
           installedGhostsRef.current,
           workingDirRef.current,
         );
-        const ghostCommandWord = parseGhostCommandWord(text);
-        const usedGhost = ghostCommandWord ? findGhostByCommand(eligibleGhosts, ghostCommandWord) : null;
+        const ghostCommandToken = parseGhostCommandToken(text);
+        const usedGhost = ghostCommandToken
+          ? findGhostByCommand(eligibleGhosts, ghostCommandToken.word, ghostCommandToken.namespace)
+          : null;
         const routedText = expandGhostCommand(text, eligibleGhosts);
         const sendSnapshot = captureComposerSendSnapshot(
           editor.getJSON(),
@@ -5599,7 +5604,7 @@ export function ChatInput({
         const markRecentPluginUsage = () => {
           if (!usedGhost || recentUsageMarked || sourceRemoteGhosts) return;
           recentUsageMarked = true;
-          void window.electronAPI.ghosts.markUsed(usedGhost.manifest.id).catch((error) => {
+          void window.electronAPI.ghosts.markUsed(installedGhostStoragePart(usedGhost)).catch((error) => {
             log.warn(
               'failed to persist recent Plugin usage:',
               error instanceof Error ? error.message : String(error),
@@ -6736,7 +6741,7 @@ export function ChatInput({
       // 分支末尾的 isAgentSwitchEchoConfigConsistent)同样返 false —— 三元组落了不等于
       // 这份完整配置落了,调用方挂在 true 上的持久化收尾(清 override / 提交・删除收藏
       // 编辑 / 写收藏锚点)一律不做。只有完整配置原样成为权威意图 / 已应用才返 true。
-      if (!sessionId) return false;
+      if (!sessionId || settingsLocked) return false;
       // 发送的引用水合 / 预检也可能 await。以同步登记的 session 级发送 token 为准，
       // 防止「先点发送、后选引擎」被异步准备反转成先登记切换再 maker:send。
       if (hasPendingAgentSendDispatch(sessionId)) return false;
@@ -7047,6 +7052,7 @@ export function ChatInput({
     },
     [
       sessionId,
+      settingsLocked,
       activeEffort,
       resolveModelEfforts,
       getRememberedEffort,
@@ -7219,8 +7225,15 @@ export function ChatInput({
       selectedDeviceId: effectiveAgentDeviceId,
       // 被控电脑上的任务:没在浏览其他电脑时列被控电脑自己的目录与它的镜像记忆。
       ...(deviceLinkDeviceId ? { homeDeviceId: deviceLinkDeviceId } : {}),
+      ...(deviceLinkDeviceId && deviceLinkDeviceName ? { homeDeviceName: deviceLinkDeviceName } : {}),
+      selfDeviceId: selfDeviceId ?? null,
       ...(taskComputerModelMemory ? { localModelMemory: taskComputerModelMemory } : {}),
       deviceModelMemory: agentDeviceModelMemoryAccessors,
+      // 归组的任务在组那一项下显示与选择(provider-groups.md §10)。组的绑定记在任务所在电脑上：被控电脑上的
+      // 任务经设备互联问那台(旧版本问不到按没归组处理)；挂着换位置的意图时下一条消息就不在原处了，也不按组显示。
+      ...(intentAgentDeviceId === undefined
+        ? { readProviderGroup: () => readSessionProviderGroup(sessionId, deviceLinkDeviceId || undefined) }
+        : {}),
       onRelocate: async (selection) => {
         if (!(await confirmAgentRelocation(selection.agentDevice))) return false;
         return performAgentSwitchRef.current(selection.agent, selection.modelId, selection.providerId, {
@@ -7234,11 +7247,14 @@ export function ChatInput({
     sessionId,
     agentLocationAware,
     deviceLinkDeviceId,
+    deviceLinkDeviceName,
+    selfDeviceId,
     taskComputerModelMemory,
     remoteHostId,
     sessionEngineFilter,
     remoteAgentDevices,
     effectiveAgentDeviceId,
+    intentAgentDeviceId,
     confirmAgentRelocation,
   ]);
 
@@ -8534,7 +8550,7 @@ export function ChatInput({
   }, [showPromptPreview]);
   // 可见推荐本身就是一次可发送输入：按钮点击时会先把它同步写入正文，再走现有发送链。
   const canSend = hasComposerPayload || showRecommendationOverlay;
-  const makeNeedsNoModel = (noConnectedSource || selectedSourceDisconnected) && !!editor &&
+  const makeNeedsNoModel = CINDY_MAKE_ENABLED && (noConnectedSource || selectedSourceDisconnected) && !!editor &&
     !hasAttachments && classifyCindyMakeCommand(
       serializeEditorContent(editor).text, slashCommandsReady ? mergedCommands : null,
     ).kind === 'start';
@@ -8836,7 +8852,7 @@ export function ChatInput({
               // main 验归属后,图片落图片附件、视频落路径引用的 file 附件(托盘可见)。
               // 键用 storageKey(= draftKey ?? sessionId):新建会话草稿态没有
               // sessionId,附件落草稿命名空间,发送时 rehomeDraftAttachments 迁移。
-              const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+              const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
               if (ghostMediaUri) {
                 if (storageKey) void attachGhostMediaToSession(ghostMediaUri, storageKey, t);
                 return;
@@ -9270,6 +9286,7 @@ export function ChatInput({
                         : true
                     }
                     onThinkingChange={async (enabled) => {
+                      if (settingsLocked) return;
                       if (currentModelAgentKind && effectiveSourceId) {
                         if (modelMemory?.setThinking) {
                           modelMemory.setThinking(
@@ -9403,6 +9420,8 @@ export function ChatInput({
                     // 已建会话按实际路由口径解析当前来源(含停用拷贝,跟真实扣费路由);
                     // 草稿是新路由选择,保持准入口径(PR #744 review 第十轮)。
                     actualRoute={!!sessionId}
+                    // 有过 Agent 回复 = 供应商组已为这个任务选好电脑,组那一项的用量按那台显示。
+                    taskStarted={taskStarted}
                     onProviderChange={(providerId, modelId, effort, fast) =>
                       handleProviderChange(providerId, modelId, effort, undefined, fast)
                     }

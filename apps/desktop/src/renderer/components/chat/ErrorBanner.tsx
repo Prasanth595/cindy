@@ -1,4 +1,8 @@
-import { isOpenAiSubscriptionProvider } from '@cindy/model-providers';
+import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
+import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
+import { Button } from '@/components/ui/button';
+import { isSharedTaskPeer } from '@cindy/device-link';
+import { isCodexGatewayWireModel, isOpenAiSubscriptionProvider } from '@cindy/model-providers';
 import { useProviders } from '@/hooks/useProviders';
 /**
  * ErrorBanner — 错误横幅 + Retry / Cancel
@@ -16,7 +20,7 @@ import { useProviders } from '@/hooks/useProviders';
 
 import { useEffect, useState } from 'react';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
-import { isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
+import { canOfferCodexHistoryRecovery, isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { chatRemoteErrorGuidanceKey } from '@/lib/autoReviewUnavailableGuidance';
 import {
   AlertCircle,
@@ -82,6 +86,7 @@ interface ErrorBannerProps {
   /** 当前 session 的 agent kind。codex 的 401 / Missing bearer 必须 hide Retry,
    *  否则 retry 撞同一个 in-memory auth retry-loop 产生重复失败 turn。 */
   agentKind?: 'cc' | 'codex' | 'pi';
+  agentDeviceId?: string | null;
   /** 当前 session 的远端 host id;非空 + agentKind='codex' 时显「同步登录态」按钮。
    *  本地 codex 401 仍 hide Retry, 但只能提示用户去自己 fix login (没有 sync 入口)。 */
   remoteHostId?: string;
@@ -136,6 +141,7 @@ export function ErrorBanner({
   usageLimitRecovery,
   agentKind,
   remoteHostId,
+  agentDeviceId,
   deviceLinkDeviceId,
   modelId,
   providerId,
@@ -202,6 +208,9 @@ export function ErrorBanner({
     !isAnyRemoteSession &&
     !silentEncryptedRetryEnabled &&
     isInvalidEncryptedContentError(error);
+  const showHistoryRecovery = Boolean(onForkStripEncrypted) && !isSharedTaskPeer(deviceLinkDeviceId) && canOfferCodexHistoryRecovery({
+    message: error, agentKind, remoteHostId, agentDeviceId, running: isRecoverable,
+  });
   const isOversizedHistoryError =
     agentKind === 'codex' && errorReason === 'codex_history_oversized';
   // SSH 不能自动剥图。本机 / device-link 由 main 侧协调器就地恢复，横幅不给按钮。
@@ -236,7 +245,7 @@ export function ErrorBanner({
   const hasImplicitOpenAiProvider =
     normalizedProviderId === null &&
     codexAuthInjection !== 'provider-oauth' &&
-    !modelId?.startsWith('codex/') &&
+    !isCodexGatewayWireModel(modelId) &&
     !modelId?.startsWith('xai/');
   const isCodexOpenAiSource =
     agentKind === 'codex' && (hasExplicitOpenAiProvider || hasImplicitOpenAiProvider);
@@ -313,6 +322,11 @@ export function ErrorBanner({
   const terminalRateLimitRetryProgress = parseTerminalRateLimitRetryProgress(error, errorReason);
   const isCodexUsageLimitError =
     agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true;
+  const { snapshot: resetSnapshot, refresh: refreshResets } = useCodexRateLimits(
+    isCodexUsageLimitError && isCodexOpenAiSource && !isAnyRemoteSession && !agentDeviceId,
+    normalizedProviderId ?? 'openai',
+  );
+  const manualReset = useCodexRateLimitReset(resetSnapshot, refreshResets, normalizedProviderId ?? 'openai');
   const usageLimitResetDate =
     usageLimitRecovery?.resetAtMs && Number.isFinite(usageLimitRecovery.resetAtMs)
       ? new Date(usageLimitRecovery.resetAtMs)
@@ -638,6 +652,19 @@ export function ErrorBanner({
         >
           {displayError}
         </span>
+        {showHistoryRecovery && (
+          <div className="mt-2 space-y-2">
+            <p className="text-12 text-[var(--text-secondary)]">
+              {t('chat.errorBanner.readableHistoryRecoveryDescription')}
+            </p>
+            <Button size="sm" compact data-split-pane-route-action=""
+              loading={forkStripEncryptedRunning}
+              onClick={() => void onForkStripEncrypted?.()}>
+              <GitFork size={12} />
+              {t('chat.errorBanner.readableHistoryRecovery')}
+            </Button>
+          </div>
+        )}
         {(isNetworkishError ||
           isOverloadError ||
           isStreamInterrupted ||
@@ -774,6 +801,11 @@ export function ErrorBanner({
           {t('chat.errorBanner.usageLimitAutoContinueAt', { time: usageLimitResumeAt })}
         </span>
       )}
+      {(manualReset.canReset || manualReset.canRetry) && (
+        <Button size="sm" compact loading={manualReset.busy} onClick={() => void manualReset.reset()}>
+          {manualReset.canRetry ? t('codexResets.retryReset') : t('codexResets.limitAction', { count: resetSnapshot?.rateLimitResetCredits?.availableCount ?? 0 })}
+        </Button>
+      )}
       {usageLimitResumeAt && onCancelUsageLimitWait && (
         <button
           type="button"
@@ -791,13 +823,14 @@ export function ErrorBanner({
       {safeRetryText && (
         <button
           type="button"
+          disabled={forkStripEncryptedRunning}
           onClick={() => onRetry(safeRetryText)}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
             isOpenAiConnectionExpired
               ? 'text-[var(--text-primary)]'
               : 'text-[var(--error-fg)]',
-            'hover:opacity-70 transition-opacity',
+            'enabled:hover:opacity-70 transition-opacity disabled:opacity-60',
           )}
           title={t('chat.errorBanner.retryTitle')}
         >

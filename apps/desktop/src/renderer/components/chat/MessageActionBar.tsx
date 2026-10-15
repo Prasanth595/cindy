@@ -35,7 +35,7 @@ import {
   Link2,
   MessageSquarePlus,
   MessageSquareReply,
-  MessageSquare,
+  MessagesSquare,
   SmilePlus,
   Pencil,
   Share,
@@ -95,6 +95,8 @@ interface MessageActionBarProps {
   onShareAsImage?: () => void;
   /** Thread replies use the same toolbar geometry as private-chat replies. */
   replyAction?: { onClick: () => void; label: string; count?: number };
+  /** Quote this message into the current timeline's composer (group 引用回复); never opens a Thread. */
+  quoteAction?: { onClick: () => void; label: string };
   /** The caller owns reaction persistence; the toolbar owns its trigger and placement. */
   reactionAction?: { label: string; open: boolean; onOpenChange: (open: boolean) => void; disabled?: boolean; content: ReactNode };
   /** When provided, the More menu exposes single-message deletion. The
@@ -150,6 +152,7 @@ export function MessageActionBar({
   onAddToChat,
   onShareAsImage,
   replyAction,
+  quoteAction,
   reactionAction,
   onDelete,
   onEdit,
@@ -377,13 +380,30 @@ export function MessageActionBar({
           className={cn(actionButtonClass, replyAction?.count && 'w-auto min-w-6 gap-1 px-1')}
           aria-label={replyAction?.label ?? t('chat.messageActionBar.reply')}
         >
-          {replyAction ? <MessageSquare size={14} strokeWidth={2} className={actionIconClass} />
+          {replyAction ? <MessagesSquare size={14} strokeWidth={2} className={actionIconClass} />
             : <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />}
           {!!replyAction?.count && <span className={cn('text-12 tabular-nums', actionIconClass)}>{replyAction.count}</span>}
         </button>
       </Tooltip.Trigger>
       <Tooltip.Content>{replyAction?.label ?? t('chat.messageActionBar.reply')}</Tooltip.Content>
     </Tooltip.Root>
+  );
+
+  const quoteBtn = quoteAction && (
+    <Tip key="quote" text={quoteAction.label}>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          quoteAction.onClick();
+        }}
+        disabled={inFlight}
+        className={actionButtonClass}
+        aria-label={quoteAction.label}
+      >
+        <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />
+      </button>
+    </Tip>
   );
 
   const reactionBtn = reactionAction && (
@@ -660,12 +680,14 @@ export function MessageActionBar({
   // align='left'  → [copy][share][fork][edit][more][time][cost]
   // align='right' → [time][copy][share][fork][edit][more]   (user)
   // 伙伴对话:[copy][share][reply][more][time] / [time][copy][share][reply][edit][more]
+  // 群聊:[copy][share][引用回复][话题][表情][time]
   const items =
     align === 'left'
       ? [
           copyBtn,
           shareBtn,
           forkBtn,
+          quoteBtn,
           replyBtn,
           reactionBtn,
           editBtn,
@@ -673,7 +695,7 @@ export function MessageActionBar({
           timeText,
           simplifiedBotConversation ? null : costText || tokensText,
         ]
-      : [timeText, copyBtn, shareBtn, forkBtn, replyBtn, reactionBtn, editBtn, moreMenu];
+      : [timeText, copyBtn, shareBtn, forkBtn, quoteBtn, replyBtn, reactionBtn, editBtn, moreMenu];
 
   return (
     <div

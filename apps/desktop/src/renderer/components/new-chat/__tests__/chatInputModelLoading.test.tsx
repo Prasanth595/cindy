@@ -4,13 +4,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useState, type ComponentProps, type ReactNode } from 'react';
 import type { Editor } from '@tiptap/react';
 import type { ProviderView } from '@cindy/model-providers';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 import { sshNativeCodexProvider, sshModel } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import { ChatInput } from '../ChatInput';
 import * as providerMemory from '@/state/providerModelMemory';
 import * as draftMemory from '@/state/newMakerDraft';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
-  setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
+  setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), selectEffort: undefined as string | null | undefined, remoteProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
 }));
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -37,9 +38,10 @@ vi.mock('@/components/sidebar/SortableList', () => ({
     </div>
   ),
 }));
-vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId, onModelChange }: { modelId: string; onModelChange: typeof h.selectModel }) => {
+vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId, onModelChange, disabled, effort }: { modelId: string; onModelChange: typeof h.selectModel; disabled?: boolean; effort?: string | null }) => {
   h.selectModel = onModelChange;
-  return <span data-testid="model-selector">{modelId}</span>;
+  h.selectEffort = effort;
+  return <button data-testid="model-selector" disabled={disabled}>{modelId}</button>;
 } }));
 vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
 vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: () => null }));
@@ -87,7 +89,7 @@ const attachments: ComponentProps<typeof ChatInput>['attachmentState'] = {
   pendingFileMentionsVersion: 0, consumePendingFileMentions: () => [],
   removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: (files) => [...files],
 };
-beforeEach(() => { h.listening = false; h.stop.mockClear(); window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
+beforeEach(() => { h.listening = false; h.stop.mockClear(); h.selectEffort = undefined; window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
 afterEach(() => { cleanup(); h.remoteProviders = []; h.remoteStatus = 'ready'; h.setModel.mockReset(); h.confirm.mockReset(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const props = {
@@ -95,6 +97,21 @@ const props = {
   vendorKey: 'codex' as const, deviceLinkDeviceId: 'test-host', attachmentState: attachments,
   hideRuntimeControls: true, showFolderPicker: false, disableAutofocus: true,
 };
+
+it('keeps the shared guest model visible but locks selection without locking message input', async () => {
+  const onSend = vi.fn().mockResolvedValue(undefined);
+  const inputProps = { ...props, hideRuntimeControls: false, initialModel: 'gpt-6-sol', onSend };
+  const view = render(<ChatInput {...inputProps} deviceLinkDeviceId={sharedTaskHostPeer('shared', 'host')} />);
+  const selector = () => screen.getByTestId('model-selector') as HTMLButtonElement;
+  expect(selector().textContent).toBe('gpt-6-sol');
+  expect(selector().disabled).toBe(true);
+  await act(async () => { expect(await h.selectModel?.('other-model')).toBe(false); });
+  expect(h.setModel).not.toHaveBeenCalled();
+  expect(h.editor?.isEditable).toBe(true);
+
+  await act(async () => { view.rerender(<ChatInput {...inputProps} deviceLinkDeviceId="host" />); });
+  expect(selector().disabled).toBe(false);
+});
 
 const queuedMessage = {
   clientId: 'queue-edit-test',
@@ -179,6 +196,20 @@ it('sends a remote-only Codex model when the controller has no connected provide
   await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   expect(onSend.mock.calls[0][1]).toBe('remote-only');
   expect(onSend.mock.calls[0][6]).toEqual(expect.objectContaining({ providerId: 'openai' }));
+});
+
+// 回归：投影 effort 为 null（目录误判/不可调档）时选择器回落会话已持久化档位，
+// 不能兜底成字面量 'low'；投影有值时仍优先投影值。
+it.each([
+  ['null projection with the persisted session effort instead of a literal low', null, 'high', 'high'],
+  ['the projected effort wins over the initial prop when present', 'medium', 'high', 'medium'],
+] as const)('renders %s', async (_name, projectedEffort, initialEffort, expected) => {
+  h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-only')])];
+  render(<ChatInput {...props} hideRuntimeControls={false} sessionId="ssh-effort-fallback" deviceLinkDeviceId={null} remoteHostId="builder"
+    initialModel="remote-only" initialProviderId="openai" initialEffort={initialEffort}
+    runtimeEffective={{ agentKind: 'codex', model: 'remote-only', providerId: 'openai', effort: projectedEffort, fastMode: false }}
+    onSend={vi.fn()} />);
+  await waitFor(() => expect(h.selectEffort).toBe(expected));
 });
 
 it.each([

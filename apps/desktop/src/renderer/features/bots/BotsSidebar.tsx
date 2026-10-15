@@ -39,6 +39,8 @@ import {
 import { useSidebarCollapsedState, useRegisterSidebarUpper } from '../feature-context';
 import { SidebarIconButton } from '@/components/sidebar/SidebarIconButton';
 import { useRemoteBots } from './useRemoteBots';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
@@ -87,14 +89,19 @@ function BotsSidebarContent() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { botId, sessionId, deviceId, groupId } = useParams();
-  const remoteBots = useRemoteBots();
+  const cloud = useCompanionCloud();
+  const rosterRemoteBots = useRemoteBots();
+  // One row per companion, on its main computer (offline rows for computers never listed here).
+  const remoteBots = useMemo(() => cloudRemoteBots(cloud, rosterRemoteBots), [rosterRemoteBots, cloud]);
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf);
   const rosterDevices = [
     ...(self ? [self] : []),
     ...remoteBots.map((bot) => ({ deviceId: bot.deviceId, name: bot.deviceName })),
   ];
-  const bots = useBotProfiles();
+  const allBots = useBotProfiles();
+  // A demoted local copy runs on its main computer now; it is listed there, not here.
+  const bots = useMemo(() => withoutShadowedBots(allBots, cloud), [allBots, cloud]);
   const { groups } = useBotGroupList();
   useSyncExternalStore(subscribeBotReadState, readRevision, readRevision);
   const unreadByBotId = useBotUnreadCounts();
@@ -456,10 +463,10 @@ function BotsSidebarContent() {
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="truncate text-14 leading-5">{bot.name}</span>
-                      <BotConnectionStatus inline online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
+                      <BotConnectionStatus inline online={bot.connectionKnown === false ? null : bot.online} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--text-secondary)]'} />
                       <span className="truncate text-12 leading-4 text-[var(--sidebar-list-muted)]">{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
                     {!selected && isRemoteBotUnread(bot) ? <span aria-label={t('bots.list.unread', { count: 1 })} className="size-[7px] shrink-0 rounded-full bg-[var(--bot-unread-bg)]" /> : null}

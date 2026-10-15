@@ -936,6 +936,8 @@ const MACOS_VOICE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
 const MACOS_AGENT_ISLAND_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_COMPUTER_PERMISSION_GUIDE_HELPER_DEPLOYMENT_TARGET = 'macos13.0';
 const MACOS_SESSION_DRAG_RELEASE_HELPER_DEPLOYMENT_TARGET = 'macos10.15';
+// Swift Charts and the macOS 14 SwiftUI animation APIs.
+const MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET = 'macos14.0';
 const MACOS_XBOX_GAMEPAD_HELPER_DEPLOYMENT_TARGET = 'macos11.0';
 const MACOS_REMOTE_DESKTOP_INPUT_DEPLOYMENT_TARGET = 'macos10.15';
 
@@ -1627,6 +1629,39 @@ function buildMacSessionDragReleaseHelper(platform: ForgePlatform, arch: ForgeAr
   );
 }
 
+function buildMacMenubarHelper(platform: ForgePlatform, arch: ForgeArch): void {
+  if (process.platform !== 'darwin' || !isMacForgePlatform(platform)) return;
+  const srcDir = path.join(__dirname, 'native', 'menubar');
+  const src = path.join(srcDir, 'macos-menubar-helper.swift');
+  const destDir = path.join(__dirname, 'resources', 'tools', 'menubar');
+  const dest = path.join(destDir, 'xdt-macos-menubar-helper');
+  const assets = ['wordmark-light.png', 'wordmark-dark.png'];
+  if (!fs.existsSync(src)) {
+    throw new Error(`[forge] macOS menu bar helper source missing at ${src}`);
+  }
+  for (const asset of assets) {
+    if (!fs.existsSync(path.join(srcDir, asset))) {
+      throw new Error(`[forge] macOS menu bar helper asset missing: ${asset}`);
+    }
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  buildSwiftHelperForForgeArch(
+    src,
+    dest,
+    arch,
+    MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET,
+    // The helper uses @main, which requires library parsing mode.
+    ['-O', '-parse-as-library'],
+    'menu bar helper',
+  );
+  for (const asset of assets) fs.copyFileSync(path.join(srcDir, asset), path.join(destDir, asset));
+  fs.chmodSync(dest, 0o755);
+  const sizeMb = (fs.statSync(dest).size / (1024 * 1024)).toFixed(2);
+  console.log(
+    `[forge:prePackage] macOS menu bar helper (${swiftArchLabel(arch, MACOS_MENUBAR_HELPER_DEPLOYMENT_TARGET)}) -> ${dest} (${sizeMb} MB)`,
+  );
+}
+
 // MakerNSIS is Windows-only (native dependency), conditionally require to
 // avoid import errors on macOS / Linux.
 const makers: ForgeConfig['makers'] = [
@@ -1938,6 +1973,7 @@ const config: ForgeConfig = {
       buildMacAgentIslandHelper(platform, arch);
       buildMacComputerPermissionGuideHelper(platform, arch);
       buildMacSessionDragReleaseHelper(platform, arch);
+      buildMacMenubarHelper(platform, arch);
       buildRemoteDesktopInput(platform, arch);
     },
     // packaged dir 产出后、makers 跑之前签内部 .exe。这样 NSIS 包出来的
@@ -2049,6 +2085,13 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           // 最终文档落盘绑定到已验证父目录的 cwd capability，避免 main 侧
           // realpath 与 write/rename 之间被 symlink 替换。
+          target: 'preload',
+        },
+        {
+          entry: 'src/main/skillhub/customizationScanProcess.ts',
+          config: 'vite.contacts-sync-codec-worker.config.ts',
+          // File approvals can stall native scandir indefinitely. Keep discovery
+          // in a killable utility process so Main can time out and recover.
           target: 'preload',
         },
         {

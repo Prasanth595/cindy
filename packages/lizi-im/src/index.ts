@@ -7,6 +7,8 @@
  */
 
 export const VERSION = '0.0.0';
+export { buildInboundMessageFacts } from './inboundFacts.js';
+export type { InboundMessageFacts } from './inboundFacts.js';
 
 export { BaseIM } from './BaseIM.js';
 export { createIM } from './createIM.js';
@@ -23,6 +25,7 @@ export type { Logger } from './logger.js';
 
 export type {
   IMHost,
+  IMHostFileStaging,
   IMAttachment,
   IMUnsupportedEntry,
   IMMessageEvent,

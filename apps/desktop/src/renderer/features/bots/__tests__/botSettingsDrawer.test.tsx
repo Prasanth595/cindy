@@ -71,6 +71,12 @@ vi.mock('../BotsHomeView', async () => {
   };
 });
 
+const cloud = vi.hoisted(() => ({ demotedBotIds: [] as string[] }));
+vi.mock('../companionCloudStore', () => ({
+  useCompanionCloud: () => ({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', actors: [], demotedBotIds: cloud.demotedBotIds }),
+}));
+beforeEach(() => { cloud.demotedBotIds = []; });
+
 import { BotSettingsDrawer } from '../BotSettingsDrawer';
 
 function LocationProbe() {
@@ -87,6 +93,16 @@ afterEach(() => {
 });
 
 describe('BotSettingsDrawer', () => {
+  it('does not open editable settings for a copy demoted to another computer', async () => {
+    cloud.demotedBotIds = ['bot-1'];
+    const router = createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }],
+      { initialEntries: ['/bots/bot-1?settings=1'] });
+    render(<RouterProvider router={router} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it.each(['query', 'sidebar', 'back'])(
     'protects drafts when %s navigation removes settings',
     async (kind) => {
@@ -189,6 +205,8 @@ describe('BotSettingsDrawer', () => {
     expect(dialog.className).toContain('right-0');
     expect(dialog.className).toContain('w-full');
     expect(dialog.className).toContain('max-w-md');
+    // Portaled after the page's title-bar drag strip, so this no-drag wins under the close button.
+    expect((dialog.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe('no-drag');
     expect(screen.getByTestId('chat-underlay')).toBeTruthy();
     expect(screen.getByTestId('simple-bot-settings')).toBeTruthy();
 

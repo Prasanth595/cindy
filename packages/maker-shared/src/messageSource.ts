@@ -207,6 +207,16 @@ export function messageSourceSenderFromMeta(meta: unknown): MessageSourceSender 
   return undefined;
 }
 
+/**
+ * 来源任务在另一台电脑上（Agent 跨电脑发消息时，接收电脑把来源任务 id 记为
+ * `deviceId::sessionId`）。它不是本机可打开的任务 id：界面照常显示标签与 id，但不提供跳转。
+ */
+export function isCrossDeviceSourceSessionId(sessionId: string | undefined): boolean {
+  if (!sessionId) return false;
+  const split = sessionId.indexOf('::');
+  return split > 0 && split < sessionId.length - 2;
+}
+
 export type MessageSourceIdKind = 'plugin' | 'teammate' | 'session' | 'automation' | 'member';
 
 export interface MessageSourceIdEntry {

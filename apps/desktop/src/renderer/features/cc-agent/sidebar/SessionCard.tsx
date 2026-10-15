@@ -112,12 +112,13 @@ const CARD_TITLE_META_SLOT_CLASS =
  */
 function getNeutralAwaitingKind(
   sessionId: string,
-): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | '' {
+): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | 'input_handoff' | '' {
   const info = makerChatStore.getRunningSnapshot().get(sessionId);
   if (info?.hasPendingPermission) return 'permission';
   if (info?.hasPendingPlanReview) return 'plan_review';
   if (info?.hasPendingAskUser) return 'ask_user';
   if (info?.hasPendingPluginSetup) return 'plugin_setup';
+  if (info?.hasPendingInputHandoff) return 'input_handoff';
   return '';
 }
 
@@ -257,7 +258,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
           ? t('ccAgent.sidebar.card.awaitingPlan')
           : awaitingKind === 'plugin_setup'
             ? t('ccAgent.sidebar.card.awaitingPluginSetup')
-            : t('ccAgent.sidebar.card.awaitingQuestion');
+            : awaitingKind === 'input_handoff'
+              ? t('ccAgent.sidebar.card.awaitingInputHandoff')
+              : t('ccAgent.sidebar.card.awaitingQuestion');
   const runningDetail =
     islandActivity?.phase === 'running' && islandActivity.compactDetail
       ? islandActivity.compactDetail
@@ -560,8 +563,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     !isEmpty &&
     !session.remoteHostId &&
     !session.deviceLinkDeviceId &&
-    // Agent 在另一台电脑运行：它的会话记录按项目路径存在那台，移动后无法继续。
-    !session.agentDeviceId &&
+    // Agent 在另一台电脑运行的任务也可移动：那台按任务 id 定址 Agent 工作区，与本机路径无关。
     session.status !== 'archived';
 
   const moveToProjectSubmenu = canMoveToProject ? (

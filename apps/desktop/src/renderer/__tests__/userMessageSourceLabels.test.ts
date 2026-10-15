@@ -30,6 +30,13 @@ describe('UserMessage source labels', () => {
     );
   });
 
+  it('marks a bubble holding only the plugin annotation as a share-image source', () => {
+    // 只发 $指令 时气泡里只有插件标注行;分享图剥掉标注后整泡也要去掉,不留空壳。
+    expect(userMessageSource).toMatch(
+      /\{\.\.\.\(inlineQuoteCount === 0 && !displayBubbleBody\.trim\(\)\s*\? \{ \[SHARE_SOURCE_ATTR\]: '' \}\s*: \{\}\)\}/,
+    );
+  });
+
   it('shows the shared-task member id on hover, like the other source labels', () => {
     expect(userMessageSource).toContain(
       "t('chat.userMessage.sourceIds.member', { id: sharedAuthorMemberId })",

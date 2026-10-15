@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { ProviderShareReceived } from '@cindy/device-link';
+import { readProviderShareGroupSize, type ProviderShareReceived } from '@cindy/device-link';
 
 import { hasProviderLogo, ProviderLogoMark } from '@/components/icons/ProviderLogoMark';
 import {
@@ -26,8 +26,10 @@ import { cn } from '@/lib/utils';
 import { extractIpcError, mapIpcErrorToI18nKey } from '@/utils/ipcError';
 
 import { providerShareAgentDeviceId } from './providerShareFormat';
+import { providerShareDisplayNames } from './providerShareNames';
 import { useProviderShareReceived } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
+import { SharedProviderGroupStatus } from './SharedProviderGroupStatus';
 
 type ReceivedStatus = 'active' | 'paused' | 'offline' | 'needs-update';
 
@@ -56,16 +58,26 @@ function StatusDot({ status }: { status: ReceivedStatus }) {
   );
 }
 
-/** 左栏的「分享给我的供应商」一组；没有分享时整组不显示。 */
+/**
+ * 左栏的「分享给我的供应商」一组；没有分享时整组不显示。被我另一台电脑的供应商组收进去的分享
+ * 不再单独列出(provider-groups.md §3、§10)，正在查看的那一项保留。
+ */
 export function ProviderShareReceivedRailGroup({
   selectedShareId,
   onSelect,
+  hiddenShareIds,
 }: {
   selectedShareId: string | null;
   onSelect: (shareId: string) => void;
+  hiddenShareIds?: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
-  const { received } = useProviderShareReceived();
+  const { received: all } = useProviderShareReceived();
+  const received = hiddenShareIds?.size
+    ? all.filter((share) => share.shareId === selectedShareId || !hiddenShareIds.has(share.shareId))
+    : all;
+  // 按全部分享编号，收起一部分后序号也不变。
+  const names = providerShareDisplayNames(all, t);
   if (received.length === 0) return null;
 
   return (
@@ -78,12 +90,13 @@ export function ProviderShareReceivedRailGroup({
       </span>
       {received.map((share) => {
         const status = receivedStatus(share);
-        const owner = t('providerShare.received.fromOwner', { name: share.owner.displayName });
+        // 只写来自谁，不写分享者的电脑名(provider-sharing.md §6)。
+        const owner = names.get(share.shareId) ?? '';
         const selected = selectedShareId === share.shareId;
         return (
           <Tip
             key={share.shareId}
-            text={`${owner} · ${share.deviceName}`}
+            text={owner}
             side="right"
             contentClassName="max-w-[360px] break-words"
           >
@@ -163,7 +176,14 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
     }
   };
 
-  const owner = t('providerShare.received.fromOwner', { name: share.owner.displayName });
+  // 只写来自谁；分享者建了供应商组时补一句组里有几台，不写是哪几台(provider-sharing.md §6)。
+  const { received: allReceived } = useProviderShareReceived();
+  const groupSize = readProviderShareGroupSize(provider);
+  const ownerName = providerShareDisplayNames(allReceived, t).get(share.shareId)
+    ?? t('providerShare.received.fromOwner', { name: share.owner.displayName });
+  const owner = groupSize !== null
+    ? `${ownerName} · ${t('settings.providers.remote.groupBadge', { count: groupSize })}`
+    : ownerName;
   let body: string | null = null;
   if (status === 'paused') body = t('providerShare.received.pausedNote');
   else if (status === 'offline') body = t('providerShare.received.offlineNote');
@@ -180,7 +200,7 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
   else if (models.length === 0) body = t('providerShare.received.modelsEmpty');
 
   return (
-    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="shrink-0 px-5 py-4">
         <div className="flex flex-wrap items-center gap-3 gap-y-2">
           <div className="flex min-w-0 flex-auto basis-[220px] items-center gap-3">
@@ -209,14 +229,14 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
                 className="truncate text-13 leading-tight"
                 style={{ color: 'var(--settings-integration-subtitle)' }}
               >
-                {`${owner} · ${share.deviceName}`}
+                {owner}
               </span>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2.5">
             <span role="status" className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
               <StatusDot status={status} />
-              {t(STATUS_LABEL_KEY[status])}
+              {t(status === 'active' && groupSize !== null ? 'providerShare.received.groupStatus.shareActive' : STATUS_LABEL_KEY[status])}
             </span>
             <Button
               variant="secondary"
@@ -244,23 +264,29 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
         </p>
       </div>
 
-      <ReadOnlyProviderModelSection
-        title={t('providerShare.received.modelsTitle')}
-        models={models}
-        note={body}
-        action={
-          status === 'active' && catalog.error ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
-            >
-              {t('providerShare.received.retryModels')}
-            </Button>
-          ) : null
-        }
-        testId="provider-share-received-models"
-      />
+      {status === 'active' && groupSize !== null && (
+        <SharedProviderGroupStatus key={catalogDeviceId} deviceId={catalogDeviceId} providerId={share.providerId} initialSize={groupSize} />
+      )}
+
+      <div className="flex min-h-40 flex-1 flex-col">
+        <ReadOnlyProviderModelSection
+          title={t('providerShare.received.modelsTitle')}
+          models={models}
+          note={body}
+          action={
+            status === 'active' && catalog.error ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
+              >
+                {t('providerShare.received.retryModels')}
+              </Button>
+            ) : null
+          }
+          testId="provider-share-received-models"
+        />
+      </div>
     </div>
   );
 }

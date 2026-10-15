@@ -47,11 +47,8 @@ import {
 
 export type AgentIslandInteractionRequest =
   | InteractionRequest
-  | {
-      kind: 'plugin_setup';
-      requestId: string;
-      detail: string;
-    };
+  | { kind: 'plugin_setup'; requestId: string; detail: string }
+  | { kind: 'input_handoff'; requestId: string; detail: string };
 
 export const AGENT_ISLAND_COMPLETION_DWELL_MS = 5_000;
 export const AGENT_ISLAND_ERROR_DWELL_MS = 12_000;
@@ -122,6 +119,7 @@ interface ApplyAgentIslandEventOptions {
 }
 
 interface AgentIslandSessionState {
+  pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
   projectName: string | null;
@@ -1125,7 +1123,16 @@ export function syncAgentIslandDeviceSessions(
       result.changed = true;
     }
     if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
+    if (input.phase === 'completed') {
+      const observedCompletion = transition.event === 'done' || waitingForCompletionNotification;
+      session.pendingDeviceCompletionNotification = input.completionNotification === 'pending' && observedCompletion;
+      if (input.completionNotification) transition.event = null;
+      else if (waitingForCompletionNotification) transition.event = 'done';
+    } else {
+      session.pendingDeviceCompletionNotification = false;
+    }
     if (transition.changed) result.changed = true;
     if (transition.event) {
       result.events.push({
@@ -2781,7 +2788,7 @@ function detailForInteraction(
   request: AgentIslandInteractionRequest,
   wording: ToolRowWording,
 ): string {
-  if (request.kind === 'plugin_setup') return request.detail;
+  if (request.kind === 'plugin_setup' || request.kind === 'input_handoff') return request.detail;
   if (request.kind === 'permission') {
     // 权限确认:requireCommandVisible 保证用户批准的真实命令始终可见。
     return formatIslandToolDetail(request.toolName, request.input, { wording, requireCommandVisible: true }, {

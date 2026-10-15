@@ -1,3 +1,5 @@
+import { todoForCaller } from '../maker-ipc/botTodoAccess.js';
+import { TodoError, queryTodoItems, type TodoListQuery, type TodoPatch, type preflightTodoEvents } from '@cindy/maker-shared/teammate-todo';
 import { t } from '../i18n.js';
 import { executeTaskTags } from '../localDb/ipc/taskTags.js';
 import { getPluginMarketService } from '../plugin-market/service.js';
@@ -42,9 +44,10 @@ import { feishuIm, wechatIm } from '../im';
 import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
-import { checkAppUpdateForAgent } from '../updateService.js';
+import { createAgentAppUpdateCallbacks } from '../agent-app-update/index.js';
 import { getScheduler } from '../scheduler-host/index.js';
 import { stabilizeHookCommand } from '../scheduler-host/hook-script-generator.js';
+import { assertPreRunHookCommandSyntax } from '../scheduler-host/pre-run-hook.js';
 import { searchSessionsWithBotScope } from '../maker-host/session-search.js';
 import { readLspModeSettings } from '../maker-host/lsp-mode-store.js';
 import {
@@ -73,16 +76,20 @@ import {
 } from '../maker-ipc/botSkillService.js';
 import {
   addBotWorkbenchProjectForCaller,
+  captureBotCreatedTaskResponsibility,
   removeBotWorkbenchProjectForCaller,
   runBotWorkbenchTool,
   type BotWorkbenchSendDeps,
 } from '../maker-ipc/botWorkbenchTools.js';
 import { createTaskToolCallAuthorizer } from '../maker-ipc/taskToolCallAuthorizer.js';
 import {
+  getSessionRowSnapshot,
   patchSessionMetaInDb,
   renameSessionTitlesInDb,
   setSessionsStatusInDb,
 } from '../localDb/ipc/sessions.js';
+import { getInputHandoffService } from '../input-handoff/service.js';
+import { isInputHandoffDisabledForSession } from '../input-handoff/botPolicy.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import type { PluginRegistry } from '../maker-host/plugins/plugin-registry.js';
 import { getDesktopContactsManager } from '../maker-host/maker-contacts-host.js';
@@ -97,6 +104,8 @@ import {
   type ChatHistoryReaderDeps,
 } from './remoteChatHistory.js';
 import { botSessionLinks, sessions } from '../localDb/schema.js';
+import { createSchedulerRemoteDeps } from './schedulerDevices.js';
+import { createRemoteSessionHandoff } from './sessionHandoffRemote.js';
 import { isCindyLearnSkillEnabled } from '../skillhub/activationPreferences.js';
 import { botLearningTracker } from '../maker-ipc/botLearningTracker.js';
 import { getLearnController } from '../learn-host/index.js';
@@ -105,6 +114,7 @@ import { createSkillhubAgentTools } from '../skillhub/agentTools.js';
 import { startGrokDeviceLogin, grokDeviceLoginStatus, cancelGrokDeviceLogin } from '../maker-host/grok-device-login-service.js';
 
 export interface DesktopMcpProvidersDeps {
+  askUserQuestionAsync?: XdtHelperMcpDeps['askUserQuestionAsync'];
   runtimeCapabilities?: XdtHelperMcpDeps['runtimeCapabilities'];
   botCapabilities: Pick<ReturnType<typeof createBotCapabilityService>, 'list' | 'select'>;
   createMediaDownloadContext?: CindyGhostsHostDeps['createMediaDownloadContext'];
@@ -115,7 +125,12 @@ export interface DesktopMcpProvidersDeps {
   /** 按会话控制启用状态的 plugin registry。 */
   pluginRegistry: PluginRegistry;
   /** Device-link transport stays host-injected so provider tests do not load Electron runtime services. */
-  invokeRemote: ChatHistoryReaderDeps['invokeRemote'];
+  invokeRemote: (
+    deviceId: string,
+    channel: string,
+    args: unknown[],
+    options?: { preSend?: () => void },
+  ) => ReturnType<ChatHistoryReaderDeps['invokeRemote']>;
   historyRemote?: import('@cindy/mcps').HistoryRemoteDeps;
   /** 插件文件交接只认活跃 Session 的实时权限；缺失时由 ghost.ts fail closed。 */
   getLiveSessionGrantState?: (
@@ -192,6 +207,13 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         : { ok: false as const, errorCode: result.errorCode, message: result.message };
     },
   };
+
+  const remoteSessionHandoff = deps.historyRemote
+    ? createRemoteSessionHandoff({
+        captureAccess: deps.historyRemote.captureAccess,
+        invoke: deps.invokeRemote,
+      })
+    : null;
 
   const authorizeTaskToolCall = createTaskToolCallAuthorizer({
     getDb: () => (isAppSessionBoundaryPending() ? null : tryGetDbClient()),
@@ -338,6 +360,16 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       withAccountDataAccess,
       authorizeCall: authorizeTaskToolCall,
       getScheduler: () => getScheduler(),
+      // 其它电脑上的定时任务:与历史查询共用设备目录与 owner fence,走既有远程控制通道。
+      ...(deps.historyRemote
+        ? {
+            remote: createSchedulerRemoteDeps({
+              listDevices: deps.historyRemote.listDevices,
+              captureAccess: deps.historyRemote.captureAccess,
+              invoke: deps.invokeRemote,
+            }),
+          }
+        : {}),
       // 前置检查脚本统一安装服务:落盘路径/协议/自测与 UI「AI 生成」共用同一实现
       // (hook-script-generator)。lazy import:该链上有 electron app 依赖,且 maker
       // 仅 description 生成模式需要,tool-call 时才解引用。
@@ -353,8 +385,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             return undefined;
           }
         },
-        stabilizeCommand: async ({ command, workingDir }) =>
-          stabilizeHookCommand(command, workingDir),
+        stabilizeCommand: async ({ command, workingDir }) => {
+          await assertPreRunHookCommandSyntax(command);
+          return stabilizeHookCommand(command, workingDir);
+        },
         install: async (input) => {
           const [{ installHookScript }, { getMaker }, { app }] = await Promise.all([
             import('../scheduler-host/hook-script-generator.js'),
@@ -467,12 +501,38 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // (LLM 调工具时) registerMakerIpc 早已执行完毕, holder 已 ready。
     xdtHelper: {
       runtimeCapabilities: deps.runtimeCapabilities,
-      appUpdate: {
-        isCurrentSession: (sessionId, sessionInstanceId) =>
-          deps.isCurrentLocalSessionInstance?.(sessionId, sessionInstanceId) === true,
-        check: checkAppUpdateForAgent,
-      },
+      // Install / auto-update requests become owner-only Host cards (see agent-app-update/).
+      appUpdate: createAgentAppUpdateCallbacks((sessionId, sessionInstanceId) =>
+        deps.isCurrentLocalSessionInstance?.(sessionId, sessionInstanceId) === true),
       logger: createLogger('mcp/cindy_helper'),
+      // 代输入: Host-owned card; values never return through this tool.
+      inputHandoff: {
+        start: async (context, request) => {
+          if (!context.sessionId || !deps.isCurrentLocalSessionInstance?.(context.sessionId, context.sessionInstanceId))
+            return { ok: false, errorCode: 'NO_SESSION_CONTEXT', message: 'This task is no longer current.' };
+          const service = getInputHandoffService();
+          if (!service) return { ok: false, errorCode: 'CAPABILITY_NOT_AVAILABLE', message: 'Input handoff is not ready yet.' };
+          // Unknown policy (store unreadable) fails closed; a teammate switch must hold.
+          if (await isInputHandoffDisabledForSession(context.sessionId).catch(() => true))
+            return {
+              ok: false,
+              errorCode: 'DISABLED_BY_OWNER',
+              message: 'The owner turned off input handoff for this teammate. Tell the owner what is still needed instead.',
+            };
+          const row = await getSessionRowSnapshot(context.sessionId).catch(() => null);
+          const requester = row?.title?.trim().slice(0, 120);
+          const result = service.start({
+            sessionId: context.sessionId,
+            purpose: request.purpose,
+            ...(request.note ? { note: request.note } : {}),
+            ...(requester ? { requester } : {}),
+            target: request.target,
+            ...(request.completeWhen ? { completeWhen: request.completeWhen } : {}),
+            ...(request.timeoutMinutes ? { timeoutMinutes: request.timeoutMinutes } : {}),
+          });
+          return result.ok ? { ok: true, requestId: result.requestId } : result;
+        },
+      },
       grokLogin: {
         start: async (context) => {
           if (!context.sessionId || !context.sessionInstanceId
@@ -625,6 +685,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: false, errorCode: 'INTERNAL', message };
         }
       },
+      askUserQuestionAsync: deps.askUserQuestionAsync,
       renameSessions: async ({ changes, dryRun }) => {
         if (!tryGetDbClient()) {
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'localDb not ready' };
@@ -662,10 +723,28 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           return { ok: false, errorCode: 'INTERNAL', message };
         }
       },
+      // 目标在另一台电脑(deviceId::sessionId):交给那台电脑按它本机的同一条通路投递。
+      ...(remoteSessionHandoff
+        ? {
+            sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) =>
+              remoteSessionHandoff({ deviceId, sessionId }, {
+                message,
+                sender: async () => {
+                  const dbClient = tryGetDbClient();
+                  const [row] = dbClient
+                    ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
+                      .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
+                    : [];
+                  return { sessionId: dispatcherSessionId, ...(row?.title ? { title: row.title } : {}) };
+                },
+              }),
+          }
+        : {}),
       sendToSession: async ({
         targetSessionId,
         message,
         dispatcherSessionId,
+        messagePurpose,
         title,
         useWorktree,
         workingDir,
@@ -674,6 +753,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         effort,
         fast,
       }) => {
+        // deviceId::sessionId → 目标在另一台电脑:交给那台电脑按它本机的同一条通路投递。
         const svc = tryGetOrcaCollabService();
         if (!svc) {
           return { ok: false, errorCode: 'HOST_NOT_READY', message: 'orca collab service not initialized' };
@@ -684,10 +764,12 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             || model !== undefined
             || effort !== undefined
             || fast !== undefined;
-          return await svc.sendToSession({
+          const recordCreation = targetSessionId ? null : await captureBotCreatedTaskResponsibility(dispatcherSessionId);
+          const result = await svc.sendToSession({
             targetSessionId,
             message,
             dispatcherSessionId,
+            messagePurpose,
             title,
             useWorktree,
             workingDir,
@@ -702,6 +784,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
                 }
               : {}),
           });
+          if (result.ok && result.wakeKind === 'created' && recordCreation) {
+            try { await recordCreation(result.targetSessionId); }
+            catch { return { ...result, responsibilityRecorded: false }; }
+          }
+          return result;
         } catch (err) {
           return { ok: false, errorCode: 'INTERNAL', message: err instanceof Error ? err.message : String(err) };
         }
@@ -897,6 +984,24 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
       // 停止走通用的 stop_session_turn。
       botWorkbench: {
+        todos: async (caller, operation, input) => {
+          try {
+            const access = await todoForCaller(caller);
+            if (operation === 'list') {
+              const all = await access.list();
+              const q = (input ?? {}) as TodoListQuery & {id?:string;key?:string};
+              if (q.id || q.key) {
+                const items = all.items.filter(t => q.id ? t.id === q.id : t.key === q.key);
+                return {ok:true,items,total:items.length};
+              }
+              return {ok:true,...queryTodoItems(all.items,q)};
+            }
+            if (operation === 'update') return {ok:true,todo:await access.patch(input as TodoPatch)};
+            if (operation === 'preflight') return {ok:true,events:await access.preflight(input as Parameters<typeof preflightTodoEvents>[1])};
+            return {ok:true,...await access.ingest(input as Parameters<typeof access.ingest>[0])};
+          } catch(error) { return {ok:false,errorCode:error instanceof TodoError ? error.code : 'INTERNAL',message:error instanceof Error?error.message:'INTERNAL'}; }
+        },
+        setResponsibility: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.setResponsibility(params)),
         get: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.get(params)),
         read: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.read(params)),
         set: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.set(params)),

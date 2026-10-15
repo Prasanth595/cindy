@@ -13,14 +13,17 @@ const state = vi.hoisted(() => ({
   allowed: new Set<string>(['anthropic']),
   owned: [] as ProviderShareOwned[],
   received: [] as ProviderShareReceived[],
+  receivedError: false,
 }));
 
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => state.scope,
   isAppSessionBoundaryPending: () => false,
+  getActiveDataOwnerPushStamp: () => ({ dataOwnerId: state.scope, ownerGeneration: 1 }),
 }));
 vi.mock('../../authManager.js', () => ({
   getAuthState: () => ({ isAuthenticated: state.authenticated }),
+  getActiveAuthRealm: () => 'global',
   getDeviceId: () => 'host-device',
 }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn() }) }));
@@ -32,7 +35,10 @@ vi.mock('../settings-store.js', () => ({ readDeviceLinkSettings: () => ({ remote
 vi.mock('../providerShareApi.js', () => ({
   providerShareApi: {
     listOwned: async () => state.owned,
-    listReceived: async () => state.received,
+    listReceived: async () => {
+      if (state.receivedError) throw new Error('offline');
+      return state.received;
+    },
   },
   fetchIdentityCard: vi.fn(),
   sha256Hex: (value: string) => value,
@@ -49,7 +55,6 @@ import {
   stopProviderShareHost,
 } from '../providerShareHost';
 import {
-  describeProviderShareDevice,
   isProviderShareRefusal,
   parseProviderShareAgentDeviceId,
   providerShareAgentDeviceId,
@@ -57,6 +62,8 @@ import {
   resolveRemoteAgentTargetWhenReady,
   startProviderShareGuest,
   stopProviderShareGuest,
+  getReceivedSharesSnapshot,
+  refreshReceivedShares,
 } from '../providerShareGuest';
 
 const person = { displayName: 'Lizi', avatarUrl: null, region: 'global' as const };
@@ -78,6 +85,7 @@ beforeEach(() => {
   state.allowed = new Set(['anthropic']);
   state.owned = [];
   state.received = [];
+  state.receivedError = false;
 });
 afterEach(() => {
   stopProviderShareHost();
@@ -179,6 +187,20 @@ describe('provider share host purge after pause', () => {
 });
 
 describe('provider share guest routing', () => {
+  it('distinguishes an authoritative empty membership list from startup, failure, disconnect and account switch', async () => {
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual([]);
+    state.receivedError = true;
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual([]);
+    state.receivedError = false;
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot()).toMatchObject({ confirmedRegions: ['global'], received: [], ownerStamp: { dataOwnerId: state.scope } });
+    state.scope = 'cloud:other:2';
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual([]);
+    stopProviderShareGuest();
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual([]);
+  });
   const received = (status: 'active' | 'paused'): ProviderShareReceived => ({
     shareId: 'share-1', memberId: 'm1', providerId: 'anthropic', providerLabel: 'Anthropic', hostDeviceId: 'owner-mac',
     deviceName: "Magi's Mac Mini", owner: { displayName: 'Magi', avatarUrl: null, region: 'global' }, status,
@@ -195,7 +217,6 @@ describe('provider share guest routing', () => {
     state.received = [received('active')];
     startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
     await expect(resolveRemoteAgentTargetWhenReady('share:share-1')).resolves.toBe(providerShareHostPeer('share-1', 'owner-mac'));
-    expect(describeProviderShareDevice('share:share-1')).toBe("Magi's Mac Mini");
     expect(() => resolveRemoteAgentTarget('share:share-2')).toThrow(/REMOTE_AGENT_SHARE_REMOVED/);
   });
 

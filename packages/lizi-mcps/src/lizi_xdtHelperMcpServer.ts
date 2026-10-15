@@ -6,9 +6,10 @@ import { registerSessionTagTools, type SessionTagsCallback } from './xdt-helper/
  *
  * 设计:
  *  - server name = `cindy_helper`,essential(常开,不可被用户关闭)
- *  - 所有工具走 `list_tools` / `call_tool` 两个入口,渐进式发现:
+ *  - 通用工具走 `list_tools` / `call_tool` 两个入口,渐进式发现:
+ *    异步提问使用独立的 ask_user_question_async 入口，以便 harness 验证根代理身份。
  *    - 'cindy'   : 只读自省 (get_capabilities / get_current_session_id)
- *    - 'auth'    : 由 Host 保存凭证的供应商授权
+ *    - 'auth'    : 由 Host 保存凭证的供应商授权；代输入(request_input_handoff)
  *    - 'history' : 只读查询本地数据库聊天历史与输入队列 (list_workdirs /
  *                  list_sessions / list_session_queue / get_chat_history /
  *                  search_chat_history)
@@ -34,7 +35,9 @@ import { ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/typ
 import { z } from 'zod';
 import { registerBotRoutineTools, type BotRoutineCallbacks } from './xdt-helper/botRoutineTools.js';
 import { registerGrokLoginTools, type GrokLoginCallbacks } from './xdt-helper/grok_login.js';
+import { registerInputHandoffTool, type InputHandoffCallbacks } from './xdt-helper/input_handoff.js';
 import { jsonObjectArg } from './json-object-arg.js';
+import { registerAsyncQuestionTool, supportsAsyncQuestionTool, type AskUserQuestionAsyncCallback } from './xdt-helper/ask_user_question_async.js';
 
 import { XdtHelperToolRegistry } from './lizi_xdtHelperToolRegistry.js';
 import { registerCreateProjectTool, type CreateProjectCallback } from './xdt-helper/create_project.js';
@@ -73,7 +76,7 @@ import type { SkillhubAgentCallback } from './xdt-helper/skillhub.js';
 import type { SetCurrentSessionTitleDeps } from './xdt-helper/set_current_session_title.js';
 import type { RenameSessionsDeps } from './xdt-helper/rename_sessions.js';
 import type { ArchiveSessionsDeps } from './xdt-helper/archive_sessions.js';
-import type { SendToSessionCallback } from './xdt-helper/send_to_session.js';
+import type { SendToRemoteSessionCallback, SendToSessionCallback } from './xdt-helper/send_to_session.js';
 import type {
   AuthorizeSkillLearningCallback,
   StartSkillLearningCallback,
@@ -117,7 +120,7 @@ export type {
 
 const D_LIST_TOOLS =
   `探索当前任务获准使用的 ${BRAND_NAME} 辅助能力。` +
-  '不传 category 先取得可用类目；只在确有需要时查看一个类目，再用 call_tool 执行。';
+  '不传 category 先取得可用类目（含每类的用途与作用范围：本机 / 可跨电脑）；只在确有需要时查看一个类目，再用 call_tool 执行。';
 
 const D_CALL_TOOL =
   '调用 list_tools 为当前任务返回的一个具体工具。不要猜工具名，也不要把它当成通用命令入口。';
@@ -133,6 +136,23 @@ const CALL_TOOL_INPUT = {
 // list_tools 入口类目: cindy(自省) / control(会话控制面) / history(聊天历史) / feedback(官方反馈提交) / handoff(session 间 handoff)。
 // 协同 team 工具已拆到独立 cindy_orca server(插件开关 gate)。
 const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'handoff', 'skills', 'app_update', 'bots'] as const;
+
+/**
+ * 类目概览里每个类目的一句话用途 + 作用范围(本机 / 可跨电脑)。只陈述事实:模型在概览
+ * 阶段就要能判断「这件事有没有工具、管不管得到另一台电脑」,不能等点进某个工具的参数
+ * 说明才发现。改工具的作用范围时同步改这里(测试按类目全集守护)。
+ */
+export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number], string> = {
+  cindy: `${BRAND_NAME} 能力说明与当前任务信息；get_capabilities({key:"self-management"}) 是管理自己的任务、定时任务、项目、伙伴的工具索引。本机。`,
+  auth: '供应商授权登录（Grok 设备码）。本机。',
+  control: '管理任务与项目：改名、归档、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改。本机。',
+  history: '查询任务、工作目录、聊天记录与输入队列。任务列表、搜索、读取聊天记录可跨电脑（device 参数 / deviceId::sessionId）；其余本机。',
+  feedback: `向 ${BRAND_NAME} 官方提交反馈。`,
+  handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
+  skills: 'Skill 的搜索、发布与学习。本机与 SkillHub。',
+  app_update: `检查与安装本机的 ${BRAND_NAME} 更新。本机。`,
+  bots: '伙伴：资料、能力、工作台、待办、后台任务与伙伴间消息。伙伴间消息可跨电脑（list_agents / send_to_agent）；其余本机。',
+};
 
 interface SessionTaskCallbacks {
   startSessionTask(params: {
@@ -285,6 +305,7 @@ function registerListToolsEntry(
               categories: registry.listCategories().filter((c) => (counts[c] ?? 0) > 0).map((c) => ({
                 name: c,
                 tool_count: counts[c] ?? 0,
+                description: HELPER_CATEGORY_DESCRIPTIONS[c as (typeof CATEGORY_ENUM)[number]],
               })),
               hint: '用 list_tools({category}) 查看某类目下的工具列表',
             }),
@@ -357,7 +378,7 @@ function registerStartSessionTaskEntry(
     category: 'bots',
     description: [
       'Start one real independent Cindy Session task in the background. For project work, pass the actual project/worktree path in working_dir before starting. Set use_worktree=true to create and register an isolated worktree before runtime starts; failure never falls back to the shared directory; creating a worktree later in a shell does not relocate the registered Session. timeout_ms defaults to 1800000 (30 minutes), maximum 86400000 (24 hours); specify the needed budget at creation. Follow-up after timeout inherits the original budget, it does not extend it.',
-      'Proactively use this for coding implementation and medium or large work: reading/modifying a project and running checks, multi-source research, multi-file processing, or complex analysis and deliverables. Do not wait for the user to request delegation or ask permission merely to start a task. Handle short simple questions, code explanations, small snippets, and single-step work yourself unless the user explicitly requests a separate task. Respect an explicit request to work inline.',
+      'Prefer completing work in the current chat, including status checks, bounded code or document reading, explaining existing results, and simple file work. A repository, multiple files, tools, or a deliverable alone is not a reason to delegate. Use this when the user explicitly requests an independent task or the work needs separate ongoing execution, an isolated workspace, parallel delivery, or independent tracking. Decide by execution needs, not time or file-count thresholds. When warranted, act without asking again merely to start a task; respect an explicit request to work inline.',
       'Normally omit model_selection: the host uses the teammate task model, or inherits its current model when no task model is configured. When the user requests another model or this task needs a different available capability, read get_app_default_model and pass an available route id in model_selection, with supported effort or fast_mode if needed. The id binds model, provider account and Harness together. This changes only this task, never application or teammate defaults. An unavailable explicit choice fails instead of silently using another model.',
       'Choose the route internally when starting the task. In ordinary replies, briefly describe the work or result; do not repeat the delegated instruction, tool names, argument names, route JSON, or task/session ids. The task card already tracks progress. Explain model or routing details when the user asks, and explain failures in plain language with the action needed.',
       'Pass the objective, constraints, known facts, relevant files, completed actions, and acceptance criteria in instruction; the task does not automatically inherit this chat. Do not duplicate its work. Review the returned result and follow up on the same task if needed.',
@@ -728,6 +749,8 @@ export interface XdtHelperMcpDeps {
   logger?: LiziMcpLogger;
   appUpdate?: AppUpdateCallbacks;
   grokLogin?: GrokLoginCallbacks;
+  /** 代输入: hand an on-screen step to the owner; values stay on the host. */
+  inputHandoff?: InputHandoffCallbacks;
   /**
    * Host-owned runtime classification. `bot-main` is a local Bot's main task: it sees
    * the ordinary task surface plus Bot tools, and every call is judged by `authorizeCall`.
@@ -761,6 +784,8 @@ export interface XdtHelperMcpDeps {
    * 路由的原语, 放在 essential 的 cindy_helper 下常开保证 skill 永不断。
    */
   sendToSession?: SendToSessionCallback;
+  /** 另一台电脑上的既有任务(send_to_session 的 deviceId::sessionId 目标)。 */
+  sendToRemoteSession?: SendToRemoteSessionCallback;
   /** Cindy-managed Learn flow; registered in the skills category when supplied by the host. */
   skillLearning?: StartSkillLearningCallback;
   /** Search catalogs and publish the current user's Skills through the host's SkillHub service. */
@@ -801,6 +826,7 @@ export interface XdtHelperMcpDeps {
    * set_current_session_title 会被注册; 不注入则不出现在 list_tools 里。
    */
   setCurrentSessionTitle?: SetCurrentSessionTitleDeps['setCurrentSessionTitle'];
+  askUserQuestionAsync?: AskUserQuestionAsyncCallback;
   /**
    * 批量 session 标题更新回调。host 注入后, control 类工具 rename_sessions 会被注册。
    * 工具层负责 dry-run token 护栏; host 负责读取当前标题、校验前置条件和写库。
@@ -872,6 +898,8 @@ export function createXdtHelperMcpServer(
   }
   if (deps.grokLogin)
     registerGrokLoginTools(registry, () => resolveLiziMcpSessionContext(sessionCtx), deps.grokLogin);
+  if (deps.inputHandoff)
+    registerInputHandoffTool(registry, () => resolveLiziMcpSessionContext(sessionCtx), deps.inputHandoff);
   registerGetCurrentSessionIdTool(registry, {
     getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
   });
@@ -966,6 +994,7 @@ export function createXdtHelperMcpServer(
     registerSendToSessionTool(registry, {
       getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
       sendToSession: deps.sendToSession,
+      ...(deps.sendToRemoteSession ? { sendToRemoteSession: deps.sendToRemoteSession } : {}),
     });
   }
   if (deps.skillLearning && deps.authorizeSkillLearning) {
@@ -1025,6 +1054,24 @@ export function createXdtHelperMcpServer(
     ...(deps.authorizeCall ? { authorizeCall: deps.authorizeCall } : {}),
   }, allowedSurface);
 
+  // A dedicated tool identity lets native Claude enforce root-only provenance
+  // before MCP dispatch. Do not expose an alias through the generic call_tool.
+  const questionTools: Tool[] = [];
+  if (deps.askUserQuestionAsync) {
+    const questions = new XdtHelperToolRegistry();
+    registerAsyncQuestionTool(questions, () => resolveLiziMcpSessionContext(sessionCtx), deps.askUserQuestionAsync);
+    const definition = questions.get('ask_user_question_async')!;
+    const inputSchema = z.strictObject(definition.inputShape);
+    server.registerTool(definition.name, { description: definition.description, inputSchema }, async (args) => {
+      if (!(await allowedSurface()).categories?.has('cindy')) {
+        return errorPayload('CAPABILITY_NOT_AVAILABLE', 'Question UI is unavailable for this task.');
+      }
+      return questions.call(definition.name, args);
+    });
+    questionTools.push({ name: definition.name, description: definition.description,
+      inputSchema: z.toJSONSchema(inputSchema) as Tool['inputSchema'] });
+  }
+
   // Pi already provides direct Bot tools through its native bridge. CC and Codex
   // consume MCP tools/list instead; expose the same registered definitions there.
   // Resolve identity per request: Codex's HTTP server is shared across sessions.
@@ -1062,11 +1109,16 @@ export function createXdtHelperMcpServer(
     }));
     // Codex/remote Claude share one helper factory; rewrite ghost guidance from
     // the request-time session, not the empty factory ctx.
-    server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: (await allowedSurface()).categories?.has('bots')
-        ? [...entryTools, ...withCindyGatedBotToolDescriptions(botTools, cindyAvailableForSession(sessionCtx))]
-        : entryTools,
-    }));
+    server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const allowed = await allowedSurface();
+      return { tools: [
+        ...entryTools,
+        ...(allowed.categories?.has('cindy') && supportsAsyncQuestionTool(resolveLiziMcpSessionContext(sessionCtx))
+          ? questionTools : []),
+        ...(allowed.categories?.has('bots')
+          ? withCindyGatedBotToolDescriptions(botTools, cindyAvailableForSession(sessionCtx)) : []),
+      ] };
+    });
   }
   return server;
 }

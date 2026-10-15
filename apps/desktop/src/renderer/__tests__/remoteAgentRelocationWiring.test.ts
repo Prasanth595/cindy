@@ -47,7 +47,13 @@ describe('ModelSelector:浏览别的电脑的目录时改道换位置', () => {
   });
 
   it('改道的行带上所属电脑', () => {
-    expect(selectorSource).toContain('relocate!({ ...row, agentDevice: remoteBrowseDevice })');
+    const start = selectorSource.indexOf('relocate!(');
+    expect(start).toBeGreaterThan(0);
+    const call = selectorSource.slice(start, selectorSource.indexOf('.then(', start));
+    // 默认:带上正在浏览的那台电脑。
+    expect(call).toContain('{ ...row, agentDevice: remoteBrowseDevice }');
+    // 任务归组、在组那一项里选同一供应商:留在此刻运行的那台,只换模型(provider-groups.md §10)。
+    expect(call).toContain('{ ...row, providerId: currentProviderId, agentDevice: currentAgentDevice }');
   });
 });
 
@@ -152,5 +158,31 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
       'const catalogDeviceId = controlledAgentDeviceId ?? remoteDeviceId ?? agentDeviceId;',
     );
     expect(sessionViewSource).toContain('deviceLinkDeviceName={controlledDeviceName}');
+  });
+
+  it('Agent 在本机也收到了的分享上:按分享目录显示,只把那一条分享并进候选', () => {
+    // 2026-10-10 用户反馈:A 远控 B 上用分享供应商的任务,模型按钮显示「模型信息暂不可用」。
+    const start = sessionViewSource.indexOf('const controlledShareIds = useMemo(');
+    expect(start).toBeGreaterThan(0);
+    const block = sessionViewSource.slice(start, sessionViewSource.indexOf('[remoteDeviceId,', start));
+    expect(block).toContain('controlledTaskReadableShareIds({');
+    expect(block).toContain('agentDeviceId: session?.agentDeviceId,');
+    expect(block).toContain('isReceived: isReceivedProviderShare,');
+    expect(sessionViewSource).toContain(
+      '...(controlledShareIds ? { readableShareIds: controlledShareIds } : {}),',
+    );
+    const branch = sessionViewSource.indexOf(
+      'if (remoteDeviceId) {\n      return controlledAgentLocation',
+    );
+    const remoteBranch = sessionViewSource.slice(
+      branch,
+      sessionViewSource.indexOf(': undefined;', branch),
+    );
+    expect(remoteBranch).toContain('shareDevices: [...(controlledShareIds ?? [])]');
+    // ChatInput 只认调用方放进候选的分享。
+    const inputStart = chatInputSource.indexOf('const deviceLinkAgentLocation =');
+    expect(chatInputSource.slice(inputStart, inputStart + 800)).toContain(
+      'readableShareIds: new Set(remoteAgentDevices.map((device) => device.deviceId)),',
+    );
   });
 });

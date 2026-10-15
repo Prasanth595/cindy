@@ -8,6 +8,7 @@
  */
 
 import path from 'node:path';
+import { chatGroupFailure } from './chatServerErrors.js';
 
 import { inArray } from 'drizzle-orm';
 import type {
@@ -45,6 +46,7 @@ import {
   type BotGroupSummary,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService } from './botGroupChatService.js';
+import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 
 const FALLBACK_MESSAGES = 20;
 const FALLBACK_MESSAGE_CHARS = 280;
@@ -183,10 +185,13 @@ export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteCh
     projectDir: null,
     projectDirName: detail.projectDir ? path.basename(detail.projectDir) : null,
     plans: detail.plans.map((plan) => ({ ...plan, workDir: null })),
-    messages: detail.messages.map((message) => (message.attachments.length > 0
+    // Older phones consume message views only; derive from this read's state here.
+    messages: projectBotGroupExecutionFailures(detail.messages, detail.executionFailures).map((message) => (message.attachments.length > 0
       ? { ...message, attachments: message.attachments.map((attachment) => ({ ...attachment, path: null })) }
       : message)),
     supportsAttachments: true,
+    supportsMemberRemoval: detail.serverBacked === true,
+    supportsSettingsManagement: detail.serverBacked === true,
   };
 }
 
@@ -348,10 +353,31 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         : null;
       if (!groupId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
       // Every action re-checks that the phone may still see this group, and any teammate it names.
-      await readVisibleGroup(groupId);
-      if (actionId === 'update' && typeof input.organizerBotId === 'string') await assertBotsVisible([input.organizerBotId]);
-      if (actionId === 'set-members') await assertBotsVisible(botIdsInput());
-      if (actionId === 'plan-edit' && typeof input.botId === 'string') await assertBotsVisible([input.botId]);
+      const visibleGroup = await readVisibleGroup(groupId);
+      // New controllers bind a write to the snapshot they edited. Older controllers
+      // retain their existing actions; the server remains the final permission owner.
+      if (visibleGroup.serverBacked && input.expectedRevision !== undefined) {
+        if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== visibleGroup.revision)
+          throw new RemoteResourceRegistryError('INVALID_PARAMS', 'PRECONDITION_FAILED');
+      }
+      if (actionId === 'add-member') {
+        if (!visibleGroup.serverBacked || typeof input.botId !== 'string')
+          throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
+        await assertBotsVisible([input.botId]);
+      }
+      const candidateId = actionId === 'update' ? input.organizerBotId : actionId === 'plan-edit' ? input.botId : undefined;
+      if (typeof candidateId === 'string') {
+        const member = visibleGroup.members.find(member => member.botId === candidateId);
+        if (visibleGroup.serverBacked) {
+          if (!member || member.actorKind !== 'bot' || member.status !== 'active')
+            throw new RemoteResourceRegistryError('INVALID_PARAMS', 'MEMBER_UNAVAILABLE');
+        } else await assertBotsVisible([candidateId]);
+      }
+      if (actionId === 'set-members') {
+        // Preserve server humans and foreign companions; only newly added IDs need local visibility.
+        const currentMemberIds = new Set(visibleGroup.members.map(member => member.botId));
+        await assertBotsVisible(botIdsInput().filter(botId => !currentMemberIds.has(botId)));
+      }
       const current = ownerService();
       const planInput = { groupId, planId: input.planId };
       let result: { ok: true } | BotGroupFailure;
@@ -378,13 +404,33 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
           for (const key of ['name', 'replyMode', 'speakingMode', 'organizerBotId'] as const) {
             if (input[key] !== undefined) patch[key] = input[key];
           }
+          if (input.expectedRevision !== undefined) patch.expectedRevision = input.expectedRevision;
           result = await current.updateGroup(patch);
+          break;
+        }
+        case 'remove-member': {
+          const member = visibleGroup.members.find(member => member.actorId === input.actorId);
+          if (!visibleGroup.serverBacked || !current.chatServer || !member?.actorId)
+            throw new RemoteResourceRegistryError('INVALID_PARAMS', 'NOT_FOUND');
+          const removed = await current.chatServer.manage({ groupId, action: { type: 'member', action: 'remove', actorId: member.actorId } });
+          if (!removed.ok) refuse(chatGroupFailure(new Error(removed.errorCode)));
+          result = { ok: true };
           break;
         }
         case 'set-members':
           result = await current.setMembers({ groupId, botIds: botIdsInput() });
           break;
+        case 'add-member':
+          result = await current.setMembers({ groupId, botIds: [input.botId as string], addOnly: true });
+          break;
         case 'delete':
+          if (visibleGroup.serverBacked && input.expectedRevision !== undefined) {
+            if (!current.chatServer || !visibleGroup.members.some(member => member.isOwned && member.role === 'owner'))
+              throw new RemoteResourceRegistryError('INVALID_PARAMS', 'PERMISSION_DENIED');
+            const archived = await current.chatServer.manage({ groupId, action: { type: 'archive', archived: true, expectedRevision: visibleGroup.revision! } });
+            if (!archived.ok) refuse(chatGroupFailure(new Error(archived.errorCode)));
+            return { effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };
+          }
           result = await current.deleteGroup(groupId);
           if (!result.ok) refuse(result);
           return { effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };

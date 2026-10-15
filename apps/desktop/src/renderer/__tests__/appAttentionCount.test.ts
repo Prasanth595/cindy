@@ -22,6 +22,17 @@ function input(overrides: Partial<AppAttentionCountInput> = {}): AppAttentionCou
 }
 
 describe('app attention total', () => {
+  it.each(['done', 'awaiting', 'error'] as const)('excludes both Make sources with %s attention', (kind) => {
+    expect(countAppAttention(input({
+      sessions: [
+        session('ordinary'),
+        session('make', { source: 'cindy-make' }),
+        session('make-merge', { source: 'cindy-make-merge' }),
+      ],
+      attentionKinds: new Map([['ordinary', kind], ['make', kind], ['make-merge', kind]]),
+    }))).toBe(1);
+  });
+
   it('counts three unread tasks and drops only the task read', () => {
     const attentionKinds = new Map<'a' | 'b' | 'c', 'done'>([
       ['a', 'done'],

@@ -15,6 +15,7 @@ import {
   providerShareJoinErrorKind,
   shareAvatarInitial,
   shareLinkRemainingMs,
+  sharesClaudeLoginEmail,
   summarizeShareUsage,
 } from '../providerShareFormat';
 import { PROVIDER_SHARE_MANAGE_PARAM, providerShareManagePath } from '../providerShareNavigation';
@@ -23,6 +24,7 @@ function usage(partial: Partial<ProviderShareModelUsageView>): ProviderShareMode
   return {
     kind: 'claude-code',
     providerId: 'xd',
+    memberKey: 'local',
     model: 'claude-opus-5-5',
     turns: 1,
     inputTokens: 0,
@@ -175,5 +177,16 @@ describe('providerShareFormat', () => {
     expect(url.pathname).toBe('/settings');
     expect(url.searchParams.get('tab')).toBe('providers');
     expect(url.searchParams.get(PROVIDER_SHARE_MANAGE_PARAM)).toBe('custom:my provider');
+  });
+});
+
+describe('sharesClaudeLoginEmail', () => {
+  it('is true only for Claude subscription logins, whose email Claude Code hands to the model', () => {
+    expect(sharesClaudeLoginEmail({ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } })).toBe(true);
+    expect(sharesClaudeLoginEmail({ id: 'claude-work', source: 'user', auth: { method: 'oauth', native: 'claude' } })).toBe(true);
+    expect(sharesClaudeLoginEmail({ id: 'openai', source: 'builtin', auth: { method: 'oauth', native: 'codex' } })).toBe(false);
+    expect(sharesClaudeLoginEmail({ id: 'anthropic-key', source: 'user', auth: { method: 'apiKey' } })).toBe(false);
+    expect(sharesClaudeLoginEmail({ id: 'anthropic', source: 'organization', auth: { method: 'apiKey' } })).toBe(false);
+    expect(sharesClaudeLoginEmail(undefined)).toBe(false);
   });
 });
