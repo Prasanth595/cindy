@@ -8760,7 +8760,8 @@
       "pinned": "Pinned",
       "needsAttention": "Needs attention",
       "duplicate": "Duplicate teammate",
-      "moreActions": "More actions for {{name}}"
+      "moreActions": "More actions for {{name}}",
+      "noResults": "No matching teammates or groups"
     },
     "cancel": "Cancel",
     "save": "Save",
@@ -8975,9 +8976,7 @@
         "planPlanning": "{{name}} is splitting the work…",
         "planStepDone": "{{name}} is done, waiting for you to continue",
         "planStepFailed": "{{name}} didn’t finish",
-        "planWaitingAnonymous": "Work split paused, waiting for you",
-        "archivedGroups": "Archived Groups",
-        "noArchivedMatch": "No archived groups match your search"
+        "planWaitingAnonymous": "Work split paused, waiting for you"
       },
       "create": {
         "title": "New Group Chat",
@@ -9233,7 +9232,7 @@
           "leaveHint": "You and your companions will leave. Transfer ownership first if you own the group.",
           "soleOwnerHint": "You’re the only member left. Archive this group to keep its history and restore it later.",
           "archive": "Archive Group",
-          "archiveHint": "Archiving stops new messages and teammate activity for everyone in this group. History is kept in Archived Groups, where you can unarchive it.",
+          "archiveHint": "Archiving disables this group for all members, stopping new messages and teammate runs. History is kept. Search for the group to view its history or unarchive it.",
           "confirm": "Confirm",
           "lastOwner": "Transfer ownership to another member before leaving or removing the current owner.",
           "conflict": "Someone updated this group. Refresh and try again.",

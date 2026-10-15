@@ -200,18 +200,18 @@ afterEach(() => {
 });
 
 describe('BotsSidebar group chats', () => {
-  it('hides archived groups by default, opens their history and restores their row on refresh', async () => {
+  it('hides archived groups without an archive entry and finds their history through search', async () => {
     mocks.groups = [group(), group({ id: 'saved', name: '已完成的旅行', archived: true })];
     const view = await renderSidebar();
     expect(screen.getByText('周末出游')).toBeTruthy();
     expect(screen.queryByText('已完成的旅行')).toBeNull();
-    const entry = screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ });
-    expect(entry.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(entry);
-    expect(screen.getByRole('textbox', { name: 'bots.list.search' })).toBeTruthy();
+    expect(screen.queryByTestId('bot-archived-groups-toggle')).toBeNull();
+    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
+    fireEvent.change(input, { target: { value: '已完成的旅行' } });
+    expect(screen.getByText('bots.archived')).toBeTruthy();
     fireEvent.click(screen.getByText('已完成的旅行'));
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/saved');
-    fireEvent.click(entry);
+    fireEvent.change(input, { target: { value: '' } });
     expect(screen.queryByText('已完成的旅行')).toBeNull();
     mocks.groups = mocks.groups.map(item => ({ ...item, archived: false }));
     view.rerender(cloneElement(mocks.registered.node as ReactElement));
@@ -224,7 +224,6 @@ describe('BotsSidebar group chats', () => {
       name: '历史群 ' + i, archived: true, members: i === 0 ? group().members : [],
     }));
     await renderSidebar();
-    fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
     const input = screen.getByRole('textbox', { name: 'bots.list.search' });
     fireEvent.change(input, { target: { value: '历史群 0' } });
     expect(screen.getByText('历史群 0')).toBeTruthy();
@@ -233,7 +232,22 @@ describe('BotsSidebar group chats', () => {
     expect(screen.getByText('历史群 0')).toBeTruthy();
     fireEvent.change(input, { target: { value: 'missing' } });
     expect(screen.queryByText('历史群 0')).toBeNull();
-    expect(screen.getByText('bots.groupChat.sidebar.noArchivedMatch')).toBeTruthy();
+    expect(screen.getByText('bots.list.noResults')).toBeTruthy();
+  });
+
+  it('keeps an empty default list searchable when only one archived group remains and no bots exist', async () => {
+    mocks.profiles = [];
+    mocks.groups = [group({ archived: true, members: [{ ...group().members[0]!, name: 'Research Lead' }] })];
+    await renderSidebar();
+    expect(screen.queryByText('周末出游')).toBeNull();
+    expect(document.querySelector('[data-bot-group-id]')).toBeNull();
+    expect(screen.queryByTestId('bot-archived-groups-toggle')).toBeNull();
+    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
+    fireEvent.change(input, { target: { value: '  RESEARCH  ' } });
+    expect(screen.getByText('周末出游')).toBeTruthy();
+    expect(screen.getByText('bots.archived')).toBeTruthy();
+    fireEvent.change(input, { target: { value: '   ' } });
+    expect(screen.queryByText('周末出游')).toBeNull();
   });
 
   const managedGroup = (archived = false) => group({ serverBacked: true, archived, revision: 7,
@@ -248,7 +262,7 @@ describe('BotsSidebar group chats', () => {
   it.each([false, true])('confirms archive change (%s) with the current revision and waits for refresh', async archived => {
     mocks.groups = [managedGroup(archived)];
     const view = await renderSidebar();
-    if (archived) fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
+    if (archived) fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
     await selectArchive(archived);
     await waitFor(() => expect(mocks.manage).toHaveBeenCalledWith({ groupId: 'g1', action: {
       type: 'archive', archived: !archived, expectedRevision: 7,
@@ -265,7 +279,7 @@ describe('BotsSidebar group chats', () => {
     else expect(screen.getByText('周末出游')).toBeTruthy();
   });
 
-  it('restores focus to the archived-groups entry after keyboard archive moves a row', async () => {
+  it('restores visible search focus after keyboard archive removes a default row', async () => {
     const focus = vi.spyOn(HTMLElement.prototype, 'focus');
     mocks.groups = [managedGroup()];
     const view = await renderSidebar();
@@ -276,8 +290,8 @@ describe('BotsSidebar group chats', () => {
 
     mocks.groups = [managedGroup(true)];
     view.rerender(cloneElement(mocks.registered.node as ReactElement));
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('bot-archived-groups-toggle')));
-    // Let the browser reveal the entry when it is outside the sidebar viewport.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'bots.list.search' })));
+    // Let the browser reveal the search field if needed.
     expect(focus).toHaveBeenLastCalledWith();
   });
 
@@ -285,7 +299,7 @@ describe('BotsSidebar group chats', () => {
     const focus = vi.spyOn(HTMLElement.prototype, 'focus');
     mocks.groups = [managedGroup(true)];
     const view = await renderSidebar();
-    fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
     const row = screen.getByText('周末出游').closest('button')!;
     fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
     fireEvent.click(await screen.findByRole('menuitem', { name: archiveKey(true) }));
@@ -300,7 +314,7 @@ describe('BotsSidebar group chats', () => {
   it('does not steal search focus when unarchive moves a filtered-out group', async () => {
     mocks.groups = [managedGroup(true)];
     const view = await renderSidebar();
-    fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
     const input = screen.getByRole('textbox', { name: 'bots.list.search' });
     await selectArchive(true);
     await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
@@ -312,10 +326,49 @@ describe('BotsSidebar group chats', () => {
     await waitFor(() => expect(document.activeElement).toBe(input));
   });
 
+  it.each([false, true])('restores the original row after archive confirmation is cancelled (%s)', async archived => {
+    let settle!: (accepted: boolean) => void;
+    mocks.confirm.mockImplementationOnce(() => new Promise<boolean>(resolve => { settle = resolve; }));
+    mocks.groups = [managedGroup(archived)];
+    await renderSidebar();
+    if (archived) fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
+    const row = screen.getByText('周末出游').closest('button')!;
+    row.focus();
+    await selectArchive(archived);
+    await waitFor(() => expect(document.activeElement).toBe(row));
+
+    // Closing the real confirmation leaves body focused because its menu item
+    // opener has already unmounted. The group row itself still exists.
+    row.blur();
+    await act(async () => { settle(false); });
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(mocks.manage).not.toHaveBeenCalled();
+    expect(mocks.refreshGroups).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('restores the original row after archive request failure (%s)', async archived => {
+    let settle!: (result: { ok: false; errorCode: string }) => void;
+    mocks.manage.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));
+    mocks.groups = [managedGroup(archived)];
+    await renderSidebar();
+    if (archived) fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
+    const row = screen.getByText('周末出游').closest('button')!;
+    row.focus();
+    await selectArchive(archived);
+    await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement).toBe(row));
+
+    row.blur();
+    await act(async () => { settle({ ok: false, errorCode: 'REVISION_CONFLICT' }); });
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(screen.getByRole('alert').textContent).toBe('bots.groupChat.server.settings.conflict');
+    expect(mocks.refreshGroups).not.toHaveBeenCalled();
+  });
+
   it('does not steal search focus when unarchive keeps the group visible', async () => {
     mocks.groups = [managedGroup(true)];
     const view = await renderSidebar();
-    fireEvent.click(screen.getByTestId('bot-archived-groups-toggle'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
     const input = screen.getByRole('textbox', { name: 'bots.list.search' });
     await selectArchive(true);
     await waitFor(() => expect(mocks.manage).toHaveBeenCalledOnce());
@@ -360,7 +413,7 @@ describe('BotsSidebar group chats', () => {
   it('shows archived history rather than stale speaking or plan prompts', async () => {
     mocks.groups = [group({ archived: true, speakingBotIds: ['mimi'], openPlan: openPlan() })];
     await renderSidebar();
-    fireEvent.click(screen.getByRole('button', { name: /bots.groupChat.sidebar.archivedGroups/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'bots.list.search' }), { target: { value: '周末' } });
     expect(screen.queryByTestId('bot-group-running')).toBeNull();
     expect(screen.queryByText(/sidebar.planStepDone/)).toBeNull();
     expect(screen.getByText('bots.groupChat.sidebar.preview:{"name":"阿布","text":"下午 有小概率阵雨"}')).toBeTruthy();

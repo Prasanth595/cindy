@@ -9,8 +9,6 @@ import {
   ArchiveRestore,
   ArrowLeft,
   Bot,
-  ChevronDown,
-  ChevronRight,
   Copy,
   Eye,
   EyeOff,
@@ -121,7 +119,6 @@ function BotsSidebarContent() {
   const collapsed = useSidebarCollapsedState();
   const [query, setQuery] = useState('');
   const [showHidden, setShowHidden] = useState(false);
-  const [showArchivedGroups, setShowArchivedGroups] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const archiveBusyRef = useRef(false);
   const [archiveError, setArchiveError] = useState('');
@@ -136,7 +133,7 @@ function BotsSidebarContent() {
   const menuOriginRef = useRef<HTMLButtonElement | null>(null);
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
-  const archivedGroupsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean; origin: HTMLElement | null } | null>(null);
 
   const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
@@ -153,6 +150,7 @@ function BotsSidebarContent() {
     setArchiveError('');
     const owner = getDataOwnerGeneration();
     const origin = menuOriginRef.current;
+    let focusArchived = !!group.archived;
     const actionKey = 'bots.groupChat.server.settings.' + (group.archived ? 'unarchive' : 'archive');
     try {
       const accepted = await confirm({ presentation: 'standard', title: t(actionKey),
@@ -164,16 +162,17 @@ function BotsSidebarContent() {
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) setArchiveError(t(chatErrorKey(result.errorCode)));
       else {
-        pendingArchiveFocusRef.current = {
-          groupId: group.id,
-          archived: !group.archived,
-          origin,
-        };
+        focusArchived = !group.archived;
         refreshBotGroups();
       }
     } catch {
       if (isDataOwnerGenerationCurrent(owner)) setArchiveError(t(chatErrorKey('REQUEST_FAILED')));
     } finally {
+      // Cancelled and failed confirmations also lose their menu-item opener.
+      // Recover to the unchanged row after the dialog releases focus.
+      if (isDataOwnerGenerationCurrent(owner)) {
+        pendingArchiveFocusRef.current = { groupId: group.id, archived: focusArchived, origin };
+      }
       archiveBusyRef.current = false;
       setArchiveBusy(false);
     }
@@ -225,14 +224,13 @@ function BotsSidebarContent() {
     ...remoteBots.filter(bot => (!hasMultipleCindys || !isCindyDeviceBot(bot)) && (!normalizedQuery || `${bot.name} ${bot.description} ${bot.deviceName}`.toLocaleLowerCase().includes(normalizedQuery))),
   ];
   const rosterSize = groups.length + rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
+  const hasArchivedGroups = groups.some(group => group.archived);
   const showSearch = rosterSize >= 8 || normalizedQuery.length > 0 ||
-    (showArchivedGroups && groups.some(group => group.archived));
+    hasArchivedGroups;
   const matchesGroup = (group: BotGroupSummary) => !normalizedQuery ||
     `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery);
-  const visibleGroups = groups.filter(group => !group.archived && matchesGroup(group));
-  const archivedGroups = groups.filter(group => group.archived);
-  const visibleArchivedGroups = archivedGroups.filter(matchesGroup)
-    .sort((a, b) => (b.lastMessage?.createdAt ?? b.updatedAt) - (a.lastMessage?.createdAt ?? a.updatedAt));
+  const visibleGroups = groups.filter(group =>
+    (!group.archived || normalizedQuery.length > 0) && matchesGroup(group));
 
   useEffect(() => {
     const pending = pendingArchiveFocusRef.current;
@@ -264,21 +262,18 @@ function BotsSidebarContent() {
 
       const row = Array.from(document.querySelectorAll<HTMLElement>('[data-bot-group-id]'))
         .find(element => element.dataset.botGroupId === pending.groupId);
-      const rowIsVisible = pending.archived
-        ? showArchivedGroups && visibleArchivedGroups.some(group => group.id === pending.groupId)
-        : visibleGroups.some(group => group.id === pending.groupId);
+      const rowIsVisible = visibleGroups.some(group => group.id === pending.groupId);
       if (row && rowIsVisible) {
         pendingArchiveFocusRef.current = null;
         row.focus();
         return;
       }
 
-      // An archived group may be hidden behind the collapsed section or the
-      // current search. Keep keyboard focus on the recovery entry instead of
-      // allowing it to fall to document.body.
-      if (pending.archived && archivedGroups.length > 0) {
+      // Archived groups disappear from the default list and remain searchable.
+      // Keep focus on that visible recovery path when the row is removed.
+      if (pending.archived) {
         pendingArchiveFocusRef.current = null;
-        archivedGroupsToggleRef.current?.focus();
+        searchInputRef.current?.focus();
         return;
       }
 
@@ -293,7 +288,7 @@ function BotsSidebarContent() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [archivedGroups.length, groups, showArchivedGroups, visibleArchivedGroups, visibleGroups]);
+  }, [groups, visibleGroups]);
   const visibleChats = [
     ...visibleBots.map(bot => ({ kind: 'bot' as const, bot,
       pinned: 'pinnedAt' in bot && Boolean(bot.pinnedAt),
@@ -554,6 +549,7 @@ function BotsSidebarContent() {
             className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-[var(--sidebar-list-muted)]"
           />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('bots.list.searchPlaceholder')}
@@ -566,9 +562,10 @@ function BotsSidebarContent() {
       {archiveError && <p role="alert" className="mb-2 px-2.5 text-12 text-[var(--error-fg)]">{archiveError}</p>}
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-3">
-        {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && groups.length === 0 ? (
+        {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && visibleGroups.length === 0 ? (
           <div className="px-3 py-3">
-            <BotCreateMenu label={t('bots.add')} />
+            {normalizedQuery ? <p className="text-12 text-[var(--sidebar-list-muted)]">{t('bots.list.noResults')}</p>
+              : <BotCreateMenu label={t('bots.add')} />}
           </div>
         ) : (
           <div className="flex flex-col gap-1">
@@ -846,21 +843,6 @@ function BotsSidebarContent() {
                 })}
               </div>
             ) : null}
-            {archivedGroups.length > 0 && <div className="mt-3 border-t border-[var(--border-default)] pt-2">
-              <button type="button" ref={archivedGroupsToggleRef} data-testid="bot-archived-groups-toggle"
-                aria-expanded={showArchivedGroups} aria-controls="archived-bot-groups"
-                onClick={() => setShowArchivedGroups(value => !value)}
-                className="mb-1 flex min-h-8 w-full items-center gap-2 rounded-full px-2.5 text-12 text-[var(--sidebar-list-muted)] hover:bg-sidebar-item-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <Archive size={14} aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-left">{t('bots.groupChat.sidebar.archivedGroups')}</span>
-                <span className="tabular-nums">{archivedGroups.length}</span>
-                {showArchivedGroups ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-              </button>
-              {showArchivedGroups && <div id="archived-bot-groups" className="flex flex-col gap-1">
-                {visibleArchivedGroups.length > 0 ? visibleArchivedGroups.map(renderGroupRow)
-                  : <p className="px-2.5 py-2 text-12 text-[var(--sidebar-list-muted)]">{t('bots.groupChat.sidebar.noArchivedMatch')}</p>}
-              </div>}
-            </div>}
           </div>
         )}
 

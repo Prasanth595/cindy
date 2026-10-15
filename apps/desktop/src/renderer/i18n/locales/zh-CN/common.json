@@ -8723,7 +8723,8 @@
       "pinned": "已置顶",
       "needsAttention": "需要处理",
       "duplicate": "复制伙伴",
-      "moreActions": "{{name}} 的更多操作"
+      "moreActions": "{{name}} 的更多操作",
+      "noResults": "没有匹配的伙伴或群聊"
     },
     "cancel": "取消",
     "save": "保存",
@@ -8938,9 +8939,7 @@
         "planPlanning": "{{name}}正在安排…",
         "planStepDone": "{{name}}做完了，等你继续",
         "planStepFailed": "{{name}}没做完",
-        "planWaitingAnonymous": "分工停下了，等你看看",
-        "archivedGroups": "已归档群",
-        "noArchivedMatch": "没有找到匹配的已归档群"
+        "planWaitingAnonymous": "分工停下了，等你看看"
       },
       "create": {
         "title": "新建群聊",
@@ -9196,7 +9195,7 @@
           "leaveHint": "你和你带来的伙伴将退出群。群主需要先转让身份。",
           "soleOwnerHint": "群里只剩你。可以归档群，保留历史记录，以后再恢复使用。",
           "archive": "归档群",
-          "archiveHint": "归档会对所有成员停用本群，停止新消息和伙伴执行。历史记录保留，可在「已归档群」中查看并取消归档。",
+          "archiveHint": "归档会对所有成员停用本群，停止新消息和伙伴执行。历史记录保留，之后可通过搜索找到本群、查看历史并取消归档。",
           "confirm": "确认",
           "lastOwner": "请先将群主转让给其他成员，再退出或移除当前群主。",
           "conflict": "群设置已被其他成员更新，请刷新后重试。",
