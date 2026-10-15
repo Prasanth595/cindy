@@ -192,12 +192,13 @@ describe('anonymous shared group status', () => {
     const env = setup(['available', 'available']);
     env.readCaps.mockResolvedValue({ virtualWorkspace: true } as RemoteAgentCaps);
     expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual(['available', 'needs-update']);
-    // A shared member is already isolated by its host and does not require guestRelay.
+    // A shared member is isolated by its host, but still needs reshareConsent so
+    // the anonymous status matches the actual guest-task admission check.
     env.view.config!.members[1].kind = 'share';
-    expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual(['available', 'busy']);
-    env.readCaps.mockResolvedValue({ guestRelay: true } as RemoteAgentCaps);
-    await vi.advanceTimersByTimeAsync(15_000);
     expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual(['available', 'needs-update']);
+    env.readCaps.mockResolvedValue({ virtualWorkspace: true, reshareConsent: true } as RemoteAgentCaps);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual(['available', 'busy']);
   });
 
   // 转分享(provider-sharing.md §4.3)：主人没同意过读状态的这个人时，分享来的电脑对他显示暂不可用，与实际分配一致。
@@ -213,6 +214,7 @@ describe('anonymous shared group status', () => {
     expect(reshareState).toHaveBeenCalledTimes(2);
     expect(env.readCaps).not.toHaveBeenCalled();
     agreed = true;
+    env.readCaps.mockResolvedValue({ virtualWorkspace: true, reshareConsent: true } as RemoteAgentCaps);
     // 同意后照常显示(这台在跑任务，显示忙碌)。
     expect(await readSharedGroupStatus({ ...env.deps, reshareState }, 'anthropic')).toEqual(['available', 'busy', 'offline']);
   });

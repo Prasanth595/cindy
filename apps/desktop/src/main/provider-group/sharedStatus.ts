@@ -86,7 +86,10 @@ export function createGuestSupportReader(readCaps: SharedGroupStatusDeps['readCa
     const promise = pending.promise;
     const capability = await readWithin(() => promise);
     if (!capability) return 'unknown';
-    return capability.virtualWorkspace === true && (member.kind !== 'device' || capability.guestRelay === true)
+    return capability.virtualWorkspace === true
+      && (member.kind === 'device'
+        ? capability.guestRelay === true
+        : member.kind !== 'share' || capability.reshareConsent === true)
       ? 'supported' : 'needs-update';
   };
 }
