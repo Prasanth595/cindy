@@ -14,6 +14,7 @@ vi.mock('../../shared/wallpaper-video-manifest.json', () => ({
     official: {
       delivery: 'cdn',
       sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+      image: { sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' },
     },
   },
 }));
@@ -153,18 +154,21 @@ describe('client-owned custom wallpaper lifecycle', () => {
     await removeCustomWallpaper();
     expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(0);
   });
-  it('retains an official CDN video when removing custom media', async () => {
-    const official = await writeBlob({
-      buffer: Buffer.from('abc'),
-      mimeType: 'video/mp4',
-      scope: 'client-wallpaper',
-    });
-    await selectImage();
-    await importCustomWallpaper(parent);
-    await removeCustomWallpaper();
-    expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from('abc'));
-    expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
-  });
+  it.each(['video/mp4', 'image/webp'])(
+    'retains official CDN %s across custom import and removal',
+    async (mimeType) => {
+      const official = await writeBlob({
+        buffer: Buffer.from('abc'),
+        mimeType,
+        scope: 'client-wallpaper',
+      });
+      await selectImage();
+      await importCustomWallpaper(parent);
+      await removeCustomWallpaper();
+      expect((await readClientWallpaperFile(official.url)).buffer).toEqual(Buffer.from('abc'));
+      expect((await listBlobFiles('client-wallpaper')).entries).toHaveLength(1);
+    },
+  );
 
   it('rejects oversized or fake MP4 files without replacing the current image', async () => {
     await selectImage();

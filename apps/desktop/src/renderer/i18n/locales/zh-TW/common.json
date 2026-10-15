@@ -1609,7 +1609,10 @@
         "customPlaybackFailed": "無法播放此影片，請選擇使用 H.264 編碼的 MP4 影片。",
         "customHint": "PNG、JPEG、WebP 圖片最大 20 MB，MP4 影片最大 100 MB。僅儲存在此裝置，影片在動態模式下靜音循環播放。",
         "customInvalid": "請選擇有效的 PNG、JPEG 或 WebP 圖片（不超過 20 MB、4000 萬像素），或不超過 100 MB 的 MP4 影片。",
-        "customFailed": "無法儲存桌布，請重試。"
+        "customFailed": "無法儲存桌布，請重試。",
+        "downloading": "正在下載桌布…",
+        "downloadFailed": "部分桌布資源未下載，暫用可用背景",
+        "retryDownload": "重試下載"
       },
       "layout": {
         "label": "面板佈局",

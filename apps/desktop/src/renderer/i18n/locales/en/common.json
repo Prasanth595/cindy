@@ -1632,7 +1632,10 @@
         "customPlaybackFailed": "This video could not be played. Choose an MP4 video encoded with H.264.",
         "customHint": "PNG, JPEG or WebP up to 20 MB; MP4 video up to 100 MB. Stored on this device. Videos loop silently in Dynamic mode.",
         "customInvalid": "Choose a valid PNG, JPEG or WebP image (up to 20 MB and 40 megapixels), or an MP4 video up to 100 MB.",
-        "customFailed": "Could not save the wallpaper. Please try again."
+        "customFailed": "Could not save the wallpaper. Please try again.",
+        "downloading": "Downloading wallpaper…",
+        "downloadFailed": "Some wallpaper assets are unavailable. Using the available background.",
+        "retryDownload": "Retry Download"
       },
       "layout": {
         "label": "Panel layout",

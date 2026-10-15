@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useId, useState } from 'react';
 import { extractIpcError } from '@/utils/ipcError';
 
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,7 @@ export function WallpaperSection() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const downloadStatusId = useId();
   const {
     wallpaperId,
     wallpaperOverlay,
@@ -36,6 +37,10 @@ export function WallpaperSection() {
     wallpaperMotion,
     customWallpaperUrl,
     playbackFailed,
+    downloadPending,
+    downloadFailed,
+    downloadProgress,
+    retryDownload,
     setWallpaper,
     setVisibility,
     setBlur,
@@ -131,6 +136,9 @@ export function WallpaperSection() {
       >
         {[...WALLPAPER_OPTIONS, { id: 'custom' as const }].map((option) => {
           const selected = wallpaperId === option.id;
+          const downloading = selected && isSceneWallpaper(option.id) && downloadPending;
+          const retryable =
+            selected && isSceneWallpaper(option.id) && downloadFailed && !downloadPending;
           const background =
             option.id === 'custom' && customWallpaperUrl && !customVideo
               ? `url("${customWallpaperUrl}")`
@@ -142,12 +150,15 @@ export function WallpaperSection() {
               role="radio"
               aria-checked={selected}
               aria-label={t('settings.appearance.wallpaper.options.' + option.id)}
+              aria-busy={downloading || undefined}
+              aria-describedby={downloading || retryable ? downloadStatusId : undefined}
+              title={retryable ? t('settings.appearance.wallpaper.retryDownload') : undefined}
               disabled={busy}
-              onClick={() =>
-                option.id === 'custom' && !customWallpaperUrl
-                  ? void chooseWallpaper()
-                  : setWallpaper(option.id)
-              }
+              onClick={() => {
+                if (retryable) retryDownload();
+                else if (option.id === 'custom' && !customWallpaperUrl) void chooseWallpaper();
+                else setWallpaper(option.id);
+              }}
               className={cn(
                 'flex min-w-0 flex-col gap-2 rounded-xl text-left transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--settings-theme-icon-active)]',
@@ -182,6 +193,36 @@ export function WallpaperSection() {
                     {t('settings.appearance.wallpaper.nonePreview')}
                   </span>
                 ) : null}
+                {downloading && (
+                  <span
+                    role="progressbar"
+                    aria-label={t('settings.appearance.wallpaper.downloading')}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(downloadProgress * 100)}
+                    className="absolute inset-0"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-0 origin-bottom bg-[color-mix(in_srgb,var(--settings-input-bg)_75%,transparent)] transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] motion-reduce:transition-none"
+                      style={{ transform: `scaleY(${downloadProgress})` }}
+                    />
+                    <span id={downloadStatusId} className="sr-only">
+                      {t('settings.appearance.wallpaper.downloading')}
+                    </span>
+                  </span>
+                )}
+                {retryable && (
+                  <span
+                    role="status"
+                    className="absolute inset-0 flex items-center justify-center bg-[color-mix(in_srgb,var(--settings-input-bg)_75%,transparent)] text-[var(--text-primary)]"
+                  >
+                    <RotateCcw size={24} aria-hidden="true" />
+                    <span id={downloadStatusId} className="sr-only">
+                      {`${t('settings.appearance.wallpaper.downloadFailed')} ${t('settings.appearance.wallpaper.retryDownload')}`}
+                    </span>
+                  </span>
+                )}
               </span>
               <span
                 className={cn(

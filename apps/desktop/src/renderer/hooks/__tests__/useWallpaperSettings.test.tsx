@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WallpaperSettingsProvider, useWallpaperSettings } from '../useWallpaperSettings';
 import { DEFAULT_APPEARANCE_SETTINGS } from '@/../shared/appearanceSettings';
+import type { WallpaperDownloadProgress } from '@/../shared/appearanceSettings';
+import manifest from '@/../shared/wallpaper-video-manifest.json';
 
 function Controls() {
   const settings = useWallpaperSettings();
@@ -12,12 +14,14 @@ function Controls() {
       <button onClick={() => settings.setWallpaper('cindy-window')}>Choose</button>
       <button onClick={settings.resetWallpaper}>Reset</button>
       <button onClick={() => settings.setMotion('dynamic')}>Animate</button>
+      <button onClick={() => settings.setMotion('static')}>Static</button>
       <button onClick={() => settings.setVisibility(1)}>Show Fully</button>
       <button onClick={() => settings.setVisibility(0)}>Hide</button>
       <button onClick={() => settings.setBlur(12)}>Blur</button>
       <button onClick={() => settings.setBlur(0)}>Clear Blur</button>
       <span data-testid="visibility">{settings.visibility}</span>
       <span data-testid="motion">{settings.wallpaperMotion}</span>
+      <span data-testid="download-progress">{settings.downloadProgress}</span>
     </>
   );
 }
@@ -36,6 +40,54 @@ afterEach(() => {
 });
 
 describe('application wallpaper lifecycle', () => {
+  it('weights required image and video progress by bytes, excluding video in static mode', async () => {
+    const listeners = new Set<(progress: WallpaperDownloadProgress) => void>();
+    vi.stubGlobal('electronAPI', {
+      appearanceSettings: {
+        getSync: () => ({
+          ...DEFAULT_APPEARANCE_SETTINGS,
+          wallpaperId: 'cindy-window',
+          wallpaperMotion: 'dynamic',
+        }),
+        onChanged: () => () => {},
+        setPatch: vi.fn().mockResolvedValue(undefined),
+        ensureWallpaperImage: () => new Promise(() => {}),
+        ensureWallpaperVideo: () => new Promise(() => {}),
+        onWallpaperDownloadProgress: (fn: (progress: WallpaperDownloadProgress) => void) => {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+      },
+    });
+    render(
+      <WallpaperSettingsProvider>
+        <Controls />
+      </WallpaperSettingsProvider>,
+    );
+    const imageTotal = manifest['cindy-window'].image.bytes;
+    const videoTotal = manifest['cindy-window'].bytes;
+    act(() => {
+      for (const listener of listeners) {
+        listener({
+          wallpaperId: 'cindy-window',
+          kind: 'image',
+          loaded: imageTotal / 2,
+          total: imageTotal,
+        });
+        listener({
+          wallpaperId: 'cindy-window',
+          kind: 'video',
+          loaded: videoTotal / 4,
+          total: videoTotal,
+        });
+      }
+    });
+    expect(Number(screen.getByTestId('download-progress').textContent)).toBeCloseTo(
+      (imageTotal / 2 + videoTotal / 4) / (imageTotal + videoTotal),
+    );
+    fireEvent.click(screen.getByText('Static'));
+    expect(Number(screen.getByTestId('download-progress').textContent)).toBe(0.5);
+  });
   it.each(['webp', 'mp4'])(
     'applies blur to %s, follows window updates and clears on hide/reset',
     async (ext) => {

@@ -1609,7 +1609,10 @@
         "customPlaybackFailed": "无法播放此视频，请选择使用 H.264 编码的 MP4 视频。",
         "customHint": "PNG、JPEG、WebP 图片最大 20 MB，MP4 视频最大 100 MB。仅保存在此设备，视频在动态模式下静音循环播放。",
         "customInvalid": "请选择有效的 PNG、JPEG 或 WebP 图片(不超过 20 MB、4000 万像素)，或不超过 100 MB 的 MP4 视频。",
-        "customFailed": "未能保存壁纸，请重试。"
+        "customFailed": "未能保存壁纸，请重试。",
+        "downloading": "正在下载壁纸…",
+        "downloadFailed": "部分壁纸资源未下载，暂用可用背景",
+        "retryDownload": "重试下载"
       },
       "layout": {
         "label": "面板布局",
