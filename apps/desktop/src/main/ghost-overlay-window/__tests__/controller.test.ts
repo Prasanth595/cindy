@@ -120,7 +120,14 @@ function ghost(id: string, opts: { enabled?: boolean; overlay?: boolean } = {}):
   };
 }
 
-function makeHarness(declaredIds: Set<string>, userEnabledIds: Set<string> = declaredIds) {
+function makeHarness(
+  declaredIds: Set<string>,
+  userEnabledIds: Set<string> = declaredIds,
+  hooks: {
+    onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
+    onAllWindowsDestroyed?: () => void;
+  } = {},
+) {
   let quitting = false;
   const created: Array<{ ghostId: string; win: FakeWindow }> = [];
   const broadcasts: GhostOverlayWindowsState[] = [];
@@ -148,6 +155,8 @@ function makeHarness(declaredIds: Set<string>, userEnabledIds: Set<string> = dec
     },
     isQuitting: () => quitting,
     log,
+    onVisibilityChanged: hooks.onVisibilityChanged,
+    onAllWindowsDestroyed: hooks.onAllWindowsDestroyed,
   };
   const controller = new GhostOverlayWindowsController(deps);
   return {
@@ -598,6 +607,80 @@ describe('in-flight creation rejection cleanup', () => {
     await expect(p1).rejects.toThrow('webContents gone');
     await expect(p2).rejects.toThrow('webContents gone');
     expect(h.calls()).toBe(1); // 在途去重仍生效,只 createWindow 一次
+  });
+});
+
+describe('visibility change hooks', () => {
+  it('stale closed does not stop a rebuilt, visible slot', async () => {
+    const visibility: Array<{ ghostId: string; visible: boolean }> = [];
+    const h = makeHarness(new Set(['a']), new Set(['a']), {
+      onVisibilityChanged: (ghostId, visible) => visibility.push({ ghostId, visible }),
+    });
+    await h.controller.show('a');
+    const win1 = h.created[0].win;
+    markReady(h.controller, win1);
+    expect(visibility).toEqual([{ ghostId: 'a', visible: true }]);
+
+    // 旧窗口销毁时暂缓 closed:模拟事件迟到。
+    win1.destroy.mockImplementation(() => {});
+    h.controller.unmount('a');
+    expect(visibility).toEqual([
+      { ghostId: 'a', visible: true },
+      { ghostId: 'a', visible: false },
+    ]);
+
+    // 重建并展示新 slot。
+    await h.controller.show('a');
+    const win2 = h.created[1].win;
+    markReady(h.controller, win2);
+    expect(visibility).toEqual([
+      { ghostId: 'a', visible: true },
+      { ghostId: 'a', visible: false },
+      { ghostId: 'a', visible: true },
+    ]);
+
+    // 迟到的旧窗口 closed 不得把新 slot 停掉。
+    win1.emitClosed();
+    expect(visibility).toEqual([
+      { ghostId: 'a', visible: true },
+      { ghostId: 'a', visible: false },
+      { ghostId: 'a', visible: true },
+    ]);
+  });
+
+  it('unmount stops pushing synchronously (not via closed event)', async () => {
+    const visibility: Array<{ ghostId: string; visible: boolean }> = [];
+    const h = makeHarness(new Set(['a']), new Set(['a']), {
+      onVisibilityChanged: (ghostId, visible) => visibility.push({ ghostId, visible }),
+    });
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+    expect(visibility).toEqual([{ ghostId: 'a', visible: true }]);
+
+    // 让 destroy 不触发 closed:验证停推由 disposeSlot 同步完成。
+    win.destroy.mockImplementation(() => {});
+    h.controller.unmount('a');
+
+    expect(visibility).toEqual([
+      { ghostId: 'a', visible: true },
+      { ghostId: 'a', visible: false },
+    ]);
+  });
+
+  it('owner change fires onAllWindowsDestroyed for stream dispose', async () => {
+    let allDestroyedCalls = 0;
+    const h = makeHarness(new Set(['a', 'b']), new Set(['a', 'b']), {
+      onAllWindowsDestroyed: () => {
+        allDestroyedCalls += 1;
+      },
+    });
+    await h.controller.show('a');
+    await h.controller.show('b');
+
+    h.controller.disposeAllForOwnerChange();
+
+    expect(allDestroyedCalls).toBe(1);
   });
 });
 

@@ -38,6 +38,11 @@ export interface GhostOverlayWindowsControllerDeps {
    * Task 7 接线为 cursorStream.setVisible;controller 不直接依赖 cursor-stream。
    */
   onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
+  /**
+   * 可选:全部浮窗被回收时同步调用(disposeAllForOwnerChange/dispose)。
+   * Task 7 接线为 cursorStream.dispose();owner 切换后订阅表需一并清空重建。
+   */
+  onAllWindowsDestroyed?: () => void;
 }
 
 const DEFAULT_SHOW_TIMEOUT_MS = 5000;
@@ -386,11 +391,15 @@ export class GhostOverlayWindowsController {
   }
 
   private onClosed(ghostId: string, slot: WindowSlot): void {
-    // 窗口销毁(含 unmount/reconcile/dispose 与外部关闭):光标流随之停止。
-    this.notifyVisibilityChanged(ghostId, false);
     this.clearTimeouts(slot);
     clearGhostOverlayWebContents(slot.webContentsId);
-    if (this.slots.get(ghostId) !== slot) return;
+    const current = this.slots.get(ghostId);
+    // 兜底停推:仅当该窗口仍是当前 slot(如外部关闭),或该 ghostId 已无任何 slot。
+    // 旧 slot 销毁后新 slot 已重建可见时,迟到的 closed 不得误停新 slot 的光标流。
+    if (current === slot || current === undefined) {
+      this.notifyVisibilityChanged(ghostId, false);
+    }
+    if (current !== slot) return;
     this.slots.delete(ghostId);
     if (slot.destroyingWindow) return;
     if (this.deps.isQuitting()) return;
@@ -491,6 +500,8 @@ export class GhostOverlayWindowsController {
 
   private disposeSlot(ghostId: string, slot: WindowSlot): void {
     this.clearTimeouts(slot);
+    // 同步停推:unmount/reconcile/invalidate 不依赖 win.destroy() 的异步 closed 事件。
+    this.notifyVisibilityChanged(ghostId, false);
     this.slots.delete(ghostId);
     slot.destroyingWindow = true;
     clearGhostOverlayWebContents(slot.webContentsId);
@@ -505,10 +516,12 @@ export class GhostOverlayWindowsController {
   destroyAllWindows(): void {
     this.generation += 1;
     this.pendingCreates.clear();
-    const slots = [...this.slots.values()];
+    const entries = [...this.slots];
     this.slots.clear();
-    for (const slot of slots) {
+    for (const [ghostId, slot] of entries) {
       this.clearTimeouts(slot);
+      // 同步停推:全量回收不依赖各窗口的异步 closed 事件。
+      this.notifyVisibilityChanged(ghostId, false);
       slot.destroyingWindow = true;
       clearGhostOverlayWebContents(slot.webContentsId);
       try {
@@ -517,6 +530,8 @@ export class GhostOverlayWindowsController {
         // already gone
       }
     }
+    // 全部回收后通知宿主 dispose 光标流(owner 切换/退出时订阅表一并清空)。
+    this.deps.onAllWindowsDestroyed?.();
   }
 
   private clearTimeouts(slot: WindowSlot): void {

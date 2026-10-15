@@ -17,7 +17,7 @@ export interface GhostOverlayCursorStreamDeps {
   getCursorScreenPoint: () => { x: number; y: number };
   /** 向指定 ghost 推送一帧光标。 */
   send: (ghostId: string, payload: { type: 'overlay-cursor'; x: number; y: number }) => void;
-  /** 单调时钟(ms):兜底保证 30Hz 上限,定时器抖动提前触发时同一窗口只推一帧。 */
+  /** 单调时钟(ms),建议 performance.now();兜底 30Hz 上限,同一 33ms 窗口只推一帧。 */
   now: () => number;
 }
 
@@ -77,6 +77,8 @@ export class GhostOverlayCursorStream {
   }
 
   private startTimer(): void {
+    // 重置上一帧时间戳:hide→show 重启后首帧立即推送,不残留旧节拍造成约 66ms 延迟。
+    this.lastPushAt = Number.NEGATIVE_INFINITY;
     this.timer = setInterval(() => this.tick(), GHOST_OVERLAY_CURSOR_STREAM_INTERVAL_MS);
     // 不阻止进程退出:光标流不是进程存活的理由。
     this.timer.unref?.();

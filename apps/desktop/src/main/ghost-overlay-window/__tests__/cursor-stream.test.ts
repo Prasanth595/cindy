@@ -21,7 +21,7 @@ function makeHarness() {
     send: (ghostId, payload) => {
       sends.push({ ghostId, payload });
     },
-    now: () => Date.now(),
+    now: () => performance.now(),
   };
   const stream = new GhostOverlayCursorStream(deps);
   return { stream, sends };
@@ -41,8 +41,7 @@ describe('GhostOverlayCursorStream', () => {
 
     vi.advanceTimersByTime(1000);
 
-    // 33ms 一拍:1s 内恰好 30 拍,且不超过 30 次/秒上限。
-    expect(sends.length).toBeLessThanOrEqual(30);
+    // 33ms 一拍:1s 内恰好 30 拍。
     expect(sends.length).toBe(30);
     for (const record of sends) {
       expect(record).toEqual({
@@ -130,7 +129,6 @@ describe('GhostOverlayCursorStream', () => {
     const unref = vi.fn();
     const fakeTimer = {
       unref,
-      ref: vi.fn(),
     } as unknown as ReturnType<typeof setInterval>;
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(fakeTimer);
     const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
