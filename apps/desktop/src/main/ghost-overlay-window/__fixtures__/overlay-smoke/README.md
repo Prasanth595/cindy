@@ -27,11 +27,15 @@ Cindy Core 新增的「插件桌面浮窗」能力（透明、置顶、不抢焦
 `.cindy` 就是 zip。在**本目录**（`__fixtures__/overlay-smoke/`）打开 PowerShell 执行：
 
 ```powershell
-Compress-Archive -Path ghost.json,main.js,overlay.html,overlay.js -DestinationPath overlay-smoke-0.0.2.cindy
+$src = "<夹具目录绝对路径>"
+$zip = "$src\..\overlay-smoke-0.0.2.zip"
+Compress-Archive -Path "$src\ghost.json","$src\main.js","$src\overlay.html","$src\overlay.js" -DestinationPath $zip -Force
+Move-Item $zip "$src\..\overlay-smoke-0.0.2.cindy" -Force
 ```
 
+- `Compress-Archive` 只接受 `.zip` 扩展名，故**先产出 `.zip` 再改名为 `.cindy`**（`.cindy` 本身即 zip）。
 - 只打包这四个文件（README 不进包）。`ghost.json` 必须位于 zip 根目录。
-- 再次打包前若目标文件已存在，先删除旧 `.cindy`，或追加 `-Force` 覆盖。
+- `-Force` 会覆盖已存在的旧 `.zip`；`Move-Item -Force` 覆盖旧 `.cindy`。
 
 ## 2. 在 Cindy 本地安装
 
