@@ -118,6 +118,34 @@ describe('overlaySlot · move 坐标校验与钳制', () => {
     }
     expect(deps.move).not.toHaveBeenCalled();
   });
+
+  it('move clamps against union bounds with negative display origins', async () => {
+    const displays = [
+      {
+        id: 0,
+        bounds: { x: 2560, y: -1114, width: 1440, height: 2560 },
+        workArea: { x: 2560, y: -1114, width: 1440, height: 2512 },
+        scaleFactor: 1,
+      },
+      {
+        id: 1,
+        bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+        workArea: { x: 0, y: 0, width: 2560, height: 1392 },
+        scaleFactor: 1,
+      },
+    ];
+    const { slot, deps } = makeSlot({ isMounted: () => true, getAllDisplays: () => displays });
+    // 联合边界:x ∈ [0, 4000],y ∈ [-1114, 1446](本机实况:竖屏原点 y 为负)。
+    await expect(slot.handle(GHOST_ID, 'move', { x: -50, y: -2000 })).resolves.toEqual({
+      ok: true,
+    });
+    expect(deps.move).toHaveBeenCalledWith(GHOST_ID, 0, -1114);
+
+    await expect(slot.handle(GHOST_ID, 'move', { x: 5000, y: 2000 })).resolves.toEqual({
+      ok: true,
+    });
+    expect(deps.move).toHaveBeenCalledWith(GHOST_ID, 4000, 1446);
+  });
 });
 
 describe('overlaySlot · displays 查询', () => {
@@ -157,5 +185,41 @@ describe('overlaySlot · 其余 kind 转发与校验', () => {
       ok: false,
       errorCode: 'INVALID_PARAMS',
     });
+  });
+
+  it('mount wraps unexpected rejection as INTERNAL', async () => {
+    const { slot } = makeSlot({
+      show: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    });
+    await expect(slot.handle(GHOST_ID, 'mount', {})).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: 'boom',
+    });
+  });
+});
+
+describe('overlaySlot · 校验顺序(错误码语义精确)', () => {
+  it('未 mount 时未知 kind 仍返回 INVALID_PARAMS', async () => {
+    const { slot } = makeSlot();
+    await expect(slot.handle(GHOST_ID, 'explode', {})).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_PARAMS',
+    });
+  });
+
+  it('未 mount 时非法参数仍返回 INVALID_PARAMS(而非 OVERLAY_NOT_MOUNTED)', async () => {
+    const { slot, deps } = makeSlot();
+    await expect(slot.handle(GHOST_ID, 'move', { x: 1.5, y: 0 })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_PARAMS',
+    });
+    await expect(
+      slot.handle(GHOST_ID, 'set-interactive', { interactive: 'yes' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_PARAMS' });
+    expect(deps.move).not.toHaveBeenCalled();
+    expect(deps.setInteractive).not.toHaveBeenCalled();
   });
 });

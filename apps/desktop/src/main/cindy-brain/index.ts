@@ -7976,7 +7976,9 @@ export function registerGhostIpc(): void {
   // fsSlot 三档守门)/ agent-request(Agent 新回合,一次性用户票或后台权限
   // 守门)/ agent-errand-request(派活取件,agent.errand 加档 + 频控守门)/
   // node-request(随包 Node JSON-RPC/MCP stdio 中继)/ pick-request
-  // (系统级选文件夹,用户亲选即授权)/ preview-request(右侧栏开预览标签,
+  // (系统级选文件夹,用户亲选即授权)/ overlay-request(桌面浮窗消息族,
+  // mount 资格审/未 mount 状态守门/move 钳制在 overlaySlot)/
+  // preview-request(右侧栏开预览标签,
   // preview.hosts 白名单守门)/ workspace-request(工作区会话入口,亲选或
   // 确认卡授权,判重/创建在 workspaceSlot)。其它类型一律拒。
   ipcMain.handle('ghost-pipe:ping', (event) => {
