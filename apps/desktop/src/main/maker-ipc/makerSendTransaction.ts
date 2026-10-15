@@ -43,6 +43,7 @@ import { buildWireMessageSourceNote, readWireSourceDevice, readWireSourcePlugin 
 import { buildCindyMakeTaskNote } from '../cindy-make/taskNote.js';
 import { getResolvedMainLocale } from '../i18n.js';
 import { buildUiLanguageErrorNote, turnUiLanguageFromSendOpts } from './uiLanguageErrorNote.js';
+import type { RepeatableWireNotes, WireNotePlan } from './wireNoteMemory.js';
 import {
   excludeDirectoryGrantConflicts,
   directoryGrantsForRuntime,
@@ -544,6 +545,16 @@ export interface MakerSendTransactionDeps {
    * 命中时每轮把任务说明追加到 wire 用户消息(不落库、不显示),见 cindy-make/taskNote.ts。
    */
   isCindyMakeSession?(sessionId: string): Promise<boolean>;
+  /**
+   * 逐轮环境说明去重(见 wireNoteMemory.ts):返回本轮真正要前置的段;与上一次已被
+   * 引擎接受的内容相同的段不再重复。`force` 在交接首条(原生上下文刚重建)时整体重发。
+   * 缺省(未注入)= 每轮全发,行为与旧版一致。
+   */
+  planRepeatableWireNotes?(
+    sessionId: string,
+    notes: RepeatableWireNotes,
+    opts: { force: boolean },
+  ): WireNotePlan;
   log: MakerSendTransactionLog;
   workdirDiagnostics?: WorkdirDiagnosticLogger;
 }
@@ -1330,30 +1341,43 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       // context 盖章);没有设备信息时沿用旧的手机判据(直连走 deps 注入的 async context,
       // 排队走 so.fromMobileClient)。
       const sourceDevice = readWireSourceDevice(so.sourceDevice);
-      const mobileClientNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      const allowsEnvironmentNotes = shouldPrependMobileClientPromptNote(normalized, sess.agentKind);
+      const mobileClientNote = allowsEnvironmentNotes
         ? buildClientEnvironmentNote({
             device: sourceDevice,
             host: sourceDevice ? deps.readHostDeviceIdentity?.() : undefined,
             legacyMobile: deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true,
           })
         : null;
-      const withMobileNote = mobileClientNote
-        ? prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, mobileClientNote)
-        : withSourceNote;
       // 个人版制作任务说明:与手机说明同层、同占位规则(原生命令必须留在消息开头)。
       const cindyMakeNote =
         (await deps.isCindyMakeSession?.(sessionId).catch(() => false)) === true &&
-        shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        allowsEnvironmentNotes
           ? buildCindyMakeTaskNote()
           : null;
-      const withCindyMakeNote = cindyMakeNote
-        ? prependNoteToWireUserMessage(withMobileNote as HandoffWireMessage, cindyMakeNote)
-        : withMobileNote;
-      const uiLanguageNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      const uiLanguageNote = allowsEnvironmentNotes
         ? buildUiLanguageErrorNote(turnUiLanguageFromSendOpts(so, getResolvedMainLocale()))
         : null;
-      const outgoing = uiLanguageNote
-        ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, uiLanguageNote)
+      // 这三段是"环境说明":同一原生上下文里内容没变就不重复发(wireNoteMemory)。交接首条
+      // (原生上下文刚重建)整体重发;只有引擎接受后才记为已发送。斜杠命令轮次本来就不带
+      // 说明,也不改写记忆——它不代表模型已经看过新的环境。
+      const repeatableNotes: RepeatableWireNotes = {
+        'client-environment': mobileClientNote,
+        'cindy-make': cindyMakeNote,
+        'ui-language': uiLanguageNote,
+      };
+      const wireNotePlan = allowsEnvironmentNotes
+        ? (deps.planRepeatableWireNotes?.(sessionId, repeatableNotes, { force: pendingHandoff !== null }) ?? null)
+        : null;
+      const plannedNotes = wireNotePlan?.notes ?? repeatableNotes;
+      const withMobileNote = plannedNotes['client-environment']
+        ? prependNoteToWireUserMessage(withSourceNote as HandoffWireMessage, plannedNotes['client-environment'])
+        : withSourceNote;
+      const withCindyMakeNote = plannedNotes['cindy-make']
+        ? prependNoteToWireUserMessage(withMobileNote as HandoffWireMessage, plannedNotes['cindy-make'])
+        : withMobileNote;
+      const outgoing = plannedNotes['ui-language']
+        ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, plannedNotes['ui-language'])
         : withCindyMakeNote;
       const meta = await deps.getSessionMeta(sessionId).catch(() => null);
       let persistUserMessage = readPersistUserMessageOption(so);
@@ -1741,6 +1765,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           // 只有跨过不可逆 dispatch 边界才消费;未派发保留 pending 下次重试。
           deps.consumePendingHandoff?.(sessionId);
         }
+        // 环境说明同样只在引擎接受后记为已发送;被拒 / 抛错时下次照常重发。
+        if (sendResult.accepted) wireNotePlan?.commit();
         if (workdirRecoveryNote && sendResult.accepted) {
           deps.consumeWorkingDirectoryRecoveryNote?.(sessionId, workdirRecoveryNote);
         }

@@ -129,6 +129,11 @@ export interface PrepareSessionEventDeps {
     event: AgentEvent,
   ) => boolean;
   readonly isGatewayProxyTokenRecoveryErrorEvent: (sessionId: string, event: AgentEvent) => boolean;
+  /**
+   * 逐轮环境说明的去重记忆(wireNoteMemory.ts)。原生自动压缩后摘要可能已丢掉旧说明,
+   * 下一轮要整体重发一次;缺省(未注入)不去重,行为同旧版。
+   */
+  readonly wireNoteMemory?: { reset(sessionId: string): void };
 }
 
 export function prepareSessionEvent(
@@ -141,6 +146,7 @@ export function prepareSessionEvent(
   // potentially multi-megabyte payload to every renderer and device-link controller.
   if (event.type === 'turn_diff') return;
   if (event.type === 'compact_boundary') deps.botCompactRuntimeRefreshCoordinator.noteBoundary(session);
+  if (event.type === 'compact_boundary') deps.wireNoteMemory?.reset(session.id);
   if (
     event.turnScope === 'background' &&
     Object.prototype.hasOwnProperty.call(event, 'backgroundTurnStartedAt') &&

@@ -30,6 +30,7 @@ import { UI_ACTION_TRIGGER_PREFIX } from '../../shared/interruptedTurn.js';
 import { createLogger } from '../logger.js';
 import { resolveBusinessSessionId } from '../sessionIds.js';
 import { registerBotDelegationParentCancellation } from './botDelegationLifecycle.js';
+import { buildDelegationCompletionMessage } from './botDelegationCompletionMessage.js';
 import { classifyBotDelegationDispatchFailure } from './botDelegationDispatchOutcome.js';
 import { resolveBotCanonicalSession } from './botCanonicalSessionRegistry.js';
 import type {
@@ -895,30 +896,18 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       clearCompletionRetryTimer(params.id);
       return false;
     }
-    const taskSubject = '后台任务';
-    const statusLine =
-      params.status === 'completed'
-        ? '已完成'
-        : params.status === 'cancelled'
-          ? '已取消'
-          : params.status === 'timed-out' || params.lastError?.startsWith('TIMEOUT')
-            ? '已超时'
-            : '失败了';
     const artifacts = params.artifacts ?? [];
     // 发给模型的回执正文不带 [UI_ACTION_TRIGGER] 前缀;前缀只留在落库 / 排队可见内容上,
     // 让这条主机内部消息在时间线与排队区保持隐藏(同 botDirectMessageService 的私信)。
-    const completionMessage = [
-      `[任务回执] ${taskSubject}${statusLine}。task_id: ${params.id}`,
-      `目标事项: ${params.objective.slice(0, 400)}`,
-      params.resultSummary ? `结果:\n${params.resultSummary}` : '',
-      artifacts.length
-        ? `交出的文件(${artifacts.length}):\n${artifacts.slice(0, 20).map((item) => `- ${item.absolutePath}`).join('\n')}`
-        : '',
-      params.lastError ? `失败原因: ${params.lastError}` : '',
-      '当前时间线里的任务卡已更新到终态,交付文件清单也在卡片里。直接依据结果接手继续当前工作;结果不够或还想让执行者接着做,用 `message_session_task`(带 task_id)继续说,不必重新发起。回复用户时不要复述本条回执,也不要提及任何内部编号。',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+    // 正文有界(结果摘要 / 文件清单截断):完整结果在下面持久化的回执行里,模型按需读取。
+    const completionMessage = buildDelegationCompletionMessage({
+      id: params.id,
+      objective: params.objective,
+      status: params.status,
+      resultSummary: params.resultSummary,
+      artifacts,
+      lastError: params.lastError,
+    });
     try {
       if (!(await completionStillPending())) {
         clearCompletionRetryTimer(params.id);

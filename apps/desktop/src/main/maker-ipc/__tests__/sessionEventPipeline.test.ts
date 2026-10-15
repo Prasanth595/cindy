@@ -252,6 +252,7 @@ function harness() {
     onUnsuccessfulProductTurn: vi.fn(async () => {}),
     log,
     botCompactRuntimeRefreshCoordinator: { noteBoundary: vi.fn() },
+    wireNoteMemory: { reset: vi.fn() },
     attemptBotCompactRuntimeRefresh: vi.fn(),
     botDelegationServiceHolder: { settleSession: vi.fn(async () => {}) },
     isFencedStaleSessionTerminal: vi.fn(() => false),
@@ -1884,6 +1885,8 @@ describe('Bot adapters in the shared event pipeline', () => {
     const h = harness();
     h.emit(event('compact_boundary'));
     expect(h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary).toHaveBeenCalledWith(h.session);
+    // 原生摘要可能丢掉了环境说明:下一轮整体重发。
+    expect(h.deps.wireNoteMemory.reset).toHaveBeenCalledWith('task');
     expect(h.deps.attemptBotCompactRuntimeRefresh).not.toHaveBeenCalled();
     h.deps.agentInputCoordinatorHolder.getQueueControlSnapshot.mockReturnValue({ pendingQueue: [{}] });
     h.emit(event('done', { result: 'first result' }));
