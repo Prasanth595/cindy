@@ -56,6 +56,8 @@ interface WindowSlot {
 
 export class GhostOverlayWindowsController {
   private readonly slots = new Map<string, WindowSlot>();
+  /** 在途创建去重:同一 ghostId 只允许一个 createWindow 在飞。 */
+  private readonly pendingCreates = new Map<string, Promise<WindowSlot | null>>();
   private disposed = false;
   /** 销毁代次:disposeAllForOwnerChange/dispose 后作废在途创建。 */
   private generation = 0;
@@ -230,10 +232,16 @@ export class GhostOverlayWindowsController {
     const existing = this.slots.get(ghostId);
     if (existing && !existing.win.isDestroyed()) return Promise.resolve(existing);
 
-    // 并发预热/show 可能短暂出现多个在途创建:createSlot 的去重分支销毁多余
-    // 窗口并清理 registry,最终只保留一个活窗口。
+    const inflight = this.pendingCreates.get(ghostId);
+    if (inflight) return inflight;
+
     const generation = this.generation;
-    return this.createSlot(ghostId, generation);
+    const promise = this.createSlot(ghostId, generation);
+    this.pendingCreates.set(ghostId, promise);
+    void promise.then(() => {
+      if (this.pendingCreates.get(ghostId) === promise) this.pendingCreates.delete(ghostId);
+    });
+    return promise;
   }
 
   private async createSlot(ghostId: string, generation: number): Promise<WindowSlot | null> {
@@ -467,6 +475,7 @@ export class GhostOverlayWindowsController {
   /** 主窗口销毁/owner 切换时回收所有隐藏窗口;controller 仍可继续预热。 */
   destroyAllWindows(): void {
     this.generation += 1;
+    this.pendingCreates.clear();
     const slots = [...this.slots.values()];
     this.slots.clear();
     for (const slot of slots) {

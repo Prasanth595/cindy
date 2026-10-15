@@ -126,8 +126,11 @@ export async function createGhostOverlayWindow(
     stage = 'load';
     await win.loadURL(`${GHOST_SCHEME}://${ghostId}/${decl.html}`);
   } catch (error) {
+    // 先捕获 id 再销毁:窗口销毁后访问 webContents 不可靠(可能抛「Object has
+    // been destroyed」),届时会掩盖原始错误并留下 registry 僵尸条目。
+    const webContentsId = win.webContents.id;
     if (!win.isDestroyed()) win.destroy();
-    clearGhostOverlayWebContents(win.webContents.id);
+    clearGhostOverlayWebContents(webContentsId);
     throw new Error(`ghost overlay ${stage} failed for ${ghostId}`, { cause: error });
   }
 

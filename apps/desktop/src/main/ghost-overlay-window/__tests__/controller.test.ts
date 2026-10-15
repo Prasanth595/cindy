@@ -186,19 +186,15 @@ describe('prewarm', () => {
     expect(h.controller.getState().a?.mounted).toBe(true);
   });
 
-  it('prewarm is idempotent (keeps a single live window)', async () => {
+  it('prewarm is idempotent (single createWindow across concurrent and repeated calls)', async () => {
     const h = makeHarness(new Set(['a']));
     h.controller.prewarm('a');
     h.controller.prewarm('a');
-    await vi.waitFor(() => {
-      const live = h.created.filter(({ win }) => !win.isDestroyed());
-      expect(live).toHaveLength(1);
-    });
+    await h.controller.show('a');
+    await h.controller.show('a');
     h.controller.prewarm('a');
-    await vi.waitFor(() => {
-      const live = h.created.filter(({ win }) => !win.isDestroyed());
-      expect(live).toHaveLength(1);
-    });
+    await Promise.resolve();
+    expect(h.created).toHaveLength(1);
     expect(Object.keys(h.controller.getState())).toEqual(['a']);
   });
 });
@@ -517,12 +513,23 @@ describe('in-flight creation registry cleanup', () => {
     expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
   });
 
-  it('dedup branch: duplicate in-flight creation destroys the extra window and clears its registry binding', async () => {
+  it('dedup branch: duplicate creation destroys the extra window and clears its registry binding', async () => {
     const h = makeHarness(new Set(['a']));
-    await Promise.all([h.controller.show('a'), h.controller.show('a')]);
+    // 直接驱动私有 createSlot 两次(绕过 ensureSlot 的在途去重),覆盖去重分支的防御清理。
+    const internals = h.controller as unknown as {
+      generation: number;
+      createSlot: (ghostId: string, generation: number) => Promise<{ win: FakeWindow } | null>;
+    };
+    const generation = internals.generation;
+    const [slot1, slot2] = await Promise.all([
+      internals.createSlot('a', generation),
+      internals.createSlot('a', generation),
+    ]);
 
     expect(h.created).toHaveLength(2);
     const [win1, win2] = h.created.map(({ win }) => win);
+    expect(slot1?.win).toBe(win1);
+    expect(slot2?.win).toBe(win1); // 去重:返回既有 slot
     expect(win1.isDestroyed()).toBe(false);
     expect(win2.isDestroyed()).toBe(true);
     expect(isGhostOverlayWebContents(win1.webContents.id)).toBe(true);

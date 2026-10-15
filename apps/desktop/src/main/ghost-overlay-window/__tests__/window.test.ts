@@ -37,6 +37,8 @@ const harness = vi.hoisted(() => {
       this.destroyed = true;
     });
     destroyed = false;
+    /** 销毁后仍可读取的 webContents id(供测试断言 registry 清理)。 */
+    readonly overlayWebContentsId: number;
     readonly webContents: {
       id: number;
       on: ReturnType<typeof vi.fn>;
@@ -45,8 +47,14 @@ const harness = vi.hoisted(() => {
     };
 
     constructor(readonly options: BrowserWindowConstructorOptions) {
+      const webContentsId = nextWebContentsId++;
+      this.overlayWebContentsId = webContentsId;
+      const isWindowDestroyed = () => this.destroyed;
       this.webContents = {
-        id: nextWebContentsId++,
+        get id(): number {
+          if (isWindowDestroyed()) throw new Error('Object has been destroyed');
+          return webContentsId;
+        },
         on: vi.fn(),
         setWindowOpenHandler: vi.fn(),
         session: { setPermissionRequestHandler: vi.fn() },
@@ -277,7 +285,7 @@ describe('createGhostOverlayWindow', () => {
     expect(win.isDestroyed()).toBe(true);
     expect(win.destroy).toHaveBeenCalledTimes(1);
     expect(win.loadURL).not.toHaveBeenCalled();
-    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
+    expect(isGhostOverlayWebContents(win.overlayWebContentsId)).toBe(false);
   });
 
   it('destroys the window and clears the registry when loadURL fails', async () => {
@@ -290,7 +298,7 @@ describe('createGhostOverlayWindow', () => {
     expect(win.isDestroyed()).toBe(true);
     expect(win.destroy).toHaveBeenCalledTimes(1);
     expect(harness.ensureProtocolRegistered).toHaveBeenCalledWith('acme-overlay');
-    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
+    expect(isGhostOverlayWebContents(win.overlayWebContentsId)).toBe(false);
   });
 
   it('disables devTools in packaged builds only', async () => {
