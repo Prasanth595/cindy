@@ -1632,7 +1632,7 @@ describe('Shared create project picker', () => {
     );
   });
 
-  it('reapplies refreshed regional defaults only while the remote runtime is untouched', () => {
+  it('reapplies refreshed regional defaults only before remote runtime selection or initialization', () => {
     const seed = newMakerDraftRouteSource.slice(
       newMakerDraftRouteSource.indexOf('// seed dlSel:'),
       newMakerDraftRouteSource.indexOf('// 远程草稿展示用:'),
@@ -1640,7 +1640,9 @@ describe('Shared create project picker', () => {
     expect(seed).toContain('shouldReseedDeviceLinkDraftDefaults({');
     expect(seed).toContain('capabilitiesChanged,');
     expect(seed).toContain('if (!capabilities || capabilitiesLoading');
-    expect(seed).toContain('controllerTouched: dlRuntimeTouchedRef.current,');
+    // A pending first selection must survive catalog refresh just like an explicit choice.
+    expect(seed).toContain('controllerTouched: dlRuntimeTouchedRef.current || dlInitializationRef.current?.key === key,');
+    expect(seed).toContain('initialModelSelectionComplete: deviceDraftDefaults?.initialModelSelectionComplete,');
     expect(seed).toContain('remoteModelChosenByUser: deviceDraftDefaults?.modelChosenByUser,');
     expect(seed).toContain('modelChosenByUser: true,');
     expect(seed).toContain('current.model,');
