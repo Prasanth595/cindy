@@ -12,7 +12,7 @@ export function validateSkillAudience(input: SkillAudienceInput): void {
     throw new Error('Invalid department selection');
   }
   if (ids !== undefined && (!Array.isArray(ids) || ids.length > 500
-    || ids.some(id => typeof id !== 'string' || !id || id.trim() !== id || id.length > 191))) {
+    || Array.from(ids).some(id => typeof id !== 'string' || !id || id.trim() !== id || id.length > 191))) {
     throw new Error('Invalid department selection');
   }
   if (ids !== undefined && (input.audienceMode !== 'all' && input.audienceMode !== 'departments')) {

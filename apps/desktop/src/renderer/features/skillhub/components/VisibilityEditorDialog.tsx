@@ -73,6 +73,7 @@ export function VisibilityEditorDialog({
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState<string>();
   const [reload, setReload] = useState(0);
   const [conflict, setConflict] = useState(false);
+  const [loadedTier, setLoadedTier] = useState<VisibilityTier>(currentTier);
   const [tier, setTier] = useState<VisibilityTier>(currentTier);
 
   useEffect(() => {
@@ -95,7 +96,8 @@ export function VisibilityEditorDialog({
       setExpectedUpdatedAt(result.updatedAt);
       setSelected(result.visibleDepts ?? []);
       setAudienceMode(result.visibleDepts?.length ? 'departments' : 'all');
-      if (result.visibility) setTier(result.visibility === 'shared' ? 'team' : result.visibility);
+      const latestTier = result.visibility === 'shared' ? 'team' : result.visibility ?? currentTier;
+      setTier(latestTier); setLoadedTier(latestTier);
     }).catch(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) setLoadError(t('skillhub.audience.loadError')); })
       .finally(() => { if (!cancelled && isDataOwnerGenerationCurrent(owner)) { setLoading(false); setInitialLoadFinished(true); } });
     return () => { cancelled = true; };
@@ -103,8 +105,8 @@ export function VisibilityEditorDialog({
 
   // ── 校验(对齐 SkillHub StepMeta/管理弹窗规则) ──────────────────────────
   // ── 影响提示(SkillHub origin/main 同款文案) ───────────────────────────
-  const tierChanged = tier !== currentTier;
-  const leavingMarket = currentTier === 'public' && tier !== 'public';
+  const tierChanged = tier !== loadedTier;
+  const leavingMarket = loadedTier === 'public' && tier !== 'public';
   const teamOwnedToPrivate = currentOwnerIsTeam && tier === 'private';
   const tierAllowed = identityPolicy.allowedVisibilities.includes(
     tier === 'team' ? 'DEPARTMENT_SCOPED' : tier.toUpperCase() as 'PUBLIC' | 'PRIVATE',
@@ -298,10 +300,10 @@ export function VisibilityEditorDialog({
               loading={saving}
               type="button"
               disabled={!isDataOwnerGenerationCurrent(dialogOwner) || loading || saving || conflict || (tier === 'team' && !audienceValid) || Boolean(loadError) || !tierAllowed || readOnly
-                || (tier === 'public' && currentTier !== 'public' && publicReview?.status === 'pending')}
+                || (tier === 'public' && loadedTier !== 'public' && publicReview?.status === 'pending')}
               onClick={() => void handleSave()}
             >
-              { tier === 'public' && currentTier !== 'public'
+              { tier === 'public' && loadedTier !== 'public'
                   ? publicReview?.status === 'pending'
                     ? t('skillhub.visibilityEditor.waitingReview')
                     : t('skillhub.visibilityEditor.submitReview')

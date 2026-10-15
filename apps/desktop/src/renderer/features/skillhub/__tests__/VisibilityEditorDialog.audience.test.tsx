@@ -122,3 +122,18 @@ it('waits for the department tree before displaying the initial modal', async ()
   expect(screen.getByRole('checkbox', { name: 'Parent' })).toBeTruthy();
   expect(window.electronAPI.skillhub.getMyDepts).toHaveBeenCalledTimes(1);
 });
+
+it('uses reloaded visibility as the comparison baseline while preserving catalog reconciliation', async () => {
+  save.mockResolvedValueOnce({ success: false, errorCode: 'SKILL_DISTRIBUTION_CONFLICT' });
+  open();
+  await waitFor(() => expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }));
+  await screen.findByText('skillhub.audience.conflict');
+  load.mockResolvedValueOnce({ success: true, audienceSupported: true, updatedAt: '2026-01-02T00:00:00.000Z', visibleDepts: [], visibility: 'public' });
+  fireEvent.click(screen.getByRole('button', { name: 'skillhub.audience.reload' }));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.queryByText('skillhub.visibilityEditor.impactPublic')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'skillhub.visibilityEditor.submitReview' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'skillhub.visibilityEditor.save' }));
+  await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ visibility: 'public', previousCatalogScope: 'team', expectedUpdatedAt: '2026-01-02T00:00:00.000Z' })));
+});

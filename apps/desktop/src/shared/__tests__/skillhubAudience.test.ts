@@ -22,3 +22,10 @@ it('accepts explicit audience pairs and legacy absence', () => {
   expect(() => validateSkillAudience({ audienceMode: 'all', visibilityDepartmentIds: [] })).not.toThrow();
   expect(() => validateSkillAudience({ audienceMode: 'departments', visibilityDepartmentIds: ['dept-1'] })).not.toThrow();
 });
+
+it('rejects sparse department arrays including structured cloned holes', () => {
+  const sparse = new Array<string>(2); sparse[1] = 'dept-1';
+  for (const ids of [new Array<string>(1), sparse, structuredClone(sparse)]) {
+    expect(() => validateSkillAudience({ audienceMode: 'departments', visibilityDepartmentIds: ids })).toThrow('Invalid department selection');
+  }
+});
