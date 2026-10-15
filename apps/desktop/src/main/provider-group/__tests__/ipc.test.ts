@@ -208,13 +208,31 @@ describe('executeProviderGroupCommand save', () => {
       config: { strategy: 'least', autoSwitch: true, members: [LOCAL, { ...SHARED, hostDeviceId: 'forged' }] },
     });
     expect((d.writeGroup.mock.calls[0][1] as ProviderGroupConfig).members[1].hostDeviceId).toBe('kai-pc');
-    // 设置页拿着没有这项的旧副本保存(例如只改了暂停)，已记下的不丢。
+    // 设置页即使带着伪造的快照保存(例如只改了暂停)，也以目录里的值为准。
     await executeProviderGroupCommand(d, {
       action: 'save',
       providerId: 'anthropic',
-      config: { strategy: 'least', autoSwitch: true, members: [LOCAL, { ...SHARED, paused: true }] },
+      config: { strategy: 'least', autoSwitch: true, members: [LOCAL, { ...SHARED, paused: true, hostDeviceId: 'forged-again' }] },
     });
     expect((d.writeGroup.mock.calls[1][1] as ProviderGroupConfig).members[1]).toMatchObject({ paused: true, hostDeviceId: 'kai-pc' });
+  });
+
+  it('does not trust a shared host id when the renderer has a stale member snapshot', async () => {
+    const SHARED = { key: 'share:s1:anthropic', kind: 'share' as const, agentDeviceId: 'share:s1', providerId: 'anthropic', limit: 4, weight: 1, paused: false };
+    const existing: ProviderGroupConfig = {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [LOCAL, { ...SHARED, hostDeviceId: 'kai-pc' }],
+    };
+    const d = deps([{ key: SHARED.key, kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic', label: 'Kai', providerName: 'Claude', ownerName: 'Kai', hostDeviceId: 'kai-pc' }], existing);
+
+    await executeProviderGroupCommand(d, {
+      action: 'save',
+      providerId: 'anthropic',
+      config: { ...existing, members: [LOCAL, { ...SHARED, hostDeviceId: 'forged' }] },
+    });
+
+    expect((d.writeGroup.mock.calls[0][1] as ProviderGroupConfig).members[1].hostDeviceId).toBe('kai-pc');
   });
 
   it('refuses a computer that is not offered as a candidate', async () => {

@@ -190,20 +190,26 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
           if (member.kind === 'share' && !member.hostDeviceId && host) member.hostDeviceId = host;
         }
         const added = next.members.filter((m) => m.kind !== 'local' && !previous.has(m.key));
-        if (added.length > 0) {
+        // 分享成员的 hostDeviceId 由 Main 端收到的分享目录持有。即使只是修改已有成员，
+        // 也不能接受渲染端快照自报的物理电脑键(协议兼容规则中的供应商组聚合条目)。
+        if (added.length > 0 || next.members.some((m) => m.kind === 'share')) {
           const candidates = await deps.directory.listCandidates(providerId, deps.readGroup(providerId));
+          const byKey = new Map(candidates.map((c) => [c.key, c]));
           const allowed = new Set(candidates.filter((c) => !c.blocked).map((c) => c.key));
           const rejected = added.filter((m) => !allowed.has(m.key));
           if (rejected.length > 0) {
             throwIpcError('PRECONDITION_FAILED', 'Only the same provider that this computer can already use can join the group');
           }
           // 显示名(电脑名与供应商名)以目录为准，渲染端给的只是快照。
-          const byKey = new Map(candidates.map((c) => [c.key, c]));
           for (const member of next.members) {
             const candidate = byKey.get(member.key);
             if (candidate?.label) member.label = candidate.label;
             if (candidate?.providerName) member.providerName = candidate.providerName;
-            if (member.kind === 'share' && candidate?.hostDeviceId) member.hostDeviceId = candidate.hostDeviceId;
+            if (member.kind === 'share') {
+              if (candidate?.hostDeviceId) member.hostDeviceId = candidate.hostDeviceId;
+              else if (stored.get(member.key)?.hostDeviceId) member.hostDeviceId = stored.get(member.key)?.hostDeviceId;
+              else delete member.hostDeviceId;
+            }
           }
         }
       }
