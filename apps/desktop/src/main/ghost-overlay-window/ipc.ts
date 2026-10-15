@@ -75,11 +75,12 @@ export function registerGhostOverlayWindowIpc(deps: GhostOverlayWindowIpcDeps): 
       if (typeof enabled !== 'boolean') {
         throwIpcError('INVALID_PARAMS', 'enabled must be a boolean');
       }
-      setUserEnabled(ghostId, enabled);
-      // 即时反馈:关掉开关时,若浮窗当前可见立即 hide,不等下次 mount/show/reconcile。
+      // 即时反馈:关掉开关时先 hide 已可见浮窗(用户意图优先),再落盘;即使 store
+      // 写失败(损坏文件),已可见浮窗也已隐藏,不等待下次 mount/show/reconcile。
       if (!enabled && controller.getState()[ghostId]?.visible) {
         controller.hide(ghostId);
       }
+      setUserEnabled(ghostId, enabled);
     },
   );
 

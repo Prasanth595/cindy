@@ -369,6 +369,13 @@ export class GhostOverlayWindowsController {
   private showInactive(ghostId: string, slot: WindowSlot): void {
     this.clearShowTimeout(slot);
     slot.pendingShow = false;
+    // kill switch 复查:用户禁用后任何路径(双阶段就绪/5s 壳/reload 恢复)都不得
+    // 把窗口显示出来——show()/createSlot 的入口检查与这里之间是异步窗口,
+    // pendingShow 兜底统一在这里收口(fail closed)。
+    if (!this.deps.isUserEnabled(ghostId)) {
+      this.deps.log.warn('ghost overlay show suppressed (user disabled)', { ghostId });
+      return;
+    }
     if (slot.win.isMinimized()) slot.win.restore();
     slot.win.showInactive();
     this.applyVisibility(ghostId, slot, true);

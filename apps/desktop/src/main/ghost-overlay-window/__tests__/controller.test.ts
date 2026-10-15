@@ -52,7 +52,7 @@ function fakeWindow(opts: { initiallyLoaded?: boolean } = {}): FakeWindow {
   const wcListeners = new Map<string, (...args: unknown[]) => void>();
   let destroyed = false;
   let visible = false;
-  let loading = !(opts.initiallyLoaded ?? false);
+  const loading = !(opts.initiallyLoaded ?? false);
   const wcOn = vi.fn((event: string, cb: (...args: unknown[]) => void) => {
     wcListeners.set(event, cb);
   });
@@ -347,6 +347,46 @@ describe('user disabled guard (fail closed)', () => {
     await h.controller.show('a');
     expect(h.created).toHaveLength(0);
     expect(h.controller.getState()).toEqual({});
+  });
+
+  it('disabled while renderer-ready pendingShow: 5s fallback does not show', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      await h.controller.show('a');
+      const win = h.created[0].win;
+      h.controller.markRendererReady(win.webContents as unknown as WebContents);
+
+      h.setUserEnabled('a', false);
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(win.showInactive).not.toHaveBeenCalled();
+      expect(win.isDestroyed()).toBe(false); // 已 ready 的壳不应被 5s 超时销毁
+      expect(h.controller.getState().a?.visible).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('disabled while a visible overlay reloads: reload complete does not re-show', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+    markReady(h.controller, win);
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
+
+    win.emitWebContentsEvent('did-start-navigation', {}, 'about:blank', false, true);
+    expect(win.isVisible()).toBe(false); // reload 开始时已 hide
+
+    h.setUserEnabled('a', false);
+
+    win.emitWebContentsEvent('did-finish-load');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(win.showInactive).toHaveBeenCalledTimes(1); // 没有再次展示
+    expect(win.isVisible()).toBe(false);
+    expect(h.controller.getState().a?.visible).toBe(false);
   });
 });
 
