@@ -37,6 +37,7 @@ import {
 } from '../../../shared/ghostOverlayWindow.js';
 import {
   clearGhostOverlayWebContents,
+  ghostIdForOverlayWebContents,
   markGhostOverlayWebContentsId,
 } from '../registry.js';
 import { registerGhostOverlayWindowIpc } from '../ipc.js';
@@ -46,17 +47,31 @@ type OverlayControllerMock = GhostOverlayWindowsController & {
   getState: ReturnType<typeof vi.fn>;
   markRendererReady: ReturnType<typeof vi.fn>;
   markPresentationReady: ReturnType<typeof vi.fn>;
+  rendererReadyGhostIds: string[];
+  presentationReadyGhostIds: string[];
 };
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
 function makeController(): OverlayControllerMock {
+  const rendererReadyGhostIds: string[] = [];
+  const presentationReadyGhostIds: string[] = [];
   return {
     getState: vi.fn(() => ({
       'ghost-a': { mounted: true, visible: false, interactive: false },
     })),
-    markRendererReady: vi.fn(),
-    markPresentationReady: vi.fn(),
+    // 模拟真实 controller 的 slotForSender:按 registry 把 sender 映射回 ghostId,
+    // 让 ready 通道的“映射到正确 ghostId”可观察(而不只是布尔闸通过)。
+    markRendererReady: vi.fn((sender: { id: number }) => {
+      const ghostId = ghostIdForOverlayWebContents(sender.id);
+      if (ghostId) rendererReadyGhostIds.push(ghostId);
+    }),
+    markPresentationReady: vi.fn((sender: { id: number }) => {
+      const ghostId = ghostIdForOverlayWebContents(sender.id);
+      if (ghostId) presentationReadyGhostIds.push(ghostId);
+    }),
+    rendererReadyGhostIds,
+    presentationReadyGhostIds,
   } as unknown as OverlayControllerMock;
 }
 
@@ -146,6 +161,9 @@ describe('ghost overlay window IPC', () => {
 
     expect(controller.markRendererReady).toHaveBeenCalledWith({ id: 42 });
     expect(controller.markPresentationReady).toHaveBeenCalledWith({ id: 43 });
+    // 加严:ready 通道经 registry 映射到**正确的 ghostId**(而非只过布尔闸)。
+    expect(controller.rendererReadyGhostIds).toEqual(['ghost-a']);
+    expect(controller.presentationReadyGhostIds).toEqual(['ghost-b']);
   });
 
   it('SET_USER_ENABLED validates ghostId and boolean payload', async () => {

@@ -2345,6 +2345,13 @@ const setGhostOverlayUserEnabled = (ghostId: string, enabled: boolean): void => 
   // TODO(Task 8): 落盘 per-owner 持久化(read/setOverlayUserEnabled)。
 };
 
+// 资格判据与 reconcile 保持一致:已装 + 未停用 + 声明了 overlay。
+// 消除 disabled-but-declared 的窄竞态(停用广播尚未 reconcile 到位时的窗口)。
+const isGhostOverlayDeclared = (ghostId: string): boolean => {
+  const ghost = findGhostForInstanceId(ghostId);
+  return ghost !== null && ghost.enabled !== false && ghost.manifest.overlay !== undefined;
+};
+
 function createGhostOverlayCursorStream(): GhostOverlayCursorStream {
   return new GhostOverlayCursorStream({
     getCursorScreenPoint: () => screen.getCursorScreenPoint(),
@@ -2380,7 +2387,7 @@ const ghostOverlayWindowsController = new GhostOverlayWindowsController({
       log: createLogger('ghost-overlay-window'),
     });
   },
-  isGhostOverlayDeclared: (ghostId) => findGhostForInstanceId(ghostId)?.manifest.overlay !== undefined,
+  isGhostOverlayDeclared,
   isUserEnabled: isGhostOverlayUserEnabled,
   broadcastState: (state) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -2411,8 +2418,7 @@ registerGhostOverlayWindowIpc({
 // 权威可见态补一次 setVisible——覆盖插件先 show 后 subscribe 的顺序相反路径。
 setGhostOverlaySlot(
   createGhostOverlaySlot({
-    isGhostOverlayDeclared: (ghostId) =>
-      findGhostForInstanceId(ghostId)?.manifest.overlay !== undefined,
+    isGhostOverlayDeclared,
     isUserEnabled: isGhostOverlayUserEnabled,
     isMounted: (ghostId) => ghostOverlayWindowsController.getState()[ghostId]?.mounted === true,
     prewarm: (ghostId) => ghostOverlayWindowsController.prewarm(ghostId),

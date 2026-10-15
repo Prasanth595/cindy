@@ -201,19 +201,33 @@ export class GhostOverlayWindowsController {
 
   // ── 双阶段就绪 ──────────────────────────────────────────────────────
 
+  /** IPC 路径(未来有桥时):按 sender 反查 slot 后标记就绪。 */
   markRendererReady(sender: WebContents): void {
     const entry = this.slotForSender(sender);
     if (!entry) return;
-    entry.slot.rendererReady = true;
+    this.markRendererReadyForSlot(entry.slot);
   }
 
   markPresentationReady(sender: WebContents): void {
     const entry = this.slotForSender(sender);
     if (!entry) return;
-    entry.slot.presentationReady = true;
-    this.scheduleRecoveryStabilityReset(entry.slot);
-    if (entry.slot.pendingShow) {
-      this.showInactive(entry.ghostId, entry.slot);
+    this.markPresentationReadyForSlot(entry.ghostId, entry.slot);
+  }
+
+  /**
+   * 宿主事件路径(零桥浮窗无 preload,就绪由 webContents 事件驱动):
+   * dom-ready → renderer-ready;did-finish-load 后再延一帧 → presentation-ready
+   * (语义为“壳已挂载 + 首份内容已提交”)。
+   */
+  private markRendererReadyForSlot(slot: WindowSlot): void {
+    slot.rendererReady = true;
+  }
+
+  private markPresentationReadyForSlot(ghostId: string, slot: WindowSlot): void {
+    slot.presentationReady = true;
+    this.scheduleRecoveryStabilityReset(slot);
+    if (slot.pendingShow) {
+      this.showInactive(ghostId, slot);
     }
   }
 
@@ -303,6 +317,13 @@ export class GhostOverlayWindowsController {
     };
     this.slots.set(ghostId, slot);
     this.attachWindowListeners(ghostId, slot);
+    // 工厂 createWindow 在返回前已 await loadURL:首次加载的 dom-ready/
+    // did-finish-load 早已发生,宿主监听器补收不到。这里按事件语义对“已加载
+    // 完成”的窗口直接推进双阶段就绪;后续 reload 仍由上面的监听器重新驱动。
+    if (!slot.win.isDestroyed() && !slot.win.webContents.isLoading()) {
+      this.onDomReady(ghostId, slot);
+      this.onDidFinishLoad(ghostId, slot);
+    }
     return slot;
   }
 
@@ -311,6 +332,9 @@ export class GhostOverlayWindowsController {
     win.on('show', () => this.onNativeVisibilityChanged(ghostId, slot, true));
     win.on('hide', () => this.onNativeVisibilityChanged(ghostId, slot, false));
     win.on('closed', () => this.onClosed(ghostId, slot));
+    // 零桥浮窗没有 preload 发就绪 IPC:就绪握手由宿主 webContents 事件驱动。
+    win.webContents.on('dom-ready', () => this.onDomReady(ghostId, slot));
+    win.webContents.on('did-finish-load', () => this.onDidFinishLoad(ghostId, slot));
     win.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
       if (isMainFrame && !isInPlace) this.onRendererReloadStarted(ghostId, slot);
     });
@@ -324,6 +348,21 @@ export class GhostOverlayWindowsController {
     );
     win.webContents.on('render-process-gone', (_event, details) => {
       this.invalidateSlot(ghostId, slot, `renderer process gone: ${details.reason}`);
+    });
+  }
+
+  /** dom-ready:壳(root 组件)已挂载,可安全接收展示指令。 */
+  private onDomReady(ghostId: string, slot: WindowSlot): void {
+    if (this.slots.get(ghostId) !== slot || slot.win.isDestroyed()) return;
+    this.markRendererReadyForSlot(slot);
+  }
+
+  /** did-finish-load:首份内容已提交;延一帧再落 presentation-ready,与 IPC 语义对齐。 */
+  private onDidFinishLoad(ghostId: string, slot: WindowSlot): void {
+    if (this.slots.get(ghostId) !== slot || slot.win.isDestroyed()) return;
+    setImmediate(() => {
+      if (this.slots.get(ghostId) !== slot || slot.win.isDestroyed() || this.disposed) return;
+      this.markPresentationReadyForSlot(ghostId, slot);
     });
   }
 

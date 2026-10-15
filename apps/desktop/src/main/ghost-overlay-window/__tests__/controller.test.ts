@@ -37,6 +37,7 @@ interface FakeWindow {
     send: ReturnType<typeof vi.fn>;
     on: ReturnType<typeof vi.fn>;
     isDestroyed: () => boolean;
+    isLoading: () => boolean;
   };
   emitClosed: () => void;
   emitWindowEvent: (event: string, ...args: unknown[]) => void;
@@ -45,12 +46,13 @@ interface FakeWindow {
 }
 
 let nextId = 1;
-function fakeWindow(): FakeWindow {
+function fakeWindow(opts: { initiallyLoaded?: boolean } = {}): FakeWindow {
   const id = nextId++;
   const winListeners = new Map<string, (...args: unknown[]) => void>();
   const wcListeners = new Map<string, (...args: unknown[]) => void>();
   let destroyed = false;
   let visible = false;
+  let loading = !(opts.initiallyLoaded ?? false);
   const wcOn = vi.fn((event: string, cb: (...args: unknown[]) => void) => {
     wcListeners.set(event, cb);
   });
@@ -85,6 +87,7 @@ function fakeWindow(): FakeWindow {
       send: vi.fn(),
       on: wcOn,
       isDestroyed: () => destroyed,
+      isLoading: () => loading,
     },
     emitClosed: () => {
       destroyed = true;
@@ -127,6 +130,7 @@ function makeHarness(
     onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
     onAllWindowsDestroyed?: () => void;
   } = {},
+  opts: { createInitiallyLoaded?: boolean } = {},
 ) {
   let quitting = false;
   const created: Array<{ ghostId: string; win: FakeWindow }> = [];
@@ -142,7 +146,9 @@ function makeHarness(
 
   const deps: GhostOverlayWindowsControllerDeps = {
     createWindow: async (ghostId) => {
-      const win = fakeWindow();
+      // 缺省为“仍在加载”(isLoading=true):就绪由测试手动驱动(IPC 或宿主事件)。
+      // createInitiallyLoaded 模拟真实工厂在返回前 await loadURL 的已加载态。
+      const win = fakeWindow({ initiallyLoaded: opts.createInitiallyLoaded ?? false });
       // 对齐 Task 3 工厂:窗口创建后登记 webContentsId ↔ ghostId。
       markGhostOverlayWebContentsId(win.webContents.id, ghostId);
       created.push({ ghostId, win });
@@ -222,6 +228,46 @@ describe('two-phase ready', () => {
     h.controller.markPresentationReady(win.webContents as unknown as WebContents);
     expect(win.showInactive).toHaveBeenCalledTimes(1);
     expect(win.focus).not.toHaveBeenCalled(); // 浮窗永不抢焦点
+    expect(h.controller.getState().a).toEqual({
+      mounted: true,
+      visible: true,
+      interactive: false,
+    });
+  });
+});
+
+describe('host-driven ready (zero-bridge webContents events)', () => {
+  it('dom-ready drives renderer-ready; did-finish-load + tick drives presentation-ready', async () => {
+    const h = makeHarness(new Set(['a']));
+    await h.controller.show('a');
+    const win = h.created[0].win;
+
+    // 零桥浮窗没有 preload 发就绪 IPC:宿主 webContents 事件驱动就绪。
+    win.emitWebContentsEvent('dom-ready');
+    expect(win.showInactive).not.toHaveBeenCalled(); // 只有 renderer-ready 不够
+
+    win.emitWebContentsEvent('did-finish-load');
+    expect(win.showInactive).not.toHaveBeenCalled(); // 延一帧前不展示
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
+    expect(win.focus).not.toHaveBeenCalled();
+    expect(h.controller.getState().a).toEqual({
+      mounted: true,
+      visible: true,
+      interactive: false,
+    });
+  });
+
+  it('marks ready on create when the factory already awaited loadURL', async () => {
+    // 真实工厂在返回前 await loadURL:首次 dom-ready/did-finish-load 已发生,
+    // controller 拿到的窗口是已加载态(isLoading=false),须按事件语义直接推进就绪。
+    const h = makeHarness(new Set(['a']), new Set(['a']), {}, { createInitiallyLoaded: true });
+    await h.controller.show('a');
+    const win = h.created[0].win;
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(win.showInactive).toHaveBeenCalledTimes(1);
     expect(h.controller.getState().a).toEqual({
       mounted: true,
       visible: true,
