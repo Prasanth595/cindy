@@ -260,6 +260,8 @@ import {
 import { prepareMobileQueuedSessionReferences } from '@/session/sessionReferences';
 import {
   readNewSessionPreferences,
+  readModelSelection,
+  saveModelSelection,
   saveNewSessionPreferences,
 } from '@/session/newSessionPreferenceStore';
 import {
@@ -527,6 +529,7 @@ export default function NewRemoteSessionScreen() {
   const router = useRouter();
   const nativeSelectionSheet = Platform.OS === 'ios' || Platform.OS === 'android';
   const auth = useAuth();
+  const modelSelectionOwner = getMobileAuthOwner();
   const outboxOwner = useSyncExternalStore(subscribeMobileAuthOwner, getMobileAuthOwner, getMobileAuthOwner);
   const {
     getPresenceAvailability,
@@ -1082,30 +1085,41 @@ export default function NewRemoteSessionScreen() {
   // 被控电脑的「新建任务默认」(与桌面远程新建同一读源 maker:get-new-maker-defaults):
   // 默认模型 = 那台电脑上新建任务时用户上次选的模型,不再从任务列表推断「最近使用」。
   // 选中设备后一次读齐三个 agent,供自动默认 / 恢复上次 agent / 切 agent 同步取用。
-  // 旧被控端(CHANNEL_NOT_ALLOWED)或重试后仍失败都算读完,回落目录区域默认,不无限等待。
+  // 旧被控端明确不支持时沿旧策略；临时失败保留为未就绪，重连后重试，不消费首次机会。
   const [hostDraftDefaults, setHostDraftDefaults] = useState<{
     deviceId: string;
+    ownerKey: string;
     byAgent: Partial<Record<NewSessionAgentKind, NewSessionRuntime | null>>;
+    failed?: boolean;
+    supportsInitialization?: boolean;
   } | null>(null);
   const hostDraftDefaultsRef = useRef(hostDraftDefaults);
   hostDraftDefaultsRef.current = hostDraftDefaults;
   // 在途读取:切 agent 时等它读完再选模型,避免先落目录默认、又因已手动切换而再也补不回来。
   const hostDraftDefaultsLoadRef = useRef<{ deviceId: string; promise: Promise<void> } | null>(null);
+  const [preferenceReadRetry, setPreferenceReadRetry] = useState(0);
   useEffect(() => {
     if (!selectedDeviceId || deviceLinkStatus !== 'online') return undefined;
-    if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId) return undefined;
+    if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId && hostDraftDefaultsRef.current.ownerKey === modelSelectionOwner.accountKey && !hostDraftDefaultsRef.current.failed) return undefined;
     const deviceId = selectedDeviceId;
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const owner = getMobileAuthOwner();
+    let failed = false;
+    let supportsInitialization = false;
     const readAgent = async (agentKind: NewSessionAgentKind) => {
       for (let attempt = 0; ; attempt += 1) {
         const defaults = await withTransientRemoteRetry(async () => {
           await openLink(deviceId);
           return maker.getNewMakerDefaults(agentKind);
-        }, { maxAttempts: 2 }).catch(() => undefined);
+        }, { maxAttempts: 2 }).catch(error => formatRemoteError(error).includes('CHANNEL_NOT_ALLOWED')
+          ? { worktreeEnabled: false } : undefined);
         if (cancelled) return null;
+        if (defaults && typeof (defaults as { initialModelSelectionComplete?: unknown }).initialModelSelectionComplete === 'boolean') supportsInitialization = true;
         // 被控端刚启动、渲染进程还没推来草稿时回 {}:稍后重读,不把它当成「从未选过模型」;
-        // 有限次后(含不带该字段的旧被控端)按无默认处理。读取失败不重读。
+        // 有限次后仍未就绪则保留初始化机会，重新连接时重试。
         if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {
+          if (defaults === undefined || !isHostDraftDefaultsReady(defaults, attempt >= 2)) failed = true;
           return hostDraftRuntimeFromDefaults(defaults, agentKind);
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
@@ -1116,16 +1130,19 @@ export default function NewRemoteSessionScreen() {
       NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
     ).then((entries) => {
       if (cancelled) return;
-      const next = { deviceId, byAgent: Object.fromEntries(entries) };
+      if (!isMobileAuthOwnerCurrent(owner)) return;
+      const next = { deviceId, ownerKey: owner.accountKey, byAgent: Object.fromEntries(entries), failed, supportsInitialization };
       // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
       hostDraftDefaultsRef.current = next;
       setHostDraftDefaults(next);
+      if (failed) retryTimer = setTimeout(() => { if (!cancelled) setPreferenceReadRetry(value => value + 1); }, 2_000);
     });
     hostDraftDefaultsLoadRef.current = { deviceId, promise };
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
     };
-  }, [deviceLinkStatus, maker, openLink, selectedDeviceId]);
+  }, [deviceLinkStatus, maker, openLink, selectedDeviceId, modelSelectionOwner.accountKey, preferenceReadRetry]);
   // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
   // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
   const waitHostDraftDefaults = useCallback(async (deviceId: string) => {
@@ -1136,17 +1153,58 @@ export default function NewRemoteSessionScreen() {
       await load.promise;
     }
   }, []);
-  const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId;
+  const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId && hostDraftDefaults.ownerKey === modelSelectionOwner.accountKey &&
+    (!hostDraftDefaults.failed || !!hostDraftDefaults.byAgent[draft.agentKind]?.model);
   // 本页已写回被控电脑的选择(按设备、agent):优先于读取结果,避免选择前发出的读取
   // 晚到后把旧模型带回来(切到别的 agent 再切回时)。
   const hostChoiceOverridesRef = useRef(new Map<string, Partial<Record<NewSessionAgentKind, NewSessionRuntime>>>());
+  const [modelSelectionMemory, setModelSelectionMemory] = useState<{
+    ownerKey: string; deviceId: string; runtime: NewSessionRuntime | null;
+    pendingWrite?: 'initialize' | 'manual' | 'effort';
+  } | null>(null);
+  const modelSelectionMemoryRef = useRef(modelSelectionMemory);
+  modelSelectionMemoryRef.current = modelSelectionMemory;
+  useEffect(() => {
+    if (!selectedDeviceId) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const deviceId = selectedDeviceId;
+    const owner = getMobileAuthOwner();
+    void readModelSelection(deviceId).then(runtime => {
+      if (cancelled || !isMobileAuthOwnerCurrent(owner)) return;
+      setModelSelectionMemory(current => current?.ownerKey === owner.accountKey && current.deviceId === deviceId && (current.runtime?.chosenByUser || current.pendingWrite)
+        ? current : { ownerKey: owner.accountKey, deviceId, runtime });
+    }).catch(() => { if (!cancelled) retryTimer = setTimeout(() => setPreferenceReadRetry(value => value + 1), 2_000); });
+    return () => { cancelled = true; clearTimeout(retryTimer); };
+  }, [selectedDeviceId, deviceLinkStatus, modelSelectionOwner.accountKey, preferenceReadRetry]);
+
+  // Retry persistence independently of the optimistic selection shown in this page.
+  useEffect(() => {
+    const snapshot = modelSelectionMemory;
+    if (!snapshot?.runtime || !snapshot.pendingWrite) return;
+    const owner = getMobileAuthOwner();
+    if (snapshot.ownerKey !== owner.accountKey) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const write = () => {
+      if (cancelled || !isMobileAuthOwnerCurrent(owner)) return;
+      void saveModelSelection(snapshot.deviceId, snapshot.runtime!, snapshot.pendingWrite === 'manual', snapshot.pendingWrite === 'effort')
+        .then(() => { if (!cancelled && isMobileAuthOwnerCurrent(owner)) setModelSelectionMemory(current => current === snapshot ? { ...current, pendingWrite: undefined } : current); })
+        .catch(() => { if (!cancelled) retryTimer = setTimeout(write, 2_000); });
+    };
+    write();
+    return () => { cancelled = true; clearTimeout(retryTimer); };
+  }, [modelSelectionMemory, modelSelectionOwner.accountKey]);
+  const modelSelectionMemoryReady = modelSelectionMemory?.ownerKey === modelSelectionOwner.accountKey && modelSelectionMemory?.deviceId === selectedDeviceId;
   const hostRuntimeFor = useCallback(
     (agentKind: NewSessionAgentKind): NewSessionRuntime | null => {
       const deviceId = selectedDeviceRef.current;
-      const chosen = hostChoiceOverridesRef.current.get(deviceId)?.[agentKind];
+      const chosen = hostChoiceOverridesRef.current.get(JSON.stringify([getMobileAuthOwner().accountKey, deviceId]))?.[agentKind];
       if (chosen) return chosen;
+      const saved = modelSelectionMemoryRef.current;
+      if (saved?.ownerKey === getMobileAuthOwner().accountKey && saved.deviceId === deviceId && saved.runtime?.agentKind === agentKind) return saved.runtime;
       const current = hostDraftDefaultsRef.current;
-      return current && current.deviceId === deviceId
+      return current && current.ownerKey === getMobileAuthOwner().accountKey && current.deviceId === deviceId
         ? current.byAgent[agentKind] ?? null
         : null;
     },
@@ -1156,16 +1214,29 @@ export default function NewRemoteSessionScreen() {
   // maker:apply-new-maker-draft-pref active=true),下次在这台电脑上新建任务——不论手机、
   // 桌面还是远程桌面——默认都是它。由选择入口发请求,本 effect 在草稿提交后读最终值写出;
   // 写失败不打扰,本页草稿照常生效。远程 Agent(模型属于另一台电脑)不写回被控电脑。
-  const [hostChoiceRequest, setHostChoiceRequest] = useState<{ seq: number; markModelChoice: boolean } | null>(null);
+  const [hostChoiceRequest, setHostChoiceRequest] = useState<{
+    seq: number; markModelChoice: boolean; deviceId: string; owner: ReturnType<typeof getMobileAuthOwner>;
+  } | null>(null);
   const hostChoiceSentSeqRef = useRef(0);
   const requestHostChoiceWrite = useCallback((markModelChoice: boolean) => {
-    setHostChoiceRequest((current) => ({ seq: (current?.seq ?? 0) + 1, markModelChoice }));
+    setHostChoiceRequest((current) => ({ seq: (current?.seq ?? 0) + 1, markModelChoice,
+      deviceId: selectedDeviceRef.current, owner: getMobileAuthOwner() }));
   }, []);
   useEffect(() => {
     if (!hostChoiceRequest || hostChoiceRequest.seq === hostChoiceSentSeqRef.current) return;
     hostChoiceSentSeqRef.current = hostChoiceRequest.seq;
-    if (!selectedDeviceId || remoteAgentChoice || !draft.model) return;
+    if (!selectedDeviceId || remoteAgentChoice || !draft.model || hostChoiceRequest.deviceId !== selectedDeviceId ||
+      !isMobileAuthOwnerCurrent(hostChoiceRequest.owner)) return;
     const { agentKind, model, providerId, effort, fastMode } = draft;
+    const remembered = { agentKind, model, providerId, effort, chosenByUser: hostChoiceRequest.markModelChoice,
+      initialModelSelectionComplete: true };
+    if (hostChoiceRequest.markModelChoice) {
+      setModelSelectionMemory({ ownerKey: getMobileAuthOwner().accountKey, deviceId: selectedDeviceId, runtime: remembered, pendingWrite: 'manual' });
+    } else {
+      setModelSelectionMemory(current => current?.deviceId === selectedDeviceId && current.ownerKey === getMobileAuthOwner().accountKey &&
+        current.runtime?.agentKind === agentKind && current.runtime.model === model && current.runtime.providerId === providerId
+        ? { ...current, runtime: { ...current.runtime, effort }, pendingWrite: current.pendingWrite ?? 'effort' } : current);
+    }
     void maker.applyNewMakerDraftPref({
       agent: agentKind,
       providerId: providerId ?? '',
@@ -1177,8 +1248,9 @@ export default function NewRemoteSessionScreen() {
     }).catch(() => undefined);
     // 记下本页选择:切到别的 agent 再切回时取到它,不被在途或更早的读取结果覆盖。
     const overrides = hostChoiceOverridesRef.current;
-    overrides.set(selectedDeviceId, {
-      ...overrides.get(selectedDeviceId),
+    const memoryKey = JSON.stringify([getMobileAuthOwner().accountKey, selectedDeviceId]);
+    overrides.set(memoryKey, {
+      ...overrides.get(memoryKey),
       [agentKind]: { agentKind, model, effort, providerId },
     });
   }, [draft, hostChoiceRequest, maker, remoteAgentChoice, selectedDeviceId]);
@@ -1400,8 +1472,9 @@ export default function NewRemoteSessionScreen() {
   ]);
 
   useEffect(() => {
-    const storedAgentKind = newSessionPreferences?.agentKind;
-    if (!newSessionPreferencesLoaded || !storedAgentKind) return;
+    const storedAgentKind = modelSelectionMemory?.deviceId === selectedDeviceId
+      ? modelSelectionMemory.runtime?.agentKind ?? newSessionPreferences?.agentKind : newSessionPreferences?.agentKind;
+    if (!modelSelectionMemoryReady || !newSessionPreferencesLoaded || !storedAgentKind) return;
     if (userTouchedRuntimeRef.current) return;
     const restored = storedAgentRestoreRef.current;
     if (!isStoredAgentRestorePending({
@@ -1416,7 +1489,7 @@ export default function NewRemoteSessionScreen() {
       restored,
       modelReady: canResolveStoredAgentRuntime({
         deviceId: selectedDeviceId,
-        hostDefaultsSettled,
+        hostDefaultsSettled: hostDefaultsSettled || (modelSelectionMemoryReady && !!modelSelectionMemory?.runtime),
         hostRuntime: hostRuntimeFor(storedAgentKind),
         catalogReady: deviceProviders.ready,
         providersUnsupported: deviceProviders.unsupported,
@@ -1517,6 +1590,7 @@ export default function NewRemoteSessionScreen() {
     hostDefaultsSettled,
     hostDraftDefaults,
     hostRuntimeFor,
+    modelSelectionMemory, modelSelectionMemoryReady,
     newSessionPreferences,
     newSessionPreferences?.agentKind,
     newSessionPreferencesLoaded,
@@ -1551,18 +1625,20 @@ export default function NewRemoteSessionScreen() {
   // 决策逻辑全在纯函数 resolveNewSessionAutoDefault 里(便于单测);此 effect 只负责"调纯函数 → setDraft + 更新 ref"。
   // 被控电脑默认与 providers 都是异步到达,任一就绪后此 effect 再触发。
   useEffect(() => {
-    if (!newSessionPreferencesLoaded) return;
-    const initialAuto = !newSessionPreferences?.agentKind && deviceProviders.ready
+    if (!newSessionPreferencesLoaded || !modelSelectionMemoryReady) return;
+    const initialized = !!modelSelectionMemory?.runtime;
+    const initialAuto = !initialized && !hostDraftDefaults?.failed && !newSessionPreferences?.agentKind && deviceProviders.ready
       ? pickInitialGroupAutoRuntime(deviceProviders.providers, availableAgentKinds ?? new Set([draft.agentKind]), deviceProviders.modelVisibilityOverrides)
       : null;
     const candidateHost = initialAuto ? hostRuntimeFor(initialAuto.agentKind) : null;
     const result = resolveNewSessionAutoDefault({
-      initialAutoRuntime: !candidateHost || (candidateHost.chosenByUser === false && candidateHost.providerId === initialAuto?.providerId) ? initialAuto : null,
+      initialModelSelectionComplete: initialized,
+      initialAutoRuntime: !candidateHost || (candidateHost.chosenByUser === false && !candidateHost.initialModelSelectionComplete && candidateHost.providerId === initialAuto?.providerId) ? initialAuto : null,
       currentRuntime: draft,
       userTouched: userTouchedRuntimeRef.current,
       appliedDeviceId: autoDefaultDeviceRef.current,
       selectedDeviceId,
-      hostDefaultsSettled,
+      hostDefaultsSettled: hostDefaultsSettled || initialized,
       hostRuntime: hostRuntimeFor(draft.agentKind),
       modelRows,
       rowsAgentKind: draft.agentKind,
@@ -1626,7 +1702,45 @@ export default function NewRemoteSessionScreen() {
         autoDefaultDeviceRef.current = previousAutoDefaultDevice;
       }
     };
-  }, [availableAgentKinds, deviceProviders.providers, draft.model, draft.providerId, capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
+  }, [modelSelectionMemory, modelSelectionMemoryReady, maker, remoteAgentChoice, availableAgentKinds, deviceProviders.providers, draft.model, draft.providerId, capabilities?.availableModels, deviceProviders.loading, draft.effort, draft.permissionMode, draft.agentKind, modelRows, deviceProviders.ready, deviceProviders.modelVisibilityOverrides, deviceProviders.unsupported, modelSections.connected.length, newSessionPreferences, newSessionPreferencesLoaded, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults, hostRuntimeFor]);
+
+  // Persist only after the actual draft has settled; stored-agent restoration uses this same path.
+  useEffect(() => {
+    if (!modelSelectionMemoryReady || modelSelectionMemory?.runtime || !selectedDeviceId ||
+      runtimeSettledDeviceId !== selectedDeviceId || !hostDefaultsSettled || hostDraftDefaults?.failed || !deviceProviders.ready ||
+      remoteAgentChoice || deviceProviders.providers.some(provider => provider.modelDiscoveryFailure)) return;
+    const remembered: NewSessionRuntime = { agentKind: draft.agentKind, model: draft.model,
+      providerId: draft.providerId, effort: draft.effort, initialModelSelectionComplete: true };
+    setModelSelectionMemory({ ownerKey: getMobileAuthOwner().accountKey, deviceId: selectedDeviceId, runtime: remembered, pendingWrite: 'initialize' });
+  }, [modelSelectionMemoryReady, modelSelectionMemory, selectedDeviceId, runtimeSettledDeviceId,
+    hostDefaultsSettled, hostDraftDefaults?.failed, deviceProviders.ready, deviceProviders.providers, remoteAgentChoice,
+    draft.agentKind, draft.model, draft.providerId, draft.effort, maker]);
+
+  // A durable local initialization and its host write have separate success states.
+  const initializedHostSelectionRef = useRef('');
+  useEffect(() => {
+    const snapshot = modelSelectionMemory;
+    if (!snapshot?.runtime?.model) return;
+    const runtime = snapshot.runtime;
+    if (runtime.chosenByUser || snapshot.pendingWrite || !hostDefaultsSettled ||
+      !hostDraftDefaults?.supportsInitialization || snapshot.deviceId !== selectedDeviceId || remoteAgentChoice) return;
+    const owner = getMobileAuthOwner();
+    if (snapshot.ownerKey !== owner.accountKey) return;
+    const key = JSON.stringify([owner.accountKey, selectedDeviceId, runtime.agentKind, runtime.providerId, runtime.model]);
+    if (initializedHostSelectionRef.current === key) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const write = () => {
+      if (cancelled || !isMobileAuthOwnerCurrent(owner)) return;
+      void maker.applyNewMakerDraftPref({ agent: runtime.agentKind, modelId: runtime.model,
+        providerId: runtime.providerId ?? '', active: true, markModelChoice: false,
+        initializeModelSelection: true, effort: runtime.effort }).then(() => {
+          if (!cancelled) initializedHostSelectionRef.current = key;
+        }).catch(() => { if (!cancelled) retryTimer = setTimeout(write, 2_000); });
+    };
+    write();
+    return () => { cancelled = true; clearTimeout(retryTimer); };
+  }, [modelSelectionMemory, selectedDeviceId, hostDefaultsSettled, hostDraftDefaults?.supportsInitialization, remoteAgentChoice, maker]);
 
   // 目录就绪后的来源终检(codex review P1):自动默认/恢复在目录加载期信任的来源可能已失效
   // (provider 被删/断开/模型下架),就绪后必须复核——联合回退整对 (model, providerId)
@@ -4371,6 +4485,7 @@ export default function NewRemoteSessionScreen() {
     userTouchedRuntimeRef.current = true;
     explicitProviderModelSelectionRef.current = null;
     const seqAtTrigger = ++runtimeActionSeqRef.current;
+    const ownerAtTrigger = getMobileAuthOwner();
     void saveNewSessionPreferences({ agentKind: nextKind });
     const storedPermissionMode = newSessionPreferences?.permissionModeByAgent[nextKind];
     const nextPermissionMode =
@@ -4383,6 +4498,7 @@ export default function NewRemoteSessionScreen() {
       await waitHostDraftDefaults(selectedDeviceId);
       // 确认期间设备已切换 → 放弃本次写入,新设备自己的 effect 会接管(Greptile P1)。
       if (selectedDeviceId !== selectedDeviceRef.current) return;
+      if (!isMobileAuthOwnerCurrent(ownerAtTrigger)) return;
       // 确认期间用户又切了 agent / 手动选了模型 → 旧回调不得覆盖新选择(Greptile P1)。
       if (seqAtTrigger !== runtimeActionSeqRef.current) return;
       setDraft((current) => {
@@ -4423,8 +4539,9 @@ export default function NewRemoteSessionScreen() {
             : false,
         };
       });
+      requestHostChoiceWrite(true);
     });
-  }, [draft.agentKind, draft.permissionMode, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostRuntimeFor, newSessionPreferences, selectedDeviceId, waitHostDraftDefaults]);
+  }, [draft.agentKind, draft.permissionMode, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostRuntimeFor, newSessionPreferences, selectedDeviceId, waitHostDraftDefaults, requestHostChoiceWrite]);
 
   // 选中的 agent 在被控端未注册(如 Pi 二进制缺失)时,coerce 到首个可用来源,避免用户停在
   // 被隐藏的选项、并防止创建出注定 requireAgent 报错的会话。仅在已拉到可用集后收敛一次。

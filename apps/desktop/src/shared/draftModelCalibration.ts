@@ -218,6 +218,7 @@ export interface DraftModelCalibrationInput {
   model: string;
   /** 用户是否在选择器里显式选过该 vendor 的模型。 */
   chosenByUser: boolean;
+  initialModelSelectionComplete?: boolean;
   /** 当前来源偏好；仍是有效连接来源时把自动模型候选限制在它内部，避免校准后静默丢来源。 */
   preferredProviderId?: string | null;
   /** 供应商清单是否仍在加载：加载期不校准，避免首帧把默认模型闪成别的。 */
@@ -243,11 +244,22 @@ export function calibrateDraftModel({
   agent,
   model,
   chosenByUser,
+  initialModelSelectionComplete,
   preferredProviderId,
   providersLoading,
   isModelEnabled,
 }: DraftModelCalibrationInput): DraftModelCalibrationResult {
   if (chosenByUser || providersLoading) return { model, providerId: null };
+  if (initialModelSelectionComplete) {
+    const connected = connectedProvidersForAgent([...providers], agent);
+    const preferred = connected.find(provider => provider.id === preferredProviderId);
+    const candidates = preferred ? [preferred] : connected;
+    const valid = connectedProvidersForAgent([...candidates], agent).some(provider =>
+      provider.models[agent]?.some(candidate => candidate.id === model &&
+        isModelSelectableForNewRoute(candidate, { userProvider: provider.source === 'user' })));
+    return valid ? { model, providerId: null }
+      : pickFirstConnectedModelForAgent(candidates, agent) ?? { model, providerId: null };
+  }
   const connectedPreferred = preferredProviderId
     ? connectedProvidersForAgent([...providers], agent).find(
         (provider) => provider.id === preferredProviderId,
@@ -284,6 +296,7 @@ export interface NewTaskDraftSelection {
   providerId?: string | null;
   /** 用户是否在选择器里显式选过；未知（旧 renderer 未推）按没选过处理。 */
   chosenByUser?: boolean;
+  initialModelSelectionComplete?: boolean;
 }
 
 /**
@@ -306,7 +319,7 @@ export function resolveNewTaskDefaultRoute(args: {
   const scoped = required ? connected.filter((provider) => provider.id === required) : connected;
   if (scoped.length === 0) return null;
   const draftModel = draft?.model?.trim() ?? '';
-  if (draftModel && draft?.chosenByUser) {
+  if (draftModel && (draft?.chosenByUser || draft?.initialModelSelectionComplete)) {
     const providerId = effectiveSourceIdForModel(
       scoped,
       required ?? draft.providerId ?? null,

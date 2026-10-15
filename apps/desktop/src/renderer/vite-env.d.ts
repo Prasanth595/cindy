@@ -2434,6 +2434,7 @@ interface ElectronAPI {
   }) => void;
 
   syncNewMakerDraft: (snapshot: {
+    initialModelSelectionComplete?: boolean;
     appDefaultModelRequestId?: string;
     ownerStamp: import('../shared/dataOwnerPush').DataOwnerPushStamp;
     selectedRoute?: import('../shared/botModelChain').BotModelRoute;
@@ -2490,6 +2491,7 @@ interface ElectronAPI {
       modelId: string;
       active: boolean;
       markModelChoice?: boolean;
+      initializeModelSelection?: boolean;
       effort?: string;
       fast?: boolean;
       thinking?: boolean;

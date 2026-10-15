@@ -947,8 +947,8 @@ describe('factory defaults survive send-time calibration', () => {
 });
 
 
-describe('organization AUTO default and explicit choices', () => {
-  it('uses AUTO for untouched drafts and unattended defaults but preserves manual real-model selection', () => {
+describe('organization Auto default and explicit choices', () => {
+  it('uses Auto for untouched drafts and unattended defaults but preserves manual real-model selection', () => {
     const gateway = provider('xd', true, { pi: [model('real'), model('auto/base', { newSessionDefault: ['pi'] })] });
     const providers = [gateway];
     expect(calibrateDraftModel({ providers, agent: 'pi', model: 'real', chosenByUser: false, providersLoading: false }))
@@ -960,4 +960,17 @@ describe('organization AUTO default and explicit choices', () => {
     gateway.models.pi![1] = model('auto/base', { newSessionDefault: ['pi'], contextWindow: 500_000 });
     expect(calibrateDraftModel({ providers, agent: 'pi', model: 'real', chosenByUser: true, providersLoading: false }).model).toBe('real');
   });
+});
+
+
+it('keeps the first resolved model when Auto appears later and uses the existing unavailable-model fallback', () => {
+  const providers = [provider('xd', true, { pi: [model('real-b'), model('auto/base', { newSessionDefault: ['pi'] })] })];
+  const input = { providers, agent: 'pi' as const, model: 'real-b', preferredProviderId: 'xd', chosenByUser: false,
+    initialModelSelectionComplete: true, providersLoading: false };
+  expect(calibrateDraftModel(input).model).toBe('real-b');
+  expect(calibrateDraftModel({ ...input, model: 'removed' }).model).toBe('real-b');
+  expect(calibrateDraftModel({ ...input, preferredProviderId: 'deleted-provider', model: 'removed' }))
+    .toMatchObject({ model: 'real-b', providerId: 'xd' });
+  expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi', draft: { model: 'real-b', providerId: 'xd', initialModelSelectionComplete: true } }))
+    .toMatchObject({ model: 'real-b', providerId: 'xd' });
 });

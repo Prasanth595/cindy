@@ -409,6 +409,7 @@ export type MobileNewMakerDraftPref =
       modelId: string;
       active: true;
       markModelChoice: boolean;
+      initializeModelSelection?: boolean;
       effort?: string;
       fast?: boolean;
     };

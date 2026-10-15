@@ -130,7 +130,7 @@ export function resolveNewMakerDefaultTuples(args: {
   if (providersLoading || !availableAgentsLoaded) return [];
   const tuples: NewMakerDefaultTuple[] = [];
 
-  // Organization AUTO is explicitly selected by the server per harness. It is
+  // Organization Auto is explicitly selected by the server per harness. It is
   // only an initial default; draft callers retain their existing manual-choice guards.
   for (const provider of [...providers].sort((a, b) => a.id.localeCompare(b.id))) {
     if (providerCatalogId(provider) !== 'xd' || provider.access?.kind !== 'managed' ||

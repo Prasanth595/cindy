@@ -398,6 +398,7 @@ export function buildRecentWorkspaceOptions(
 export interface NewSessionRuntime {
   /** False only when the host explicitly identifies an untouched seed. */
   chosenByUser?: boolean;
+  initialModelSelectionComplete?: boolean;
   agentKind: NewSessionAgentKind;
   model: string;
   effort: string;
@@ -438,7 +439,7 @@ function groupAutoRow(rows: readonly ProviderModelRow[], agent: NewSessionAgentK
     .sort((a, b) => a.model.id.localeCompare(b.model.id))[0];
 }
 
-/** Fresh mobile drafts may choose another installed harness when the base AUTO requires it. */
+/** Fresh mobile drafts may choose another installed harness when the base Auto requires it. */
 export function pickInitialGroupAutoRuntime(
   providers: readonly ProviderView[],
   agents: ReadonlySet<NewSessionAgentKind>,
@@ -457,7 +458,7 @@ export function pickInitialGroupAutoRuntime(
 
 function hostRuntimeWithGroupAuto(runtime: NewSessionRuntime | null | undefined, rows: readonly ProviderModelRow[], agent: NewSessionAgentKind, catalogReady: boolean): NewSessionRuntime | null {
   if (runtime?.agentKind !== agent) return null;
-  if (!catalogReady || runtime.chosenByUser !== false) return runtime;
+  if (!catalogReady || runtime.initialModelSelectionComplete || runtime.chosenByUser !== false) return runtime;
   const preferred = groupAutoRow(rows, agent, runtime.providerId);
   return preferred ? { ...runtime, model: preferred.model.id, providerId: preferred.provider.id,
     effort: reconcileEffortForModel(preferred.model, runtime.effort) } : runtime;
@@ -754,11 +755,13 @@ function findSectionModelRow(
 /**
  * 被控电脑的新建任务默认回包是否已就绪。被控端只有在渲染进程推来草稿镜像后才回
  * worktreeEnabled;刚启动时回 {}(或只有模型预设),这时不能当成「从未选过模型」,
- * 调用方应稍后重读。旧被控端同样不带该字段,由调用方有限次重读后按无默认处理。
+ * 调用方应稍后重读。有限次重读后可接受旧端的非空模型快照；空响应仍保留初始化机会。
  */
-export function isHostDraftDefaultsReady(defaults: unknown): boolean {
+export function isHostDraftDefaultsReady(defaults: unknown, allowLegacyModel = false): boolean {
   return !!defaults && typeof defaults === 'object'
-    && Object.prototype.hasOwnProperty.call(defaults, 'worktreeEnabled');
+    && (Object.prototype.hasOwnProperty.call(defaults, 'worktreeEnabled') ||
+      (allowLegacyModel && typeof (defaults as { model?: unknown }).model === 'string' &&
+        !!(defaults as { model: string }).model.trim()));
 }
 
 /**
@@ -780,13 +783,15 @@ export function hostDraftRuntimeFromDefaults(
     effort?: unknown;
     providerId?: unknown;
     modelChosenByUser?: unknown;
+    initialModelSelectionComplete?: unknown;
   };
   const model = typeof value.model === 'string' ? value.model.trim() : '';
   if (!model) return null;
   const providerId = typeof value.providerId === 'string' && value.providerId ? value.providerId : null;
-  if (value.modelChosenByUser === false && providerId === null) return null;
+  if (value.modelChosenByUser === false && !value.initialModelSelectionComplete && providerId === null) return null;
   const effort = typeof value.effort === 'string' ? value.effort.trim() : '';
-  return { agentKind, model, effort, providerId, ...(value.modelChosenByUser === false ? { chosenByUser: false } : {}) };
+  return { agentKind, model, effort, providerId, ...(value.modelChosenByUser === false ? { chosenByUser: false } : {}),
+    ...(value.initialModelSelectionComplete === true ? { initialModelSelectionComplete: true } : {}) };
 }
 
 /**
@@ -945,7 +950,7 @@ export function nextStoredAgentRestoreStep(input: {
  */
 export function canResolveStoredAgentRuntime(input: {
   deviceId: string;
-  /** 被控电脑新建任务默认是否已读完(成功、旧被控端或读取失败都算读完)。 */
+  /** 已成功读取主机默认或确认旧主机不支持；临时失败不算就绪。 */
   hostDefaultsSettled: boolean;
   hostRuntime: NewSessionRuntime | null;
   catalogReady: boolean;
@@ -976,6 +981,7 @@ export function canResolveStoredAgentRuntime(input: {
 export function resolveNewSessionAutoDefault(input: {
   /** Only supplied when no engine preference or manual model choice exists. */
   initialAutoRuntime?: NewSessionRuntime | null;
+  initialModelSelectionComplete?: boolean;
   currentRuntime?: Pick<NewSessionRuntime, 'agentKind' | 'model' | 'providerId'>;
   userTouched: boolean;
   appliedDeviceId: string | null;
@@ -1012,7 +1018,7 @@ export function resolveNewSessionAutoDefault(input: {
   if (!selectedDeviceId) return null;
   if (!hostDefaultsSettled) return null;
   const initialAuto = input.initialAutoRuntime;
-  if (catalogReady && initialAuto && (!input.hostRuntime || (input.hostRuntime.chosenByUser === false &&
+  if (!input.initialModelSelectionComplete && catalogReady && initialAuto && (!input.hostRuntime || (input.hostRuntime.chosenByUser === false && !input.hostRuntime.initialModelSelectionComplete &&
       (!input.hostRuntime.providerId || input.hostRuntime.providerId === initialAuto.providerId))) &&
     (input.currentRuntime?.model !== initialAuto.model || input.currentRuntime?.agentKind !== initialAuto.agentKind || input.currentRuntime?.providerId !== initialAuto.providerId)) {
     return { appliedDeviceId: selectedDeviceId, source: 'catalog-default', patch: initialAuto };

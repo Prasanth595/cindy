@@ -11,15 +11,15 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
-## 组织模型组 AUTO 默认选择
+## 组织模型组 Auto 首次初始化与记忆
 
-不新增 wire 字段或 schema 版本。Model Access 已有的 `newSessionDefault` / `sortOrder`
-用于标记当前成员的 AUTO 初始默认及组优先级。`auto/<accessGroupId>` 仍为普通非空模型 ID，
-目录保留组名与真实模型，授权和实际目标解析仍由服务端完成。内部目标与组优先级字段不进入 wire。
-旧客户端可手选 AUTO，但不承诺首次默认它；新客户端连接无 AUTO 的旧服务端沿用原默认。
-完整默认选择需要对应 Server 与客户端版本，发布可分步进行。手机消费执行主机目录，
-主机 `modelChosenByUser` 缺省仍视为未知并保留旧选择，明确 false 才可替换未手选种子。
-没有新的 device-link channel、权限、凭证、数据库迁移或 Mobile fingerprint 变更。
+模型目录仍复用 `newSessionDefault` / `sortOrder`，不改 schema 版本或稳定 `auto/<accessGroupId>`。
+只有无历史选模记录的首次成功初始化会检查 Auto；无 Auto 则原逻辑，之后记住选择。
+桌面现有草稿偏好镜像新增可选 `initialModelSelectionComplete`，远控写回增加可选
+`initializeModelSelection`。旧端缺省保守保留已知选择；新端初始化写回会先重读持久偏好，
+不覆盖用户手选。手机同时保存账号/设备隔离的模型与来源，不依赖当前页面的 touched ref。
+旧客户端可手选 Auto，但不承诺首次默认它；新客户端连旧服务无 Auto 时沿原逻辑。
+完整行为需配套客户端与执行主机更新。无新 channel、权限、凭证、数据库迁移或 Mobile fingerprint。
 
 ## Model Access 复杂价目
 

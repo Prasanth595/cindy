@@ -67,7 +67,7 @@ describe('resolveNewMakerDefaultTuple', () => {
     expect(resolve([gateway], new Set(['pi']))).toMatchObject({ model: 'auto/a-extra', vendor: 'pi' });
   });
 
-  it('uses the server-selected group AUTO before factory defaults without removing real choices', () => {
+  it('uses the server-selected group Auto before factory defaults without removing real choices', () => {
     const gateway = provider({ id: 'xd', access: 'managed', models: { pi: [model('real'), model('auto/extra'), model('auto/base', 'high', ['pi'])] } });
     const subscription = provider({ id: 'openai', access: 'subscription', models: { codex: [model('gpt-6.1-sol')] } });
     for (const providers of [[subscription, gateway], [gateway, subscription]]) {

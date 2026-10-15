@@ -34,6 +34,7 @@ interface VendorPrefsSnapshot {
 }
 
 export interface NewMakerDraftSnapshot {
+  initialModelSelectionComplete?: boolean;
   /** Model picker preferences captured in the same owner-fenced envelope. */
   providerModelMemory?: ProviderModelMemorySnapshot;
   selectedRoute?: BotModelRoute;
@@ -105,6 +106,7 @@ export function syncNewMakerDraftCache(
     selectedRoute: normalizeBotModelChain([p.selectedRoute])[0],
     ...(record(p.providerModelMemory) ? { providerModelMemory: p.providerModelMemory } : {}),
     lastByVendor: p.lastByVendor!,
+    ...(typeof p.initialModelSelectionComplete === 'boolean' ? { initialModelSelectionComplete: p.initialModelSelectionComplete } : {}),
     ...(record(p.modelChosenByVendor) ? { modelChosenByVendor: p.modelChosenByVendor } : {}),
     fastModeByModel: p.fastModeByModel!,
     effortByModel: p.effortByModel!,
@@ -183,7 +185,7 @@ export function getWorkerDefaultsFromNewMaker(
 export function getNewTaskDraftSelection(
   ownerScope: string,
   agent: 'claude-code' | 'codex' | 'pi',
-): { model?: string; providerId?: string | null; chosenByUser: boolean } | null {
+): { model?: string; providerId?: string | null; chosenByUser: boolean; initialModelSelectionComplete?: boolean } | null {
   if (!cache || selectedRouteOwner !== ownerScope) return null;
   const vendor: VendorKey = agent === 'claude-code' ? 'cc' : agent;
   const prefs = cache.lastByVendor[vendor];
@@ -191,6 +193,7 @@ export function getNewTaskDraftSelection(
     model: prefs?.model,
     providerId: prefs?.providerId,
     chosenByUser: cache.modelChosenByVendor?.[vendor] === true,
+    ...(typeof cache.initialModelSelectionComplete === 'boolean' ? { initialModelSelectionComplete: cache.initialModelSelectionComplete } : {}),
   };
 }
 
@@ -208,6 +211,7 @@ export function getNewTaskDraftSelection(
  * 缓存未就绪 / 该 vendor 没草稿 model → 返回空对象,控制端按 capabilities 默认兜底。
  */
 export interface RemoteNewMakerDefaults {
+  initialModelSelectionComplete?: boolean;
   model?: string;
   /** false = 明确未选过，可应用目录新任务默认；undefined = 旧端未知，保守保留原模型。 */
   modelChosenByUser?: boolean;
@@ -245,6 +249,7 @@ export function getRemoteNewMakerDefaults(
   const modelChosenByUser = cache?.modelChosenByVendor?.[vendor];
   const base: RemoteNewMakerDefaults = {
     ...(providerModelMemory ? { providerModelMemory } : {}),
+    ...(typeof cache?.initialModelSelectionComplete === 'boolean' ? { initialModelSelectionComplete: cache.initialModelSelectionComplete } : {}),
     ...(cache ? { worktreeEnabled: cache.worktreeEnabled === true } : {}),
     ...(typeof modelChosenByUser === 'boolean' ? { modelChosenByUser } : {}),
   };

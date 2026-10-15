@@ -94,7 +94,7 @@ import {
   patchCollab,
   patchVendorPrefs,
   patchVendorPrefsPreservingModelChoice,
-  applySuggestedDefaultTuple,
+  initializeModelSelection,
   fallbackUnavailableVendor,
   markDefaultTupleCustomized,
   clearDefaultTupleTuningCustomization,
@@ -1280,15 +1280,25 @@ export function NewMakerDraftRoute() {
   useEffect(() => {
     // 远程主机 / device-link 的可用 Harness 与来源属于执行端，不能拿控制端本机登录态替它选。
     if (
-      !suggestedDefaultTuple ||
+      localProvidersLoading || localProvidersLoadFailed || !availableAgentsLoaded ||
+      localProviders.some(provider => provider.modelDiscoveryFailure) ||
       catalogDeviceId ||
       draft.remoteHostId ||
       hasLegacyDefaultChoice
     )
       return;
-    applySuggestedDefaultTuple(suggestedDefaultTuple);
+    const vendor = (['cc', 'codex', 'pi'] as const).find(value => value === draft.vendor && availableVendors.has(value))
+      ?? (['cc', 'codex', 'pi'] as const).find(value => availableVendors.has(value));
+    const fallback = vendor ? calibrateDraftModel({ providers: localProviders,
+      agent: vendor === 'cc' ? 'claude-code' : vendor, model: draft.lastByVendor[vendor].model,
+      preferredProviderId: draft.lastByVendor[vendor].providerId, chosenByUser: false,
+      providersLoading: false, isModelEnabled }) : null;
+    initializeModelSelection(suggestedDefaultTuple ?? (vendor && fallback?.providerId
+      ? { vendor, model: fallback.model, providerId: fallback.providerId } : null), true);
   }, [
     suggestedDefaultTuple,
+    localProvidersLoading, localProvidersLoadFailed, availableAgentsLoaded, availableVendors, localProviders,
+    draft.vendor, draft.lastByVendor,
     catalogDeviceId,
     draft.remoteHostId,
     hasLegacyDefaultChoice,
@@ -1391,6 +1401,7 @@ export function NewMakerDraftRoute() {
       agent: capabilityAgentKind,
       model: chatPrefs.model,
       chosenByUser: draftModelChosenByUser,
+      initialModelSelectionComplete: draft.initialModelSelectionComplete,
       preferredProviderId: chatPrefs.providerId,
       providersLoading: localProvidersLoading,
     });
@@ -1401,6 +1412,7 @@ export function NewMakerDraftRoute() {
     chatPrefs.model,
     chatPrefs.providerId,
     draftModelChosenByUser,
+    draft.initialModelSelectionComplete,
     localProvidersLoading,
     defaultVisibilityVersion,
   ]);
@@ -1498,6 +1510,7 @@ export function NewMakerDraftRoute() {
   const dlSeedCapabilitiesRef = useRef<AgentCapabilities | null>(null);
   /** 控制端是否编辑过当前设备 / Agent 的远程运行配置；能力刷新不得覆盖这类显式意图。 */
   const dlRuntimeTouchedRef = useRef(false);
+  const dlInitializationRef = useRef<{ key: string; selection: DeviceLinkDraftSelection; completed: boolean } | null>(null);
   const skipDefaultsRefetchRef = useRef(false);
   const remoteDraftIdentityRef = useRef<string | null>(null);
   const remoteDraftRevisionRef = useRef(0);
@@ -1590,6 +1603,7 @@ export function NewMakerDraftRoute() {
       dlSeedKeyRef.current = null;
       dlSeedCapabilitiesRef.current = null;
       dlRuntimeTouchedRef.current = false;
+      dlInitializationRef.current = null;
       setDlSel(null);
       return;
     }
@@ -1604,8 +1618,9 @@ export function NewMakerDraftRoute() {
         currentSeedKey: dlSeedKeyRef.current,
         nextSeedKey: key,
         capabilitiesChanged,
-        controllerTouched: dlRuntimeTouchedRef.current,
+        controllerTouched: dlRuntimeTouchedRef.current || dlInitializationRef.current?.key === key,
         remoteModelChosenByUser: deviceDraftDefaults?.modelChosenByUser,
+        initialModelSelectionComplete: deviceDraftDefaults?.initialModelSelectionComplete,
       })
     ) {
       if (capabilitiesChanged) {
@@ -1633,15 +1648,9 @@ export function NewMakerDraftRoute() {
     }
     dlSeedKeyRef.current = key;
     dlSeedCapabilitiesRef.current = capabilities;
-    if (newTarget) dlRuntimeTouchedRef.current = false;
-    setDlSel(
-      resolveDeviceLinkDraftDefaults(
-        capabilities,
-        deviceDraftDefaults,
-        undefined,
-        capabilityAgentKind,
-      ),
-    );
+    if (newTarget) { dlRuntimeTouchedRef.current = false; dlInitializationRef.current = null; }
+    const seeded = resolveDeviceLinkDraftDefaults(capabilities, deviceDraftDefaults, undefined, capabilityAgentKind);
+    setDlSel(seeded);
   }, [
     usesDeviceCatalog,
     catalogDeviceId,
@@ -1650,6 +1659,46 @@ export function NewMakerDraftRoute() {
     capabilitiesLoading,
     deviceDraftDefaultsReady,
     deviceDraftDefaults,
+  ]);
+
+  // Persist independently of reseeding: the provider catalog may arrive after capabilities.
+  useEffect(() => {
+    if (!catalogDeviceId || !capabilities || capabilitiesLoading || !deviceDraftDefaultsReady || dlRuntimeTouchedRef.current) return;
+    const key = `${catalogDeviceId}:${capabilityAgentKind}`;
+    const pending = dlInitializationRef.current?.key === key ? dlInitializationRef.current : null;
+    if (pending?.completed) return;
+    const seeded = resolveDeviceLinkDraftDefaults(capabilities,
+      pending ? { ...pending.selection, modelChosenByUser: true } : deviceDraftDefaults,
+      pending?.selection.model, capabilityAgentKind);
+    if (!seeded.model) return;
+    if (isDeviceLinkDraft && !isAgentDeviceDraft && deviceDraftDefaults?.initialModelSelectionComplete === false &&
+      deviceDraftDefaults.modelChosenByUser === false && !deviceProvidersLoading && !deviceProvidersError &&
+      !deviceProviders.some(provider => provider.modelDiscoveryFailure)) {
+      const attempt = { key, selection: seeded, completed: false };
+      dlInitializationRef.current = attempt;
+      let cancelled = false;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      const write = () => {
+        if (cancelled || dlRuntimeTouchedRef.current) return;
+        void window.electronAPI.deviceLink.invoke(catalogDeviceId, 'maker:apply-new-maker-draft-pref', [{
+          agent: capabilityAgentKind, providerId: seeded.providerId ?? '', modelId: seeded.model,
+          active: true, markModelChoice: false, initializeModelSelection: true, effort: seeded.effort,
+        }]).then(() => { if (!cancelled) attempt.completed = true; }).catch(() => {
+          if (!cancelled) retryTimer = setTimeout(write, 2_000);
+        });
+      };
+      write();
+      return () => { cancelled = true; clearTimeout(retryTimer); };
+    }
+  }, [
+    usesDeviceCatalog,
+    catalogDeviceId,
+    capabilityAgentKind,
+    capabilities,
+    capabilitiesLoading,
+    deviceDraftDefaultsReady,
+    deviceDraftDefaults,
+    isDeviceLinkDraft, isAgentDeviceDraft, deviceProvidersLoading, deviceProvidersError, deviceProviders,
   ]);
 
   // 记住这次对运行 Agent 的电脑的选择(仅本次运行)，切走再切回时恢复。
@@ -2031,7 +2080,7 @@ export function NewMakerDraftRoute() {
               : (dlSel?.providerId ?? deviceLinkInitial?.providerId ?? ''),
             modelId: model,
             active: true,
-            markModelChoice: false,
+            markModelChoice: target !== undefined,
             ...(activeEffort !== undefined ? { effort: activeEffort } : {}),
             ...(patch.fast !== undefined ? { fast: patch.fast } : {}),
           },
@@ -2652,6 +2701,8 @@ export function NewMakerDraftRoute() {
     (newModelId: string) => {
       if (usesDeviceCatalog) {
         dlRuntimeTouchedRef.current = true;
+        pushActiveDraftPref({}, { agent: capabilityAgentKind,
+          providerId: dlSel?.providerId ?? deviceLinkInitial?.providerId ?? null, modelId: newModelId });
         // 远程草稿:只改 dlSel,绝不写本地 newMakerDraft。capabilities 未就绪时退化为仅换 model。
         if (!capabilities) {
           setDlSel((prev) => (prev ? { ...prev, model: newModelId } : prev));
@@ -2684,6 +2735,7 @@ export function NewMakerDraftRoute() {
       deviceDraftDefaults,
       patchActiveTuplePrefs,
       capabilityAgentKind,
+      pushActiveDraftPref, dlSel?.providerId, deviceLinkInitial?.providerId,
     ],
   );
   const handleFastModeChange = useCallback(

@@ -104,6 +104,8 @@ export interface CollabDraft {
 }
 
 export interface NewMakerDraft {
+  /** Successful first catalog decision, independent of manual customization. */
+  initialModelSelectionComplete: boolean;
   /** 当前选中的 vendor。默认 'cc',用户切换后写回 + 持久化。 */
   vendor: MakerVendor;
   /** 选中的 workingDir;初次 null,Project 行内 + 会预填到此。 */
@@ -239,6 +241,7 @@ const DEFAULT_WORKTREE_ENABLED = false;
 
 function makeDefault(): NewMakerDraft {
   return {
+    initialModelSelectionComplete: false,
     vendor: 'cc',
     workingDir: null,
     remoteHostId: null,
@@ -489,6 +492,7 @@ function sanitize(raw: unknown): NewMakerDraft {
       orca: sanitizeVendorPrefs(lastByVendorRaw.orca, 'orca'),
       codex: sanitizeVendorPrefs(lastByVendorRaw.codex, 'codex'),
     },
+    initialModelSelectionComplete: r.initialModelSelectionComplete === true || legacySelectionCustomized,
     modelChosenByVendor,
     defaultTupleCustomized,
     defaultTupleSelectionCustomized,
@@ -530,6 +534,7 @@ interface StoredWorktreePreference {
 
 type StoredDefaultTuplePreference = Pick<
   NewMakerDraft,
+  | 'initialModelSelectionComplete'
   | 'vendor'
   | 'fastModeByModel'
   | 'effortByModel'
@@ -541,6 +546,7 @@ type StoredDefaultTuplePreference = Pick<
 
 function defaultTuplePreferenceOf(draft: NewMakerDraft): StoredDefaultTuplePreference {
   return {
+    initialModelSelectionComplete: draft.initialModelSelectionComplete,
     vendor: draft.vendor,
     fastModeByModel: draft.fastModeByModel,
     effortByModel: draft.effortByModel,
@@ -1037,6 +1043,19 @@ export function applySuggestedDefaultTuple(tuple: SuggestedDefaultTuple): boolea
     vendor: tuple.vendor,
     lastByVendor: { ...currentDraft.lastByVendor, [tuple.vendor]: nextPrefs },
   };
+  scheduleWrite({ preserveStoredDefaultTuplePreference: false });
+  emit();
+  return true;
+}
+
+/** First successful catalog decision. Rebase makes a concurrent manual choice win. */
+export function initializeModelSelection(tuple: SuggestedDefaultTuple | null, catalogReady: boolean): boolean {
+  if (!catalogReady || !tuple) return false;
+  rebaseStoredDefaultTuplePreference();
+  if (currentDraft.initialModelSelectionComplete || currentDraft.defaultTupleCustomized ||
+    Object.values(currentDraft.modelChosenByVendor).some(Boolean)) return false;
+  if (tuple) applySuggestedDefaultTuple(tuple);
+  currentDraft = { ...currentDraft, initialModelSelectionComplete: true };
   scheduleWrite({ preserveStoredDefaultTuplePreference: false });
   emit();
   return true;

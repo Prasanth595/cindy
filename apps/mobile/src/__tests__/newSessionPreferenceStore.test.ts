@@ -302,3 +302,50 @@ describe('newSessionPreferenceStore', () => {
     expect(store.size).toBe(0);
   });
 });
+
+
+it('persists first model initialization and manual choice by account and device, with writes winning late initialization', async () => {
+  setMobileAuthOwner('model-owner');
+  const { readModelSelection, saveModelSelection } = await import('@/session/newSessionPreferenceStore');
+  const real = { agentKind: 'pi' as const, model: 'real-b', providerId: 'xd', effort: 'high' };
+  expect(await readModelSelection('device-a')).toBeNull();
+  await saveModelSelection('device-a', real, false);
+  await saveModelSelection('device-a', { ...real, model: 'auto/base' }, false);
+  expect((await readModelSelection('device-a'))?.model).toBe('real-b');
+  const manual = saveModelSelection('device-a', { ...real, model: 'real-c' }, true);
+  const staleInit = saveModelSelection('device-a', { ...real, model: 'auto/base' }, false);
+  await Promise.all([manual, staleInit]);
+  expect((await readModelSelection('device-a'))?.model).toBe('real-c');
+  await saveModelSelection('device-a', { ...real, model: 'real-c', effort: 'low' }, false, true);
+  expect(await readModelSelection('device-a')).toMatchObject({ model: 'real-c', effort: 'low', chosenByUser: true });
+  await saveModelSelection('device-a', { ...real, effort: 'high' }, false, true);
+  expect((await readModelSelection('device-a'))?.effort).toBe('low');
+  await saveModelSelection('device-a', { ...real, model: 'auto/base' }, true);
+  expect((await readModelSelection('device-a'))?.model).toBe('auto/base');
+  await saveModelSelection('device-a', { ...real, agentKind: 'codex', model: 'codex-b' }, true);
+  expect(await readModelSelection('device-a')).toMatchObject({ agentKind: 'codex', model: 'codex-b' });
+  expect(await readModelSelection('device-b')).toBeNull();
+  setMobileAuthOwner('other-model-owner');
+  expect(await readModelSelection('device-a')).toBeNull();
+});
+
+
+it('restores the saved route after module rehydration and keeps a failed read pending', async () => {
+  const memory = await import('@/session/newSessionPreferenceStore');
+  setMobileAuthOwner('restart-owner');
+  await memory.saveModelSelection('restart-device', { agentKind: 'pi', model: 'real-b', providerId: 'provider-b', effort: 'high' }, true);
+  vi.resetModules();
+  const auth = await import('@/auth/authOwnerGeneration'); auth.setMobileAuthOwner('restart-owner');
+  const reloaded = await import('@/session/newSessionPreferenceStore');
+  expect(await reloaded.readModelSelection('restart-device')).toMatchObject({ model: 'real-b', providerId: 'provider-b', chosenByUser: true });
+  const storage = (await import('@react-native-async-storage/async-storage')).default;
+  vi.mocked(storage.getItem).mockRejectedValueOnce(new Error('temporary read error'));
+  await expect(reloaded.readModelSelection('restart-device')).rejects.toThrow('temporary read error');
+  expect((await reloaded.readModelSelection('restart-device'))?.model).toBe('real-b');
+  const saving = reloaded.saveModelSelection('restart-device', { agentKind: 'pi', model: 'auto/base', providerId: 'xd', effort: '' }, true);
+  auth.setMobileAuthOwner('next-owner');
+  await saving;
+  expect(await reloaded.readModelSelection('restart-device')).toBeNull();
+  auth.setMobileAuthOwner('restart-owner');
+  expect((await reloaded.readModelSelection('restart-device'))?.model).toBe('real-b');
+});

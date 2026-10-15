@@ -7,6 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   normalizeNewSessionAgentKind,
   type NewSessionAgentKind,
+  type NewSessionRuntime,
   type NewSessionDeviceOption,
   type NewSessionStoredPreferences,
   type NewSessionWorkspaceKind,
@@ -209,3 +210,48 @@ export const __testing = {
   storageKey: STORAGE_KEY,
   workingDirStorageKey,
 };
+
+
+/** Non-secret route memory belongs to the signed-in membership/realm and execution device. */
+function modelSelectionKey(accountKey: string, deviceId: string): string {
+  return `${STORAGE_KEY}.model.${encodeURIComponent(accountKey)}.${encodeURIComponent(deviceId)}`;
+}
+
+async function loadModelSelection(accountKey: string, deviceId: string): Promise<NewSessionRuntime | null> {
+  if (!accountKey || !deviceId) return null;
+  // Storage failure is not an empty history: let the caller retry without consuming first initialization.
+  const raw = await AsyncStorage.getItem(modelSelectionKey(accountKey, deviceId));
+  if (!raw) return null;
+  const value = readRecord(JSON.parse(raw));
+  const agentKind = normalizeNewSessionAgentKind(value?.agentKind);
+  if (!value || !agentKind || typeof value.model !== 'string') throw new Error('Invalid saved model selection');
+  return { agentKind, model: value.model, providerId: readString(value.providerId),
+    effort: typeof value.effort === 'string' ? value.effort : '',
+    chosenByUser: value.chosenByUser === true, initialModelSelectionComplete: true };
+}
+
+export async function readModelSelection(deviceId: string): Promise<NewSessionRuntime | null> {
+  const owner = getMobileAuthOwner();
+  await writeChain;
+  const saved = await loadModelSelection(owner.accountKey, deviceId);
+  return isMobileAuthOwnerCurrent(owner) ? saved : null;
+}
+
+/** Serialized with existing preferences; a late initialization can never overwrite a selection. */
+export function saveModelSelection(deviceId: string, runtime: NewSessionRuntime, manual: boolean, updateEffortOnly = false): Promise<void> {
+  const owner = getMobileAuthOwner();
+  const next = writeChain.then(async () => {
+    if (!owner.accountKey || !deviceId || !isMobileAuthOwnerCurrent(owner)) return;
+    const saved = await loadModelSelection(owner.accountKey, deviceId);
+    if (updateEffortOnly) {
+      if (!saved || saved.agentKind !== runtime.agentKind || saved.model !== runtime.model || saved.providerId !== runtime.providerId) return;
+    } else if (!manual && saved) return;
+    if (!isMobileAuthOwnerCurrent(owner)) return;
+    await AsyncStorage.setItem(modelSelectionKey(owner.accountKey, deviceId), JSON.stringify({
+      agentKind: runtime.agentKind, model: runtime.model, providerId: runtime.providerId,
+      effort: runtime.effort, chosenByUser: updateEffortOnly ? saved?.chosenByUser === true : manual, initialModelSelectionComplete: true,
+    }));
+  });
+  writeChain = next.catch(() => undefined);
+  return next;
+}

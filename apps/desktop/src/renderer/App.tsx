@@ -62,6 +62,7 @@ import {
   setWorktreePreference,
   patchVendorPrefs,
   patchVendorPrefsPreservingModelChoice,
+  initializeModelSelection,
 } from '@/state/newMakerDraft';
 import {
   snapshotForSeed,
@@ -156,6 +157,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
         providerId: draft.lastByVendor.pi.providerId ?? null,
       },
     },
+    initialModelSelectionComplete: draft.initialModelSelectionComplete || draft.defaultTupleCustomized || Object.values(draft.modelChosenByVendor).some(Boolean),
     modelChosenByVendor: {
       cc: draft.modelChosenByVendor.cc === true,
       codex: draft.modelChosenByVendor.codex === true,
@@ -292,6 +294,7 @@ export function App() {
         fast,
         thinking,
         markModelChoice,
+        initializeModelSelection: initializeSelection,
         appDefaultSelection,
       }) => {
         if (appDefaultSelection) {
@@ -309,6 +312,10 @@ export function App() {
           return;
         }
         const vendor = agentKindToVendor(agent);
+        if (initializeSelection) {
+          initializeModelSelection({ vendor, providerId, model: modelId, effort: effort as Effort }, true);
+          return;
+        }
         if (active) {
           const patch =
             markModelChoice === false ? patchVendorPrefsPreservingModelChoice : patchVendorPrefs;

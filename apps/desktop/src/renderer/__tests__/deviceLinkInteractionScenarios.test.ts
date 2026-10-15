@@ -62,6 +62,47 @@ import * as messageService from '@/lib/messageService';
 import { getIssueConfirmDraft, saveIssueConfirmDraft } from '@/lib/issueConfirmDraftStore';
 
 const TEST_OWNER_STAMP = { dataOwnerId: 'test-owner', ownerGeneration: 0 } as const;
+
+it('persists remote first selection after late catalogs and retries a failed write without overwriting a manual choice', async () => {
+  vi.useFakeTimers();
+  try {
+  const source = readFileSync(resolve(process.cwd(), 'src/renderer/features/cc-agent/NewMakerDraftRoute.tsx'), 'utf8').replace(/\r\n/g, '\n');
+  const section = source.slice(source.indexOf('// Persist independently of reseeding:'));
+  const body = section.match(/useEffect\(\(\) => \{([\s\S]*?)\n  \}, \[/)?.[1];
+  expect(body).toBeTruthy();
+  const invoke = vi.fn(async () => ({}));
+  invoke.mockRejectedValueOnce(new Error('temporary disconnect'));
+  const context = { catalogDeviceId: 'host-a', capabilities: {}, capabilitiesLoading: false,
+    deviceDraftDefaultsReady: true, dlRuntimeTouchedRef: { current: false }, dlInitializationRef: { current: null },
+    resolveDeviceLinkDraftDefaults: () => ({ model: 'real-b', providerId: 'host-provider', effort: 'high' }),
+    deviceDraftDefaults: { initialModelSelectionComplete: false, modelChosenByUser: false },
+    capabilityAgentKind: 'pi', isDeviceLinkDraft: true, isAgentDeviceDraft: false,
+    deviceProvidersLoading: true, deviceProvidersError: null, deviceProviders: [{ modelDiscoveryFailure: true }],
+    window: { electronAPI: { deviceLink: { invoke } } } };
+  const compiled = ts.transpileModule(body!, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const run = () => new Function(...Object.keys(context), compiled)(...Object.values(context));
+  run();
+  expect(invoke).not.toHaveBeenCalled();
+  context.deviceProvidersLoading = false;
+  run();
+  expect(invoke).not.toHaveBeenCalled();
+  context.deviceProviders = [];
+  const cleanup = run();
+  expect(invoke).toHaveBeenCalledWith('host-a', 'maker:apply-new-maker-draft-pref', [expect.objectContaining({ modelId: 'real-b', initializeModelSelection: true, markModelChoice: false })]);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(invoke).toHaveBeenCalledTimes(2);
+  run();
+  expect(invoke).toHaveBeenCalledTimes(2);
+  cleanup();
+  context.dlInitializationRef.current = null;
+  invoke.mockRejectedValueOnce(new Error('temporary disconnect'));
+  const cleanupManual = run();
+  context.dlRuntimeTouchedRef.current = true;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(invoke).toHaveBeenCalledTimes(3);
+  cleanupManual();
+  } finally { vi.useRealTimers(); }
+});
 type RemotePush = {
   deviceId: string;
   channel: string;
@@ -1347,7 +1388,7 @@ describe('远程交互接线不变式', () => {
     expect(pushActiveEnd).toBeGreaterThan(pushActiveStart);
     const pushActiveBody = newMakerDraftRouteSrc.slice(pushActiveStart, pushActiveEnd);
     expect(pushActiveBody).toContain('active: true');
-    expect(pushActiveBody).toContain('markModelChoice: false');
+    expect(pushActiveBody).toContain('markModelChoice: target !== undefined');
   });
 
   it('外部 session effort patch 必须在 layout commit 时对齐 cache 并抢占旧 runtime', () => {

@@ -437,12 +437,24 @@ describe('capabilities refresh clamp contract', () => {
 });
 
 
-it('uses group AUTO for an untouched managed host seed while preserving either side manual selection', () => {
+it('uses group Auto for an untouched managed host seed while preserving either side manual selection', () => {
   const capabilities = caps({ availableModels: [...caps().availableModels, {
-    ...caps().availableModels[0], id: 'auto/base', displayName: 'AUTO (base)', newSessionDefault: ['claude-code'],
+    ...caps().availableModels[0], id: 'auto/base', displayName: 'Auto (base)', newSessionDefault: ['claude-code'],
   }] });
   const remote = { model: 'claude-opus-4-8', providerId: 'xd', modelChosenByUser: false };
   expect(resolveDeviceLinkDraftDefaults(capabilities, remote, undefined, 'claude-code').model).toBe('auto/base');
   expect(resolveDeviceLinkDraftDefaults(capabilities, { ...remote, modelChosenByUser: true }, undefined, 'claude-code').model).toBe('claude-opus-4-8');
   expect(resolveDeviceLinkDraftDefaults(capabilities, remote, 'claude-opus-4-8', 'claude-code').model).toBe('claude-opus-4-8');
+});
+
+
+it('retains initialized remote defaults across catalog changes without reopening first initialization', () => {
+  const capabilities = caps({ availableModels: [...caps().availableModels, {
+    ...caps().availableModels[0], id: 'auto/base', displayName: 'Auto (base)', newSessionDefault: ['claude-code'],
+  }] });
+  const remembered = { model: 'claude-opus-4-8', providerId: 'xd', modelChosenByUser: false, initialModelSelectionComplete: true };
+  expect(resolveDeviceLinkDraftDefaults(capabilities, remembered, undefined, 'claude-code').model).toBe('claude-opus-4-8');
+  expect(shouldReseedDeviceLinkDraftDefaults({ currentSeedKey: 'device:cc', nextSeedKey: 'device:cc',
+    capabilitiesChanged: true, controllerTouched: false, remoteModelChosenByUser: false, initialModelSelectionComplete: true })).toBe(false);
+  expect(resolveDeviceLinkDraftDefaults(capabilities, { ...remembered, model: 'removed' }, undefined, 'claude-code').model).toBe(capabilities.availableModels[0].id);
 });

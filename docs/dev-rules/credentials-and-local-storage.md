@@ -225,6 +225,19 @@ Desktop 的运行时 refresh 遇到瞬时失败后，主动调用与定时重试
 - 临时文件使用唯一目录或文件名，完成、失败和取消路径都应尽力清理；需要跨重启保留的
   内容不属于临时文件，应进入明确的 userData 存储与生命周期设计。
 
+## 首次选模与上次选择
+
+桌面复用按 dataOwnerId 隔离的 `xdt:newMakerDraft:v1:<dataOwnerId>` 草稿偏好，
+`initialModelSelectionComplete` 只在目录成功加载并选定初始模型后写入；已有手选记录视为
+已初始化。远控通过原有草稿偏好通道在执行电脑保存，不把控制电脑的供应商 ID 当作本机来源。
+
+手机复用 `newSessionPreferenceStore` 的 AsyncStorage 与串行写入队列，选模记录使用
+`${STORAGE_KEY}.model.<编码后的 accountKey>.<编码后的 deviceId>`；accountKey 包含区域与
+成员身份，deviceId 是模型执行电脑。只保存 Agent、模型、供应商、推理档位及初始化/手选标记，
+不保存凭证，不从无归属的旧全局数据认领模型。登出后记录保留给原账号，下次同账号登录恢复；
+账号切换使在途读写失效。读取失败不当作空历史，初始化写入不得覆盖已有手选，供应商与模型
+一起恢复并由现有目录校准检查可用性。
+
 ## Review 清单
 
 1. 写入目标是否可能位于仓库、当前工作目录或被 Git 跟踪的路径？

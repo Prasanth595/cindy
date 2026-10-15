@@ -171,7 +171,7 @@ describe('newMakerDraft store', () => {
     expect(applySuggestedDefaultTuple(resolve())).toBe(false);
   });
 
-  it('applies the group AUTO tuple to the real draft store and preserves a manual real model after refresh', async () => {
+  it('applies the group Auto tuple to the real draft store and preserves a manual real model after refresh', async () => {
     const { applySuggestedDefaultTuple, getDraft, markDefaultTupleCustomized, patchCurrentVendorPrefs } = await loadModule();
     const auto = { vendor: 'pi' as const, providerId: 'xd', model: 'auto/base', effort: 'high' as const };
     expect(applySuggestedDefaultTuple(auto)).toBe(true);
@@ -1923,5 +1923,44 @@ describe('newMakerDraft agent computer', () => {
     vi.resetModules();
     mod = await loadModule();
     expect(mod.getDraft()).toMatchObject({ workingDir: '/local/proj', agentDeviceId: null, agentDeviceName: null });
+  });
+});
+
+
+describe('first model initialization persistence', () => {
+  it('checks Auto once, retains no-Auto result after restart, and isolates owners', async () => {
+    let draft = await loadModule();
+    draft.setNewMakerDraftOwner('member-a');
+    const real = { vendor: 'pi' as const, model: 'real-b', providerId: 'xd' };
+    expect(draft.initializeModelSelection(real, false)).toBe(false);
+    expect(draft.initializeModelSelection(null, true)).toBe(false);
+    expect(draft.getDraft().initialModelSelectionComplete).toBe(false);
+    expect(draft.initializeModelSelection(real, true)).toBe(true);
+    vi.resetModules();
+    draft = await loadModule(); draft.setNewMakerDraftOwner('member-a');
+    expect(draft.initializeModelSelection({ ...real, model: 'auto/base' }, true)).toBe(false);
+    expect(draft.getDraft().lastByVendor.pi.model).toBe('real-b');
+    draft.patchVendorPrefs('pi', { model: 'auto/base', providerId: 'xd' });
+    vi.resetModules();
+    draft = await loadModule(); draft.setNewMakerDraftOwner('member-a');
+    expect(draft.getDraft().lastByVendor.pi.model).toBe('auto/base');
+    draft.setNewMakerDraftOwner('member-b');
+    expect(draft.getDraft().initialModelSelectionComplete).toBe(false);
+    expect(draft.initializeModelSelection({ ...real, model: 'auto/base' }, true)).toBe(true);
+    draft.patchVendorPrefs('pi', real);
+    vi.resetModules();
+    draft = await loadModule(); draft.setNewMakerDraftOwner('member-b');
+    expect(draft.getDraft().lastByVendor.pi.model).toBe('real-b');
+    expect(draft.initializeModelSelection({ ...real, model: 'auto/base' }, true)).toBe(false);
+  });
+
+  it('preserves legacy manual selection and a newer selection from another window', async () => {
+    const old = await loadModule(); old.setNewMakerDraftOwner('member-a');
+    old.patchVendorPrefs('pi', { model: 'real-b', providerId: 'xd' });
+    vi.resetModules();
+    const fresh = await loadModule(); fresh.setNewMakerDraftOwner('member-a');
+    expect(fresh.initializeModelSelection({ vendor: 'pi', model: 'auto/base', providerId: 'xd' }, true)).toBe(false);
+    expect(fresh.getDraft().lastByVendor.pi.model).toBe('real-b');
+    expect(old.initializeModelSelection({ vendor: 'pi', model: 'auto/base', providerId: 'xd' }, true)).toBe(false);
   });
 });

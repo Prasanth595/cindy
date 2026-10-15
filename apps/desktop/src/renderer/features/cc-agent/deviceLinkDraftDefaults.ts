@@ -23,6 +23,7 @@ export interface RemoteDraftDefaults {
   model?: string;
   /** false = 被控端明确未在 New Maker picker 选过模型；undefined = 旧端未知。 */
   modelChosenByUser?: boolean;
+  initialModelSelectionComplete?: boolean;
   effort?: string;
   fastMode?: boolean;
   permissionMode?: string;
@@ -72,10 +73,11 @@ export function shouldReseedDeviceLinkDraftDefaults(input: {
   capabilitiesChanged: boolean;
   controllerTouched: boolean;
   remoteModelChosenByUser: boolean | undefined;
+  initialModelSelectionComplete?: boolean;
 }): boolean {
   if (input.currentSeedKey !== input.nextSeedKey) return true;
   return (
-    input.capabilitiesChanged && !input.controllerTouched && input.remoteModelChosenByUser === false
+    input.capabilitiesChanged && !input.initialModelSelectionComplete && !input.controllerTouched && input.remoteModelChosenByUser === false
   );
 }
 
@@ -125,7 +127,7 @@ export function resolveDeviceLinkDraftDefaults(
     : undefined;
   const wantedModelId =
     targetModel ??
-    (remoteDraft?.modelChosenByUser === false
+    (remoteDraft?.modelChosenByUser === false && !remoteDraft.initialModelSelectionComplete
       ? (groupAuto ?? (providerId === null ? markedDefault : undefined) ?? remoteDraft.model)
       : remoteDraft?.model);
 

@@ -59,6 +59,88 @@ beforeAll(async () => {
   await i18n.changeLanguage('zh-CN');
 });
 
+it('retries transient host-default reads while online and cancels retry on departure', async () => {
+  vi.useFakeTimers();
+  try {
+    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const marker = source.indexOf("if (!selectedDeviceId || deviceLinkStatus !== 'online') return undefined;");
+    const body = source.slice(marker, source.indexOf('\n  }, [', marker));
+    const compiled = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    let retries = 0;
+    const getNewMakerDefaults = vi.fn(async () => ({ worktreeEnabled: false, model: 'real-b' }));
+    getNewMakerDefaults.mockRejectedValueOnce(new Error('temporary read error'));
+    const hostDraftDefaultsRef: { current: { failed?: boolean } | null } = { current: null };
+    const context = { selectedDeviceId: 'device-a', deviceLinkStatus: 'online', hostDraftDefaultsRef,
+      modelSelectionOwner: { accountKey: 'member-a' }, getMobileAuthOwner: () => ({ accountKey: 'member-a' }),
+      isMobileAuthOwnerCurrent: () => true, openLink: vi.fn(async () => {}), maker: { getNewMakerDefaults },
+      withTransientRemoteRetry: (call: () => Promise<unknown>) => call(), formatRemoteError: String,
+      isHostDraftDefaultsReady, hostDraftRuntimeFromDefaults, NEW_SESSION_AGENT_OPTIONS: [{ kind: 'pi' }],
+      setHostDraftDefaults: vi.fn(), hostDraftDefaultsLoadRef: { current: null },
+      setPreferenceReadRetry: (update: (value: number) => number) => { retries = update(retries); } };
+    const run = () => new Function(...Object.keys(context), compiled)(...Object.values(context));
+    const cleanup = run();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hostDraftDefaultsRef.current?.failed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(retries).toBe(1);
+    cleanup();
+    const cleanupRecovered = run();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hostDraftDefaultsRef.current?.failed).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(retries).toBe(1);
+    cleanupRecovered();
+    hostDraftDefaultsRef.current = null;
+    getNewMakerDefaults.mockRejectedValueOnce(new Error('temporary read error'));
+    const cleanupCancelled = run();
+    await vi.advanceTimersByTimeAsync(0);
+    cleanupCancelled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(retries).toBe(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it('retries local and host initialization writes without marking failed writes as durable', async () => {
+  vi.useFakeTimers();
+  try {
+    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    const effect = (marker: string, context: Record<string, unknown>) => {
+      const section = source.slice(source.indexOf(marker));
+      const body = section.match(/useEffect\(\(\) => \{([\s\S]*?)\n  \}, \[/)?.[1];
+      expect(body).toBeTruthy();
+      const compiled = ts.transpileModule(body!, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      return new Function(...Object.keys(context), compiled)(...Object.values(context));
+    };
+    const memory = { ownerKey: 'member-a', deviceId: 'device-a',
+      runtime: { agentKind: 'pi', model: 'real-b', providerId: 'provider-a', effort: '', initialModelSelectionComplete: true },
+      pendingWrite: 'initialize' as string | undefined };
+    let current = memory;
+    const saveModelSelection = vi.fn(async () => {});
+    saveModelSelection.mockRejectedValueOnce(new Error('temporary storage failure'));
+    const authContext = { getMobileAuthOwner: () => ({ accountKey: 'member-a' }), isMobileAuthOwnerCurrent: () => true };
+    const cleanup = effect('// Retry persistence independently', { ...authContext, modelSelectionMemory: memory, saveModelSelection,
+      setModelSelectionMemory: (update: (value: typeof memory) => typeof memory) => { current = update(current); } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(current.pendingWrite).toBe('initialize');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(saveModelSelection).toHaveBeenCalledTimes(2);
+    expect(current.pendingWrite).toBeUndefined();
+    cleanup();
+    const applyNewMakerDraftPref = vi.fn(async () => ({}));
+    applyNewMakerDraftPref.mockRejectedValueOnce(new Error('temporary IPC failure'));
+    const initializedHostSelectionRef = { current: '' };
+    const cleanupHost = effect('// A durable local initialization', { ...authContext, modelSelectionMemory: current,
+      hostDefaultsSettled: true, hostDraftDefaults: { supportsInitialization: true }, selectedDeviceId: 'device-a',
+      remoteAgentChoice: null, initializedHostSelectionRef, maker: { applyNewMakerDraftPref } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(initializedHostSelectionRef.current).toBe('');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(applyNewMakerDraftPref).toHaveBeenCalledTimes(2);
+    expect(initializedHostSelectionRef.current).not.toBe('');
+    cleanupHost();
+  } finally { vi.useRealTimers(); }
+});
+
 function modelRow(
   id: string,
   efforts: readonly string[] = [],
@@ -140,6 +222,9 @@ describe('hostDraftRuntimeFromDefaults', () => {
     expect(isHostDraftDefaultsReady(null)).toBe(false);
     expect(isHostDraftDefaultsReady({ worktreeEnabled: false })).toBe(true);
     expect(isHostDraftDefaultsReady({ worktreeEnabled: true, model: 'm' })).toBe(true);
+    expect(isHostDraftDefaultsReady({ model: 'legacy-b' })).toBe(false);
+    expect(isHostDraftDefaultsReady({ model: 'legacy-b' }, true)).toBe(true);
+    expect(isHostDraftDefaultsReady({}, true)).toBe(false);
   });
 
   it('leaves a never-chosen host seed to the catalog regional default, like the desktop controller', () => {
@@ -410,7 +495,7 @@ describe('stored agent restore gating', () => {
 
   it('gates the stored agent restore on real data and leaves the auto-default unblocked', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
-    const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
+    const storedStart = source.indexOf('const storedAgentKind = modelSelectionMemory?.deviceId === selectedDeviceId');
     const autoStart = source.indexOf('const result = resolveNewSessionAutoDefault({');
     const storedSource = source.slice(storedStart, source.indexOf('storedAgentRestoreRef.current = restoreState', storedStart));
     const autoGuardSource = source.slice(source.lastIndexOf('useEffect(() => {', autoStart), autoStart);
@@ -433,7 +518,8 @@ describe('stored agent restore gating', () => {
     expect(source).toContain('return hostDraftRuntimeFromDefaults(defaults, agentKind);');
     // 写:本页的模型选择写回被控电脑;远程 Agent 的模型属于另一台电脑,不写回。
     expect(source).toMatch(/active: true,\s+markModelChoice: hostChoiceRequest\.markModelChoice,/);
-    expect(source).toContain('if (!selectedDeviceId || remoteAgentChoice || !draft.model) return;');
+    expect(source).toContain('if (!selectedDeviceId || remoteAgentChoice || !draft.model || hostChoiceRequest.deviceId !== selectedDeviceId ||');
+    expect(source).toContain('!isMobileAuthOwnerCurrent(hostChoiceRequest.owner)) return;');
     expect(source).not.toContain('pickMostRecentSessionRuntime');
     // 三个本机选择入口(供应商行 / 统一面板 / 旧端扁平列表)都写回。
     for (const name of ['selectProviderModelRow', 'selectUnifiedModel', 'selectFlatModel']) {
@@ -446,10 +532,14 @@ describe('stored agent restore gating', () => {
     // 本页写回的选择优先于读取结果,晚到的旧读取不能把它覆盖(Codex P1)。
     const runtimeForStart = source.indexOf('const hostRuntimeFor = useCallback(');
     const runtimeForBody = source.slice(runtimeForStart, source.indexOf('\n  );', runtimeForStart));
-    expect(runtimeForBody.indexOf('hostChoiceOverridesRef.current.get(deviceId)')).toBeLessThan(runtimeForBody.indexOf('current.byAgent[agentKind]'));
+    const overrideAt = runtimeForBody.indexOf('hostChoiceOverridesRef.current.get(JSON.stringify');
+    expect(overrideAt).toBeGreaterThan(-1);
+    expect(overrideAt).toBeLessThan(runtimeForBody.indexOf('current.byAgent[agentKind]'));
     // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
     const switchStart = source.indexOf('const switchAgent = useCallback(');
     const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));
+    expect(switchBody).toContain('requestHostChoiceWrite(true);');
+    expect(switchBody).toContain('if (!isMobileAuthOwnerCurrent(ownerAtTrigger)) return;');
     const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId);');
     expect(waitAt).toBeGreaterThan(-1);
     expect(waitAt).toBeLessThan(switchBody.indexOf('pickAgentDefaultRuntime({'));
@@ -511,7 +601,7 @@ describe('isNewSessionRuntimePending', () => {
 
   it('rolls back the restore marker and device lock when an automatic write is dropped', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
-    const storedStart = source.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
+    const storedStart = source.indexOf('const storedAgentKind = modelSelectionMemory?.deviceId === selectedDeviceId');
     const storedEffect = source.slice(storedStart, source.indexOf('}, [', storedStart));
     expect(storedEffect).toContain('if (storedAgentRestoreRef.current === restoreState) storedAgentRestoreRef.current = previousRestore;');
     expect(storedEffect).toContain('autoDefaultDeviceRef.current = previousAutoDefaultDevice;');
@@ -2038,7 +2128,7 @@ describe('new session composer surface', () => {
     const voiceButtonStart = newSource.indexOf('const renderComposerVoiceButton = (buttonStyle?: StyleProp<ViewStyle>) => (');
     const voiceButtonEnd = newSource.indexOf('// 切 agent:', voiceButtonStart);
     const voiceButtonSource = newSource.slice(voiceButtonStart, voiceButtonEnd);
-    const storedAgentStart = newSource.indexOf('const storedAgentKind = newSessionPreferences?.agentKind;');
+    const storedAgentStart = newSource.indexOf('const storedAgentKind = modelSelectionMemory?.deviceId === selectedDeviceId');
     const storedAgentEnd = newSource.indexOf('// 新建任务默认运行配置', storedAgentStart);
     const storedAgentSource = newSource.slice(storedAgentStart, storedAgentEnd);
     const selectDeviceStart = newSource.indexOf('const selectDevice = useCallback((option: NewSessionDeviceOption) => {');
@@ -3014,11 +3104,11 @@ describe('closed saved model requires reselection', () => {
 });
 
 
-describe('group AUTO initial selection', () => {
+describe('group Auto initial selection', () => {
   const autoRow = () => ({ ...modelRow('auto/base', [], null, ['pi']), provider: { id: 'xd', name: 'Cindy', auth: { method: 'managed' }, access: { kind: 'managed' } } as ProviderModelRow['provider'] });
   const input = () => ({ userTouched: false, appliedDeviceId: null, selectedDeviceId: 'device-a', hostDefaultsSettled: true,
     hostRuntime: null, modelRows: [modelRow('legacy', [], null, ['pi']), autoRow()], rowsAgentKind: 'pi' as const, catalogReady: true, currentEffort: '' });
-  it('prefers marked AUTO on initial open and agent switch, retaining explicit choices', () => {
+  it('prefers marked Auto on initial open and agent switch, retaining explicit choices', () => {
     expect(resolveNewSessionAutoDefault(input())?.patch).toMatchObject({ model: 'auto/base', providerId: 'xd' });
     expect(pickAgentDefaultRuntime({ agentKind: 'pi', hostRuntime: null, modelRows: input().modelRows, currentEffort: '', catalogReady: true })).toMatchObject({ model: 'auto/base', providerId: 'xd' });
     expect(resolveNewSessionAutoDefault({ ...input(), userTouched: true })).toBeNull();
@@ -3035,13 +3125,13 @@ describe('group AUTO initial selection', () => {
 });
 
 
-it('initial mobile entry selects the base AUTO and submits its installed harness, preserving manual choices', () => {
+it('initial mobile entry selects the base Auto and submits its installed harness, preserving manual choices', () => {
   const providers: import('@cindy/model-providers').ProviderView[] = [{
     id: 'xd', name: 'Cindy', source: 'builtin', connected: true, auth: { method: 'managed' }, access: { kind: 'managed' },
     agents: ['claude-code', 'pi'], routing: { 'claude-code': { upstream: 'https://provider.test', authStrategy: 'none' }, pi: { upstream: 'https://provider.test', authStrategy: 'none' } },
     models: {
-      'claude-code': [{ id: 'auto/z-base', name: 'AUTO (base)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 0, newSessionDefault: ['claude-code'] }],
-      pi: [{ id: 'auto/a-extra', name: 'AUTO (extra)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 1, newSessionDefault: ['pi'] }],
+      'claude-code': [{ id: 'auto/z-base', name: 'Auto (base)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 0, newSessionDefault: ['claude-code'] }],
+      pi: [{ id: 'auto/a-extra', name: 'Auto (extra)', contextWindow: 1000, efforts: [], defaultEffort: null, sortOrder: 1, newSessionDefault: ['pi'] }],
     },
   }];
   const initialAutoRuntime = pickInitialGroupAutoRuntime(providers, new Set(['claude-code', 'pi']), {});
@@ -3058,4 +3148,20 @@ it('initial mobile entry selects the base AUTO and submits its installed harness
   expect(resolveNewSessionAutoDefault({ ...input, hostRuntime: { agentKind: 'pi', model: 'real', effort: '', providerId: 'xd' } })).toBeNull();
   expect(resolveNewSessionAutoDefault({ ...input, hostRuntime: { agentKind: 'pi', model: 'real', effort: '', providerId: 'anthropic', chosenByUser: false } })).toBeNull();
   expect(resolveNewSessionAutoDefault({ ...input, currentRuntime: initialAutoRuntime! })).toBeNull();
+});
+
+
+it('does not repeat Auto initialization after restoring a first choice, including an unavailable old model', () => {
+  const real = modelRow('real-b');
+  const auto = { ...modelRow('auto/base', [], null, ['pi']), provider: real.provider };
+  const restored = { agentKind: 'pi' as const, model: 'real-b', providerId: real.provider.id, effort: '', initialModelSelectionComplete: true };
+  const input = { userTouched: false, appliedDeviceId: null, selectedDeviceId: 'device-a', hostDefaultsSettled: true,
+    hostRuntime: restored, modelRows: [real, auto], rowsAgentKind: 'pi' as const, catalogReady: true, currentEffort: '',
+    initialAutoRuntime: { ...restored, model: 'auto/base' }, initialModelSelectionComplete: true };
+  expect(resolveNewSessionAutoDefault(input)?.patch.model).toBe('real-b');
+  expect(resolveNewSessionAutoDefault({ ...input, hostDefaultsSettled: false })).toBeNull();
+  expect(pickAgentDefaultRuntime({ agentKind: 'pi', hostRuntime: { ...restored, model: 'removed' },
+    modelRows: [real, auto], currentEffort: '', catalogReady: true }).model).toBe('real-b');
+  expect(hostDraftRuntimeFromDefaults({ model: 'real-b', providerId: null, modelChosenByUser: false,
+    initialModelSelectionComplete: true }, 'pi')).toMatchObject({ model: 'real-b', initialModelSelectionComplete: true });
 });

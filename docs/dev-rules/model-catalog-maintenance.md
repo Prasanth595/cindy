@@ -112,15 +112,18 @@ xAI 保留 Registry 声明顺序，XD 以 Gateway `/models` 为准，均不受�
 来源内的默认推荐可由服务端按区域下发的 `newSessionDefault` 指定；公共 Registry 的
 同名字段不进入活动目录。未标记时取排序第一的默认可见模型，即账号返回的第一个可见模型。
 
-组织模型组配置了可用 AUTO 时，未手动选择的新任务优先采用服务端标记的 `auto/<accessGroupId>`。
+Auto 只参与首次初始化：当前账号/组织在执行电脑尚无选模历史时，等目录成功就绪再检查可用
+`auto/<accessGroupId>`；有则采用，没有则沿原策略，并持久记录首次检查完成。
+随后新建任务、应用重启和目录刷新都保留上次选择，不能因 Auto 后来出现或后台切目标而覆盖。
+用户主动选择真实模型或 Auto 都保存。旧用户已有的手选标记优先，不能被新字段迁移清掉。
+目录加载、临时失败和偏好读取失败不消费首次机会；已保存模型失效按既有安全回退，不重置初始化状态。
 服务端复用 `newSessionDefault` 按引擎标记，并以 `sortOrder` 表示基础组优先、组 ID 稳定排序；
-同一基础组不支持某个引擎时，才在该引擎使用附加组 AUTO。客户端首次选择先比较组优先级，
-再选实际安装且可用的引擎；手机已保存的引擎偏好仍保留。没有可用 AUTO 时原策略不变。
-真实模型继续可选。草稿的 `defaultTupleCustomized` / `modelChosenByUser` 以及手机的手动操作标记
-保护手选模型；后台切目标、刷新目录不覆盖用户手选的真实模型，也不改已有任务配置。
-桌面本地入口、远程草稿与手机新建入口分别由 `newMakerDefaultTuple.ts`、
-`deviceLinkDraftDefaults.ts`、Mobile `session/newSession.ts` 解析，并测试创建请求仍携带固定 AUTO ID。
-没有组织 AUTO 时，客户端出厂来源顺序为 Codex 订阅 GPT-6.1 Sol（Codex）、
+首次在已安装引擎内比较组优先级，手机已有引擎偏好保留。真实模型继续可选，已有任务不变。
+桌面使用账号隔离的 `newMakerDraft` 保存 `initialModelSelectionComplete`，并随已有偏好镜像给远控；
+远控首次写回经 `initializeModelSelection` 原子守卫，手选写回仍沿原通道。手机复用偏好存储的
+串行写入队列，按 realm-qualified membership 与执行设备保存 model/provider/agent/effort；
+恢复先等持久记录，再读被控端，手选覆盖自动初始化，迟到的初始化不能覆盖更新的选择。
+没有组织 Auto 时，客户端出厂来源顺序为 Codex 订阅 GPT-6.1 Sol（Codex）、
 Claude 订阅 Opus 5.5（Claude Code）、Cindy AI 下发的 Auto（Pi），最后保留 xAI 回退。
 订阅按认证身份识别独立账号，始终保留实际账号 ID；Auto 必须存在于 Cindy AI 的可用 Pi
 目录，不依赖旧 GLM 默认标记，也不在客户端将其替换成固定型号。草稿发送校准与无人值守
