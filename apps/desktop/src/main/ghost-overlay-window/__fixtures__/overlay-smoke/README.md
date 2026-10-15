@@ -28,9 +28,9 @@ Cindy Core 新增的「插件桌面浮窗」能力（透明、置顶、不抢焦
 
 ```powershell
 $src = "<夹具目录绝对路径>"
-$zip = "$src\..\overlay-smoke-0.0.2.zip"
+$zip = "$src\..\overlay-smoke-0.0.3.zip"
 Compress-Archive -Path "$src\ghost.json","$src\main.js","$src\overlay.html","$src\overlay.js" -DestinationPath $zip -Force
-Move-Item $zip "$src\..\overlay-smoke-0.0.2.cindy" -Force
+Move-Item $zip "$src\..\overlay-smoke-0.0.3.cindy" -Force
 ```
 
 - `Compress-Archive` 只接受 `.zip` 扩展名，故**先产出 `.zip` 再改名为 `.cindy`**（`.cindy` 本身即 zip）。
@@ -40,12 +40,12 @@ Move-Item $zip "$src\..\overlay-smoke-0.0.2.cindy" -Force
 ## 2. 在 Cindy 本地安装
 
 1. 打开 Cindy，进入「插件」入口（Plugins）。
-2. 本地安装：把 `overlay-smoke-0.0.2.cindy` 拖入窗口，或从磁盘选择该文件。
+2. 本地安装：把 `overlay-smoke-0.0.3.cindy` 拖入窗口，或从磁盘选择该文件。
 3. 按确认框完成安装与授权（resident 常驻会多一行如实披露）。
 4. 确认插件已启用。启用的同时电子脑被拉起，圆应自动出现在屏幕上。
 
 > **更新已安装的旧版本**：Cindy 本地安装不会原地替换已装的同名插件；更新前请先在插件
-> 管理里**卸载旧版**（如 0.0.1），再安装新版（0.0.2），或按 Cindy 插件更新流程操作，
+> 管理里**卸载旧版**（如 0.0.2），再安装新版（0.0.3），或按 Cindy 插件更新流程操作，
 > 否则可能仍加载旧包。
 
 ## 3. 人工验收清单（对照设计 §6.3 的 Core 项）
