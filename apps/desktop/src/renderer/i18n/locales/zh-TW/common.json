@@ -470,13 +470,12 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
-      "usage": "用量均衡",
+      "quotaFirst": "能讀取 Claude 訂閱用量時，先用配額快重置的電腦，再選用量低的，相近時依組策略",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例",
-        "usage": "按5小時和每週用量分配"
+        "weight": "依權重比例"
       }
     },
     "autoSwitch": {
@@ -751,7 +750,10 @@
     "copy": "複製到本機",
     "paste": "貼上到遠端電腦",
     "clipboardSyncHint": "此視窗在前景時，雙向同步文字、圖片和富文字。",
-    "credentialRequired": "請完成 Mac 密碼驗證。如果無法驗證，請更新兩台電腦上的 Cindy。"
+    "credentialRequired": "請完成 Mac 密碼驗證。如果無法驗證，請更新兩台電腦上的 Cindy。",
+    "handoffEnded": "這次代輸入已經結束，沒有可顯示的視窗。",
+    "handoffUnavailable": "這台電腦暫時無法只顯示這個視窗。請在那台電腦上更新 Cindy，或開啟遠端桌面。",
+    "handoffWindow": "代輸入 · {{app}}"
   },
   "ipcError": {
     "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
@@ -1637,6 +1639,7 @@
         "done": "已完成 ✓",
         "error": "執行失敗",
         "needsReply": "需要你回覆",
+        "inputHandoff": "需要你代為輸入",
         "externalDone": "Cindy · 任務「{{title}}」已完成 ✓",
         "externalError": "Cindy · 任務「{{title}}」執行失敗",
         "externalNeedsReply": "Cindy · 任務「{{title}}」需要你回覆",
@@ -5259,8 +5262,9 @@
           "descriptions": {
             "unsupported": "此保護僅可在 macOS 上使用。",
             "disabled": "Cindy 執行期間會阻止 Codex 連線至 Work Louder 鍵盤；不會限制 Cindy 本身。",
-            "recovery-required": "保護已停止，但 NODE_OPTIONS 尚未安全還原。請先重試還原，再重新開啟。",
-            "error": "Cindy 無法更新 Codex 保護；原有 NODE_OPTIONS 已保留或等待還原。"
+            "paused": "此保護因影響其他應用程式已暫停。若應用程式仍異常，請結束舊版 Cindy，再完全結束並重新開啟受影響的應用程式。",
+            "recovery-required": "保護已暫停，但舊的啟動設定尚未清理完成。請點擊「還原環境」，完成後完全結束並重新開啟受影響的應用程式。",
+            "error": "Cindy 無法讀取或清理舊的保護設定；此保護仍保持暫停。"
           },
           "restartRequired": "請完全結束並重新開啟 Codex 以生效"
         },
@@ -6532,6 +6536,9 @@
         "slotWorkspace": "工作區任務"
       },
       "commandPaletteTag": "插件指令",
+      "commandPaletteSource": {
+        "team": "團隊共享"
+      },
       "library": {
         "title": "持久作品庫",
         "loading": "正在讀取庫資訊…",
@@ -6578,7 +6585,23 @@
         "installLocationPickedPrefix": "已選擇：",
         "installLocationChange": "更改…",
         "bindAfterInstallFailed": "自訂儲存位置設定失敗，已回退預設位置",
-        "cancel": "取消"
+        "cancel": "取消",
+        "reattachTitle": "接回這個插件以前的作品資料？",
+        "reattachDescription": "這台電腦還保留著這個插件以前安裝時的作品資料，可能來自之前從本機匯入、後來解除安裝的版本。接回後，以前的畫布和圖片會繼續出現在這次安裝的插件裡；不接回則從空白開始，以前的資料仍保留在這台電腦上。",
+        "reattachConfirm": "接回",
+        "reattachSkip": "不接回",
+        "legacyFoundBanner": "這台電腦上還有這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），目前的安裝沒有使用它。",
+        "legacyReattach": "接回以前的作品資料",
+        "legacyReattachBusy": "正在接回…",
+        "legacyReattachConfirmTitle": "接回以前的作品資料？",
+        "legacyReattachConfirmDescription": "插件會改用以前留下的作品資料。目前的作品資料會移入回收站，保留 30 天，期滿後徹底清除。",
+        "legacyReattachConfirmText": "接回",
+        "legacyReattachDone": "已接回以前的作品資料",
+        "legacyReattachFailed": "接回失敗",
+        "legacyReattachNeedsRestart": "沒能清掉這個插件的快取。請重新啟動 Cindy 後再使用這個插件。",
+        "legacyInUseBanner": "這台電腦上另一個安裝（例如本機版）還在使用這個插件以前的作品資料。解除安裝那個版本後，可以在這裡接回。",
+        "legacyFoundUnknownBanner": "這台電腦上有一份可能是這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），沒有來源記錄，目前的安裝沒有使用它。",
+        "legacyReattachUnknownSource": "這份作品資料沒有來源記錄，可能是手動複製或用腳本搬過來的。請確認它屬於這個插件。"
       },
       "updateConfirm": {
         "title": "更新插件「{{name}}」？",
@@ -8961,6 +8984,14 @@
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
       },
+      "quote": {
+        "replyingTo": "引用 {{name}}",
+        "remove": "取消引用",
+        "jumpLabel": "查看 {{name}} 的原訊息：{{summary}}",
+        "deleted": "原訊息已刪除",
+        "unavailable": "原訊息不在可查看的紀錄裡",
+        "attachments": "{{name}} 等 {{total}} 個附件"
+      },
       "timeline": {
         "loadEarlier": "查看更早的訊息",
         "loadEarlierFailed": "更早的訊息沒能載入，請再試一次",
@@ -9059,7 +9090,8 @@
         "requestTimeout": "還未確認操作結果，請重新整理查看後再重試。",
         "permissionDenied": "你沒有執行此操作的群管理權限。",
         "serviceError": "群聊服務處理失敗，請稍後重試。",
-        "groupArchived": "本群已封存，無法執行此操作。"
+        "groupArchived": "本群已封存，無法執行此操作。",
+        "quoteUnavailable": "引用的訊息已刪除或無法查看，已取消引用，請再傳送一次"
       },
       "organizer": "負責人",
       "plan": {
@@ -9091,9 +9123,11 @@
         "openFailed": "檔案沒能開啟，可能已被移動或刪除"
       },
       "server": {
-        "reply": "回覆",
+        "quoteReply": "引用回覆",
+        "startTopic": "建立話題",
+        "openTopic": "查看話題 · {{count}} 則回覆",
+        "topic": "話題",
         "replies": "回覆",
-        "replyCount": "{{count}} 則回覆",
         "replyPlaceholder": "回覆這則訊息，可用 @ 點名夥伴…",
         "sendReply": "傳送回覆",
         "addReaction": "新增表情回應",
@@ -9237,7 +9271,11 @@
       "configure": "前往設定",
       "empty_toolset": "目前執行環境沒有可用的內建工具。",
       "empty_mcp": "尚未新增自訂 MCP 服務。",
-      "empty_skill": "暫無可選的技能。"
+      "empty_skill": "暫無可選的技能。",
+      "inputHandoff": {
+        "title": "代輸入",
+        "description": "遇到需要你本人輸入的登入資訊、密碼或驗證碼時，允許這位夥伴請你在任意裝置上填寫。你填寫的內容不會交給它。"
+      }
     },
     "guided": {
       "title": "建立夥伴",
@@ -9696,6 +9734,21 @@
       "addRemoteProject": "新增遠端專案"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "免費",
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字元",
+          "image": "張",
+          "second": "秒",
+          "minute": "分鐘",
+          "request": "次",
+          "megapixel": "百萬像素",
+          "megapixelSecond": "百萬像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在設定裡配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付費",
@@ -10157,7 +10210,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；切換權限模式、計畫模式或結束 Cindy 後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
@@ -11539,7 +11592,8 @@
         "awaitingPermission": "等待授權",
         "awaitingQuestion": "等待你的回覆",
         "awaitingPlan": "等待計劃審閱",
-        "awaitingPluginSetup": "等待插件設定"
+        "awaitingPluginSetup": "等待插件設定",
+        "awaitingInputHandoff": "等待代輸入"
       },
       "showAllSessions": "顯示全部 {{count}} 項",
       "allSessions": "全部任務",
@@ -13105,6 +13159,125 @@
       "allowDirs": "同時允許這些檔案所在目錄(本任務內同目錄媒體檔案不再詢問)",
       "allow": "允許",
       "deny": "拒絕"
+    }
+  },
+  "inputHandoff": {
+    "originWarning": {
+      "insecure": "這個頁面沒有使用安全連線，輸入的內容可能被他人讀取。",
+      "ip-address": "這個頁面使用 IP 位址而不是網域名稱，請確認它是你預期的網站。",
+      "local-host": "這個頁面來自本機服務，請確認它是你預期的程式。",
+      "local-file": "這個頁面是本機檔案，請確認它是你預期的內容。",
+      "punycode": "這個網址包含特殊字元，可能在冒充其他網站，請仔細核對。",
+      "embedded-frame": "輸入框位於嵌入的其他網站中，請確認來源可信。"
+    },
+    "agentControlled": "這個介面由 Agent 開啟。填寫前請確認它確實是你要登入的地方。",
+    "error": {
+      "decision": "操作沒有送達，請重試。",
+      "stale": "介面已經變化，請依最新內容操作。",
+      "submit": "輸入沒有送達，請重試。"
+    },
+    "terminal": {
+      "succeeded": "已交還給 Agent。",
+      "cancelled": "已取消代輸入。",
+      "failed": "代輸入已結束。",
+      "expired": "等待時間過長，代輸入已結束。"
+    },
+    "failure": {
+      "permission": "Cindy 沒有讀取這台電腦介面的權限。請在系統設定的輔助使用中允許 Cindy。",
+      "target_gone": "目標視窗已關閉。",
+      "unreadable": "無法讀取這個介面。可以在主機電腦上直接完成，然後交還給 Agent。",
+      "action_failed": "剛才的操作沒有生效，請檢查介面後重試。",
+      "timeout": "等待時間過長，代輸入已結束。",
+      "unsupported": "這台電腦暫不支援代輸入。",
+      "origin_changed": "填寫前頁面已變化，什麼都沒有填入。請確認現在的頁面後再填寫。",
+      "picture_unavailable": "無法顯示這一步的畫面。請在系統設定中允許 Cindy 錄製螢幕，並確認視窗沒有被縮到最小。",
+      "screen_locked": "這台電腦的螢幕已鎖定（顯示器休眠也會鎖定螢幕）。請先喚醒並解鎖，再讓 Agent 重試。",
+      "nothing_to_fill": "這個介面沒有需要你輸入的內容，已交還給 Agent 繼續。"
+    },
+    "phase": {
+      "reading": "正在讀取介面…",
+      "working": "正在填寫…",
+      "finishing": "看起來已經完成，{{count}} 秒後交還給 Agent。",
+      "finishingNow": "看起來已經完成，正在交還給 Agent…"
+    },
+    "action": {
+      "stay": "還沒完成",
+      "done": "交還給 Agent",
+      "claim": "改在這裡處理",
+      "picture": "看畫面",
+      "backToForm": "回到表單",
+      "liveView": "即時畫面",
+      "fill": "填寫",
+      "skip": "略過",
+      "continue": "繼續",
+      "close": "取消",
+      "showPassword": "顯示密碼",
+      "hidePassword": "隱藏密碼",
+      "scan": "掃碼"
+    },
+    "remoteUnavailable": "這台電腦無法從遠端接收輸入。請在主機電腦上完成這一步，再交還給 Agent。",
+    "unnamedField": "輸入框",
+    "passwordField": "密碼",
+    "codeField": "驗證碼",
+    "filledHint": "已有內容；留空則保持不變。",
+    "record": {
+      "doneOn_one": "主人在 {{device}} 完成了 {{count}} 步輸入",
+      "doneOn_other": "主人在 {{device}} 完成了 {{count}} 步輸入",
+      "doneHost_one": "主人在宿主電腦上完成了 {{count}} 步輸入",
+      "doneHost_other": "主人在宿主電腦上完成了 {{count}} 步輸入",
+      "donePhone_one": "主人在手機上完成了 {{count}} 步輸入",
+      "donePhone_other": "主人在手機上完成了 {{count}} 步輸入",
+      "doneElsewhere_one": "主人在另一台裝置上完成了 {{count}} 步輸入",
+      "doneElsewhere_other": "主人在另一台裝置上完成了 {{count}} 步輸入",
+      "done": "代輸入已完成",
+      "nothingToFill": "無需輸入，已交還給 Agent",
+      "cancelled": "代輸入已取消",
+      "expired": "代輸入已逾時",
+      "failed": "代輸入未完成"
+    },
+    "holder": {
+      "elsewhere": "正在 {{device}} 上處理，也可以改在這裡處理。",
+      "host": "宿主電腦",
+      "phone": "手機",
+      "otherDevice": "另一台裝置"
+    },
+    "agentNote": "Agent 補充：{{note}}",
+    "picture": {
+      "hint": "點按畫面中的位置，Cindy 會在主機電腦上點按同一個位置。",
+      "open": "顯示這一步的畫面",
+      "alt": "目標視窗的畫面",
+      "loading": "正在取得畫面…",
+      "error": "無法取得畫面，請重試。",
+      "field": "目前的輸入框",
+      "type": "輸入",
+      "typeEnter": "輸入並按 Return"
+    },
+    "deviceCode": {
+      "prompt": "用這個代碼登入",
+      "copy": "複製代碼",
+      "copied": "已複製代碼",
+      "copyFailed": "複製失敗",
+      "open": "在本裝置開啟",
+      "openFailed": "無法開啟連結",
+      "then": "在開啟的頁面輸入代碼並完成登入，然後點「交還給 Agent」。"
+    },
+    "nothingLeft": "這裡沒有需要你填寫的了。",
+    "dialogNote": "只會填進電腦上的這一處，不會交給 Agent，也不會儲存。",
+    "qr": {
+      "open": "在本機打開 {{site}}",
+      "copyLink": "複製連結",
+      "copyText": "複製內容",
+      "copied": "已複製。",
+      "copyFailed": "無法複製，請重試。",
+      "loading": "正在取得 QR 碼…",
+      "scanned": "已掃碼，等你在手機上確認。確認後會自動繼續。",
+      "hint": "用手機掃描這個碼完成登入。登入後會自動繼續。",
+      "hintLink": "用手機掃描這個碼，或在本機打開連結完成登入。登入後會自動繼續。",
+      "copyImage": "複製圖片",
+      "imageCopied": "已複製圖片。",
+      "openFailed": "沒能打開這個連結。可以用手機掃描這個碼。",
+      "alt": "電腦上的 QR 碼。點擊會點在電腦上的這個碼上。",
+      "failed": "沒能取得 QR 碼，點擊重試。"
     }
   },
   "commandPalette": {

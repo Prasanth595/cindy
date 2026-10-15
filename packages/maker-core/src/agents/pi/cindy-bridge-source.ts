@@ -3700,10 +3700,9 @@ class CindyMcpGateway {
       name: CINDY_MCP_CALL_TOOL,
       label: 'Call a Cindy MCP tool',
       description:
-        'Invoke a Cindy MCP tool by its exact server and tool names plus args as an object. Inspect the exact input ' +
-        'schema with cindy_mcp_list_tools first when you have not used that tool before in this conversation; ' +
-        'calling an uninspected tool is recorded and auto-disclosed. If the server rejects the arguments, the error ' +
-        'repeats that schema.',
+        'Invoke a tool after inspecting its exact input schema with cindy_mcp_list_tools. Pass the exact server and ' +
+        'tool names plus args as an object; omit args for tools that take no parameters. ' +
+        'If the server rejects the arguments, the error repeats that schema.',
       parameters: {
         type: 'object',
         properties: {
@@ -3711,11 +3710,11 @@ class CindyMcpGateway {
           tool: { type: 'string', description: 'Exact tool name from cindy_mcp_list_tools.' },
           args: {
             type: 'object',
-            description: 'Arguments for the selected tool as a JSON object.',
+            description: 'Arguments for the selected tool as a JSON object; omit when the selected tool takes none.',
             additionalProperties: true,
           },
         },
-        required: ['server', 'tool', 'args'],
+        required: ['server', 'tool'],
         additionalProperties: false,
       },
       execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => this.executeCall(params, signal),

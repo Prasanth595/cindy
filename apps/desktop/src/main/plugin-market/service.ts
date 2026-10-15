@@ -48,6 +48,7 @@ import {
 } from '../../shared/pluginMarket.js';
 import { getAuthState, getCurrentUserId } from '../authManager.js';
 import {
+  confirmLegacyLibraryReattach,
   getGhostManager,
   hasPendingGhostCalls,
   hasRunningGhostCindyWork,
@@ -2317,12 +2318,27 @@ export class PluginMarketService {
               inspected.packageSha256,
             );
       requireSameMarketOwner(owner);
+      // Asked only beside a first-install prompt the user just answered;
+      // background and default installs never stop for it.
+      const reclaimLegacyBareInstance = consent.mode === 'confirmed' && !options.expectedInstalled &&
+        plugin.scope === 'organization' && typeof plugin.namespace === 'string' &&
+        await confirmLegacyLibraryReattach({
+          ghostId: plugin.ghostId,
+          namespace: plugin.namespace,
+          pluginId: plugin.id,
+          name: plugin.name,
+        }).catch((error: unknown) => {
+          log.warn('legacy library reattach prompt unavailable', { ghostId: plugin.ghostId, error: String(error) });
+          return false;
+        });
+      requireSameMarketOwner(owner);
       const commit = () =>
         this.commitDownloadedPackage(
           tempPath,
           plugin,
           {
             consent,
+            ...(reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
             expectedInstalled: options.expectedInstalled,
             ...(options.expectedInstalledApproval !== undefined
               ? { expectedInstalledApproval: options.expectedInstalledApproval }
@@ -2356,6 +2372,8 @@ export class PluginMarketService {
     plugin: VisiblePluginSummary | VisiblePluginDetail,
     options: {
       consent: GhostInstallConsentDecision;
+      /** The user agreed to reattach the library left under the bare id. */
+      reclaimLegacyBareInstance?: boolean;
       expectedInstalledApproval?: string;
       sourceReplacementMode: ServerSourceReplacementMode;
       beforeCommitInLock?: () => void;
@@ -2437,6 +2455,7 @@ export class PluginMarketService {
         pluginId: plugin.id,
         version: plugin.currentRelease.version,
         consent: options.consent,
+        ...(options.reclaimLegacyBareInstance && !installedNow ? { reclaimLegacyBareInstance: true } : {}),
         ...(sourceChanged ? { sourceChanged: true } : {}),
         ...deliveryNamespaceFields(plugin),
         ...(plugin.ghostId === 'cindy-github' && plugin.scope === 'public' &&
@@ -2511,11 +2530,31 @@ export class PluginMarketService {
       (!hasDeliveryNamespace(plugin) && plugin.scope === 'organization' &&
         local.ghosts.some((candidate) => candidate.manifest.id === plugin.ghostId &&
           hasDeliveryNamespace(candidate) && candidate.namespace !== null) && target === plugin));
+    // A recovered legacy route may already name the current release without
+    // having its approved package evidence. Reinstall through the verified
+    // market update transaction; neither the route nor the manifest grants trust.
+    let needsSourceRecovery = false;
+    if (matchesUpdateRoute && ghost?.approval.state === 'approved' && identity && record &&
+        record.releaseId === plugin.currentRelease.id &&
+        record.sha256 === plugin.currentRelease.sha256 &&
+        record.scope === 'organization') {
+      const user = getAuthState().user;
+      const manager = getGhostManager();
+      const physicalId = installedGhostPhysicalRelId(ghost);
+      const evidence = manager.approvedInstallEvidence(physicalId);
+      if (user?.membershipKind === 'org' && record.organizationId === user.orgId &&
+          evidence && manager.readApprovedInstallOriginStrict(physicalId) !== 'agent-forge' &&
+          installedIdentityMatchesManifest(identity, evidence.approvedManifest)) {
+        needsSourceRecovery = evidence.packageSha256 === null
+          ? evidence.legacyMigrated
+          : record.source === 'legacy-adopted' && evidence.packageSha256 === record.sha256;
+      }
+    }
     const installState: PluginMarketItem['installState'] = conflict
       ? 'conflict'
       : !matchesUpdateRoute
         ? 'not-installed'
-        : record?.releaseId === plugin.currentRelease.id
+        : record?.releaseId === plugin.currentRelease.id && !needsSourceRecovery
           ? 'installed'
           : 'update-available';
     const projectedTarget = matchesUpdateRoute && !hasDeliveryNamespace(target) &&

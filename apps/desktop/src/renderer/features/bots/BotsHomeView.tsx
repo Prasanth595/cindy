@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { ConnectProviderCard } from '@/components/onboarding/ConnectProviderCard';
@@ -662,6 +663,18 @@ export function BotSettings({
                 autosave.onEdit('instant');
               }}
             />
+            <div className="mt-5 flex items-start gap-3 border-t border-[var(--border-default)] pt-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-13 font-medium text-[var(--text-primary)]">{t('bots.capabilities.inputHandoff.title')}</p>
+                <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t('bots.capabilities.inputHandoff.description')}</p>
+              </div>
+              <Switch
+                aria-label={t('bots.capabilities.inputHandoff.title')}
+                className="mt-0.5 shrink-0"
+                checked={capabilities.inputHandoff !== false}
+                onCheckedChange={(value) => updateCapability('inputHandoff', value === true)}
+              />
+            </div>
           </div>
         )}
         {page === 'history' ? (

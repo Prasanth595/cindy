@@ -47,7 +47,7 @@ export interface ExecutorCaptureHooks {
   noteOpaqueWrite(): void;
 }
 
-/** `session` 仅免除当前执行器的分享凭证确认，普通权限上限仍由 gate 判断。 */
+/** `session` 免除当前任务后续的分享凭证确认，普通权限上限仍由 gate 判断。 */
 export type ExecutorConfirmation = boolean | 'session';
 
 export interface RemoteExecutorOptions {
@@ -68,6 +68,11 @@ export interface RemoteExecutorOptions {
   confirm?(action: ExecutorAction): Promise<ExecutorConfirmation>;
   /** 与 confirm 一起提供：git 查看内容、打出 git 配置的命令先在本机核实，读不到凭证时不弹卡。 */
   gitCredentials?: GitCredentialHistory;
+  /**
+   * 「本任务总是允许」的任务级记录(credentialGrants.ts，由启动方按当前原始权限档写入)：Agent 实例被系统
+   * 回收重建后据此恢复；缺省时只在本执行器内有效。
+   */
+  credentialGrant?: { remember(): void; forget(): void; watch?(revoke: () => void): () => void };
 }
 
 export class ExecutorRequestError extends Error {
@@ -120,8 +125,14 @@ export class RemoteExecutor {
   private readonly writeHooks: FileWriteHooks;
   private closed = false;
   private permissionGeneration = 0;
+  private credentialConfirmationTail?: Promise<void>;
+  /** 当前占着确认排队位置的请求的放行函数。 */
+  private readonly credentialSlotReleases = new Set<() => void>();
+  private readonly unwatchCredentialGrant?: () => void;
 
   constructor(private readonly opts: RemoteExecutorOptions) {
+    // 任务级授权在别处被删除(如 Agent 重建期间用户改了权限档)：收回本执行器已恢复的授权。
+    this.unwatchCredentialGrant = opts.credentialGrant?.watch?.(() => this.revokeCredentialGrant());
     this.workspace = opts.workspace;
     this.gate = opts.gate;
     this.rg = createRipgrepRunner(opts.rgPath);
@@ -141,6 +152,23 @@ export class RemoteExecutor {
   setGateMode(mode: ExecutorGateMode): void {
     this.permissionGeneration += 1;
     this.gate.setMode(mode);
+    this.releaseCredentialQueue();
+    this.opts.credentialGrant?.forget();
+  }
+
+  /** 撤销分享凭证的任务授权：与权限档变化一样清掉授权，并作废等待中的确认。 */
+  private revokeCredentialGrant(): void {
+    this.permissionGeneration += 1;
+    this.gate.setMode(this.gate.getMode());
+    this.releaseCredentialQueue();
+  }
+
+  /**
+   * 等待中的确认已作废(权限档变化或授权撤销)：放开它们占着的排队位置，之后的请求不必等旧卡；
+   * 旧卡之后的回答仍按 generation 丢弃。
+   */
+  private releaseCredentialQueue(): void {
+    for (const release of [...this.credentialSlotReleases]) release();
   }
 
   /** 本机用户在确认卡上允许了一个操作。 */
@@ -160,9 +188,9 @@ export class RemoteExecutor {
    * 没有确认通道或任务已结束时返回 false。
    */
   async confirm(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> {
-    if (this.closed || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
+    if (this.closed || signal?.aborted || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
     const permissionGeneration = this.permissionGeneration;
-    // 只有要核实的 git 命令才在弹卡前等核实结果，其余操作照旧立即弹卡。
+    // 只有要核实的 git 命令才在弹卡前等核实结果；核实通过不弹卡，也不必排在其他确认卡后面。
     const gitCheck = this.gitReadsCheck(action, signal);
     if (gitCheck && await gitCheck) {
       // 核实期间任务结束、请求被取消或权限已切换：同样不放行。
@@ -170,16 +198,48 @@ export class RemoteExecutor {
       this.gate.recordCredentialExemption(action);
       return true;
     }
-    const allowed = await this.opts.confirm(action).catch(() => false);
-    // 等确认期间任务结束、请求被取消或权限已切换：不接受旧确认。
-    if ((allowed !== true && allowed !== 'session') || this.closed || signal?.aborted
-      || permissionGeneration !== this.permissionGeneration) return false;
-    if (allowed === 'session') {
-      this.gate.allowCredentialsForSession();
-      if (this.gate.getMode() === 'full') return true;
+    // 核实需要时间：期间请求被取消就不再排队(abort 事件不会重放给之后登记的监听)。
+    if (gitCheck && (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration)) return false;
+    // 同一任务可能并行调用工具。只排队确认，不排队执行；前一张卡建立任务授权后，
+    // 后续请求重新检查，避免已经弹出的多张卡仍逐一等待用户回答。
+    // 排队位置要等前一个位置放行、且自己的卡处理完才放行。
+    const previous = this.credentialConfirmationTail;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const slot = previous ? previous.then(() => settled) : settled;
+    this.credentialConfirmationTail = slot;
+    this.credentialSlotReleases.add(settle);
+    // 自己的请求取消后立即让出：还在排队就不再等(后面的请求仍等前一张卡)；
+    // 卡已弹出就不再挡住后面的请求，这张卡之后的回答会被丢弃。
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      onAbort = () => { settle(); resolve(); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      if (previous) await Promise.race([previous, aborted]);
+      if (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration) return false;
+      // 调用方仍会重新检查普通权限上限；这里只免除已授权的分享凭证确认。
+      if (!this.gate.needsCredentialConsent(action)) return true;
+      const allowed = await this.opts.confirm(action).catch(() => false);
+      // 等确认期间任务结束、请求被取消或权限已切换：不接受旧确认。
+      if ((allowed !== true && allowed !== 'session') || this.closed || signal?.aborted
+        || permissionGeneration !== this.permissionGeneration) return false;
+      if (allowed === 'session') {
+        this.gate.allowCredentialsForSession();
+        this.opts.credentialGrant?.remember();
+        if (this.gate.getMode() === 'full') return true;
+      }
+      this.gate.recordApproval(action);
+      return true;
+    } finally {
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      this.credentialSlotReleases.delete(settle);
+      settle();
+      void slot.then(() => {
+        if (this.credentialConfirmationTail === slot) this.credentialConfirmationTail = undefined;
+      });
     }
-    this.gate.recordApproval(action);
-    return true;
   }
 
   /** 要在本机核实的 git 命令返回核实结果(true = 读不到凭证)；不需要核实的返回 null。 */
@@ -202,6 +262,7 @@ export class RemoteExecutor {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.unwatchCredentialGrant?.();
     await this.shell.close();
   }
 

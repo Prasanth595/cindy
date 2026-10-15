@@ -470,13 +470,12 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
-      "usage": "使用量で分散",
+      "quotaFirst": "Claude サブスクリプションの使用量を取得できる場合、クォータのリセットが近いパソコンを優先し、次に使用量の少ないものを選びます。同程度ならグループの割り当て方式で選びます",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
         "order": "上のパソコンを優先",
-        "weight": "重みの比率で",
-        "usage": "5時間・週間の使用量で分散"
+        "weight": "重みの比率で"
       }
     },
     "autoSwitch": {
@@ -751,7 +750,10 @@
     "copy": "このパソコンにコピー",
     "paste": "リモートパソコンに貼り付け",
     "clipboardSyncHint": "このウィンドウが最前面にある間、テキスト、画像、リッチテキストを双方向に同期します。",
-    "credentialRequired": "Mac のパスワードを確認してください。確認できない場合は両方のパソコンで Cindy を更新してください。"
+    "credentialRequired": "Mac のパスワードを確認してください。確認できない場合は両方のパソコンで Cindy を更新してください。",
+    "handoffEnded": "この代理入力はすでに終了しているため、表示するウィンドウがありません。",
+    "handoffUnavailable": "このコンピュータではこのウィンドウだけを表示できません。そのコンピュータで Cindy を更新するか、リモートデスクトップをオンにしてください。",
+    "handoffWindow": "代理入力 · {{app}}"
   },
   "ipcError": {
     "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
@@ -1637,6 +1639,7 @@
         "done": "完了しました ✓",
         "error": "実行に失敗しました",
         "needsReply": "返信が必要です",
+        "inputHandoff": "代理入力が必要です",
         "externalDone": "Cindy · セッション「{{title}}」が完了しました ✓",
         "externalError": "Cindy · セッション「{{title}}」の実行に失敗しました",
         "externalNeedsReply": "Cindy · セッション「{{title}}」への返信が必要です",
@@ -5259,8 +5262,9 @@
           "descriptions": {
             "unsupported": "この保護機能は macOS でのみ利用できます。",
             "disabled": "Cindy の実行中、Codex が Work Louder キーボード に接続するのを防ぎます。Cindy 自体は制限されません。",
-            "recovery-required": "保護は停止しましたが、NODE_OPTIONS は安全に復元されていません。再度有効にする前に復元を再試行してください。",
-            "error": "Codex の保護を更新できませんでした。以前の NODE_OPTIONS は保持されているか、復元待ちです。"
+            "paused": "他のアプリに影響するため、この保護機能は一時停止しています。問題が続く場合は、旧バージョンの Cindy を終了し、影響を受けたアプリを完全に終了してから開き直してください。",
+            "recovery-required": "保護機能は一時停止していますが、以前の起動設定が残っています。「環境を復元」を選択し、完了後に影響を受けたアプリを完全に終了してから開き直してください。",
+            "error": "以前の保護設定を読み取るか削除することができませんでした。保護機能は一時停止したままです。"
           },
           "restartRequired": "適用するには Codex を完全に終了して再起動"
         },
@@ -6532,6 +6536,9 @@
         "slotWorkspace": "ワークスペースセッション"
       },
       "commandPaletteTag": "プラグインコマンド",
+      "commandPaletteSource": {
+        "team": "チーム共有"
+      },
       "library": {
         "title": "永続ライブラリ",
         "loading": "ライブラリ情報を読み込み中…",
@@ -6578,7 +6585,23 @@
         "installLocationPickedPrefix": "選択済み:",
         "installLocationChange": "変更…",
         "bindAfterInstallFailed": "カスタム保存場所の設定に失敗したため、既定の場所に戻しました",
-        "cancel": "キャンセル"
+        "cancel": "キャンセル",
+        "reattachTitle": "このプラグインの以前の作品データを引き継ぎますか?",
+        "reattachDescription": "このコンピューターには、このプラグインを以前インストールしたときの作品データが残っています。以前ローカルから読み込み、その後アンインストールしたバージョンのものかもしれません。引き継ぐと、以前のキャンバスや画像を今回インストールしたプラグインで引き続き使えます。引き継がない場合は空の状態から始まり、以前のデータはこのコンピューターに残ります。",
+        "reattachConfirm": "引き継ぐ",
+        "reattachSkip": "引き継がない",
+        "legacyFoundBanner": "このコンピューターには、このプラグインが以前残した作品データ({{size}} · {{count}} ファイル)があり、現在のインストールでは使われていません。",
+        "legacyReattach": "以前の作品データを引き継ぐ",
+        "legacyReattachBusy": "引き継ぎ中…",
+        "legacyReattachConfirmTitle": "以前の作品データを引き継ぎますか?",
+        "legacyReattachConfirmDescription": "プラグインは以前の作品データを使うようになります。現在の作品データはごみ箱に移動され 30 日間保持された後、完全に消去されます。",
+        "legacyReattachConfirmText": "引き継ぐ",
+        "legacyReattachDone": "以前の作品データを引き継ぎました",
+        "legacyReattachFailed": "引き継ぎに失敗しました",
+        "legacyReattachNeedsRestart": "このプラグインのキャッシュを消去できませんでした。Cindy を再起動してからプラグインを使ってください。",
+        "legacyInUseBanner": "このコンピューター上の別のインストール(ローカル版など)が、このプラグインの以前の作品データをまだ使っています。そのインストールをアンインストールすると、ここで引き継げます。",
+        "legacyFoundUnknownBanner": "このコンピューターには、このプラグインが以前残した可能性のある作品データ({{size}} · {{count}} ファイル)があります。出所の記録がなく、現在のインストールでは使われていません。",
+        "legacyReattachUnknownSource": "この作品データには出所の記録がありません。手動またはスクリプトでコピーされた可能性があります。このプラグインのものか確認してください。"
       },
       "updateConfirm": {
         "title": "プラグイン「{{name}}」を更新しますか?",
@@ -8961,6 +8984,14 @@
         "attachmentsFailed": "添付ファイルを送信できませんでした。ファイルが残っているか確認するか、削除してから再試行してください",
         "folderNotSupported": "フォルダーは添付できません。中のファイルを選んでください"
       },
+      "quote": {
+        "replyingTo": "{{name}} を引用",
+        "remove": "引用を外す",
+        "jumpLabel": "{{name}} の元のメッセージを表示：{{summary}}",
+        "deleted": "元のメッセージは削除されました",
+        "unavailable": "元のメッセージは閲覧できる履歴にありません",
+        "attachments": "{{name}} など {{total}} 件"
+      },
       "timeline": {
         "loadEarlier": "以前のメッセージを表示",
         "loadEarlierFailed": "以前のメッセージを読み込めませんでした。もう一度お試しください",
@@ -9059,7 +9090,8 @@
         "requestTimeout": "操作の結果をまだ確認できません。更新して結果を確認してから再試行してください。",
         "permissionDenied": "このグループを管理する権限がありません。",
         "serviceError": "チャットサービスで処理を完了できません。しばらくしてから再試行してください。",
-        "groupArchived": "このグループはアーカイブ済みのため操作できません。"
+        "groupArchived": "このグループはアーカイブ済みのため操作できません。",
+        "quoteUnavailable": "引用したメッセージは削除されたか、表示できなくなりました。引用を外したので、もう一度送信してください。"
       },
       "organizer": "まとめ役",
       "plan": {
@@ -9091,9 +9123,11 @@
         "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
       },
       "server": {
-        "reply": "返信",
+        "quoteReply": "引用して返信",
+        "startTopic": "スレッドを作成",
+        "openTopic": "スレッドを表示 · {{count}} 件の返信",
+        "topic": "スレッド",
         "replies": "返信",
-        "replyCount": "{{count}} 件の返信",
         "replyPlaceholder": "このメッセージに返信。@ でパートナーを指定できます…",
         "sendReply": "返信を送信",
         "addReaction": "リアクションを追加",
@@ -9237,7 +9271,11 @@
       "configure": "設定を開く",
       "empty_toolset": "この実行環境には利用できる内蔵ツールがありません。",
       "empty_mcp": "カスタム MCP サーバーはまだ追加されていません。",
-      "empty_skill": "選択できるスキルはありません。"
+      "empty_skill": "選択できるスキルはありません。",
+      "inputHandoff": {
+        "title": "代理入力",
+        "description": "サインイン情報、パスワード、確認コードなど本人の入力が必要なとき、この仲間がいずれかのデバイスでの入力を依頼できます。入力した内容が仲間に渡ることはありません。"
+      }
     },
     "guided": {
       "title": "パートナーを作成",
@@ -9696,6 +9734,21 @@
       "addRemoteProject": "リモートプロジェクトを追加"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "無料",
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} から",
+        "units": {
+          "token": "トークン",
+          "character": "文字",
+          "image": "枚",
+          "second": "秒",
+          "minute": "分",
+          "request": "リクエスト",
+          "megapixel": "メガピクセル",
+          "megapixelSecond": "メガピクセル·秒"
+        }
+      },
       "budgetNeedsApiKey": "このモデルは設定で API key を構成してから使用できます",
       "paymentRequired": {
         "badge": "有料",
@@ -10157,7 +10210,7 @@
       "saveEdit": "テキストを保存"
     },
     "sharedProviderCredential": {
-      "description": "このタスクは共有されたプロバイダーを使うため、Agent が読み取った内容は共有元または共有元が手配したパソコンを経由します。この操作は認証情報（鍵や .env など）に関わる可能性があり、確認が必要です。「このセッションで常に許可」を選ぶと、このタスクで共有に伴う認証情報の確認を繰り返しません。タスクを開き直すか権限モードを変更すると、再度確認します。"
+      "description": "このタスクは共有されたプロバイダーを使うため、Agent が読み取った内容は共有元または共有元が手配したパソコンを経由します。この操作は認証情報（鍵や .env など）に関わる可能性があり、確認が必要です。「このセッションで常に許可」を選ぶと、このタスクで共有に伴う認証情報の確認を繰り返しません。権限モードやプランモードを変更するか Cindy を終了すると、再度確認します。"
     },
     "mediaDownload": {
       "title": "生成されたメディアをダウンロードしますか？",
@@ -11539,7 +11592,8 @@
         "awaitingPermission": "承認待ち",
         "awaitingQuestion": "返信待ち",
         "awaitingPlan": "プランの確認待ち",
-        "awaitingPluginSetup": "プラグイン設定待ち"
+        "awaitingPluginSetup": "プラグイン設定待ち",
+        "awaitingInputHandoff": "代理入力待ち"
       },
       "showAllSessions": "すべて表示 {{count}} 件",
       "allSessions": "すべてのセッション",
@@ -13105,6 +13159,125 @@
       "allowDirs": "これらのファイルのフォルダーも許可(このセッション中、同じフォルダーのメディアファイルは再確認しません)",
       "allow": "許可",
       "deny": "拒否"
+    }
+  },
+  "inputHandoff": {
+    "originWarning": {
+      "insecure": "このページは安全な接続を使っていません。入力内容が他人に読まれる可能性があります。",
+      "ip-address": "このページはドメインではなく IP アドレスを使っています。想定したサイトか確認してください。",
+      "local-host": "このページはこのコンピュータ上のサービスから表示されています。想定したアプリか確認してください。",
+      "local-file": "このページはローカルファイルです。想定した内容か確認してください。",
+      "punycode": "このアドレスには特殊な文字が含まれ、別のサイトを装っている可能性があります。よく確認してください。",
+      "embedded-frame": "入力欄はページに埋め込まれた別サイトの中にあります。提供元が信頼できるか確認してください。"
+    },
+    "agentControlled": "この画面は Agent が開きました。入力する前に、本当にサインインしたい場所か確認してください。",
+    "error": {
+      "decision": "操作が届きませんでした。もう一度お試しください。",
+      "stale": "画面が変わりました。最新の内容で操作してください。",
+      "submit": "入力が届きませんでした。もう一度お試しください。"
+    },
+    "terminal": {
+      "succeeded": "Agent に戻しました。",
+      "cancelled": "代理入力をキャンセルしました。",
+      "failed": "代理入力は終了しました。",
+      "expired": "待ち時間が長すぎたため、代理入力は終了しました。"
+    },
+    "failure": {
+      "permission": "Cindy にこのコンピュータの画面を読む権限がありません。システム設定のアクセシビリティで Cindy を許可してください。",
+      "target_gone": "対象のウインドウが閉じられました。",
+      "unreadable": "この画面を読み取れません。ホストのコンピュータで直接完了してから Agent に戻してください。",
+      "action_failed": "直前の操作が反映されませんでした。画面を確認してもう一度お試しください。",
+      "timeout": "待ち時間が長すぎたため、代理入力は終了しました。",
+      "unsupported": "このコンピュータはまだ代理入力に対応していません。",
+      "origin_changed": "入力前にページが変わったため、何も入力していません。現在のページを確認してからもう一度入力してください。",
+      "picture_unavailable": "このステップの画面を表示できませんでした。システム設定で Cindy の画面収録を許可し、ウインドウが最小化されていないか確認してください。",
+      "screen_locked": "このコンピュータの画面はロックされています（ディスプレイのスリープでもロックされます）。スリープを解除してロックを外してから、Agent にもう一度試すよう伝えてください。",
+      "nothing_to_fill": "この画面には入力が必要な項目がないため、Agent がそのまま続けます。"
+    },
+    "phase": {
+      "reading": "画面を読み取っています…",
+      "working": "入力しています…",
+      "finishing": "完了したようです。{{count}} 秒後に Agent に戻します。",
+      "finishingNow": "完了したようです。Agent に戻しています…"
+    },
+    "action": {
+      "stay": "まだ終わっていない",
+      "done": "Agent に戻す",
+      "claim": "ここで対応",
+      "picture": "画面を見る",
+      "backToForm": "フォームに戻る",
+      "liveView": "ライブ表示",
+      "fill": "入力",
+      "skip": "スキップ",
+      "continue": "続ける",
+      "close": "キャンセル",
+      "showPassword": "パスワードを表示",
+      "hidePassword": "パスワードを隠す",
+      "scan": "スキャン"
+    },
+    "remoteUnavailable": "このコンピュータはリモートから入力を受け取れません。ホストのコンピュータでこのステップを完了してから Agent に戻してください。",
+    "unnamedField": "入力欄",
+    "passwordField": "パスワード",
+    "codeField": "確認コード",
+    "filledHint": "すでに入力済みです。空欄のままにすると変更しません。",
+    "record": {
+      "doneOn_one": "オーナーが {{device}} で {{count}} ステップの入力を完了しました",
+      "doneOn_other": "オーナーが {{device}} で {{count}} ステップの入力を完了しました",
+      "doneHost_one": "オーナーがホストのコンピュータで {{count}} ステップの入力を完了しました",
+      "doneHost_other": "オーナーがホストのコンピュータで {{count}} ステップの入力を完了しました",
+      "donePhone_one": "オーナーがスマートフォンで {{count}} ステップの入力を完了しました",
+      "donePhone_other": "オーナーがスマートフォンで {{count}} ステップの入力を完了しました",
+      "doneElsewhere_one": "オーナーが別のデバイスで {{count}} ステップの入力を完了しました",
+      "doneElsewhere_other": "オーナーが別のデバイスで {{count}} ステップの入力を完了しました",
+      "done": "代理入力が完了しました",
+      "nothingToFill": "入力不要のため Agent に戻しました",
+      "cancelled": "代理入力をキャンセルしました",
+      "expired": "代理入力がタイムアウトしました",
+      "failed": "代理入力は完了しませんでした"
+    },
+    "holder": {
+      "elsewhere": "{{device}} で対応中です。ここで引き継ぐこともできます。",
+      "host": "ホストのコンピュータ",
+      "phone": "スマートフォン",
+      "otherDevice": "別のデバイス"
+    },
+    "agentNote": "Agentからの補足：{{note}}",
+    "picture": {
+      "hint": "画面上の位置をタップすると、Cindy がホストのコンピュータで同じ位置をクリックします。",
+      "open": "このステップの画面を表示",
+      "alt": "対象ウインドウの画面",
+      "loading": "画面を取得しています…",
+      "error": "画面を取得できませんでした。もう一度お試しください。",
+      "field": "選択中の入力欄",
+      "type": "入力",
+      "typeEnter": "入力して Return"
+    },
+    "deviceCode": {
+      "prompt": "このコードでサインイン",
+      "copy": "コードをコピー",
+      "copied": "コードをコピーしました",
+      "copyFailed": "コピーできませんでした",
+      "open": "このデバイスで開く",
+      "openFailed": "リンクを開けませんでした",
+      "then": "開いたページでコードを入力してサインインを完了したら、「Agent に戻す」を選んでください。"
+    },
+    "nothingLeft": "ここで入力が必要な項目はありません。",
+    "dialogNote": "コンピュータ上のこの場所にだけ入力されます。Agent に渡したり保存したりすることはありません。",
+    "qr": {
+      "open": "この端末で {{site}} を開く",
+      "copyLink": "リンクをコピー",
+      "copyText": "内容をコピー",
+      "copied": "コピーしました。",
+      "copyFailed": "コピーできませんでした。もう一度お試しください。",
+      "loading": "QR コードを取得しています…",
+      "scanned": "スキャンしました。スマートフォンで確認してください。確認後は自動で続行します。",
+      "hint": "スマートフォンでこのコードを読み取ってログインしてください。ログイン後は自動で続行します。",
+      "hintLink": "スマートフォンでこのコードを読み取るか、この端末でリンクを開いてログインしてください。ログイン後は自動で続行します。",
+      "copyImage": "画像をコピー",
+      "imageCopied": "画像をコピーしました。",
+      "openFailed": "このリンクを開けませんでした。スマートフォンでコードを読み取ってください。",
+      "alt": "コンピュータ上の QR コード。クリックするとコンピュータ上の同じ位置をクリックします。",
+      "failed": "QR コードを取得できませんでした。クリックして再試行してください。"
     }
   },
   "commandPalette": {

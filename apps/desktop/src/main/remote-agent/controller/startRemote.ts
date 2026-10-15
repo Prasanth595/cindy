@@ -19,6 +19,7 @@ import {
 import type { AgentEvent, AgentSessionHandle, StartSessionOptions } from '@cindy/maker-core';
 
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
+import { credentialGrantPermission, type CredentialGrantRecord } from '../executor/credentialGrants';
 import { RemoteExecutor, type ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor, type ExecutorAction } from '../executor/gate';
@@ -92,9 +93,10 @@ export interface StartRemoteAgentDeps {
   /**
    * 供应商分享的受邀者任务(docs/product-rules/provider-sharing.md §9 第 7 条)：读写凭证类文件、执行读取
    * 凭证的命令不论权限档都要本机用户确认，没有批准时在本机弹确认卡；`description` 是卡上的说明。
-   * 同账号任务不提供。
+   * 同账号任务不提供。`grant` 是这个任务在这个分享上的「本任务总是允许」记录，Agent 实例被系统回收
+   * 重建后据此恢复；缺省时授权只在本次启动的执行器内有效。
    */
-  credentialConsent?: { description: string };
+  credentialConsent?: { description: string; grant?: CredentialGrantRecord };
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** 本机 Codex 程序(给对方的 Codex 提供 exec-server 执行环境)；缺省时不提供。 */
@@ -223,10 +225,16 @@ export async function startRemoteAgentSession(
   let writableDirs = [...new Set(opts.writableDirs ?? [])];
   const workspace = new ExecutorWorkspace({ workingDir: opts.workingDir, extraDirs: [...extraDirs, ...writableDirs] });
   const applyDirs = () => workspace.setExtraDirs([...new Set([...extraDirs, ...writableDirs])]);
+  let permissionMode = opts.permissionMode;
+  let planMode = opts.planMode === true;
   const credentialConsent = deps.credentialConsent;
-  const gate = new ExecutorGate(workspace, executorGateModeFor(opts.permissionMode, opts.planMode === true), Date.now, {
+  const gate = new ExecutorGate(workspace, executorGateModeFor(permissionMode, planMode), Date.now, {
     confirmCredentials: credentialConsent !== undefined,
   });
+  // 同一任务、同一分享、原始权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
+  const grant = credentialConsent?.grant;
+  const grantPermission = () => credentialGrantPermission(permissionMode, planMode);
+  if (grant?.restore(grantPermission())) gate.allowCredentialsForSession();
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({
     workspace,
@@ -241,11 +249,18 @@ export async function startRemoteAgentSession(
           confirm: async (action: ExecutorAction) =>
             controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
           gitCredentials: sharedGitCredentials,
+          ...(grant
+            ? {
+                credentialGrant: {
+                  remember: () => grant.remember(grantPermission()),
+                  forget: () => grant.forget(),
+                  watch: (revoke: () => void) => grant.watch(revoke),
+                },
+              }
+            : {}),
         }
       : {}),
   });
-  let permissionMode = opts.permissionMode;
-  let planMode = opts.planMode === true;
   const vendorOptions: Record<string, unknown> = { ...(opts.vendorOptions ?? {}) };
   const mcp = await deps.prepareMcp({ kind, opts, vendorOptions }).catch((error) => {
     void executor.close();

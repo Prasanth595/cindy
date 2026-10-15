@@ -26,7 +26,6 @@ import { Select } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
-import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
@@ -43,10 +42,16 @@ import {
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
 import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersion';
-import { providerWeeklyQuotaSource } from '../../../shared/providerQuotaSource';
 import { ProviderGroupAddDialog } from './ProviderGroupAddDialog';
 import { useProviderGroup } from './useProviderGroup';
 
+/**
+ * Claude 订阅的配额排序已对所有组策略生效(provider-groups.md §5，2026-10-15)，不再单列「用量均衡」；
+ * 旧组存的 `usage` 与最少占用挑法相同，按最少占用显示，用户改选时才写回新值。
+ */
+const SELECTABLE_STRATEGIES = PROVIDER_GROUP_STRATEGIES.filter((value) => value !== 'usage');
+const selectableStrategy = (strategy: ProviderGroupStrategy): ProviderGroupStrategy =>
+  strategy === 'usage' ? 'least' : strategy;
 const LIMIT_OPTIONS = Array.from({ length: PROVIDER_GROUP_MAX_LIMIT }, (_, i) => String(i + 1));
 const WEIGHT_OPTIONS = ['1', '2', '3', '5', '10', '20', '50', String(PROVIDER_GROUP_MAX_WEIGHT)];
 
@@ -54,9 +59,6 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
   const group = useProviderGroup(providerId, { live: true });
-  const { providers } = useProviders();
-  const provider = providers.find((entry) => entry.id === providerId);
-  const supportsUsage = provider && providerWeeklyQuotaSource({ ...provider, connected: true, suspended: false }) === 'claude';
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const config = group.view?.config ?? null;
@@ -173,21 +175,26 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
                 onRemove={(label) => void removeMember(member, label)}
               />
             ))}
-            <div className="flex flex-wrap items-center gap-3 border-t border-[var(--settings-theme-card-border)] px-4 py-3">
-              <span className="text-13 text-[var(--text-primary)]">{t('providerGroup.strategy.label')}</span>
-              <SegmentedControl
-                value={config.strategy}
-                onValueChange={(strategy: ProviderGroupStrategy) => void save({ ...config, strategy })}
-                aria-label={t('providerGroup.strategy.label')}
-                options={PROVIDER_GROUP_STRATEGIES.filter((value) => value !== 'usage' || supportsUsage || config.strategy === 'usage').map((value) => ({
-                  value,
-                  label: t(`providerGroup.strategy.${value}`),
-                  disabled: saving,
-                }))}
-              />
-              <span className="flex-1" />
-              <span className="text-12 text-[var(--text-secondary)]">
-                {t(`providerGroup.strategy.description.${config.strategy}`)}
+            <div className="flex flex-col gap-1.5 border-t border-[var(--settings-theme-card-border)] px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-13 text-[var(--text-primary)]">{t('providerGroup.strategy.label')}</span>
+                <SegmentedControl
+                  value={selectableStrategy(config.strategy)}
+                  onValueChange={(strategy: ProviderGroupStrategy) => void save({ ...config, strategy })}
+                  aria-label={t('providerGroup.strategy.label')}
+                  options={SELECTABLE_STRATEGIES.map((value) => ({
+                    value,
+                    label: t(`providerGroup.strategy.${value}`),
+                    disabled: saving,
+                  }))}
+                />
+                <span className="flex-1" />
+                <span className="text-12 text-[var(--text-secondary)]">
+                  {t(`providerGroup.strategy.description.${selectableStrategy(config.strategy)}`)}
+                </span>
+              </div>
+              <span className="text-12 leading-[1.4] text-[var(--text-tertiary)]">
+                {t('providerGroup.strategy.quotaFirst')}
               </span>
             </div>
             <div className="flex items-start justify-between gap-3 border-t border-[var(--settings-theme-card-border)] px-4 py-3">

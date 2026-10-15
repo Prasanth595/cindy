@@ -94,6 +94,7 @@ import type {
   ContinuationInFlightProjectionCapability,
 } from '@/hooks/useCCAgentChat';
 import { findLastUserInputClientId, isAutoResumeRowInFlight } from '@/lib/autoResumePresentation';
+import { InputHandoffRecordRow, readInputHandoffRecordData } from '@/features/input-handoff/InputHandoffRecordRow';
 export { findLastUserInputClientId, isAutoResumeRowInFlight } from '@/lib/autoResumePresentation';
 import { Spinner } from '@/components/ui/spinner';
 import { useMessageNavRailPreference } from '@/hooks/useMessageNavRailPreference';
@@ -6754,6 +6755,10 @@ const MessageItem = memo(function MessageItem({
 }) {
   // silent-stop 自动续跑行(isSyntheticTrigger + systemCardType):渲染成
   // 「已自动继续」分隔线,必须在 synthetic early-return 之前检查,否则分隔线被吞。
+  if (message.role === 'user' && message.systemCardType === 'input-handoff') {
+    const record = readInputHandoffRecordData(message.systemCardData);
+    return record ? <InputHandoffRecordRow record={record} at={message.createdAt} /> : null;
+  }
   if (message.role === 'user' && message.systemCardType) {
     return (
       <SystemCard

@@ -77,6 +77,11 @@
     "planDoneGeneric": "역할 분담을 마쳤습니다",
     "olderOnComputer": "이전 메시지는 컴퓨터에서 확인하세요"
   },
+  "quote": {
+    "label": "{{name}} 인용: {{summary}}",
+    "deleted": "원본 메시지가 삭제되었습니다",
+    "attachments": "{{name}} 등 {{total}}개"
+  },
   "notice": {
     "memberJoined": "{{name}} 님이 그룹에 참여했습니다",
     "memberFailed": "{{name}} 님이 이번에는 답하지 못했습니다",
@@ -208,7 +213,8 @@
     "requestTimeout": "아직 작업 결과를 확인하지 못했어요. 새로고침하여 확인한 후 다시 시도해 주세요.",
     "permissionDenied": "이 그룹을 관리할 권한이 없어요.",
     "serviceError": "채팅 서비스에서 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
-    "groupArchived": "보관된 그룹에서는 이 작업을 수행할 수 없어요."
+    "groupArchived": "보관된 그룹에서는 이 작업을 수행할 수 없어요.",
+    "quoteUnavailable": "인용한 메시지가 삭제되었거나 더 이상 볼 수 없습니다. 인용을 해제했으니 다시 보내세요."
   },
   "followUp": {
     "next": "분담 · 다음 단계",

@@ -120,7 +120,10 @@ export class ExecutorGate {
     this.mode = mode;
   }
 
-  /** 本机用户在凭证确认卡上选择了「本任务总是允许」。授权随执行器关闭或权限档变化失效。 */
+  /**
+   * 本机用户在凭证确认卡上选择了「本任务总是允许」，或新执行器按任务级记录恢复了这项授权
+   * (credentialGrants.ts)。权限档变化即失效。
+   */
   allowCredentialsForSession(): void {
     if (this.options.confirmCredentials) this.credentialsAllowedForSession = true;
   }

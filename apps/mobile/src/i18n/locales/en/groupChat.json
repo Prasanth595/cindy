@@ -77,6 +77,11 @@
     "planDoneGeneric": "Work split finished",
     "olderOnComputer": "Earlier messages are on your computer"
   },
+  "quote": {
+    "label": "Quoting {{name}}: {{summary}}",
+    "deleted": "Original message was deleted",
+    "attachments": "{{name}} and others ({{total}} files)"
+  },
   "notice": {
     "memberJoined": "{{name}} joined the group",
     "memberFailed": "{{name}} couldn’t reply this time",
@@ -208,7 +213,8 @@
     "requestTimeout": "The result is not confirmed yet. Refresh to check before retrying.",
     "permissionDenied": "You do not have permission to manage this group.",
     "serviceError": "The chat service could not complete the request. Try again later.",
-    "groupArchived": "This group is archived. This action is unavailable."
+    "groupArchived": "This group is archived. This action is unavailable.",
+    "quoteUnavailable": "The quoted message was deleted or is no longer visible. The quote was removed. Send again."
   },
   "followUp": {
     "next": "Plan · Next step",

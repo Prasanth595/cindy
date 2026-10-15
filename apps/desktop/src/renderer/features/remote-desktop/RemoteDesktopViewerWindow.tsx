@@ -357,6 +357,12 @@ export function RemoteDesktopViewerWindow() {
         <div className="remote-viewer-heading">
           <span className="remote-viewer-title">
             {state?.target?.name ?? t('remoteDesktop.title')}
+            {state?.window && (
+              <>
+                <span aria-hidden="true"> · </span>
+                {t('remoteDesktop.handoffWindow', { app: state.window.app })}
+              </>
+            )}
           </span>
           <div className="remote-viewer-status">
             <span>
@@ -386,68 +392,71 @@ export function RemoteDesktopViewerWindow() {
             )}
           </div>
         </div>
-        <div
-          className="remote-viewer-toolgroup"
-          role="group"
-          aria-label={t('remoteDesktop.viewer.controlGroup')}
-        >
-          {state?.caps?.workspaceNavigation ? (
-            <>
+        {/* A 代输入 window view has no desktop to navigate. */}
+        {!state?.target?.handoff && (
+          <div
+            className="remote-viewer-toolgroup"
+            role="group"
+            aria-label={t('remoteDesktop.viewer.controlGroup')}
+          >
+            {state?.caps?.workspaceNavigation ? (
+              <>
+                <ViewerTool
+                  label={t('remoteDesktop.workspaceLeft')}
+                  disabled={!state.controlling || state.controlPending}
+                  onClick={() => workspaceAction('workspaceLeft')}
+                >
+                  <WorkspaceLeftIcon size={16} />
+                </ViewerTool>
+                <ViewerTool
+                  label={t('remoteDesktop.workspaceRight')}
+                  disabled={!state.controlling || state.controlPending}
+                  onClick={() => workspaceAction('workspaceRight')}
+                >
+                  <WorkspaceRightIcon size={16} />
+                </ViewerTool>
+              </>
+            ) : (
+              <>
+                <ViewerTool
+                  label={t('remoteDesktop.allWindows')}
+                  disabled={!state?.controlling || state.controlPending}
+                  onClick={() =>
+                    controller.current?.keys(
+                      state?.caps?.platform === 'darwin'
+                        ? ['ControlLeft', 'ArrowUp']
+                        : ['MetaLeft', 'Tab'],
+                    )
+                  }
+                >
+                  <AllWindowsIcon size={16} />
+                </ViewerTool>
+                <ViewerTool
+                  label={t('remoteDesktop.showDesktop')}
+                  disabled={!state?.controlling || state.controlPending}
+                  onClick={() =>
+                    // Cmd+F3 only works from the physical Mission Control key; a
+                    // synthesized F3 keycode never triggers it. F11 is the default.
+                    controller.current?.keys(
+                      state?.caps?.platform === 'darwin' ? ['F11'] : ['MetaLeft', 'KeyD'],
+                    )
+                  }
+                >
+                  <ShowDesktopIcon size={16} />
+                </ViewerTool>
+              </>
+            )}
+            {state?.caps?.omarchyMenu && (
               <ViewerTool
-                label={t('remoteDesktop.workspaceLeft')}
+                label={t('remoteDesktop.omarchyMenu')}
                 disabled={!state.controlling || state.controlPending}
-                onClick={() => workspaceAction('workspaceLeft')}
+                onClick={() => workspaceAction('omarchyMenu')}
               >
-                <WorkspaceLeftIcon size={16} />
+                <OmarchyMenuIcon size={16} />
               </ViewerTool>
-              <ViewerTool
-                label={t('remoteDesktop.workspaceRight')}
-                disabled={!state.controlling || state.controlPending}
-                onClick={() => workspaceAction('workspaceRight')}
-              >
-                <WorkspaceRightIcon size={16} />
-              </ViewerTool>
-            </>
-          ) : (
-            <>
-              <ViewerTool
-                label={t('remoteDesktop.allWindows')}
-                disabled={!state?.controlling || state.controlPending}
-                onClick={() =>
-                  controller.current?.keys(
-                    state?.caps?.platform === 'darwin'
-                      ? ['ControlLeft', 'ArrowUp']
-                      : ['MetaLeft', 'Tab'],
-                  )
-                }
-              >
-                <AllWindowsIcon size={16} />
-              </ViewerTool>
-              <ViewerTool
-                label={t('remoteDesktop.showDesktop')}
-                disabled={!state?.controlling || state.controlPending}
-                onClick={() =>
-                  // Cmd+F3 only works from the physical Mission Control key; a
-                  // synthesized F3 keycode never triggers it. F11 is the default.
-                  controller.current?.keys(
-                    state?.caps?.platform === 'darwin' ? ['F11'] : ['MetaLeft', 'KeyD'],
-                  )
-                }
-              >
-                <ShowDesktopIcon size={16} />
-              </ViewerTool>
-            </>
-          )}
-          {state?.caps?.omarchyMenu && (
-            <ViewerTool
-              label={t('remoteDesktop.omarchyMenu')}
-              disabled={!state.controlling || state.controlPending}
-              onClick={() => workspaceAction('omarchyMenu')}
-            >
-              <OmarchyMenuIcon size={16} />
-            </ViewerTool>
-          )}
-        </div>
+            )}
+          </div>
+        )}
         <div className="remote-viewer-zoom-group" role="group" aria-label={t('remoteDesktop.fit')}>
           <ViewerTool
             label={t('remoteDesktop.zoomOut')}
@@ -493,7 +502,7 @@ export function RemoteDesktopViewerWindow() {
             restoreFocus={() => activePanel.current === null}
             onOpenChange={(open) => openPanel('display', open)}
           >
-            {(state?.caps?.displays.length ?? 0) > 1 && (
+            {!state?.target?.handoff && (state?.caps?.displays.length ?? 0) > 1 && (
               <Select
                 label={t('remoteDesktop.display')}
                 className="remote-viewer-display-select"

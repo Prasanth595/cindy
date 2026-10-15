@@ -7,7 +7,8 @@ export type AgentIslandInteractionKind =
   | 'permission'
   | 'ask_user_question'
   | 'plan_review'
-  | 'plugin_setup';
+  | 'plugin_setup'
+  | 'input_handoff';
 export type AgentIslandActivityLineKind = 'user' | 'assistant' | 'status' | 'tool';
 
 /**
@@ -782,6 +783,7 @@ const AGENT_ISLAND_INTERACTION_KINDS: readonly AgentIslandInteractionKind[] = [
   'ask_user_question',
   'plan_review',
   'plugin_setup',
+  'input_handoff',
 ];
 
 /** renderer payload 的运行时校验:整体形状非法返回 null,单条非法条目丢弃。 */

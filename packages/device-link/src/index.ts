@@ -59,6 +59,7 @@ export * from "./pluginSecretSubmission.js";
 export * from "./pluginConnectionSubmission.js";
 export * from "./pluginDeviceAuthorization.js";
 export * from "./pluginOauthAuthentication.js";
+export * from "./inputHandoff.js";
 export * from "./inputDelivery.js";
 export * from "./taskMigration.js";
 export * from "./remoteAgent.js";

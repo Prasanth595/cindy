@@ -15,6 +15,7 @@ import {
   type InstalledGhost,
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
+  confirmLegacyLibraryReattach: vi.fn(async (_plugin: unknown) => false),
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
     dir: string;
@@ -103,6 +104,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  confirmLegacyLibraryReattach: (plugin: unknown) => runtime.confirmLegacyLibraryReattach(plugin),
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
@@ -231,6 +233,7 @@ const TEST_INSTALL_CONTEXT: PluginMarketInstallContext = {
   consent: { prompt: async () => true, initiator: 'user' },
 };
 import type { PluginMarketApi } from '../api';
+import { downloadVerifiedPlugin } from '../download';
 import { createOrganizationPrefixStore } from '../organizationPrefixStore';
 
 const roots: string[] = [];
@@ -249,6 +252,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 afterEach(() => {
   runtime.ghosts = [];
+  runtime.confirmLegacyLibraryReattach.mockReset();
+  runtime.confirmLegacyLibraryReattach.mockImplementation(async () => false);
   runtime.install.mockReset();
   runtime.inspect.mockReset();
   runtime.inspectedManifest = null;
@@ -538,6 +543,139 @@ function namespaceRecoveryHarness(
   h.ledger.markRemovedRecord(record, 'user-1');
   return h;
 }
+
+function sameReleaseRecoveryHarness(
+  source: 'market' | 'legacy-adopted' = 'legacy-adopted',
+  layout: 'legacy' | 'namespaced' = 'legacy',
+) {
+  vi.mocked(downloadVerifiedPlugin).mockClear();
+  const canonicalManifest = normalizedManifest(manifest('helper'));
+  const dir = installOrganizationHelper(canonicalManifest as unknown as Record<string, unknown>, layout);
+  const item = summary({
+    ghostId: 'helper', namespace: 'acme', scope: 'organization', organizationId: 'org-1',
+    currentRelease: { ...summary().currentRelease, id: RELEASE_ID },
+  });
+  const h = harness([item]);
+  const evidence = { packageSha256: null as string | null, approvedManifest: canonicalManifest, legacyMigrated: true };
+  runtime.approvedInstallEvidence.mockImplementation(() => evidence);
+  h.ledger.upsertInstallation(recordForTest(item, {
+    source, namespace: 'acme', manifestDigest: ghostManifestDigest(canonicalManifest),
+  }));
+  runtime.install.mockImplementation(async () => {
+    evidence.packageSha256 = item.currentRelease.sha256;
+    evidence.legacyMigrated = false;
+    return runtime.ghosts[0];
+  });
+  return { ...h, item, evidence, dir };
+}
+
+describe('same-release legacy organization source recovery', () => {
+  it.each([
+    { source: 'legacy-adopted', layout: 'legacy', hasPackage: false },
+    { source: 'legacy-adopted', layout: 'namespaced', hasPackage: false },
+    { source: 'market', layout: 'legacy', hasPackage: false },
+    { source: 'legacy-adopted', layout: 'legacy', hasPackage: true },
+  ] as const)('verifies and repairs $source / $layout / hasPackage=$hasPackage once', async ({ source, layout, hasPackage }) => {
+    const h = sameReleaseRecoveryHarness(source, layout);
+    if (hasPackage) {
+      h.evidence.packageSha256 = h.item.currentRelease.sha256;
+      h.evidence.legacyMigrated = false;
+    }
+    runtime.ghosts[0].enabled = false;
+    expect((await h.service.snapshot({ discoveryOnly: true })).items[0].installState).toBe('update-available');
+    expect(h.api.download).not.toHaveBeenCalled();
+
+    const snapshot = await h.service.snapshot();
+    await h.service.snapshot();
+
+    expect(snapshot.items[0]).toMatchObject({ installState: 'installed', enabled: false });
+    expect(h.api.download).toHaveBeenCalledExactlyOnceWith(h.item.id, RELEASE_ID);
+    expect(downloadVerifiedPlugin).toHaveBeenCalledTimes(1);
+    expect(runtime.install).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.objectContaining({
+      ghostId: 'helper', namespace: 'acme', expectedInstalledApproval: APPROVED_INSTALL_TOKEN,
+      pendingMarketRecord: expect.objectContaining({ source: 'market', sha256: h.item.currentRelease.sha256 }),
+    }));
+    expect(runtime.install.mock.calls[0][1]).not.toHaveProperty('sourceChanged');
+    expect(runtime.ghosts[0].dir).toBe(h.dir);
+    expect(runtime.ghosts[0].enabled).toBe(false);
+    expect(runtime.uninstall).not.toHaveBeenCalled();
+    expect(h.ledger.installationForGhost('helper')).toMatchObject({ source: 'market', installed: true, releaseId: RELEASE_ID });
+  });
+
+  it.each(['healthy', 'modern-without-sha', 'missing-evidence', 'package-conflict', 'manifest-conflict', 'forge', 'other-org', 'unapproved'] as const)(
+    'does not reinterpret %s as a legacy recovery', async (scenario) => {
+      const h = sameReleaseRecoveryHarness(scenario === 'healthy' ? 'market' : 'legacy-adopted');
+      if (scenario === 'healthy') h.evidence.packageSha256 = h.item.currentRelease.sha256;
+      if (scenario === 'modern-without-sha') h.evidence.legacyMigrated = false;
+      if (scenario === 'missing-evidence') runtime.approvedInstallEvidence.mockReturnValue(null);
+      if (scenario === 'package-conflict') h.evidence.packageSha256 = 'f'.repeat(64);
+      if (scenario === 'manifest-conflict') h.evidence.approvedManifest = normalizedManifest(manifest('helper', '0.9.0'));
+      if (scenario === 'forge') runtime.installOrigins.set('helper', 'agent-forge');
+      if (scenario === 'other-org') runtime.authIdentity!.orgId = 'other-org';
+      if (scenario === 'unapproved') runtime.ghosts[0].approval = { state: 'invalid' };
+      const before = h.ledger.installationForGhost('helper');
+
+      await h.service.snapshot();
+
+      expect(h.api.download).not.toHaveBeenCalled();
+      expect(runtime.install).not.toHaveBeenCalled();
+      expect(h.ledger.installationForGhost('helper')?.source).toBe(before?.source);
+    },
+  );
+
+  it('keeps legacy trust on failed package verification and uses existing retry backoff', async () => {
+    const h = sameReleaseRecoveryHarness();
+    vi.mocked(downloadVerifiedPlugin).mockRejectedValueOnce(new Error('Plugin package SHA256 mismatch'));
+
+    await h.service.snapshot();
+    await h.service.snapshot();
+
+    expect(h.api.download).toHaveBeenCalledTimes(1);
+    expect(runtime.install).not.toHaveBeenCalled();
+    expect(h.evidence.packageSha256).toBeNull();
+    expect(h.ledger.installationForGhost('helper')?.source).toBe('legacy-adopted');
+  });
+
+  it('waits for active calls and repairs on the next reconciliation', async () => {
+    const h = sameReleaseRecoveryHarness();
+    runtime.pendingCalls = true;
+    expect((await h.service.snapshot()).items[0].installState).toBe('update-available');
+    expect(h.api.download).not.toHaveBeenCalled();
+    runtime.pendingCalls = false;
+    expect((await h.service.snapshot()).items[0].installState).toBe('installed');
+    expect(runtime.install).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['approval', 'owner'] as const)('does not commit recovery when %s changes during download', async (changed) => {
+    const h = sameReleaseRecoveryHarness();
+    const download = h.api.download.getMockImplementation()!;
+    h.api.download.mockImplementationOnce(async (...args) => {
+      const result = await download(...args);
+      if (changed === 'owner') runtime.session.generation += 1;
+      else runtime.ghosts[0].approval = { state: 'approved', revision: '00000000-0000-4000-8000-000000000002' };
+      return result;
+    });
+    if (changed === 'owner') await expect(h.service.snapshot()).rejects.toThrow('active account changed');
+    else await h.service.snapshot();
+    expect(runtime.install).not.toHaveBeenCalled();
+    expect(h.ledger.installationForGhost('helper')?.source).toBe('legacy-adopted');
+  });
+
+  it('does not bypass update consent if the verified same-release package adds permissions', async () => {
+    const h = sameReleaseRecoveryHarness();
+    const expanded = manifest('helper', '1.0.0', ['notify', 'fs']);
+    h.api.detail.mockResolvedValue({ ...h.item, currentRelease: { ...h.item.currentRelease, manifest: expanded } });
+    runtime.inspectedManifest = expanded;
+
+    const snapshot = await h.service.snapshot();
+    await h.service.snapshot();
+
+    expect(snapshot.items[0]).toMatchObject({ installState: 'update-available', updateRequiresConsent: true });
+    expect(h.api.download).toHaveBeenCalledTimes(1);
+    expect(runtime.install).not.toHaveBeenCalled();
+    expect(h.ledger.installationForGhost('helper')?.source).toBe('legacy-adopted');
+  });
+});
 
 describe('PluginMarketService migration and defaultInstall', () => {
   it.each([
@@ -1484,9 +1622,11 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     h.ledger.markRemovedRecord(h.ledger.installationForGhost(item.ghostId)!, 'user-1');
 
+    // Hold the verified update so route recovery alone must remain untrusted.
+    runtime.pendingCalls = true;
     const snapshot = await h.service.snapshot();
 
-    expect(snapshot.items[0]).toMatchObject({ installState: 'installed', enabled: true });
+    expect(snapshot.items[0]).toMatchObject({ installState: 'update-available', enabled: true });
     expect(h.ledger.installationForGhost(item.ghostId)).toMatchObject({
       installed: true,
       source: 'legacy-adopted',
@@ -1505,11 +1645,13 @@ describe('PluginMarketService migration and defaultInstall', () => {
     });
     const h = namespaceRecoveryHarness([publicItem, orgItem], orgItem);
 
+    // Hold the verified update so route recovery alone must remain untrusted.
+    runtime.pendingCalls = true;
     const snapshot = await h.service.snapshot();
 
     expect(h.ledger.installationForPlugin({ namespace: 'acme', ghostId: 'helper' }))
       .toMatchObject({ installed: true, pluginId: orgItem.id });
-    expect(snapshot.items.find((item) => item.pluginId === orgItem.id)?.installState).toBe('installed');
+    expect(snapshot.items.find((item) => item.pluginId === orgItem.id)?.installState).toBe('update-available');
     expect(h.api.download).not.toHaveBeenCalled();
   });
 
@@ -2151,6 +2293,32 @@ describe('PluginMarketService migration and defaultInstall', () => {
     );
     expect(runtime.install.mock.calls[0]?.[1]?.pendingMarketRecord)
       .not.toHaveProperty('approvedPackageSha256');
+  });
+
+  it.each([true, false])('asks once before a first organization install and passes the answer (%s)', async (answer) => {
+    runtime.confirmLegacyLibraryReattach.mockImplementation(async () => answer);
+    const item = summary({ scope: 'organization', organizationId: 'org-1', ghostId: 'acme-tool', namespace: 'acme' });
+    runtime.install.mockResolvedValue({
+      manifest: manifest(item.ghostId),
+      dir: '/userData/cindy-brain/' + item.ghostId,
+      enabled: true,
+    });
+    const target = harness([item]);
+    await target.service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledTimes(1);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledWith({
+      ghostId: 'acme-tool', namespace: 'acme', pluginId: item.id, name: item.name,
+    });
+    const options = runtime.install.mock.calls[0]?.[1] as Record<string, unknown>;
+    if (answer) expect(options).toMatchObject({ reclaimLegacyBareInstance: true });
+    else expect(options).not.toHaveProperty('reclaimLegacyBareInstance');
+  });
+
+  it('does not ask about leftover libraries for a public install', async () => {
+    const item = summary();
+    runtime.install.mockResolvedValue({ manifest: manifest(), dir: '/userData/cindy-brain/cindy-test', enabled: true });
+    await harness([item]).service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).not.toHaveBeenCalled();
   });
 
   it('manual market install accepts the normalized setup manifest returned by detail', async () => {

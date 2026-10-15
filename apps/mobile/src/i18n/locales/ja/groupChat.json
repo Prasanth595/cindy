@@ -77,6 +77,11 @@
     "planDoneGeneric": "役割分担が完了しました",
     "olderOnComputer": "それより前のメッセージはパソコンで確認できます"
   },
+  "quote": {
+    "label": "{{name}} を引用：{{summary}}",
+    "deleted": "元のメッセージは削除されました",
+    "attachments": "{{name}} など {{total}} 件"
+  },
   "notice": {
     "memberJoined": "{{name}}さんがグループに参加しました",
     "memberFailed": "{{name}} は今回返信できませんでした",
@@ -208,7 +213,8 @@
     "requestTimeout": "操作の結果をまだ確認できません。更新して結果を確認してから再試行してください。",
     "permissionDenied": "このグループを管理する権限がありません。",
     "serviceError": "チャットサービスで処理を完了できません。しばらくしてから再試行してください。",
-    "groupArchived": "このグループはアーカイブ済みのため操作できません。"
+    "groupArchived": "このグループはアーカイブ済みのため操作できません。",
+    "quoteUnavailable": "引用したメッセージは削除されたか、表示できなくなりました。引用を外したので、もう一度送信してください。"
   },
   "followUp": {
     "next": "分担 · 次のステップ",

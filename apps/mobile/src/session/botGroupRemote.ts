@@ -13,6 +13,7 @@ import {
   BOT_GROUP_REMOTE_COLLECTION_ID,
   BOT_GROUP_REMOTE_RESOURCE_KIND,
   isBotGroupRuntimeFailureCode,
+  parseBotGroupQuoteView,
   type BotGroupAttachment,
   type BotGroupAttachmentCategory,
   type BotGroupErrorCode,
@@ -203,6 +204,7 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
   const noticeCode = typeof record.noticeCode === 'string' && NOTICE_CODES.has(record.noticeCode)
     ? record.noticeCode as BotGroupMessageView['noticeCode']
     : null;
+  const quote = parseBotGroupQuoteView(record.quote);
   return {
     id: messageId,
     sequence,
@@ -217,6 +219,9 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
     planId: optionalId(record.planId),
     files: stringList(record.files, MAX_FILES, 1_024),
     // Older computers send no attachments.
+    // 引用回复 and the tombstone it degrades to; older computers send neither.
+    ...(record.deleted === true ? { deleted: true } : {}),
+    ...(quote ? { quote } : {}),
     attachments: Array.isArray(record.attachments)
       ? record.attachments.slice(0, BOT_GROUP_ATTACHMENTS_MAX).flatMap((raw) => {
         const attachment = parseAttachment(raw);

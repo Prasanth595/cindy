@@ -67,8 +67,8 @@ export interface ProviderGroupPickInput {
   agentKind: AgentKind;
   model: string;
   /**
-   * 仅本机任务入口设置：初次分配与故障重选时，本机可用就优先本机，不受对外暂停分配或负载影响。
-   * 远程请求与分享中转不传，也不从请求载荷读取。
+   * 仅本机任务入口设置：本机任务与其他使用方走同一组策略(2026-10-15 用户裁决)，只是本机的「暂停对外分配」
+   * 不拦本机自己的任务。远程请求与分享中转不传，也不从请求载荷读取，不能借它绕过暂停。
    */
   localTask?: true;
   exclude?: ReadonlySet<string>;
@@ -210,47 +210,40 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       const usable = (r: ResolvedProviderGroupMember) =>
         offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null
         && !providerGroupUsageState(r.claudeUsage, input.model, deps.now()).limited;
-      const ownLocal = (r: ResolvedProviderGroupMember) => input.localTask === true && r.member.kind === 'local';
-      const paused = (r: ResolvedProviderGroupMember) => r.member.paused && !ownLocal(r);
-      const local = input.localTask === true ? config.members.find((m) => m.kind === 'local') : undefined;
-      // 本机优先只读可用性，不等无关的负载查询或远端目录，也不因远端先返回而分配到别处。
-      let resolved = local && !input.exclude?.has(local.key) && coolingUntil(input.providerId, local.key) === null
-        ? await deps.directory.resolveMembers(
-            input.providerId, { ...config, members: [local] }, {
-              includeLocalRunning: false,
-              ...(input.fresh ? { fresh: true } : {}),
-            },
-          )
-        : [];
-      if (!resolved.some(usable)) {
-        resolved = await deps.directory.resolveMembers(input.providerId, config, {
-          quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
-          // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
-          enough: (r) => usable(r)
-            && !paused(r)
-            && !input.exclude?.has(r.member.key),
-          ...(input.fresh ? { fresh: true } : {}),
-          ...(input.localTask ? { includeLocalRunning: false } : {}),
-        });
-      }
-      const schedulable: SchedulableMember[] = resolved.map((r) => ({
-        key: r.member.key,
-        usable: usable(r),
-        paused: paused(r),
-        running: memberRunning(input.providerId, r),
-        limit: r.member.limit,
-        weight: r.member.weight,
-        usagePercent: providerGroupUsageState(r.claudeUsage, input.model, deps.now()).usagePercent,
-      }));
-      const preferred = resolved.find((r) => ownLocal(r) && usable(r) && !input.exclude?.has(r.member.key));
-      const key = preferred?.member.key ?? pickProviderGroupMember(schedulable, config.strategy, {
+      // 「暂停对外分配」只拦本机以外的新任务；除此之外本机任务与其他使用方同一套组策略，不另设本机优先。
+      const paused = (r: ResolvedProviderGroupMember) =>
+        r.member.paused && !(input.localTask === true && r.member.kind === 'local');
+      const resolved = await deps.directory.resolveMembers(input.providerId, config, {
+        quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
+        // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
+        enough: (r) => usable(r)
+          && !paused(r)
+          && !input.exclude?.has(r.member.key),
+        ...(input.fresh ? { fresh: true } : {}),
+      });
+      const now = deps.now();
+      const schedulable: SchedulableMember[] = resolved.map((r) => {
+        const quota = providerGroupUsageState(r.claudeUsage, input.model, now);
+        return {
+          key: r.member.key,
+          usable: usable(r),
+          paused: paused(r),
+          running: memberRunning(input.providerId, r),
+          limit: r.member.limit,
+          weight: r.member.weight,
+          usagePercent: quota.usagePercent,
+          weeklyResetAtMs: quota.weeklyResetAtMs,
+          fiveHourResetAtMs: quota.fiveHourResetAtMs,
+        };
+      });
+      const key = pickProviderGroupMember(schedulable, config.strategy, {
         exclude: input.exclude,
         lastPicked: lastPicked.get(input.providerId) ?? null,
         random: deps.random,
+        now,
       });
       if (!key) return { kind: 'unavailable', resolved };
-      // 本机优先不参与组策略轮询，避免本机自用打断外部任务的分配顺序。
-      if (!preferred) lastPicked.set(input.providerId, key);
+      lastPicked.set(input.providerId, key);
       if (input.reserveFor) {
         provisional.set(input.reserveFor, {
           providerId: input.providerId,

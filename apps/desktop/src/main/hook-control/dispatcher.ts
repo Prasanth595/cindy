@@ -253,7 +253,10 @@ export interface HookRunRequest {
    * 连接不在线时直接丢弃, 不缓存不重发(与 turn.end 的离线补发相反)。
    */
   onProgress?: (text: string) => void;
-  /** Independent, acknowledged channel notice after runtime retirement fails. */
+  /**
+   * Independent, acknowledged channel notice outside the turn result: runtime
+   * retirement failures and the fixed 代输入 pointer.
+   */
   onRuntimeRecovery?: (text: string) => Promise<boolean>;
   /**
    * 执行中交互卡回调(interaction.request 链路)。runner 把 maker 的

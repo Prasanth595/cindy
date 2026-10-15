@@ -35,6 +35,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isImAccountScopeClosedError } from '../accountBoundary';
 import { bindRuntimeRecoveryNotice } from './runtimeRecoveryNotice';
+import { bindInputHandoffChannelNotice } from './inputHandoffChannelNotice';
 import { isImSubagentEvent } from './agentEventScope';
 import { isExpiredPermissionDecision, type SharedPermission } from '../../maker-ipc/sharedPermission';
 import { presentSharedPermissionCard } from './permissionPresentation';
@@ -1421,6 +1422,11 @@ export function createTurnRunner(
             if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
             return im.sendText(userId, text, { threadTs: noticeScope });
           }, log);
+          // 代输入: one fixed pointer in this chat when a card opens for the task.
+          bindInputHandoffChannelNotice(noticeSession, async (text) => {
+            if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
+            return im.sendText(userId, text, { threadTs: noticeScope });
+          });
           // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
           // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
           // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。

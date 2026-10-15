@@ -19,7 +19,7 @@ describe('ChatInput Ghost snapshot contract', () => {
     expect(source).toContain(
       'const ghostCommandItems = useMemo(() => {\n    if (!isGhostSigil) return [];\n    return ghostsForCommand',
     );
-    expect(source).toContain('}, [ghostsForCommand, isGhostSigil, t]);');
+    expect(source).toContain('}, [ghostSourceLabels, ghostsForCommand, isGhostSigil, t]);');
   });
 
   it('uses the latest installed snapshot and workdir at send time', () => {

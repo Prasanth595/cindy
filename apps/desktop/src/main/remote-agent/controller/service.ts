@@ -24,6 +24,7 @@ import type {
 } from '@cindy/maker-core';
 import { resolveMemoryScopeKey } from '@cindy/maker-core';
 
+import { credentialGrantFor } from '../executor/credentialGrants';
 import type { ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import type { GuardedFetch } from '../executor/webFetch';
@@ -83,7 +84,7 @@ const SHARED_PROVIDER_CREDENTIAL_NOTICE =
   "This task uses a shared provider, so what the agent reads passes through the sharer's computer or another computer they arrange. "
   + 'This may involve credentials, so it needs your confirmation. '
   + 'Always allow for this session skips further shared-provider credential confirmations in this task. '
-  + 'Reopening the task or changing its permission mode requires confirmation again.';
+  + 'Changing its permission mode or Plan mode, or quitting Cindy, requires confirmation again.';
 
 function mcpTargets(extra: PiExtraSpawnConfig | null): Map<string, LocalMcpTarget> {
   const targets = new Map<string, LocalMcpTarget>();
@@ -192,7 +193,12 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         : {}),
       ...(webFetch ? { webFetch } : {}),
       ...(shared
-        ? { credentialConsent: { description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE } }
+        ? {
+            credentialConsent: {
+              description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
+              ...(sessionId ? { grant: credentialGrantFor(sessionId, input.deviceId) } : {}),
+            },
+          }
         : {}),
       prepareMcp: async ({ kind, opts: startOpts, vendorOptions }): Promise<PreparedRemoteMcp> => {
         const extra = await deps.prepareMcpBridge(deps.mcpProviders(), deps.logger, {

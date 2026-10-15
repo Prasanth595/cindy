@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   discarded: [] as any[],
   deleted: [] as string[],
   keyboardAvoidingView: null as any,
-  platform: { OS: 'ios' },
+  platform: { OS: 'ios' }, headerBlur: [] as number[], headerFade: [] as (number | undefined)[],
 }));
 
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn(async () => ({})) }));
@@ -61,7 +61,8 @@ vi.mock('expo-router', () => ({
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
 }));
-vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children) }));
+vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children), useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }) }));
+vi.mock('@/session/SessionHeaderNativeControls', () => ({ SessionHeaderNativeBlur: ({ height, fadeInside }: any) => { h.headerBlur.push(height); h.headerFade.push(fadeInside); return null; } }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({
@@ -201,6 +202,7 @@ vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
+import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -266,7 +268,7 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
-  h.platform.OS = 'ios'; h.keyboardAvoidingView = null;
+  h.platform.OS = 'ios'; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = [];
   h.local = {
@@ -281,10 +283,40 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
 
 describe('group timeline', () => {
+  it('shows a 引用回复 block from the loaded original, and only the author once it is deleted', async () => {
+    // Server message ids are UUIDs; the parser rejects a quote that points at anything else.
+    const originalId = '11111111-1111-4111-8111-111111111111';
+    const quote = { messageId: originalId, authorName: '咪咪', authorKind: 'bot' as const, excerpt: 'old snapshot', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    // Through the same parser the phone uses for the computer's projection.
+    const data = group();
+    data.messages.push(message(originalId, 9, { authorBotId: 'mimi', authorName: '咪咪', content: '**好的**，我看看' }),
+      message('q1', 10, { authorKind: 'user', content: '就按这个来', quote }));
+    await render(parseBotGroupChatData(data)!);
+    const block = byId('botGroup.quote')!;
+    expect(block.textContent).toContain('咪咪');
+    expect(block.textContent).toContain('**好的**，我看看');
+    expect(block.textContent).not.toContain('old snapshot');
+    const deleted = group();
+    deleted.messages = [message(originalId, 9, { authorBotId: 'mimi', authorName: '咪咪', deleted: true, content: '（消息已删除）' }),
+      message('q1', 10, { authorKind: 'user', content: '就按这个来', quote: { ...quote, excerpt: '私密的原文' } })];
+    await render(parseBotGroupChatData(deleted)!);
+    expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
+    expect(node.textContent).not.toContain('私密的原文');
+  });
+
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {
     h.platform.OS = 'android';
     await render();
     expect(h.keyboardAvoidingView).toMatchObject({ enabled: true, behavior: 'height' });
+    expect(h.headerBlur).toEqual([]);
+  });
+
+  it('floats the iOS header on the task header blur instead of an opaque band', async () => {
+    await render();
+    // Before the header is measured the blur still covers the status bar plus one bar row.
+    expect(h.headerBlur.at(-1)).toBe(59 + 44);
+    // The two-line identity stays over solid blur; the feather starts at the header's lower edge.
+    expect(h.headerFade.at(-1)).toBe(0);
   });
 
   it('waits for measured tail positioning before acknowledging replies, including new snapshots', async () => {

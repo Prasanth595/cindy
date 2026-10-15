@@ -1444,6 +1444,8 @@ interface ElectronAPI {
     ) => () => void;
     /** 双击 .cindy 转交信号:收到后调 takePendingInstall 取路径走一键装入流程。 */
     onInstallRequested: (callback: () => void) => () => void;
+    /** 设置页接回旧作品库：start 时对应插件面板先卸下，done 时从磁盘重新挂上。 */
+    onLibraryReplaced: (callback: (payload: { id: string; phase: 'start' | 'done' }) => void) => () => void;
     /** 运行时状态广播:crashed / fused 时面板原地显示错误接管态。 */
     onRuntimeChanged: (
       callback: (payload: { states: Record<string, string> }) => void,
@@ -1665,6 +1667,7 @@ interface ElectronAPI {
     libraryRevertDefault: (id: string) => Promise<{ ok: boolean; message?: string }>;
     libraryUnbind: (id: string) => Promise<{ ok: boolean; message?: string }>;
     libraryDelete: (id: string) => Promise<{ ok: boolean; cancelled?: boolean; message?: string }>;
+    libraryReattachLegacy: (id: string) => Promise<{ ok: boolean; cancelled?: boolean; message?: string }>;
     legacyRecoveryStatus: () => Promise<
       import('../shared/legacyGhostRecovery').LegacyGhostRecoveryStatus
     >;
@@ -3953,7 +3956,7 @@ interface ElectronAPI {
   fetchReleaseNotesIndex: () => Promise<string[] | null>;
 
   // ── Device Link (设备互联/跨设备远程控制) ─────────────────────────────
-  openRemoteDesktop: (target: { deviceId: string; name: string }) => Promise<void>;
+  openRemoteDesktop: (target: { deviceId: string; name: string; handoff?: string }) => Promise<void>;
   remoteDesktopViewer: import('../shared/remoteDesktopViewer').RemoteDesktopViewerApi;
   remoteDesktop: import('../shared/remoteDesktop').RemoteDesktopApi;
   sharedTask: {
@@ -6258,6 +6261,23 @@ interface ElectronAPI {
     pluginOauthDeviceCode: (
       request: import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeRequest,
     ) => Promise<import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeView | null>;
+
+    /** 代输入 values for a local task (trusted frame only). */
+    submitInputHandoff: (requestId: string, submission: unknown) => Promise<{ accepted: boolean }>;
+    /** 代输入 values for a task on another computer (signed v3 exchange). */
+    submitRemoteInputHandoff: (
+      request: import('../shared/pluginOauth').LocalInputHandoffRequest,
+    ) => Promise<{ accepted: boolean }>;
+    /** 代输入 screenshot step on this computer (trusted frame only). */
+    getInputHandoffPicture: (
+      requestId: string,
+      revision: number,
+    ) => Promise<import('@cindy/device-link').InputHandoffPicture | null>;
+    /** 代输入 screenshot step on another computer (sealed offer, this window only). */
+    openRemoteInputHandoffPicture: (
+      request: import('../shared/pluginOauth').LocalInputHandoffPictureRequest,
+    ) => Promise<{ token: string; picture: import('@cindy/device-link').InputHandoffPicture }>;
+    answerRemoteInputHandoffPicture: (token: string, submission: unknown) => Promise<{ accepted: boolean }>;
 
     /** Submit one inline plugin Secret through the local trusted-frame-only IPC. */
     submitPluginSetupInline: (request: {
