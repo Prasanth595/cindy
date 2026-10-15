@@ -9,6 +9,12 @@ export function chatErrorDiagnostic(error: unknown): { code: string; status?: nu
   return { code, ...(typeof value?.status === 'number' && Number.isInteger(value.status) ? { status: value.status } : {}) };
 }
 
+/** Only use at the outgoing attachment boundary; transport/auth failures remain retryable. */
+export function isPermanentChatAttachmentError(error: unknown): boolean {
+  return ['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE', 'INVALID_ATTACHMENT', 'INVALID_MEDIA_URL',
+    'ERR_INVALID_URL', 'ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ENOTDIR'].includes(chatErrorDiagnostic(error).code);
+}
+
 /** Stable localized categories for desktop and remote controllers; raw errors stay private. */
 export function chatGroupFailure(error: unknown): BotGroupFailure {
   const { code, status } = chatErrorDiagnostic(error);

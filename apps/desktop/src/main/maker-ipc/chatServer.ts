@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { migrateLocalGroups } from './chatServerMigration.js';
-import { chatErrorDiagnostic, chatGroupFailure } from './chatServerErrors.js';
+import { chatErrorDiagnostic, chatGroupFailure, isPermanentChatAttachmentError } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
@@ -74,7 +74,7 @@ interface ServerPlan {
 interface Running {
   execution: Execution; sessionId: string; clientId: string; accepted: boolean; started: number;
   context?: ExecutionContext;
-  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; retryAt: number; keepLease?: boolean };
+  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; retryAt: number; keepLease?: boolean; attachmentFailed?: boolean };
   delivery?: Promise<void>;
   plan?: ServerPlan;
   workspace?: { workDir: string; branch: string | null; ownerSessionId: string | null };
@@ -901,33 +901,47 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           const terminal = pending.terminal;
           let text = terminal.resultText;
           if (!text.trim() && terminal.resultMessageClientId) text = (await readPersistedReplyText(terminal.sessionId, terminal.resultMessageClientId)) ?? '';
-          const produced: BotGroupAttachment[] = [];
-          if (terminal.outcome !== 'error' && run.workspace && run.beforeFiles && deps.workDir) {
-            const files = await deps.workDir.changedFiles(run.workspace.workDir, run.beforeFiles);
-            for (const name of files) {
-              const fullPath = path.resolve(run.workspace.workDir, name);
-              if (!fullPath.startsWith(path.resolve(run.workspace.workDir) + path.sep)) continue;
-              const stat = await import('node:fs/promises').then(fs => fs.lstat(fullPath));
-              if (stat.isFile()) produced.push({ id: name, name: path.basename(name), category: 'file', mimeType: 'application/octet-stream', size: stat.size, path: fullPath, url: null });
+          let files: Awaited<ReturnType<typeof media.upload>> = [];
+          if (terminal.outcome !== 'error') {
+            try {
+              const produced: BotGroupAttachment[] = [];
+              if (run.workspace && run.beforeFiles && deps.workDir) {
+                const changedFiles = await deps.workDir.changedFiles(run.workspace.workDir, run.beforeFiles);
+                for (const name of changedFiles) {
+                  const fullPath = path.resolve(run.workspace.workDir, name);
+                  if (!fullPath.startsWith(path.resolve(run.workspace.workDir) + path.sep)) continue;
+                  const stat = await import('node:fs/promises').then(fs => fs.lstat(fullPath));
+                  if (stat.isFile()) produced.push({ id: name, name: path.basename(name), category: 'file', mimeType: 'application/octet-stream', size: stat.size, path: fullPath, url: null });
+                }
+              }
+              files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`, produced, run.execution.bot_id);
+            } catch (error) {
+              if (!isPermanentChatAttachmentError(error)) throw error;
+              // Fail visibly instead of dropping an artifact or occupying the Bot forever.
+              // Keep the SDK terminal immutable and retry only the cached failure receipt.
+              pending.attachmentFailed = true;
+              deps.log?.warn('Chat result attachment cannot be delivered', chatErrorDiagnostic(error));
             }
           }
-          const files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`, produced, run.execution.bot_id);
-          if (terminal.outcome === 'error') {
-            failureCodes.set(`${run.execution.id}:${run.execution.epoch}`, terminal.failureCode ?? 'RUNTIME_ERROR');
+          const failed = terminal.outcome === 'error' || pending.attachmentFailed;
+          const failureCode = pending.attachmentFailed ? 'RUNTIME_ERROR' : terminal.failureCode ?? 'RUNTIME_ERROR';
+          if (failed) {
+            failureCodes.set(`${run.execution.id}:${run.execution.epoch}`, failureCode);
             if (failureCodes.size > 1000) failureCodes.delete(failureCodes.keys().next().value!);
           }
-          pending.payload = terminal.outcome === 'error' ? { detail: botGroupRuntimeFailureDetail(terminal.failureCode ?? 'RUNTIME_ERROR') }
+          pending.payload = failed ? { detail: botGroupRuntimeFailureDetail(failureCode) }
             : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: text.slice(0, 16000) || '已完成' }, ...files] }), continueDiscussion: run.context?.kind !== 'member.joined' && !run.plan && !isBotGroupNoReplyText(text) };
         }
         if (!current() || running.get(run.execution.bot_id) !== run) return;
-        await updateExecution(run, pending.terminal.outcome === 'error' ? 'fail' : 'complete', pending.payload);
+        const failed = pending.terminal.outcome === 'error' || pending.attachmentFailed;
+        await updateExecution(run, failed ? 'fail' : 'complete', pending.payload);
         if (run.plan && deps.onStepSettled) {
           const s = await snapshot(run.execution.conversation_id);
           const step = run.plan.steps[run.execution.plan_step!];
           const latest = (await api<ServerPlan[]>(`/conversations/${s.room.id}/plans?ids=${run.plan.id}`)).find(p => p.id === run.plan!.id);
           if (latest?.status !== 'running') deps.onStepSettled({ groupId: s.room.id, groupName: s.room.name,
             memberBotIds: s.members.flatMap(m => localBot(m.id)?.id ?? []), planId: run.plan.id, position: step.position,
-            botName: step.botName, task: step.task, outcome: pending.terminal.outcome === 'error' ? 'failed' : 'done', planDone: latest?.status === 'done' }, scope);
+            botName: step.botName, task: step.task, outcome: failed ? 'failed' : 'done', planDone: latest?.status === 'done' }, scope);
         }
       } catch (error) {
         // Keep the result during transport/temporary service failures. A definitive

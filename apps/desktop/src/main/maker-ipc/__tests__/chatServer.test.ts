@@ -115,6 +115,7 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.handle.mockImplementation(response);
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
+    fixture.upload.mockReset().mockResolvedValue([]);
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -1252,6 +1253,109 @@ describe('Chat Server result delivery and refresh', () => {
     expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'ack', scope: `conversation:${roomId}`, cursor: '43' }));
   });
 
+  it.each(['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE', 'ENOENT', 'EACCES', 'INVALID_MEDIA_URL'])(
+    'settles permanent attachment failure %s and releases the Bot for its next request', async code => {
+      let replacementQueued = false;
+      const nextExecution = { ...execution, id: '40000000-0000-4000-8000-000000000002', epoch: 2 };
+      fixture.handle.mockImplementation((route, _method, body) => {
+        if (body?.action === 'fail') replacementQueued = true;
+        if (route === '/executions/claim' && replacementQueued) {
+          replacementQueued = false;
+          return { body: { execution: nextExecution } };
+        }
+        return response(route);
+      });
+      fixture.upload.mockRejectedValueOnce(Object.assign(new Error('private path and token'), { code }));
+      await start();
+      await service.settleLaneTurn(terminal);
+      const failures = fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+      expect(failures).toHaveLength(1);
+      expect(failures[0][2]).toMatchObject({ detail: 'cindy-runtime-error:RUNTIME_ERROR' });
+      expect(JSON.stringify(failures)).not.toMatch(/private path|token|Finished reply/);
+      expect(deliveries()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(fixture.upload).toHaveBeenCalledOnce();
+      expect(deps.dispatch).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(deps.dispatch).mock.calls[1][0].clientId).toContain(nextExecution.id);
+    });
+
+  it('fails a plan step when collecting an artifact fails and reports the failed outcome', async () => {
+    const planId = '70000000-0000-4000-8000-000000000001';
+    let failed = false;
+    const plan = { id: planId, revision: 1, source_message_id: execution.source_message_id, request_text: 'Create report',
+      organizer_id: botId, creator_id: selfId, status: 'running', current_step: 0,
+      steps: [{ position: 0, botId, botName: 'Bot', task: 'Create report', status: 'running' }],
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    deps.workDir = {
+      prepare: vi.fn(async () => ({ ok: true as const, workDir: '/isolated/group-workspace', branch: null, ownerSessionId: null })),
+      snapshot: vi.fn(async () => new Map()),
+      changedFiles: vi.fn(async () => { throw Object.assign(new Error('private artifact path'), { code: 'ENOENT' }); }),
+      trashGroupFolder: vi.fn(),
+    };
+    deps.onStepSettled = vi.fn();
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (route === '/executions/claim') {
+        const next = claimed ? null : { ...execution, access_mode: 'owner', requester_id: selfId, plan_id: planId, plan_step: 0 };
+        claimed = true; return { body: { execution: next } };
+      }
+      if (body?.action === 'fail') failed = true;
+      if (route.includes('/plans')) return { body: [{ ...plan, status: failed ? 'failed' : 'running' }] };
+      if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: {
+        id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
+        content: [{ type: 'text', text: 'Create report' }], deleted: false, threadRootId: null,
+      } };
+      return response(route);
+    });
+    await start();
+    await service.settleLaneTurn(terminal);
+    expect(deps.workDir.changedFiles).toHaveBeenCalledOnce();
+    expect(fixture.upload).not.toHaveBeenCalled();
+    expect(fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail')).toHaveLength(1);
+    expect(deps.onStepSettled).toHaveBeenCalledWith(expect.objectContaining({ planId, position: 0, outcome: 'failed', planDone: false }), undefined);
+    expect(deliveries()).toEqual([]);
+  });
+
+  it('retries only the immutable failure receipt after an oversized attachment and a lost failure ACK', async () => {
+    let attempts = 0;
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (body?.action === 'fail' && ++attempts === 1) throw new Error('ECONNRESET');
+      return response(route);
+    });
+    fixture.upload.mockRejectedValueOnce(new Error('ATTACHMENT_TOO_LARGE'));
+    await start();
+    await service.settleLaneTurn(terminal);
+    await service.settleLaneTurn({ ...terminal, resultText: 'Late reply', outcome: 'error', failureCode: 'NETWORK_ERROR' });
+    await vi.advanceTimersByTimeAsync(16_000);
+    const failures = fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+    expect(failures).toHaveLength(2);
+    expect(failures[1][2]).toEqual(failures[0][2]);
+    expect(failures[0][2]).toMatchObject({ detail: 'cindy-runtime-error:RUNTIME_ERROR' });
+    expect(fixture.upload).toHaveBeenCalledOnce();
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+    expect(deliveries()).toEqual([]);
+  });
+
+  it('retries a temporary attachment transport error and completes without rerunning the Agent', async () => {
+    fixture.upload.mockRejectedValueOnce(new Error('ECONNRESET'));
+    await start();
+    await service.settleLaneTurn(terminal);
+    expect(deliveries()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(fixture.upload).toHaveBeenCalledTimes(2);
+    expect(deliveries()).toHaveLength(1);
+    expect(fixture.handle.mock.calls.some(([, , body]) => body?.action === 'fail')).toBe(false);
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('does not upload artifacts while settling an SDK failure', async () => {
+    fixture.upload.mockRejectedValueOnce(new Error('ATTACHMENT_TOO_LARGE'));
+    await start();
+    await service.settleLaneTurn({ ...terminal, outcome: 'error', failureCode: 'NETWORK_ERROR' });
+    expect(fixture.upload).not.toHaveBeenCalled();
+    expect(fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail')).toHaveLength(1);
+    expect(deliveries()).toEqual([]);
+  });
+
   it.each(['before-commit', 'after-commit'])('retries an identical result after a lost response (%s) without rerunning the Agent', async loss => {
     const committed = new Map<string, unknown>();
     let attempts = 0;
@@ -1268,10 +1372,12 @@ describe('Chat Server result delivery and refresh', () => {
     await start();
     expect(await service.settleLaneTurn(terminal)).toBe(true);
     expect(deliveries()).toHaveLength(1);
+    fixture.upload.mockRejectedValueOnce(new Error('ATTACHMENT_TOO_LARGE'));
     await vi.advanceTimersByTimeAsync(16000);
     expect(deliveries()).toHaveLength(2);
     expect(deliveries()[1][2]).toEqual(deliveries()[0][2]);
     expect(committed.size).toBe(1);
+    expect(fixture.upload).toHaveBeenCalledOnce();
     expect(deps.dispatch).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(30000);
     expect(deliveries()).toHaveLength(2);
