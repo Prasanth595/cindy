@@ -2636,13 +2636,14 @@ it('leaves a direct tool alone when its required name is not the Cindy envelope'
   }]);
   gateway.register({ registerTool: () => undefined });
   await gateway.listResult({ server: 'files', tool: 'write_file' });
-  // 缺 content 时必须原样走到服务端, 由服务端报它真实的参数要求; 桥不得把它引向
-  // 「把 name 当工具名、其余塞进 args」的错误形状。
+  // 缺 name 时必须原样走到服务端, 由服务端报它真实的参数要求 (缺 name 与缺 content);
+  // 桥不得把它引向「把 name 当工具名、其余塞进 args」的错误形状。
+  // 关键: 参数里**不能带 name** —— 带了它新旧判据都不会进信封分支, 撤掉修复这测试照样绿,
+  // 就盖不住「普通工具又收到信封提示」这个回归。
   // 错误正文过 safeMcpFailure 脱敏 (不外泄上游 body), 所以断言错误来自服务端那条路径,
   // 关键证据是下面两条: 请求确实发出了, 且 arguments 逐字未被桥改写。
-  await expect(gateway.executeCall({ server: 'files', tool: 'write_file', args: { name: 'a.md' } }))
+  await expect(gateway.executeCall({ server: 'files', tool: 'write_file', args: { content: 'text' } }))
     .rejects.toThrow(/write_file failed/);
-  expect(gateway.executeCall).toBeDefined();
   expect(requests).toHaveLength(1);
-  expect(requests[0].params).toEqual({ name: 'write_file', arguments: { name: 'a.md' } });
+  expect(requests[0].params).toEqual({ name: 'write_file', arguments: { content: 'text' } });
 });
