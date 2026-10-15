@@ -12,6 +12,7 @@ import {
   parseRemoteAgentReadResult,
   parseRemoteAgentReply,
   parseRemoteAgentRequest,
+  parseRemoteAgentReshareResult,
   parseRemoteAgentStreamItem,
   remoteAgentErrorCode,
 } from '../index';
@@ -35,6 +36,50 @@ describe('remote agent channel', () => {
     const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
     expect(parseRemoteAgentCaps({ ...caps, guestRelay: true }).guestRelay).toBe(true);
     expect(parseRemoteAgentCaps({ ...caps, guestRelay: 'yes' })).not.toHaveProperty('guestRelay');
+  });
+
+  // 转分享(provider-sharing.md §4.3)：组所在电脑把它分享的人报给分享来的组内电脑，由那台的主人逐人同意。
+  it('parses the reshare op, its result and the consent capability', () => {
+    const key = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const other = 'b1b2c3d4e5f60718293a4b5c6d7e8f90';
+    expect(parseRemoteAgentRequest({
+      op: 'reshare',
+      entries: [
+        { key, name: '  Bob ', avatar: 'https://cdn.example.com/a.png', extra: 1 },
+        { key: other, name: 'Carol', avatar: 'http://insecure.example.com/a.png' },
+      ],
+    })).toEqual({
+      op: 'reshare',
+      entries: [
+        { key, name: 'Bob', avatar: 'https://cdn.example.com/a.png' },
+        { key: other, name: 'Carol' },
+      ],
+    });
+    expect(parseRemoteAgentRequest({ op: 'reshare', entries: [] })).toEqual({ op: 'reshare', entries: [] });
+    for (const bad of [
+      { op: 'reshare' },
+      { op: 'reshare', entries: [{ key: 'short', name: 'Bob' }] },
+      { op: 'reshare', entries: [{ key, name: '' }] },
+      { op: 'reshare', entries: [{ key, name: 'a\u0000b' }] },
+      { op: 'reshare', entries: [{ key, name: 'x'.repeat(129) }] },
+      { op: 'reshare', entries: [{ key, name: 'Bob' }, { key, name: 'Bob again' }] },
+      { op: 'reshare', entries: Array.from({ length: 257 }, (_, i) => ({ key: `${String(i).padStart(3, '0')}${key.slice(3)}`, name: 'x' })) },
+    ]) {
+      expect(() => parseRemoteAgentRequest(bad)).toThrow('REMOTE_AGENT_INVALID');
+    }
+    // 回包：不认识的状态与请求外的键丢掉。
+    expect(parseRemoteAgentReshareResult({
+      entries: [
+        { key, state: 'approved' },
+        { key: other, state: 'maybe' },
+        { key: 'c1b2c3d4e5f60718293a4b5c6d7e8f90', state: 'pending' },
+      ],
+    }, new Set([key, other]))).toEqual({ entries: [{ key, state: 'approved' }] });
+    expect(() => parseRemoteAgentReshareResult({})).toThrow('REMOTE_AGENT_INVALID');
+    const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
+    expect(parseRemoteAgentCaps({ ...caps, reshareConsent: true }).reshareConsent).toBe(true);
+    expect(parseRemoteAgentCaps({ ...caps, reshareConsent: 1 })).not.toHaveProperty('reshareConsent');
+    expect(remoteAgentErrorCode('[REMOTE_AGENT_RESHARE_NOT_ALLOWED] no')).toBe('REMOTE_AGENT_RESHARE_NOT_ALLOWED');
   });
 
   it('parses every op and drops unknown fields', () => {

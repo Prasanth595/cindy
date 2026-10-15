@@ -6,6 +6,7 @@
  *    分享的状态、在线或所在电脑变化时刷新对应 `share:<id>` 的模型目录缓存，消失的分享作废缓存。
  *  - 待审批申请(分享者)：由全局审批宿主播种(`owned` 一次)、REQUESTED 推送追加、审批后移除；
  *    管理页每次读取 `owned` 也会发布到这里。设置页入口的提示点读这份。
+ *  - 待处理的转分享请求(分享者)：同一份 `owned` 快照里成员带的 reshares；RESHARE_REQUESTED 推送时重读。
  *
  * 注意：`owned` 会让 main 进入快速拉取(每 5 秒)，所以这里**不**在每次 OWNED_CHANGED 都重读，
  * 只在还有待审批申请时重读(那时 main 本来就在快速拉取)，以便撤回、过期的申请及时消失。
@@ -27,8 +28,10 @@ import type {
 import {
   diffReceivedShares,
   pendingRequestsFromOwned,
+  pendingResharesFromOwned,
   providerShareAgentDeviceId,
   type ProviderSharePendingRequest,
+  type ProviderSharePendingReshare,
 } from './providerShareFormat';
 
 const log = createLogger('providerShareStore');
@@ -216,9 +219,36 @@ function setPending(next: readonly ProviderSharePendingRequest[]): void {
   for (const listener of pendingSubscribers) listener();
 }
 
-/** 一份 owned 快照是本机待审批申请的权威来源：整体替换。 */
+// 待处理的转分享请求(分享者，provider-sharing.md §4.3)：与待审批申请同出一份 owned 快照。
+let pendingReshares: readonly ProviderSharePendingReshare[] = [];
+const reshareSubscribers = new Set<() => void>();
+
+function setPendingReshares(next: readonly ProviderSharePendingReshare[]): void {
+  if (next.length === 0 && pendingReshares.length === 0) return;
+  pendingReshares = next;
+  for (const listener of reshareSubscribers) listener();
+}
+
+/** 一份 owned 快照是本机待审批申请(含转分享请求)的权威来源：整体替换。 */
 export function publishProviderShareOwnerState(state: ProviderShareOwnerState): void {
+  setPendingReshares(state.ready ? pendingResharesFromOwned(state.shares) : []);
   setPending(state.ready ? pendingRequestsFromOwned(state.shares) : []);
+}
+
+export function getProviderSharePendingReshares(): readonly ProviderSharePendingReshare[] {
+  return pendingReshares;
+}
+
+function subscribeReshares(listener: () => void): () => void {
+  reshareSubscribers.add(listener);
+  return () => {
+    reshareSubscribers.delete(listener);
+  };
+}
+
+/** 设置页入口的提示点与管理页「待处理」一栏读这份。 */
+export function useProviderSharePendingReshares(): readonly ProviderSharePendingReshare[] {
+  return useSyncExternalStore(subscribeReshares, getProviderSharePendingReshares, getProviderSharePendingReshares);
 }
 
 export function addProviderShareRequested(event: ProviderShareRequestedEvent): void {
@@ -275,4 +305,6 @@ export function resetProviderShareStoreForTests(): void {
   receivedSubscribers.clear();
   pendingRequests = [];
   pendingSubscribers.clear();
+  pendingReshares = [];
+  reshareSubscribers.clear();
 }

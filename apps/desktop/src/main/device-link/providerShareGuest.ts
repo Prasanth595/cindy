@@ -35,6 +35,7 @@ import {
   crossRegionWithdraw,
   getCrossRegionReceived,
   getConfirmedCrossRegionReceivedRegions,
+  isCrossRegionReceivedComplete,
   ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
   startProviderShareCrossRegion,
@@ -101,8 +102,40 @@ function allReceived(rt: Runtime | null): ProviderShareReceived[] {
   return rt ? [...rt.received, ...getCrossRegionReceived()] : [];
 }
 
+/** 已收到的分享变化的旁听者(见 onProviderShareReceivedChanged)。 */
+const receivedListeners = new Set<() => void>();
+
 function emitChanged(rt: Runtime): void {
-  if (current(rt)) rt.events.changed(allReceived(rt));
+  if (!current(rt)) return;
+  rt.events.changed(allReceived(rt));
+  for (const listener of receivedListeners) {
+    try {
+      listener();
+    } catch (error) {
+      log.warn('received shares listener failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+/**
+ * 已收到的分享变了：供应商组据此把已被删除或已退出的分享移出组(provider-groups.md §3)。只通知，不带内容；
+ * 读名单用 {@link getConfirmedReceivedShareIds}。
+ */
+export function onProviderShareReceivedChanged(listener: () => void): () => void {
+  receivedListeners.add(listener);
+  return () => {
+    receivedListeners.delete(listener);
+  };
+}
+
+/**
+ * 完整可信的已收到分享名单：本区域已拉到过，本账号可能有分享的对方区域也都已确认。只有这时才能据此认定某个分享
+ * 已被删除或已退出；说不准时为 null(还没拉到、拉取失败、换账号中)。
+ */
+export function getConfirmedReceivedShareIds(): ReadonlySet<string> | null {
+  const rt = runtime;
+  if (!rt || !current(rt) || rt.fetchedAt === 0 || !isCrossRegionReceivedComplete()) return null;
+  return new Set(allReceived(rt).map((share) => share.shareId));
 }
 
 // ─── 任务绑定 ────────────────────────────────────────────────────

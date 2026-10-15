@@ -13,6 +13,11 @@ export interface SharedGroupStatusDeps {
   readGroup(providerId: string): ProviderGroupConfig | null;
   readCaps(member: ProviderGroupMember): Promise<RemoteAgentCaps>;
   isIncapable(agentDeviceId: string): boolean;
+  /**
+   * 转分享(provider-sharing.md §4.3)：分享来的电脑的主人没同意过读状态的这个受邀者时，他看到的状态
+   * (暂不可用，或那台需要更新才能同意)；同意过或不是分享来的电脑返回 null。
+   */
+  reshareState?(member: ProviderGroupMember): ProviderShareGroupState | null;
 }
 
 async function readWithin<T>(read: () => Promise<T>): Promise<T | null> {
@@ -102,6 +107,9 @@ export async function readSharedGroupStatus(deps: SharedGroupStatusDeps, provide
     const status = view?.members.find((item) => item.key === member.key);
     if (!status) return 'unknown';
     if (status.state !== 'available' && status.state !== 'full') return status.state;
+    // 与实际分配一致：主人没同意过这个人的分享来的电脑不会分给他。
+    const reshare = deps.reshareState?.(member) ?? null;
+    if (reshare) return reshare;
     if (member.agentDeviceId) {
       // 与实际接任务的条件一致；旧版同账号组员可能主人能用，受邀者却不能用。
       if (member.kind === 'device' && deps.isIncapable(member.agentDeviceId)) return 'needs-update';

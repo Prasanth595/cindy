@@ -281,7 +281,8 @@ describe('provider share invoke', () => {
       expect(sharedGroupStatus).not.toHaveBeenCalled();
       const explicit = await runInvoke(GUEST, { channel: 'maker:provider:list', args: [{ includeSharedGroupStatus: true, providerId: 'private-provider' }] });
       expect(explicit).toMatchObject({ ok: true, result: { providers: [{ id: 'anthropic', groupStatus: ['busy', 'needs-update'] }] } });
-      expect(sharedGroupStatus).toHaveBeenCalledWith('anthropic');
+      // 带上读状态的受邀者：分享来的组内电脑按它的主人是否同意过这个人显示(转分享，provider-sharing.md §4.3)。
+      expect(sharedGroupStatus).toHaveBeenCalledWith('anthropic', GUEST);
       expect(JSON.stringify(explicit)).not.toContain('private-provider');
 
       // An old host or failed status read still supplies its ordinary model catalog.

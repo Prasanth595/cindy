@@ -42,6 +42,7 @@ import {
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
+import { GroupMemberReshare, reshareSummaryText } from './GroupMemberReshare';
 import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersion';
 import { providerWeeklyQuotaSource } from '../../../shared/providerQuotaSource';
 import { ProviderGroupAddDialog } from './ProviderGroupAddDialog';
@@ -261,6 +262,7 @@ function MemberRow({
   // 「已满」等于跑满上限，上限就在旁边的下拉里，不必再报一遍数。其余状态(冷却、不在线、已暂停)
   // 上面可能还有在跑的任务，补一段运行数。
   const appendRunning = running > 0 && status != null && status.state !== 'available' && status.state !== 'full';
+  const reshare = member.kind === 'share' ? status?.reshare : undefined;
   // 点名称一侧展开这台的剩余额度(2026-10-10 用户要求)；收起时不读。
   const [quotaOpen, setQuotaOpen] = useState(false);
   const quotaId = useId();
@@ -316,6 +318,15 @@ function MemberRow({
                   <span aria-hidden="true">·</span>
                   <span className="[font-variant-numeric:tabular-nums]">
                     {t('providerGroup.member.runningCount', { count: running })}
+                  </span>
+                </>
+              )}
+              {/* 分享来的电脑：它的主人是否同意给本机分享的人用(provider-sharing.md §4.3)，展开看每个人。 */}
+              {reshare && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span data-testid="provider-group-member-reshare-summary">
+                    {reshareSummaryText(t, reshare, ownerName ?? '')}
                   </span>
                 </>
               )}
@@ -382,6 +393,7 @@ function MemberRow({
           offline={status?.state === 'offline'}
         />
       )}
+      {quotaOpen && reshare && <GroupMemberReshare summary={reshare} owner={ownerName ?? ''} />}
     </div>
   );
 }

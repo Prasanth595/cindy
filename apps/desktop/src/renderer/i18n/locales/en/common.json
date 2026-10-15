@@ -262,6 +262,22 @@
         "title": "Remove Sharing with {{name}}?",
         "description": "{{name}} will immediately lose access to {{provider}}, and any running sessions will stop. To share again, you’ll need a new link. Usage records are kept.",
         "confirm": "Remove Share"
+      },
+      "reshare": {
+        "applying": "wants to use it through {{owner}}’s provider group",
+        "requestedAt": "Requested {{time}}",
+        "usageHint": "If you agree, {{name}}’s sessions can run on this computer, and usage counts under {{owner}}",
+        "approve": "Agree",
+        "reject": "Decline",
+        "listTitle": "Using it through {{owner}}’s provider group",
+        "stateApproved": "Agreed",
+        "stateRejected": "Declined",
+        "revoke": "Withdraw",
+        "revokeAria": "Withdraw agreement for {{name}}",
+        "approveAria": "Agree to {{name}} using it",
+        "toastApproved": "{{name}} can now use {{provider}} through {{owner}}’s provider group",
+        "toastRejected": "Declined {{name}}’s request",
+        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped."
       }
     },
     "toast": {
@@ -310,7 +326,7 @@
       "factFiles": "Your project files and commands still run on your own computer",
       "factFilesDetail": "Your session permissions still apply",
       "factPrivacy": "Chat content and files the Agent reads pass through {{name}}’s computer and are saved on the computer that runs the session",
-      "factPrivacyDetail": "{{name}} only sees your nickname and avatar",
+      "factPrivacyDetail": "{{name}}, and owners of other computers who need to agree, only see your nickname and avatar",
       "factApproval": "After you send the request, it takes effect only once {{name}} approves",
       "factApprovalDetail": "{{name}} can pause or remove this share at any time",
       "send": "Send Request",
@@ -424,7 +440,9 @@
       "approvedTitle": "Share Request Approved",
       "approvedBody": "{{name}} shared {{provider}} with you",
       "rejectedTitle": "Share Request Declined",
-      "rejectedBody": "{{name}} declined to share {{provider}}"
+      "rejectedBody": "{{name}} declined to share {{provider}}",
+      "reshareTitle": "New Usage Request",
+      "reshareBody": "{{name}} wants to use your shared {{provider}} through {{owner}}’s provider group"
     }
   },
   "providerGroup": {
@@ -540,7 +558,24 @@
         "lastDescription": "It’s the last computer in the group, so removing it deletes the {{provider}} provider group.",
         "confirm": "Remove from Group"
       },
-      "sourceGroupOwner": "Hosts the group"
+      "sourceGroupOwner": "Hosts the group",
+      "reshare": {
+        "allApproved": "Available to people you share with",
+        "waiting_one": "{{count}} person you share with is waiting for {{owner}} to agree",
+        "waiting_other": "{{count}} people you share with are waiting for {{owner}} to agree",
+        "rejected_one": "{{owner}} declined {{count}} person you share with",
+        "rejected_other": "{{owner}} declined {{count}} people you share with",
+        "needsUpdate": "{{owner}} needs to update Cindy before agreeing to people you share with",
+        "unknown": "Not yet known whether {{owner}} agrees to people you share with",
+        "title": "Can people you share with use this computer",
+        "description": "{{owner}} agrees person by person. Tasks from people without agreement aren’t assigned to this computer.",
+        "state": {
+          "approved": "Agreed",
+          "pending": "Waiting",
+          "rejected": "Declined",
+          "unknown": "Not checked yet"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",

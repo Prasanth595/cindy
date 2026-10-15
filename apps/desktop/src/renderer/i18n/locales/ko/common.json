@@ -260,6 +260,22 @@
         "title": "{{name}}님과의 공유를 삭제할까요?",
         "description": "{{name}}님은 즉시 {{provider}}을(를) 사용할 수 없게 되고 실행 중인 세션은 중지됩니다. 다시 공유하려면 새 링크가 필요합니다. 사용량 기록은 유지됩니다.",
         "confirm": "공유 삭제"
+      },
+      "reshare": {
+        "applying": "{{owner}}님의 제공자 그룹을 통해 사용하려고 합니다",
+        "requestedAt": "{{time}}에 요청",
+        "usageHint": "동의하면 {{name}}님의 세션이 이 컴퓨터에서 실행될 수 있고, 사용량은 {{owner}}님 몫으로 기록됩니다",
+        "approve": "동의",
+        "reject": "거절",
+        "listTitle": "{{owner}}님의 제공자 그룹을 통해 사용",
+        "stateApproved": "동의함",
+        "stateRejected": "동의하지 않음",
+        "revoke": "동의 철회",
+        "revokeAria": "{{name}}님에 대한 동의 철회",
+        "approveAria": "{{name}}님의 사용에 동의",
+        "toastApproved": "{{name}}님이 {{owner}}님의 제공자 그룹을 통해 {{provider}}을(를) 사용할 수 있게 되었습니다",
+        "toastRejected": "{{name}}님의 요청을 거절했습니다",
+        "toastRevoked": "{{name}}님에 대한 동의를 철회했습니다. 실행 중인 세션은 중지되었습니다"
       }
     },
     "toast": {
@@ -308,7 +324,7 @@
       "factFiles": "프로젝트 파일과 명령은 계속 내 컴퓨터에서 실행됩니다",
       "factFilesDetail": "내 세션 권한이 그대로 적용됩니다",
       "factPrivacy": "채팅 내용과 Agent가 읽은 파일 내용은 {{name}}님의 컴퓨터를 거쳐, 실제로 세션을 실행하는 컴퓨터에 저장됩니다",
-      "factPrivacyDetail": "{{name}}님에게는 내 닉네임과 프로필 사진만 표시됩니다",
+      "factPrivacyDetail": "{{name}}님과 동의가 필요한 다른 컴퓨터 주인에게는 내 닉네임과 프로필 사진만 표시됩니다",
       "factApproval": "요청을 보낸 뒤 {{name}}님이 승인해야 적용됩니다",
       "factApprovalDetail": "{{name}}님은 언제든지 이 공유를 일시 중지하거나 삭제할 수 있습니다",
       "send": "요청 보내기",
@@ -422,7 +438,9 @@
       "approvedTitle": "공유 요청 승인됨",
       "approvedBody": "{{name}}님이 {{provider}} 공유를 승인했습니다",
       "rejectedTitle": "공유 요청 거절됨",
-      "rejectedBody": "{{name}}님이 {{provider}} 공유를 거절했습니다"
+      "rejectedBody": "{{name}}님이 {{provider}} 공유를 거절했습니다",
+      "reshareTitle": "새 사용 요청",
+      "reshareBody": "{{name}}님이 {{owner}}님의 제공자 그룹을 통해 내가 공유한 {{provider}}을(를) 사용하려고 합니다"
     }
   },
   "providerGroup": {
@@ -535,7 +553,22 @@
         "lastDescription": "그룹의 마지막 컴퓨터입니다. 제외하면 {{provider}} 제공자 그룹이 삭제됩니다.",
         "confirm": "그룹에서 제외"
       },
-      "sourceGroupOwner": "그룹을 만든 컴퓨터"
+      "sourceGroupOwner": "그룹을 만든 컴퓨터",
+      "reshare": {
+        "allApproved": "공유받은 사람도 사용할 수 있음",
+        "waiting_other": "공유받은 사람 {{count}}명이 {{owner}}님의 동의를 기다리는 중",
+        "rejected_other": "{{owner}}님이 공유받은 사람 {{count}}명에게 동의하지 않음",
+        "needsUpdate": "{{owner}}님이 Cindy를 업데이트해야 공유받은 사람에게 동의할 수 있습니다",
+        "unknown": "{{owner}}님이 공유받은 사람에게 동의했는지 아직 알 수 없습니다",
+        "title": "공유받은 사람이 이 컴퓨터를 쓸 수 있는지",
+        "description": "{{owner}}님이 한 명씩 동의합니다. 동의받지 않은 사람의 세션은 이 컴퓨터에 배정되지 않습니다.",
+        "state": {
+          "approved": "동의함",
+          "pending": "동의 대기 중",
+          "rejected": "동의하지 않음",
+          "unknown": "아직 확인 안 됨"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "{{provider}} 제공자 그룹을 삭제할까요?",

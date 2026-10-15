@@ -169,6 +169,12 @@ export interface RemoteAgentOpenPayload {
    */
   relay?: string;
   /**
+   * 供应商组转分享：组所在电脑把受邀者的任务转给分享来的组内电脑时，带上这个受邀者(按账号)的转分享键，
+   * 与组所在电脑经 op `reshare` 报上去的键相同。那台的主人同意过这个人才运行；没同意或没带时拒绝。
+   * 只发给分享来的组内电脑；旧版本解码时丢弃。
+   */
+  reshareKey?: string;
+  /**
    * 任务所在电脑支持「需要换一台」(docs/product-rules/provider-groups.md §6.1 分享的人)：组所在电脑中转的
    * 任务在组内电脑上因电脑本身的原因失败时，先在事件流里发一个 `providerGroupSwitch` 状态(一次性凭证)
    * 再转出错误，任务所在电脑据此自动交接后重新打开。只有声明了的电脑才会收到这个状态。
@@ -322,6 +328,9 @@ export function decodeOpenPayload(value: unknown): RemoteAgentOpenPayload {
     ...(value.virtualWorkspace === true ? { virtualWorkspace: true } : {}),
     ...(value.groupAssigned === true ? { groupAssigned: true } : {}),
     ...(typeof value.relay === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.relay) ? { relay: value.relay } : {}),
+    ...(typeof value.reshareKey === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.reshareKey)
+      ? { reshareKey: value.reshareKey }
+      : {}),
     ...(value.acceptsGroupSwitch === true ? { acceptsGroupSwitch: true } : {}),
     ...(typeof value.groupSwitchToken === 'string' && REMOTE_AGENT_RELAY_KEY_PATTERN.test(value.groupSwitchToken)
       ? { groupSwitchToken: value.groupSwitchToken }

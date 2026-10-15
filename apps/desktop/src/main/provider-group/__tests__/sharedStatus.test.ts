@@ -200,6 +200,23 @@ describe('anonymous shared group status', () => {
     expect(await readSharedGroupStatus(env.deps, 'anthropic')).toEqual(['available', 'needs-update']);
   });
 
+  // 转分享(provider-sharing.md §4.3)：主人没同意过读状态的这个人时，分享来的电脑对他显示暂不可用，与实际分配一致。
+  it('shows a shared-in computer as unavailable to a shared user its owner has not agreed to', async () => {
+    const env = setup(['available', 'available', 'offline']);
+    env.view.config!.members[1].kind = 'share';
+    env.view.config!.members[2].kind = 'share';
+    let agreed = false;
+    const reshareState: NonNullable<SharedGroupStatusDeps['reshareState']> = vi.fn((member) =>
+      (member.kind === 'share' && !agreed ? 'unavailable' : null));
+    expect(await readSharedGroupStatus({ ...env.deps, reshareState }, 'anthropic')).toEqual(['available', 'unavailable', 'offline']);
+    // 离线的照实显示离线；不再为没同意的那台探测能力。
+    expect(reshareState).toHaveBeenCalledTimes(2);
+    expect(env.readCaps).not.toHaveBeenCalled();
+    agreed = true;
+    // 同意后照常显示(这台在跑任务，显示忙碌)。
+    expect(await readSharedGroupStatus({ ...env.deps, reshareState }, 'anthropic')).toEqual(['available', 'busy', 'offline']);
+  });
+
   it('reflects the same temporary exclusion as the guest router without probing or changing it', async () => {
     const env = setup(['available', 'available']);
     env.isIncapable.mockReturnValue(true);

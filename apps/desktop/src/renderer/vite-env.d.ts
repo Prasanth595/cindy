@@ -3973,6 +3973,8 @@ interface ElectronAPI {
     onSettled(cb: (event: import('../shared/providerShare').ProviderShareSettledEvent) => void): () => void;
     onOpenJoin(cb: (event: { link: string }) => void): () => void;
     onOpenManage(cb: (event: { providerId: string }) => void): () => void;
+    /** 有人请求把这里分享的供应商经他的供应商组转给别人用(转分享)。 */
+    onReshareRequested(cb: () => void): () => void;
   };
   providerGroup: {
     command<C extends import('../shared/providerGroup').ProviderGroupCommand>(

@@ -260,6 +260,22 @@
         "title": "删除对 {{name}} 的分享？",
         "description": "{{name}} 将立即无法使用 {{provider}}，正在运行的任务会停止。之后要再分享，需要重新生成链接。用量记录会保留。",
         "confirm": "删除分享"
+      },
+      "reshare": {
+        "applying": "想经 {{owner}} 的供应商组使用",
+        "requestedAt": "{{time}}请求",
+        "usageHint": "同意后，{{name}} 的任务可以在这台电脑上运行，用量算在 {{owner}} 名下",
+        "approve": "同意",
+        "reject": "拒绝",
+        "listTitle": "经 {{owner}} 的供应商组使用",
+        "stateApproved": "已同意",
+        "stateRejected": "未同意",
+        "revoke": "撤回同意",
+        "revokeAria": "撤回对 {{name}} 的同意",
+        "approveAria": "同意 {{name}} 使用",
+        "toastApproved": "已同意 {{name}} 经 {{owner}} 的供应商组使用 {{provider}}",
+        "toastRejected": "已拒绝 {{name}} 的请求",
+        "toastRevoked": "已撤回对 {{name}} 的同意，正在运行的任务已停止"
       }
     },
     "toast": {
@@ -308,7 +324,7 @@
       "factFiles": "你的项目文件和命令仍在你自己的电脑上执行",
       "factFilesDetail": "由你的任务权限把关",
       "factPrivacy": "对话内容和 Agent 读取的文件内容会经过 {{name}} 的电脑，并保存在实际运行任务的那台电脑上",
-      "factPrivacyDetail": "{{name}} 只会看到你的昵称和头像",
+      "factPrivacyDetail": "{{name}} 和需要同意你使用的其他电脑主人只会看到你的昵称和头像",
       "factApproval": "发送申请后，需要 {{name}} 同意才会生效",
       "factApprovalDetail": "{{name}} 可以随时关闭或删除这个分享",
       "send": "发送申请",
@@ -422,7 +438,9 @@
       "approvedTitle": "分享申请已通过",
       "approvedBody": "{{name}} 已同意分享 {{provider}}",
       "rejectedTitle": "分享申请未通过",
-      "rejectedBody": "{{name}} 没有同意分享 {{provider}}"
+      "rejectedBody": "{{name}} 没有同意分享 {{provider}}",
+      "reshareTitle": "新的使用请求",
+      "reshareBody": "{{name}} 想经 {{owner}} 的供应商组使用你分享的 {{provider}}"
     }
   },
   "providerGroup": {
@@ -535,7 +553,22 @@
         "lastDescription": "它是组里最后一台电脑，移出后会删除 {{provider}} 的供应商组。",
         "confirm": "移出组"
       },
-      "sourceGroupOwner": "组所在电脑"
+      "sourceGroupOwner": "组所在电脑",
+      "reshare": {
+        "allApproved": "分享的人可以用",
+        "waiting_other": "{{count}} 位分享的人等待 {{owner}} 同意",
+        "rejected_other": "{{owner}} 未同意 {{count}} 位分享的人",
+        "needsUpdate": "{{owner}} 的 Cindy 更新后才能同意给分享的人用",
+        "unknown": "还不知道 {{owner}} 是否同意给分享的人用",
+        "title": "分享的人能否用这台电脑",
+        "description": "需要 {{owner}} 逐人同意。没同意的人，任务不会分到这台电脑。",
+        "state": {
+          "approved": "已同意",
+          "pending": "等待同意",
+          "rejected": "未同意",
+          "unknown": "还没问到"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",

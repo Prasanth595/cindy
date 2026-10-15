@@ -128,6 +128,7 @@ import {
 import { PROVIDER_SHARE_MANAGE_PARAM } from '@/features/provider-share/providerShareNavigation';
 import {
   useProviderSharePendingRequests,
+  useProviderSharePendingReshares,
   useProviderShareReceived,
 } from '@/features/provider-share/providerShareStore';
 
@@ -2430,11 +2431,15 @@ export function ProvidersSection() {
   // 该状态下 OpenAI 行必须留在左栏,否则「重新连接」入口不可达,用户被迫从向导重发现。
   const codexAuth = useCodexAuth();
   const remoteControlEnabled = useRemoteControlEnabled();
-  // 供应商分享：入口提示点读待审批申请；管理页是本页的子页面(返回回到供应商详情)。
+  // 供应商分享：入口提示点读待审批申请与待处理的转分享请求；管理页是本页的子页面(返回回到供应商详情)。
   const pendingShareRequests = useProviderSharePendingRequests();
+  const pendingReshares = useProviderSharePendingReshares();
   const pendingShareCounts = useMemo(
-    () => pendingRequestCountByProvider(pendingShareRequests.map((item) => item.share)),
-    [pendingShareRequests],
+    () => pendingRequestCountByProvider([
+      ...pendingShareRequests.map((item) => item.share),
+      ...pendingReshares.map((item) => item.share),
+    ]),
+    [pendingShareRequests, pendingReshares],
   );
   const [shareManageProviderId, setShareManageProviderId] = useState<string | null>(null);
   const openaiReconnectRequired = codexAuth.state.kind === 'reconnect-required';

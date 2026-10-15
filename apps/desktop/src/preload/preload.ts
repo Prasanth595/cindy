@@ -847,6 +847,7 @@ const fanOutProviderShareRequested = createIpcFanOut(PROVIDER_SHARE_IPC.REQUESTE
 const fanOutProviderShareSettled = createIpcFanOut(PROVIDER_SHARE_IPC.SETTLED);
 const fanOutProviderShareOpenJoin = createIpcFanOut(PROVIDER_SHARE_IPC.OPEN_JOIN);
 const fanOutProviderShareOpenManage = createIpcFanOut(PROVIDER_SHARE_IPC.OPEN_MANAGE);
+const fanOutProviderShareReshareRequested = createIpcFanOut(PROVIDER_SHARE_IPC.RESHARE_REQUESTED);
 const fanOutDeviceLinkOwnershipChanged = createIpcFanOut('device-link:ownership-changed');
 // 控制端:目标设备「无响应」熔断状态翻转(payload = { deviceId, unresponsive })
 const fanOutDeviceLinkResponsivenessChanged = createIpcFanOut('device-link:responsiveness-changed');
@@ -4572,6 +4573,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onSettled: fanOutProviderShareSettled,
     onOpenJoin: fanOutProviderShareOpenJoin,
     onOpenManage: fanOutProviderShareOpenManage,
+    onReshareRequested: fanOutProviderShareReshareRequested,
   },
   // 供应商组：这台电脑上某个供应商的组设置(只接受本机应用窗口)。
   providerGroup: {

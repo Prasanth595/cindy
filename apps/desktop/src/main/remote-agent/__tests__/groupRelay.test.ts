@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER } from '@cindy/device-link';
+import { isProviderSharePeer, providerShareGuestPeer, REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay';
@@ -20,7 +20,7 @@ import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
-import { relayKeyFor, type RelayRunFailure } from '../host/groupRelay';
+import { relayKeyFor, reshareKeyFor, type RelayRunFailure } from '../host/groupRelay';
 import {
   createRemoteAgentHost,
   hostSessionIdFor,
@@ -57,6 +57,8 @@ function fakeAgentHost(name: string, started: Started[], options: {
   failStart?: boolean;
   /** 这台的 Agent 一启动就结束。 */
   endImmediately?: boolean;
+  /** 转分享的同意(本机是分享者)。 */
+  reshare?: Parameters<typeof createRemoteAgentHost>[0]['reshare'];
 }) {
   return createRemoteAgentHost({
     isAgentAvailable: () => true,
@@ -118,6 +120,7 @@ function fakeAgentHost(name: string, started: Started[], options: {
     }),
     ...(options.purge ? { purgeHostedTranscripts: options.purge } : {}),
     ...(options.groupRelay ? { groupRelay: options.groupRelay } : {}),
+    ...(options.reshare ? { reshare: options.reshare } : {}),
     captureOwner: () => 'owner',
     isOwnerCurrent: () => true,
     runsRoot: path.join(root, name),
@@ -226,7 +229,7 @@ function setup(options: {
   } satisfies RemoteAgentGroupRelayDeps;
   const ownerStarted: Started[] = [];
   const owner = fakeAgentHost('owner', ownerStarted, {
-    trust: (controller) => (controller.startsWith('share-') ? 'guest' : 'owner'),
+    trust: (controller) => (controller.startsWith('share-') || isProviderSharePeer(controller) ? 'guest' : 'owner'),
     purge: async () => undefined,
     groupRelay: relay,
     ...options.owner,
@@ -819,5 +822,115 @@ describe('provider group "switch to another computer" for shared users', () => {
     await waitFor(() => switchTokenIn(second.stream) !== undefined);
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_STUDIO.memberKey]) }));
     await second.client.close('close', 'navigation');
+  });
+});
+
+// 转分享(docs/product-rules/provider-sharing.md §4.3)：受邀者 B 的组替 B 分享的人 C 转来的任务，只在本机主人 A 同意过 C 时运行。
+describe('provider group reshare consent', () => {
+  /** B 的组所在电脑在 A 这台上的身份(A 的受邀者)。 */
+  const B_GROUP = providerShareGuestPeer('a-share', 'b-member', 'b-device');
+  /** C(B 分享的人)在 B 那台上的身份。 */
+  const C_AT_B = providerShareGuestPeer('b-share', 'c-member', 'c-device');
+  const C_KEY = reshareKeyFor('b-share', 'c-member');
+
+  function memberHost(approved: Set<string>) {
+    const started: Started[] = [];
+    const sync = vi.fn(async (_controller: string, entries: readonly { key: string }[]) => ({
+      entries: entries.map((entry) => ({ key: entry.key, state: approved.has(entry.key) ? 'approved' as const : 'pending' as const })),
+    }));
+    const host = fakeAgentHost('a', started, {
+      trust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
+      reshare: { sync, allows: (controller, key) => controller === B_GROUP && !!key && approved.has(key) },
+    });
+    const open = (payload: Record<string, unknown>) => host.handle(B_GROUP, {
+      op: 'open',
+      runId: runId(),
+      agentKind: 'claude-code',
+      payload: { json: openPayload('relayed', payload) },
+    });
+    return { host, started, sync, open };
+  }
+
+  it('declares consent support only to shared users and records whom their group computer reports', async () => {
+    const env = memberHost(new Set([C_KEY]));
+    expect(await env.host.handle(B_GROUP, { op: 'caps' })).toMatchObject({ reshareConsent: true });
+    expect(await env.host.handle('same-account-mac', { op: 'caps' })).not.toHaveProperty('reshareConsent');
+    expect(await env.host.handle(B_GROUP, { op: 'reshare', entries: [{ key: C_KEY, name: 'Carol' }] }))
+      .toEqual({ entries: [{ key: C_KEY, state: 'approved' }] });
+    expect(env.sync).toHaveBeenCalledWith(B_GROUP, [{ key: C_KEY, name: 'Carol' }]);
+    // 同账号电脑经组使用不需要同意，也不能报人。
+    await expect(env.host.handle('same-account-mac', { op: 'reshare', entries: [] })).rejects.toThrow(/REMOTE_AGENT_INVALID/);
+  });
+
+  it('refuses a relayed task for someone the owner has not agreed to, and runs it once agreed', async () => {
+    const approved = new Set<string>();
+    const env = memberHost(approved);
+    await expect(env.open({ relay: relayKeyFor(C_AT_B), groupAssigned: true, reshareKey: C_KEY }))
+      .rejects.toThrow(/REMOTE_AGENT_RESHARE_NOT_ALLOWED/);
+    // 旧组所在电脑不带转分享键：回已有的错误码，它照常换组里下一台。
+    await expect(env.open({ relay: relayKeyFor(C_AT_B), groupAssigned: true }))
+      .rejects.toThrow(/REMOTE_AGENT_PROVIDER_NOT_ALLOWED/);
+    expect(env.host.runCount()).toBe(0);
+    // 受邀者 B 自己的任务(不是被转来的)不需要同意。
+    await env.open({ groupAssigned: true });
+    await waitFor(() => env.started.length === 1);
+    approved.add(C_KEY);
+    await env.open({ relay: relayKeyFor(C_AT_B), groupAssigned: true, reshareKey: C_KEY });
+    await waitFor(() => env.started.length === 2);
+    expect(env.started[1].input.guest).toBe(true);
+    await env.host.abortAll();
+  });
+
+  it('stops the relayed tasks of a person right away when the owner withdraws agreement', async () => {
+    const approved = new Set([C_KEY]);
+    const env = memberHost(approved);
+    await env.open({ relay: relayKeyFor(C_AT_B), groupAssigned: true, reshareKey: C_KEY });
+    await env.open({ groupAssigned: true });
+    expect(env.host.runCount()).toBe(2);
+    approved.delete(C_KEY);
+    await env.host.abortReshare((controller) => controller === B_GROUP, C_KEY);
+    // 只结束 C 的任务，B 自己的照常运行。
+    await waitFor(() => env.host.runCount() === 1);
+    await env.host.abortAll();
+  });
+
+  it('asks the group to pick only computers that agreed to this person, and tells a shared-in computer who it is', async () => {
+    const SHARED_IN: GroupRelayMember = { memberKey: 'share:a-share:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: false };
+    const opens: Array<Record<string, unknown>> = [];
+    const env = setup({
+      plans: [{ kind: 'member', ...SHARED_IN }, { kind: 'member', ...MEMBER_MINI }],
+      intercept: async (_agentDeviceId, request, forward) => {
+        if (request.op === 'open') opens.push((request.payload as { json: Record<string, unknown> }).json);
+        return forward();
+      },
+    });
+    const first = await openAsGuest(env, C_AT_B, openPayload(SESSION, { reshareKey: 'f'.repeat(32) }));
+    expect(env.relay.plan).toHaveBeenCalledWith(expect.objectContaining({ reshareKey: C_KEY }));
+    // 带的是本机按分享与成员派生的键，受邀者自己填的不转发。
+    expect(opens[0]).toMatchObject({ relay: relayKeyFor(C_AT_B), groupAssigned: true, reshareKey: C_KEY });
+    await first.client.close('close', 'navigation');
+    const second = await openAsGuest(env, C_AT_B, openPayload('task-2'));
+    // 同账号的组内电脑不需要同意，不带键。
+    expect(opens[1]).not.toHaveProperty('reshareKey');
+    await second.client.close('close', 'navigation');
+  });
+
+  it('marks consent for re-checking when the shared-in computer refuses the person, then tries the next computer', async () => {
+    const SHARED_IN: GroupRelayMember = { memberKey: 'share:a-share:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: false };
+    const noteReshareDenied = vi.fn();
+    const env = setup({
+      plans: [{ kind: 'member', ...SHARED_IN }, { kind: 'member', ...MEMBER_MINI }],
+      intercept: async (_agentDeviceId, request, forward) => {
+        if (request.op === 'open' && _agentDeviceId === 'studio') {
+          throw new Error('[REMOTE_AGENT_RESHARE_NOT_ALLOWED] the owner of this computer has not agreed to this user');
+        }
+        return forward();
+      },
+    });
+    (env.relay as RemoteAgentGroupRelayDeps).noteReshareDenied = noteReshareDenied;
+    const { client } = await openAsGuest(env, C_AT_B, openPayload(SESSION));
+    expect(noteReshareDenied).toHaveBeenCalledWith('studio', C_KEY);
+    expect(env.memberStarted.mini).toHaveLength(1);
+    await client.close('close', 'navigation');
   });
 });

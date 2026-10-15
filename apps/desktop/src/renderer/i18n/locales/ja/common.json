@@ -260,6 +260,22 @@
         "title": "{{name}} との共有を削除しますか？",
         "description": "{{name}} はすぐに {{provider}} を使えなくなり、実行中のセッションは停止します。再び共有するには新しいリンクが必要です。使用量の記録は残ります。",
         "confirm": "共有を削除"
+      },
+      "reshare": {
+        "applying": "{{owner}} のプロバイダーグループ経由での利用を希望しています",
+        "requestedAt": "{{time}}にリクエスト",
+        "usageHint": "同意すると、{{name}} のセッションをこのパソコンで実行でき、使用量は {{owner}} の分として記録されます",
+        "approve": "同意",
+        "reject": "拒否",
+        "listTitle": "{{owner}} のプロバイダーグループ経由で利用",
+        "stateApproved": "同意済み",
+        "stateRejected": "未同意",
+        "revoke": "同意を取り消す",
+        "revokeAria": "{{name}} への同意を取り消す",
+        "approveAria": "{{name}} の利用に同意する",
+        "toastApproved": "{{name}} が {{owner}} のプロバイダーグループ経由で {{provider}} を使えるようにしました",
+        "toastRejected": "{{name}} のリクエストを拒否しました",
+        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました"
       }
     },
     "toast": {
@@ -308,7 +324,7 @@
       "factFiles": "プロジェクトのファイルとコマンドは引き続きあなたのパソコンで実行されます",
       "factFilesDetail": "あなたのセッションの権限が適用されます",
       "factPrivacy": "チャットの内容と Agent が読み取ったファイルの内容は {{name}} のパソコンを経由し、実際にセッションを実行するパソコンに保存されます",
-      "factPrivacyDetail": "{{name}} に表示されるのはあなたのニックネームとアバターだけです",
+      "factPrivacyDetail": "{{name}} と、同意が必要なほかのパソコンの持ち主に表示されるのは、あなたのニックネームとアバターだけです",
       "factApproval": "申請を送った後、{{name}} が承認すると有効になります",
       "factApprovalDetail": "{{name}} はこの共有をいつでも停止または削除できます",
       "send": "申請を送信",
@@ -422,7 +438,9 @@
       "approvedTitle": "共有の申請が承認されました",
       "approvedBody": "{{name}} が {{provider}} の共有を承認しました",
       "rejectedTitle": "共有の申請は承認されませんでした",
-      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした"
+      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした",
+      "reshareTitle": "新しい利用リクエスト",
+      "reshareBody": "{{name}} が {{owner}} のプロバイダーグループ経由で、あなたの共有した {{provider}} を使いたいと希望しています"
     }
   },
   "providerGroup": {
@@ -535,7 +553,22 @@
         "lastDescription": "グループ内の最後のパソコンです。外すと {{provider}} のプロバイダーグループは削除されます。",
         "confirm": "グループから外す"
       },
-      "sourceGroupOwner": "グループを作成したパソコン"
+      "sourceGroupOwner": "グループを作成したパソコン",
+      "reshare": {
+        "allApproved": "共有相手も利用できます",
+        "waiting_other": "共有相手 {{count}} 人が {{owner}} の同意を待っています",
+        "rejected_other": "{{owner}} は共有相手 {{count}} 人に同意しませんでした",
+        "needsUpdate": "{{owner}} が Cindy を更新すると、共有相手への同意ができるようになります",
+        "unknown": "{{owner}} が共有相手に同意しているかはまだわかりません",
+        "title": "共有相手がこのパソコンを使えるか",
+        "description": "{{owner}} が 1 人ずつ同意します。同意されていない人のセッションはこのパソコンに割り当てられません。",
+        "state": {
+          "approved": "同意済み",
+          "pending": "同意待ち",
+          "rejected": "未同意",
+          "unknown": "未確認"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "{{provider}} のプロバイダーグループを削除しますか？",

@@ -159,6 +159,40 @@ describe('ProviderGroupSection', () => {
     expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
   });
 
+  // 转分享(provider-sharing.md §4.3)：分享来的电脑的主人是否同意本机分享出去的人经组使用它。
+  it('shows whether the owner of a shared-in computer agreed to the people this computer shares with', async () => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
+    const SHARED = { key: 'share:s1:anthropic', kind: 'share' as const, agentDeviceId: 'share:s1', providerId: 'anthropic', limit: 4, weight: 1, paused: false };
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, SHARED] };
+    const view = viewOf(stored);
+    view.members[1] = {
+      ...view.members[1],
+      state: 'available',
+      ownerName: 'Kai',
+      reshare: {
+        support: 'supported',
+        guests: [
+          { memberId: 'c', displayName: 'Carol', avatarUrl: null, state: 'pending' },
+          { memberId: 'd', displayName: 'Dave', avatarUrl: null, state: 'approved' },
+        ],
+      },
+    };
+    command.mockImplementation(async (cmd: { action: string }) => (cmd.action === 'list' ? { anthropic: stored } : view));
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    const rows = await screen.findAllByTestId('provider-group-member');
+    await waitFor(() => expect(within(rows[1]).getByTestId('provider-group-member-reshare-summary').textContent)
+      .toBe('1 位分享的人等待 Kai 同意'));
+    // 本机这一行不显示。
+    expect(within(rows[0]).queryByTestId('provider-group-member-reshare-summary')).toBeNull();
+    expect(screen.queryByTestId('provider-group-member-reshare')).toBeNull();
+    fireEvent.click(rows[1].querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    const list = within(rows[1]).getByTestId('provider-group-member-reshare');
+    expect(list.textContent).toContain('需要 Kai 逐人同意');
+    const guests = within(list).getAllByTestId('provider-group-member-reshare-guest');
+    expect(guests.map((guest) => guest.textContent)).toEqual(['CCarol等待同意', 'DDave已同意']);
+  });
+
   it('expands a computer to show the quota of its own account', async () => {
     stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);

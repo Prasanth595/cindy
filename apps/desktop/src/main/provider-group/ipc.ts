@@ -11,6 +11,7 @@ import {
   normalizeProviderGroupConfig,
   type ProviderGroupCommand,
   type ProviderGroupConfig,
+  type ProviderGroupReshareSummary,
   type ProviderGroupSessionGroup,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
@@ -52,6 +53,31 @@ export interface ProviderGroupCommandDeps {
   /** 这个任务此刻归哪个组(只读本机记录)。 */
   sessionGroup(sessionId: string): Promise<ProviderGroupSessionGroup>;
   changed(providerId: string): void;
+  /**
+   * 转分享(provider-sharing.md §4.3)：分享来的组内电脑的主人对本机分享出去的人逐人同意的结果，设置页据此显示；
+   * 设置页打开时顺带核对一次。不提供时不显示(测试)。
+   */
+  reshare?: {
+    summary(providerId: string, agentDeviceId: string): ProviderGroupReshareSummary | null;
+    refreshIfStale(): void;
+  };
+}
+
+/** 本机自己的组：分享来的组内电脑补上转分享的结果(只给本机设置页，不经设备互联发出)。 */
+function withReshare(deps: ProviderGroupCommandDeps, view: ProviderGroupView): ProviderGroupView {
+  const reshare = deps.reshare;
+  if (!reshare || !view.config) return view;
+  reshare.refreshIfStale();
+  const members = view.config.members;
+  return {
+    ...view,
+    members: view.members.map((status) => {
+      const member = members.find((m) => m.key === status.key);
+      if (member?.kind !== 'share' || !member.agentDeviceId) return status;
+      const summary = reshare.summary(view.providerId, member.agentDeviceId);
+      return summary ? { ...status, reshare: summary } : status;
+    }),
+  };
 }
 
 const REMOTE_DEVICE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
@@ -137,7 +163,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
   const { providerId } = command;
   switch (command.action) {
     case 'get':
-      return deps.router.view(providerId, { includeGuestSupport: true });
+      return withReshare(deps, await deps.router.view(providerId, { includeGuestSupport: true }));
     case 'remote-view':
       return markMembersUnreachableHere(
         await deps.remoteView(command.deviceId, providerId),
@@ -179,12 +205,23 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       const written = await deps.writeGroup(providerId, next);
       await deps.pruneBindings(providerId, written ? new Set(written.members.map((m) => m.key)) : null);
       deps.changed(providerId);
-      return deps.router.view(providerId, { includeGuestSupport: true });
+      return withReshare(deps, await deps.router.view(providerId, { includeGuestSupport: true }));
     }
   }
 }
 
-export function registerProviderGroupIpc(): void {
+/**
+ * 转分享(provider-sharing.md §4.3)由 bootstrap 接上(reshareRuntime.ts)：组里的电脑变了就重新报分享的人，
+ * 设置页显示分享来的电脑对每个人的同意情况。
+ */
+export interface ProviderGroupIpcReshare {
+  summary(providerId: string, agentDeviceId: string): ProviderGroupReshareSummary | null;
+  refreshIfStale(): void;
+  kick(reason: string): void;
+}
+
+export function registerProviderGroupIpc(options: { reshare?: ProviderGroupIpcReshare } = {}): void {
+  const reshare = options.reshare;
   const deps: ProviderGroupCommandDeps = {
     router: getProviderGroupRouter(),
     directory: getProviderGroupDirectory(),
@@ -197,6 +234,8 @@ export function registerProviderGroupIpc(): void {
     listGroups: listProviderGroups,
     sessionGroup: readProviderGroupOfSession,
     changed: (providerId) => {
+      // 组里的电脑变了：重新报转分享(加进来的分享来的电脑要请它的主人同意，移出的不再列着)。
+      reshare?.kick('group');
       try {
         broadcast(PROVIDER_GROUP_IPC.CHANGED, { providerId });
         // 同账号其他电脑的模型列表按本机目录里的组摘要收起组内电脑：组变化后让它们重读目录。
@@ -205,6 +244,7 @@ export function registerProviderGroupIpc(): void {
         log.warn('provider group broadcast failed', { error: String(error) });
       }
     },
+    ...(reshare ? { reshare } : {}),
   };
 
   ipcMain.handle(PROVIDER_GROUP_IPC.COMMAND, async (event, raw: unknown) => {

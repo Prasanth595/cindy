@@ -392,14 +392,19 @@ export interface RemoteAgentHandler {
   abortAll(): void;
   /** 结束匹配控制端的任务(供应商分享被关闭)。 */
   abortControllers?(match: (controller: string) => boolean): Promise<void>;
+  /** 结束匹配控制端替某个人(转分享键)转来的任务(转分享的同意被撤回)。 */
+  abortReshare?(match: (controller: string) => boolean, reshareKey: string): Promise<void>;
   /** 结束并清理匹配控制端留在本机的数据(供应商分享被删除)。 */
   purgeControllers?(match: (controller: string) => boolean): Promise<void>;
   /** 有进行中任务的控制端。 */
   activeControllers?(): string[];
   /** 正在运行一轮的任务的控制端(每个任务一项)。 */
   turnRunningControllers?(): string[];
-  /** 分享详情的匿名组状态；不开放同账号组管理通道。 */
-  sharedGroupStatus?(providerId: string): Promise<ProviderShareGroupState[] | null>;
+  /**
+   * 分享详情的匿名组状态；不开放同账号组管理通道。guestController 是读状态的受邀者：分享来的组内电脑按它的
+   * 主人是否同意过这个人显示(转分享)。
+   */
+  sharedGroupStatus?(providerId: string, guestController?: string): Promise<ProviderShareGroupState[] | null>;
 }
 let remoteAgentHandler: RemoteAgentHandler | null = null;
 
@@ -4189,7 +4194,7 @@ async function projectProviderShareRead(
     const providers = result && typeof result === 'object' ? (result as { providers?: unknown }).providers : null;
     const offered = Array.isArray(providers) && providers.some((p) => p?.id === providerId && p.remoteInvocationEnabled === true);
     const states = wantsStatus && offered
-      ? await remoteAgentHandler?.sharedGroupStatus?.(providerId).catch(() => null) ?? null
+      ? await remoteAgentHandler?.sharedGroupStatus?.(providerId, src).catch(() => null) ?? null
       : null;
     return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src), states) };
   }
@@ -4346,6 +4351,17 @@ export async function revokeProviderShareControllers(
   }
   const handler = remoteAgentHandler;
   await (purge ? handler?.purgeControllers?.(guarded) : handler?.abortControllers?.(guarded));
+}
+
+/**
+ * 转分享的同意被撤回(provider-sharing.md §4.3)：结束受邀者的组替那个人转来的任务。连接不断(受邀者自己与它
+ * 分享的其他人照常用)；只有分享的受邀者对端能匹配。
+ */
+export async function abortProviderShareReshareRuns(
+  match: (controller: string) => boolean,
+  reshareKey: string,
+): Promise<void> {
+  await remoteAgentHandler?.abortReshare?.((controller) => isProviderSharePeer(controller) && match(controller), reshareKey);
 }
 
 async function runAuthorizedInvoke(

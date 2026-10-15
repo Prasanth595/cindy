@@ -597,6 +597,7 @@ import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
 import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
 import { registerProviderGroupIpc } from './provider-group/ipc.js';
 import { registerProviderGroupRemoteHandler } from './provider-group/remoteRegistration.js';
+import { providerGroupReshare, registerProviderGroupReshare } from './provider-group/reshareRuntime.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -9587,8 +9588,9 @@ app.on('ready', async () => {
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
-  registerProviderGroupIpc();
+  registerProviderGroupIpc({ reshare: providerGroupReshare });
   registerProviderGroupRemoteHandler();
+  registerProviderGroupReshare();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,

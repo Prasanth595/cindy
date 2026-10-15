@@ -21,10 +21,11 @@ import type {
   ProviderOwnUsageView,
   ProviderShareMemberView,
   ProviderShareOwnerState,
+  ProviderShareReshareView,
   ProviderShareUsageRange,
 } from '../../../shared/providerShare';
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
-import type { ProviderShareGate, ProviderSharePendingRequest } from './providerShareFormat';
+import { pendingResharesFromOwned, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection } from './ProviderUsageSection';
 import { publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
@@ -97,7 +98,7 @@ export function ProviderShareManagePage({
   }, [load]);
 
   // 同一个供应商在这台电脑上只应有一条分享；稳妥起见合并同供应商的全部记录。
-  const { members, requests } = useMemo(() => {
+  const { members, requests, reshares } = useMemo(() => {
     const shares = state?.ready ? state.shares.filter((share) => share.providerId === providerId) : [];
     const pending: ProviderSharePendingRequest[] = [];
     for (const share of shares) {
@@ -109,7 +110,12 @@ export function ProviderShareManagePage({
       }
     }
     pending.sort((a, b) => Date.parse(a.request.createdAt) - Date.parse(b.request.createdAt));
-    return { members: shares.flatMap((share) => share.members), requests: pending };
+    return {
+      members: shares.flatMap((share) => share.members),
+      requests: pending,
+      // 转分享请求(provider-sharing.md §4.3)：成员想经自己的供应商组把这里分享的供应商转给别人用。
+      reshares: pendingResharesFromOwned(shares),
+    };
   }, [providerId, state]);
 
   const withBusy = useCallback(async (key: string, run: () => Promise<void>) => {
@@ -165,6 +171,27 @@ export function ProviderShareManagePage({
         void load();
       }),
     [load, t, withBusy],
+  );
+
+  /** 转分享：同意、拒绝，或撤回已同意的(撤回立即停止这个人经组转来的任务)。只改本机记录。 */
+  const decideReshare = useCallback(
+    (reshare: ProviderShareReshareView, owner: string, decision: 'approve' | 'reject') =>
+      withBusy(reshare.id, async () => {
+        try {
+          await window.electronAPI.providerShare.command({ action: 'reshare-decide', id: reshare.id, decision });
+          toast.success(
+            decision === 'approve'
+              ? t('providerShare.manage.reshare.toastApproved', { name: reshare.name, owner, provider: providerName })
+              : reshare.state === 'approved'
+                ? t('providerShare.manage.reshare.toastRevoked', { name: reshare.name })
+                : t('providerShare.manage.reshare.toastRejected', { name: reshare.name }),
+          );
+        } catch (error) {
+          toast.error(t(mapIpcErrorToI18nKey(error)));
+        }
+        void load();
+      }),
+    [load, providerName, t, withBusy],
   );
 
   const removeMember = useCallback(
@@ -263,7 +290,7 @@ export function ProviderShareManagePage({
         </p>
       )}
 
-      {requests.length > 0 && (
+      {(requests.length > 0 || reshares.length > 0) && (
         <section className="mt-6 shrink-0" aria-labelledby="provider-share-pending-title">
           <h3 id="provider-share-pending-title" className="mb-2 text-13 font-medium text-[var(--settings-section-title)]">
             {t('providerShare.manage.pending.title')}
@@ -319,6 +346,51 @@ export function ProviderShareManagePage({
                 </div>
               </div>
             ))}
+            {reshares.map((item, index) => (
+              <div
+                key={item.reshare.id}
+                data-testid="provider-share-reshare-row"
+                className={cn(
+                  'flex flex-wrap items-center gap-3 px-4 py-3',
+                  (requests.length > 0 || index > 0) && 'border-t border-[var(--settings-theme-card-border)]',
+                )}
+              >
+                <ShareAvatar displayName={item.reshare.name} avatarUrl={item.reshare.avatarUrl} />
+                <div className="flex min-w-[200px] flex-1 flex-col gap-0.5">
+                  <div className="flex flex-wrap items-baseline gap-2 text-13">
+                    <span className="font-medium text-[var(--text-primary)]">{item.reshare.name}</span>
+                    <span className="text-12 text-[var(--text-secondary)]">
+                      {t('providerShare.manage.reshare.applying', { owner: item.owner.displayName })}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 text-12 text-[var(--text-secondary)]">
+                    <span>{t('providerShare.manage.reshare.requestedAt', { time: time.relative(item.reshare.requestedAt) })}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{t('providerShare.manage.reshare.usageHint', { name: item.reshare.name, owner: item.owner.displayName })}</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    compact
+                    disabled={busy.has(item.reshare.id)}
+                    onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'reject')}
+                  >
+                    {t('providerShare.manage.reshare.reject')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    compact
+                    disabled={busy.has(item.reshare.id)}
+                    onClick={() => void decideReshare(item.reshare, item.owner.displayName, 'approve')}
+                  >
+                    {t('providerShare.manage.reshare.approve')}
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}
@@ -350,6 +422,8 @@ export function ProviderShareManagePage({
                 time={time}
                 onPause={() => void setMember(member, member.status === 'paused' ? 'resume' : 'pause')}
                 onRemove={() => void removeMember(member)}
+                reshareBusy={(id) => busy.has(id)}
+                onReshare={(reshare, decision) => void decideReshare(reshare, member.displayName, decision)}
               />
             ))
           )}
@@ -374,6 +448,8 @@ function MemberRow({
   time,
   onPause,
   onRemove,
+  reshareBusy,
+  onReshare,
 }: {
   member: ProviderShareMemberView;
   first: boolean;
@@ -381,9 +457,13 @@ function MemberRow({
   time: ReturnType<typeof useShareTimeFormat>;
   onPause: () => void;
   onRemove: () => void;
+  reshareBusy: (id: string) => boolean;
+  onReshare: (reshare: ProviderShareReshareView, decision: 'approve' | 'reject') => void;
 }) {
   const { t } = useTranslation();
   const paused = member.status === 'paused';
+  // 转分享里已处理过的人(待处理的在上方「待处理」一栏)：可以撤回已同意的，或改为同意。
+  const decided = (member.reshares ?? []).filter((reshare) => reshare.state !== 'pending');
   const statusText = paused
     ? t('providerShare.manage.members.statusPaused')
     : member.runningTasks > 0
@@ -391,55 +471,99 @@ function MemberRow({
       : t('providerShare.manage.members.statusActive');
   // 用量在上方「用量」块里按人列出(供应商组 §10)，这里只管分享本身。
   return (
-    <div
-      data-testid="provider-share-member-row"
-      className={cn('flex flex-wrap items-center gap-3 px-4 py-3', !first && 'border-t border-[var(--settings-theme-card-border)]')}
-    >
-      <ShareAvatar
-        displayName={member.displayName}
-        avatarUrl={member.avatarUrl}
-        className={cn(paused && 'opacity-70')}
-      />
-      <div className={cn('flex min-w-[180px] flex-1 flex-col gap-0.5', paused && 'opacity-70')}>
-        <div className="flex flex-wrap items-center gap-2 text-13">
-          <span className="font-medium text-[var(--text-primary)]">{member.displayName}</span>
-          <span className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
-            <span
-              aria-hidden="true"
-              className={cn(
-                'h-1.5 w-1.5 shrink-0 rounded-full',
-                paused ? 'bg-[var(--remote-status-disconnected)]' : 'bg-[var(--remote-status-ready)]',
-              )}
-            />
-            {statusText}
-          </span>
+    <div className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}>
+      <div data-testid="provider-share-member-row" className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <ShareAvatar
+          displayName={member.displayName}
+          avatarUrl={member.avatarUrl}
+          className={cn(paused && 'opacity-70')}
+        />
+        <div className={cn('flex min-w-[180px] flex-1 flex-col gap-0.5', paused && 'opacity-70')}>
+          <div className="flex flex-wrap items-center gap-2 text-13">
+            <span className="font-medium text-[var(--text-primary)]">{member.displayName}</span>
+            <span className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'h-1.5 w-1.5 shrink-0 rounded-full',
+                  paused ? 'bg-[var(--remote-status-disconnected)]' : 'bg-[var(--remote-status-ready)]',
+                )}
+              />
+              {statusText}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 text-12 text-[var(--text-secondary)]">
+            <span>{t('providerShare.manage.members.joined', { date: time.date(Date.parse(member.joinedAt)) })}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {member.lastUsedAt
+                ? t('providerShare.manage.members.lastUsed', { time: time.relative(member.lastUsedAt) })
+                : t('providerShare.manage.members.neverUsed')}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-1.5 text-12 text-[var(--text-secondary)]">
-          <span>{t('providerShare.manage.members.joined', { date: time.date(Date.parse(member.joinedAt)) })}</span>
-          <span aria-hidden="true">·</span>
-          <span>
-            {member.lastUsedAt
-              ? t('providerShare.manage.members.lastUsed', { time: time.relative(member.lastUsedAt) })
-              : t('providerShare.manage.members.neverUsed')}
-          </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button variant="secondary" size="sm" compact disabled={busy} onClick={onPause}>
+            {t(paused ? 'providerShare.manage.members.resume' : 'providerShare.manage.members.pause')}
+          </Button>
+          <Button
+            variant="secondary"
+            tone="danger"
+            size="sm"
+            compact
+            disabled={busy}
+            aria-label={t('providerShare.manage.members.removeAria', { name: member.displayName })}
+            onClick={onRemove}
+          >
+            {t('providerShare.manage.members.remove')}
+          </Button>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        <Button variant="secondary" size="sm" compact disabled={busy} onClick={onPause}>
-          {t(paused ? 'providerShare.manage.members.resume' : 'providerShare.manage.members.pause')}
-        </Button>
-        <Button
-          variant="secondary"
-          tone="danger"
-          size="sm"
-          compact
-          disabled={busy}
-          aria-label={t('providerShare.manage.members.removeAria', { name: member.displayName })}
-          onClick={onRemove}
-        >
-          {t('providerShare.manage.members.remove')}
-        </Button>
-      </div>
+      {decided.length > 0 && (
+        // 经这个成员的供应商组转给别人用的人(provider-sharing.md §4.3)：缩进到昵称一列，与这一行同属一人。
+        <div className="-mt-1 flex flex-col gap-1.5 px-4 pb-3" data-testid="provider-share-reshare-list">
+          <span className="ml-11 text-12 text-[var(--text-tertiary)]">
+            {t('providerShare.manage.reshare.listTitle', { owner: member.displayName })}
+          </span>
+          {decided.map((reshare) => {
+            const approved = reshare.state === 'approved';
+            return (
+              <div
+                key={reshare.id}
+                data-testid="provider-share-reshare-item"
+                className="ml-11 flex flex-wrap items-center gap-2"
+              >
+                <ShareAvatar
+                  displayName={reshare.name}
+                  avatarUrl={reshare.avatarUrl}
+                  size="sm"
+                  className={cn(!approved && 'opacity-70')}
+                />
+                <span className={cn('min-w-0 flex-1 truncate text-13 text-[var(--text-primary)]', !approved && 'opacity-70')}>
+                  {reshare.name}
+                  <span className="ml-2 text-12 text-[var(--text-secondary)]">
+                    {t(approved ? 'providerShare.manage.reshare.stateApproved' : 'providerShare.manage.reshare.stateRejected')}
+                  </span>
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  compact
+                  tone={approved ? 'danger' : undefined}
+                  disabled={reshareBusy(reshare.id)}
+                  aria-label={t(
+                    approved ? 'providerShare.manage.reshare.revokeAria' : 'providerShare.manage.reshare.approveAria',
+                    { name: reshare.name },
+                  )}
+                  onClick={() => onReshare(reshare, approved ? 'reject' : 'approve')}
+                >
+                  {t(approved ? 'providerShare.manage.reshare.revoke' : 'providerShare.manage.reshare.approve')}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

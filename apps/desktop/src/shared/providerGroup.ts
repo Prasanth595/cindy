@@ -103,6 +103,26 @@ export interface ProviderGroupMemberStatus {
    * 按自己的连接情况补上，不来自组所在电脑的回包。
    */
   unreachableHere?: boolean;
+  /**
+   * 分享来的电脑：这台的主人对本机分享出去的人逐人同意的结果(provider-sharing.md §4.3)。只在本机自己的组里、
+   * 组所在的供应商分享给了别人时有；不经设备互联发给其他电脑。
+   */
+  reshare?: ProviderGroupReshareSummary;
+}
+
+/** 本机分享出去的一个人：分享来的那台电脑的主人是否同意他经组使用那台。 */
+export interface ProviderGroupReshareGuest {
+  memberId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  /** unknown = 还没问到(那台离线或刚加入)。 */
+  state: 'approved' | 'pending' | 'rejected' | 'unknown';
+}
+
+export interface ProviderGroupReshareSummary {
+  /** needs-update = 那台的 Cindy 太旧，给不出同意；unknown = 还没问到。 */
+  support: 'supported' | 'needs-update' | 'unknown';
+  guests: ProviderGroupReshareGuest[];
 }
 
 export interface ProviderGroupView {
