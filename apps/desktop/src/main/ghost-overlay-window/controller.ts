@@ -238,9 +238,13 @@ export class GhostOverlayWindowsController {
     const generation = this.generation;
     const promise = this.createSlot(ghostId, generation);
     this.pendingCreates.set(ghostId, promise);
-    void promise.then(() => {
+    const cleanup = () => {
       if (this.pendingCreates.get(ghostId) === promise) this.pendingCreates.delete(ghostId);
-    });
+    };
+    // fulfillment 与 rejection 都要清理映射:若只在 fulfilled 分支清理,一旦
+    // createSlot 意外 reject,该 ghostId 会永久命中已拒绝的 inflight promise。
+    // then(cleanup, cleanup) 不改变 promise 的透传语义,也不会新增未处理拒绝。
+    void promise.then(cleanup, cleanup);
     return promise;
   }
 

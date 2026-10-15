@@ -116,7 +116,8 @@ export async function createGhostOverlayWindow(
     (_webContents, _permission, callback) => callback(false),
   );
 
-  markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+  const webContentsId = win.webContents.id;
+  markGhostOverlayWebContentsId(webContentsId, ghostId);
 
   // 协议 handler 必须先于 loadURL 挂好,否则直载会 404 / 空响应。失败路径必须
   // 销毁窗口并清理 registry,否则留下 show:false + closable:false 的僵尸窗口。
@@ -126,9 +127,8 @@ export async function createGhostOverlayWindow(
     stage = 'load';
     await win.loadURL(`${GHOST_SCHEME}://${ghostId}/${decl.html}`);
   } catch (error) {
-    // 先捕获 id 再销毁:窗口销毁后访问 webContents 不可靠(可能抛「Object has
-    // been destroyed」),届时会掩盖原始错误并留下 registry 僵尸条目。
-    const webContentsId = win.webContents.id;
+    // 清理使用创建期捕获的 id:窗口销毁后访问 webContents 不可靠(可能抛
+    // 「Object has been destroyed」),届时会掩盖原始错误并留下 registry 僵尸条目。
     if (!win.isDestroyed()) win.destroy();
     clearGhostOverlayWebContents(webContentsId);
     throw new Error(`ghost overlay ${stage} failed for ${ghostId}`, { cause: error });

@@ -538,6 +538,69 @@ describe('in-flight creation registry cleanup', () => {
   });
 });
 
+describe('in-flight creation rejection cleanup', () => {
+  function brokenWindow(): BrowserWindow {
+    // 模拟 createSlot 成功路径中未包裹的抛点:窗口已销毁时读 webContents.id 会抛。
+    return {
+      webContents: {
+        get id(): number {
+          throw new Error('webContents gone');
+        },
+        on: vi.fn(),
+        send: vi.fn(),
+      },
+      on: vi.fn(),
+      isDestroyed: () => false,
+      destroy: vi.fn(),
+    } as unknown as BrowserWindow;
+  }
+
+  function rejectionHarness() {
+    let calls = 0;
+    const log = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+    };
+    const deps: GhostOverlayWindowsControllerDeps = {
+      createWindow: async () => {
+        calls += 1;
+        return brokenWindow();
+      },
+      isGhostOverlayDeclared: () => true,
+      isUserEnabled: () => true,
+      broadcastState: () => {},
+      isQuitting: () => false,
+      log,
+    };
+    return { controller: new GhostOverlayWindowsController(deps), calls: () => calls };
+  }
+
+  it('rejected in-flight creation clears the pending entry and retries on the next call', async () => {
+    const h = rejectionHarness();
+
+    await expect(h.controller.show('a')).rejects.toThrow('webContents gone');
+    expect(h.calls()).toBe(1);
+
+    // 清理后再次调用会重新 createWindow,而不是永远命中同一个已拒绝 promise。
+    await expect(h.controller.show('a')).rejects.toThrow('webContents gone');
+    expect(h.calls()).toBe(2);
+  });
+
+  it('two concurrent rejected creations share the in-flight promise and both reject', async () => {
+    const h = rejectionHarness();
+
+    const p1 = h.controller.show('a');
+    const p2 = h.controller.show('a');
+    await expect(p1).rejects.toThrow('webContents gone');
+    await expect(p2).rejects.toThrow('webContents gone');
+    expect(h.calls()).toBe(1); // 在途去重仍生效,只 createWindow 一次
+  });
+});
+
 // 清理跨用例的 registry 绑定,避免影响其它断言。
 beforeEach(() => {
   for (let i = 1; i < nextId; i += 1) clearGhostOverlayWebContents(i);
