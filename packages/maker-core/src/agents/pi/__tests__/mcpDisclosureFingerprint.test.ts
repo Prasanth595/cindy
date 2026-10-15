@@ -263,14 +263,14 @@ describe('MCP gateway schema disclosure', () => {
     // 关键：另一实例的写入发生在本实例**构造之后**，本实例内存里没有这条记录，
     // 因此只有落盘时的读-合并才能保住它（删掉合并循环这条测试就会红）。
     const { call, disk, renames, externalWrite } = loadGateway();
-    const otherKey = 'cindy_other other_tool';
+    const otherKey = 'cindy_other\u0000other_tool';
     const otherFingerprint = fingerprint({ name: 'other_tool', description: '别的工具' });
     externalWrite({ version: 1, entries: { [otherKey]: otherFingerprint } });
 
     await call();
 
     expect(disk.value?.entries[otherKey]).toBe(otherFingerprint);
-    expect(disk.value?.entries['cindy_orca send_to_worker']).toBe(fingerprint(TOOL));
+    expect(disk.value?.entries['cindy_orca\u0000send_to_worker']).toBe(fingerprint(TOOL));
     // 原子替换：先写 tmp 再 rename
     expect(renames).toHaveLength(1);
     expect(renames[0]).toContain('.tmp');
@@ -280,7 +280,7 @@ describe('MCP gateway schema disclosure', () => {
     // 持锁 pid 999 已退出 → 锁必须被回收，本进程仍能落盘。
     const { call, disk } = loadGateway({ lockOwner: 999 });
     await call();
-    expect(disk.value?.entries['cindy_orca send_to_worker']).toBe(fingerprint(TOOL));
+    expect(disk.value?.entries['cindy_orca\u0000send_to_worker']).toBe(fingerprint(TOOL));
   });
 
   it('skips persisting while another live instance holds the lock, without breaking the gate', async () => {

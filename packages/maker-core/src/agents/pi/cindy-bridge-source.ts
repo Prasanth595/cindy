@@ -2876,16 +2876,18 @@ function mcpGatewayKey(serverName: string, toolName: string): string {
  * 确认持锁进程已不存在才回收重建；进程还活着、pid 读不出来或与自己相同就不猜，宁可
  * 跳过这一次落盘——本进程内存里的披露仍然有效。
  */
-function acquireDisclosureLock(lockPath: string): number | undefined {
+function acquireDisclosureLock(lockPath: string): boolean {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
+      // fd 只参与 wx 独占创建这一步；锁语义是文件存在性 + pid 内容，写完即可释放。
       const fd = openSync(lockPath, 'wx', 0o600);
       try { writeFileSync(lockPath, String(process.pid)); } catch { /* pid 写不进去时只当普通锁 */ }
-      return fd;
+      try { closeSync(fd); } catch { /* 关闭失败不影响已持有的锁 */ }
+      return true;
     } catch {
-      if (attempt === 1) return undefined;
+      if (attempt === 1) return false;
       const owner = readLockOwner(lockPath);
-      if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return undefined;
+      if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return false;
       // 回收：把残留锁**原子地挪走**，只有 rename 成功的那个实例才有权回收。否则两个
       // 实例会先各自读到旧 owner，然后都执行 rmSync——A 删掉旧锁并重新加锁后，B 仍然
       // 会把 A 的新锁删掉，两边同时进入写入路径，后一次替换覆盖前一次刚存的披露记录。
@@ -2894,12 +2896,12 @@ function acquireDisclosureLock(lockPath: string): number | undefined {
       try {
         renameSync(lockPath, stale);
       } catch {
-        return undefined; // 已被另一个实例回收或重建：不争，跳过本次落盘。
+        return false; // 已被另一个实例回收或重建：不争，跳过本次落盘。
       }
       try { rmSync(stale, { force: true }); } catch { /* 残留回收槽不影响正确性 */ }
     }
   }
-  return undefined;
+  return false;
 }
 
 function readLockOwner(lockPath: string): number | undefined {
@@ -3006,8 +3008,7 @@ class CindyMcpGateway {
     const temp = file + '.' + process.pid + '.tmp';
     try {
       const lockPath = file + '.lock';
-      const lockFd = acquireDisclosureLock(lockPath);
-      if (lockFd === undefined) return;
+      if (!acquireDisclosureLock(lockPath)) return;
       try {
         const merged = new Map<string, string>(this.disclosedSchemas);
         try {
@@ -3027,7 +3028,6 @@ class CindyMcpGateway {
         writeFileSync(temp, JSON.stringify({ version: 1, entries: Object.fromEntries(merged) }), { mode: 0o600 });
         renameSync(temp, file);
       } finally {
-        try { closeSync(lockFd); } catch { /* 关闭失败不影响已落盘结果 */ }
         try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写入回收 */ }
       }
     } catch {
