@@ -92,6 +92,20 @@ describe('provider share reshare consent (sharer computer)', () => {
     expect(reshare.listProviderShareReshares()[0]?.state).toBe('rejected');
   });
 
+  it('notifies the owner when pending or rejected people disappear from the report', async () => {
+    const changed = vi.fn();
+    reshare.setProviderShareReshareEvents({ requested: vi.fn(), changed, revoked: vi.fn() });
+    await reshare.handleProviderShareReshare(B_GROUP, [{ key: CAROL, name: 'Carol' }, { key: DAVE, name: 'Dave' }]);
+    const dave = reshare.listProviderShareReshares().find((record) => record.key === DAVE)!;
+    await reshare.decideProviderShareReshare(dave.id, 'reject');
+    changed.mockClear();
+
+    await reshare.handleProviderShareReshare(B_GROUP, []);
+
+    expect(changed).toHaveBeenCalledOnce();
+    expect(reshare.listProviderShareReshares()).toEqual([]);
+  });
+
   it('only accepts reports from an active shared user', async () => {
     access.active = false;
     await expect(reshare.handleProviderShareReshare(B_GROUP, [{ key: CAROL, name: 'Carol' }])).rejects.toThrow(/REMOTE_AGENT_INVALID/);

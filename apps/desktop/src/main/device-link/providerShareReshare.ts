@@ -152,6 +152,8 @@ export interface ProviderShareReshareSyncResult {
   added: ProviderShareReshareRecord[];
   /** 组所在电脑不再报上来的人里已经同意过的(要结束他们经组转来的任务)。 */
   droppedApproved: ProviderShareReshareRecord[];
+  /** 管理页可见的记录集合或展示字段发生变化。 */
+  changed: boolean;
 }
 
 /**
@@ -165,6 +167,7 @@ export async function syncProviderShareReshare(
 ): Promise<ProviderShareReshareSyncResult> {
   const added: ProviderShareReshareRecord[] = [];
   const droppedApproved: ProviderShareReshareRecord[] = [];
+  let changed = false;
   const next = await store.updateAtomic(({ value }) => {
     const wanted = new Map(entries.map((entry) => [entry.key, entry]));
     const records: ProviderShareReshareRecord[] = [];
@@ -175,11 +178,14 @@ export async function syncProviderShareReshare(
       }
       const entry = wanted.get(record.key);
       if (!entry) {
+        changed = true;
         if (record.state === 'approved') droppedApproved.push(record);
         continue;
       }
       wanted.delete(record.key);
-      records.push({ ...record, name: entry.name, avatar: entry.avatar ?? null });
+      const nextRecord = { ...record, name: entry.name, avatar: entry.avatar ?? null };
+      if (nextRecord.name !== record.name || nextRecord.avatar !== record.avatar) changed = true;
+      records.push(nextRecord);
     }
     for (const entry of wanted.values()) {
       const record: ProviderShareReshareRecord = {
@@ -192,6 +198,7 @@ export async function syncProviderShareReshare(
         requestedAt: now,
       };
       added.push(record);
+      changed = true;
       records.push(record);
     }
     return { records };
@@ -206,6 +213,7 @@ export async function syncProviderShareReshare(
     },
     added,
     droppedApproved,
+    changed,
   };
 }
 
@@ -398,7 +406,7 @@ async function handleProviderShareReshareNow(
     completedBatches.set(batchKey, { batch, touchedAt: now });
     if (synced.droppedApproved.length > 0) events?.revoked(synced.droppedApproved);
     if (synced.added.length > 0) events?.requested(synced.added);
-    else if (synced.droppedApproved.length > 0) events?.changed();
+    else if (synced.changed) events?.changed();
     const states = new Map(synced.result.entries.map((entry) => [entry.key, entry.state]));
     return {
       entries: entries.flatMap((entry) => {
@@ -411,7 +419,7 @@ async function handleProviderShareReshareNow(
   const synced = await syncProviderShareReshare(peer, entries);
   if (synced.droppedApproved.length > 0) events?.revoked(synced.droppedApproved);
   if (synced.added.length > 0) events?.requested(synced.added);
-  else if (synced.droppedApproved.length > 0) events?.changed();
+  else if (synced.changed) events?.changed();
   return synced.result;
 }
 
