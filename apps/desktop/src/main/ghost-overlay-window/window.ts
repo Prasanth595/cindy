@@ -8,10 +8,13 @@
  *  - 尺寸缺省 GHOST_OVERLAY_DEFAULT_SIZE(128),边界 32–512 已由 Task 2 校验,
  *    工厂直接用 decl 的显式值或默认值;
  *  - webPreferences 按 electron-security-and-process-boundaries §3 逐项写明,
- *    不吃默认值;partition 用 owner-scoped ghost 分区(与 electronSandboxAdapter
- *    的 cindy-ghost:// 协议 handler 同一 session);
+ *    不吃默认值;
  *  - 承载路线首选直载 cindy-ghost://<ghostId>/<decl.html>,加载前先
  *    ensureProtocolRegistered(依赖注入,bootstrap 接线属 Task 7)。
+ *
+ * 分区不在此处计算:浮窗 session 必须与 cindy-ghost:// 协议 handler 注册所在
+ * session **逐字一致**(owner-scoped + namespace 作用域 + approval receipt),
+ * 该解析函数由 Task 7 接线方与协议注册共用同一实现注入,工厂只透传注入值。
  */
 
 import { BrowserWindow, app } from 'electron';
@@ -22,13 +25,20 @@ import {
   type GhostOverlayDecl,
 } from '../../shared/ghost.js';
 import type { Logger } from '../logger.js';
-import { getActiveAppSession } from '../appSessionState.js';
-import { ownerScopedGhostPartition } from '../cindy-brain/ghostWebviewPartition.js';
-import { markGhostOverlayWebContentsId } from './registry.js';
+import {
+  clearGhostOverlayWebContents,
+  markGhostOverlayWebContentsId,
+} from './registry.js';
 
 export interface GhostOverlayWindowDeps {
-  /** 确保该意识 owner 分区上的 cindy-ghost:// 协议 handler 就位(幂等)。 */
+  /** 确保该意识分区上的 cindy-ghost:// 协议 handler 就位(幂等)。 */
   ensureProtocolRegistered: (ghostId: string) => Promise<void>;
+  /**
+   * 解析浮窗所属的 owner-scoped session 分区字符串(与 cindy-ghost:// 协议
+   * handler 注册同源,含 namespace 作用域与 approval receipt);null = 当前
+   * 不可用(未安装 / 无 active owner)。
+   */
+  resolveGhostOverlaySession: (ghostId: string) => string | null;
   log: Logger;
 }
 
@@ -42,15 +52,14 @@ export async function createGhostOverlayWindow(
   decl: GhostOverlayDecl,
   deps: GhostOverlayWindowDeps,
 ): Promise<BrowserWindow> {
-  const { ensureProtocolRegistered, log } = deps;
+  const { ensureProtocolRegistered, resolveGhostOverlaySession, log } = deps;
   const width = decl.width ?? GHOST_OVERLAY_DEFAULT_SIZE;
   const height = decl.height ?? GHOST_OVERLAY_DEFAULT_SIZE;
 
-  // 浮窗与 cindy-ghost:// 协议 handler 必须落在同一 owner-scoped session。
-  const owner = getActiveAppSession();
-  const partition = ownerScopedGhostPartition(ghostId, owner);
+  // 分区由注入方解析:必须与协议 handler 注册 session 逐字一致。
+  const partition = resolveGhostOverlaySession(ghostId);
   if (!partition) {
-    throw new Error('ghost overlay requires an active data owner');
+    throw new Error(`ghost overlay session unavailable for ${ghostId}`);
   }
 
   const win = new BrowserWindow({
@@ -109,9 +118,18 @@ export async function createGhostOverlayWindow(
 
   markGhostOverlayWebContentsId(win.webContents.id, ghostId);
 
-  // 协议 handler 必须先于 loadURL 挂好,否则直载会 404 / 空响应。
-  await ensureProtocolRegistered(ghostId);
-  await win.loadURL(`${GHOST_SCHEME}://${ghostId}/${decl.html}`);
+  // 协议 handler 必须先于 loadURL 挂好,否则直载会 404 / 空响应。失败路径必须
+  // 销毁窗口并清理 registry,否则留下 show:false + closable:false 的僵尸窗口。
+  let stage: 'protocol' | 'load' = 'protocol';
+  try {
+    await ensureProtocolRegistered(ghostId);
+    stage = 'load';
+    await win.loadURL(`${GHOST_SCHEME}://${ghostId}/${decl.html}`);
+  } catch (error) {
+    if (!win.isDestroyed()) win.destroy();
+    clearGhostOverlayWebContents(win.webContents.id);
+    throw new Error(`ghost overlay ${stage} failed for ${ghostId}`, { cause: error });
+  }
 
   log.info('ghost overlay window created', { ghostId });
   return win;

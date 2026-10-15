@@ -1,25 +1,42 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindowConstructorOptions } from 'electron';
 
+import { createGhostOverlayWindow } from '../window.js';
+import { isGhostOverlayWebContents } from '../registry.js';
+
 /**
  * createGhostOverlayWindow 的窗口参数 / 守卫单测。
  *
  * electron 走 vi.mock 的 FakeWindow（参照 computer-permission-guide 的
- * electron-window.test.ts）；appSessionState 仅 mock 出当前 owner 与
- * dataOwnerStorageKey，让真实 ownerScopedGhostPartition 的命名逻辑原样参与
- * 断言（分区命名本身已在 ghostWebviewPartition.test.ts 单独钉住）。
+ * electron-window.test.ts）。分区由注入的 resolveGhostOverlaySession 提供,
+ * 工厂只透传注入值——真实 owner-scoped 命名逻辑(含 namespace 作用域与
+ * approval receipt)由 Task 7 接线方与协议注册共用同一实现,不在此固化。
  */
 
 const harness = vi.hoisted(() => {
   const app = { isPackaged: false };
   let nextWebContentsId = 1;
+  let nextLoadError: Error | null = null;
   const windows: FakeWindow[] = [];
   const ensureProtocolRegistered = vi.fn(async () => undefined);
+  const resolveGhostOverlaySession = vi.fn<(ghostId: string) => string | null>(
+    (ghostId: string) => `cindy-ghost-owner:local:opaque-local-owner:${ghostId}`,
+  );
 
   class FakeWindow {
-    readonly loadURL = vi.fn(async () => undefined);
+    readonly loadURL = vi.fn(async () => {
+      if (nextLoadError) {
+        const error = nextLoadError;
+        nextLoadError = null;
+        throw error;
+      }
+    });
     readonly setIgnoreMouseEvents = vi.fn();
     readonly setAlwaysOnTop = vi.fn();
+    readonly destroy = vi.fn(() => {
+      this.destroyed = true;
+    });
+    destroyed = false;
     readonly webContents: {
       id: number;
       on: ReturnType<typeof vi.fn>;
@@ -36,19 +53,32 @@ const harness = vi.hoisted(() => {
       };
       windows.push(this);
     }
+
+    isDestroyed(): boolean {
+      return this.destroyed;
+    }
   }
 
   return {
     app,
     windows,
     ensureProtocolRegistered,
+    resolveGhostOverlaySession,
     FakeWindow,
+    setNextLoadError: (error: Error | null) => {
+      nextLoadError = error;
+    },
     reset: () => {
       app.isPackaged = false;
       nextWebContentsId = 1;
+      nextLoadError = null;
       windows.length = 0;
       ensureProtocolRegistered.mockReset();
       ensureProtocolRegistered.mockResolvedValue(undefined);
+      resolveGhostOverlaySession.mockReset();
+      resolveGhostOverlaySession.mockImplementation(
+        (ghostId: string) => `cindy-ghost-owner:local:opaque-local-owner:${ghostId}`,
+      );
     },
   };
 });
@@ -57,17 +87,6 @@ vi.mock('electron', () => ({
   BrowserWindow: harness.FakeWindow,
   app: harness.app,
 }));
-
-vi.mock('../../appSessionState.js', () => ({
-  getActiveAppSession: () => ({
-    mode: 'local' as const,
-    dataOwnerId: 'local-owner',
-    generation: 1,
-  }),
-  dataOwnerStorageKey: (ownerId: string) => `opaque-${ownerId}`,
-}));
-
-import { createGhostOverlayWindow } from '../window.js';
 
 const log = {
   trace: vi.fn(),
@@ -79,7 +98,11 @@ const log = {
 };
 
 function deps() {
-  return { ensureProtocolRegistered: harness.ensureProtocolRegistered, log };
+  return {
+    ensureProtocolRegistered: harness.ensureProtocolRegistered,
+    resolveGhostOverlaySession: harness.resolveGhostOverlaySession,
+    log,
+  };
 }
 
 function webPreferences(win: (typeof harness.windows)[number]): Record<string, unknown> {
@@ -88,7 +111,6 @@ function webPreferences(win: (typeof harness.windows)[number]): Record<string, u
 
 describe('createGhostOverlayWindow', () => {
   beforeEach(() => {
-    vi.resetModules();
     harness.reset();
     log.info.mockReset();
   });
@@ -150,10 +172,12 @@ describe('createGhostOverlayWindow', () => {
     expect(harness.windows[0].setAlwaysOnTop).toHaveBeenCalledWith(true, 'floating', 1);
   });
 
-  it('loads the plugin overlay page from its owner-scoped partition', async () => {
+  it('loads the plugin overlay page from the injected session partition', async () => {
     await createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps());
 
     const win = harness.windows[0];
+    // 工厂透传注入分区,不自算 owner-scoped 命名。
+    expect(harness.resolveGhostOverlaySession).toHaveBeenCalledWith('acme-overlay');
     expect(webPreferences(win).partition).toBe(
       'cindy-ghost-owner:local:opaque-local-owner:acme-overlay',
     );
@@ -166,6 +190,35 @@ describe('createGhostOverlayWindow', () => {
     expect(registerOrder).toBeDefined();
     expect(loadOrder).toBeDefined();
     expect(registerOrder!).toBeLessThan(loadOrder!);
+  });
+
+  it('uses a distinct injected partition per ghost (no namespace collision)', async () => {
+    harness.resolveGhostOverlaySession
+      .mockReturnValueOnce('cindy-ghost-owner:local:opaque-a:_ns__a__overlay:ns:a:receipt:r1')
+      .mockReturnValueOnce('cindy-ghost-owner:local:opaque-b:_ns__b__overlay:ns:b:receipt:r2');
+
+    await createGhostOverlayWindow('_ns__a__overlay', { html: 'overlay.html' }, deps());
+    await createGhostOverlayWindow('_ns__b__overlay', { html: 'overlay.html' }, deps());
+
+    expect(harness.resolveGhostOverlaySession).toHaveBeenNthCalledWith(1, '_ns__a__overlay');
+    expect(harness.resolveGhostOverlaySession).toHaveBeenNthCalledWith(2, '_ns__b__overlay');
+    expect(webPreferences(harness.windows[0]).partition).toBe(
+      'cindy-ghost-owner:local:opaque-a:_ns__a__overlay:ns:a:receipt:r1',
+    );
+    expect(webPreferences(harness.windows[1]).partition).toBe(
+      'cindy-ghost-owner:local:opaque-b:_ns__b__overlay:ns:b:receipt:r2',
+    );
+    expect(webPreferences(harness.windows[0]).partition).not.toBe(
+      webPreferences(harness.windows[1]).partition,
+    );
+  });
+
+  it('fails closed before creating a window when no session is resolvable', async () => {
+    harness.resolveGhostOverlaySession.mockReturnValueOnce(null);
+    await expect(
+      createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps()),
+    ).rejects.toThrow('ghost overlay session unavailable for acme-overlay');
+    expect(harness.windows).toHaveLength(0);
   });
 
   it('denies window.open and blocks out-of-plugin navigation', async () => {
@@ -212,6 +265,32 @@ describe('createGhostOverlayWindow', () => {
     const callback = vi.fn();
     handler(win.webContents, 'notifications', callback);
     expect(callback).toHaveBeenCalledWith(false);
+  });
+
+  it('destroys the window and clears the registry when protocol registration fails', async () => {
+    harness.ensureProtocolRegistered.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps()),
+    ).rejects.toThrow('ghost overlay protocol failed for acme-overlay');
+
+    const win = harness.windows[0];
+    expect(win.isDestroyed()).toBe(true);
+    expect(win.destroy).toHaveBeenCalledTimes(1);
+    expect(win.loadURL).not.toHaveBeenCalled();
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
+  });
+
+  it('destroys the window and clears the registry when loadURL fails', async () => {
+    harness.setNextLoadError(new Error('load boom'));
+    await expect(
+      createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps()),
+    ).rejects.toThrow('ghost overlay load failed for acme-overlay');
+
+    const win = harness.windows[0];
+    expect(win.isDestroyed()).toBe(true);
+    expect(win.destroy).toHaveBeenCalledTimes(1);
+    expect(harness.ensureProtocolRegistered).toHaveBeenCalledWith('acme-overlay');
+    expect(isGhostOverlayWebContents(win.webContents.id)).toBe(false);
   });
 
   it('disables devTools in packaged builds only', async () => {
