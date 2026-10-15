@@ -3036,16 +3036,26 @@ class CindyMcpGateway {
     return this.disclosedSchemas.has(mcpGatewayKey(call.tool.serverName, call.tool.name));
   }
 
-  /** 该工具的 schema 是否自己要求字符串 name（Cindy 通用 call_tool 的 {name, args} 信封）。 */
+  /**
+   * 该工具是否采用 Cindy 通用 call_tool 的 {name, args} 信封。
+   *
+   * 判据必须用**形状指纹**而不是名字或单个字段：Pi 也接入用户自接的第三方 MCP，它们可能
+   * 同样叫 call_tool（但信封是 {tool_name, arguments}），也可能有个叫 name 的必填字符串
+   * 参数却是文件名（配 content 直传）。所以要求三个信号同时成立 —— properties.name 是
+   * string、properties.args 是 object、且 required 含 name —— 才认定是 Cindy 的信封。
+   * 少一个都不套用这条自纠错说明，让调用按检视到的 schema 原样走到服务端，由服务端报它
+   * 真实的参数要求：普通工具缺字段时不能被引向错误的嵌套形状。
+   */
   private requiresNameEnvelope(tool: ConnectedMcpTool): boolean {
     const schema = tool.inputSchema as {
       required?: unknown;
       properties?: Record<string, { type?: unknown } | undefined>;
     } | null;
-    const name = schema?.properties?.name;
+    const properties = schema?.properties;
     return Array.isArray(schema?.required)
       && schema.required.includes('name')
-      && name?.type === 'string';
+      && properties?.name?.type === 'string'
+      && properties?.args?.type === 'object';
   }
 
   list(serverName?: string): Array<{ server: string; name: string; description: string }> {

@@ -2473,8 +2473,8 @@ it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-param
   const gateway = new context.Gateway();
   gateway.add('cindy_memory', client, [
     { name: 'list_tools', inputSchema: { type: 'object' } },
-    // 真实 cindy server 的 call_tool schema: 必填字符串 name (= {name, args} 信封)。
-    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+    // 真实 cindy server 的 call_tool schema 形状指纹: name:string + args:object + required 含 name。
+    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'object' } }, required: ['name'] } },
   ]);
   const ordinary: any[] = [];
   gateway.register({ registerTool: (tool: unknown) => ordinary.push(tool) });
@@ -2529,8 +2529,8 @@ it('tells the model the call_tool envelope instead of forwarding a flattened env
   const gateway = new context.Gateway();
   gateway.add('cindy_memory', client, [
     { name: 'list_tools', inputSchema: { type: 'object' } },
-    // 真实 cindy server 的 call_tool schema: 必填字符串 name (= {name, args} 信封)。
-    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+    // 真实 cindy server 的 call_tool schema 形状指纹: name:string + args:object + required 含 name。
+    { name: 'call_tool', inputSchema: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'object' } }, required: ['name'] } },
   ]);
   gateway.register({ registerTool: () => undefined });
   await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
@@ -2590,12 +2590,13 @@ it('does not apply the Cindy envelope rule to a third-party tool also named call
     name: 'call_tool',
     arguments: { tool_name: 'inner', arguments: { a: 1 } },
   });
-  // 同一 server 里, schema 要求字符串 name 的工具仍走信封自纠错 (判据是 schema 不是名字)。
+  // 同一 server 里, schema 形状指纹齐全 (name+args+required) 的工具仍走信封自纠错
+  // (判据是形状不是名字)。
   gateway.add('mixed', client, [{
     name: 'call_tool',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string' } },
+      properties: { name: { type: 'string' }, args: { type: 'object' } },
       required: ['name'],
     },
   }]);
@@ -2603,4 +2604,45 @@ it('does not apply the Cindy envelope rule to a third-party tool also named call
   await expect(gateway.executeCall({ server: 'mixed', tool: 'call_tool', args: { filename: 'x.md' } }))
     .rejects.toThrow(/envelope \{"name": <tool>, "args"/);
   expect(requests).toHaveLength(1);
+});
+
+it('leaves a direct tool alone when its required name is not the Cindy envelope', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const requests: Array<{ method: string; params: any }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    requests.push({ method, params });
+    // 服务端按真实 schema 报缺 content —— 这才是模型该看到的修正信息。
+    throw Object.assign(new Error('MCP error -32602: missing content'), { invalidParams: true });
+  } };
+  const gateway = new context.Gateway();
+  // 第三方直调工具: name 是文件名, content 是正文, 没有 args 信封。
+  gateway.add('files', client, [{
+    name: 'write_file',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' }, content: { type: 'string' } },
+      required: ['name', 'content'],
+    },
+  }]);
+  gateway.register({ registerTool: () => undefined });
+  await gateway.listResult({ server: 'files', tool: 'write_file' });
+  // 缺 content 时必须原样走到服务端, 由服务端报它真实的参数要求; 桥不得把它引向
+  // 「把 name 当工具名、其余塞进 args」的错误形状。
+  // 错误正文过 safeMcpFailure 脱敏 (不外泄上游 body), 所以断言错误来自服务端那条路径,
+  // 关键证据是下面两条: 请求确实发出了, 且 arguments 逐字未被桥改写。
+  await expect(gateway.executeCall({ server: 'files', tool: 'write_file', args: { name: 'a.md' } }))
+    .rejects.toThrow(/write_file failed/);
+  expect(gateway.executeCall).toBeDefined();
+  expect(requests).toHaveLength(1);
+  expect(requests[0].params).toEqual({ name: 'write_file', arguments: { name: 'a.md' } });
 });
