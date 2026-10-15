@@ -377,6 +377,12 @@
         "cancel": "取消"
       },
       "detailNote": "Agent 在 {{name}} 的電腦或 {{name}} 安排的其他電腦上執行，使用的是對方的登入和配額。對話內容和 Agent 讀取的檔案內容會經過 {{name}} 的電腦，並儲存在實際執行任務的那台電腦上。新建任務時在模型列表裡選擇它就能用。",
+      "credentialConsent": {
+        "label": "信任 {{name}}",
+        "description": "開啟後，用這個分享的任務讀取金鑰等敏感資訊時不再跳出確認，和用自己的供應商一樣。只對這台電腦生效。",
+        "ariaLabel": "信任 {{name}}（{{provider}}）",
+        "writeFailed": "未能儲存信任設定"
+      },
       "modelsTitle": "可用的模型",
       "modelsLoading": "正在讀取對方開放的模型…",
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
@@ -1608,7 +1614,10 @@
         "customPlaybackFailed": "無法播放此影片，請選擇使用 H.264 編碼的 MP4 影片。",
         "customHint": "PNG、JPEG、WebP 圖片最大 20 MB，MP4 影片最大 100 MB。僅儲存在此裝置，影片在動態模式下靜音循環播放。",
         "customInvalid": "請選擇有效的 PNG、JPEG 或 WebP 圖片（不超過 20 MB、4000 萬像素），或不超過 100 MB 的 MP4 影片。",
-        "customFailed": "無法儲存桌布，請重試。"
+        "customFailed": "無法儲存桌布，請重試。",
+        "downloading": "正在下載桌布…",
+        "downloadFailed": "部分桌布資源未下載，暫用可用背景",
+        "retryDownload": "重試下載"
       },
       "layout": {
         "label": "面板佈局",

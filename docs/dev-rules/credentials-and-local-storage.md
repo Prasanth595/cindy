@@ -209,6 +209,7 @@ Desktop 的运行时 refresh 遇到瞬时失败后，主动调用与定时重试
 | macOS 菜单栏 helper（开发构建） | `userData/menubar/`，开发时由 `swiftc` 编译的 helper 及其 wordmark 图片和源码哈希；打包版改用 `resources/tools/menubar/`，不在 userData 落盘 |
 | 供应商分享：受邀者会话登记 | `userData/remote-agent/guest-sessions.json`（控制端摘要 → 本机侧任务与原生会话 id），只用来限制受邀者只能恢复自己的会话，并在分享删除时精确清理影子工作区、附件与会话记录 |
 | 供应商分享：跨区域标记 | `userData/remote-agent/provider-share-regions.json`，账号摘要 → 对方区域；**不含凭证**。跨区连接凭证只在内存里，用新身份名片重新换取；没有标记的账号从不联系对方区域 |
+| 供应商分享：受邀者对分享的本机偏好 | `userData/owners/<账号>/provider-share-guest-prefs.json`，分享 id → 分享所属区域与「信任 {分享者}」（凭证操作不再确认）；只存显式打开的项，在同路径 `.lock` 跨进程安全锁内重读、修改和原子替换，拿不到锁不保存。持有权切换使排队和在途写入失效；已进入文件系统的替换在新持有者保存前完成，不能覆盖其撤销。不含昵称、对话或凭证。退出分享或分享从已确认区域的权威名单里消失时清掉 |
 | 用户明确导出的文件                  | 用户选择或任务明确指定的目标路径                                                                                                                                                                                                                                                                                                                                                                                |
 
 - 内置 Skill 的官方身份只授予当前 manifest 已提交且指纹匹配的 bundle：`.active` 必须是

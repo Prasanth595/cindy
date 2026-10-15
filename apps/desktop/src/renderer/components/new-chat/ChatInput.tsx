@@ -569,8 +569,8 @@ interface ChatInputProps {
   modelMemoryOverride?: ModelMemoryAccessors;
   /** Initial model from session data. When provided, overrides activeModel. */
   initialModel?: string;
-  /** Initial effort from session data. When provided, overrides activeEffort. */
-  initialEffort?: Effort;
+  /** Initial effort from session data. null explicitly means the model has no effort selector. */
+  initialEffort?: Effort | null;
   /**
    * per-session 来源(供应商)初值。来自 session.providerId(null = 跟随默认路由)。
    * 决定 ModelSelector 来源栏高亮哪家;不传 = 跟随默认(显示列表首项为默认命中)。
@@ -1762,7 +1762,7 @@ export function ChatInput({
       agentKind: runtimeAgentKind ?? vendorKeyToAgentKind(vendorKey) ?? 'claude-code',
       model: initialModel ?? (sessionId ? '' : localVendorDefaults.model),
       providerId: initialProviderId ?? null,
-      effort: initialEffort ?? localVendorDefaults.effort,
+      effort: initialEffort === null || initialEffort === '' ? null : initialEffort ?? localVendorDefaults.effort,
       fastMode: fastMode === true,
     },
     effective: sessionId ? runtimeEffective : undefined,
@@ -1771,9 +1771,10 @@ export function ChatInput({
     optimistic: pendingRemoteSwitch,
   });
   const activeModel = composerSelection.display.model;
-  // null = 投影未知/不可调档:回落到会话已持久化的档位(与运行实况一致),不能兜底成
-  // 字面量 'low'——该值会随下一条发送作为用户选择下发,把假档位写成真档位。
-  const activeEffort = composerSelection.display.effort ?? initialEffort ?? 'low';
+  // A missing runtime projection keeps the persisted choice; null/empty session
+  // effort remains unspecified instead of sending the display-only fallback.
+  const selectedEffort = composerSelection.display.effort ?? initialEffort ?? '';
+  const activeEffort = selectedEffort || 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 
@@ -5379,7 +5380,7 @@ export function ChatInput({
               workspaceKind: 'dialogue',
               agentKind: currentModelAgentKind === 'claude-code' ? 'cc' : currentModelAgentKind ?? undefined,
               model: activeModel,
-              effort: activeEffort,
+              effort: selectedEffort,
               permissionMode: activePermissionMode,
               providerId: sendProviderId,
               fastMode,
@@ -5927,7 +5928,7 @@ export function ChatInput({
           }
         }
         let result: boolean | void;
-        let effortForSend = activeEffort;
+        let effortForSend = selectedEffort;
         try {
           if (sessionId) {
             const coordinator = effortChangeCoordinatorRef.current;
@@ -5965,7 +5966,7 @@ export function ChatInput({
             }
             // 等待 commit 后，闭包里的 activeEffort 可能仍是旧 props；以该 session 已提交的
             // 选择发送，保证本 turn 与 UI/SQLite 的 effort 相同。
-            effortForSend = coordinator.getCommittedEffort(sessionId) ?? activeEffort;
+            effortForSend = coordinator.getCommittedEffort(sessionId) ?? selectedEffort;
           }
           result = await onSend(
             routedText,
@@ -6016,7 +6017,7 @@ export function ChatInput({
       sessionId,
       onSend,
       activeModel,
-      activeEffort,
+      selectedEffort,
       activePermissionMode,
       sendProviderId,
       selectedSourceDisconnected,
@@ -6199,7 +6200,7 @@ export function ChatInput({
     // cache，并使先前本机发布的旧 runtime attempt 失效，避免迟到完成覆盖外部终态。
     effortChangeCoordinatorRef.current.adoptExternalEffort(
       sessionId,
-      initialEffort,
+      initialEffort ?? '',
       (targetSessionId, effort) => window.electronAPI.maker.setEffort(targetSessionId, effort),
     );
   }, [deviceLinkDeviceId, initialEffort, sessionId]);

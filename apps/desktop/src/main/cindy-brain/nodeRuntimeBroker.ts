@@ -519,7 +519,9 @@ export function createUtilityNodeWorkerProcess(
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     serviceName: `cindy-ghost-node:${ghostId}${isChild ? ':child' : ''}`,
-    ...(process.platform === 'darwin' ? { disclaim: true } : {}),
+    // 参考 VS Code 的本地扩展模型，为插件开放底层系统能力：
+    // 保留宿主的 macOS TCC 责任归属，实际访问仍由系统权限决定。
+    ...(process.platform === 'darwin' ? { disclaim: false } : {}),
   });
   const stdout = child.stdout;
   const stderr = child.stderr;

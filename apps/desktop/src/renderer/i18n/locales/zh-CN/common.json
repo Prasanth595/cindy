@@ -377,6 +377,12 @@
         "cancel": "取消"
       },
       "detailNote": "Agent 在 {{name}} 的电脑或 {{name}} 安排的其他电脑上运行，用的是对方的登录和配额。对话内容和 Agent 读取的文件内容会经过 {{name}} 的电脑，并保存在实际运行任务的那台电脑上。新建任务时在模型列表里选择它就能用。",
+      "credentialConsent": {
+        "label": "信任 {{name}}",
+        "description": "开启后，用这个分享的任务读取密钥等敏感信息时不再弹窗确认，和用自己的供应商一样。只对这台电脑生效。",
+        "ariaLabel": "信任 {{name}}（{{provider}}）",
+        "writeFailed": "未能保存信任设置"
+      },
       "modelsTitle": "可用的模型",
       "modelsLoading": "正在读取对方开放的模型…",
       "modelsRefused": "对方电脑暂时不让读取这个分享：可能没有允许远程控制、关了这个供应商的「允许被远程调用」，也可能对方的 Cindy 刚启动、还没准备好。请稍后重试，或让对方检查这两项设置。",
@@ -1608,7 +1614,10 @@
         "customPlaybackFailed": "无法播放此视频，请选择使用 H.264 编码的 MP4 视频。",
         "customHint": "PNG、JPEG、WebP 图片最大 20 MB，MP4 视频最大 100 MB。仅保存在此设备，视频在动态模式下静音循环播放。",
         "customInvalid": "请选择有效的 PNG、JPEG 或 WebP 图片(不超过 20 MB、4000 万像素)，或不超过 100 MB 的 MP4 视频。",
-        "customFailed": "未能保存壁纸，请重试。"
+        "customFailed": "未能保存壁纸，请重试。",
+        "downloading": "正在下载壁纸…",
+        "downloadFailed": "部分壁纸资源未下载，暂用可用背景",
+        "retryDownload": "重试下载"
       },
       "layout": {
         "label": "面板布局",

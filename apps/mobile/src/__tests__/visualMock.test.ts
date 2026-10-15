@@ -125,6 +125,19 @@ it('supplies the task tag catalog required when opening session options', async 
     .toMatchObject({ tags: [], sessions: [{ sessionId: 'session-primary', tags: [] }] });
 });
 
+it('generates a rename draft without changing the demo task title', async () => {
+  const mock = await import('@/debug/visualMock');
+  const link = mock.createVisualMockDeviceLinkContext();
+  const readSession = () => link.invoke<{ title: string }>(mock.VISUAL_MOCK_DEVICE_ID,
+    'local-db:sessions:get', [mock.VISUAL_MOCK_SESSION_ID]);
+  const original = await readSession();
+  const draft = await link.invoke<{ title: string }>(mock.VISUAL_MOCK_DEVICE_ID,
+    'maker:regenerate-title', [{ sessionId: mock.VISUAL_MOCK_SESSION_ID }]);
+  expect(draft.title.trim()).not.toBe('');
+  expect(draft.title).not.toBe(original.title);
+  expect((await readSession()).title).toBe(original.title);
+});
+
 it('projects imported history rows without falling back to synthetic messages', async () => {
   config.MOBILE_VISUAL_MOCK_REALDATA_URL = 'https://fixture.invalid/snapshot.json';
   const rows: RemoteMessage[] = [{ id: 'real-message', clientId: 'real-message',

@@ -24,6 +24,17 @@ export interface AppearanceOverrides {
 
 export type WallpaperMotion = 'static' | 'dynamic';
 
+export const WALLPAPER_DOWNLOAD_PROGRESS_CHANNEL =
+  'appearance-settings:wallpaper-download-progress';
+
+/** Local Desktop transfer telemetry; never persisted or sent through device-link. */
+export interface WallpaperDownloadProgress {
+  wallpaperId: WallpaperId;
+  kind: 'image' | 'video';
+  loaded: number;
+  total: number;
+}
+
 export interface AppearanceSettings {
   uiFamily: string;
   codeFamily: string;

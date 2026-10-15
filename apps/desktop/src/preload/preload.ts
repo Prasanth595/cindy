@@ -1,4 +1,5 @@
 import { createAccessibilitySupportBridge } from './accessibilitySupport';
+import { createWallpaperAssetsBridge } from './wallpaperAssets';
 import type { CompanionImportApi, CompanionImportSelection } from '@cindy/maker-shared/companion-import';
 import { TASK_MIGRATION_LOCAL_CHANNEL } from '@cindy/device-link';
 import type { WorktreeRecycleAction, WorktreeRecycleStatus } from '../shared/worktreeRecycle';
@@ -1123,7 +1124,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('page-zoom:reset'),
   appearanceSettings: {
     importWallpaper: () => ipcRenderer.invoke('appearance-settings:import-wallpaper'),
-    ensureWallpaperVideo: (id: string) => ipcRenderer.invoke('appearance-settings:ensure-wallpaper-video', id),
+    ...createWallpaperAssetsBridge(),
     removeWallpaper: () => ipcRenderer.invoke('appearance-settings:remove-wallpaper'),
     getSync: (): AppearanceSettings | null => appearanceSettingsInfo,
     get: (): Promise<unknown> => ipcRenderer.invoke('appearance-settings:get'),

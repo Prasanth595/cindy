@@ -358,7 +358,10 @@ function statusTextForItem(item: { type?: string; command?: string; tool?: strin
  * 把 minimal 收敛到 low。max / ultra 直接透传，不再静默降级为 xhigh(issue #352)。
  * 某模型是否真支持某档位由目录 efforts 与 UI/reconcile 门控保证。
  */
-function clampEffortForCodex(model: string, e: Effort): CodexEffort {
+function clampEffortForCodex(model: string, e: Effort): CodexEffort | undefined {
+  // Desktop's persisted no-effort sentinel is an empty string, not a Codex enum.
+  // Keep it in session state, but let app-server use its default on the wire.
+  if (!e) return undefined;
   if (e === 'minimal' && !CODEX_MINIMAL_EFFORT_MODELS.has(model)) return 'low';
   return e;
 }
@@ -6640,7 +6643,7 @@ assertRouteCurrent();
           mode: 'plan',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort) ?? null,
             developer_instructions: null,
           },
         };
@@ -6651,7 +6654,7 @@ assertRouteCurrent();
           mode: 'default',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort) ?? null,
             developer_instructions: developerInstructions,
           },
         };
@@ -12664,7 +12667,8 @@ assertRouteCurrent();
           refreshCodexAutoReviewerRoute(params.threadId);
         }
         // ReasoningEffort 的 'none' 不属于 Effort; 排除后其余值都是合法 Effort, 无需 cast。
-        if (s.effort && s.effort !== 'none') mutableEffort = s.effort;
+        // A server default must not replace an explicit no-effort session choice.
+        if (mutableEffort && s.effort && s.effort !== 'none') mutableEffort = s.effort;
         if (before !== (mutableServiceTier ?? null)) {
           log.debug('thread/settings/updated reconciled serviceTier', {
             threadId: params.threadId,
@@ -13719,7 +13723,7 @@ assertRouteCurrent();
               if (turnParams.collaborationMode) {
                 turnParams.collaborationMode.settings.model = mutableModel;
                 turnParams.collaborationMode.settings.reasoning_effort =
-                  clampEffortForCodex(mutableModel, mutableEffort);
+                  clampEffortForCodex(mutableModel, mutableEffort) ?? null;
               }
               workspacePermissionProfileActive = 'permissions' in turnThreadWorkspaceConfig;
               workspacePermissionProfileFingerprint = workspacePermissionProfileActive
@@ -14297,7 +14301,7 @@ assertRouteCurrent();
         mutableEffort = newEffort;
         // thread 已启动 → 立即经 thread/settings/update 生效; 未启动由首个 turn/start
         // 携带 (TurnStartParams.effort, v2.rs:5800)。发 clamp 后的值, 与 turn/start 一致。
-        await pushThreadSettings({ effort: clamped });
+        if (clamped !== undefined) await pushThreadSettings({ effort: clamped });
       },
 
       getEffort() {
