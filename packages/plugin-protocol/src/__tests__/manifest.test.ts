@@ -1810,7 +1810,7 @@ describe('Ghost manifest contract', () => {
     if (!notObject.ok) expect(notObject.reason).toContain('overlay 必须是对象');
 
     // 路径穿越与对象保留键名（__proto__ / constructor / prototype）一律拒绝。
-    for (const bad of ['__proto__', '../x', 'a/../b']) {
+    for (const bad of ['__proto__', 'constructor', 'prototype', '../x', 'a/../b']) {
       const rejected = validateGhostManifest(withOverlay({ html: bad }));
       expect(rejected.ok, bad).toBe(false);
       if (!rejected.ok) expect(rejected.reason).toContain('overlay.html');
@@ -1849,6 +1849,25 @@ describe('Ghost manifest contract', () => {
     const parsed = validateGhostManifest(validManifest);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.manifest.overlay).toBeUndefined();
+  });
+
+  it('overlay.html 与 locales 声明的路径冲突时拒绝', () => {
+    // 与 panel.html / mainView.html 同口径:声明文件路径不得与 locales.* 重叠。
+    const samePath = validateGhostManifest({
+      ...validManifest,
+      overlay: { html: 'locales/en.json' },
+      locales: { en: 'locales/en.json' },
+    });
+    expect(samePath.ok).toBe(false);
+    if (!samePath.ok) expect(samePath.reason).toContain('与插件其他声明文件大小写折叠后冲突');
+
+    const descendant = validateGhostManifest({
+      ...validManifest,
+      overlay: { html: 'locales' },
+      locales: { en: 'locales/en.json' },
+    });
+    expect(descendant.ok).toBe(false);
+    if (!descendant.ok) expect(descendant.reason).toContain('冲突');
   });
 });
 

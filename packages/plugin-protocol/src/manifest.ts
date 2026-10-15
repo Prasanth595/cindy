@@ -1413,6 +1413,7 @@ export function validateGhostManifest(value: unknown): ManifestValidation {
     raw.icon,
     raw.settingsHtml,
     isPlainObject(raw.panel) ? raw.panel.html : undefined,
+    isPlainObject(raw.overlay) ? raw.overlay.html : undefined,
     isPlainObject(raw.mainView) ? raw.mainView.html : undefined,
     isPlainObject(raw.node) ? raw.node.entry : undefined,
     ...(isPlainObject(raw.node) && Array.isArray(raw.node.entries) ? raw.node.entries : []),

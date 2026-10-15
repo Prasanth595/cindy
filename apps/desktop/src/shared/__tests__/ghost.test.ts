@@ -2455,7 +2455,7 @@ describe('ghost · overlay 声明校验', () => {
     expect(!notObject.ok && notObject.reason).toContain('overlay 必须是对象');
 
     // 路径穿越与对象保留键名（__proto__ / constructor / prototype）一律拒绝。
-    for (const bad of ['__proto__', '../x', 'a/../b']) {
+    for (const bad of ['__proto__', 'constructor', 'prototype', '../x', 'a/../b']) {
       const rejected = validateGhostManifest(withOverlay({ html: bad }));
       expect(rejected.ok, bad).toBe(false);
       expect(!rejected.ok && rejected.reason).toContain('overlay.html');
@@ -2492,6 +2492,17 @@ describe('ghost · overlay 声明校验', () => {
     const omitted = validateGhostManifest(goodManifest());
     expect(omitted.ok).toBe(true);
     if (omitted.ok) expect(omitted.manifest.overlay).toBeUndefined();
+  });
+
+  it('overlay.html 与 locales 声明的路径冲突时拒绝', () => {
+    // 与 panel.html / mainView.html 同口径:声明文件路径不得与 locales.* 大小写折叠后精确撞车。
+    const samePath = validateGhostManifest({
+      ...goodManifest(),
+      overlay: { html: 'locales/en.json' },
+      locales: { en: 'locales/en.json' },
+    });
+    expect(samePath.ok).toBe(false);
+    expect(!samePath.ok && samePath.reason).toContain('与插件其他声明文件大小写折叠后冲突');
   });
 });
 
