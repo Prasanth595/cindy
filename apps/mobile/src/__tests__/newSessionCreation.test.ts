@@ -23,6 +23,7 @@ vi.mock('@/session/mobileDurableOutbox', () => ({
   persistCancelledCreationDraft: persistCancelledDraft,
   suspendCreationDraftForCleanup: vi.fn(async () => {}),
   getCurrentMobileOutboxRecords: editOutbox.records,
+  isDurableOutboxCreationHeld: () => false,
   mobileDurableOutbox: { update: editOutbox.update, subscribe: () => () => {} },
 }));
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
@@ -208,6 +209,7 @@ describe('newSessionCreation pipeline', () => {
     persistCancelledDraft.mockReset();
     editOutbox.records.mockReset().mockReturnValue([]);
     editOutbox.update.mockReset().mockResolvedValue(undefined);
+    setMobileAuthOwner(null);
     setMobileAuthOwner('owner-a');
     await recoveryTesting.drainMutations();
     recoveryStorage.clear();
@@ -330,6 +332,8 @@ describe('newSessionCreation pipeline', () => {
       remoteSessionStore.clear();
     }
     // If the editor is lost in another restart before submitting, the saved draft is reachable again.
+    setMobileAuthOwner(null);
+    setMobileAuthOwner('owner-a');
     const secondRestart = createDurableOutbox(storage);
     await secondRestart.activate(owner.accountKey);
     editOutbox.records.mockImplementation(() => [...secondRestart.getSnapshot()]);

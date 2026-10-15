@@ -4,7 +4,7 @@ import { modelNeedsReselection } from '@/session/modelReselection';
 import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreatedWorktreeRecovery';
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
-import { mobileDurableOutbox, holdDurableOutboxCreation, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
+import { mobileDurableOutbox, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
 import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
@@ -246,7 +246,8 @@ import {
   createNewSessionId,
   completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
-  getNewSessionCreationTask,
+  hasLiveNewSessionCreation,
+  holdNewSessionCreationDraft,
   startNewSessionCreation,
 } from '@/session/newSessionCreation';
 import {
@@ -4823,7 +4824,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const obligationOwnedByLiveTask = (sessionId: string) => (
-          getNewSessionCreationTask(sessionId) !== null
+          hasLiveNewSessionCreation(sessionId)
           || isPrecreatedWorktreeRegistrationInFlight(sessionId)
         );
         // 本设备上一次未完成的 obligation 先恢复。其它设备记录、仍被正常创建
@@ -4918,7 +4919,7 @@ export default function NewRemoteSessionScreen() {
         })()
         : null;
       if (!isCurrentOwner()) return;
-      releaseDurableCreation = holdDurableOutboxCreation(sessionId);
+      releaseDurableCreation = holdNewSessionCreationDraft(sessionId);
       const firstMessageClientId = recovering?.item.clientId ?? createOutboxClientId();
       // Legacy Plan requires a live session-wide permission change. Keep its existing
       // online creation pipeline instead of introducing deferred permission mutations.
@@ -4928,8 +4929,12 @@ export default function NewRemoteSessionScreen() {
         let firstRecord: DurableOutboxRecord = {
           version: 1, accountId: authOwnerAtCreate.accountKey, deviceId: deviceIdSnapshot,
           ...(recoveryIdentity ? { storageSessionId: recoveryIdentity.storageSessionId } : {}),
-          createdAt: recovering?.createdAt ?? Date.now(), state: 'queued', suspended: creatingWorktree, uploads: [], clearBoundaryMs: null,
+          createdAt: recovering?.createdAt ?? Date.now(), state: recovering ? 'failed' : 'queued',
+          suspended: !!recovering || creatingWorktree, uploads: [], clearBoundaryMs: null,
           creation: { draft: effectiveDraft, deviceName: selectedDeviceName,
+            // Replacing a restored draft does not hand it to the background pipeline.
+            // Keep its recovery intent durable until the creation pipeline takes over.
+            ...(recovering ? { editReady: true } : {}),
             ...(creatingWorktree ? { originalWorkingDir: effectiveDraft.workingDir } : {}),
             planModeArm: planModeCapability && planModeDraftOn, restorePermissionMode: legacyPlanRestore },
           item: buildOutboxItem({
@@ -5128,7 +5133,7 @@ export default function NewRemoteSessionScreen() {
         const current = outboxRecoveryRef.current;
         if (!current?.creation || current.item.sessionId !== sessionId) throw new Error('OUTBOX_STALE_WRITE');
         const updated = await mobileDurableOutbox.update(current, {
-          creation: { ...current.creation, draft: effectiveDraft }, suspended: false,
+          creation: { ...current.creation, draft: effectiveDraft }, suspended: !!current.creation.editReady,
         });
         outboxRecoveryRef.current = updated;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
@@ -5535,7 +5540,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const sessionIsClaimed = (pendingSessionId: string) => (
-          getNewSessionCreationTask(pendingSessionId) !== null
+          hasLiveNewSessionCreation(pendingSessionId)
           || isPrecreatedWorktreeRegistrationInFlight(pendingSessionId)
         );
         const recovery = await recoverPendingPrecreatedWorktrees(worktreeAccountId, {

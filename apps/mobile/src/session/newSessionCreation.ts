@@ -50,7 +50,7 @@ import {
 } from '@/session/newSession';
 import type { DeviceProvidersPayload } from '@/device-link/deviceProvidersCache';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
-import { getCurrentMobileOutboxRecords, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
+import { getCurrentMobileOutboxRecords, holdDurableOutboxCreation, isDurableOutboxCreationHeld, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
 import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
 import {
   forgetPendingPrecreatedWorktree,
@@ -179,8 +179,12 @@ let snapshotVersion = 0;
 const taskSnapshots = new Map<string, NewSessionCreationTask | null>();
 // Each mounted editor holds a claim until it leaves. The durable record remains
 // recoverable after all editors leave or the process restarts.
-let claimedDurableEdits = new WeakMap<DurableOutboxRecord, number>();
+let claimedDurableEdits = new Map<string, number>();
 const durableEditSnapshots = new WeakMap<DurableOutboxRecord, NewSessionCreationTask>();
+
+function durableEditKey(record: DurableOutboxRecord): string {
+  return JSON.stringify([record.accountId, record.deviceId, record.storageSessionId ?? record.item.sessionId, record.item.clientId]);
+}
 
 function emit(): void {
   snapshotVersion += 1;
@@ -192,7 +196,7 @@ function emit(): void {
 // Release their in-memory guards as well as their React snapshots; durable drafts
 // belong to the outbox and remain available when that account signs in again.
 subscribeMobileAuthOwner(() => {
-  claimedDurableEdits = new WeakMap();
+  claimedDurableEdits = new Map();
   let changed = false;
   for (const [sessionId, task] of tasks) {
     if (isMobileAuthOwnerCurrent(task.owner)) continue;
@@ -546,6 +550,27 @@ export function getNewSessionCreationTask(sessionId: string): NewSessionCreation
   return tasks.get(sessionId) ?? getDurableEditTask(sessionId);
 }
 
+/** A persisted recovery entry must not prevent its orphaned worktree from being reconciled. */
+export function hasLiveNewSessionCreation(sessionId: string): boolean {
+  return tasks.has(sessionId) || isDurableOutboxCreationHeld(sessionId);
+}
+
+/** Keep an in-flight form submission exclusive even when that form leaves. */
+export function holdNewSessionCreationDraft(sessionId: string): () => void {
+  const owner = getMobileAuthOwner();
+  const release = holdDurableOutboxCreation(sessionId);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    release();
+    if (!isMobileAuthOwnerCurrent(owner)) return;
+    const record = getCurrentMobileOutboxRecords().find(record => record.item.sessionId === sessionId);
+    if (record) restoreNewSessionDurableEdit(record);
+    emit();
+  };
+}
+
 function isDurableEditRecord(record: DurableOutboxRecord): boolean {
   return record.accountId === getMobileAuthOwner().accountKey
     && record.suspended === true && record.state === 'failed'
@@ -555,8 +580,9 @@ function isDurableEditRecord(record: DurableOutboxRecord): boolean {
 }
 
 function getDurableEditTask(sessionId: string): NewSessionCreationTask | null {
+  if (isDurableOutboxCreationHeld(sessionId)) return null;
   const record = getCurrentMobileOutboxRecords().find(record =>
-    record.item.sessionId === sessionId && isDurableEditRecord(record) && !claimedDurableEdits.has(record));
+    record.item.sessionId === sessionId && isDurableEditRecord(record) && !claimedDurableEdits.has(durableEditKey(record)));
   if (!record?.creation) return null;
   let task = durableEditSnapshots.get(record);
   if (!task) {
@@ -578,7 +604,7 @@ export function restoreNewSessionDurableEdit(record: DurableOutboxRecord): boole
   if (!isDurableEditRecord(record) || !record.creation) return false;
   // Claiming already removes the synthetic row. Do not repeatedly delete a
   // later authoritative mirror row while the editor still holds this record.
-  if (claimedDurableEdits.has(record)) return true;
+  if (hasLiveNewSessionCreation(record.item.sessionId) || claimedDurableEdits.has(durableEditKey(record))) return true;
   if (!remoteSessionStore.getSessions().some(session => session.id === record.item.sessionId)) {
     remoteSessionStore.upsertDeviceSession(record.deviceId, record.creation.deviceName, {
       ...sessionFromCreateResult({ sessionId: record.item.sessionId }, record.creation.draft),
@@ -725,7 +751,8 @@ export function completeNewSessionDurableEdit(sessionId: string, deviceId: strin
   if (!task && !record) return;
   const owner = getMobileAuthOwner();
   const claims = claimedDurableEdits;
-  if (record) claims.set(record, (claims.get(record) ?? 0) + 1);
+  const key = record ? durableEditKey(record) : undefined;
+  if (key) claims.set(key, (claims.get(key) ?? 0) + 1);
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
   if (!task) {
     dismissRecoveredPrecreatedSession({ sessionId, deviceId });
@@ -733,15 +760,16 @@ export function completeNewSessionDurableEdit(sessionId: string, deviceId: strin
   }
   let released = false;
   return () => {
-    if (released || !record) return;
+    if (released || !key) return;
     released = true;
-    const remaining = (claims.get(record) ?? 1) - 1;
-    if (remaining > 0) { claims.set(record, remaining); return; }
-    claims.delete(record);
-    // A submitted/replaced record or a later account generation belongs to a
-    // different flow. Never resurrect its old synthetic row on form cleanup.
-    if (!isMobileAuthOwnerCurrent(owner) || !getCurrentMobileOutboxRecords().includes(record)) return;
-    if (restoreNewSessionDurableEdit(record)) emit();
+    const remaining = (claims.get(key) ?? 1) - 1;
+    if (remaining > 0) { claims.set(key, remaining); return; }
+    claims.delete(key);
+    if (!isMobileAuthOwnerCurrent(owner)) return;
+    // Follow the stable durable identity through draft updates and cancelled-ID
+    // rotation. Only its latest, still-paused edit record may regain an entry.
+    const latest = getCurrentMobileOutboxRecords().find(record => durableEditKey(record) === key);
+    if (latest && restoreNewSessionDurableEdit(latest)) emit();
   };
 }
 
@@ -1099,6 +1127,17 @@ async function runPipeline(task: InternalTask): Promise<void> {
   }
   void subscribe(`session:${sessionId}`, params.deviceId, ['sessions', `session:${sessionId}`]).catch(() => undefined);
   try {
+    if (params.transport.handoffFirstMessage) {
+      const record = getCurrentMobileOutboxRecords().find(record => record.deviceId === params.deviceId
+        && record.item.sessionId === sessionId && record.item.clientId === task.firstMessageClientId);
+      if (record?.creation?.editReady && isDurableEditRecord(record)) {
+        // The live task now owns recovery. Persist that transfer before any host
+        // creation, so later enqueue failures keep the ordinary outbox semantics.
+        await mobileDurableOutbox.update(record, { suspended: false, state: 'queued', error: undefined,
+          creation: { ...record.creation, editReady: undefined } });
+        assertTaskOwnerCurrent(task);
+      }
+    }
     await withTransientRemoteRetry(async () => {
       assertTaskOwnerCurrent(task);
       await openLink(params.deviceId);
