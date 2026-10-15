@@ -65,16 +65,17 @@ import {
 import { syncBotProfileFromFolder } from '../../maker-ipc/botProfileFolderSync.js';
 import { requestBotRuntimeEpochRefresh } from '../../maker-ipc/botRuntimeEpochRefreshSignal.js';
 import { createLogger } from '../../logger.js';
+import { collectTaskResponsibilityScopes } from '../../maker-ipc/botTaskResponsibility.js';
 import {
   addBotWorkbenchDirectory,
   broadcastBotWorkbenchChanged,
   readBotWorkbench,
-  readBotWorkbenchDirectoryPaths,
   removeBotWorkbenchDirectory,
 } from '../../maker-ipc/botWorkbenchService.js';
 import {
   listBotWorkbenchCandidatesForOwner,
   readBotWorkbenchTaskForOwner,
+  readBotResponsibleSessionIds,
 } from '../../maker-ipc/botWorkbenchTools.js';
 import {
   NEW_BOT_DEFAULT_PI_EFFORT,
@@ -1546,6 +1547,16 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     else delete nextConfig.gender;
   }
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
+  // Legacy chain-only profiles gain mirrored fields during normalization.
+  // Compare the same representation so unrelated edits do not validate stale routes.
+  if (botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig)) {
+    const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
+    owner.assertCurrent();
+    if (!primary || !await validateTaskModel(primary)) {
+      throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
+    owner.assertCurrent();
+  }
   if (JSON.stringify(previous.taskModelOverride ?? null) !== JSON.stringify(normalizedNextConfig.taskModelOverride ?? null)) {
     const taskModel = readBotTaskModelOverride(normalizedNextConfig.taskModelOverride);
     if (taskModel && !await validateTaskModel(taskModel)) {
@@ -1832,6 +1843,17 @@ export function registerBotIpc(): void {
 
   ipcMain.handle('local-db:bots:create', async (event, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
+    const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    if (body.prepareInvitation === true) {
+      const owner = captureBotOperationOwner();
+      const capabilities = body.capabilities && typeof body.capabilities === 'object' && !Array.isArray(body.capabilities)
+        ? body.capabilities as Record<string, unknown> : {};
+      const [primary] = await readEffectiveBotModelChain(capabilities);
+      owner.assertCurrent();
+      const available = primary && await validateTaskModel(primary);
+      owner.assertCurrent();
+      if (!available) throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
     return createBotProfile(raw);
   });
 
@@ -2122,7 +2144,9 @@ export function registerBotIpc(): void {
     const owner = captureBotOperationOwner();
     const workbench = await readBotWorkbench(owner.userDataDir, botId);
     owner.assertCurrent();
-    return workbench;
+    const responsibleSessionIds = await readBotResponsibleSessionIds(owner.userDataDir, botId);
+    owner.assertCurrent();
+    return { ...workbench, responsibleSessionIds };
   });
   for (const operation of ['list', 'update', 'act'] as const) {
     ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
@@ -2145,8 +2169,7 @@ export function registerBotIpc(): void {
     if (result.ok) broadcastBotWorkbenchChanged(botId);
     return result;
   });
-  // 侧栏「<伙伴>在跟进」:每个在用的本机伙伴接手了哪些项目。只给路径列表,不做文件系统探测,
-  // 也不带判断与会话内容;渲染层按任务的工作目录自己匹配。
+  // Exact per-task responsibility IDs from the current owner, without message bodies.
   ipcMain.handle('local-db:bots:workbench:follow-scopes', async (event) => {
     assertTrustedAppRendererEvent(event);
     const owner = captureBotOperationOwner();
@@ -2154,12 +2177,13 @@ export function registerBotIpc(): void {
       .select({ id: botProfiles.id })
       .from(botProfiles)
       .where(eq(botProfiles.status, 'active'));
-    const scopes = await Promise.all(bots.map(async (bot) => ({
-      botId: bot.id,
-      directories: await readBotWorkbenchDirectoryPaths(owner.userDataDir, bot.id),
-    })));
+    // Older renderers receive empty directories rather than claiming projects.
+    const scopes = await collectTaskResponsibilityScopes(
+      bots.map((bot) => bot.id),
+      (botId) => readBotResponsibleSessionIds(owner.userDataDir, botId),
+    );
     owner.assertCurrent();
-    return scopes.filter((scope) => scope.directories.length > 0);
+    return scopes;
   });
   // 工作台详情视图:只读一件任务的最近内容(有界)。范围限于该伙伴已接手的项目,
   // 外部会话只读转录尾部,不写库、不导入。

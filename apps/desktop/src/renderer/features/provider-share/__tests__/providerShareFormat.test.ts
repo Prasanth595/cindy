@@ -24,6 +24,7 @@ function usage(partial: Partial<ProviderShareModelUsageView>): ProviderShareMode
   return {
     kind: 'claude-code',
     providerId: 'xd',
+    memberKey: 'local',
     model: 'claude-opus-5-5',
     turns: 1,
     inputTokens: 0,

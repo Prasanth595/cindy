@@ -58,6 +58,8 @@ describe('IM session background results', () => {
     const f = fixture();
     f.owned.mockReturnValue(true);
     f.output.start('session', '/work', 'other-task');
+    // A harness wake-up while the hook turn still observes the session belongs to that turn.
+    f.output.start('session', '/work', 'provider-wake');
     expect(f.watchContinuation).not.toHaveBeenCalled();
     f.owned.mockReturnValue(false);
     f.sender.mockReturnValue(undefined as never);
@@ -98,7 +100,7 @@ describe('IM session background results', () => {
     expect(f.send).toHaveBeenCalledOnce();
   });
 
-  it('relays only scheduler and other-task turns, never desktop input', () => {
+  it('relays only scheduler, other-task and harness wake-up turns, never desktop input', () => {
     const f = fixture();
     f.output.start('session', '/work');
     f.watch().onSettling?.(undefined);
@@ -114,6 +116,12 @@ describe('IM session background results', () => {
     f.watch().onSettling?.(undefined);
     f.watch().onEnd(result);
     expect(f.send).toHaveBeenCalledTimes(2);
+
+    f.output.start('session', '/work', 'provider-wake');
+    f.watch().onSettling?.(undefined);
+    f.watch().onEnd(result);
+    expect(f.send).toHaveBeenCalledTimes(3);
+    expect(f.send).toHaveBeenLastCalledWith(expect.objectContaining({ payload: expect.objectContaining({ background: true }) }));
   });
 
   it('keeps a silenced scheduler run quiet but still delivers its failure', () => {

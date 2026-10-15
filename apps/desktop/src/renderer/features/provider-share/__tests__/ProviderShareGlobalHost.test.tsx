@@ -2,11 +2,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderShareReceived } from '@cindy/device-link';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { __resetForTest, addModelFavorite, listModelFavorites, setModelFavoritesOwner } from '@/state/modelFavorites';
+import { providerShareFavoriteSource } from '@/state/providerShareFavorites';
 
 import type {
   ProviderShareOwnerState,
   ProviderShareRequestedEvent,
   ProviderShareSettledEvent,
+  ProviderShareReceivedSnapshot,
 } from '../../../../shared/providerShare';
 import { ProviderShareGlobalHost } from '../ProviderShareGlobalHost';
 import { resetProviderShareStoreForTests } from '../providerShareStore';
@@ -19,6 +24,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => bus.auth }));
 vi.mock('@/lib/remoteCatalogSnapshot', () => ({ refreshRemoteCatalogSnapshot: vi.fn(async () => undefined) }));
 vi.mock('@/features/cc-agent/lib/genericNewMakerRouteState', () => ({
   makeGenericNewMakerRouteState: () => ({ workspacePrompt: 'generic' }),
@@ -44,6 +50,8 @@ function ownerState(requests = [request]): ProviderShareOwnerState {
 }
 
 const bus = vi.hoisted(() => ({
+  auth: { dataOwnerId: 'recipient', dataOwnerGeneration: 1 },
+  received: [] as ProviderShareReceived[],
   command: vi.fn(),
   requested: new Set<(event: ProviderShareRequestedEvent) => void>(),
   settled: new Set<(event: ProviderShareSettledEvent) => void>(),
@@ -58,9 +66,24 @@ function listen<T>(set: Set<T>) {
 }
 
 let currentOwner: ProviderShareOwnerState = ownerState();
+const receivedShare: ProviderShareReceived = {
+  shareId: 's1', memberId: 'm1', providerId: 'anthropic', providerLabel: 'Anthropic', hostDeviceId: 'host',
+  deviceName: 'Host', owner: { displayName: 'Owner', avatarUrl: null, region: 'global' },
+  status: 'active', hostOnline: true, hostCapable: true,
+};
+const membership = (): ProviderShareReceivedSnapshot => ({
+  ownerStamp: { dataOwnerId: bus.auth.dataOwnerId, ownerGeneration: bus.auth.dataOwnerGeneration },
+  confirmedRegions: ['global'], received: bus.received,
+});
 
 beforeEach(() => {
   resetProviderShareStoreForTests();
+  __resetForTest();
+  window.localStorage.clear();
+  bus.auth = { dataOwnerId: 'recipient', dataOwnerGeneration: 1 };
+  bus.received = [receivedShare];
+  setDataOwnerGeneration('recipient', 1);
+  setModelFavoritesOwner('recipient');
   bus.command.mockReset();
   bus.requested.clear();
   bus.settled.clear();
@@ -69,6 +92,7 @@ beforeEach(() => {
   bus.command.mockImplementation(async (command: { action: string }) => {
     if (command.action === 'owned') return currentOwner;
     if (command.action === 'received') return [];
+    if (command.action === 'received-snapshot') return membership();
     if (command.action === 'approve' || command.action === 'reject') {
       currentOwner = ownerState([]);
       return { ok: true };
@@ -90,7 +114,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); resetProviderShareStoreForTests(); vi.restoreAllMocks(); });
 
 function LocationProbe() {
   const location = useLocation();
@@ -107,6 +131,54 @@ function renderHost() {
 }
 
 describe('ProviderShareGlobalHost', () => {
+  it('resumes failed favorite cleanup after same-owner repair without a share push', async () => {
+    currentOwner = ownerState([]);
+    bus.received = [];
+    addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
+    const writes = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage unavailable'); });
+    const view = renderHost();
+    await waitFor(() => expect(writes).toHaveBeenCalled());
+    expect(listModelFavorites()).toHaveLength(1);
+    writes.mockRestore();
+    bus.auth = { ...bus.auth, dataOwnerGeneration: 2 };
+    setDataOwnerGeneration('recipient', 2);
+    view.rerender(<MemoryRouter><ProviderShareGlobalHost /><LocationProbe /></MemoryRouter>);
+    await waitFor(() => expect(listModelFavorites()).toEqual([]));
+    expect(bus.command).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'received-snapshot',
+      favoriteRecovery: { ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 2 }, regions: ['global'] },
+    }));
+  });
+
+  it('refetches membership on same-owner repair and ignores an earlier generation reply', async () => {
+    currentOwner = ownerState([]);
+    addModelFavorite({ providerId: providerShareFavoriteSource(receivedShare), modelId: 'opus', agent: 'cc' });
+    let finish!: (snapshot: ProviderShareReceivedSnapshot) => void;
+    bus.command.mockImplementation(async (command: { action: string }) => {
+      if (command.action === 'owned') return currentOwner;
+      if (command.action === 'received') return bus.received;
+      if (bus.auth.dataOwnerGeneration === 1) return new Promise((resolve) => { finish = resolve; });
+      return membership();
+    });
+    const view = renderHost();
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    const old = { ...membership(), received: [] };
+    bus.auth = { ...bus.auth, dataOwnerGeneration: 2 };
+    setDataOwnerGeneration('recipient', 2);
+    view.rerender(<MemoryRouter><ProviderShareGlobalHost /><LocationProbe /></MemoryRouter>);
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'received-snapshot',
+      favoriteRecovery: { ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 2 }, regions: ['global'] },
+    })));
+    await act(async () => { finish(old); });
+    expect(listModelFavorites()).toHaveLength(1);
+    bus.received = [];
+    bus.auth = { ...bus.auth, dataOwnerGeneration: 3 };
+    setDataOwnerGeneration('recipient', 3);
+    view.rerender(<MemoryRouter><ProviderShareGlobalHost /><LocationProbe /></MemoryRouter>);
+    await waitFor(() => expect(listModelFavorites()).toEqual([]));
+  });
+
   it('queues pending requests found at startup and approves from the dialog', async () => {
     renderHost();
     const dialog = await screen.findByTestId('provider-share-approve-dialog');

@@ -3,6 +3,7 @@ import {
   buildClientDeviceNote,
   buildMessageSourceNote,
   describeMessageSourceSender,
+  isCrossDeviceSourceSessionId,
   messageSourceIdEntries,
   formatSourceRef,
   promptSafeSourceName,
@@ -242,5 +243,14 @@ describe('private group reply provenance', () => {
     expect(readMessageSourceGroup(meta)).toEqual({ groupId: 'group-1', name: 'Design Room' });
     expect(describeMessageSourceSender(messageSourceSenderFromMeta(meta)!)).toContain('从群聊「Design Room」(group_id: group-1)');
     expect(readMessageSourceGroup({ sourceGroup: { name: 'No identity' } })).toBeUndefined();
+  });
+});
+
+describe('isCrossDeviceSourceSessionId', () => {
+  it('recognizes only a device-qualified source task id', () => {
+    expect(isCrossDeviceSourceSessionId('dev-A::task-1')).toBe(true);
+    for (const local of [undefined, '', 'task-1', '::task-1', 'dev-A::']) {
+      expect(isCrossDeviceSourceSessionId(local)).toBe(false);
+    }
   });
 });

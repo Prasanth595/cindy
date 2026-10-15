@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HistoryViewController } from '../historyViewController.js';
-import type { HistoryMessageSource, HistoryViewPage, HistoryWorkPatch, HistoryWorkSummary } from '../historyView.js';
+import type { HistoryDetailPage, HistoryMessageSource, HistoryViewPage, HistoryWorkPatch, HistoryWorkSummary } from '../historyView.js';
 import { renderHistoryView } from '../historyViewRender.js';
 import { HISTORY_WORK_LINE_MAX_BYTES, HISTORY_WORK_LINES_MAX_BYTES, projectHistoryWorkLines } from '../historyWorkLines.js';
 
@@ -105,7 +105,7 @@ describe('HistoryViewController.applyWorkPatch', () => {
   async function fixture() {
     const transport = {
       page: vi.fn(async () => page([answer, { type: 'work', key: 'work-c1', summary: summary('work-c1', 'r1', []) }])),
-      details: vi.fn(async () => ({ version: 1 as const, messages: [], hasMore: false, nextCursor: null })),
+      details: vi.fn(async (): Promise<HistoryDetailPage<HistoryMessageSource>> => ({ version: 1, messages: [], hasMore: false, nextCursor: null })),
       expanded: vi.fn(async () => undefined),
     };
     const view = new HistoryViewController(transport);
@@ -175,5 +175,27 @@ describe('HistoryViewController.applyWorkPatch', () => {
       },
     });
     expect(items[0].deferred?.lines).toEqual([{ kind: 'thinking', key: 'c9', text: 'next' }]);
+  });
+
+  it('reports a group as awaiting details until its first detail rows land', async () => {
+    const { view, transport } = await fixture();
+    let finish!: (value: HistoryDetailPage<HistoryMessageSource>) => void;
+    transport.details.mockImplementationOnce(() => new Promise<HistoryDetailPage<HistoryMessageSource>>((resolve) => { finish = resolve; }));
+    type Item = { key: string; ids: string[]; children?: Item[]; deferred?: { awaitingDetails?: boolean } };
+    const awaiting = () => renderHistoryView<HistoryMessageSource, Item>({
+      view, snapshot: view.getSnapshot(), liveMessages: [], streaming: true,
+      build: (rows) => [{ key: 'work', ids: [], children: rows.map((r) => ({ key: r.clientId, ids: [r.clientId] })) }],
+      structure: {
+        placeholder: (value) => row('thinking', '', { clientId: `placeholder-${value.key}` }),
+        children: (item) => item.children,
+        sourceIds: (item) => item.ids,
+        rebuild: (item, children, deferred) => ({ ...item, children, deferred }),
+      },
+    })[0].deferred?.awaitingDetails;
+    expect(awaiting()).toBe(true);
+    view.setExpanded('work-c1', true);
+    expect(awaiting()).toBe(true);
+    finish({ version: 1, messages: [row('thinking', 'first', { id: 'm1', clientId: 'm1' })], hasMore: false, nextCursor: null });
+    await vi.waitFor(() => expect(awaiting()).toBe(false));
   });
 });

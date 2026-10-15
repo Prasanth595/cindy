@@ -3,9 +3,9 @@ import { cleanup, render, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
-  sessions: ['a', 'b', 'c'].map((id) => ({ id, status: 'active' })),
-  history: null as { id: string; status: string }[] | null,
-  remoteSessions: [] as { id: string; status: string; deviceLinkDeviceId?: string }[],
+  sessions: ['a', 'b', 'c'].map((id) => ({ id, status: 'active' })) as { id: string; status: string; source?: string }[],
+  history: null as { id: string; status: string; source?: string }[] | null,
+  remoteSessions: [] as { id: string; status: string; source?: string; deviceLinkDeviceId?: string }[],
   attention: new Map<string, string>([
     ['a', 'done'],
     ['b', 'done'],
@@ -49,7 +49,10 @@ vi.mock('@/hooks/useCCSessions', () => ({
   }),
 }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
-  useRemoteProjectSessions: () => state.remoteSessions,
+  remoteProjectsStore: {
+    subscribe: () => () => {},
+    getMergedRemoteSessions: () => state.remoteSessions,
+  },
 }));
 vi.mock('@/features/cc-agent/hooks/useAutomationScheduleSessionIndex', () => ({
   usePublishedAutomationScheduleSessionIndex: () => state.empty,
@@ -71,6 +74,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   state.publish.mockClear();
   state.isLoading = false;
+  state.sessions = ['a', 'b', 'c'].map((id) => ({ id, status: 'active' }));
   state.history = null;
   state.remoteSessions = [];
   state.running = new Map();
@@ -85,6 +89,24 @@ afterEach(() => {
 });
 
 describe('app badge projection lifecycle', () => {
+  it.each(['done', 'awaiting', 'error'])('excludes hidden Make tasks with %s attention while retaining notification deduplication IDs', (kind) => {
+    vi.stubGlobal('electronAPI', { notificationSetAppAttentionCount: state.publish });
+    state.sessions = [
+      ...state.sessions,
+      { id: 'make', status: 'active', source: 'cindy-make' },
+      { id: 'make-merge', status: 'active', source: 'cindy-make-merge' },
+    ];
+    state.history = [{ id: 'archived-make', status: 'archived', source: 'cindy-make' }];
+    state.remoteSessions = [{ id: 'remote-make', status: 'active', source: 'cindy-make', deviceLinkDeviceId: 'device-a' }];
+    state.attention.set('make', kind);
+    state.attention.set('make-merge', kind);
+    render(<AppBadgeAttentionSync />);
+    expect(state.publish).toHaveBeenLastCalledWith(expect.objectContaining({
+      count: 3,
+      sessionIds: ['a', 'b', 'c', 'make', 'make-merge', 'remote-make', 'archived-make'],
+    }));
+  });
+
   it('retains active attention when archived history fills the all bucket', () => {
     vi.stubGlobal('electronAPI', { notificationSetAppAttentionCount: state.publish });
     state.history = Array.from({ length: 1000 }, (_, index) => ({

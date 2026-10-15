@@ -24,6 +24,8 @@ export interface ProviderGroupHeldWorkerTerminals<T> {
   discard(sessionId: string, holdId: number): void;
   /** 不再换了：回报这次终态。重复调用无副作用。 */
   release(sessionId: string, holdId: number): void;
+  /** 这次登记暂存着一个协同 Worker 的终态(还没结算)。 */
+  has(sessionId: string, holdId: number): boolean;
 }
 
 interface HeldWorkerTerminal<T> {
@@ -56,6 +58,10 @@ export function createProviderGroupHeldWorkerTerminals<T>(
 
     discard(sessionId, holdId) {
       take(sessionId, holdId);
+    },
+
+    has(sessionId, holdId) {
+      return held.get(sessionId)?.has(holdId) === true;
     },
 
     release(sessionId, holdId) {

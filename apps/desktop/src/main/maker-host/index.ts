@@ -1,5 +1,6 @@
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
+import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
 import { createCompanionImportProvider } from '../bot-import/importProvider.js';
 import { createCompanionConnectionsProvider } from '../bot-import/connectionProvider.js';
 import { resolveCompanionRuntimeEnvironment } from '../bot-import/runtime.js';
@@ -1288,6 +1289,7 @@ export function getMaker(): Maker {
       resolveSessionEnvironment: resolveCompanionRuntimeEnvironment,
       getDisabledSkillPaths: readDisabledSkillPaths,
       getManagedSkills: listCindyManagedSkills,
+      scanLocalCustomizations,
       auth: desktopClaudeAuthAdapter,
       runtimeConfig: buildDesktopClaudeRuntimeConfig(getClaudeEndpoint),
       binaryPath: claudePath,
@@ -1616,6 +1618,7 @@ export function getMaker(): Maker {
       resolveSessionEnvironment: resolveCompanionRuntimeEnvironment,
       getDisabledSkillPaths: readDisabledSkillPaths,
       getManagedSkills: listCindyManagedSkills,
+      scanLocalCustomizations,
       prepareCodexSkills: prepareCindyCodexSkills,
       auth: desktopCodexAuthAdapter,
       runtimeConfig: desktopCodexRuntimeConfig,

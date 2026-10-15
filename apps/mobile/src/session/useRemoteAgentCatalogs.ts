@@ -63,7 +63,8 @@ export function useRemoteAgentCatalogs(input: {
   /** 只读 keepDeviceIds 里的电脑(选择器没打开、只为模型药丸取 Agent 所在那台的目录时)。 */
   keepOnly?: boolean;
 }): RemoteAgentCatalog[] {
-  const { readDeviceList, invoke, openLink, connectionEpoch, status } = useDeviceLink();
+  const { readDeviceList, invoke, openLink, connectionEpoch, status, presenceVersion, getPresenceAvailability } =
+    useDeviceLink();
   const { accountGeneration } = useAuth();
   const { t } = useTranslation();
   const revoked = useRevokedDevices();
@@ -210,13 +211,18 @@ export function useRemoteAgentCatalogs(input: {
 
   return useMemo(() => {
     if (devices.length === 0 && shareCatalogs.length === 0) return NO_CATALOGS;
+    void presenceVersion;
     const deviceCatalogs = devices.map((device): RemoteAgentCatalog => {
       const state = catalogs.get(device.deviceId);
       const payload = state?.payload;
+      // 设备清单是打开时的快照;面板开着期间上下线以实时 presence 为准(未知时沿用清单)。
+      const presence = getPresenceAvailability(device.deviceId);
+      const offline = presence === false || (presence !== true && !device.canOpen);
       return {
         deviceId: device.deviceId,
         name: device.name,
         status: state?.status ?? (device.canOpen ? 'loading' : 'error'),
+        ...(offline ? { offline: true as const } : {}),
         providers: payload ? remoteAgentProviders(payload.providers) : [],
         ...(payload?.modelVisibilityOverrides !== undefined
           ? { modelVisibilityOverrides: payload.modelVisibilityOverrides }
@@ -224,5 +230,5 @@ export function useRemoteAgentCatalogs(input: {
       };
     });
     return shareCatalogs.length === 0 ? deviceCatalogs : [...deviceCatalogs, ...shareCatalogs];
-  }, [catalogs, devices, shareCatalogs]);
+  }, [catalogs, devices, shareCatalogs, presenceVersion, getPresenceAvailability]);
 }

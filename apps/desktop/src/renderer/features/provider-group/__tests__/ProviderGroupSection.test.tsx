@@ -4,23 +4,30 @@
  * 再次打开时先显示已知的组，不从「读取中」重来。
  */
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import { createInstance } from 'i18next';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupView } from '../../../../shared/providerGroup';
+import zhCN from '../../../i18n/locales/zh-CN/common.json';
 import { memberStatusText, ProviderGroupSection } from '../ProviderGroupSection';
 import { __testing as localGroupsTesting, useLocalProviderGroupsState } from '../useLocalProviderGroups';
 import { __testing as groupViewTesting } from '../useProviderGroup';
 
+let realLocale: ReturnType<typeof createInstance> | null = null;
+const providerState = vi.hoisted(() => ({ providers: [
+  { id: 'anthropic', connected: true, auth: { method: 'oauth', native: 'claude' } },
+] }));
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
-  useTranslation: () => ({
+  useTranslation: () => realLocale ? { t: realLocale.t, i18n: realLocale } : ({
     t: (key: string, options?: Record<string, unknown>) =>
       options && Object.keys(options).length > 0 ? `${key}:${JSON.stringify(options)}` : key,
     i18n: { language: 'en' },
   }),
 }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => providerState }));
 const confirmSpy = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: confirmSpy }) }));
 // Radix 的浮层要 ResizeObserver,jsdom 里没有;行内「更多操作」菜单只需要验证菜单项的行为,
@@ -89,6 +96,8 @@ function viewOf(config: ProviderGroupConfig | null): ProviderGroupView {
 }
 
 beforeEach(() => {
+  realLocale = null;
+  providerState.providers = [{ id: 'anthropic', connected: true, auth: { method: 'oauth', native: 'claude' } }];
   stored = null;
   running = null;
   localGroupsTesting.reset();
@@ -120,6 +129,18 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('ProviderGroupSection', () => {
+  it('shows the version and sharing update hint alongside the owner’s normal availability', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const base = viewOf(stored);
+    base.members[0] = { ...base.members[0], appVersion: '0.1.103', guestSupport: 'needs-update' };
+    command.mockImplementation(async (cmd: { action: string }) => cmd.action === 'list' ? { anthropic: stored } : base);
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findByText('v0.1.103');
+    expect(screen.getByText('providerGroup.member.version.updateRequired')).toBeTruthy();
+    expect(screen.getByTestId('provider-group-member').getAttribute('data-member-state')).toBe('available');
+    expect(screen.getByText('providerGroup.member.runningCount:{"count":1}')).toBeTruthy();
+  });
+
   it('creates a group with this computer plus the selected computers', async () => {
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     expect(await screen.findByText(/providerGroup\.section\.empty/)).toBeTruthy();
@@ -174,12 +195,23 @@ describe('ProviderGroupSection', () => {
     expect(rows[1].getAttribute('data-member-state')).toBe('cooling');
     expect(within(rows[1]).getByText(/providerGroup\.member\.status\.coolingUntil/)).toBeTruthy();
     // 本机与远程共用同一个开关；本机不能移出组。
-    expect(within(rows[0]).getByRole('switch')).toBeTruthy();
+    const localSwitch = within(rows[0]).getByRole('switch', {
+      name: 'providerGroup.member.assignLocalAria:{"name":"providerGroup.member.local"}',
+    });
+    expect(localSwitch).toBeTruthy();
     expect(within(rows[0]).queryByRole('button', { name: 'providerGroup.member.remove' })).toBeNull();
     fireEvent.click(
       within(rows[1]).getByRole('switch', { name: 'providerGroup.member.assignAria:{"name":"Mac mini"}' }),
     );
     await waitFor(() => expect(stored?.members[1].paused).toBe(true));
+    expect(await within(rows[1]).findByText('providerGroup.member.status.paused')).toBeTruthy();
+    fireEvent.click(localSwitch);
+    await waitFor(() => expect(stored?.members[0].paused).toBe(true));
+    expect(await within(rows[0]).findByText('providerGroup.member.status.pausedLocal')).toBeTruthy();
+    expect(within(rows[0]).getByText('providerGroup.member.runningCount:{"count":1}')).toBeTruthy();
+    fireEvent.click(localSwitch);
+    await waitFor(() => expect(stored?.members[0].paused).toBe(false));
+    await waitFor(() => expect(within(rows[0]).queryByText('providerGroup.member.status.pausedLocal')).toBeNull());
   });
 
   it('says idle instead of staying silent when a computer is available with nothing running', async () => {
@@ -198,6 +230,8 @@ describe('ProviderGroupSection', () => {
     await screen.findAllByTestId('provider-group-member');
     fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.round' }));
     await waitFor(() => expect(stored?.strategy).toBe('round'));
+    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.order' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
     fireEvent.click(screen.getByRole('switch', { name: 'providerGroup.autoSwitch.label' }));
     await waitFor(() => expect(stored?.autoSwitch).toBe(false));
   });
@@ -209,6 +243,43 @@ describe('ProviderGroupSection', () => {
     fireEvent.click(within(rows[1]).getByRole('button', { name: 'providerGroup.member.remove' }));
     await waitFor(() => expect(stored?.members.map((m) => m.key)).toEqual(['local']));
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
+  });
+
+  it('explains in Chinese that quota comes first for a disconnected subscription and shows an old usage group as least busy', async () => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
+    providerState.providers[0].connected = false;
+    stored = { strategy: 'usage', autoSwitch: true, members: [LOCAL] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Claude" />);
+    expect(await screen.findByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '最少占用' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('给最闲的那台')).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: '按顺序' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
+  });
+
+  it.each([
+    { kind: 'API-only', members: [LOCAL] },
+    { kind: 'mixed local API and remote subscription', members: [LOCAL, MINI] },
+  ])('explains when quota overrides the strategy for a $kind group', async ({ members }) => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
+    providerState.providers[0].auth.method = 'api-key';
+    // Group views do not expose remote authentication types; the local connection cannot gate this explanation.
+    stored = { strategy: 'order', autoSwitch: true, members };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findAllByTestId('provider-group-member');
+    expect(screen.getByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '按顺序' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+  });
+
+  it('shows the quota hint for a subscription group', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findAllByTestId('provider-group-member');
+    expect(screen.getByText('providerGroup.strategy.quotaFirst')).toBeTruthy();
   });
 });
 

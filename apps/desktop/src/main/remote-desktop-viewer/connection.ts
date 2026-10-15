@@ -1,4 +1,5 @@
 import {
+  handoffWindowCapabilities,
   isRemoteDesktopChannelRequest,
   parseRemoteDesktopRequest,
   REMOTE_DESKTOP_CHANNEL_TIMEOUT_MS,
@@ -78,7 +79,10 @@ export class RemoteViewerConnection {
   ) {}
   bind(target: RemoteViewerTarget): void {
     const owner = this.deps.owner();
-    const sameScope = this.owner === owner && this.target?.deviceId === target.deviceId;
+    const sameScope =
+      this.owner === owner &&
+      this.target?.deviceId === target.deviceId &&
+      this.target.handoff === target.handoff;
     this.deactivate();
     if (!sameScope) this.lifecycle = null;
     this.owner = owner;
@@ -191,6 +195,9 @@ export class RemoteViewerConnection {
       if ('lease' in request && request.lease !== this.lease)
         throw new Error('DESKTOP_LEASE_EXPIRED');
       if (request.op === 'start' && this.starting) throw new Error('DESKTOP_BUSY');
+      // The window decides whether this is a 代输入 window view; the page cannot widen or swap it.
+      if (request.op === 'start' && request.handoff !== this.target?.handoff)
+        throw new Error('DESKTOP_UNAVAILABLE');
       // Clipboard contents and credentials are handled only by dedicated Main adapters.
       if (
         request.op === 'clipboard' ||
@@ -238,7 +245,9 @@ export class RemoteViewerConnection {
           const result = await this.send(outgoing, check);
           if (request.op === 'capabilities') {
             check();
-            this.caps = result as RemoteDesktopCapabilities;
+            const caps = result as RemoteDesktopCapabilities;
+            // A window view never runs whole-desktop safety features (masks, mute, clipboard sync).
+            this.caps = target.handoff && caps?.handoffWindow ? handoffWindowCapabilities(caps) : caps;
           }
           if (isStart) {
             const lease = result as RemoteDesktopLease;

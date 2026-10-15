@@ -29,6 +29,7 @@ import { providerShareAgentDeviceId } from './providerShareFormat';
 import { providerShareDisplayNames } from './providerShareNames';
 import { useProviderShareReceived } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
+import { SharedProviderGroupStatus } from './SharedProviderGroupStatus';
 
 type ReceivedStatus = 'active' | 'paused' | 'offline' | 'needs-update';
 
@@ -199,7 +200,7 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
   else if (models.length === 0) body = t('providerShare.received.modelsEmpty');
 
   return (
-    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="shrink-0 px-5 py-4">
         <div className="flex flex-wrap items-center gap-3 gap-y-2">
           <div className="flex min-w-0 flex-auto basis-[220px] items-center gap-3">
@@ -235,7 +236,7 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
           <div className="flex shrink-0 items-center gap-2.5">
             <span role="status" className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
               <StatusDot status={status} />
-              {t(STATUS_LABEL_KEY[status])}
+              {t(status === 'active' && groupSize !== null ? 'providerShare.received.groupStatus.shareActive' : STATUS_LABEL_KEY[status])}
             </span>
             <Button
               variant="secondary"
@@ -263,23 +264,29 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
         </p>
       </div>
 
-      <ReadOnlyProviderModelSection
-        title={t('providerShare.received.modelsTitle')}
-        models={models}
-        note={body}
-        action={
-          status === 'active' && catalog.error ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
-            >
-              {t('providerShare.received.retryModels')}
-            </Button>
-          ) : null
-        }
-        testId="provider-share-received-models"
-      />
+      {status === 'active' && groupSize !== null && (
+        <SharedProviderGroupStatus key={catalogDeviceId} deviceId={catalogDeviceId} providerId={share.providerId} initialSize={groupSize} />
+      )}
+
+      <div className="flex min-h-40 flex-1 flex-col">
+        <ReadOnlyProviderModelSection
+          title={t('providerShare.received.modelsTitle')}
+          models={models}
+          note={body}
+          action={
+            status === 'active' && catalog.error ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
+              >
+                {t('providerShare.received.retryModels')}
+              </Button>
+            ) : null
+          }
+          testId="provider-share-received-models"
+        />
+      </div>
     </div>
   );
 }

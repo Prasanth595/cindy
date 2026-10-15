@@ -60,3 +60,19 @@ it('accepts frames up to the tier budget and stops capture beyond it', async () 
   auto.owner.stop();
   await expect(rejected).resolves.toBeNull();
 });
+
+it('captures only the 代输入 window, never the display, and returns to the display after', async () => {
+  const { owner } = setup();
+  owner.setExcludedWindows([7, 8]);
+  owner.setWindow(4242);
+  // The window view exists only as the overlay stream.
+  await expect(owner.frame('1', false)).resolves.toBeNull();
+  expect(h.spawn).not.toHaveBeenCalled();
+  void owner.frame('1', true, { fps: 30, quality: 'auto', audio: false });
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  expect(h.spawn.mock.calls[0][1].at(-1)).toBe('window:4242');
+  owner.setWindow(null);
+  void owner.frame('1', true, { fps: 30, quality: 'auto', audio: false });
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+  expect(h.spawn.mock.calls[1][1].at(-1)).toBe('7,8');
+});

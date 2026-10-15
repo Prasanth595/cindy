@@ -140,6 +140,8 @@ vi.mock('@/features/provider-group/useLocalProviderGroups', () => ({
   useLocalProviderGroups: () => catalogs.localGroups,
 }));
 vi.mock('@/features/provider-share/providerShareStore', () => ({
+  ensureProviderShareReceivedStarted: vi.fn(),
+  requestProviderShareFavoriteRegions: vi.fn(),
   useProviderShareReceived: () => ({ received: [], loaded: true }),
 }));
 vi.mock('@/state/modelVisibilityPrefs', () => ({

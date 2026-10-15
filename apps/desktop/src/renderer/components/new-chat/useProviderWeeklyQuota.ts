@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ProviderView } from '@cindy/model-providers';
+import { providerWeeklyQuotaSource } from '../../../shared/providerQuotaSource';
 import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
 import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
@@ -130,27 +131,7 @@ export function codexWeeklyQuota(
   return null;
 }
 
-export function providerWeeklyQuotaSource(
-  provider: ProviderView,
-): 'codex' | 'claude' | 'xai' | null {
-  if (
-    !provider.connected ||
-    provider.suspended ||
-    provider.openAiAccount?.reconnectRequired ||
-    provider.auth.method !== 'oauth' ||
-    (provider.access && provider.access.kind !== 'subscription')
-  )
-    return null;
-  if (provider.id === 'openai' || provider.auth.native === 'codex') return 'codex';
-  if (provider.auth.native === 'claude') return 'claude';
-  if (provider.auth.native === 'xai') return 'xai';
-  // These APIs currently describe only the built-in native account, not any
-  // arbitrary same-brand API/OAuth connection a user may add.
-  if (provider.source !== 'builtin') return null;
-  if (provider.id === 'anthropic') return 'claude';
-  if (provider.id === 'xai') return 'xai';
-  return null;
-}
+export { providerWeeklyQuotaSource };
 
 export interface ProviderUsageSnapshots {
   source: 'codex' | 'claude' | 'xai' | null;

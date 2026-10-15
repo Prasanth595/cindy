@@ -3270,6 +3270,42 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     expect(String(handle.finalize.mock.calls[0][0])).toContain('process exited with code 1');
   });
 
+  it('shows live tok/s while running but drops it from the frozen failure card', async () => {
+    const handle = {
+      messageId: 'stream-fatal-rate',
+      append: vi.fn(),
+      replace: vi.fn(),
+      finalize: vi.fn(),
+      close: vi.fn(),
+    };
+    mocks.feishuIm.startStreamingText.mockResolvedValue(handle);
+    const h = setupSession(async () => ({ accepted: true }));
+    const { onTurnComplete } = await runDefaultTurn();
+
+    h.emit({
+      type: 'status',
+      data: {
+        status: 'Running',
+        isRunning: true,
+        tokenSpeed: { rate: 116.4, average: 110, tokens: 500, elapsedMs: 4_000, streaming: true },
+      },
+    });
+    h.emit({ type: 'tool_use', data: { toolName: 'Read', toolUseId: 'r1', input: { file_path: '/x/a.ts' } } });
+    await waitForAssertion(() => {
+      expect(String(handle.replace.mock.calls.at(-1)?.[0])).toContain('· 116 tok/s');
+    });
+
+    h.emit({ type: 'error', data: { message: 'process exited with code 1', isTerminal: true } });
+    await waitForAssertion(() => {
+      expect(onTurnComplete).toHaveBeenCalledTimes(1);
+      expect(handle.finalize).toHaveBeenCalledTimes(1);
+    });
+    // 失败收口保留过程区(用户能看到死在哪步), 但不能留一个已经不存在的速度。
+    const finalView = String(handle.finalize.mock.calls[0][0]);
+    expect(finalView).toContain('读取 a.ts');
+    expect(finalView).not.toContain('tok/s');
+  });
+
   it('keeps streaming resumed-turn output into the same turn after a silentStop resume', async () => {
     const handle = {
       messageId: 'stream-resume',

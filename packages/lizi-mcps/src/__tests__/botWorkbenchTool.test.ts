@@ -37,6 +37,7 @@ const snapshot = {
 function setup(sessionId: string | null = 'bot-session', todos?:BotWorkbenchCallbacks['todos']) {
   const callbacks: BotWorkbenchCallbacks = {
     ...(todos ? {todos} : {}),
+    setResponsibility: vi.fn(async ({ taskId, responsible }) => ({ ok: true as const, taskId, responsible })),
     get: vi.fn(async () => ({ ok: true as const, workbench: snapshot })),
     read: vi.fn(async ({ taskId }: { taskId: string }) => ({
       ok: true as const,
@@ -224,4 +225,28 @@ describe('teammate affair discovery tools',()=>{
     const live=setup('canonical',callback);const response=await live.reg.call('update_teammate_todo',{patch:{operation:'complete',completion:{summary:42}}});
     expect(response.isError).toBe(true);expect(callback).not.toHaveBeenCalled();
   });
+});
+
+it('takes/releases by exact task ID with caller-derived bot identity', async () => {
+  const { reg, callbacks } = setup();
+  for (const responsible of [true, false]) {
+    expect(parse(await reg.call('set_workbench_task_responsibility', { task_id: 'one', responsible })))
+      .toMatchObject({ ok: true, task_id: 'one', responsible });
+    expect(callbacks.setResponsibility).toHaveBeenLastCalledWith({ callerSessionId: 'bot-session', taskId: 'one', responsible });
+  }
+  vi.mocked(callbacks.setResponsibility!).mockClear();
+  expect(parse(await reg.call('set_workbench_task_responsibility', { task_id: 'one', responsible: true, bot_id: 'other' })).ok).toBe(false);
+  expect(parse(await reg.call('set_workbench_task_responsibility', { task_id: 'one', responsible: 'yes' })).ok).toBe(false);
+  expect(callbacks.setResponsibility).not.toHaveBeenCalled();
+});
+
+
+it('keeps older hosts usable without advertising an unavailable responsibility writer', () => {
+  const { callbacks } = setup();
+  delete callbacks.setResponsibility;
+  const reg = new XdtHelperToolRegistry();
+  registerBotWorkbenchTools(reg, { callbacks, getSessionContext: () => ({ sessionId: 'main', agentKind: 'claude-code', workingDir: '/w' }) });
+  const names = reg.list('bots').map(tool => tool.name);
+  expect(names).toContain('get_workbench');
+  expect(names).not.toContain('set_workbench_task_responsibility');
 });

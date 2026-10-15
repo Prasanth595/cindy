@@ -2448,3 +2448,50 @@ it('applies native Fast only to the exact declared connection and fails closed o
   } finally { vi.useRealTimers(); }
   expect(original).not.toHaveProperty('service_tier');
 });
+
+// PR #6025 回归: cindy_mcp_call_tool 的 args 必须对模型可选 (无参工具按其内层
+// 空 schema 省略 args 时, 入口层不能再以 required 拦住)。同时锁死转发值: 省略
+// args 时发给 MCP server 的 arguments 必须是 {} (recordInput 归一), 而不是
+// undefined / 丢字段 — 否则 call_tool({name, args}) 入口 schema 又会 -32602。
+it('lets cindy_mcp_call_tool omit args and forwards an empty object for no-parameter tools', async () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const compiled = ts.transpileModule(
+    source.slice(source.indexOf('const CINDY_MCP_LIST_TOOLS'), source.indexOf('async function connectServer'))
+      + '\n(globalThis as any).Gateway = CindyMcpGateway;',
+    { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const context: Record<string, any> = {
+    recordInput: (value: unknown) => value && typeof value === 'object' ? value : {},
+    mcpContentToPi: (content: unknown) => content,
+  };
+  runInNewContext(compiled, context);
+  const requests: Array<{ method: string; params: any }> = [];
+  const client = { request: async (method: string, params: unknown) => {
+    requests.push({ method, params });
+    return { content: [{ type: 'text', text: 'ok' }] };
+  } };
+  const gateway = new context.Gateway();
+  gateway.add('cindy_memory', client, [
+    { name: 'list_tools', inputSchema: { type: 'object' } },
+    { name: 'call_tool', inputSchema: { type: 'object' } },
+  ]);
+  const ordinary: any[] = [];
+  gateway.register({ registerTool: (tool: unknown) => ordinary.push(tool) });
+  const callTool = ordinary.find((tool) => tool.name === 'cindy_mcp_call_tool');
+  expect(callTool).toBeDefined();
+  // 模型看到的契约: server/tool 必填, args 可选 (无参工具可省略)。
+  expect(callTool.parameters.required).toEqual(['server', 'tool']);
+  expect(callTool.parameters.required).not.toContain('args');
+  // 披露门: 先按 schema 检视一次再调用 (与生产路径同序)。
+  await gateway.listResult({ server: 'cindy_memory', tool: 'call_tool' });
+  await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool' });
+  expect(requests).toHaveLength(1);
+  expect(requests[0].method).toBe('tools/call');
+  expect(requests[0].params).toEqual({ name: 'call_tool', arguments: {} });
+  // 对照: 显式传 args 时仍原样转发 (既有行为不变)。
+  await gateway.executeCall({ server: 'cindy_memory', tool: 'call_tool', args: { name: 'memory_list', args: {} } });
+  expect(requests[1].params).toEqual({
+    name: 'call_tool',
+    arguments: { name: 'memory_list', args: {} },
+  });
+});

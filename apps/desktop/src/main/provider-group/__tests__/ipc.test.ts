@@ -13,11 +13,17 @@ vi.mock('../runtime.js', () => ({
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a' }));
-vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn() }));
+vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self') }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import type { ProviderGroupCandidate, ProviderGroupConfig } from '../../../shared/providerGroup';
-import { executeProviderGroupCommand, parseProviderGroupCommand, type ProviderGroupCommandDeps } from '../ipc';
+import {
+  executeProviderGroupCommand,
+  markMembersUnreachableHere,
+  parseProviderGroupCommand,
+  PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS,
+  type ProviderGroupCommandDeps,
+} from '../ipc';
 
 const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
 const MINI = {
@@ -37,6 +43,7 @@ function deps(candidates: ProviderGroupCandidate[], existing: ProviderGroupConfi
   return {
     switchOwner: (next: string) => { owner = next; },
     ownerKey: vi.fn(() => owner),
+    localDeviceId: vi.fn(() => 'self'),
     pruneBindings: vi.fn(async () => {}),
     router: { view: vi.fn(async (providerId: string) => ({ providerId, config: stored, members: [] })) },
     directory: { listCandidates: vi.fn(async () => candidates), resolveMembers: vi.fn(), invalidate: vi.fn() },
@@ -89,6 +96,81 @@ describe('executeProviderGroupCommand reads', () => {
     expect(d.router.view).not.toHaveBeenCalled();
     await executeProviderGroupCommand(d, { action: 'remote-view', providerId: 'anthropic', deviceId: 'mini' });
     expect(remoteView).toHaveBeenCalledWith('mini', 'anthropic');
+  });
+
+  it('marks a computer in another computer’s group that this computer cannot reach', async () => {
+    const config: ProviderGroupConfig = {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [
+        LOCAL,
+        MINI,
+        { ...MINI, key: 'device:self:anthropic', agentDeviceId: 'self', providerId: 'anthropic' },
+        { ...MINI, key: 'device:vm:anthropic', agentDeviceId: 'vm', providerId: 'anthropic' },
+      ],
+    };
+    const status = (key: string, state: 'available' | 'cooling') => ({
+      key, kind: 'device' as const, label: key, state, running: 2, limit: 4, weight: 1, paused: false,
+    });
+    const view = {
+      providerId: 'anthropic',
+      config,
+      members: [
+        { ...status('local', 'available'), kind: 'local' as const },
+        status(MINI.key, 'available'),
+        status('device:self:anthropic', 'available'),
+        status('device:vm:anthropic', 'cooling'),
+      ],
+    };
+    // 这台电脑读不到 mini 的目录(连不上)。
+    const readDeviceCatalog = vi.fn(async (_agentDeviceId: string): Promise<never[]> => {
+      throw new Error('[DEVICE_LINK_DEVICE_UNRESPONSIVE] target device mini is unresponsive (circuit open)');
+    });
+    const marked = await markMembersUnreachableHere(view, { readDeviceCatalog }, 'self');
+    // 只核对组所在电脑看着能用、由这台直连的「我的其他电脑」：组所在电脑自己、本机这台、冷却中的都不读。
+    expect(readDeviceCatalog.mock.calls.map(([id]) => id)).toEqual(['mini']);
+    expect(marked.members.map((m) => [m.key, m.unreachableHere === true])).toEqual([
+      ['local', false],
+      [MINI.key, true],
+      ['device:self:anthropic', false],
+      ['device:vm:anthropic', false],
+    ]);
+    // 其余字段照组所在电脑的回包。
+    expect(marked.members[1]).toMatchObject({ state: 'available', running: 2 });
+  });
+
+  it('leaves another computer’s group as it is when this computer can reach it or cannot tell', async () => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+    const view = {
+      providerId: 'anthropic',
+      config,
+      members: [{ key: MINI.key, kind: 'device' as const, label: 'mini', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
+    };
+    const reachable = vi.fn(async () => []);
+    expect(await markMembersUnreachableHere(view, { readDeviceCatalog: reachable }, 'self')).toBe(view);
+    // 还不知道本机是哪台(没登录)：不判断。
+    const unused = vi.fn(async () => []);
+    expect(await markMembersUnreachableHere(view, { readDeviceCatalog: unused }, null)).toBe(view);
+    expect(unused).not.toHaveBeenCalled();
+  });
+
+  it('does not hold the group view on a slow computer, and does not mark it', async () => {
+    vi.useFakeTimers();
+    try {
+      const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+      const view = {
+        providerId: 'anthropic',
+        config,
+        members: [{ key: MINI.key, kind: 'device' as const, label: 'mini', state: 'available' as const, running: 0, limit: 4, weight: 1, paused: false }],
+      };
+      // 读目录一直没有结果(还没超时、熔断也还没打开)。
+      const slow = vi.fn(() => new Promise<never[]>(() => undefined));
+      const pending = markMembersUnreachableHere(view, { readDeviceCatalog: slow }, 'self');
+      await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS);
+      expect(await pending).toBe(view);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers which group a task is in from the service', async () => {

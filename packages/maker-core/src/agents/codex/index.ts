@@ -131,7 +131,6 @@ import {
 } from '../shared/auto-review-decision.js';
 import type { ReviewableAction } from '../shared/auto-review.js';
 import { UsageTracker } from '../shared/usage-tracker.js';
-import { calibratedResponseDuration } from '@cindy/maker-shared/usage-format';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
 import { getDefaultImageResizer } from '../shared/image-resizer.js';
 import { formatManagedImageReferences } from '../shared/managed-image-reference.js';
@@ -172,8 +171,8 @@ import {
   classifyCodexError,
   translateErrorNotification,
   translateItemNotification,
-  observeCodexItemTiming,
   beginCodexGenerationTurn,
+  codexGenerationDurationMs,
   finalizeCodexGenerationTurn,
   pauseCodexGeneration,
   resetCodexGenerationTiming,
@@ -316,6 +315,9 @@ type CodexEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ul
 const CODEX_MINIMAL_EFFORT_MODELS = new Set([
   'bytedance-seed/seed-2.1-pro',
   'z-ai/glm-5.2',
+  // Muse Wonder：XD Gateway ID 与 Meta Model API 官方 ID（自定义连接经 alias 继承同一档位）。
+  'meta/muse-wonder-1.0',
+  'muse-wonder-1.0',
 ]);
 
 /**
@@ -352,7 +354,7 @@ function statusTextForItem(item: { type?: string; command?: string; tool?: strin
 /**
  * maker Effort → Codex app-server 可透传档。
  *
- * Seed 2.1 Pro 与 GLM-5.2 的官方档位包含 minimal，原样下发；其他模型继续
+ * Seed 2.1 Pro、GLM-5.2 与 Muse Wonder 的官方档位包含 minimal，原样下发；其他模型继续
  * 把 minimal 收敛到 low。max / ultra 直接透传，不再静默降级为 xhigh(issue #352)。
  * 某模型是否真支持某档位由目录 efforts 与 UI/reconcile 门控保证。
  */
@@ -2133,7 +2135,9 @@ export class CodexAgent extends BaseAgent {
    * 运行时技能列表（command palette）走 listAgentSkills → RPC，不受影响。
    */
   async listCustomizations(opts: ListCustomizationsOptions): Promise<ListCustomizationsResult> {
-    return scanCodexCustomizations(opts);
+    return this.deps.scanLocalCustomizations
+      ? this.deps.scanLocalCustomizations('codex', opts)
+      : scanCodexCustomizations(opts);
   }
 
   private async listSkillsForCwd(
@@ -3620,6 +3624,13 @@ assertRouteCurrent();
     // 受邀者只能用分享给它的那一个供应商(启动来源就是它)：app-server 不升格、不开智能子代理调配，
     // 自定义供应商路由与按模型分流也只留它(见 prepareCodexExtraSpawnConfig 的 deviceHostedGuestProviderId)。
     const guestProviderId = hostedGuest ? hosted?.guestProvider?.providerId : undefined;
+    // Input handoff askpass for this owner's own local tasks. The app-server is
+    // shared, so the variables reach this thread's commands through its config.
+    const taskShellEnvConfig = Object.fromEntries(Object.entries(
+      !opts.remoteHostId && !hosted && !reviewMode && sid
+        ? this.deps.runtimeConfig.taskShellEnv?.({ sessionId: sid }) ?? {}
+        : {},
+    ).map(([name, value]) => [`shell_environment_policy.set.${name}`, value]));
     if (hostedGuest && (!guestProviderId || guestProviderId !== opts.providerId)) {
       throw new Error('[REMOTE_AGENT_PROVIDER_NOT_ALLOWED] this provider is not allowed for remote use on this computer');
     }
@@ -3709,7 +3720,7 @@ assertRouteCurrent();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      responseSpeed: translatorRt.responseSpeed.snapshot(),
+      tokenSpeed: translatorRt.tokenSpeed.snapshot(),
       outputTokens: usageTracker.getTurnUsage().output,
       durationMs: translatorRt.generationOutputDurationMs,
       openStartedAt: translatorRt.generationStartedAt,
@@ -6460,6 +6471,7 @@ assertRouteCurrent();
         // starts a second continuation loop whose turns bypass Session.send
         // and lose the Host origin after the first terminal event.
         'features.goals': false,
+        ...taskShellEnvConfig,
         // Keep companion memory in its own Home. Native delegation uses the
         // same feature settings and permissions as an ordinary task.
         ...(opts.botRuntimeProfile ? {
@@ -6481,6 +6493,10 @@ assertRouteCurrent();
           : {}),
         ...(reviewMode
           ? {
+              // Keep project instructions inside the approved Review root.
+              // An empty marker list stops Codex from walking above cwd while
+              // still loading an AGENTS.md located in cwd itself.
+              ...(process.platform === 'win32' ? {} : { project_root_markers: [] }),
               // Windows native sandboxes cannot enforce this split read scope.
               // Keep the deny policy, and route evidence reads through the host.
               // Native AGENTS discovery also invokes that incompatible sandbox.
@@ -10825,7 +10841,6 @@ assertRouteCurrent();
         text?: unknown;
       } | null | undefined;
       if (!candidate || candidate.type !== 'plan') return false;
-      translatorRt.responseSpeedHasUnobservedOutput = true;
       if (typeof candidate.text === 'string') proposedPlanText = candidate.text;
       return true;
     }
@@ -10997,16 +11012,8 @@ assertRouteCurrent();
       const realTurnUsage = usageTracker.getTurnUsage();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
-      const unmeasuredOutputOnly = translatorRt.responseSpeedHasUnobservedOutput
-        && translatorRt.responseSpeed.snapshot().outputTokens === 0;
-      // With no sampled units, retain the real total but expose no rate. Mixed
-      // turns retain only their observed estimates, never a whole-turn scale.
-      translatorRt.responseSpeed.finish(realTurnUsageSegments.length > 0
-        && (!translatorRt.responseSpeedHasUnobservedOutput || unmeasuredOutputOnly)
-        ? realTurnUsage.output : undefined);
-      if (!translatorRt.generationTimingReliable || unmeasuredOutputOnly) translatorRt.responseSpeed.invalidate();
-      const speedSnapshot = translatorRt.responseSpeed.snapshot();
-      const generationDurationMs = calibratedResponseDuration(speedSnapshot, realTurnUsage.output);
+      translatorRt.tokenSpeed.stop(realTurnUsage.output);
+      const generationDurationMs = codexGenerationDurationMs(translatorRt);
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
         completionTokens: realTurnUsage.output,
@@ -11017,9 +11024,12 @@ assertRouteCurrent();
         cachedTokens: realTurnUsage.cacheRead,
         cacheCreationTokens: realTurnUsage.cacheCreate,
         segments: realTurnUsageSegments,
-        // Persist TPS timing only when observed stream time pairs with real turn output.
+        // With usage, exclude post-output finalization. Without usage, retain
+        // the measured duration metadata (zero output cannot produce a rate).
         ...(generationDurationMs !== undefined ? {
-          durationMs: generationDurationMs,
+          durationMs: realTurnUsage.output > 0
+            ? translatorRt.generationOutputDurationMs || undefined
+            : generationDurationMs,
         } : {}),
         ...(typeof turn.durationMs === 'number' && Number.isFinite(turn.durationMs)
           ? { turnDurationMs: turn.durationMs }
@@ -11223,7 +11233,7 @@ assertRouteCurrent();
           data: {
             status: 'Done',
             ...attachLiveGeneration(endSnap, {
-              responseSpeed: translatorRt.responseSpeed.snapshot(),
+              tokenSpeed: translatorRt.tokenSpeed.snapshot(),
               outputTokens: realTurnUsage.output,
               durationMs: translatorRt.generationOutputDurationMs,
               openStartedAt: null,
@@ -12418,12 +12428,10 @@ assertRouteCurrent();
           params.turnId,
           'started',
         );
-        observeCodexItemTiming(translatorRt, 'started', translatedParams);
         pushItemStatus(translatedItem);
         translateItemNotification('started', translatedParams, eventQueue, {
           rt: translatorRt,
           log,
-          timingObserved: true,
           onCompactBoundary: handleCompactBoundary,
         });
         // 重放帧后发:translator 刚推的 running 帧不得把已重放出的终态盖回去。
@@ -12558,12 +12566,6 @@ assertRouteCurrent();
           log,
           onCompactBoundary: handleCompactBoundary,
         });
-        // Close the observed response after translating any final text that
-        // was absent from deltas. A later usage/turn terminal calibrates the
-        // counts without charging its delivery lag as model generation.
-        if (!isLateCollabTerminal && translatedItem.type === 'agentMessage') {
-          translatorRt.responseSpeed.pause();
-        }
         // A late V1 spawn completion is the spawn tool closing, not necessarily
         // the child closing. Reassert a running compact state, or an explicit
         // failed/stopped tracker state; a completed replay would only duplicate

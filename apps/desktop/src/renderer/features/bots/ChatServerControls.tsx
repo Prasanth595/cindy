@@ -19,8 +19,12 @@ const emojiChoices = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '
 const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
 export { chatErrorKey } from './chatError';
 
-export function ChatMessageActions({ groupId, shareScope, message, align = message.isSelf ? 'right' : 'left', onReply, onChanged }: {
-  groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right'; onReply?: () => void; onChanged: () => void;
+/**
+ * `onQuote` is 引用回复: a new main-timeline message that quotes this one. `onReply` opens the
+ * message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after.
+ */
+export function ChatMessageActions({ groupId, shareScope, message, align = message.isSelf ? 'right' : 'left', onQuote, onReply, onChanged }: {
+  groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -53,8 +57,9 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
       <MessageActionBar copyText={message.content} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
         align={align} hovered simplifiedBotConversation
         onShareAsImage={() => shareSelectionStore.enter(shareScope, message.id)}
+        quoteAction={onQuote ? { onClick: onQuote, label: t(key('quoteReply')) } : undefined}
         replyAction={onReply ? { onClick: onReply, count: message.replyCount,
-          label: message.replyCount ? t(key('replyCount'), { count: message.replyCount }) : t(key('reply')) } : undefined}
+          label: message.replyCount ? t(key('openTopic'), { count: message.replyCount }) : t(key('startTopic')) } : undefined}
         reactionAction={groupId ? { label: t(key('addReaction')), open: picker, onOpenChange: setPicker, disabled: busy,
           content: <div className="grid grid-cols-6 gap-1">{emojiChoices.map(emoji =>
             <button type="button" key={emoji} className={iconClass} aria-label={emoji}

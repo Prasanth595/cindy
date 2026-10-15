@@ -2,6 +2,9 @@
  * Bot group chat wire contract shared by Desktop main, preload and renderer.
  * Product rules: docs/product-rules/bot-group-chat.md.
  */
+import type { BotGroupQuoteInput, BotGroupQuoteView } from './botGroupQuote';
+
+export * from './botGroupQuote';
 
 export const BOT_GROUP_MIN_MEMBERS = 2;
 export const BOT_GROUP_MAX_MEMBERS = 6;
@@ -139,6 +142,8 @@ export interface BotGroupMessageView {
   isSelf?: boolean;
   threadRootId?: string | null;
   replyCount?: number;
+  /** 引用回复: the earlier main-timeline message this one quotes; not a Thread parent. */
+  quote?: BotGroupQuoteView;
   reactions?: Array<{ emoji: string; count: number; me: boolean }>;
   id: string;
   sequence: number;
@@ -331,6 +336,7 @@ export type BotGroupErrorCode =
   | 'SERVICE_ERROR'
   | 'GROUP_ARCHIVED'
   | 'INVALID_PARAMS'
+  | 'REVISION_CONFLICT'
   | 'NOT_FOUND'
   | 'MEMBER_LIMIT'
   | 'MEMBER_UNAVAILABLE'
@@ -340,6 +346,8 @@ export type BotGroupErrorCode =
   | 'PLAN_OPEN'
   /** The plan already ended, was replaced, or is in a state that does not allow the action. */
   | 'PLAN_CLOSED'
+  /** The quoted message was deleted, moved out of reach or never belonged to this timeline. */
+  | 'QUOTE_UNAVAILABLE'
   | 'INTERNAL';
 
 export interface BotGroupFailure {
@@ -361,6 +369,8 @@ export interface BotGroupCreateInput {
 
 export interface BotGroupUpdateInput {
   groupId: string;
+  /** Optional optimistic precondition for server-backed settings. */
+  expectedRevision?: number;
   name?: string;
   replyMode?: BotGroupReplyMode;
   speakingMode?: BotGroupSpeakingMode;
@@ -374,6 +384,8 @@ export interface BotGroupSetMembersInput {
   groupId: string;
   /** Complete ordered member list. */
   botIds: string[];
+  /** Server-backed additive invite; preserves every existing member. */
+  addOnly?: boolean;
 }
 
 export interface BotGroupSendInput {
@@ -386,6 +398,8 @@ export interface BotGroupSendInput {
   division?: boolean;
   /** At most `BOT_GROUP_ATTACHMENTS_MAX`; with attachments the text may be empty. */
   attachments?: BotGroupAttachmentInput[];
+  /** 引用回复 on a server group; the host reads the message itself. A quote alone is not a message. */
+  quote?: BotGroupQuoteInput;
 }
 
 export interface BotGroupPlanActionInput {
@@ -456,6 +470,7 @@ export type BotGroupRemoteActionId =
   | 'stop'
   | 'update'
   | 'set-members'
+  | 'add-member'
   | 'remove-member'
   | 'delete'
   | 'plan-start'
@@ -477,6 +492,8 @@ export interface BotGroupRemoteChatData extends BotGroupDetail {
   supportsAttachments?: boolean;
   /** Host supports removing one server actor, including a human. */
   supportsMemberRemoval?: boolean;
+  /** Revision-checked settings and additive `add-member` ({ botId }) on server groups. */
+  supportsSettingsManagement?: boolean;
 }
 
 export const BOT_GROUP_CLIENT_ID_PREFIX = 'bot-group:';

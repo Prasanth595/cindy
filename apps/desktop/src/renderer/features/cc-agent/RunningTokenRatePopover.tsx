@@ -1,5 +1,3 @@
-import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
-import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, ArrowDown, X } from 'lucide-react';
@@ -10,22 +8,24 @@ import {
   emptyRateHistory,
   loadCachedRateHistory,
   recordRunningTokenRate,
+  recordTokenSpeed,
   saveCachedRateHistory,
   RATE_SAMPLE_FRESH_MS,
   type RateHistory,
+  type TokenSpeedSnapshot,
 } from './lib/runningTokenRateHistory';
 
 export function useRunningTokenRateHistory(input: {
   /** 会话身份：用于进程内缓存速度历史，切任务再切回不清零（重启应用清零）。 */
-  responseSpeed?: ResponseSpeedSnapshot;
   sessionKey: string | null;
   startedAt: number | null;
   outputTokens: number;
   generationDurationMs: number;
   generationReliable: boolean;
-  generationActive?: boolean;
+  /** Host-measured speed (Pi extension algorithm); old hosts omit it. */
+  tokenSpeed?: TokenSpeedSnapshot;
 }) {
-  const { sessionKey, startedAt, outputTokens, generationDurationMs, generationReliable, generationActive } = input;
+  const { sessionKey, startedAt, outputTokens, generationDurationMs, generationReliable, tokenSpeed } = input;
   // 挂载时从按会话的进程内缓存播种：RunningStatusBar 以 sessionId 为 key，
   // 切走再切回是全新挂载，历史从缓存恢复而不是从零开始。
   const [history, setHistory] = useState<RateHistory>(() => {
@@ -36,39 +36,38 @@ export function useRunningTokenRateHistory(input: {
     return startedAt === null ? { ...cached, baseline: null, lastReport: null } : cached;
   });
   useEffect(() => {
-    setHistory((previous) => {
-      const recorded = recordRunningTokenRate(previous, {
-        startedAt,
-        outputTokens,
-        generationDurationMs,
-        generationReliable,
-      });
-      return generationActive === false ? { ...recorded, latestRate: null, latestSampleAt: undefined } : recorded;
-    });
-  }, [startedAt, outputTokens, generationDurationMs, generationReliable, generationActive]);
+    setHistory((previous) =>
+      tokenSpeed && generationReliable
+        ? recordTokenSpeed(previous, { startedAt, speed: tokenSpeed })
+        : recordRunningTokenRate(previous, {
+            startedAt,
+            outputTokens,
+            generationDurationMs,
+            generationReliable,
+          }),
+    );
+  }, [startedAt, outputTokens, generationDurationMs, generationReliable, tokenSpeed]);
   useEffect(() => {
     if (sessionKey) saveCachedRateHistory(sessionKey, history);
   }, [sessionKey, history]);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const timestamp = input.responseSpeed?.sampledAt ?? history.latestSampleAt;
-    if (timestamp === undefined || (input.responseSpeed ? input.responseSpeed.phase !== 'generating' : history.latestRate === null)) return;
+    const timestamp = history.latestSampleAt;
+    if (timestamp === undefined || history.latestRate === null) return;
     setNow(Date.now());
     const timer = setTimeout(() => setNow(Date.now()),
       Math.max(0, timestamp + RATE_SAMPLE_FRESH_MS - Date.now()));
     return () => clearTimeout(timer);
-  }, [history.latestSampleAt, history.latestRate, input.responseSpeed]);
+  }, [history.latestSampleAt, history.latestRate]);
   const visibleHistory = history.latestSampleAt === undefined ||
     Math.max(now, Date.now()) - history.latestSampleAt >= RATE_SAMPLE_FRESH_MS
     ? { ...history, latestRate: null } : history;
-  if (input.responseSpeed) return responseSpeedHistory(input.responseSpeed, Math.max(now, Date.now()));
   return startedAt === null || history.startedAt === startedAt
     ? visibleHistory
     : { ...history, startedAt, baseline: null, latestRate: null };
 }
 
 export function RunningTokenRatePopover({
-  responseSpeed,
   elapsedText,
   rate,
   rateText,
@@ -78,7 +77,6 @@ export function RunningTokenRatePopover({
   history,
   onPinnedChange,
 }: {
-  responseSpeed?: ResponseSpeedSnapshot;
   elapsedText: string;
   rate: string | null;
   rateText: string | null;
@@ -92,8 +90,6 @@ export function RunningTokenRatePopover({
   const [mode, setMode] = useState<'idle' | 'hover' | 'pinned' | 'dismissed'>('idle');
   const open = mode === 'pinned';
   useEffect(() => onPinnedChange?.(open), [open, onPinnedChange]);
-  const approximate = (value: string | null, estimated = true) => value && estimated
-    ? t('chat.runningStatus.estimatedValue', { value }) : value;
   const samples = history.samples;
   const firstTime = samples[0]?.durationMs ?? 0;
   const span = (samples.at(-1)?.durationMs ?? 0) - firstTime;
@@ -104,7 +100,6 @@ export function RunningTokenRatePopover({
   }));
   const line = points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join(' ');
   const last = points.at(-1);
-  const activity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
   const card = (
     <div
       aria-description={t('chat.runningStatus.tokenRateDescription')}
@@ -114,17 +109,10 @@ export function RunningTokenRatePopover({
         <div className="col-start-1 row-start-1 min-w-0 self-center">
           <div className="mb-1 flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
             <Activity size={14} aria-hidden="true" />
-            {t(activity === 'failed' ? 'chat.runningStatus.responseFailed'
-              : activity === 'cancelled' ? 'chat.runningStatus.responseCancelled'
-                : activity === 'retrying' ? 'chat.runningStatus.responseRetrying'
-                  : activity === 'complete' ? 'chat.runningStatus.finalAverage'
-              : activity === 'waiting' ? 'chat.runningStatus.responsePending'
-                : activity === 'tool' ? 'chat.runningStatus.toolRunning'
-                  : activity === 'paused' ? 'chat.runningStatus.generationPaused'
-                    : activity === 'quiet' ? 'chat.runningStatus.responsePending' : 'chat.runningStatus.currentRate')}
+            {t('chat.runningStatus.currentRate')}
           </div>
           <div className="flex items-baseline gap-1.5 tabular-nums">
-            <span className="text-28 font-medium leading-none">{approximate(rate, Boolean(responseSpeed) && (responseSpeed?.phase !== 'complete' || responseSpeed.estimated)) ?? '—'}</span>
+            <span className="text-28 font-medium leading-none">{rate ?? '—'}</span>
             <span className="text-12 text-[var(--text-secondary)]">
               {t('chat.runningStatus.tokenRateUnit')}
             </span>
@@ -155,14 +143,14 @@ export function RunningTokenRatePopover({
           <div className="flex items-center gap-2">
             <dt className="text-[var(--text-secondary)]">{t('chat.runningStatus.averageRate')}</dt>
             <dd className="font-medium">
-              {averageRate ? t('chat.runningStatus.tokenRate', { rate: approximate(averageRate, responseSpeed?.estimated ?? false) }) : '—'}
+              {averageRate ? t('chat.runningStatus.tokenRate', { rate: averageRate }) : '—'}
             </dd>
           </div>
           <div className="flex items-center gap-2">
             <dt className="text-[var(--text-secondary)]">{t('chat.runningStatus.outputTotal')}</dt>
             <dd className="font-medium">
               {t('chat.runningStatus.tokenCount', {
-                tokens: approximate(formatRunningTokenCount(outputTokens), responseSpeed?.estimated ?? false),
+                tokens: formatRunningTokenCount(outputTokens),
               })}
             </dd>
           </div>
@@ -171,18 +159,12 @@ export function RunningTokenRatePopover({
             <dd className="font-medium">
               {samples.length > 0
                 ? t('chat.runningStatus.tokenRate', {
-                    rate: approximate(formatRecentOutputTokenRate(history.peak), Boolean(responseSpeed)),
+                    rate: formatRecentOutputTokenRate(history.peak),
                   })
                 : '—'}
             </dd>
           </div>
         </dl>
-        {responseSpeed && (
-          <dl className="col-span-2 flex items-center justify-between gap-3 text-12 tabular-nums" title={t(`chat.runningStatus.${responseSpeed.waitOrigin === 'stream' ? 'streamWaitDescription' : 'turnWaitDescription'}`)}>
-            <dt className="text-[var(--text-secondary)]">{t(`chat.runningStatus.${responseSpeed.waitOrigin === 'stream' ? 'streamWait' : 'firstResponse'}`)}</dt>
-            <dd>{responseSpeed.firstResponseMs === null ? '—' : t('chat.runningStatus.waitSeconds', { seconds: (responseSpeed.firstResponseMs / 1000).toFixed(1) })}</dd>
-          </dl>
-        )}
       </div>
     </div>
   );

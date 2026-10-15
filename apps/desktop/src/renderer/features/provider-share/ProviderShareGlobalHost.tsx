@@ -9,9 +9,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 
 import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { toast } from '@/lib/toast';
+import { useProviderShareFavoriteCleanupFailed } from '@/state/providerShareFavorites';
 
 import type { ProviderShareSettledEvent } from '../../../shared/providerShare';
 import { ProviderShareApplyDialog, isProviderShareRequestTrackedByDialog } from './ProviderShareApplyDialog';
@@ -20,7 +22,7 @@ import { pendingRequestsFromOwned } from './providerShareFormat';
 import { providerShareManagePath } from './providerShareNavigation';
 import {
   addProviderShareRequested,
-  ensureProviderShareReceivedStarted,
+  refreshProviderShareFavoriteMembership,
   getProviderSharePendingRequests,
   refreshProviderShareOwnerPending,
   useProviderSharePendingRequests,
@@ -31,6 +33,14 @@ const SETTLED_TOAST_MS = 6000;
 
 export function ProviderShareGlobalHost() {
   const { t } = useTranslation();
+  const { dataOwnerId, dataOwnerGeneration } = useAuth();
+  useEffect(() => {
+    refreshProviderShareFavoriteMembership();
+  }, [dataOwnerId, dataOwnerGeneration]);
+  const favoriteCleanupFailed = useProviderShareFavoriteCleanupFailed();
+  useEffect(() => {
+    if (favoriteCleanupFailed) toast.error(t('newChat.modelSelector.unified.favoritesCleanupFailed'));
+  }, [favoriteCleanupFailed, t]);
   const navigate = useNavigate();
   const location = useLocation();
   const navigateRef = useRef(navigate);
@@ -65,7 +75,6 @@ export function ProviderShareGlobalHost() {
     const api = (window as Partial<Window>).electronAPI?.providerShare;
     if (!api) return;
     let disposed = false;
-    ensureProviderShareReceivedStarted();
 
     void refreshProviderShareOwnerPending().then((state) => {
       if (disposed || !state?.ready) return;

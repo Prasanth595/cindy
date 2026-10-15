@@ -14,6 +14,7 @@ import {
   type PluginConfigurationSummary,
 } from '@cindy/device-link';
 import { ghostContentKeys, ghostPermissionItems, ghostTrustLabelKey, type GhostSetupAssessment, type InstalledGhost } from '../../shared/ghost.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import { resolvePreferredSystemLocale } from '../../shared/locale.js';
 import { t } from '../i18n.js';
 import { mobilePluginUsage } from './mobilePluginUsage.js';
@@ -116,7 +117,7 @@ export class MobilePluginPages {
     return this.deps.now?.() ?? Date.now();
   }
   private ghost(id: string) {
-    return this.deps.list().find((g) => g.manifest.id === id) ?? fail();
+    return this.deps.list().find((g) => installedGhostStoragePart(g) === id) ?? fail();
   }
   private check(page: Page, enabled = true): InstalledGhost {
     const ghost = this.ghost(page.plugin);
@@ -305,10 +306,11 @@ export class MobilePluginPages {
   }
   private item(ghost: InstalledGhost, order?: RemoteCollectionItem['pluginOrder']): RemoteCollectionItem {
     const m = ghost.manifest;
+    const id = installedGhostStoragePart(ghost);
     const mobile = parsePluginMobileDeclaration(m.mobile);
-    const unread = ghost.enabled ? this.deps.unread(m.id) : null;
+    const unread = ghost.enabled ? this.deps.unread(id) : null;
     return {
-      ref: { collectionId: PLUGIN_COLLECTION, kind: 'plugin', id: m.id },
+      ref: { collectionId: PLUGIN_COLLECTION, kind: 'plugin', id },
       revision: this.deps.revision(ghost),
       ...(order ? { pluginOrder: order } : {}),
       display: {
@@ -369,7 +371,7 @@ export class MobilePluginPages {
               !q ||
               `${g.manifest.name} ${g.manifest.description ?? ''}`.toLocaleLowerCase().includes(q),
           )
-          .map((g) => this.item(g, order?.get(g.manifest.id)));
+          .map((g) => this.item(g, order?.get(installedGhostStoragePart(g))));
         return {
           collectionId: PLUGIN_COLLECTION,
           revision: createHash('sha256').update(JSON.stringify(items)).digest('hex'),
@@ -403,13 +405,13 @@ export class MobilePluginPages {
         ];
         let assessment: GhostSetupAssessment | undefined;
         try {
-          assessment = this.deps.setupAssessment?.(ghost.manifest.id);
+          assessment = this.deps.setupAssessment?.(installedGhostStoragePart(ghost));
         } catch {
           // A failed read is unknown, never a fabricated missing configuration.
         }
         let configuration = mobilePluginConfiguration(ghost.manifest, undefined, assessment);
         try {
-          configuration = this.deps.configuration?.(ghost.manifest.id, assessment) ?? configuration;
+          configuration = this.deps.configuration?.(installedGhostStoragePart(ghost), assessment) ?? configuration;
         } catch {
           // A failed configuration read retains declarations with unknown status.
         }
@@ -439,7 +441,7 @@ export class MobilePluginPages {
                 usage: mobilePluginUsage(
                   ghost,
                   assessment,
-                  this.deps.runtimeState?.(ghost.manifest.id),
+                  this.deps.runtimeState?.(installedGhostStoragePart(ghost)),
                   configuration,
                 ),
               },
@@ -551,7 +553,7 @@ export class MobilePluginPages {
           this.pages.set(page.id, page);
           const result: PluginPageDocument = {
             pageId: page.id,
-            pluginId: id,
+            pluginId: installedGhostStoragePart(ghost),
             title: ghost.manifest.name,
             surface,
             entry,

@@ -29,6 +29,8 @@ const link = vi.hoisted(() => ({
   readDeviceList: vi.fn(),
   connectionEpoch: 1,
   status: 'online' as const,
+  presenceVersion: 1,
+  getPresenceAvailability: vi.fn((_deviceId: string): boolean | null => null),
 }));
 
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => link }));
@@ -81,6 +83,8 @@ beforeEach(async () => {
   clearAllDeviceProviders();
   clearAllProviderShareCatalogs();
   latest = [];
+  link.presenceVersion = 1;
+  link.getPresenceAvailability.mockImplementation(() => null);
   link.readDeviceList.mockResolvedValue({ devices: [device('controlled', 'Home Mac'), device('studio', 'Studio Mac')] });
   link.invoke.mockImplementation(async (deviceId: string, channel: string) => {
     if (channel === 'maker:provider:list' && deviceId === 'studio') {
@@ -149,6 +153,15 @@ describe('remote Agent catalogs with provider shares', () => {
 
     await render({ enabled: true, controlledDeviceId: 'controlled', keepDeviceIds: ['share:share-1'], keepOnly: true });
     expect(latest.map((catalog) => catalog.deviceId)).toContain('share:share-1');
+  });
+
+  it('marks a computer offline as soon as its live presence drops while the picker is open', async () => {
+    await render({ enabled: true, controlledDeviceId: 'controlled', keepDeviceIds: [] });
+    expect(latest.find((catalog) => catalog.deviceId === 'studio')?.offline).toBeUndefined();
+    link.getPresenceAvailability.mockImplementation((deviceId) => (deviceId === 'studio' ? false : null));
+    link.presenceVersion = 2;
+    await render({ enabled: true, controlledDeviceId: 'controlled', keepDeviceIds: [] });
+    expect(latest.find((catalog) => catalog.deviceId === 'studio')?.offline).toBe(true);
   });
 
   it('shows the cached shares right away on the next open', async () => {

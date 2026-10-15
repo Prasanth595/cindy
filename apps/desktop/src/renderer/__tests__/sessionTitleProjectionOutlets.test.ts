@@ -119,7 +119,9 @@ describe('desktop 会话标题投影出口', () => {
     expect(sidebarUpper).toContain(
       'const title = projectDraftSessionTitle(session.title, unnamedLabelRef.current);',
     );
-    expect(sidebarUpper).toContain('void botOwnedSessionNotificationTitle(sessionId).then((botTitle) => {');
+    // /review Reviewer tasks are checked first: they never notify on their own.
+    expect(sidebarUpper).toContain('if (await isReviewSessionNotificationTarget(sessionId)) return;');
+    expect(sidebarUpper).toContain('const botTitle = await botOwnedSessionNotificationTitle(sessionId);');
     expect(sidebarUpper).toContain(
       'sendSessionEventNotification(sessionId, botTitle ?? unnamedLabelRef.current, kind);',
     );

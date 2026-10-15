@@ -408,8 +408,11 @@ export function WorkGroupBlock({
     hasBeyondPreviewChild ||
     recentActivities.length > MAX_LIVE_WORK_ACTIVITIES;
   const effectiveExpanded = expanded && canToggle;
+  // Expanding keeps the running lines on screen until the detail read has rows to replace them.
+  // The body opens right away (spinner only), so the handoff swaps rows inside an open Collapse.
+  const holdLines = effectiveExpanded && deferred?.awaitingDetails === true && !!workLines?.length;
   const isLivePreviewVisible =
-    !compact && isStreaming && !effectiveExpanded
+    !compact && isStreaming && (!effectiveExpanded || holdLines)
     && (workLines ? workLines.length > 0 : liveActivities.length > 0);
   // 完成态只计算一次完整摘要；运行态保持折叠时走上面的反向 latest-five
   // 热路径，用户主动展开后才投影全部历史。
@@ -548,7 +551,7 @@ export function WorkGroupBlock({
               'flex flex-col gap-2',
             )}
           >
-            {effectiveExpanded &&
+            {effectiveExpanded && !holdLines &&
               childItems.map((child) => (
                 <Fragment key={child.key}>
                   <ExpandedWorkGroupChild

@@ -34,6 +34,61 @@ function loadRemoteInvoke(overrides: Record<string, unknown>) {
   return new Function(...Object.keys(dependencies), compiled + '; return remoteInvoke;')(...Object.values(dependencies));
 }
 
+function loadBackgroundInvoke(overrides: Record<string, unknown>) {
+  const declarations = source.statements.filter((node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && ['remoteBackgroundInvoke', 'backgroundInvokeDevice'].includes(node.name?.text ?? ''));
+  const backgroundCode = ts.transpileModule(declarations.map((node) => node.getText(source).replace(/^export /, '')).join(' '), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const dependencies = {
+    resolveRemoteAgentTargetWhenReady: async (id: string) => id,
+    client: { isLinkReady: () => true },
+    remoteInvoke: loadRemoteInvoke({}),
+    openRemoteLink: vi.fn(),
+    assertBackgroundLinkAccepted: () => {},
+    snapshotSubscriptions: () => [],
+    closeRemoteLink: vi.fn(),
+    ...overrides,
+  };
+  return new Function(...Object.keys(dependencies), backgroundCode + '; return remoteBackgroundInvoke;')(...Object.values(dependencies));
+}
+
+it.each(['target resolution', 'link opening', 'online wait'])(
+  'does not send an old account’s background request after account changes during %s', async (stage) => {
+    let current = true;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const reached = vi.fn();
+    const pause = async () => { reached(); await waiting; };
+    const invoke = vi.fn<DeviceLinkClient['invoke']>(async (_peer, _payload, _timeout, options) => {
+      options?.preSend?.();
+      return { ok: true, result: null };
+    });
+    const remoteInvoke = loadRemoteInvoke({
+      client: { invoke },
+      ensureOnlineForRequest: stage === 'online wait' ? pause : async () => {},
+    });
+    const remoteBackgroundInvoke = loadBackgroundInvoke({
+      remoteInvoke,
+      client: { isLinkReady: () => stage !== 'link opening' },
+      openRemoteLink: pause,
+      resolveRemoteAgentTargetWhenReady: async (id: string) => {
+        if (stage === 'target resolution') await pause();
+        return id;
+      },
+    });
+    const changed = new Error('account changed');
+    const pending = remoteBackgroundInvoke('host', 'provider-group:remote', [{ action: 'usage-part' }], {
+      preSend: () => { if (!current) throw changed; },
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(reached).toHaveBeenCalledTimes(1));
+    current = false;
+    release();
+    expect(await pending).toBe(changed);
+    expect(invoke).not.toHaveBeenCalled();
+  },
+);
+
 it.each(['caller cancelled', 'target disabled', 'link closed', 'still valid'])(
   'revalidates %s after the client queue and never reopens an explicitly closed link', async (change) => {
     let enabled = true;

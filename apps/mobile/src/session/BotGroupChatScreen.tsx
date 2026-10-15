@@ -20,14 +20,16 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
 import {
   BOT_GROUP_REMOTE_COLLECTION_ID,
   isBotGroupRuntimeFailureCode,
+  resolveBotGroupQuote,
   type BotGroupAttachment,
   type BotGroupMemberView,
+  type BotGroupQuoteDisplay,
   type BotGroupMessageView,
   type BotGroupPlanAction,
   type BotGroupPlanStepView,
@@ -52,7 +54,8 @@ import { MainWindowActionButton, MainWindowEmptyState } from '@/components/Mobil
 import { readRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
-import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
+import { fontWeight, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 import { goBackGuarded } from '@/utils/backGuard';
 import {
   BOT_GROUP_MESSAGE_AVATAR_SIZE,
@@ -60,11 +63,13 @@ import {
   BotGroupDuoAvatar,
   useBotGroupIdentities,
 } from './BotGroupAvatars';
-import { ChatIdentityHeader } from './ChatIdentityHeader';
+import { CHAT_HEADER_BLUR_FADE_INSIDE, ChatIdentityHeader } from './ChatIdentityHeader';
+import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
+import { BotGroupQuote } from './BotGroupQuote';
 import {
   BOT_GROUP_COMPACT_HIT_SLOP,
   BotGroupDivider,
@@ -117,6 +122,10 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
+  // iOS: the header floats on the task header's feathered blur and the timeline scrolls beneath it.
+  const floatingHeader = Platform.OS === 'ios';
+  const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const stickToBottom = useRef(true);
   const group = chat.state.kind === 'ready' ? chat.state.group : null;
   const focused = useIsFocused();
@@ -261,6 +270,8 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     onOpenSettings={() => setSettings(true)}
     settingsLabel={t('groupChat.settings.open')} />;
 
+  const offlineNote = group && !chat.online
+    ? <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(offlineKey)}</Text> : null;
   let body;
   if (chat.state.kind === 'loading' && !chat.online) {
     // Nothing to show until the computer is reachable again; the screen re-reads on reconnect.
@@ -296,8 +307,9 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
         Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web',
       )}
     >
-      {!chat.online ? <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(offlineKey)}</Text> : null}
-      <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.timeline} keyboardShouldPersistTaps="handled"
+      {floatingHeader ? null : offlineNote}
+      <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.timeline, floatingHeader && { paddingTop: headerHeight + spacing.md }]}
+        scrollIndicatorInsets={floatingHeader ? { top: headerHeight } : undefined} keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         maintainVisibleContentPosition={chat.server ? { minIndexForVisible: group.hasMoreBefore ? 1 : 0 } : undefined}
         onScroll={onScroll} scrollEventThrottle={64}
@@ -324,12 +336,22 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     </KeyboardAvoidingView>;
   }
 
-  return <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']} testID="botGroup.screen">
+  return <SafeAreaView style={styles.screen} edges={floatingHeader ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']} testID="botGroup.screen">
     <Stack.Screen options={{ headerShown: false }} />
-    {header}
-    {body}
+    {floatingHeader ? <>
+      <View style={[styles.flex, group ? null : { paddingTop: headerHeight }]}>{body}</View>
+      <SessionHeaderNativeBlur height={Math.max(headerHeight, insets.top + navigationChrome.target)} fadeInside={CHAT_HEADER_BLUR_FADE_INSIDE} />
+      <View style={[styles.floatingHeader, { paddingTop: insets.top }]} onLayout={(event) => setHeaderHeight(event.nativeEvent.layout.height)}>
+        {header}
+        {offlineNote}
+      </View>
+    </> : <>
+      {header}
+      {body}
+    </>}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
       act={chat.act} onClose={() => setSettings(false)}
+      onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}
       onDeleted={onGroupDeleted} /> : null}
   </SafeAreaView>;
@@ -392,6 +414,7 @@ export function BotGroupTimeline({
         {groupTime !== undefined ? <Text style={styles.time}>{formatBotMessageGroupTime(groupTime, i18n.language)}</Text> : null}
         <CompanionEntering id={message.id} createdAt={message.createdAt} kind={message.authorKind === 'user' ? 'send' : 'reply'}>
         <BotGroupTimelineItem message={message} continued={continued} member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
+          quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, messages) : undefined}
           members={group.members} deviceId={deviceId} online={online} identityFor={identityFor} mentionLabels={mentionLabels}
           resolveMedia={resolveMedia} resolveServerMedia={resolveServerMedia}
           canContinue={message.id === continueId} continuing={continuing} onContinue={onContinue}
@@ -422,12 +445,14 @@ export function BotGroupTimeline({
 }
 
 function BotGroupTimelineItem({
-  message, continued = false, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue,
+  message, continued = false, quoteDisplay, member, members, deviceId, online, identityFor, mentionLabels, resolveMedia, resolveServerMedia, canContinue, continuing, onContinue,
   plan, planActionable, planReassignable, planPending, onPlanAction, onEditStep,
 }: {
   message: BotGroupMessageView;
   /** Same teammate as the message just above: no second avatar or name. */
   continued?: boolean;
+  /** 引用回复: how the quoted message reads now. */
+  quoteDisplay?: BotGroupQuoteDisplay;
   member: BotGroupMemberView | undefined;
   members: readonly BotGroupMemberView[];
   deviceId: string;
@@ -449,6 +474,7 @@ function BotGroupTimelineItem({
 }) {
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   if (message.kind === 'round-end') {
     return <BotGroupDivider testID="botGroup.roundEnd">
       <Text style={styles.dividerText}>{t('groupChat.timeline.roundEnded')}</Text>
@@ -475,10 +501,15 @@ function BotGroupTimelineItem({
     const compact = message.content.length <= COMPACT_BUBBLE_MAX_CHARS && !message.content.includes('\n');
     return <View style={styles.userRow} testID="botGroup.message.user">
       <View style={styles.userColumn}>
+        {quoteDisplay ? <BotGroupQuote display={quoteDisplay} align="right" /> : null}
         {attachments.length > 0
           ? <BotGroupMessageAttachments messageId={message.id} attachments={attachments} align="right" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} />
           : null}
-        {bubble ? <View style={[styles.userBubble, compact && styles.userBubbleCompact]} testID="botGroup.message.userBubble">
+        {bubble ? <View style={[
+          styles.userBubble,
+          compact && styles.userBubbleCompact,
+          userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+        ]} testID="botGroup.message.userBubble">
           <BotGroupUserText content={message.content} mentionLabels={mentionLabels} />
         </View> : null}
       </View>
@@ -505,6 +536,7 @@ function BotGroupTimelineItem({
           actionable={planActionable} reassignable={planReassignable} pending={planPending}
           onStart={() => onPlanAction('start')} onDismiss={() => onPlanAction('dismiss')} onEditStep={onEditStep} />
         : <>
+          {quoteDisplay ? <BotGroupQuote display={quoteDisplay} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
           {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
           <BotGroupHandoffFiles files={message.files} />
@@ -516,6 +548,7 @@ function BotGroupTimelineItem({
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.surface },
   flex: { flex: 1 },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyActions: { flexDirection: 'row', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.lg },
   timeline: { flexGrow: 1, justifyContent: 'flex-end', gap: spacing.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
@@ -533,7 +566,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   // Full width so the bubble keeps its 86% cap and attachments their own size limits.
   userColumn: { flex: 1, minWidth: 0, alignItems: 'flex-end', gap: spacing.xs },
-  // The 1:1 user bubble (MessageRenderer userBubble + companion border): 86% wide, padding 12, compact 8/12.
+  // The 1:1 user bubble (MessageRenderer userBubble): 86% wide, padding 12, compact 8/12.
   userBubble: { maxWidth: '86%', backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.container, padding: spacing.md },
   userBubbleCompact: { paddingVertical: spacing.sm },

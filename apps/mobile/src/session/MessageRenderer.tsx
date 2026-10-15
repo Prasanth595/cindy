@@ -22,10 +22,12 @@ import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/m
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
+import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Image as ExpoImage } from 'expo-image';
+import { MessageLoadingImage, MessageImagePlaceholder } from './MessageLoadingImage';
+import { InputHandoffRecordRow } from '@/inputHandoff/InputHandoffRecordRow';
 import {
   ArrowLeftRight,
   Bot,
@@ -77,6 +79,7 @@ import {
   type GestureResponderEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
   type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
@@ -177,6 +180,7 @@ import {
 } from '@/session/userMessageCollapse';
 import {
   collectMobileMessageGalleryImages,
+  isLightboxMediaKind,
   lightboxImagesForPayload,
   type MobileMessageGalleryImage,
 } from '@/session/messageGallery';
@@ -229,14 +233,8 @@ import {
   parseProjectDeepLinkUrl,
   parseSessionDeepLinkUrl,
   projectDisplayName,
-  shortSessionId,
   type SessionDeepLinkTarget,
 } from '@/session/sessionLinks';
-import {
-  formatMobileSessionReferenceMetadata,
-  mobileSessionReferenceMetadataKey,
-  type MobilePersistedSessionReferenceMetadata,
-} from '@/session/sessionReferences';
 import {
   canOpenChatPathChip,
   chatPathLabelReadsAsFileReference,
@@ -261,6 +259,7 @@ import {
   useRemoteSessions,
 } from '@/session/remoteSessionStore';
 import {
+  isCrossDeviceSourceSessionId,
   shouldShowSourceDevice,
   type MessageSourceDevice,
   type MessageSourcePlugin,
@@ -274,8 +273,8 @@ import {
   sourcePluginLabel,
 } from '@/session/messageSourceLabels';
 import {
-  compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
+  sentSessionMessageChipLabel,
 } from '@/session/sessionMessageText';
 import { buildMobileMarkdownTableColumnWidths } from '@/session/messageTableLayout';
 import { buildPayloadHeaderLayout, buildPayloadModalSafeArea } from '@/session/payloadHeaderLayout';
@@ -415,6 +414,8 @@ import { latexToUnicodeApproximation } from '@cindy/maker-shared/math-markdown';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 import { iconSize, iconStroke, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
+import { isOwnUserBubble } from './userBubbleOwnership';
 import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
@@ -688,6 +689,12 @@ interface MessageActions {
   /** 「从手机「X」发送」设备标签点击:打开设备详情;设备已删除时由宿主提示。 */
   onOpenSourceDevice?: (deviceId: string) => void;
   onOpenPayload?: (payload: MessagePayload) => void;
+  /**
+   * 带点击来源打开:sourceGroupKey 为点开时所在的顶层 render item key,看图器据此
+   * 确定「同一条消息」的翻页范围。顶层列表项把 onOpenPayload 包成它(见
+   * RenderListItemView),组件内照常调 onOpenPayload。
+   */
+  onOpenPayloadFromItem?: (payload: MessagePayload, sourceGroupKey: string) => void;
   onLoadToolInput?: (ref: MobileToolInputProjection) => Promise<MobileToolInputDetail>;
   onBlockingOverlayChange?: (blocked: boolean) => void;
   onMessageActionSheetOpenChange?: (clientId: string, open: boolean) => void;
@@ -763,8 +770,10 @@ export function MessageRenderer({
   busyAction,
   canLoadEarlier,
   emptyTestID,
+  emptyMessage,
   bottomOverlayHeight,
   contentBottomInset,
+  renderScrollComponent,
   isSessionStreaming,
   makerTurnRunning,
   continuationTurnClientId,
@@ -789,6 +798,8 @@ export function MessageRenderer({
   /** Offscreen preload and disappearing native screens must not replace the user's bookmark. */
   isReadingPositionActive?: () => boolean;
   bottomOverlayHeight?: number;
+  /** 列表滚动容器；任务页用它让聊天记录往下拖到输入框顶边时交给输入框（composerPullThrough）。 */
+  renderScrollComponent?: (props: ScrollViewProps) => ReactElement<ScrollViewProps>;
   /** Floating composers reserve a stable tail gap while their expanded surface overlays history. */
   contentBottomInset?: number;
   /** 顶部 chrome(绝对定位半透明工具栏)实测高度:内容顶部按此让位,详见 mobileMessageListTopPadding。 */
@@ -802,6 +813,7 @@ export function MessageRenderer({
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
   loadEarlierProgressKey?: string | null;
   emptyTestID?: string;
+  emptyMessage?: string;
   /** 排队消息 inline 区(InlineQueueSection),渲染在最后一条消息之后、随内容滚动。 */
   queueFooter?: ReactNode;
   scrollResetKey?: string;
@@ -939,6 +951,7 @@ export function MessageRenderer({
   // LegendList updates getState().scroll optimistically before an imperative native scroll lands.
   // Only native ScrollView scroll/end-drag samples advance this ack source for Android prepend.
   const nativeScrollEventSequenceRef = useRef(0);
+  const [sampleScrollDebug] = useState(createScrollDebugSampler);
   const scrollMetricsRef = useRef<MessageScrollMetrics>({
     contentHeight: 0,
     offsetY: 0,
@@ -1080,6 +1093,16 @@ export function MessageRenderer({
     return () => cancelAnimationFrame(frame);
   }, [acknowledgeCompanionRead, companion, onCompanionReadThrough, isAwayFromBottom]);
   const [payload, setPayload] = useState<MessagePayload | null>(null);
+  /** 当前 payload 的点击来源(顶层 render item key);看图器按它取同一条消息的图集。 */
+  const [payloadSourceGroupKey, setPayloadSourceGroupKey] = useState<string | null>(null);
+  const openPayload = useCallback((next: MessagePayload) => {
+    setPayloadSourceGroupKey(null);
+    setPayload(next);
+  }, []);
+  const openPayloadFromItem = useCallback((next: MessagePayload, sourceGroupKey: string) => {
+    setPayloadSourceGroupKey(sourceGroupKey);
+    setPayload(next);
+  }, []);
   const payloadRef = useRef(payload);
   payloadRef.current = payload;
   const openMessageActionSheetsRef = useRef(new Set<string>());
@@ -1657,7 +1680,8 @@ export function MessageRenderer({
   // hydrate / 新注册后 gallery 需要重建,否则点开气泡本地图时 initialUrl 对不上图集条目。
   const sentThumbsVersion = useSentAttachmentThumbsVersion();
   const chatFilePathContext = useContext(ChatFilePathContext);
-  const imageLightboxOpen = historyActive && payload?.kind === 'media' && payload.media.kind === 'image';
+  // 图片与视频都进全屏查看器,两者在同一图集里横滑互翻;音频等仍走通用查看器。
+  const imageLightboxOpen = historyActive && payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind);
   const galleryImages = useMemo(
     () => (imageLightboxOpen
       ? collectMobileMessageGalleryImages(
@@ -1665,6 +1689,7 @@ export function MessageRenderer({
           chatFilePathContext?.workdir,
           chatFilePathContext?.remoteHostId,
           chatFilePathContext?.sessionId,
+          getSentImagePreview,
         )
       : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sentThumbsVersion 是 collect 内部读的全局 store 的失效信号
@@ -1672,6 +1697,7 @@ export function MessageRenderer({
       chatFilePathContext?.remoteHostId,
       chatFilePathContext?.sessionId,
       chatFilePathContext?.workdir,
+      getSentImagePreview,
       imageLightboxOpen,
       listData,
       sentThumbsVersion,
@@ -1682,21 +1708,22 @@ export function MessageRenderer({
   // 避免取件 effect / FlatList / LightboxPage memo 每帧全部失效。
   const lightboxImagesRef = useRef<readonly MobileMessageGalleryImage[] | null>(null);
   const lightboxImages = useMemo(() => {
-    if (!(payload?.kind === 'media' && payload.media.kind === 'image') || !galleryImages) return null;
-    const next = lightboxImagesForPayload(galleryImages, payload);
+    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) return null;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey);
     const prev = lightboxImagesRef.current;
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
-        && p.payload.media.previewable === n.payload.media.previewable;
+        && p.payload.media.previewable === n.payload.media.previewable
+        && p.previewUri === n.previewUri;
     })) {
       return prev;
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, payload]);
+  }, [galleryImages, imageLightboxOpen, payload, payloadSourceGroupKey]);
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
@@ -1755,7 +1782,8 @@ export function MessageRenderer({
     onPreviewRewind,
     onEnterShareSelection,
     onShareableMessageViewChange: handleShareableMessageViewChange,
-    onOpenPayload: setPayload,
+    onOpenPayload: openPayload,
+    onOpenPayloadFromItem: openPayloadFromItem,
     onLoadToolInput,
     onMessageActionSheetOpenChange: handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
@@ -1806,6 +1834,8 @@ export function MessageRenderer({
     handleShareableMessageViewChange,
     handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
+    openPayload,
+    openPayloadFromItem,
     pendingSend,
     getSentImagePreview,
     shareSelectionActive,
@@ -2232,7 +2262,9 @@ export function MessageRenderer({
     }
     // Preloads need real geometry, but must not publish bookmarks or trigger user work.
     if (!historyActiveRef.current) return;
-    if (mobileDebugEnabled()) mobileDebugLog('debug', 'scroll', 'list scroll', {
+    const debugFlags = Number(isDragSample) | (Number(isMomentumScrollingRef.current) << 1)
+      | (Number(readingOlderRef.current) << 2) | (Number(nearBottomRef.current) << 3);
+    if (mobileDebugEnabled() && sampleScrollDebug(debugFlags, isFinalDragSample)) mobileDebugLog('debug', 'scroll', 'list scroll', {
       ...metrics, dragging: isDragSample, momentum: isMomentumScrollingRef.current,
       readingOlder: readingOlderRef.current, nearBottom: nearBottomRef.current,
     });
@@ -2746,6 +2778,13 @@ export function MessageRenderer({
   // native detach/attach batches and try to mount a child that still belongs to
   // the previous row. listperf keeps the DEV-only override for explicit A/Bs.
   const recycleItems = __DEV__ ? devRecycleItems === true : false;
+  // 贴底跟随时数据变化不做可见位置锚定：重连补同步会整批替换 / 丢弃尾部行，锚定会把旧的可见行
+  // 钉在原屏幕位置，先露出新内容的开头（甚至列表顶部）再被贴底跟随拉回，表现为「跳一下又跳回来」。
+  // 不锚定时内容变短由原生滚动范围直接截到新底部，变长由贴底跟随补滚。读历史（离开底部，或
+  // 「加载更早」事务进行中——它可能由自动补齐在贴底时发起）仍靠锚定保住正在看的行。
+  // readingOlderRef 在事务开始与结束时都会伴随一次重渲染（loadingEarlier / 事务收尾的 state），
+  // 这里在渲染期读取它足以让 prepend 那次数据提交带上锚定。
+  const anchorVisibleRowsOnDataChange = isAwayFromBottom || readingOlderRef.current;
 
   return (
     // chat-text-quote:Provider 恒挂载(值可为 null),避免启用态翻转时整棵消息树
@@ -2781,12 +2820,12 @@ export function MessageRenderer({
         // 二分实锤,3.3.2 / 3.3.3 均复现)。
         alignItemsAtEnd
         maintainScrollAtEnd={false}
-        // iOS always uses LegendList/RN's atomic data/size anchoring. Android history prepends
-        // temporarily disable the whole prop because RN exposes one native switch: leaving either
-        // flag on would race the app-owned key/offset correction there.
+        // iOS uses LegendList/RN's atomic data/size anchoring while reading history. Android history
+        // prepends temporarily disable the whole prop because RN exposes one native switch: leaving
+        // either flag on would race the app-owned key/offset correction there.
         maintainVisibleContentPosition={historyPrependNativeMvcpDisabled
           ? false
-          : { data: true, size: true }}
+          : { data: anchorVisibleRowsOnDataChange, size: true }}
         contentContainerStyle={[
           styles.messages,
           { paddingBottom: bottomPadding, paddingTop: topPadding },
@@ -2795,7 +2834,7 @@ export function MessageRenderer({
         ]}
         ListEmptyComponent={syncingWhileEmpty
           ? <SyncingMessages />
-          : <EmptyMessages testID={emptyTestID} />}
+          : <EmptyMessages testID={emptyTestID} copy={emptyMessage} />}
         ListHeaderComponent={
           loadEarlierAction.visible ? (
             <MessageListActionButton
@@ -2826,6 +2865,7 @@ export function MessageRenderer({
         testID={testID ?? 'message.list'}
         viewabilityConfig={viewabilityConfigRef.current}
         onViewableItemsChanged={handleViewableItemsChanged}
+        renderScrollComponent={renderScrollComponent}
       />
       </Animated.View>
       {shareSelectionActive && stickyShareClientId ? (
@@ -2859,13 +2899,14 @@ export function MessageRenderer({
           {hasNewMessages ? <View style={styles.scrollToBottomDot} testID="message.newMessageDot" /> : null}
         </MessageListActionButton>
       ) : null}
-      {historyActive && payload?.kind === 'media' && payload.media.kind === 'image' && lightboxImages ? (
-        // 图片走 IM 级全屏查看器(手势缩放/下滑关闭/横滑翻页);其余 payload 走通用查看器。
+      {imageLightboxOpen && payload?.kind === 'media' && lightboxImages ? (
+        // 图片 / 视频走 IM 级全屏查看器(手势缩放/下滑关闭/横滑翻页);其余 payload 走通用查看器。
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
           initialUrl={payload.media.url}
           onClose={closePayload}
+          onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}
           onShareImage={onShareImage}
         />
@@ -3060,9 +3101,15 @@ const RenderListItemView = memo(function RenderListItemView({
 }) {
   const isViewable = useMessageListItemVisible(item.key);
   const heavyContentVisible = focused || isViewable;
+  // 本项(含 work_group / subagent 内层)点开的 payload 都带上顶层 key 作来源:
+  // 看图器按它取「同一条消息」的图集,不靠 url 反查(同一 url 会再出现在后面的消息里)。
+  const openPayloadFromItem = actions.onOpenPayloadFromItem;
+  const itemActions = useMemo(() => (openPayloadFromItem
+    ? { ...actions, onOpenPayload: (next: MessagePayload) => openPayloadFromItem(next, item.key) }
+    : actions), [actions, item.key, openPayloadFromItem]);
   return (
     <MessageHeavyContentVisibilityContext.Provider value={heavyContentVisible}>
-      <RenderItemView actions={actions} focused={focused} item={item} />
+      <RenderItemView actions={itemActions} focused={focused} item={item} />
     </MessageHeavyContentVisibilityContext.Provider>
   );
 });
@@ -3141,7 +3188,9 @@ function SessionOriginLabel({
       idText={sourceIdText(sourceMeta)
         ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
       label={sessionOriginLabel(origin)}
-      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      onPress={onOpen && senderSessionId && !isCrossDeviceSourceSessionId(senderSessionId)
+        ? () => onOpen(senderSessionId)
+        : undefined}
       openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
     />
@@ -3242,12 +3291,12 @@ function ForkOriginMarker({ onOpenForkOrigin }: { onOpenForkOrigin?: () => void 
   );
 }
 
-function EmptyMessages({ testID }: { testID?: string }) {
+function EmptyMessages({ testID, copy }: { testID?: string; copy?: string }) {
   const styles = useThemedStyles(makeStyles);
   const { t } = useTranslation();
   return (
     <View style={styles.emptyCard} testID={testID ?? 'message.empty'}>
-      <Text style={styles.emptyTitle}>{t('message.renderer.emptyMessages')}</Text>
+      <Text style={styles.emptyTitle}>{copy ?? t('message.renderer.emptyMessages')}</Text>
     </View>
   );
 }
@@ -3340,6 +3389,8 @@ function MessageBubble({
   item: MobileMessageItem;
   actions: MessageActions & { firstUserMessageClientId?: string };
 }) {
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
+  const { user: viewer } = useAuth();
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -3480,11 +3531,11 @@ function MessageBubble({
     && item.message.kind === 'user'
     && !isFirstUserMessage
   );
+  // 对齐桌面:任务运行中也保留删除入口,点了由页面提示等回复结束,不让菜单项时有时无。
   const canDelete = !!(
     showCompletedActionBar
     && clientId
     && actions.onDeleteMessage
-    && actions.isSessionStreaming !== true
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);
@@ -3719,9 +3770,11 @@ function MessageBubble({
         presentation.density === 'compact' && styles.bubbleCompact,
         presentation.density === 'rich' && styles.bubbleRich,
         isUser ? styles.userBubble : styles.agentBubble,
-        actions.companion && isUser && styles.companionUserBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
+        isUser && !item.message.systemCardType && userBubbleColors
+          && isOwnUserBubble(item.message, { accountId: viewer?.id, remoteDeviceId: actions.remoteDeviceId })
+          && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
       ]}
       testID={isUser ? 'message.userBubble' : 'message.agentBubble'}
     >
@@ -3798,7 +3851,6 @@ function MessageBubble({
                   onOpenSessionLink={actions.onOpenSessionLink}
                   pinContentWidth={!isUser}
                   selectable={canSelectVisibleText}
-                  sessionReferences={item.message.sessionReferences}
                   streaming={false}
                   text={text}
                 />
@@ -3814,7 +3866,6 @@ function MessageBubble({
             onOpenPayload={actions.onOpenPayload}
             onOpenSessionLink={actions.onOpenSessionLink}
             pinContentWidth={!isUser}
-            sessionReferences={item.message.sessionReferences}
             selectable={canSelectVisibleText}
             streaming={isStreamingAssistant}
             text={bubbleBody}
@@ -4732,7 +4783,14 @@ function WorkGroupCard({
   const pluginWork = actions.companionPluginWork?.get(item.key);
   // The Host projects running lines for this view; folded groups render them as they are,
   // without building the hidden activity tree or reading any work details.
-  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
+  const lines = isStreaming ? item.deferred?.lines : undefined;
+  // Expanding keeps these lines on screen until the detail read has rows to replace them.
+  const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;
+  const lineRows = lines?.length ? (
+    <View style={styles.workActivityStack}>
+      {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+    </View>
+  ) : null;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4742,13 +4800,7 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
-      collapsedBody={lines?.length ? (
-        <Rail layout={layout}>
-          <View style={styles.workActivityStack}>
-            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
-          </View>
-        </Rail>
-      ) : undefined}
+      collapsedBody={lineRows ? <Rail layout={layout}>{lineRows}</Rail> : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4765,6 +4817,7 @@ function WorkGroupCard({
       {expanded ? (
         <Rail layout={layout}>
           <View style={styles.workGroupStack}>
+            {holdLines && lineRows}
             {item.deferred?.loading && <CompactActivityIndicator color={colors.textTertiary} size={header.iconSize} />}
             {item.deferred?.failed && (
               <MessageListActionButton
@@ -4777,7 +4830,7 @@ function WorkGroupCard({
                 <Text style={styles.payloadOpenButtonText}>{t('message.renderer.retryPreview')}</Text>
               </MessageListActionButton>
             )}
-            {item.children.map((child) => {
+            {!holdLines && item.children.map((child) => {
               if (child.type === 'thinking') {
                 return <ExpandedWorkThinkingRow key={child.key} item={child} />;
               }
@@ -5340,6 +5393,7 @@ function MobileSystemCard({
   }
   // agent-switch 走专用「分隔线 + 药丸」渲染(对齐桌面),不落通用盒子卡片。
   if (type === 'agent-switch') return <MobileAgentSwitchCard data={data} />;
+  if (type === 'input-handoff') return <InputHandoffRecordRow data={data} />;
   // auto-resume 复用桌面 AgentActionRow 的单行状态布局:默认只显示当前状态和压缩后的
   // 中断原因,完整诊断按需展开,避免底层错误全文把手机消息流撑成一张大卡片。
   if (type === 'auto-resume') {
@@ -5597,7 +5651,6 @@ function MarkdownBody({
   onOpenPayload,
   onOpenSessionLink,
   pinContentWidth = false,
-  sessionReferences,
   selectable,
   streaming,
   text,
@@ -5615,8 +5668,6 @@ function MarkdownBody({
    * 气泡(长代码围栏横向裁切 + 纵向巨高空白)。
    */
   pinContentWidth?: boolean;
-  /** 当前落库消息里的展示安全引用摘要，按 sessionId + anchor 精确匹配链接。 */
-  sessionReferences?: readonly MobilePersistedSessionReferenceMetadata[];
   /** 完成态消息为 true:各块 Text 开原生选中(含内嵌图片 View 的块除外,Android 上有风险)。 */
   selectable?: boolean;
   /** 消息流式中:文件 chip 层跳过远端验证。 */
@@ -5732,15 +5783,6 @@ function MarkdownBody({
   // changes; referenced task title changes still refresh every affected chip.
   const remoteSessions = useRemoteSessions();
   const sessionLinkTitles = useMarkdownSessionLinkTitles(text, remoteSessions);
-  const sessionReferenceDetails = useMemo(() => {
-    if (!sessionReferences?.length) return undefined;
-    const details: Record<string, string> = {};
-    for (const metadata of sessionReferences) {
-      details[mobileSessionReferenceMetadataKey(metadata.sessionId, metadata.messageClientId)] =
-        formatMobileSessionReferenceMetadata(metadata);
-    }
-    return details;
-  }, [sessionReferences]);
   const renderInlines = useCallback(
     (
       inlines: readonly MobileMarkdownInline[],
@@ -5755,7 +5797,6 @@ function MarkdownBody({
         renderManagedImage,
         onOpenMedia: openMarkdownMedia,
         onOpenSessionLink,
-        sessionReferenceDetails,
         sessionLinkTitles,
         SpanText,
         streaming,
@@ -5763,7 +5804,7 @@ function MarkdownBody({
     ),
     // renderInline also reads translated fallback labels. Invalidate completed
     // memoized text blocks when useTranslation refreshes its bound translator.
-    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
+    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, streaming, styles, t],
   );
   const textRunGroupingOptions = useMemo(() => ({
     ...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
@@ -6309,7 +6350,6 @@ function renderInline(
     onOpenMedia?: (url: string, title: string, kind: 'video') => void;
     onOpenPayload?: (payload: MessagePayload) => void;
     onOpenSessionLink?: (url: string) => void;
-    sessionReferenceDetails?: Readonly<Record<string, string>>;
     sessionLinkTitles?: Readonly<Record<string, string>>;
     /** 块可选中且 iOS 时为 MarkdownSelectableSpan(嵌套进 UITextView 原生树);缺省 RN Text。 */
     SpanText?: typeof Text;
@@ -6363,7 +6403,6 @@ function renderInline(
             key={spanKey(`session-link:${index}:${inline.url}`)}
             onOpenSessionLink={ctx.onOpenSessionLink}
             session={session}
-            sessionReferenceDetails={ctx.sessionReferenceDetails}
             sessionLinkTitles={ctx.sessionLinkTitles}
             SpanText={SpanText}
             styles={styles}
@@ -6482,7 +6521,7 @@ function renderInline(
           testID="message.markdownInlineImage"
         >
           <View style={size}>
-            <ExpoImage
+            <MessageLoadingImage
               accessibilityLabel={inline.alt || i18n.t('message.renderer.imageFallbackTitle')}
               contentFit="cover"
               recyclingKey={inline.url}
@@ -6501,7 +6540,6 @@ function MarkdownSessionLinkSpan({
   inline,
   onOpenSessionLink,
   session,
-  sessionReferenceDetails,
   sessionLinkTitles,
   SpanText,
   styles,
@@ -6510,7 +6548,6 @@ function MarkdownSessionLinkSpan({
   inline: Extract<MobileMarkdownInline, { type: 'link' }>;
   onOpenSessionLink?: (url: string) => void;
   session: SessionDeepLinkTarget;
-  sessionReferenceDetails?: Readonly<Record<string, string>>;
   sessionLinkTitles?: Readonly<Record<string, string>>;
   SpanText: typeof Text;
   styles: ReturnType<typeof makeStyles>;
@@ -6523,24 +6560,26 @@ function MarkdownSessionLinkSpan({
         message.clientId === session.messageClientId || message.id === session.messageClientId
       ))
     : null;
-  const messageLabel = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+  // 消息数组更新(流式 / 列表重渲)时,目标消息没变就不重算摘要。
+  const messageLabel = useMemo(() => {
+    const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+    return messageText ? sentSessionMessageChipLabel(messageText) : '';
+  }, [targetMessage]);
   const title = session.messageClientId
-    ? compactSessionMessageLabel(messageLabel ?? shortSessionId(session.messageClientId))
+    ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit
       ?? sessionLinkTitles?.[session.sessionId]
-      ?? i18n.t('message.renderer.sessionChipFallback', { id: shortSessionId(session.sessionId) });
-  const detail = sessionReferenceDetails?.[
-    mobileSessionReferenceMetadataKey(session.sessionId, session.messageClientId)
-  ];
+      ?? i18n.t('message.renderer.sessionChipFallback');
   // handler 由上层可选注入 → 缺席时 chip 不可点,下划线也必须跟着不加
   // (clickableInlineStyle 保证两者同源)。
   const openSessionLink = onOpenSessionLink ? () => onOpenSessionLink(inline.url) : undefined;
+  // 发给模型的上下文范围(条数 / 是否截断)不在气泡里展示:用户无从理解也无从操作。
   return (
     <SpanText
       onPress={openSessionLink}
       style={clickableInlineStyle(styles, openSessionLink, baseStyle, styles.sessionLinkChipText)}
     >
-      {`${session.messageClientId ? '❝' : '↳'} ${title}${detail ? ` · ${detail}` : ''}`}
+      {`${session.messageClientId ? '❝' : '↳'} ${title}`}
     </SpanText>
   );
 }
@@ -6742,7 +6781,7 @@ function PendingAttachmentImage({ layout, uri, sourceUri = uri, onError, onSize,
   );
   return (
     <View style={styles.attachmentImageWrap}>
-      <ExpoImage
+      <MessageLoadingImage
         source={{ uri }}
         recyclingKey={uri}
         contentFit="contain"
@@ -6917,7 +6956,7 @@ function MediaPreview({
             <Text style={styles.mediaHint} numberOfLines={2}>{fallbackDetail}</Text>
           </View>
         ) : thumbUri ? (
-          <ExpoImage
+          <MessageLoadingImage
             // 尺寸未知时先 contain 进最大框，解码后收敛到真实比例。
             contentFit="contain"
             recyclingKey={thumbUri}
@@ -6927,7 +6966,7 @@ function MediaPreview({
             style={[styles.attachmentImage, displaySize]}
           />
         ) : (
-          <View style={[styles.attachmentImagePending, displaySize]} testID="message.mediaThumbLoading" />
+          <MessageImagePlaceholder style={displaySize} />
         )}
       </MessageContentOpenButton>
     );
@@ -6949,7 +6988,7 @@ function MediaPreview({
         testID="message.mediaPreviewButton"
       >
         {uri ? (
-          <ExpoImage
+          <MessageLoadingImage
             contentFit="cover"
             recyclingKey={uri}
             source={{ uri }}
@@ -6957,7 +6996,7 @@ function MediaPreview({
             style={[styles.imagePreview, frameSize]}
           />
         ) : phase.kind === 'resolving' ? (
-          <View style={[styles.imagePreview, frameSize]} testID="message.mediaThumbLoading" />
+          <MessageImagePlaceholder style={[styles.imagePreview, frameSize]} />
         ) : (
           <View
             style={[styles.imagePreview, styles.imagePreviewFallback, frameSize]}
@@ -7661,7 +7700,7 @@ function MessagePayloadBody({
   if (payload.kind === 'media') {
     const resolved = remoteState.status === 'ready' ? remoteState.media : null;
     const displayUrl = resolved?.url ?? payload.media.url;
-    // 图片 payload 已分流到 ImageLightbox 全屏查看器,本查看器只承载 video/audio/其它媒体。
+    // 聊天里的图片 / 视频已分流到 ImageLightbox 全屏查看器,本查看器主要承载音频与其它媒体。
     const playerKind = payload.media.kind === 'video' || payload.media.kind === 'audio' ? payload.media.kind : null;
     const canInlinePlayer = playerKind !== null
       && isDirectPreviewableMediaUrl(displayUrl)
@@ -8728,11 +8767,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     marginTop: spacing.sm,
     textAlign: 'center',
   },
-  companionUserBubble: { borderColor: colors.border },
   userBubble: {
     alignSelf: 'flex-end',
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     maxWidth: '86%',
     minWidth: 0,
     overflow: 'hidden',

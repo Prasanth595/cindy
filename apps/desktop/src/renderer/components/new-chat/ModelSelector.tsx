@@ -1,3 +1,4 @@
+import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, matchesModelName } from '@/lib/modelDisplayNames';
@@ -1607,10 +1608,13 @@ function ModelSelectorContentView({
     };
   }, [readProviderGroup, remoteAgentDeviceId, currentProviderId]);
   // 归的组那一项此刻在列表里(组所在电脑在线、组还在)才按组显示；不然照常列出任务实际所在的那台。
+  // 任务所在电脑自己建的组：本机任务看本机设置，被控电脑上的任务看那台目录里的组摘要。
   const boundEntry = useMemo(() => {
     if (!boundGroup) return null;
     const visible = boundGroup.deviceId === null
-      ? !homeDeviceId && localProviderGroups[boundGroup.providerId] !== undefined
+      ? homeDeviceId
+        ? remoteProviderGroups.groups.has(remoteProviderEntryKey(homeDeviceId, boundGroup.providerId))
+        : localProviderGroups[boundGroup.providerId] !== undefined
       : remoteProviderGroups.groups.has(remoteProviderEntryKey(boundGroup.deviceId, boundGroup.providerId));
     return visible ? boundGroup : null;
   }, [boundGroup, homeDeviceId, localProviderGroups, remoteProviderGroups]);
@@ -1666,10 +1670,20 @@ function ModelSelectorContentView({
       });
       const providerIds = [...new Set(entries.map((entry) => entry.providerId))];
       return providerIds.length > 0
-        ? [{ deviceId: device.deviceId, providers: shared, providerIds }]
+        ? [{ deviceId: device.deviceId, providers: shared, providerIds, entries }]
         : [];
     });
   }, [remoteAgentDevices, remoteDeviceCatalogs, remoteProviderGroups]);
+  // 目录还在读或读取失败的其他电脑(分享不算):收藏区里它们的收藏置灰列出,不当作模型已下架。
+  const remoteAgentUnavailableDeviceIds = useMemo(
+    () =>
+      (remoteAgentDevices ?? []).flatMap((device) => {
+        if (isProviderShareAgentDeviceId(device.deviceId)) return [];
+        const catalog = remoteDeviceCatalogs.get(device.deviceId);
+        return !catalog || catalog.loading || catalog.error ? [device.deviceId] : [];
+      }),
+    [remoteAgentDevices, remoteDeviceCatalogs],
+  );
   const hasRemoteAgent = remoteAgent !== undefined;
   const homeProviders = homeDeviceId ? homeDeviceProviders.providers : localProviders.providers;
   const homeModelVisibilityOverrides = homeDeviceProviders.modelVisibilityOverrides;
@@ -2611,6 +2625,8 @@ function ModelSelectorContentView({
     currentProviderId,
     resolveCurrentSourceId,
   ]);
+  const editingDisplayPricingModel = editingProvider && editingModel && currentAgentKind
+    ? findCatalogModel(editingProvider, editingModel.id, currentAgentKind, { exact: true }) : undefined;
   const editingPricePresentation = editingModel
     ? pricePresentationOf(editingProvider?.id ?? editingProviderId, editingModel.id)
     : null;
@@ -2755,7 +2771,12 @@ function ModelSelectorContentView({
       {(editShowFast || editHasEfforts) && (
         <div className="mx-1 my-1 h-px bg-[var(--model-dropdown-border)]" />
       )}
-      {editingPricePresentation && (
+      {editingDisplayPricingModel?.displayPricing && editingDisplayPricingModel.currency && (
+        <div {...menuSkipAttrs} className="max-h-72 overflow-y-auto border-t border-[var(--model-dropdown-border)] pt-2.5">
+          <DisplayPricingDetails model={editingDisplayPricingModel} />
+        </div>
+      )}
+      {!editingDisplayPricingModel?.displayPricing && editingPricePresentation && (
         <>
           <div {...menuSkipAttrs} className="px-2 pb-1 pt-1">
             <div
@@ -3352,6 +3373,63 @@ function ModelSelectorContentView({
         }
         return applied;
       });
+    /**
+     * 收藏区里另一台电脑上的收藏(浏览任务所在电脑的目录时列出):效果与左侧栏切到那台电脑再选中它相同。
+     *   - 草稿:整行带着那台电脑交给 onUnifiedSelect(同浏览那台时的 withAgentDevice);
+     *   - 已建任务、Agent 不在那台:连运行位置一起换(onRelocate,同浏览那台时的 relocate);
+     *   - 已建任务、Agent 已在那台 / 那一项是任务归的供应商组:这一选择要走那台目录里的会话链路
+     *     (同引擎直切 / 跨引擎事务 / 组内留在原处),这里不另起一套 —— 切到那台的目录,同一条收藏在
+     *     那里照样列出,由用户在那里选。
+     */
+    const selectDeviceFavorite: NonNullable<
+      NonNullable<UnifiedModelPanelProps['remoteSources']>['onSelectDeviceFavorite']
+    > = ({ deviceId: targetDeviceId, providerId, modelId: id, effort: rowEffort, config: rowConfig }) => {
+      const rowEffortValue = rowEffort === '' ? undefined : rowEffort;
+      const agentDevice = {
+        deviceId: targetDeviceId,
+        name: remoteAgentDevices?.find((device) => device.deviceId === targetDeviceId)?.name || targetDeviceId,
+      };
+      const dismissIfApplied = (applied: boolean) => {
+        if (applied) {
+          closeOptionsPanel();
+          onDismiss?.();
+        }
+        return applied;
+      };
+      if (onUnifiedSelect) {
+        return runLiveWrite(() =>
+          onUnifiedSelect({
+            providerId,
+            modelId: id,
+            ...(rowEffortValue ? { effort: rowEffortValue } : {}),
+            engine: rowConfig.engine,
+            fast: rowConfig.fast,
+            favoriteUid: rowConfig.favoriteUid,
+            agentDevice,
+          }),
+        ).then(dismissIfApplied);
+      }
+      const agent = vendorKeyToAgentKind(rowConfig.engine);
+      const inBoundGroup =
+        stayInGroup && boundEntry?.deviceId === targetDeviceId && boundEntry.providerId === providerId;
+      const onRelocate = remoteAgent?.onRelocate;
+      if (onRelocate && agent && targetDeviceId !== remoteAgentDeviceId && !inBoundGroup) {
+        return runLiveWrite(() =>
+          onRelocate({
+            providerId,
+            modelId: id,
+            agent,
+            ...(rowEffortValue ? { effort: rowEffortValue } : {}),
+            fast: rowConfig.fast,
+            agentDevice,
+          }),
+        ).then(dismissIfApplied);
+      }
+      closeOptionsPanel();
+      setRemoteBrowseTouched(true);
+      setRemoteBrowse({ deviceId: targetDeviceId, providerId });
+      return false;
+    };
     const panelSessionEngineFilter =
       sessionEngineFilter && relocate
         ? {
@@ -3471,6 +3549,11 @@ function ModelSelectorContentView({
                     localProviderLabel: remoteAgentLocalLabel,
                     groups: remoteAgentGroups,
                     labelOf: remoteAgentLabelOf,
+                    // 远程收藏按任务所在电脑共享(§1.5):被控电脑上的任务读写那台的收藏,本机任务读写本机。
+                    ...(homeDeviceId ? { favoritesDeviceId: homeDeviceId } : {}),
+                    homeDeviceId: homeDeviceId ?? selfDeviceId,
+                    unavailableDeviceIds: remoteAgentUnavailableDeviceIds,
+                    onSelectDeviceFavorite: selectDeviceFavorite,
                     active: remoteBrowse
                       ? { deviceId: remoteBrowse.deviceId, providerId: remoteActiveProviderId ?? '' }
                       : null,

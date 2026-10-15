@@ -56,7 +56,6 @@ import { isRealAutomationOrigin } from '@/lib/messageAutomationOrigin';
 import { SHARE_SOURCE_ATTR } from '@/lib/shareConversationImage';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '../../../shared/agentInputQueue';
-import type { PersistedSessionReferenceMetadata } from '../../../shared/sessionReferenceMetadata';
 import {
   buildRewindDraftAttachments,
   startRewindSourceProbe,
@@ -105,11 +104,11 @@ import {
 import { findLinkifyMatches } from './userMessageLinkify';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
-import { buildSessionMessageDeepLink, parseSessionDeepLinkHref } from '@/lib/deepLink';
+import { buildSessionMessageDeepLink } from '@/lib/deepLink';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { insertSessionLinkIntoComposer } from '@/lib/composerActionsBus';
 import { MENTION_TOKEN_SPLIT, parseMentionToken } from '@/lib/mentionRefFormat';
-import { parseGhostCommandWord, splitGhostDirective } from '@/cindy-brain/ghostCommand';
+import { ghostCommandTokenLength, parseGhostCommandToken, splitGhostDirective } from '@/cindy-brain/ghostCommand';
 import { splitHostCapabilityDirective } from '@/cindy-brain/hostCapabilityInvocation';
 import {
   GhostFulfillmentContext,
@@ -161,8 +160,6 @@ interface UserMessageProps {
    */
   allowPrivilegedLinks?: boolean;
   content: string;
-  /** Resolved range summaries for session links in this user message. */
-  sessionReferences?: PersistedSessionReferenceMetadata[];
   /** chat-text-quote:content 开头 blockquote 为引用功能产出(胶囊化渲染判据)。 */
   quotesEncoded?: boolean;
   /** Hidden semantic reference ranges; preserved only while visible text is unchanged. */
@@ -286,7 +283,6 @@ function renderTextWithLinks(
   keyPrefix: string,
   onImageClick: ((xdtFileUrl: string) => void) | undefined,
   sessionId?: string,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   if (!interactive) return [text];
@@ -309,14 +305,6 @@ function renderTextWithLinks(
         />,
       );
     } else if (match.kind === 'session') {
-      const target = parseSessionDeepLinkHref(match.href);
-      const referenceMetadata = target
-        ? sessionReferences?.find(
-            (reference) =>
-              reference.sessionId === target.sessionId &&
-              (reference.messageClientId ?? null) === target.messageClientId,
-          )
-        : undefined;
       // 会话深链 → chip(显式 label / 标题 / 短 ID),点击跳会话、带锚点定位
       // 消息。`[标题](深链)` markdown 形式(输入框粘贴 chip 化的序列化产物)
       // 带显式 label,SessionLinkChip 优先展示、不查库。
@@ -325,7 +313,6 @@ function renderTextWithLinks(
           key={`${keyPrefix}-session-${match.index}`}
           href={match.href}
           label={match.label}
-          referenceMetadata={referenceMetadata}
         />,
       );
     } else if (match.kind === 'project') {
@@ -427,7 +414,6 @@ function renderContentWithoutPastedText(
   /** remote 会话:@-chip 点击跳过本机 smart resolve,按 workdir 风格直接 join。 */
   remoteJoin = false,
   renderLegacySlashCommands = true,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -472,7 +458,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -488,7 +473,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -582,7 +566,6 @@ function renderContentWithoutPastedText(
             `${li}-${pi}`,
             onImageClick,
             sessionId,
-            sessionReferences,
             interactive,
           ),
         );
@@ -754,7 +737,6 @@ export function renderContent(
   remoteJoin = false,
   pastedTextRanges: readonly PastedTextRange[] = [],
   slashCommandRanges?: readonly SlashCommandRange[],
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   /**
    * 粘贴段胶囊的点击入口(issue #946)。不传时胶囊退回不可交互,只剩 hover
    * tooltip —— 那正是"发出去就再也看不到全文"的旧行为,新调用点都应该传。
@@ -824,7 +806,6 @@ export function renderContent(
           sessionId,
           remoteJoin,
           useLegacySlashHeuristic,
-          sessionReferences,
           interactive,
         )}
       </span>
@@ -842,7 +823,6 @@ export function UserMessage({
   workingDir,
   allowPrivilegedLinks = true,
   content,
-  sessionReferences,
   quotesEncoded,
   agentReferences,
   pastedTextRanges,
@@ -977,10 +957,10 @@ export function UserMessage({
   // $指令 开头且确认命中意识时,气泡正文渲剥掉指令 token 的余文($token 的
   // 语义由气泡内的召唤标注行承载,正文不重复报幕);普通消息里的 $word 不受
   // 影响。2026-07-29 起取消「卡片即消息」合并形态:正文永远回归文字气泡。
-  const ghostCmdWord =
-    ghostDirective?.kind === 'command' ? parseGhostCommandWord(bubbleBody) : null;
+  const ghostCmd =
+    ghostDirective?.kind === 'command' ? parseGhostCommandToken(bubbleBody) : null;
   // 触发符恒为 1 个字符($ 或全角变体),token = 触发符 + 指令词。
-  const ghostCmdToken = ghostCmdWord ? bubbleBody.slice(0, 1 + ghostCmdWord.length) : null;
+  const ghostCmdToken = ghostCmd ? bubbleBody.slice(0, 1 + ghostCommandTokenLength(ghostCmd)) : null;
   const ghostPromptBody = ghostCmdToken ? bubbleBody.slice(ghostCmdToken.length).trim() : '';
   // 软提示兑现(语义调用):本条消息触发的那一轮 AI 真调了被提及的意识时,
   // 升级为与硬指令同形态的召唤标注行。判据来自 GhostFulfillmentContext
@@ -1522,6 +1502,10 @@ export function UserMessage({
             无余文时气泡只剩标注行。 */}
                 {(inlineQuoteCount > 0 || displayBubbleBody.trim() || ghostChipDisplay) && (
                   <div
+                    // 只剩插件标注行的气泡:分享图会剥掉标注,整泡一起去掉,不留空壳。
+                    {...(inlineQuoteCount === 0 && !displayBubbleBody.trim()
+                      ? { [SHARE_SOURCE_ATTR]: '' }
+                      : {})}
                     className={cn(
                       // overflow-wrap:anywhere（不是 break-words）才能让超长无空格序列
                       // 在任意字符处断行，并把内容的 min-content 缩小到一个字符宽。
@@ -1543,6 +1527,7 @@ export function UserMessage({
                  下方有正文/引用时加分隔线,单独成泡时不加。 */
                       <GhostSummonCard
                         directive={ghostChipDisplay}
+                        commandNamespace={ghostCmd?.namespace ?? undefined}
                         running={Boolean(sessionRunning) && Boolean(isLastUserMessage)}
                         {...(messageClientId ? { messageClientId } : {})}
                         className={
@@ -1629,7 +1614,6 @@ export function UserMessage({
                                         : ghostBodySourceStart + quoteTextSegmentStarts[index]!,
                                       segment.text.length,
                                     ),
-                                sessionReferences,
                                 longMessageCollapsed ? undefined : handlePastedTextChipClick,
                                 projectSentRanges(
                                   validAgentReferences,
@@ -1670,7 +1654,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               undefined,
                               bubbleAgentReferences,
                               false,
@@ -1703,7 +1686,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               handlePastedTextChipClick,
                               bubbleAgentReferences,
                             )}

@@ -32,6 +32,22 @@
   预览就复制一份。远程设备或 SSH 文件必须保留真实来源，不能把远程绝对路径当成本机路径。
 - docx、PDF、zip 等非媒体文件不进入媒体字节仓，继续使用已有 `xdt-file` 等受控文件
   通道。`xdt-audio` 只保留播放用户本地散文件的直读职责，不作为新的托管媒体写入口。
+- 飞书、Discord、Telegram、企业微信四个个人 IM 渠道的入站附件，去处只由 `@cindy/im` 的
+  `classifyInboundAttachment` 判定（MIME 或扩展名任一命中即可）：
+  - 图片与音视频经 `IMHost.media` 进总仓（`cacheImage` 一律带 `staging: true`，另有
+    `cacheMedia`），以可回收暂存写入。host 入仓前按真实字节核验类型（`im/shared/inboundMediaVerify.ts`），
+    消息落库时 pin 为用户附件；下载期间发生换代则回滚。
+  - 非媒体文件经 `IMHost.files` 暂存到按账号隔离的 `im-attachments/<渠道>/staging/`。消息路由到任务后，
+    由 `im/shared/turnRunner.ts` 调用 `adoptStagedInboundFiles`，把触发消息自己的附件移入
+    `im-attachments/<渠道>/sessions/<任务ID>/`。群历史附件和受保护内容不落库，留在暂存区按龄回收。
+    实现见 `im/shared/inboundFileStaging.ts`。
+  - host 缺对应能力或总仓拒收格式时标为不支持，不回落写 `cc-agent/*-media`。
+- 另外两个个人 IM 渠道暂未接入上述分流，各自保留现有做法：
+  - 钉钉只收图片，经 `cacheImage`（未带 `staging`）直接按用户附件入仓。
+  - 微信由 `im/wechat/mediaStaging.ts` 在已知任务后直接 `ingestMedia` 媒体，并把文件写入同一棵
+    `im-attachments/wechat/sessions/<任务ID>/`。
+  - 任务删除时，两者与上述四个渠道统一由 `removeImSessionAttachmentDirs` 清理。迁移这两个渠道前，
+    先对齐本条规则。
 
 ## 写入与记账
 

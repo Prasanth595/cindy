@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "日誌與回饋",
+    "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
+    "uploaded": "日誌已上傳，上傳編號：{{code}}。回報時請附上編號。",
+    "close": "關閉",
+    "uploadDescription": "上傳後，請在回報中附上上傳編號。",
+    "uploadDetails": "查看上傳內容"
+  },
   "taskMove": {
     "upgradeComputer": "這台電腦的 Cindy 版本暫不支援移動任務。請更新「{{name}}」上的 Cindy 後再試。",
     "sourceProjects": "任務所在電腦的專案",
@@ -241,13 +249,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "還沒有分享給任何人。產生分享連結傳給對方，對方申請、你同意後會出現在這裡。",
         "table": {
-          "model": "模型",
           "turns": "訊息",
           "input": "輸入",
           "output": "輸出",
           "amount": "估算金額"
         },
-        "noUsage": "這段時間沒有用量",
         "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
       },
       "removeConfirm": {
@@ -376,6 +382,30 @@
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
       "modelsFailedWithCode": "暫時讀不到對方開放的模型，請稍後重試。（錯誤代碼：{{code}}）",
       "retryModels": "重新讀取模型",
+      "groupStatus": {
+        "title": "組內電腦狀態",
+        "shareActive": "分享已開啟",
+        "refresh": "重新整理狀態",
+        "computer": "電腦 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任務",
+        "loading": "正在讀取電腦狀態…",
+        "unsupported": "分享者的 Cindy 尚未提供狀態，請聯絡分享者檢查或更新",
+        "failed": "電腦狀態讀取失敗，請重新整理再試",
+        "unconfirmed": "部分電腦狀態尚未確認，請稍後重新整理",
+        "noneReady": "目前沒有可接任務的電腦，請聯絡分享者檢查",
+        "note": "僅顯示匿名狀態，不顯示電腦名稱和用量。能否執行仍取決於所選模型。",
+        "updateNote": "需要分享者更新對應電腦上的 Cindy，才能接收分享來的任務",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任務",
+          "cooling": "冷卻中，暫不接新任務",
+          "offline": "離線或無法連線",
+          "paused": "已暫停分配",
+          "unavailable": "暫不可用",
+          "needs-update": "需要更新",
+          "unknown": "狀態未知"
+        }
+      },
       "modelsEmpty": "對方還沒有開放可用的模型。",
       "pausedNote": "對方暫停了這個分享，恢復後才能使用。",
       "offlineNote": "對方電腦不在線，上線後就能繼續使用。",
@@ -402,9 +432,28 @@
     },
     "usage": {
       "title": "用量",
-      "description": "依使用方統計 {{provider}} 的用量。本機與我的其他電腦從這次更新後開始記錄。",
+      "description": "依人統計 {{provider}} 的用量。你自己的用量從這次更新後開始記錄。",
       "shareSource": "分享的人",
-      "unknownDevice": "另一台電腦"
+      "unknownDevice": "另一台電腦",
+      "descriptionGroup": "依人統計 {{provider}} 的用量，展開後依組內每台電腦分開。你自己的用量從這次更新後開始記錄。",
+      "summary": {
+        "total": "總用量",
+        "amount": "估算金額",
+        "people": "使用方",
+        "models": "模型"
+      },
+      "selfTag": "你",
+      "relayName": "經 {{device}} 轉來",
+      "computerCount_other": "{{count}} 台電腦",
+      "lastUsedOn": "{{lastUsed}} · 用了 {{computers}}",
+      "unattributed": "更早的記錄",
+      "unattributedSource": "當時沒有區分電腦",
+      "removedMember": "已移出組",
+      "expandAria": "展開 {{name}} 的用量明細",
+      "collapseAria": "收起 {{name}} 的用量明細",
+      "table": {
+        "member": "電腦 / 模型"
+      }
     },
     "section": {
       "title": "供應商組",
@@ -421,6 +470,7 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
+      "quotaFirst": "能讀取 Claude 訂閱用量時，先用配額快重置的電腦，再選用量低的，相近時依組策略",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
@@ -434,6 +484,13 @@
     },
     "member": {
       "local": "本機",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任務",
+        "supportUnknown": "分享任務相容性未知"
+      },
       "sourceDevice": "我的其他電腦",
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
@@ -451,6 +508,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -458,9 +516,11 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
+        "unreachableHere": "從這台電腦連不上",
         "unavailable": {
           "provider-off": "那臺電腦沒有對這個供應商開啟「允許遠端呼叫」",
           "disconnected": "供應商未連線或已停用",
@@ -690,7 +750,10 @@
     "copy": "複製到本機",
     "paste": "貼上到遠端電腦",
     "clipboardSyncHint": "此視窗在前景時，雙向同步文字、圖片和富文字。",
-    "credentialRequired": "請完成 Mac 密碼驗證。如果無法驗證，請更新兩台電腦上的 Cindy。"
+    "credentialRequired": "請完成 Mac 密碼驗證。如果無法驗證，請更新兩台電腦上的 Cindy。",
+    "handoffEnded": "這次代輸入已經結束，沒有可顯示的視窗。",
+    "handoffUnavailable": "這台電腦暫時無法只顯示這個視窗。請在那台電腦上更新 Cindy，或開啟遠端桌面。",
+    "handoffWindow": "代輸入 · {{app}}"
   },
   "ipcError": {
     "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
@@ -810,6 +873,273 @@
       "allowOnce": "允許一次",
       "alwaysAllowForSession": "本任務總是允許",
       "deny": "拒絕"
+    }
+  },
+  "menubar": {
+    "balance": {
+      "name": "Cindy 餘額",
+      "quotaName": "Cindy 本期配額",
+      "short": "Cindy"
+    },
+    "time": {
+      "today": "今天 {{time}}",
+      "tomorrow": "明天 {{time}}",
+      "weekday": "{{day}} {{time}}",
+      "date": "{{date}} {{time}}",
+      "minutesAgo_other": "{{n}} 分鐘前",
+      "hoursAgo_other": "{{n}} 小時前",
+      "daysAgo_other": "{{n}} 天前"
+    },
+    "duration": {
+      "daysHours": "{{d}} 天 {{h}} 小時",
+      "days_other": "{{d}} 天",
+      "hoursMinutes": "{{h}} 小時 {{m}} 分",
+      "hours_other": "{{h}} 小時",
+      "minutes_other": "{{m}} 分鐘"
+    },
+    "durationShort": {
+      "daysHours": "{{d}}天{{h}}時",
+      "days": "{{d}}天",
+      "hoursMinutes": "{{h}}時{{m}}分",
+      "hours": "{{h}}時",
+      "minutes": "{{m}}分"
+    },
+    "window": {
+      "session": "{{hours}} 小時",
+      "week": "本週",
+      "scoped": "{{model}} 本週"
+    },
+    "headline": {
+      "recommend": "{{name}} 餘量最足。",
+      "balance": "Cindy 餘額還能用。",
+      "quota": "Cindy 本期配額還能用。",
+      "none": "餘量都用完了。",
+      "unread": "還沒讀到餘量。",
+      "empty": "還沒有帶餘量的帳號。",
+      "emptyHint": "在 Cindy 裡連上訂閱，這裡就會顯示餘量。",
+      "restore": "{{name}} {{duration}}後重置",
+      "soon": "{{name}} 快見底",
+      "subscriptionsUsed": "訂閱都用完了",
+      "waitReset": "等訂閱重置",
+      "sentence": "{{text}}。",
+      "joiner": "，"
+    },
+    "cell": {
+      "payg": "按量",
+      "plan": "訂閱",
+      "noBalance": "無餘額",
+      "unknown": "查不到",
+      "noData": "還沒讀到餘量",
+      "lastsDays": "約{{n}}天",
+      "lastsDaysShort": "{{n}}天",
+      "resetsIn": "{{duration}}後重置",
+      "credits": "credits"
+    },
+    "a11y": {
+      "payg": "{{name}}，按量計費，查不到餘額",
+      "plan": "{{name}}，訂閱，查不到餘量",
+      "balance": "Cindy 餘額 {{amount}}",
+      "balanceDays": "Cindy 餘額 {{amount}}，約夠 {{n}} 天",
+      "quota": "Cindy 本期配額剩餘 {{amount}}",
+      "noData": "{{name}}，暫無資料",
+      "reserve": "{{name}}，已用完，還有 credits 可用",
+      "remaining": "{{name}} 剩餘 {{n}}%"
+    },
+    "detail": {
+      "balanceCaption": "餘額",
+      "quotaCaption": "本期剩餘配額",
+      "apiKey": "API Key",
+      "subscription": "訂閱",
+      "noBalance": "查不到餘額",
+      "unknownRemaining": "查不到餘量",
+      "noData": "暫無資料",
+      "windowLeft": "{{window}}剩餘"
+    },
+    "say": {
+      "balance": "餘額不會自動回滿。",
+      "quota": "配額按週期發放，不在這裡儲值。",
+      "quotaResets": "配額將於 {{at}} 重置為滿額。",
+      "balanceLasts_other": "按近 7 天的消耗，約夠 {{n}} 天。",
+      "balanceEstimating": "消耗記錄還在積累，過幾天就能估算還能用多久。",
+      "payg": "{{name}} 按用量付費。",
+      "paygSub": "它的接口不提供餘額，所以這裡沒有餘量；用掉的部分照常計入 Cindy 用量。",
+      "plan": "{{name}} 是訂閱連接。",
+      "planSub": "Cindy 還讀不到它的餘量；用掉的部分照常計入 Cindy 用量。",
+      "noData": "還沒讀到餘量。",
+      "noDataSub": "稍後重新整理，或用它跑一次任務後就會顯示。",
+      "usedUp": "{{window}}的用量已用完。",
+      "usedUpWithCredits": "{{at}}回滿；在那之前 Codex 會扣 {{credits}} credits 繼續工作。",
+      "creditsOnly": "Codex 會扣 {{credits}} credits 繼續工作。",
+      "resetsAt": "{{at}}回滿。",
+      "emptyIn": "按现在的速度，約 {{duration}}後見底。",
+      "beforeReset": "比重置早 {{duration}}。",
+      "full": "滿格。",
+      "relaxed": "節奏寬鬆。",
+      "onPace": "節奏正常。",
+      "windowRefresh": "{{window}}週期{{at}}更新",
+      "usedUpWithResets_other": "還有 {{n}} 次額度重置可用，用一次立即回滿。"
+    },
+    "fact": {
+      "balance": "餘額",
+      "quotaLeft": "本期剩餘配額",
+      "quotaTotal": "本期配額",
+      "updatedAgo": "{{ago}}更新",
+      "dailyUse": "日均消耗",
+      "about": "約 {{value}}",
+      "estimating": "估算中",
+      "estimatingSub": "資料還不夠",
+      "last7Days": "近 7 天",
+      "runsOut": "預計用完",
+      "aroundDate": "{{date}}前後",
+      "atThisPace": "按當前速度",
+      "usedFor": "用于",
+      "cindyModels": "Cindy 提供的模型",
+      "chargedPerUse": "按實際用量扣費",
+      "billing": "計費",
+      "perUse": "按量",
+      "subscription": "訂閱",
+      "connected": "已連接",
+      "notProvided": "接口不提供",
+      "notReadable": "暫時讀不到",
+      "inMenu": "在選單裡",
+      "hidden": "已隱藏",
+      "shown": "顯示",
+      "editHint": "可在「編輯」裡調整",
+      "usage": "用量",
+      "counted": "照常統計",
+      "countedSub": "計入 Cindy 用量",
+      "resetsFull": "回滿",
+      "windowResets": "{{window}}重置",
+      "timeLeft": "還有 {{duration}}",
+      "remainingPercent": "剩 {{n}}%",
+      "perModel": "按模型單獨計算",
+      "pace": "節奏",
+      "paceNormal": "正常",
+      "paceAhead": "超前 {{n}}%",
+      "paceReserve": "儲備 {{n}}%",
+      "paceSub": "均匀用應剩 {{n}}%",
+      "paceUsedUp": "已用完",
+      "paceWaiting": "等待回滿",
+      "extraCredits": "額外 credits",
+      "unlimited": "不限",
+      "creditsUsedAfter": "配額用完後由 Codex 扣除",
+      "noCredits": "沒有備用 credits",
+      "prepaid": "預付餘額",
+      "xaiAccount": "xAI 帳戶",
+      "account": "帳號",
+      "todaySpent": "今日已用",
+      "dailySuggested": "每日建議 {{value}} 以內",
+      "poolPlan": "方案餘額",
+      "poolPlanSub": "隨方案發放",
+      "poolPurchased": "儲值餘額",
+      "poolPurchasedSub": "自行儲值",
+      "poolPromo": "贈送餘額",
+      "poolPromoSub": "活動贈送",
+      "promoExpires": "{{value}} {{date}}到期",
+      "promoExpiresAll": "{{date}}到期",
+      "resetCredits": "額度重置",
+      "resetCount_other": "{{n}} 次",
+      "resetExpires": "{{date}}前有效",
+      "resetAtLimit": "達到用量上限時可用",
+      "device": "所在電腦",
+      "deviceSub": "我的其他電腦"
+    },
+    "action": {
+      "newTask": "用 {{name}} 開新任務",
+      "topUp": "在 Cindy 裡儲值",
+      "manage": "在 Cindy 設定中管理",
+      "openApp": "打開 Cindy",
+      "useReset": "在 Cindy 設定中使用重置"
+    },
+    "tasks": {
+      "today_other": "今天 {{n}} 個",
+      "withRunning_other": "{{base}} · {{n}} 個執行中",
+      "context": "上下文 {{n}}%",
+      "private": "{{harness}} 任務"
+    },
+    "harness": {
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "pi": "Pi"
+    },
+    "usage": {
+      "estimateNote": "訂閱等值 = 按 API 參考價折算訂閱裡用掉的量，不是帳單。",
+      "deviceSelf": "這台 {{name}}（實時）",
+      "deviceSynced": "{{name}}（同步到 {{date}}）",
+      "deviceNotSynced": "{{name}}（還沒同步）",
+      "deviceJoiner": " + ",
+      "allDevices": "所有裝置 = {{list}}。"
+    },
+    "manage": {
+      "balance": "餘額 · 不會自動回滿",
+      "quota": "配額 · 按週期重置",
+      "payg": "API Key · 按量，查不到餘額",
+      "plan": "訂閱 · 查不到餘量",
+      "subscription": "訂閱 · {{plan}} · {{windows}}",
+      "onDevice": "{{name}} · {{subtitle}}"
+    },
+    "notify": {
+      "lowTitle": "餘量快用完了",
+      "lowBody": "所有還有餘量的來源都快見底了。點選單列的 Cindy 圖示，看看哪些什麼時候回滿。"
+    },
+    "ui": {
+      "updatedJustNow": "剛剛更新",
+      "updatedMinutes_other": "{{n}} 分鐘前更新",
+      "updatedHours_other": "{{n}} 小時前更新",
+      "updatedDays_other": "{{n}} 天前更新",
+      "tasks": "任務",
+      "tokenUnit": "token",
+      "noTasksToday": "今天還沒有任務",
+      "moreTasks_other": "另外 {{n}} 個任務",
+      "running": "執行中",
+      "openApp": "打開 Cindy",
+      "gateTitle": "登入後查看餘量",
+      "gateBody": "在 Cindy 裡登入，或選擇跳過登入，這裡就會顯示訂閱餘量和今天的用量。",
+      "settings": "管理",
+      "refresh": "重新整理",
+      "monthScopeLocal": "近 30 天 · 這台電腦",
+      "monthScopeAll": "近 30 天 · 所有裝置",
+      "expand": "展開",
+      "expandUsage": "展開用量",
+      "back": "返回",
+      "usageTitle": "用量",
+      "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
+      "scopeLocal": "這台電腦",
+      "scopeAll": "所有裝置",
+      "noUsage": "沒有用量",
+      "harness": {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "pi": "Pi"
+      },
+      "dailyAverage": "日均",
+      "paid": "實付",
+      "range7": "7 天",
+      "range30": "30 天",
+      "range90": "90 天",
+      "listModels_other": "近 {{n}} 天模型",
+      "listTasks": "今天的任務",
+      "today": "今天",
+      "manageTitle": "管理",
+      "done": "完成",
+      "sources": "餘量來源",
+      "sourcesShown": "{{a}} / {{b}} 顯示",
+      "statusIcon": "選單列圖示",
+      "statusIconMode": {
+        "icon": "只圖標",
+        "lowest": "最低餘量",
+        "today": "今日用量",
+        "task": "當前任務"
+      },
+      "other": "其他",
+      "lowAlert": "快用完時通知",
+      "privacy": "隱藏個人資訊",
+      "usageScope": "用量統計範圍",
+      "manageFoot": "管理模型供應商",
+      "showSource": "在選單裡顯示 {{name}}",
+      "reorderHint": "拖動，或用操作選單調整順序",
+      "moveUp": "上移",
+      "moveDown": "下移"
     }
   },
   "settings": {
@@ -1309,6 +1639,7 @@
         "done": "已完成 ✓",
         "error": "執行失敗",
         "needsReply": "需要你回覆",
+        "inputHandoff": "需要你代為輸入",
         "externalDone": "Cindy · 任務「{{title}}」已完成 ✓",
         "externalError": "Cindy · 任務「{{title}}」執行失敗",
         "externalNeedsReply": "Cindy · 任務「{{title}}」需要你回覆",
@@ -1332,6 +1663,10 @@
       "wecomGroupClearFailed": "Webhook 移除失敗"
     },
     "windowBehavior": {
+      "menubar": {
+        "label": "在選單列顯示餘量",
+        "hint": "在 macOS 選單列放一個 Cindy 圖示，點開查看訂閱餘量、Cindy 餘額和今天的用量。"
+      },
       "loginItem": {
         "label": "自動啟動",
         "hint": "登入電腦後開啟 Cindy，預設關閉",
@@ -2483,6 +2818,10 @@
           "modelSupportsImageInput": "支援圖片輸入",
           "modelSupportsImageInputHelp": "僅在該模型確實支援視覺輸入時開啟。儲存後新建 Pi 任務生效。",
           "runtimeAdvanced": "進階",
+          "openaiImages": "使用 OpenAI Images 介面",
+          "openaiImagesHint": "使用此連線的位址和 API Key 呼叫 /images/generations 與 /images/edits。開啟後，此連線將作為供應商唯一的圖片連線。缺少的模型可手動新增 ID，再到模型詳情宣告圖片能力。",
+          "xaiVideos": "使用 xAI 相容影片介面",
+          "xaiVideosHint": "使用此連線的位址與 API Key 提交、查詢影片任務。開啟後，此連線將作為供應商唯一的影片連線。缺少的模型可手動新增 ID，再到模型詳情宣告影片能力。",
           "runtimeSupportsImageGeneration": "支援圖片生成與編輯",
           "runtimeSupportsImageGenerationHelpLabel": "瞭解圖片生成與編輯支援",
           "runtimeSupportsImageGenerationConditionTitle": "適用條件",
@@ -2731,6 +3070,20 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "目錄未提供",
           "capability": "能力",
+          "videoCapability": {
+            "label": "影片能力",
+            "default": "跟隨模型目錄",
+            "generate": "文字生成影片",
+            "edit": "文字生成影片與圖片轉影片",
+            "hint": "套用於 {{agent}} 影片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
+          "imageCapability": {
+            "label": "圖片能力",
+            "default": "跟隨模型目錄",
+            "generate": "圖片生成",
+            "edit": "圖片生成與編輯",
+            "hint": "套用於 {{agent}} 的圖片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
           "capabilityHint": "優先使用目前供應商宣告的能力；未宣告時，圖片能力參考模型名稱。",
           "imageInput": "圖片輸入",
           "supported": "支援",
@@ -3137,7 +3490,10 @@
       "connection": {
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
-        "manualModel": "模型 ID（無法自動取得時填寫）"
+        "manualModel": "模型 ID（無法自動取得時填寫）",
+        "modelTypeAutomatic": "自動辨識",
+        "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
+        "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
       },
       "byok": {
         "managed": "由企業管理連線與模型",
@@ -4972,8 +5328,9 @@
           "descriptions": {
             "unsupported": "此保護僅可在 macOS 上使用。",
             "disabled": "Cindy 執行期間會阻止 Codex 連線至 Work Louder 鍵盤；不會限制 Cindy 本身。",
-            "recovery-required": "保護已停止，但 NODE_OPTIONS 尚未安全還原。請先重試還原，再重新開啟。",
-            "error": "Cindy 無法更新 Codex 保護；原有 NODE_OPTIONS 已保留或等待還原。"
+            "paused": "此保護因影響其他應用程式已暫停。若應用程式仍異常，請結束舊版 Cindy，再完全結束並重新開啟受影響的應用程式。",
+            "recovery-required": "保護已暫停，但舊的啟動設定尚未清理完成。請點擊「還原環境」，完成後完全結束並重新開啟受影響的應用程式。",
+            "error": "Cindy 無法讀取或清理舊的保護設定；此保護仍保持暫停。"
           },
           "restartRequired": "請完全結束並重新開啟 Codex 以生效"
         },
@@ -5806,7 +6163,12 @@
           "invalidPackage": "插件安裝包異常，無法安裝，請聯絡釋出者。",
           "downloadTimeout": "插件下載逾時，請稍後重試。",
           "downloadFailed": "插件下載失敗，請檢查網路後重試。",
-          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。"
+          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。",
+          "namespaceClientRequired": "目前版本無法查看企業插件，請更新 Cindy。已安裝的企業插件仍可使用。",
+          "organizationContextUnavailable": "暫時無法確認企業身份，請稍後重試。已安裝的企業插件仍可使用。",
+          "namespaceConfigRequired": "企業插件服務暫時無法使用。已安裝的企業插件仍可使用。",
+          "listChanged": "企業插件目錄已變化，請重試。",
+          "organizationUnavailable": "企業插件暫時無法使用。已安裝的企業插件仍可使用。"
         },
         "securityTitle": "安裝與權限",
         "securityDescription": "安裝包會在主處理程序中校驗大小與 SHA-256，再經 Cindy 插件清單校驗後原子安裝。安裝前會請你確認插件的權限，安裝好後即自動開啟，可隨時在插件頁停用；更新會保留當前生效狀態，新版本權限變多時會先請你確認。",
@@ -5878,7 +6240,7 @@
         "customSourcesUnavailable": "以下自訂市場暫時無法存取：{{names}}，其他市場不受影響。",
         "replace": "取代",
         "replaceAria": "以此市場版本取代 {{name}}",
-        "replaceDescription": "已安裝相同 ID 的插件，繼續將以市場版本取代，原有資料會保留。"
+        "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
       "install": "安裝插件…",
       "empty": "還沒有安裝任何插件",
@@ -6240,6 +6602,9 @@
         "slotWorkspace": "工作區任務"
       },
       "commandPaletteTag": "插件指令",
+      "commandPaletteSource": {
+        "team": "團隊共享"
+      },
       "library": {
         "title": "持久作品庫",
         "loading": "正在讀取庫資訊…",
@@ -6286,7 +6651,23 @@
         "installLocationPickedPrefix": "已選擇：",
         "installLocationChange": "更改…",
         "bindAfterInstallFailed": "自訂儲存位置設定失敗，已回退預設位置",
-        "cancel": "取消"
+        "cancel": "取消",
+        "reattachTitle": "接回這個插件以前的作品資料？",
+        "reattachDescription": "這台電腦還保留著這個插件以前安裝時的作品資料，可能來自之前從本機匯入、後來解除安裝的版本。接回後，以前的畫布和圖片會繼續出現在這次安裝的插件裡；不接回則從空白開始，以前的資料仍保留在這台電腦上。",
+        "reattachConfirm": "接回",
+        "reattachSkip": "不接回",
+        "legacyFoundBanner": "這台電腦上還有這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），目前的安裝沒有使用它。",
+        "legacyReattach": "接回以前的作品資料",
+        "legacyReattachBusy": "正在接回…",
+        "legacyReattachConfirmTitle": "接回以前的作品資料？",
+        "legacyReattachConfirmDescription": "插件會改用以前留下的作品資料。目前的作品資料會移入回收站，保留 30 天，期滿後徹底清除。",
+        "legacyReattachConfirmText": "接回",
+        "legacyReattachDone": "已接回以前的作品資料",
+        "legacyReattachFailed": "接回失敗",
+        "legacyReattachNeedsRestart": "沒能清掉這個插件的快取。請重新啟動 Cindy 後再使用這個插件。",
+        "legacyInUseBanner": "這台電腦上另一個安裝（例如本機版）還在使用這個插件以前的作品資料。解除安裝那個版本後，可以在這裡接回。",
+        "legacyFoundUnknownBanner": "這台電腦上有一份可能是這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），沒有來源記錄，目前的安裝沒有使用它。",
+        "legacyReattachUnknownSource": "這份作品資料沒有來源記錄，可能是手動複製或用腳本搬過來的。請確認它屬於這個插件。"
       },
       "updateConfirm": {
         "title": "更新插件「{{name}}」？",
@@ -8317,7 +8698,7 @@
         "message": "跟進「{{title}}」",
         "aria": "跟進「{{title}}」"
       },
-      "followingMark": "{{names}}在跟進這個專案",
+      "followingMark": "{{names}}在跟進這個任務",
       "olderCount_other": "更早的 {{count}} 個",
       "kind": {
         "existing": "原有任務",
@@ -8669,6 +9050,14 @@
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
       },
+      "quote": {
+        "replyingTo": "引用 {{name}}",
+        "remove": "取消引用",
+        "jumpLabel": "查看 {{name}} 的原訊息：{{summary}}",
+        "deleted": "原訊息已刪除",
+        "unavailable": "原訊息不在可查看的紀錄裡",
+        "attachments": "{{name}} 等 {{total}} 個附件"
+      },
       "timeline": {
         "loadEarlier": "查看更早的訊息",
         "loadEarlierFailed": "更早的訊息沒能載入，請再試一次",
@@ -8767,7 +9156,8 @@
         "requestTimeout": "還未確認操作結果，請重新整理查看後再重試。",
         "permissionDenied": "你沒有執行此操作的群管理權限。",
         "serviceError": "群聊服務處理失敗，請稍後重試。",
-        "groupArchived": "本群已封存，無法執行此操作。"
+        "groupArchived": "本群已封存，無法執行此操作。",
+        "quoteUnavailable": "引用的訊息已刪除或無法查看，已取消引用，請再傳送一次"
       },
       "organizer": "負責人",
       "plan": {
@@ -8799,9 +9189,11 @@
         "openFailed": "檔案沒能開啟，可能已被移動或刪除"
       },
       "server": {
-        "reply": "回覆",
+        "quoteReply": "引用回覆",
+        "startTopic": "建立話題",
+        "openTopic": "查看話題 · {{count}} 則回覆",
+        "topic": "話題",
         "replies": "回覆",
-        "replyCount": "{{count}} 則回覆",
         "replyPlaceholder": "回覆這則訊息，可用 @ 點名夥伴…",
         "sendReply": "傳送回覆",
         "addReaction": "新增表情回應",
@@ -8914,6 +9306,7 @@
       "avatar": "{{name}} 正在挑選新頭像",
       "welcome": "正在準備第一聲問候",
       "failed": "準備暫時停住了。已完成的內容會保留，可以再試一次。",
+      "changeModel": "更換模型",
       "retryFailed": "暫時無法重試，請稍後再試。",
       "leave": "先去忙",
       "avatarSkipped": "暫時用了預設頭像，你隨時可以換一張。"
@@ -8944,7 +9337,11 @@
       "configure": "前往設定",
       "empty_toolset": "目前執行環境沒有可用的內建工具。",
       "empty_mcp": "尚未新增自訂 MCP 服務。",
-      "empty_skill": "暫無可選的技能。"
+      "empty_skill": "暫無可選的技能。",
+      "inputHandoff": {
+        "title": "代輸入",
+        "description": "遇到需要你本人輸入的登入資訊、密碼或驗證碼時，允許這位夥伴請你在任意裝置上填寫。你填寫的內容不會交給它。"
+      }
     },
     "guided": {
       "title": "建立夥伴",
@@ -8954,7 +9351,9 @@
       "generate": "產生夥伴",
       "generating": "正在構思夥伴…",
       "generationFailed": "暫時無法產生，請保留你的想法再試一次。",
-      "modelRequired": "請先在 Cindy 中選擇可用的預設模型。",
+      "modelRequired": "請在上方選擇可用模型後繼續。",
+      "modelFollowsDefault": "跟隨夥伴預設模型。",
+      "modelForThisBot": "此選擇僅用於這位夥伴。",
       "cindyDescription": "我會幫你使用 Cindy、連接工具，也會和你一起把事情做完。",
       "cindySummary": "管理 Cindy，連接工具，把事情做完。",
       "openCindy": "開啟 Cindy",
@@ -9401,6 +9800,21 @@
       "addRemoteProject": "新增遠端專案"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "免費",
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字元",
+          "image": "張",
+          "second": "秒",
+          "minute": "分鐘",
+          "request": "次",
+          "megapixel": "百萬像素",
+          "megapixelSecond": "百萬像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在設定裡配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付費",
@@ -9507,7 +9921,10 @@
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
+        "remoteFavoriteUnavailable": "{{source}} · 暫時讀不到那臺電腦的模型",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能儲存收藏變更",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
         "addFavorite": "存為收藏",
         "customize": "自訂",
@@ -9859,7 +10276,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；切換權限模式、計畫模式或結束 Cindy 後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
@@ -10168,25 +10585,8 @@
       "observedPeak": "峰值",
       "tokenRate": "{{rate}} tok/s",
       "tokenRateUnit": "tok/s",
-      "tokenRateDescription": "即時速度和峰值為估算。回應結束後以實際用量校準；不計工具執行和請求等待。",
-      "tokenCount": "{{tokens}} tok",
-      "estimatedValue": "約{{value}}",
-      "estimatedTokenRate": "約{{rate}} tok/s",
-      "responseWaiting": "等待 {{seconds}}秒",
-      "waitSeconds": "{{seconds}}秒",
-      "firstResponse": "首回應",
-      "streamWait": "流內等待",
-      "turnWaitDescription": "從本機收到引擎開始到首個文字、思考或工具內容，不等同於網路延遲。",
-      "streamWaitDescription": "從 SDK 串流開始到首個內容區塊，之前的請求等待無法測量。",
-      "lastGeneration": "上次生成",
-      "finalAverage": "最終平均",
-      "generationPaused": "生成暫停",
-      "responsePending": "等待回應",
-      "responseFailed": "請求失敗",
-      "responseCancelled": "已停止",
-      "responseRetrying": "正在重試",
-      "responseGenerating": "正在生成",
-      "toolRunning": "執行工具中"
+      "tokenRateDescription": "最近一段生成速度，不含工具執行與等待。",
+      "tokenCount": "{{tokens}} tok"
     },
     "shareImage": {
       "entry": "分享為圖片",
@@ -10244,6 +10644,8 @@
       "syncAuthFailed": "同步失敗：{{msg}}",
       "syncAuthDaemonRestartFailed": "憑證已推送到遠端，但舊 daemon 沒重啟 — 請重連遠端後再點重試",
       "invalidEncryptedContent": "由於更換供應商導致加密不可用，本任務只能在原供應商下使用，或點此 Fork 丟棄協議加密內容並在新任務繼續。",
+      "readableHistoryRecovery": "用可讀歷史建立新任務",
+      "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
       "forkStripEncrypted": "Fork 並剝離",
       "forkStripEncryptedRunning": "Fork 中…",
       "forkStripEncryptedTitle": "Fork 並剝離出新任務(去掉加密推理內容)",
@@ -10655,7 +11057,8 @@
           "usage-limit": "{{from}} 達到用量上限，已換到 {{to}} 繼續",
           "auth": "{{from}} 登入已失效，已換到 {{to}} 繼續",
           "unavailable": "{{from}} 連不上，已換到 {{to}} 繼續",
-          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續"
+          "overload": "{{from}} 的服務繁忙，已換到 {{to}} 繼續",
+          "failed": "{{from}} 出了問題，已換到 {{to}} 繼續"
         },
         "agentReconnect": {
           "named": "已重新連上 {{computer}}，繼續執行",
@@ -10707,8 +11110,12 @@
           "sourceFilesChanged": "來源任務的檔案已變更，請針對當前成果重新執行 /review。",
           "artifactChanged": "審查成果已變更，請針對當前成果重新執行 /review。",
           "providerFailed": "審查任務執行失敗",
-          "artifactUnavailable": "Cindy 無法安全讀取審查成品，請檢查工作區或附件後重新執行 /review"
-        }
+          "artifactUnavailable": "Cindy 無法準備審查檔案，請檢查所選目錄或附件後重新執行 /review。"
+        },
+        "directory": "目錄：",
+        "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
+        "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
     "markdownRenderer": {
@@ -10807,13 +11214,8 @@
       },
       "expandLongMessage": "展開全文",
       "collapseLongMessage": "收起",
-      "sessionReference": {
-        "recent": "最近訊息",
-        "aroundAnchor": "連結訊息附近",
-        "messageCount_one": "{{count}} 條訊息",
-        "messageCount_other": "{{count}} 條訊息",
-        "truncated": "已截斷"
-      },
+      "sessionLinkFallback": "某個任務",
+      "messageLinkFallback": "引用的訊息",
       "forkBusy": "當前任務正在執行，等結束後再從這裡開啟新任務",
       "editStopTimeout": "等待任務停止超時，請稍後重試",
       "editQueueNotEmpty": "任務有排隊中的訊息，先傳送或移除佇列內容後再編輯",
@@ -11172,6 +11574,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },
@@ -11255,7 +11658,8 @@
         "awaitingPermission": "等待授權",
         "awaitingQuestion": "等待你的回覆",
         "awaitingPlan": "等待計劃審閱",
-        "awaitingPluginSetup": "等待插件設定"
+        "awaitingPluginSetup": "等待插件設定",
+        "awaitingInputHandoff": "等待代輸入"
       },
       "showAllSessions": "顯示全部 {{count}} 項",
       "allSessions": "全部任務",
@@ -12823,6 +13227,125 @@
       "deny": "拒絕"
     }
   },
+  "inputHandoff": {
+    "originWarning": {
+      "insecure": "這個頁面沒有使用安全連線，輸入的內容可能被他人讀取。",
+      "ip-address": "這個頁面使用 IP 位址而不是網域名稱，請確認它是你預期的網站。",
+      "local-host": "這個頁面來自本機服務，請確認它是你預期的程式。",
+      "local-file": "這個頁面是本機檔案，請確認它是你預期的內容。",
+      "punycode": "這個網址包含特殊字元，可能在冒充其他網站，請仔細核對。",
+      "embedded-frame": "輸入框位於嵌入的其他網站中，請確認來源可信。"
+    },
+    "agentControlled": "這個介面由 Agent 開啟。填寫前請確認它確實是你要登入的地方。",
+    "error": {
+      "decision": "操作沒有送達，請重試。",
+      "stale": "介面已經變化，請依最新內容操作。",
+      "submit": "輸入沒有送達，請重試。"
+    },
+    "terminal": {
+      "succeeded": "已交還給 Agent。",
+      "cancelled": "已取消代輸入。",
+      "failed": "代輸入已結束。",
+      "expired": "等待時間過長，代輸入已結束。"
+    },
+    "failure": {
+      "permission": "Cindy 沒有讀取這台電腦介面的權限。請在系統設定的輔助使用中允許 Cindy。",
+      "target_gone": "目標視窗已關閉。",
+      "unreadable": "無法讀取這個介面。可以在主機電腦上直接完成，然後交還給 Agent。",
+      "action_failed": "剛才的操作沒有生效，請檢查介面後重試。",
+      "timeout": "等待時間過長，代輸入已結束。",
+      "unsupported": "這台電腦暫不支援代輸入。",
+      "origin_changed": "填寫前頁面已變化，什麼都沒有填入。請確認現在的頁面後再填寫。",
+      "picture_unavailable": "無法顯示這一步的畫面。請在系統設定中允許 Cindy 錄製螢幕，並確認視窗沒有被縮到最小。",
+      "screen_locked": "這台電腦的螢幕已鎖定（顯示器休眠也會鎖定螢幕）。請先喚醒並解鎖，再讓 Agent 重試。",
+      "nothing_to_fill": "這個介面沒有需要你輸入的內容，已交還給 Agent 繼續。"
+    },
+    "phase": {
+      "reading": "正在讀取介面…",
+      "working": "正在填寫…",
+      "finishing": "看起來已經完成，{{count}} 秒後交還給 Agent。",
+      "finishingNow": "看起來已經完成，正在交還給 Agent…"
+    },
+    "action": {
+      "stay": "還沒完成",
+      "done": "交還給 Agent",
+      "claim": "改在這裡處理",
+      "picture": "看畫面",
+      "backToForm": "回到表單",
+      "liveView": "即時畫面",
+      "fill": "填寫",
+      "skip": "略過",
+      "continue": "繼續",
+      "close": "取消",
+      "showPassword": "顯示密碼",
+      "hidePassword": "隱藏密碼",
+      "scan": "掃碼"
+    },
+    "remoteUnavailable": "這台電腦無法從遠端接收輸入。請在主機電腦上完成這一步，再交還給 Agent。",
+    "unnamedField": "輸入框",
+    "passwordField": "密碼",
+    "codeField": "驗證碼",
+    "filledHint": "已有內容；留空則保持不變。",
+    "record": {
+      "doneOn_one": "主人在 {{device}} 完成了 {{count}} 步輸入",
+      "doneOn_other": "主人在 {{device}} 完成了 {{count}} 步輸入",
+      "doneHost_one": "主人在宿主電腦上完成了 {{count}} 步輸入",
+      "doneHost_other": "主人在宿主電腦上完成了 {{count}} 步輸入",
+      "donePhone_one": "主人在手機上完成了 {{count}} 步輸入",
+      "donePhone_other": "主人在手機上完成了 {{count}} 步輸入",
+      "doneElsewhere_one": "主人在另一台裝置上完成了 {{count}} 步輸入",
+      "doneElsewhere_other": "主人在另一台裝置上完成了 {{count}} 步輸入",
+      "done": "代輸入已完成",
+      "nothingToFill": "無需輸入，已交還給 Agent",
+      "cancelled": "代輸入已取消",
+      "expired": "代輸入已逾時",
+      "failed": "代輸入未完成"
+    },
+    "holder": {
+      "elsewhere": "正在 {{device}} 上處理，也可以改在這裡處理。",
+      "host": "宿主電腦",
+      "phone": "手機",
+      "otherDevice": "另一台裝置"
+    },
+    "agentNote": "Agent 補充：{{note}}",
+    "picture": {
+      "hint": "點按畫面中的位置，Cindy 會在主機電腦上點按同一個位置。",
+      "open": "顯示這一步的畫面",
+      "alt": "目標視窗的畫面",
+      "loading": "正在取得畫面…",
+      "error": "無法取得畫面，請重試。",
+      "field": "目前的輸入框",
+      "type": "輸入",
+      "typeEnter": "輸入並按 Return"
+    },
+    "deviceCode": {
+      "prompt": "用這個代碼登入",
+      "copy": "複製代碼",
+      "copied": "已複製代碼",
+      "copyFailed": "複製失敗",
+      "open": "在本裝置開啟",
+      "openFailed": "無法開啟連結",
+      "then": "在開啟的頁面輸入代碼並完成登入，然後點「交還給 Agent」。"
+    },
+    "nothingLeft": "這裡沒有需要你填寫的了。",
+    "dialogNote": "只會填進電腦上的這一處，不會交給 Agent，也不會儲存。",
+    "qr": {
+      "open": "在本機打開 {{site}}",
+      "copyLink": "複製連結",
+      "copyText": "複製內容",
+      "copied": "已複製。",
+      "copyFailed": "無法複製，請重試。",
+      "loading": "正在取得 QR 碼…",
+      "scanned": "已掃碼，等你在手機上確認。確認後會自動繼續。",
+      "hint": "用手機掃描這個碼完成登入。登入後會自動繼續。",
+      "hintLink": "用手機掃描這個碼，或在本機打開連結完成登入。登入後會自動繼續。",
+      "copyImage": "複製圖片",
+      "imageCopied": "已複製圖片。",
+      "openFailed": "沒能打開這個連結。可以用手機掃描這個碼。",
+      "alt": "電腦上的 QR 碼。點擊會點在電腦上的這個碼上。",
+      "failed": "沒能取得 QR 碼，點擊重試。"
+    }
+  },
   "commandPalette": {
     "viewSkillDetails": "查看技能詳情",
     "projectSkillNotLoaded": "目前的 Pi 任務尚未載入此專案 Skill，新任務會自動嘗試載入"
@@ -13862,6 +14385,26 @@
       "inline": "記憶體附件",
       "allow": "僅本次允許",
       "cancel": "取消"
+    },
+    "workspaceSelection": {
+      "cancel": "取消",
+      "title": "選擇要審查的程式碼",
+      "message": "這個目錄沒有可用的程式碼差異。可以審查目前程式碼，或選擇實際開發的目錄。",
+      "current": "審查目前目錄",
+      "choose": "選擇其他目錄",
+      "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
     }
   },
   "learn": {
@@ -14093,7 +14636,9 @@
         "description": "請將以下資訊寄送至客服信箱 {{email}}，以申請開立發票。",
         "requiredInfo": "郵件中請提供以下資訊：",
         "emailSubject": "申請開立訂單 {{orderId}} 的發票",
-        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
+        "personalInvoicePolicy": "Cindy 個人版儲值預設開立<strong>個人抬頭發票</strong>，抬頭可填寫姓名或「個人」。如需開立企業抬頭發票用於公司報銷，請提供<strong>加蓋公司公章的報銷說明</strong>，並在說明中註明開票抬頭。",
+        "invoiceTitleHint": "填寫說明：個人抬頭請填寫姓名或「個人」；如需企業抬頭用於公司報銷，請隨郵件附上加蓋公司公章、註明開票抬頭的報銷說明。",
+        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n{{invoiceTitleHint}}\n\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
         "sendAction": "寄送開票申請",
         "emailCopied": "客服信箱已複製",
         "emailCopyFailed": "複製客服信箱失敗，請再試一次",
