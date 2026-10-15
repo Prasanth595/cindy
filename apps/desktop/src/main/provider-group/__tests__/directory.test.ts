@@ -229,6 +229,36 @@ describe('resolveMembers', () => {
     expect(resolved.reportedRunning).toBeUndefined();
   });
 
+  it.each(['resolve', 'reject'] as const)('bounds local load reads and ignores a late %s', async (outcome) => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(deps({
+        localRunning: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+          if (outcome === 'reject') throw new Error('db busy');
+          return 6;
+        },
+      }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', {
+        strategy: 'least',
+        autoSwitch: true,
+        members: [{ key: 'local', kind: 'local', agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false }],
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toHaveBeenCalledTimes(1);
+      const [resolved] = done.mock.calls[0][0];
+      expect(resolved).toMatchObject({ state: 'ok', member: { key: 'local' } });
+      expect(resolved.reportedRunning).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(resolved.reportedRunning).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('names members for activity records without the sharer’s computer name', () => {
     const directory = createProviderGroupDirectory(deps());
     const member = (patch: Partial<ProviderGroupConfig['members'][number]>) => ({
@@ -370,6 +400,36 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
       ]);
       expect(resolved[0].pending).toBeUndefined();
       expect(resolved[0].claudeUsage).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the local computer when its catalog is slow and its load read stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      const local: ProviderGroupMember = {
+        key: 'local', kind: 'local', agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false,
+      };
+      const directory = createProviderGroupDirectory({
+        ...slowDeps(),
+        listLocalProviders: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 2_500));
+          return [view('anthropic', 'Anthropic')];
+        },
+        localRunning: () => new Promise<number | null>(() => undefined),
+      });
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', { ...config, members: [local, SLOW] }, {
+        quickMs: 3_000,
+        enough: (resolved) => resolved.state === 'ok',
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(done.mock.calls[0][0]).toMatchObject([
+        { member: { key: local.key }, state: 'ok' },
+        { member: { key: SLOW.key }, state: 'offline', pending: true },
+      ]);
     } finally {
       vi.useRealTimers();
     }

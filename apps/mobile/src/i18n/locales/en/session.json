@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "Open Task",
+    "loading": "Loading task…",
+    "failed": "Could not load task details.",
+    "missing": "This computer did not return details for this task.",
+    "timedOut": "Loading task details timed out.",
+    "retry": "Reload Task",
+    "back": "Go Back"
+  },
   "failedScheduleNotice": {
     "text": "An automatic run failed.",
     "precheck": "Automatic checks are temporarily blocked.",

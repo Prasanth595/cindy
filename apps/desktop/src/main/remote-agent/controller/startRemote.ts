@@ -96,7 +96,12 @@ export interface StartRemoteAgentDeps {
    * 同账号任务不提供。`grant` 是这个任务在这个分享上的「本任务总是允许」记录，Agent 实例被系统回收
    * 重建后据此恢复；缺省时授权只在本次启动的执行器内有效。
    */
-  credentialConsent?: { description: string; grant?: CredentialGrantRecord };
+  credentialConsent?: {
+    description: string;
+    grant?: CredentialGrantRecord;
+    /** 受邀者把这个分享切成了「信任 {分享者}」：每次操作前问一遍，true 时与本机任务一样不弹卡。 */
+    skip?: () => boolean;
+  };
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** 本机 Codex 程序(给对方的 Codex 提供 exec-server 执行环境)；缺省时不提供。 */
@@ -229,7 +234,7 @@ export async function startRemoteAgentSession(
   let planMode = opts.planMode === true;
   const credentialConsent = deps.credentialConsent;
   const gate = new ExecutorGate(workspace, executorGateModeFor(permissionMode, planMode), Date.now, {
-    confirmCredentials: credentialConsent !== undefined,
+    confirmCredentials: credentialConsent ? () => credentialConsent.skip?.() !== true : false,
   });
   // 同一任务、同一分享、原始权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
   const grant = credentialConsent?.grant;

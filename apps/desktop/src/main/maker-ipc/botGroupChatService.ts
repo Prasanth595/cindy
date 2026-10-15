@@ -160,6 +160,8 @@ export interface BotGroupChatServiceDeps {
   captureOwnerScope?: () => DataOwnerBroadcastScope;
   isOwnerScopeCurrent?: (scope: DataOwnerBroadcastScope) => boolean;
   onChanged?: (payload: BotGroupChangedPayload, ownerScope?: DataOwnerBroadcastScope) => void;
+  /** Cloud companions (cloud-companions.md); absent keeps the Chat Server per-computer only. */
+  companionCloud?: import('../companion-cloud/runtime.js').CompanionCloudHost;
   now?: () => number;
   createId?: () => string;
   memberTurnTimeoutMs?: number;

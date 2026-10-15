@@ -259,6 +259,59 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
+  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', async (withTaskGrant) => {
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=one');
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => fakeHostedAgent(input, [env]),
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    const opts = { sessionId: 'credentials-skip', workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    let skip = true;
+    const deps = {
+      ...makeDeps(host),
+      credentialConsent: {
+        description: 'Only this task; content passes through the sharer.',
+        skip: () => skip,
+        ...(withTaskGrant ? { grant: credentialGrantFor(opts.sessionId, 'share:skip') } : {}),
+      },
+    };
+    let localConfirmations = 0;
+    const run = async (handle: AgentSessionHandle) => {
+      handle.setInteractionResolver(async (request) => {
+        if (request.requestId !== 'forged') localConfirmations += 1;
+        return { kind: 'permission', behavior: 'allow' };
+      });
+      const reader = (async () => {
+        const results: string[] = [];
+        for await (const event of handle.events()) {
+          if (event.type === 'text') results.push((event.data as { text: string }).text);
+          if (event.type === 'done') return results;
+        }
+        return results;
+      })();
+      await handle.send({ type: 'user', content: 'read credentials' });
+      expect(await reader).toEqual(['credential:200']);
+    };
+    const handle = await startRemoteAgentSession('pi', opts, deps);
+    try {
+      // 受邀者在设置里打开了「信任 {分享者}」：读 .env 不弹卡、直接放行。
+      await run(handle);
+      expect(localConfirmations).toBe(0);
+      // 运行中关掉：下一次凭证操作就要确认。
+      skip = false;
+      await run(handle);
+      expect(localConfirmations).toBe(1);
+    } finally {
+      await handle.close({ reason: 'navigation' });
+      host.dispose();
+    }
+  });
+
   it('restores a task-level credential grant when the agent is rebuilt with the same share and permission mode', async () => {
     const env = path.join(project, '.env');
     fs.writeFileSync(env, 'TOKEN=one');

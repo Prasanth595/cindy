@@ -393,6 +393,12 @@
         "cancel": "キャンセル"
       },
       "detailNote": "Agent は {{name}} のパソコン、または {{name}} が手配した別のパソコンで動き、相手のログインとクォータを使います。チャットの内容と Agent が読み取ったファイルの内容は {{name}} のパソコンを経由し、実際にセッションを実行するパソコンに保存されます。タスクを新規作成するときにモデル一覧で選ぶと使えます。",
+      "credentialConsent": {
+        "label": "{{name}} を信頼",
+        "description": "オンにすると、この共有を使うタスクが鍵などの機密情報を読み取るときに確認しなくなり、自分のプロバイダーと同じように使えます。このパソコンでのみ有効です。",
+        "ariaLabel": "{{name}} を信頼（{{provider}}）",
+        "writeFailed": "信頼の設定を保存できませんでした"
+      },
       "modelsTitle": "利用できるモデル",
       "modelsLoading": "相手が公開しているモデルを読み込んでいます…",
       "modelsRefused": "相手のパソコンが今この共有の読み込みを許可していません。リモート操作を許可していないか、このプロバイダーの「リモート利用を許可」がオフになっているか、相手の Cindy が起動したばかりでまだ準備できていない可能性があります。しばらくしてから再試行するか、相手にこの 2 つの設定を確認してもらってください。",
@@ -488,13 +494,12 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
-      "usage": "使用量で分散",
+      "quotaFirst": "Claude サブスクリプションの使用量を取得できる場合、クォータのリセットが近いパソコンを優先し、次に使用量の少ないものを選びます。同程度ならグループの割り当て方式で選びます",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
         "order": "上のパソコンを優先",
-        "weight": "重みの比率で",
-        "usage": "5時間・週間の使用量で分散"
+        "weight": "重みの比率で"
       }
     },
     "autoSwitch": {
@@ -5296,8 +5301,9 @@
           "descriptions": {
             "unsupported": "この保護機能は macOS でのみ利用できます。",
             "disabled": "Cindy の実行中、Codex が Work Louder キーボード に接続するのを防ぎます。Cindy 自体は制限されません。",
-            "recovery-required": "保護は停止しましたが、NODE_OPTIONS は安全に復元されていません。再度有効にする前に復元を再試行してください。",
-            "error": "Codex の保護を更新できませんでした。以前の NODE_OPTIONS は保持されているか、復元待ちです。"
+            "paused": "他のアプリに影響するため、この保護機能は一時停止しています。問題が続く場合は、旧バージョンの Cindy を終了し、影響を受けたアプリを完全に終了してから開き直してください。",
+            "recovery-required": "保護機能は一時停止していますが、以前の起動設定が残っています。「環境を復元」を選択し、完了後に影響を受けたアプリを完全に終了してから開き直してください。",
+            "error": "以前の保護設定を読み取るか削除することができませんでした。保護機能は一時停止したままです。"
           },
           "restartRequired": "適用するには Codex を完全に終了して再起動"
         },
@@ -9416,6 +9422,44 @@
       "memory": "記憶しました：{{title}}",
       "skillCreated": "スキルを作成：{{title}}",
       "skillUpdated": "スキルを更新：{{title}}"
+    },
+    "cloud": {
+      "homeLabel": "メインのパソコン",
+      "thisComputer": "このパソコン",
+      "homeOffline": "メインのパソコン「{{device}}」がオフラインです",
+      "homeOfflineShort": "メインのパソコンがオフライン",
+      "homeUnreachable": "メインのパソコン「{{device}}」はリモート操作を許可していません",
+      "homeReadOnly": "メインのパソコン：{{device}}",
+      "continueHere": "このパソコンで続ける",
+      "takeOverHint": "このパソコンで続けると、{{name}} はこちらで動作し、下の会話も引き継がれます。",
+      "takingOver": "このパソコンで {{name}} を準備しています…",
+      "takeOverConflict": "{{name}} はすでに「{{device}}」に移っています",
+      "takeOverOffline": "サーバーに接続できないため、今はこのパソコンで続けられません",
+      "takeOverFailed": "このパソコンで {{name}} を引き継げませんでした",
+      "notEnabled": "このサーバーはメインのパソコンの変更に対応していません",
+      "readOnlyNote": "クラウドに保存された会話です。閲覧のみできます",
+      "empty": "クラウドの会話はまだありません",
+      "loadFailed": "クラウドの会話を読み込めませんでした",
+      "reload": "会話を再読み込み",
+      "loadOlder": "以前のメッセージを読み込む",
+      "unknownDevice": "別のパソコン",
+      "loadingDevices": "パソコンの一覧を読み込んでいます…",
+      "devicesFailed": "パソコンの一覧を読み込めませんでした",
+      "noTargets": "引き継げるパソコンがありません。別のパソコンがオンラインで、同じアカウントでログインし、「同一アカウントのデバイスによる操作を許可」をオンにしている必要があります",
+      "resumeToMove": "{{name}} を再開してから別のパソコンに移動してください",
+      "moveTo": "「{{device}}」に移す",
+      "transferTitle": "{{name}} を「{{device}}」に移しますか？",
+      "transferDescription": "これから {{name}} は「{{device}}」で動作します。作業ディレクトリと接続はこのパソコンに残り、このパソコンの会話は履歴になります。",
+      "transferAction": "「{{device}}」に移す",
+      "transferred": "{{name}} を「{{device}}」に移しました",
+      "transferConflict": "{{name}} のメインのパソコンはすでに変わっているため、移しませんでした",
+      "transferOffline": "サーバーに接続できません。{{name}} は引き続きこのパソコンで動作します",
+      "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移動してください",
+      "transferFailed": "{{name}} を「{{device}}」に移せませんでした",
+      "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
+      "shadowTitle": "この仲間は「{{device}}」で動作しています",
+      "shadowHint": "ここの会話は閲覧のみできます。",
+      "openOnHome": "「{{device}}」で開く"
     }
   },
   "common": {

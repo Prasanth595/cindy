@@ -393,6 +393,12 @@
         "cancel": "取消"
       },
       "detailNote": "Agent 在 {{name}} 的电脑或 {{name}} 安排的其他电脑上运行，用的是对方的登录和配额。对话内容和 Agent 读取的文件内容会经过 {{name}} 的电脑，并保存在实际运行任务的那台电脑上。新建任务时在模型列表里选择它就能用。",
+      "credentialConsent": {
+        "label": "信任 {{name}}",
+        "description": "开启后，用这个分享的任务读取密钥等敏感信息时不再弹窗确认，和用自己的供应商一样。只对这台电脑生效。",
+        "ariaLabel": "信任 {{name}}（{{provider}}）",
+        "writeFailed": "未能保存信任设置"
+      },
       "modelsTitle": "可用的模型",
       "modelsLoading": "正在读取对方开放的模型…",
       "modelsRefused": "对方电脑暂时不让读取这个分享：可能没有允许远程控制、关了这个供应商的「允许被远程调用」，也可能对方的 Cindy 刚启动、还没准备好。请稍后重试，或让对方检查这两项设置。",
@@ -488,13 +494,12 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "usage": "用量均衡",
+      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例",
-        "usage": "按5小时和每周用量分配"
+        "weight": "按权重比例"
       }
     },
     "autoSwitch": {
@@ -5290,8 +5295,9 @@
           "descriptions": {
             "unsupported": "此保护仅在 macOS 上可用。",
             "disabled": "Cindy 运行期间阻止 Codex 连接 Work Louder 键盘；不会限制 Cindy 本身。",
-            "recovery-required": "保护已停止，但 NODE_OPTIONS 尚未安全恢复。请先重试恢复，再重新开启。",
-            "error": "Cindy 无法更新 Codex 保护；原有 NODE_OPTIONS 已保留或等待恢复。"
+            "paused": "此保护因影响其他应用已暂停。若应用仍异常，请退出旧版 Cindy，再完全退出并重新打开受影响应用。",
+            "recovery-required": "保护已暂停，但旧的启动设置尚未清理完成。请点击“恢复环境”，完成后完全退出并重新打开受影响应用。",
+            "error": "Cindy 无法读取或清理旧的保护设置；此保护仍保持暂停。"
           },
           "restartRequired": "请完全退出并重新打开 Codex 以生效"
         },
@@ -9416,6 +9422,44 @@
       "memory": "已记住：{{title}}",
       "skillCreated": "已建立技能：{{title}}",
       "skillUpdated": "已更新技能：{{title}}"
+    },
+    "cloud": {
+      "homeLabel": "主力电脑",
+      "thisComputer": "这台电脑",
+      "homeOffline": "主力电脑「{{device}}」离线",
+      "homeOfflineShort": "主力电脑离线",
+      "homeUnreachable": "主力电脑「{{device}}」没有开放远程控制",
+      "homeReadOnly": "主力电脑：{{device}}",
+      "continueHere": "在这台电脑继续",
+      "takeOverHint": "在这台电脑继续后，{{name}} 改在这里运行，下面的对话一起带过来。",
+      "takingOver": "正在这台电脑上准备 {{name}}…",
+      "takeOverConflict": "{{name}} 已经换到「{{device}}」继续了",
+      "takeOverOffline": "连不上服务器，暂时无法在这台电脑继续",
+      "takeOverFailed": "未能在这台电脑上接手 {{name}}",
+      "notEnabled": "当前服务器不支持更换主力电脑",
+      "readOnlyNote": "这里是云端保存的对话，只能查看",
+      "empty": "还没有云端对话",
+      "loadFailed": "未能读取云端对话",
+      "reload": "重新读取对话",
+      "loadOlder": "加载更早的消息",
+      "unknownDevice": "另一台电脑",
+      "loadingDevices": "正在读取电脑列表…",
+      "devicesFailed": "未能读取电脑列表",
+      "noTargets": "没有可接手的电脑。另一台电脑需要在线、登录同一账号，并开启「允许同账号设备控制本机」",
+      "resumeToMove": "先恢复 {{name}}，再换到另一台电脑",
+      "moveTo": "交给「{{device}}」",
+      "transferTitle": "把 {{name}} 交给「{{device}}」？",
+      "transferDescription": "从现在起 {{name}} 在「{{device}}」上运行。工作目录和连接留在这台电脑，这台电脑上的对话变为历史记录。",
+      "transferAction": "交给「{{device}}」",
+      "transferred": "{{name}} 已交给「{{device}}」",
+      "transferConflict": "{{name}} 的主力电脑已经变了，这次没有交出",
+      "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
+      "transferBusy": "{{name}} 还在回复，等这一轮结束再换电脑",
+      "transferFailed": "未能把 {{name}} 交给「{{device}}」",
+      "targetUnavailable": "「{{device}}」现在不可用，它需要在线并开启远程控制",
+      "shadowTitle": "这个伙伴已在「{{device}}」上运行",
+      "shadowHint": "这里的对话只能查看。",
+      "openOnHome": "打开「{{device}}」上的伙伴"
     }
   },
   "common": {

@@ -55,6 +55,9 @@ import {
   shouldDeferCanonicalBotSessionNavigation,
   withBotCanonicalSessionReadTimeout,
 } from './botNavigation';
+import { useCompanionCloud } from './companionCloudStore';
+import { withoutShadowedBots } from './companionCloudPresentation';
+import { BotHomeComputerSetting } from './BotHomeComputerSetting';
 import { BotLifecycleSettings } from './BotLifecycleSettings';
 import { BotInvitationWelcome } from './BotInvitationWelcome';
 import { BotModelChainEditor } from './BotModelChainEditor';
@@ -512,6 +515,7 @@ export function BotSettings({
                 </button>
               ))}
             </div>
+            <BotHomeComputerSetting bot={bot} />
             <div className="mt-6">
               <BotLifecycleSettings
                 bot={bot}
@@ -769,7 +773,9 @@ export function BotsHomeView() {
   const history = useContext(MainViewHistoryContext);
   const selectedBot = useMemo(() => bots.find((bot) => bot.id === botId && bot.status !== 'deleting') ?? null, [botId, bots]);
   const profilesLoaded = hasLoadedBotProfiles();
-  const entryTarget = botEntryTarget(bots, history?.current.lastBotId);
+  const cloud = useCompanionCloud();
+  // Demoted copies (home moved to another computer) are never the entry choice.
+  const entryTarget = botEntryTarget(withoutShadowedBots(bots, cloud), history?.current.lastBotId);
   // An empty profile projection can predate the newly connected source/runtime.
   // Only followers may resume from live defaults; Main resolves the actual route
   // when opening the canonical task without writing a per-Bot override.

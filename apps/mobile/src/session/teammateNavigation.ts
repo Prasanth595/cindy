@@ -45,6 +45,21 @@ export function teammateResourceRoute(hosted: HostedRemoteCollectionItem, locale
   };
 }
 
+/**
+ * The read-only cloud view of a companion whose main computer is offline
+ * (docs/product-rules/cloud-companions.md §3.1). The row's computer is that main computer.
+ */
+export function cloudCompanionRoute(hosted: HostedRemoteCollectionItem, actorId: string, locale: string) {
+  return {
+    pathname: '/companions/cloud/[actorId]' as const,
+    params: {
+      actorId, botId: hosted.item.ref.id,
+      deviceId: hosted.host.deviceId, deviceName: hosted.host.deviceName,
+      title: resolveRemoteText(hosted.item.display.title, locale),
+    },
+  };
+}
+
 /** Reuse the actual home route; retired collection routes are replaced. */
 export function homeDismissCount(routes: readonly { name: string; params?: unknown }[]): number | null {
   for (let index = routes.length - 1; index >= 0; index--) {

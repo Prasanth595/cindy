@@ -38,6 +38,9 @@ Bot Profile
 └── history Sessions              仅用于旧版本数据与异常恢复后的记录
 ```
 
+伙伴属于账号而不是某台电脑：同一伙伴只在它的主力电脑上运行，其他电脑与手机通过云端对话层查看并可接管，
+规则见 [云端伙伴](cloud-companions.md)。
+
 每条伙伴 Session 必须能反查唯一的 Bot owner 与 Profile 版本。伙伴启动的后台任务是普通
 Cindy Session，以父任务关系回到发起伙伴，但不冒充该伙伴或另一个伙伴的主任务。
 伙伴在群聊里使用独立的群专线 Session（`role = 'group'`），与主任务共享 Profile 与 Home，

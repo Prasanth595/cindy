@@ -74,7 +74,7 @@ import { useUpdateChannelGate } from '@/update/useUpdateChannelGate';
 import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 import { useStartupEndpointGate } from '@/config/useStartupEndpointGate';
 import { IS_OTA_SELFHOST } from '@/config/env';
-import { getNewSessionCreationTask } from '@/session/newSessionCreation';
+import { hasLiveNewSessionCreation } from '@/session/newSessionCreation';
 import { isExactRemoteSessionClaimed } from '@/session/newSessionWorktree';
 import {
   isPrecreatedWorktreeRegistrationInFlight,
@@ -309,7 +309,7 @@ function PrecreatedWorktreeRecoveryBridge() {
         (id) => invoke(deviceId, 'local-db:sessions:get', [id]),
       ),
       shouldDefer: (record) => (
-        getNewSessionCreationTask(record.sessionId) !== null
+        hasLiveNewSessionCreation(record.sessionId)
         || isPrecreatedWorktreeRegistrationInFlight(record.sessionId)
       ),
       // Account selection updates user/token while the AuthProvider stays mounted.

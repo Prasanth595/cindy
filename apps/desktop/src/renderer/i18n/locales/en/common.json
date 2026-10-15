@@ -395,6 +395,12 @@
         "cancel": "Cancel"
       },
       "detailNote": "The agent runs on {{name}}'s computer or another computer {{name}} arranges, using their sign-in and quota. Chat content and files the agent reads pass through {{name}}'s computer and are saved on the computer that runs the session. To use it, choose it in the model list when you start a task.",
+      "credentialConsent": {
+        "label": "Trust {{name}}",
+        "description": "When on, tasks that use this share no longer ask before reading keys or other sensitive information, just like your own providers. Applies to this computer only.",
+        "ariaLabel": "Trust {{name}} ({{provider}})",
+        "writeFailed": "Could not save the trust setting"
+      },
       "modelsTitle": "Available Models",
       "modelsLoading": "Loading the models they shared…",
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
@@ -491,13 +497,12 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "usage": "Usage Balancing",
+      "quotaFirst": "When Claude subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
         "order": "Earlier in the list first",
-        "weight": "Split by weight",
-        "usage": "Balance 5-hour and weekly usage"
+        "weight": "Split by weight"
       }
     },
     "autoSwitch": {
@@ -5323,8 +5328,9 @@
           "descriptions": {
             "unsupported": "This protection is available on macOS only.",
             "disabled": "While Cindy is running, stop Codex from connecting to Work Louder keyboards. Cindy itself is not restricted.",
-            "recovery-required": "Protection stopped, but NODE_OPTIONS has not been safely restored. Retry the recovery before enabling it again.",
-            "error": "Cindy could not update Codex protection. Your previous NODE_OPTIONS value was preserved or queued for recovery."
+            "paused": "Protection is paused because it can affect other apps. If problems persist, quit older Cindy versions, then fully quit and reopen the affected apps.",
+            "recovery-required": "Protection is paused, but its old startup settings still need to be removed. Select “Restore environment”, then fully quit and reopen the affected apps.",
+            "error": "Cindy could not read or remove the old protection settings. Protection remains paused."
           },
           "restartRequired": "Quit and reopen Codex to apply"
         },
@@ -9455,6 +9461,44 @@
       "memory": "Remembered: {{title}}",
       "skillCreated": "Created skill: {{title}}",
       "skillUpdated": "Updated skill: {{title}}"
+    },
+    "cloud": {
+      "homeLabel": "Main Computer",
+      "thisComputer": "This computer",
+      "homeOffline": "Main computer “{{device}}” is offline",
+      "homeOfflineShort": "Main computer offline",
+      "homeUnreachable": "Main computer “{{device}}” doesn’t allow remote control",
+      "homeReadOnly": "Main computer: {{device}}",
+      "continueHere": "Continue on This Computer",
+      "takeOverHint": "{{name}} will run here from now on, and the conversation below comes along.",
+      "takingOver": "Getting {{name}} ready on this computer…",
+      "takeOverConflict": "{{name}} has already moved to “{{device}}”",
+      "takeOverOffline": "Can’t reach the server, so {{name}} can’t continue here right now",
+      "takeOverFailed": "Couldn’t take over {{name}} on this computer",
+      "notEnabled": "This server doesn’t support changing the main computer",
+      "readOnlyNote": "This conversation is saved in the cloud and is read only",
+      "empty": "No conversation in the cloud yet",
+      "loadFailed": "Couldn’t load the cloud conversation",
+      "reload": "Reload Conversation",
+      "loadOlder": "Load Earlier Messages",
+      "unknownDevice": "another computer",
+      "loadingDevices": "Loading your computers…",
+      "devicesFailed": "Couldn’t load your computers",
+      "noTargets": "No computer can take over. The other computer must be online, signed in to the same account, and have “Allow same-account devices to control this machine” turned on",
+      "resumeToMove": "Resume {{name}} before moving it to another computer",
+      "moveTo": "Move to “{{device}}”",
+      "transferTitle": "Move {{name}} to “{{device}}”?",
+      "transferDescription": "From now on {{name}} runs on “{{device}}”. The working directory and connections stay on this computer, and the conversation here becomes history.",
+      "transferAction": "Move to “{{device}}”",
+      "transferred": "{{name}} moved to “{{device}}”",
+      "transferConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
+      "transferOffline": "Can’t reach the server. {{name}} still runs on this computer",
+      "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
+      "transferFailed": "Couldn’t move {{name}} to “{{device}}”",
+      "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
+      "shadowTitle": "This teammate now runs on “{{device}}”",
+      "shadowHint": "The conversation here is read only.",
+      "openOnHome": "Open on “{{device}}”"
     }
   },
   "common": {

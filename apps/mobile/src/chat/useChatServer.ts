@@ -11,7 +11,8 @@ import type { BotGroupChatState } from '@/session/useBotGroupChat';
 import { chatAccessLost, chatCursor, chatGroupView, chatHttpsUrl, chatRoomRow, chatReadAt, chatReadSequence, chatLastReplyAt, chatLastReplySequence, createChatServerClient, type ChatPage, type ChatRequest, type ChatSnapshot } from './chatServerClient';
 import { subscribeChatServer } from './chatServerSubscription';
 
-function useChatClient() {
+/** The account's Chat Server client, fenced to the current account, realm and mount. */
+export function useChatClient() {
   const auth = useAuth();
   const owner = `${auth.user?.id ?? ''}:${auth.accountGeneration}:${getActiveMobileSessionRealm()}`;
   const active = useRef(owner); active.current = owner;
@@ -36,10 +37,11 @@ function useChatClient() {
         .finally(() => { discovering = undefined; });
       return discovering;
     };
-    const request: ChatRequest = async <T,>(path: string, method: 'GET' | 'POST' = 'GET', body?: unknown) => {
+    const request: ChatRequest = async <T,>(path: string, method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: unknown, actorId?: string) => {
       check();
       const url = await endpoint(); check();
-      const result = await deps.current.apiFetch<T>(`/v1${path}`, { baseUrl: url, method, cache: 'no-store', ...(body !== undefined ? { body } : {}), assertCurrent: check });
+      const result = await deps.current.apiFetch<T>(`/v1${path}`, { baseUrl: url, method, cache: 'no-store', ...(body !== undefined ? { body } : {}),
+        ...(actorId ? { headers: { 'X-Chat-Actor': actorId } } : {}), assertCurrent: check });
       check(); return result;
     };
     const client = createChatServerClient(request);

@@ -581,6 +581,25 @@ describe('findWindowsGitBash', () => {
 });
 
 describe('shared provider credentials', () => {
+  it('stops asking as soon as the share is set to skip credential confirmations, and asks again once it is switched back', () => {
+    const workspace = new ExecutorWorkspace({ workingDir: project });
+    let skip = false;
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: () => !skip });
+    const action: ExecutorAction = { kind: 'read', path: path.join(project, '.env') };
+    expect(gate.needsCredentialConsent(action)).toBe(true);
+    expect(gate.authorize(action).ok).toBe(false);
+
+    skip = true;
+    expect(gate.needsCredentialConsent(action)).toBe(false);
+    expect(gate.authorize(action)).toEqual({ ok: true, elevated: true });
+    // 跳过期间的「本任务总是允许」不建立授权：切回来后仍要确认。
+    gate.allowCredentialsForSession();
+
+    skip = false;
+    expect(gate.needsCredentialConsent(action)).toBe(true);
+    expect(gate.authorize(action).ok).toBe(false);
+  });
+
   it('preserves same-account command approval while sharing checks nested credential reads', () => {
     const workspace = new ExecutorWorkspace({ workingDir: project });
     const sameAccount = new ExecutorGate(workspace, 'normal');

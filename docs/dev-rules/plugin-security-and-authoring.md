@@ -171,6 +171,12 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 - 主机按 `webContents` 绑定反查真实 ghostId，**不信任 sender 自报身份**。
 - 沉睡、抽离和主机退出必须终止对应沙箱；沙箱崩溃只由 `GhostRuntime` 收敛，不得带崩
   主应用。
+- 声明 `node` 的插件另有独立 Node 工作进程，拥有当前系统用户级本机能力，不属于
+  上述浏览器沙箱。参考 [VS Code 的本地扩展权限模型](https://code.visualstudio.com/docs/configure/extensions/extension-runtime-security)，
+  macOS 以 `disclaim: false` 创建插件 Node 工作进程及宿主代启的 Node 子进程，保留
+  宿主的 TCC 责任归属，为插件开放底层系统能力；具体访问仍由系统授权、签名和用途声明
+  决定，不自动授予宿主尚未取得的权限。实现见 `nodeRuntimeBroker.ts` 的
+  `createUtilityNodeWorkerProcess`。浏览器沙箱、Host 能力守门和宿主环境变量过滤继续生效。
 
 ## 3. 权限即授权边界
 

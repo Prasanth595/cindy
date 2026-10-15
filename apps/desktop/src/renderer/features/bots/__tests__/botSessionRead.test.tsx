@@ -13,16 +13,19 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   read: undefined as undefined | ((at: number) => void),
   params: { botId: 'bot-1', sessionId: 'session-1' } as Record<string, string | undefined>,
+  demoted: [] as string[],
 }));
+vi.mock('../companionCloudStore', () => ({ useCompanionCloud: () => ({ enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: mocks.demoted }) }));
+vi.mock('../CompanionShadowBanner', () => ({ CompanionShadowBanner: ({ botId }: { botId: string }) => <div data-testid="shadow-banner">{botId}</div> }));
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
   useParams: () => mocks.params,
 }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ botUnreadBoundaryAt, onBotReadThrough }: { botUnreadBoundaryAt?: number | null; onBotReadThrough?: (at: number) => void }) => {
+  CCAgentSessionView: ({ botUnreadBoundaryAt, onBotReadThrough, readOnly }: { botUnreadBoundaryAt?: number | null; onBotReadThrough?: (at: number) => void; readOnly?: boolean }) => {
     mocks.read = onBotReadThrough;
-    return <div data-testid="chat" data-unread-boundary={botUnreadBoundaryAt ?? ''} />;
+    return <div data-testid="chat" data-unread-boundary={botUnreadBoundaryAt ?? ''} data-readonly={readOnly ? 'yes' : 'no'} />;
   },
 }));
 
@@ -73,6 +76,7 @@ beforeEach(() => {
   resetBotReadStateForTests();
   setBotReadStateOwner('owner-1');
   mocks.params = { botId: 'bot-1', sessionId: 'session-1' };
+  mocks.demoted = [];
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(10_000);
   installElectronApi(readyBot);
@@ -121,5 +125,22 @@ describe('Bot conversation read position', () => {
 
     await waitFor(() => expect(messageListeners.length).toBe(0));
     expect(getBotLastReadAt('bot-1')).toBeNull();
+  });
+});
+
+describe('a demoted copy', () => {
+  it('shows the main-computer banner and keeps the main task read only', async () => {
+    mocks.demoted = ['bot-1'];
+    const view = render(<BotSessionView />);
+    await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
+    expect(view.getByTestId('shadow-banner').textContent).toBe('bot-1');
+    expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('yes');
+  });
+
+  it('keeps an ordinary companion writable', async () => {
+    const view = render(<BotSessionView />);
+    await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
+    expect(view.queryByTestId('shadow-banner')).toBeNull();
+    expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('no');
   });
 });

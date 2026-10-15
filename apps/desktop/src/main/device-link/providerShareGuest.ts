@@ -41,6 +41,7 @@ import {
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
 } from './providerShareCrossRegion.js';
+import { captureProviderShareGuestPrefsRemoval, pruneProviderShareGuestPrefs } from './providerShareGuestPrefs.js';
 
 const log = createLogger('provider-share:guest');
 
@@ -105,16 +106,29 @@ function allReceived(rt: Runtime | null): ProviderShareReceived[] {
 /** 已收到的分享变化的旁听者(见 onProviderShareReceivedChanged)。 */
 const receivedListeners = new Set<() => void>();
 
-function emitChanged(rt: Runtime): void {
+/** 已拿到权威名单的区域(本区域要拉到过一次；对方区域按跨区域运行时的已加载状态)。 */
+function confirmedRegions(rt: Runtime): Region[] {
+  return [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()];
+}
+
+function emitChanged(rt: Runtime): Promise<void> | void {
   if (!current(rt)) return;
-  rt.events.changed(allReceived(rt));
-  for (const listener of receivedListeners) {
-    try {
-      listener();
-    } catch (error) {
-      log.warn('received shares listener failed', { error: error instanceof Error ? error.message : String(error) });
+  const received = allReceived(rt);
+  // 分享被分享者删除后，它在这台电脑上的本机偏好一起清掉；还没加载的区域不动。
+  const pruning = pruneProviderShareGuestPrefs(new Set(received.map((share) => share.shareId)), confirmedRegions(rt));
+  const notify = () => {
+    if (!current(rt)) return;
+    rt.events.changed(received);
+    for (const listener of receivedListeners) {
+      try {
+        listener();
+      } catch (error) {
+        log.warn('received shares listener failed', { error: error instanceof Error ? error.message : String(error) });
+      }
     }
-  }
+  };
+  if (pruning) return pruning.then(notify);
+  notify();
 }
 
 /**
@@ -232,7 +246,8 @@ export function refreshReceivedShares(reason: string): Promise<void> {
       if (!current(rt)) return;
       rt.received = received;
       rt.fetchedAt = Date.now();
-      emitChanged(rt);
+      const changed = emitChanged(rt);
+      if (changed) await changed;
     } catch (error) {
       if (current(rt)) log.warn('received shares refresh failed', { reason, error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -285,9 +300,7 @@ export function getReceivedSharesSnapshot(recovery?: ProviderShareFavoriteRecove
   }
   return {
     ownerStamp,
-    confirmedRegions: valid
-      ? [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()]
-      : [],
+    confirmedRegions: valid ? confirmedRegions(rt) : [],
     received: valid ? allReceived(rt) : [],
   };
 }
@@ -395,8 +408,16 @@ export async function withdrawProviderShareRequest(requestId: string): Promise<v
 }
 
 export async function leaveProviderShare(memberId: string): Promise<void> {
-  requireRuntime();
-  if (await crossRegionLeave(memberId)) return;
-  await providerShareApi.leave(memberId);
-  await refreshReceivedShares('left');
+  const rt = requireRuntime();
+  const shareId = allReceived(rt).find((share) => share.memberId === memberId)?.shareId ?? null;
+  const forgetPrefs = shareId ? captureProviderShareGuestPrefsRemoval(shareId) : null;
+  const crossRegion = await crossRegionLeave(memberId);
+  if (!crossRegion) {
+    if (!current(rt)) throwIpcError('DEVICE_LINK_NOT_CONNECTED', 'Account changed');
+    await providerShareApi.leave(memberId);
+  }
+  // 退出后这个分享的本机偏好(「信任 {分享者}」)一起忘掉。
+  if (forgetPrefs) await forgetPrefs();
+  if (!current(rt)) return;
+  if (!crossRegion) await refreshReceivedShares('left');
 }

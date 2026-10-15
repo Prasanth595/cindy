@@ -93,8 +93,11 @@ function approvalOf(action: ExecutorAction): { kind: Approval['kind']; key: stri
 }
 
 export interface ExecutorGateOptions {
-  /** 供应商分享的受邀者任务：凭证类操作不论权限档都要本机用户确认。 */
-  confirmCredentials?: boolean;
+  /**
+   * 供应商分享的受邀者任务：凭证类操作不论权限档都要本机用户确认。传函数时每次操作都重新问一遍
+   * (受邀者在设置里把这个分享切成「信任 {分享者}」后，运行中的任务下一步就不再问)。
+   */
+  confirmCredentials?: boolean | (() => boolean);
 }
 
 export class ExecutorGate {
@@ -125,7 +128,13 @@ export class ExecutorGate {
    * (credentialGrants.ts)。权限档变化即失效。
    */
   allowCredentialsForSession(): void {
-    if (this.options.confirmCredentials) this.credentialsAllowedForSession = true;
+    if (this.confirmsCredentials()) this.credentialsAllowedForSession = true;
+  }
+
+  /** 这个任务此刻要不要把凭证类操作交给本机用户确认。 */
+  private confirmsCredentials(): boolean {
+    const option = this.options.confirmCredentials;
+    return typeof option === 'function' ? option() : option === true;
   }
 
   getMode(): ExecutorGateMode {
@@ -165,7 +174,7 @@ export class ExecutorGate {
   }
 
   private isCredentialAction(action: ExecutorAction): boolean {
-    if (!this.options.confirmCredentials) return false;
+    if (!this.confirmsCredentials()) return false;
     if (action.kind === 'fetch') return false;
     if (action.kind === 'exec') {
       return isShareCredentialCommand(action.command, this.workspace.allRoots(), {
@@ -182,7 +191,7 @@ export class ExecutorGate {
    * 凭证后可以不问)；其余情况返回 null。
    */
   credentialGitReads(action: ExecutorAction): GitRead[] | null {
-    if (!this.options.confirmCredentials || action.kind !== 'exec') return null;
+    if (!this.confirmsCredentials() || action.kind !== 'exec') return null;
     return shareCredentialGitReads(action.command, this.workspace.allRoots(), {
       cwd: action.cwd,
       platform: process.platform,
