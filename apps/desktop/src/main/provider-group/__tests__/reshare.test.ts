@@ -37,7 +37,15 @@ function owned(members: Array<{ memberId: string; displayName: string }>, provid
   };
 }
 
-const CAPS: RemoteAgentCaps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048, reshareConsent: true };
+const CAPS: RemoteAgentCaps = {
+  version: 1,
+  agents: [],
+  maxRuns: 16,
+  uploadChunkBytes: 1024,
+  maxPayloadBytes: 2048,
+  reshareConsent: true,
+  reshareBatch: true,
+};
 const CAROL = reshareKeyFor('b-share', 'carol');
 const DAVE = reshareKeyFor('b-share', 'dave');
 
@@ -53,12 +61,19 @@ function setup(options: {
     ? [owned([{ memberId: 'carol', displayName: 'Carol' }, { memberId: 'dave', displayName: 'Dave' }])]
     : options.shares;
   let states = { ...(options.states ?? {}) };
+  const responses: unknown[] = [];
   const cleanups: Record<string, string> = {};
   let cleanupSeq = 0;
   const invoke = vi.fn(async (_agentDeviceId: string, request: unknown) => {
-    const entries = (request as { entries: Array<{ key: string }> }).entries;
+    const input = request as { entries: Array<{ key: string }>; batch?: { id: string; index: number; count: number } };
+    const entries = input.entries;
     if (entries.length === 0) states = {};
-    return { entries: entries.map((entry) => ({ key: entry.key, state: states[entry.key] ?? 'pending' as const })) };
+    const response = {
+      entries: entries.map((entry) => ({ key: entry.key, state: states[entry.key] ?? 'pending' as const })),
+      ...(input.batch ? { batch: { ...input.batch, complete: input.batch.index === input.batch.count - 1 } } : {}),
+    };
+    responses.push(response);
+    return response;
   });
   const readCaps = vi.fn(async () => options.caps ?? CAPS);
   const changed = vi.fn();
@@ -81,6 +96,7 @@ function setup(options: {
   return {
     get reshare() { return reshare; },
     invoke,
+    responses,
     readCaps,
     changed,
     completeCleanup,
@@ -149,6 +165,35 @@ describe('provider group reshare (group computer side)', () => {
     expect(env.reshare.needsUpdate('share:a1')).toBe(true);
     expect(env.reshare.allows('share:a1', CAROL)).toBe(false);
     expect(env.reshare.summary('anthropic', 'share:a1')?.support).toBe('needs-update');
+  });
+
+  it('sends a large report in ordered batches and aggregates the final states', async () => {
+    const members = Array.from({ length: 257 }, (_, index) => ({ memberId: 'member-' + index, displayName: 'Member ' + index }));
+    const approvedKey = reshareKeyFor('b-share', 'member-0');
+    const env = setup({ shares: [owned(members)], states: { [approvedKey]: 'approved' } });
+    await env.reshare.sync('large');
+
+    expect(env.invoke).toHaveBeenCalledTimes(2);
+    const requests = env.invoke.mock.calls.map(([, request]) => request as { op: string; entries: unknown[]; batch?: { id: string; index: number; count: number } });
+    expect(requests.map((request) => request.entries.length)).toEqual([256, 1]);
+    expect(requests.map((request) => request.batch?.index)).toEqual([0, 1]);
+    expect(requests[0]?.batch?.id).toBe(requests[1]?.batch?.id);
+    expect(requests.every((request) => request.batch?.count === 2)).toBe(true);
+    expect(env.responses).toEqual([
+      expect.objectContaining({ batch: expect.objectContaining({ index: 0, count: 2, complete: false }) }),
+      expect.objectContaining({ batch: expect.objectContaining({ index: 1, count: 2, complete: true }) }),
+    ]);
+    expect(env.reshare.summary('anthropic', 'share:a1')?.guests).toHaveLength(257);
+    expect(env.reshare.allows('share:a1', approvedKey)).toBe(true);
+    expect(env.reshare.summary('anthropic', 'share:a1')?.guests.at(-1)?.state).toBe('pending');
+  });
+
+  it('does not partially send a large report to an older computer', async () => {
+    const members = Array.from({ length: 257 }, (_, index) => ({ memberId: 'member-' + index, displayName: 'Member ' + index }));
+    const env = setup({ shares: [owned(members)], caps: { ...CAPS, reshareBatch: undefined } });
+    await env.reshare.sync('old');
+    expect(env.invoke).not.toHaveBeenCalled();
+    expect(env.reshare.needsUpdate('share:a1')).toBe(true);
   });
 
   it('keeps the last answers when the shared-in computer cannot be reached, and asks again later', async () => {

@@ -30,6 +30,13 @@ const B_OTHER_DEVICE = providerShareGuestPeer('a-share', 'b-member', 'b-laptop')
 const CAROL = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
 const DAVE = 'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1';
 
+function manyEntries(count: number): Array<{ key: string; name: string }> {
+  return Array.from({ length: count }, (_, index) => ({
+    key: index.toString(16).padStart(32, '0'),
+    name: 'Person ' + index,
+  }));
+}
+
 beforeEach(async () => {
   access.active = true;
   reshare.setProviderShareReshareEvents(null);
@@ -101,6 +108,45 @@ describe('provider share reshare consent (sharer computer)', () => {
     expect(await reshare.decideProviderShareReshare(removed[0]!.id, 'approve')).toBeNull();
   });
 
+  it('stages out-of-order reshare batches and replaces records only after all chunks arrive', async () => {
+    const entries = manyEntries(257);
+    const batchId = 'batch-a1b2c3d4e5f6';
+    const first = await reshare.handleProviderShareReshare(B_GROUP, entries.slice(256), { id: batchId, index: 1, count: 2 });
+    expect(first.batch).toEqual({ id: batchId, index: 1, count: 2, complete: false });
+    expect(reshare.listProviderShareReshares()).toEqual([]);
+
+    const complete = await reshare.handleProviderShareReshare(B_GROUP, entries.slice(0, 256), { id: batchId, index: 0, count: 2 });
+    expect(complete.batch).toEqual({ id: batchId, index: 0, count: 2, complete: true });
+    expect(complete.entries).toHaveLength(256);
+    expect(reshare.listProviderShareReshares()).toHaveLength(257);
+    expect(reshare.listProviderShareReshares().every((record) => record.state === 'pending')).toBe(true);
+
+    // 已完成片段重发仍回完成状态，不会重新创建一个未完成批次。
+    const duplicate = await reshare.handleProviderShareReshare(B_GROUP, entries.slice(0, 256), { id: batchId, index: 0, count: 2 });
+    expect(duplicate.batch).toEqual({ id: batchId, index: 0, count: 2, complete: true });
+    expect(duplicate.entries).toHaveLength(256);
+    expect(reshare.listProviderShareReshares()).toHaveLength(257);
+  });
+
+  it('rejects conflicting duplicate chunks instead of replacing an earlier chunk', async () => {
+    const batch = { id: 'batch-112233445566', index: 0, count: 2 } as const;
+    await reshare.handleProviderShareReshare(B_GROUP, [{ key: CAROL, name: 'Carol' }], batch);
+    await expect(reshare.handleProviderShareReshare(B_GROUP, [{ key: CAROL, name: 'Changed' }], batch))
+      .rejects.toThrow(/REMOTE_AGENT_INVALID/);
+  });
+
+  it('keeps the previous approvals when a reshare batch is missing a chunk', async () => {
+    await reshare.handleProviderShareReshare(B_GROUP, [{ key: CAROL, name: 'Carol' }]);
+    const carol = reshare.listProviderShareReshares()[0]!;
+    await reshare.decideProviderShareReshare(carol.id, 'approve');
+    const entries = [{ key: CAROL, name: 'Carol' }, ...manyEntries(256)];
+    const result = await reshare.handleProviderShareReshare(B_GROUP, entries.slice(0, 256), {
+      id: 'batch-f6e5d4c3b2a1', index: 0, count: 2,
+    });
+    expect(result.batch?.complete).toBe(false);
+    expect(reshare.listProviderShareReshares()).toEqual([expect.objectContaining({ key: CAROL, state: 'approved' })]);
+  });
+
   it('ignores damaged records on disk', () => {
     expect(reshare.__testing.normalize({ records: [
       { id: 'not-a-uuid', shareId: 'a', memberId: 'b', deviceId: 'c', key: CAROL, name: 'x', state: 'approved', requestedAt: 1 },
@@ -109,5 +155,15 @@ describe('provider share reshare consent (sharer computer)', () => {
     ] })).toEqual({ records: [{
       id: '22222222-2222-4222-8222-222222222222', shareId: 'a', memberId: 'b', deviceId: 'c', key: CAROL, name: 'Carol', avatar: null, state: 'approved', requestedAt: 1,
     }] });
+  });
+
+  it('does not silently truncate a valid record list at a fixed person count', () => {
+    const records = Array.from({ length: 4097 }, (_, index) => ({
+      id: index.toString(16).padStart(32, '0') + '0000',
+      shareId: 'a', memberId: 'b', deviceId: 'c',
+      key: index.toString(16).padStart(32, '0'),
+      name: 'Person', state: 'pending', requestedAt: 1,
+    }));
+    expect(reshare.__testing.normalize({ records }).records).toHaveLength(4097);
   });
 });

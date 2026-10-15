@@ -14,6 +14,7 @@ import {
   REMOTE_AGENT_RELAY_KEY_PATTERN,
   REMOTE_AGENT_RESHARE_STATES,
   parseProviderSharePeer,
+  type RemoteAgentReshareBatch,
   type RemoteAgentReshareEntry,
   type RemoteAgentReshareResult,
   type RemoteAgentReshareState,
@@ -49,8 +50,13 @@ interface ReshareFile {
   records: ProviderShareReshareRecord[];
 }
 
-/** 防止损坏文件无限膨胀的存储边界，远高于实际用量。 */
-const MAX_RECORDS = 4096;
+/** 文件按字节设硬上限；人数不按固定条数截断，超限时原子写入失败并保留旧快照。 */
+const RESHARE_STORE_MAX_BYTES = 4 * 1024 * 1024;
+/** 未收齐的分片只在内存保留一小段时间；新批次会替换同一组所在电脑的旧批次。 */
+const RESHARE_BATCH_TTL_MS = 10 * 60_000;
+/** 未完成批次按序列化后的条目字节数计入全局预算，避免多个来源共同耗尽主进程内存。 */
+const RESHARE_BATCH_MEMORY_BUDGET_BYTES = 16 * 1024 * 1024;
+const RESHARE_BATCH_METADATA_BYTES = 512;
 const ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 const RECORD_ID = /^[0-9a-f-]{36}$/;
 
@@ -104,7 +110,6 @@ function normalize(raw: unknown): ReshareFile {
   const records: ProviderShareReshareRecord[] = [];
   const seen = new Set<string>();
   for (const entry of source) {
-    if (records.length >= MAX_RECORDS) break;
     const record = normalizeRecord(entry);
     if (!record) continue;
     const scope = `${scopeOf(record)}\0${record.key}`;
@@ -131,7 +136,7 @@ const store = createOverrideSettingsFile<ReshareFile>({
   normalize,
   log,
   label: 'provider-share-reshare',
-  maxBytes: 4 * 1024 * 1024,
+  maxBytes: RESHARE_STORE_MAX_BYTES,
   // 记录里有别人的昵称与头像：不进日志。
   logLoadedValue: false,
 });
@@ -177,7 +182,6 @@ export async function syncProviderShareReshare(
       records.push({ ...record, name: entry.name, avatar: entry.avatar ?? null });
     }
     for (const entry of wanted.values()) {
-      if (records.length >= MAX_RECORDS) break;
       const record: ProviderShareReshareRecord = {
         id: randomUUID(),
         ...peer,
@@ -200,8 +204,7 @@ export async function syncProviderShareReshare(
         return state ? [{ key: entry.key, state }] : [];
       }),
     },
-    // 落盘时超出存储边界没写进去的不算新增。
-    added: added.filter((record) => next.records.some((item) => item.id === record.id)),
+    added,
     droppedApproved,
   };
 }
@@ -267,9 +270,62 @@ export interface ProviderShareReshareEvents {
 
 let events: ProviderShareReshareEvents | null = null;
 
+interface PendingReshareBatch {
+  batch: RemoteAgentReshareBatch;
+  chunks: Map<number, RemoteAgentReshareEntry[]>;
+  bytes: number;
+  touchedAt: number;
+}
+
+const pendingBatches = new Map<string, PendingReshareBatch>();
+const completedBatches = new Map<string, { batch: RemoteAgentReshareBatch; touchedAt: number }>();
+/** 同一来源的片段按到达顺序处理，避免旧批次完成回写覆盖刚开始的新批次。 */
+const reshareLocks = new Map<string, Promise<void>>();
+let pendingBatchBytes = 0;
+
+function entriesBytes(entries: readonly RemoteAgentReshareEntry[]): number {
+  return Buffer.byteLength(JSON.stringify(entries), 'utf8');
+}
+
+function removePendingBatch(batchKey: string): void {
+  const pending = pendingBatches.get(batchKey);
+  if (!pending) return;
+  pendingBatches.delete(batchKey);
+  pendingBatchBytes -= pending.bytes + RESHARE_BATCH_METADATA_BYTES;
+}
+
+function pruneBatchState(now: number): void {
+  for (const [batchKey, pending] of pendingBatches) {
+    if (now - pending.touchedAt > RESHARE_BATCH_TTL_MS) removePendingBatch(batchKey);
+  }
+  for (const [batchKey, completed] of completedBatches) {
+    if (now - completed.touchedAt > RESHARE_BATCH_TTL_MS) completedBatches.delete(batchKey);
+  }
+}
+
+function sameEntries(left: readonly RemoteAgentReshareEntry[], right: readonly RemoteAgentReshareEntry[]): boolean {
+  return left.length === right.length && left.every((entry, index) => {
+    const other = right[index];
+    return !!other && entry.key === other.key && entry.name === other.name && entry.avatar === other.avatar;
+  });
+}
+
+function provisionalStates(
+  peer: ProviderShareResharePeer,
+  entries: readonly RemoteAgentReshareEntry[],
+): RemoteAgentReshareResult['entries'] {
+  const states = new Map(read().filter((record) => samePeer(record, peer)).map((record) => [record.key, record.state]));
+  return entries.map((entry) => ({ key: entry.key, state: states.get(entry.key) ?? 'pending' }));
+}
+
 /** providerShareRuntime 启动时接上，停止时清掉。 */
 export function setProviderShareReshareEvents(next: ProviderShareReshareEvents | null): void {
   events = next;
+  if (!next) {
+    pendingBatches.clear();
+    completedBatches.clear();
+    pendingBatchBytes = 0;
+  }
 }
 
 /** 受邀者对端 → 组所在电脑的身份；不是受邀者返回 null。 */
@@ -282,17 +338,103 @@ export function providerShareResharePeerOf(controller: string): ProviderShareRes
  * 远程 Agent 的 op `reshare`(调用方已按分享准入)：记下组所在电脑此刻分享的人，返回每个人的结果。
  * 只有受邀者能报，同账号电脑经组使用不需要同意。
  */
-export async function handleProviderShareReshare(
+async function handleProviderShareReshareNow(
   controller: string,
   entries: readonly RemoteAgentReshareEntry[],
+  batch?: RemoteAgentReshareBatch,
 ): Promise<RemoteAgentReshareResult> {
   const peer = providerShareResharePeerOf(controller);
   if (!peer || !providerShareGuestAccess(controller)) throw new Error('[REMOTE_AGENT_INVALID] reshare is only for shared users');
+  if (batch) {
+    const batchKey = scopeOf(peer);
+    const now = Date.now();
+    pruneBatchState(now);
+    const completed = completedBatches.get(batchKey);
+    if (completed && completed.batch.id === batch.id && completed.batch.count === batch.count) {
+      // 完成后的重发只需重读当前条目的已落盘状态，避免再次替换或新增待处理记录。
+      return { entries: provisionalStates(peer, entries), batch: { ...batch, complete: true } };
+    }
+    const previous = pendingBatches.get(batchKey);
+    const expired = previous && now - previous.touchedAt > RESHARE_BATCH_TTL_MS;
+    if (!previous || expired || previous.batch.id !== batch.id || previous.batch.count !== batch.count) {
+      if (previous) removePendingBatch(batchKey);
+      const firstChunkBytes = entriesBytes(entries);
+      if (pendingBatchBytes + RESHARE_BATCH_METADATA_BYTES + firstChunkBytes > RESHARE_BATCH_MEMORY_BUDGET_BYTES) {
+        throw new Error('[REMOTE_AGENT_BUSY] reshare batch memory budget exceeded');
+      }
+      pendingBatches.set(batchKey, { batch, chunks: new Map(), bytes: 0, touchedAt: now });
+      pendingBatchBytes += RESHARE_BATCH_METADATA_BYTES;
+    }
+    const pending = pendingBatches.get(batchKey)!;
+    pending.touchedAt = now;
+    const existing = pending.chunks.get(batch.index);
+    if (existing) {
+      if (!sameEntries(existing, entries)) throw new Error('[REMOTE_AGENT_INVALID] conflicting duplicate reshare batch chunk');
+    } else {
+      const chunk = [...entries];
+      const chunkBytes = entriesBytes(chunk);
+      if (pendingBatchBytes + chunkBytes > RESHARE_BATCH_MEMORY_BUDGET_BYTES) {
+        throw new Error('[REMOTE_AGENT_BUSY] reshare batch memory budget exceeded');
+      }
+      pending.chunks.set(batch.index, chunk);
+      pending.bytes += chunkBytes;
+      pendingBatchBytes += chunkBytes;
+    }
+    if (pending.chunks.size < pending.batch.count) {
+      return { entries: provisionalStates(peer, entries), batch: { ...batch, complete: false } };
+    }
+    const allEntries: RemoteAgentReshareEntry[] = [];
+    for (let index = 0; index < pending.batch.count; index += 1) {
+      const chunk = pending.chunks.get(index);
+      if (!chunk) return { entries: provisionalStates(peer, entries), batch: { ...batch, complete: false } };
+      allEntries.push(...chunk);
+    }
+    if (new Set(allEntries.map((entry) => entry.key)).size !== allEntries.length) {
+      removePendingBatch(batchKey);
+      throw new Error('[REMOTE_AGENT_INVALID] duplicate reshare key across batch');
+    }
+    const synced = await syncProviderShareReshare(peer, allEntries);
+    removePendingBatch(batchKey);
+    completedBatches.set(batchKey, { batch, touchedAt: now });
+    if (synced.droppedApproved.length > 0) events?.revoked(synced.droppedApproved);
+    if (synced.added.length > 0) events?.requested(synced.added);
+    else if (synced.droppedApproved.length > 0) events?.changed();
+    const states = new Map(synced.result.entries.map((entry) => [entry.key, entry.state]));
+    return {
+      entries: entries.flatMap((entry) => {
+        const state = states.get(entry.key);
+        return state ? [{ key: entry.key, state }] : [];
+      }),
+      batch: { ...batch, complete: true },
+    };
+  }
   const synced = await syncProviderShareReshare(peer, entries);
   if (synced.droppedApproved.length > 0) events?.revoked(synced.droppedApproved);
   if (synced.added.length > 0) events?.requested(synced.added);
   else if (synced.droppedApproved.length > 0) events?.changed();
   return synced.result;
+}
+
+/** 同一来源上的并发片段必须串行，避免旧批次的慢落盘结果覆盖后到的新批次。 */
+export function handleProviderShareReshare(
+  controller: string,
+  entries: readonly RemoteAgentReshareEntry[],
+  batch?: RemoteAgentReshareBatch,
+): Promise<RemoteAgentReshareResult> {
+  const peer = providerShareResharePeerOf(controller);
+  if (!peer || !providerShareGuestAccess(controller)) {
+    return Promise.reject(new Error('[REMOTE_AGENT_INVALID] reshare is only for shared users'));
+  }
+  const batchKey = scopeOf(peer);
+  const previous = reshareLocks.get(batchKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  reshareLocks.set(batchKey, current);
+  const run = previous.then(() => handleProviderShareReshareNow(controller, entries, batch));
+  return run.finally(() => {
+    release();
+    if (reshareLocks.get(batchKey) === current) reshareLocks.delete(batchKey);
+  });
 }
 
 /** 组转来的受邀者任务能不能在这台运行(远程 Agent 打开任务时核对)。 */

@@ -39,6 +39,7 @@ import {
   type RemoteAgentPayload,
   type RemoteAgentPollResult,
   type RemoteAgentReply,
+  type RemoteAgentReshareBatch,
   type RemoteAgentReshareEntry,
   type RemoteAgentReshareResult,
   type RemoteAgentReverseRequest,
@@ -221,7 +222,7 @@ export interface RemoteAgentHostDeps {
    * 受邀者任务(带 relay)只在主人同意过的人上运行。不提供 = 不接受 op `reshare`、也不核对(测试 / 旧接线)。
    */
   reshare?: {
-    sync(controller: string, entries: readonly RemoteAgentReshareEntry[]): Promise<RemoteAgentReshareResult>;
+    sync(controller: string, entries: readonly RemoteAgentReshareEntry[], batch?: RemoteAgentReshareBatch): Promise<RemoteAgentReshareResult>;
     allows(controller: string, reshareKey: string | undefined): boolean;
   };
   captureOwner(): unknown;
@@ -2034,6 +2035,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           ...(deps.providerAccess && deps.bindGuestProviderRoute ? { guestRelay: true } : {}),
           // 转分享的同意只对受邀者(把这里分享的供应商放进自己组的人)有意义。
           ...(guest && deps.reshare ? { reshareConsent: true } : {}),
+          ...(guest && deps.reshare ? { reshareBatch: true } : {}),
         };
         return caps;
       }
@@ -2044,7 +2046,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       case 'reshare':
         // 转分享：受邀者的组所在电脑报上它分享的人(整体替换它上一份)，主人逐人同意。同账号电脑经组使用不需要同意。
         if (!deps.reshare || trustOf(controller) !== 'guest') fail('REMOTE_AGENT_INVALID', 'reshare is only for shared users');
-        return deps.reshare.sync(controller, request.entries);
+        return deps.reshare.sync(controller, request.entries, request.batch);
       case 'upload': {
         const uploadKey = key(controller, request.uploadId);
         let upload = uploads.get(uploadKey);

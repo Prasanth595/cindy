@@ -10,11 +10,16 @@
  * 本机分享出去的人还没读到时不报：整体替换会把那台上已有的同意清掉。
  * 移出全部组的清理与组设置一起持久保存，空名单确认后才删除；离线每分钟重试，重启与重新加入都先完成清理。
  */
+import { randomUUID } from 'node:crypto';
+
 import {
+  REMOTE_AGENT_MAX_RESHARE_ENTRIES,
   parseRemoteAgentReshareResult,
   type ProviderShareOwned,
   type RemoteAgentCaps,
+  type RemoteAgentReshareBatch,
   type RemoteAgentReshareEntry,
+  type RemoteAgentReshareState,
 } from '@cindy/device-link';
 
 import type { ProviderGroupConfig, ProviderGroupReshareGuest, ProviderGroupReshareSummary } from '../../shared/providerGroup.js';
@@ -142,15 +147,46 @@ export function createProviderGroupReshare(deps: ProviderGroupReshareDeps): Prov
       const caps = await deps.readCaps(agentDeviceId);
       if (stopped) return false;
       if (!cleanupToken && deps.pendingCleanups()[agentDeviceId]) return false;
-      if (caps.reshareConsent !== true) {
+      if (caps.reshareConsent !== true || (entries.length > REMOTE_AGENT_MAX_RESHARE_ENTRIES && caps.reshareBatch !== true)) {
         // 旧版本给不出同意：这台不分给受邀者，设置页提示那台需要更新。
         state.support = 'needs-update';
         state.states = new Map();
         // 降级的电脑不能确认已清空；保留清理，升级或恢复后再报。
         if (cleanupToken) throw new Error('The shared computer cannot confirm reshare cleanup yet');
       } else {
-        const keys = new Set(entries.map((entry) => entry.key));
-        const result = parseRemoteAgentReshareResult(await deps.invoke(agentDeviceId, { op: 'reshare', entries }), keys);
+        const batchId = entries.length > REMOTE_AGENT_MAX_RESHARE_ENTRIES ? randomUUID() : null;
+        const batches: Array<{ entries: RemoteAgentReshareEntry[]; batch?: RemoteAgentReshareBatch }> = [];
+        if (!batchId) batches.push({ entries });
+        else {
+          for (let index = 0; index < entries.length; index += REMOTE_AGENT_MAX_RESHARE_ENTRIES) {
+            batches.push({
+              entries: entries.slice(index, index + REMOTE_AGENT_MAX_RESHARE_ENTRIES),
+              batch: { id: batchId, index: batches.length, count: Math.ceil(entries.length / REMOTE_AGENT_MAX_RESHARE_ENTRIES) },
+            });
+          }
+        }
+        const states = new Map<string, RemoteAgentReshareState>();
+        for (const current of batches) {
+          const request = { op: 'reshare', entries: current.entries, ...(current.batch ? { batch: current.batch } : {}) };
+          const result = parseRemoteAgentReshareResult(
+            await deps.invoke(agentDeviceId, request),
+            current.batch && current.batch.index === current.batch.count - 1
+              ? new Set(entries.map((entry) => entry.key))
+              : new Set(current.entries.map((entry) => entry.key)),
+          );
+          if (current.batch) {
+            if (!result.batch || result.batch.id !== current.batch.id || result.batch.index !== current.batch.index || result.batch.count !== current.batch.count) {
+              throw new Error('Invalid reshare batch response');
+            }
+            // 重试已完成批次时，接收端会对任意重复片段回 complete=true；只要求最后一片
+            // 的正常回包必须表示已整体替换，不能把幂等重试误判成协议错误。
+            if (current.batch.index === current.batch.count - 1 && !result.batch.complete) {
+              throw new Error('Incomplete reshare batch response');
+            }
+          }
+          for (const entry of result.entries) states.set(entry.key, entry.state);
+        }
+        const result = { entries: [...states].map(([key, state]) => ({ key, state })) };
         if (stopped) return false;
         if (cleanupToken) {
           await deps.completeCleanup(agentDeviceId, cleanupToken);

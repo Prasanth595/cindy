@@ -916,8 +916,9 @@ describe('provider group reshare consent', () => {
 
   function memberHost(approved: Set<string>, resolveProvider?: NonNullable<Parameters<typeof createRemoteAgentHost>[0]['providerAccess']>['resolve']) {
     const started: Started[] = [];
-    const sync = vi.fn(async (_controller: string, entries: readonly { key: string }[]) => ({
+    const sync = vi.fn(async (_controller: string, entries: readonly { key: string }[], batch?: { id: string; index: number; count: number }) => ({
       entries: entries.map((entry) => ({ key: entry.key, state: approved.has(entry.key) ? 'approved' as const : 'pending' as const })),
+      ...(batch ? { batch: { ...batch, complete: false } } : {}),
     }));
     const host = fakeAgentHost('a', started, {
       trust: (controller) => (isProviderSharePeer(controller) ? 'guest' : 'owner'),
@@ -935,11 +936,15 @@ describe('provider group reshare consent', () => {
 
   it('declares consent support only to shared users and records whom their group computer reports', async () => {
     const env = memberHost(new Set([C_KEY]));
-    expect(await env.host.handle(B_GROUP, { op: 'caps' })).toMatchObject({ reshareConsent: true });
+    expect(await env.host.handle(B_GROUP, { op: 'caps' })).toMatchObject({ reshareConsent: true, reshareBatch: true });
     expect(await env.host.handle('same-account-mac', { op: 'caps' })).not.toHaveProperty('reshareConsent');
     expect(await env.host.handle(B_GROUP, { op: 'reshare', entries: [{ key: C_KEY, name: 'Carol' }] }))
       .toEqual({ entries: [{ key: C_KEY, state: 'approved' }] });
-    expect(env.sync).toHaveBeenCalledWith(B_GROUP, [{ key: C_KEY, name: 'Carol' }]);
+    expect(env.sync).toHaveBeenCalledWith(B_GROUP, [{ key: C_KEY, name: 'Carol' }], undefined);
+    const batch = { id: 'batch-a1b2c3d4e5f6', index: 0, count: 2 };
+    expect(await env.host.handle(B_GROUP, { op: 'reshare', entries: [{ key: C_KEY, name: 'Carol' }], batch }))
+      .toEqual({ entries: [{ key: C_KEY, state: 'approved' }], batch: { ...batch, complete: false } });
+    expect(env.sync).toHaveBeenCalledWith(B_GROUP, [{ key: C_KEY, name: 'Carol' }], batch);
     // 同账号电脑经组使用不需要同意，也不能报人。
     await expect(env.host.handle('same-account-mac', { op: 'reshare', entries: [] })).rejects.toThrow(/REMOTE_AGENT_INVALID/);
   });

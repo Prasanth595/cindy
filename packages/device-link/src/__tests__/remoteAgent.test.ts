@@ -75,11 +75,63 @@ describe('remote agent channel', () => {
         { key: 'c1b2c3d4e5f60718293a4b5c6d7e8f90', state: 'pending' },
       ],
     }, new Set([key, other]))).toEqual({ entries: [{ key, state: 'approved' }] });
+    expect(() => parseRemoteAgentReshareResult({
+      entries: [{ key, state: 'pending' }, { key, state: 'approved' }],
+    })).toThrow('REMOTE_AGENT_INVALID');
+    expect(() => parseRemoteAgentReshareResult({
+      entries: Array.from({ length: 257 }, (_, index) => ({
+        key: String(index).padStart(3, '0') + key.slice(3),
+        state: 'pending',
+      })),
+    })).toThrow('REMOTE_AGENT_INVALID');
     expect(() => parseRemoteAgentReshareResult({})).toThrow('REMOTE_AGENT_INVALID');
     const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
     expect(parseRemoteAgentCaps({ ...caps, reshareConsent: true }).reshareConsent).toBe(true);
     expect(parseRemoteAgentCaps({ ...caps, reshareConsent: 1 })).not.toHaveProperty('reshareConsent');
     expect(remoteAgentErrorCode('[REMOTE_AGENT_RESHARE_NOT_ALLOWED] no')).toBe('REMOTE_AGENT_RESHARE_NOT_ALLOWED');
+  });
+
+  it('parses reshare batches and rejects malformed batch metadata', () => {
+    const key = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const batchId = 'batch-a1b2c3d4e5f6';
+    expect(parseRemoteAgentRequest({
+      op: 'reshare',
+      entries: [{ key, name: 'Bob' }],
+      batch: { id: batchId, index: 1, count: 2 },
+    })).toEqual({
+      op: 'reshare',
+      entries: [{ key, name: 'Bob' }],
+      batch: { id: batchId, index: 1, count: 2 },
+    });
+    expect(parseRemoteAgentRequest({
+      op: 'reshare',
+      entries: [{ key, name: 'Bob' }],
+      batch: { id: batchId, index: 4096, count: 4097 },
+    })).toMatchObject({ batch: { index: 4096, count: 4097 } });
+    expect(parseRemoteAgentReshareResult({
+      entries: [{ key, state: 'approved' }],
+      batch: { id: batchId, index: 1, count: 2, complete: true },
+    }, new Set([key]))).toEqual({
+      entries: [{ key, state: 'approved' }],
+      batch: { id: batchId, index: 1, count: 2, complete: true },
+    });
+    for (const batch of [
+      { id: 'short', index: 0, count: 1 },
+      { id: 123, index: 0, count: 1 },
+      { id: batchId, index: -1, count: 2 },
+      { id: batchId, index: 2, count: 2 },
+      { id: batchId, index: 0, count: 0 },
+      { id: batchId, index: 0, count: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      expect(() => parseRemoteAgentRequest({ op: 'reshare', entries: [{ key, name: 'Bob' }], batch }))
+        .toThrow('REMOTE_AGENT_INVALID');
+    }
+    const caps = { version: 1, agents: [], maxRuns: 16, uploadChunkBytes: 1024, maxPayloadBytes: 2048 };
+    expect(parseRemoteAgentCaps({ ...caps, reshareConsent: true, reshareBatch: true })).toMatchObject({
+      reshareConsent: true,
+      reshareBatch: true,
+    });
+    expect(parseRemoteAgentCaps({ ...caps, reshareBatch: 'yes' })).not.toHaveProperty('reshareBatch');
   });
 
   it('parses every op and drops unknown fields', () => {

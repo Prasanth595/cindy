@@ -3348,7 +3348,9 @@ describe('provider:custom:* CRUD handlers', () => {
     const harness = new IpcHarness();
     const calls: string[] = [];
     const keys = new Map<AgentKind, string>();
+    const kickProviderGroupReshare = vi.fn();
     const deps = makeDeps({
+      kickProviderGroupReshare,
       oauthCancel: vi.fn(() => calls.push('cancel')),
       removeOAuthCredentials: vi.fn(() => {
         calls.push('clear');
@@ -3378,6 +3380,7 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(await listCustomProviders()).toEqual([]);
     expect(keys.size).toBe(0);
     expect(calls).toEqual(['cancel', 'clear']);
+    expect(kickProviderGroupReshare).toHaveBeenCalledWith('provider-delete');
     expect(deps.stageClearProviderModelPriceOverrides).toHaveBeenCalledWith('openrouter');
     expect(deps.broadcastPricingChanged).toHaveBeenCalled();
 
