@@ -39,6 +39,12 @@ export interface GhostOverlayWindowDeps {
    * 不可用(未安装 / 无 active owner)。
    */
   resolveGhostOverlaySession: (ghostId: string) => string | null;
+  /**
+   * 解析浮窗 URL host 用的 manifest id。协议 handler 只认 manifest id
+   * (electronSandboxAdapter.registerGhostProtocol 的 selfPrefix 与 host 断言),
+   * storage part 与 manifest id 可能不同(例如命名空间实例)。
+   */
+  resolveManifestId: (ghostId: string) => string | null;
   log: Logger;
 }
 
@@ -52,7 +58,8 @@ export async function createGhostOverlayWindow(
   decl: GhostOverlayDecl,
   deps: GhostOverlayWindowDeps,
 ): Promise<BrowserWindow> {
-  const { ensureProtocolRegistered, resolveGhostOverlaySession, log } = deps;
+  const { ensureProtocolRegistered, resolveGhostOverlaySession, resolveManifestId, log } =
+    deps;
   const width = decl.width ?? GHOST_OVERLAY_DEFAULT_SIZE;
   const height = decl.height ?? GHOST_OVERLAY_DEFAULT_SIZE;
 
@@ -60,6 +67,13 @@ export async function createGhostOverlayWindow(
   const partition = resolveGhostOverlaySession(ghostId);
   if (!partition) {
     throw new Error(`ghost overlay session unavailable for ${ghostId}`);
+  }
+
+  // URL host 一律用 manifest id(协议 handler 只认 manifest id);窗口其余身份
+  // (分区、registry 绑定、controller slot key、IPC sender 校验)保持 storage part。
+  const manifestId = resolveManifestId(ghostId);
+  if (!manifestId) {
+    throw new Error(`ghost overlay manifest id unavailable for ${ghostId}`);
   }
 
   const win = new BrowserWindow({
@@ -104,8 +118,8 @@ export async function createGhostOverlayWindow(
   // ── 守卫(设计 §4.7)────────────────────────────────────────────────
   // 浮窗零弹窗:一律 deny,不转外链(与 secondary-windows 的 shell.openExternal 不同)。
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  // 导航限定在自己的 cindy-ghost://<ghostId>/ 内,越界一律掐断。
-  const allowedPrefix = `${GHOST_SCHEME}://${ghostId}/`;
+  // 导航限定在自己的 cindy-ghost://<manifestId>/ 内,越界一律掐断。
+  const allowedPrefix = `${GHOST_SCHEME}://${manifestId}/`;
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(allowedPrefix)) {
       event.preventDefault();
@@ -125,7 +139,7 @@ export async function createGhostOverlayWindow(
   try {
     await ensureProtocolRegistered(ghostId);
     stage = 'load';
-    await win.loadURL(`${GHOST_SCHEME}://${ghostId}/${decl.html}`);
+    await win.loadURL(`${GHOST_SCHEME}://${manifestId}/${decl.html}`);
   } catch (error) {
     // 清理使用创建期捕获的 id:窗口销毁后访问 webContents 不可靠(可能抛
     // 「Object has been destroyed」),届时会掩盖原始错误并留下 registry 僵尸条目。

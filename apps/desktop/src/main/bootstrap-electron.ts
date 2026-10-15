@@ -2384,6 +2384,7 @@ const ghostOverlayWindowsController = new GhostOverlayWindowsController({
         ensureGhostProtocolRegistered(installed);
       },
       resolveGhostOverlaySession: resolveGhostOverlayPartition,
+      resolveManifestId: (id) => findGhostForInstanceId(id)?.manifest.id ?? null,
       log: createLogger('ghost-overlay-window'),
     });
   },

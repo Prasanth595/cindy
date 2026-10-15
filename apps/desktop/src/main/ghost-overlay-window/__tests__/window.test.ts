@@ -22,6 +22,9 @@ const harness = vi.hoisted(() => {
   const resolveGhostOverlaySession = vi.fn<(ghostId: string) => string | null>(
     (ghostId: string) => `cindy-ghost-owner:local:opaque-local-owner:${ghostId}`,
   );
+  const resolveManifestId = vi.fn<(ghostId: string) => string | null>(
+    (ghostId: string) => ghostId,
+  );
 
   class FakeWindow {
     readonly loadURL = vi.fn(async () => {
@@ -72,6 +75,7 @@ const harness = vi.hoisted(() => {
     windows,
     ensureProtocolRegistered,
     resolveGhostOverlaySession,
+    resolveManifestId,
     FakeWindow,
     setNextLoadError: (error: Error | null) => {
       nextLoadError = error;
@@ -87,6 +91,8 @@ const harness = vi.hoisted(() => {
       resolveGhostOverlaySession.mockImplementation(
         (ghostId: string) => `cindy-ghost-owner:local:opaque-local-owner:${ghostId}`,
       );
+      resolveManifestId.mockReset();
+      resolveManifestId.mockImplementation((ghostId: string) => ghostId);
     },
   };
 });
@@ -109,6 +115,7 @@ function deps() {
   return {
     ensureProtocolRegistered: harness.ensureProtocolRegistered,
     resolveGhostOverlaySession: harness.resolveGhostOverlaySession,
+    resolveManifestId: harness.resolveManifestId,
     log,
   };
 }
@@ -198,6 +205,62 @@ describe('createGhostOverlayWindow', () => {
     expect(registerOrder).toBeDefined();
     expect(loadOrder).toBeDefined();
     expect(registerOrder!).toBeLessThan(loadOrder!);
+  });
+
+  it('loads the overlay entry using the manifest id host when it differs from the storage part', async () => {
+    // 真实缺陷场景:storage part(_root__acme)与 manifest id(acme)不一致,
+    // 协议 handler 只认 manifest id,URL host 必须用后者。
+    harness.resolveManifestId.mockReturnValueOnce('acme');
+    await createGhostOverlayWindow('_root__acme', { html: 'overlay.html' }, deps());
+
+    const win = harness.windows[0];
+    expect(harness.resolveManifestId).toHaveBeenCalledWith('_root__acme');
+    expect(win.loadURL).toHaveBeenCalledWith('cindy-ghost://acme/overlay.html');
+    // 窗口其余身份保持 storage part:分区、协议注册、registry 绑定。
+    expect(harness.resolveGhostOverlaySession).toHaveBeenCalledWith('_root__acme');
+    expect(webPreferences(win).partition).toBe(
+      'cindy-ghost-owner:local:opaque-local-owner:_root__acme',
+    );
+    expect(harness.ensureProtocolRegistered).toHaveBeenCalledWith('_root__acme');
+    expect(isGhostOverlayWebContents(win.overlayWebContentsId)).toBe(true);
+  });
+
+  it('whitelists navigation by manifest id host even when storage part differs', async () => {
+    harness.resolveManifestId.mockReturnValueOnce('acme');
+    await createGhostOverlayWindow('_root__acme', { html: 'overlay.html' }, deps());
+
+    const win = harness.windows[0];
+    const navCall = win.webContents.on.mock.calls.find(
+      ([event]) => event === 'will-navigate',
+    );
+    expect(navCall).toBeDefined();
+    const navHandler = navCall![1] as (
+      event: { preventDefault(): void },
+      url: string,
+    ) => void;
+
+    const preventDefault = vi.fn();
+    // 放行 manifest id host。
+    navHandler({ preventDefault }, 'cindy-ghost://acme/other.html');
+    expect(preventDefault).not.toHaveBeenCalled();
+
+    // storage part host 不再是白名单 host,必须拒绝。
+    preventDefault.mockClear();
+    navHandler({ preventDefault }, 'cindy-ghost://_root__acme/other.html');
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+
+    // 其它 host 依旧拒绝。
+    preventDefault.mockClear();
+    navHandler({ preventDefault }, 'cindy-ghost://other/x');
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before creating a window when no manifest id is resolvable', async () => {
+    harness.resolveManifestId.mockReturnValueOnce(null);
+    await expect(
+      createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps()),
+    ).rejects.toThrow('ghost overlay manifest id unavailable for acme-overlay');
+    expect(harness.windows).toHaveLength(0);
   });
 
   it('uses a distinct injected partition per ghost (no namespace collision)', async () => {
