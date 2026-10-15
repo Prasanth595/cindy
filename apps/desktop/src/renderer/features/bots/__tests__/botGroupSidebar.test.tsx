@@ -29,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   profiles: [] as unknown[],
   groups: [] as BotGroupSummary[],
   params: {} as { botId?: string; groupId?: string },
+  pathname: '/bots',
+  collapsed: false,
   registered: { node: null as ReactNode },
   islandActivity: new Map<string, { sessionId: string; phase: string; workingPhase?: string }>(),
   runningStatusOptions: null as null | {
@@ -72,13 +74,14 @@ vi.mock('@/lib/sessionEventNotification', () => ({
   sendSessionEventNotification: (...args: unknown[]) => mocks.sendNotification(...args),
 }));
 vi.mock('@/lib/sessionService', () => ({ get: (...args: unknown[]) => mocks.getSession(...args) }));
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router-dom', async importOriginal => ({
+  ...await importOriginal<typeof import('react-router-dom')>(),
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: '/bots', search: '', hash: '' }),
+  useLocation: () => ({ pathname: mocks.pathname, search: '', hash: '' }),
   useParams: () => mocks.params,
 }));
 vi.mock('../../feature-context', () => ({
-  useSidebarCollapsedState: () => false,
+  useSidebarCollapsedState: () => mocks.collapsed,
   useRegisterSidebarUpper: (node: ReactNode) => {
     mocks.registered.node = node;
   },
@@ -178,6 +181,8 @@ beforeEach(() => {
   mocks.refreshGroups.mockReset();
   mocks.ownerGeneration = 1;
   mocks.params = {};
+  mocks.pathname = '/bots';
+  mocks.collapsed = false;
   mocks.groups = [];
   mocks.islandActivity = new Map();
   mocks.runningStatusOptions = null;
@@ -293,6 +298,45 @@ describe('BotsSidebar group chats', () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'bots.list.search' })));
     // Let the browser reveal the search field if needed.
     expect(focus).toHaveBeenLastCalledWith();
+  });
+
+  it.each([false, true])('recovers focus when settings archives the selected group (route already cleared: %s)', async cleared => {
+    mocks.params = { groupId: 'g1' };
+    mocks.pathname = '/bots/groups/g1';
+    mocks.groups = [managedGroup()];
+    const view = await renderSidebar();
+    mocks.groups = [managedGroup(true)];
+    if (cleared) { mocks.params = {}; mocks.pathname = '/bots/list'; }
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'bots.list.search' })));
+  });
+
+  it('keeps a new sidebar selection when settings archive finishes', async () => {
+    mocks.params = { groupId: 'g1' };
+    mocks.pathname = '/bots/groups/g1';
+    mocks.groups = [managedGroup()];
+    const view = await renderSidebar();
+    const next = screen.getByText('咪咪').closest('button')!;
+    act(() => next.focus());
+    mocks.groups = [managedGroup(true)];
+    mocks.params = {};
+    mocks.pathname = '/bots/list';
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    expect(document.activeElement).toBe(next);
+  });
+
+  it('recovers to an existing sidebar button when settings archive finishes with a collapsed sidebar', async () => {
+    mocks.params = { groupId: 'g1' };
+    mocks.pathname = '/bots/groups/g1';
+    mocks.groups = [managedGroup()];
+    mocks.collapsed = true;
+    const view = await renderSidebar();
+    mocks.groups = [managedGroup(true)];
+    mocks.params = {};
+    mocks.pathname = '/bots/list';
+    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    await waitFor(() => expect(document.activeElement).toBe(view.container.querySelector('button')));
   });
 
   it('restores focus to the moved group row after keyboard unarchive', async () => {

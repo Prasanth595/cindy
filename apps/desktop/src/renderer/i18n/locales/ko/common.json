@@ -8709,6 +8709,7 @@
       "createMenu": "새로 만들기",
       "createTeammate": "새 파트너",
       "startChat": "대화 시작하기",
+      "selectChat": "파트너 또는 그룹 채팅을 선택해 대화를 시작하세요",
       "typing": "입력 중…",
       "unread": "읽지 않은 메시지 {{count}}개",
       "search": "파트너 또는 그룹 채팅 검색",

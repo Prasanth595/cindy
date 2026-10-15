@@ -17,7 +17,7 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
@@ -98,6 +98,8 @@ function BotsSidebarContent() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { botId, sessionId, deviceId, groupId } = useParams();
+  // The registered sidebar slot can sit outside the group's route context.
+  const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
   const cloud = useCompanionCloud();
   const rosterRemoteBots = useRemoteBots();
   // One row per companion, on its main computer (offline rows for computers never listed here).
@@ -135,6 +137,8 @@ function BotsSidebarContent() {
   const menuPointerDownRef = useRef(false);
   const menuRestoreFocusRef = useRef(true);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const previousSelectedGroupRef = useRef(groups.find(group => group.id === selectedGroupId));
   const pendingArchiveFocusRef = useRef<{ groupId: string; archived: boolean; origin: HTMLElement | null } | null>(null);
 
   const openContextMenu = (kind: 'bot' | 'group', id: string, origin: HTMLButtonElement, x: number, y: number) => {
@@ -234,6 +238,18 @@ function BotsSidebarContent() {
     (!group.archived || normalizedQuery.length > 0) && matchesGroup(group));
 
   useEffect(() => {
+    const previous = previousSelectedGroupRef.current;
+    previousSelectedGroupRef.current = groups.find(group => group.id === selectedGroupId);
+    // Settings can archive the selected group without going through the row
+    // menu. Reuse its recovery after the drawer and confirmation release focus.
+    if (previous && !previous.archived && !pendingArchiveFocusRef.current &&
+      (selectedGroupId === previous.id || pathname === '/bots/list') &&
+      groups.some(group => group.id === previous.id && group.archived)) {
+      pendingArchiveFocusRef.current = { groupId: previous.id, archived: true, origin: null };
+    }
+  }, [groups, selectedGroupId, pathname]);
+
+  useEffect(() => {
     const pending = pendingArchiveFocusRef.current;
     if (!pending) return;
     const updatedGroup = groups.find(group => group.id === pending.groupId);
@@ -274,7 +290,8 @@ function BotsSidebarContent() {
       // Keep focus on that visible recovery path when the row is removed.
       if (pending.archived) {
         pendingArchiveFocusRef.current = null;
-        searchInputRef.current?.focus();
+        const target = searchInputRef.current ?? sidebarRef.current?.querySelector<HTMLButtonElement>('button');
+        target?.focus();
         return;
       }
 
@@ -503,7 +520,7 @@ function BotsSidebarContent() {
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 px-2 pt-3">
+      <div ref={sidebarRef} className="flex flex-col items-center gap-2 px-2 pt-3">
         {(pathname === '/bots' || pathname.startsWith('/bots/')) && (
           <SidebarIconButton
             icon={ArrowLeft}

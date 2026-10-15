@@ -8709,6 +8709,7 @@
       "createMenu": "新建",
       "createTeammate": "新建伙伴",
       "startChat": "开始对话",
+      "selectChat": "选择伙伴或群聊，开始对话",
       "typing": "正在输入…",
       "unread": "{{count}} 条未读消息",
       "search": "搜索伙伴或群聊",

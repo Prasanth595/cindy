@@ -8746,6 +8746,7 @@
       "createMenu": "Create",
       "createTeammate": "New teammate",
       "startChat": "Start the conversation",
+      "selectChat": "Select a teammate or group chat to start chatting",
       "typing": "Typing…",
       "unread": "{{count}} unread messages",
       "search": "Search teammates or group chats",
