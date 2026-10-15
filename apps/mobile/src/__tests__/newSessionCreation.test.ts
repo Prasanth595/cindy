@@ -531,6 +531,75 @@ describe('newSessionCreation pipeline', () => {
     expect(drainStashedNewSessionDraft('s1', 'dev-1')).toBeNull();
   });
 
+  it.each(['current', 'unmount', 'another-task', 'blur', 'account'] as const)(
+    'only reports a delayed edit-save failure on its current task page: %s', async pageState => {
+      const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('MODEL_UNAVAILABLE'); }) });
+      startNewSessionCreation(makeParams('s1', maker));
+      await flushPipeline();
+      const record = { ...recoveryOutboxRecord('s1'), accountId: getMobileAuthOwner().accountKey };
+      editOutbox.records.mockReturnValue([record]);
+      let failSave!: (error: Error) => void;
+      editOutbox.update.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failSave = reject; }));
+      const alive = { current: 's1' as string | null };
+      const navigation = { isFocused: vi.fn(() => true) };
+      const alert = vi.fn();
+      const setError = vi.fn();
+      const replace = vi.fn();
+      const retry = vi.fn(retryNewSessionCreation);
+      const bindings = {
+        creationTask: getNewSessionCreationTask('s1'), sessionId: 's1', deviceId: 'dev-1',
+        getMobileAuthOwner, isMobileAuthOwnerCurrent, outboxSessionAliveRef: alive, navigation,
+        returnNewSessionToEdit, router: { replace }, Alert: { alert }, setError,
+        t: (key: string, options?: { message: string }) => options?.message ?? key,
+        formatRemoteError: (error: Error) => error.message, retryNewSessionCreation: retry,
+      };
+      // Execute the actual Alert action, including its asynchronous catch, rather
+      // than reproducing the page's lifecycle guard in the test.
+      const screen = ts.createSourceFile('session.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8'),
+        ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      let action: string | undefined;
+      const findAction = (node: ts.Node) => {
+        if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+          && property.name.getText(screen) === 'text' && property.initializer.getText(screen) === "t('session.screen.backToEdit')")) {
+          const handler = node.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(screen) === 'onPress');
+          if (handler && ts.isPropertyAssignment(handler)) action = handler.initializer.getText(screen);
+        }
+        ts.forEachChild(node, findAction);
+      };
+      findAction(screen);
+      if (!action) throw new Error('Missing return-to-edit alert action');
+      const code = ts.transpileModule(`const onPress = ${action};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      const onPress = new Function(...Object.keys(bindings), `${code}; return onPress;`)(...Object.values(bindings));
+      onPress();
+      await flushPipeline();
+      expect(editOutbox.update).toHaveBeenCalledOnce();
+      expect(getNewSessionCreationTask('s1')?.returningToEdit).toBe(true);
+      if (pageState === 'unmount') alive.current = null;
+      if (pageState === 'another-task') alive.current = 's2';
+      if (pageState === 'blur') navigation.isFocused.mockReturnValue(false);
+      if (pageState === 'account') setMobileAuthOwner('owner-b');
+      failSave(new Error('disk full'));
+      await flushPipeline();
+      expect(replace).not.toHaveBeenCalled();
+      if (pageState === 'current') {
+        expect(setError).toHaveBeenCalledWith('disk full');
+        expect(alert).toHaveBeenCalledOnce();
+        // A dialog already shown must not let its retry act on a page that subsequently left.
+        alive.current = null;
+        alert.mock.calls[0][2][1].onPress();
+        expect(retry).not.toHaveBeenCalled();
+        expect(setError).toHaveBeenCalledTimes(1);
+      } else {
+        expect(setError).not.toHaveBeenCalled();
+        expect(alert).not.toHaveBeenCalled();
+      }
+      expect(editOutbox.records()).toEqual([record]);
+      if (pageState !== 'account') {
+        expect(getNewSessionCreationTask('s1')).toMatchObject({ status: 'create-failed', returningToEdit: false });
+        expect(remoteSessionStore.getSessions().some(session => session.id === 's1')).toBe(true);
+      }
+    });
+
   it('keeps a cancelled durable worktree recovery visible until its form accepts it', async () => {
     const maker = makeMaker();
     startNewSessionCreation(makeParams('s1', maker, {

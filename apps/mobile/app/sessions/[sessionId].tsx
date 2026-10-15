@@ -4069,9 +4069,12 @@ function SessionScreenContent() {
           style: 'cancel',
           onPress: () => {
             if (!creationTask) return;
+            const owner = getMobileAuthOwner();
+            const isCurrent = () => isMobileAuthOwnerCurrent(owner)
+              && outboxSessionAliveRef.current === sessionId && navigation.isFocused();
             void returnNewSessionToEdit({
               sessionId, deviceId,
-              isCurrent: () => outboxSessionAliveRef.current === sessionId,
+              isCurrent,
               onReady: params => router.replace({ pathname: '/sessions/new', params }),
               stashDraft: prepared => {
                 // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
@@ -4108,6 +4111,8 @@ function SessionScreenContent() {
               },
             })
               .catch((err: unknown) => {
+                // Recovery continues after leaving, but its error UI belongs to this page.
+                if (!isCurrent()) return;
                 // 补偿回收失败时保留 task + 合成行，绝不先跳回表单再创建第二个孤儿
                 // worktree。用户可取消等待连接恢复，或直接复用同 sessionId 重试创建。
                 const cleanupError = formatRemoteError(err);
@@ -4120,6 +4125,7 @@ function SessionScreenContent() {
                   {
                     text: t('session.screen.retry'),
                     onPress: () => {
+                      if (!isCurrent()) return;
                       setError(null);
                       retryNewSessionCreation(sessionId);
                     },
@@ -4187,7 +4193,7 @@ function SessionScreenContent() {
       dismissNewSessionCreation(sessionId);
       void load();
     }
-  }, [creationTask, deviceId, deviceName, load, router, sessionId, setComposerDraft]);
+  }, [creationTask, deviceId, deviceName, load, navigation, router, sessionId, setComposerDraft]);
 
   // 排队行里该显示「在途转圈」的 clientId:本页 enqueue 在途的条目,加上新建会话
   // 乐观管线仍在跑(create + 首条 enqueue 都还没确认)时的首条消息——它同样是
