@@ -12,6 +12,7 @@ import {
   type MenubarCollectDeps,
 } from '../collect';
 import { topModels, type MenubarSubscriptionInput } from '../snapshot';
+import type { UsageHistoryPayload, UsageHistoryTask } from '../../usage/usageHistory';
 
 const NOW = Date.UTC(2026, 9, 11, 3, 0, 0);
 const nowSec = NOW / 1000;
@@ -102,6 +103,31 @@ describe('source mapping', () => {
 });
 
 describe('collectMenubarInputs', () => {
+  function task(sessionId: string, source?: string | null): UsageHistoryTask {
+    return {
+      taskKey: 'local:' + sessionId,
+      deviceId: 'local',
+      sessionId,
+      title: sessionId,
+      model: 'gpt-5.5',
+      providerId: null,
+      source,
+      contextTokens: 0,
+      contextWindow: 0,
+      lastActiveAt: NOW,
+    };
+  }
+
+  function usage(tasks: UsageHistoryTask[]): UsageHistoryPayload {
+    const money = { amount: 1, currency: 'USD', approximate: false, kind: 'actual-cost' } as const;
+    return {
+      todayKey: '2026-10-11',
+      modelDaily: [{ day: '2026-10-11', agentKind: 'codex', model: 'gpt-5.5', tokens: 1000, money, apiMoney: money, subscriptionEstimateMoney: money }],
+      tasks,
+      taskDaily: tasks.map((entry, index) => ({ day: '2026-10-11', taskKey: entry.taskKey, tokens: 100 - index })),
+    } as UsageHistoryPayload;
+  }
+
   function deps(overrides: Partial<MenubarCollectDeps> = {}): MenubarCollectDeps {
     return {
       nowMs: NOW,
@@ -168,6 +194,39 @@ describe('collectMenubarInputs', () => {
       expect.objectContaining({ sessionId: 's1', title: 'Fix the chart', harness: 'codex', running: true, startedAtMs: NOW - 60_000 }),
     ]);
     expect(collected.usage.days).toHaveLength(90);
+  });
+
+  it.each(['cindy-make', 'cindy-make-merge'])('hides %s usage tasks without changing accounting totals', async (source) => {
+    const input = usage([task('hidden', source), task('ordinary', null)]);
+    const collected = await collectMenubarInputs(deps({ readUsage: async () => input }));
+
+    expect(collected.tasks.map((entry) => entry.sessionId)).toEqual(['ordinary']);
+    expect(collected.tasks[0].tokensToday).toBe(99);
+    expect(collected.usage.scopes.local.daily.at(-1)).toEqual({ money: [0, 1, 0], paid: 1, tokens: [0, 1000, 0] });
+    expect(input.taskDaily).toHaveLength(2);
+    expect(input.tasks).toHaveLength(2);
+  });
+
+  it.each(['cindy-make', 'cindy-make-merge'])('checks live %s sources for legacy usage and running-only tasks', async (source) => {
+    const input = usage([task('legacy'), task('ordinary')]);
+    const collected = await collectMenubarInputs(deps({
+      readUsage: async () => input,
+      activities: () => [{ sessionId: 'running-only', phase: 'running', startedAtMs: NOW - 1000 } as never],
+      sessionRow: async (sessionId) => ({ title: sessionId, model: 'gpt-5.5', agentKind: 'codex', source: sessionId === 'ordinary' ? null : source }),
+    }));
+
+    expect(collected.tasks.map((entry) => entry.sessionId)).toEqual(['ordinary']);
+  });
+
+  it('applies the visible task limit after filtering live sources', async () => {
+    const hiddenIds = Array.from({ length: 35 }, (_, index) => 'hidden-' + index);
+    const ordinaryIds = Array.from({ length: 31 }, (_, index) => 'ordinary-' + index);
+    const collected = await collectMenubarInputs(deps({
+      activities: () => [...hiddenIds, ...ordinaryIds].map((sessionId) => ({ sessionId, phase: 'running', startedAtMs: NOW - 1000 } as never)),
+      sessionRow: async (sessionId) => ({ title: sessionId, model: 'gpt-5.5', agentKind: 'codex', source: sessionId.startsWith('hidden-') ? 'cindy-make' : null }),
+    }));
+
+    expect(collected.tasks.map((entry) => entry.sessionId)).toEqual(ordinaryIds.slice(0, 30));
   });
 });
 

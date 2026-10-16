@@ -6,6 +6,7 @@ import {
   isValidPluginResourceId,
   isValidPluginNamespace,
   PLUGIN_PREFIX_PATTERN,
+  type OrganizationPluginAccessError,
   type PluginCurrentOrganization,
   type PluginRemovalNotice,
   type VisiblePluginDetail,
@@ -47,6 +48,7 @@ import {
 } from '../../shared/pluginMarket.js';
 import { getAuthState, getCurrentUserId } from '../authManager.js';
 import {
+  confirmLegacyLibraryReattach,
   getGhostManager,
   hasPendingGhostCalls,
   hasRunningGhostCindyWork,
@@ -102,7 +104,7 @@ import {
   type GhostInstallConsentPrompt,
 } from '../cindy-brain/ghostInstallConsent.js';
 import type { GhostInstallConsentInitiator } from '../../shared/ghostInstallConsent.js';
-import { PluginMarketApi } from './api.js';
+import { isPluginMarketPassthroughErrorCode, PluginMarketApi } from './api.js';
 import { createOrganizationPrefixStore } from './organizationPrefixStore.js';
 import { downloadVerifiedPlugin } from './download.js';
 import {
@@ -127,6 +129,28 @@ import { MarketSourceManager } from './sources/index.js';
 import { MarketSourceStore } from './sources/store.js';
 
 const log = createLogger('plugin-market');
+
+function organizationAccessErrorCode(
+  error: OrganizationPluginAccessError | undefined,
+): string | null {
+  if (!error) return null;
+  log.warn('organization plugin catalog unavailable', { code: error.code });
+  return error.code;
+}
+
+/**
+ * 目录里找不到条目时的拒绝。企业部分被拒时，条目可能只是没有下发：保留准入原因，
+ * 但仍不读取详情、不安装。
+ */
+function throwListedPluginUnavailable(
+  organizationAccessError: OrganizationPluginAccessError | undefined,
+): never {
+  const code = organizationAccessError?.code;
+  if (code && isPluginMarketPassthroughErrorCode(code)) {
+    throwIpcError(code, 'Organization plugin catalog is unavailable');
+  }
+  throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
+}
 
 class SilentUpgradeBusyError extends Error {}
 class SilentDefaultInstallCancelledError extends Error {}
@@ -1036,6 +1060,7 @@ export class PluginMarketService {
     let plugins: VisiblePluginSummary[];
     let removals: PluginRemovalNotice[];
     let currentOrganization: PluginCurrentOrganization | null | undefined;
+    let organizationAccessError: string | null = null;
     let customDiscovery: CustomMarketDiscovery;
     try {
       // 官方目录与自定义发现并行；单个本地/网络盘来源卡顿不会串行拖住官方请求。
@@ -1043,6 +1068,7 @@ export class PluginMarketService {
       plugins = visiblePluginsForOwner(owner, catalog.plugins);
       removals = catalog.removals;
       currentOrganization = catalog.currentOrganization;
+      organizationAccessError = organizationAccessErrorCode(catalog.organizationAccessError);
       customDiscovery = discovered;
     } catch (error) {
       log.warn('market list unavailable', {
@@ -1126,6 +1152,7 @@ export class PluginMarketService {
       unavailableReason: null,
       customSourceNames,
       unavailableCustomSourceNames: customDiscovery.unavailableSourceNames,
+      organizationAccessError,
     };
     if (!options.discoveryOnly && options.deferReconciliation) {
       // 目录展示不等待默认插件下载；对账仍复用原有串行锁和 owner 校验。
@@ -1152,6 +1179,7 @@ export class PluginMarketService {
         unavailableReason: null,
         customSourceNames: [],
         unavailableCustomSourceNames: [],
+        organizationAccessError: organizationAccessErrorCode(catalog.organizationAccessError),
       };
     } catch (error) {
       log.warn('public market list unavailable', {
@@ -1230,9 +1258,7 @@ export class PluginMarketService {
       this.rememberCurrentOrganization(listed.currentOrganization);
       const catalog = visiblePluginsForOwner(owner, listed.plugins);
       const summary = catalog.find((candidate) => candidate.id === pluginId);
-      if (!summary) {
-        throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
-      }
+      if (!summary) throwListedPluginUnavailable(listed.organizationAccessError);
       const plugin = await this.api.detail(pluginId);
       requireSameMarketOwner(owner);
       assertDetailMatchesSummary(summary, plugin);
@@ -1440,9 +1466,7 @@ export class PluginMarketService {
     this.rememberCurrentOrganization(listed.currentOrganization);
     const catalog = visiblePluginsForOwner(owner, listed.plugins);
     const selected = catalog.find((candidate) => candidate.id === pluginId);
-    if (!selected) {
-      throwIpcError('NOT_FOUND', 'Plugin is unavailable to the active account');
-    }
+    if (!selected) throwListedPluginUnavailable(listed.organizationAccessError);
     if (!isGhostAvailableForActiveSession(selected.ghostId)) {
       throwIpcError('PERMISSION_DENIED', 'This Plugin requires a Cindy account');
     }
@@ -2294,12 +2318,27 @@ export class PluginMarketService {
               inspected.packageSha256,
             );
       requireSameMarketOwner(owner);
+      // Asked only beside a first-install prompt the user just answered;
+      // background and default installs never stop for it.
+      const reclaimLegacyBareInstance = consent.mode === 'confirmed' && !options.expectedInstalled &&
+        plugin.scope === 'organization' && typeof plugin.namespace === 'string' &&
+        await confirmLegacyLibraryReattach({
+          ghostId: plugin.ghostId,
+          namespace: plugin.namespace,
+          pluginId: plugin.id,
+          name: plugin.name,
+        }).catch((error: unknown) => {
+          log.warn('legacy library reattach prompt unavailable', { ghostId: plugin.ghostId, error: String(error) });
+          return false;
+        });
+      requireSameMarketOwner(owner);
       const commit = () =>
         this.commitDownloadedPackage(
           tempPath,
           plugin,
           {
             consent,
+            ...(reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
             expectedInstalled: options.expectedInstalled,
             ...(options.expectedInstalledApproval !== undefined
               ? { expectedInstalledApproval: options.expectedInstalledApproval }
@@ -2333,6 +2372,8 @@ export class PluginMarketService {
     plugin: VisiblePluginSummary | VisiblePluginDetail,
     options: {
       consent: GhostInstallConsentDecision;
+      /** The user agreed to reattach the library left under the bare id. */
+      reclaimLegacyBareInstance?: boolean;
       expectedInstalledApproval?: string;
       sourceReplacementMode: ServerSourceReplacementMode;
       beforeCommitInLock?: () => void;
@@ -2414,6 +2455,7 @@ export class PluginMarketService {
         pluginId: plugin.id,
         version: plugin.currentRelease.version,
         consent: options.consent,
+        ...(options.reclaimLegacyBareInstance && !installedNow ? { reclaimLegacyBareInstance: true } : {}),
         ...(sourceChanged ? { sourceChanged: true } : {}),
         ...deliveryNamespaceFields(plugin),
         ...(plugin.ghostId === 'cindy-github' && plugin.scope === 'public' &&
@@ -2488,11 +2530,31 @@ export class PluginMarketService {
       (!hasDeliveryNamespace(plugin) && plugin.scope === 'organization' &&
         local.ghosts.some((candidate) => candidate.manifest.id === plugin.ghostId &&
           hasDeliveryNamespace(candidate) && candidate.namespace !== null) && target === plugin));
+    // A recovered legacy route may already name the current release without
+    // having its approved package evidence. Reinstall through the verified
+    // market update transaction; neither the route nor the manifest grants trust.
+    let needsSourceRecovery = false;
+    if (matchesUpdateRoute && ghost?.approval.state === 'approved' && identity && record &&
+        record.releaseId === plugin.currentRelease.id &&
+        record.sha256 === plugin.currentRelease.sha256 &&
+        record.scope === 'organization') {
+      const user = getAuthState().user;
+      const manager = getGhostManager();
+      const physicalId = installedGhostPhysicalRelId(ghost);
+      const evidence = manager.approvedInstallEvidence(physicalId);
+      if (user?.membershipKind === 'org' && record.organizationId === user.orgId &&
+          evidence && manager.readApprovedInstallOriginStrict(physicalId) !== 'agent-forge' &&
+          installedIdentityMatchesManifest(identity, evidence.approvedManifest)) {
+        needsSourceRecovery = evidence.packageSha256 === null
+          ? evidence.legacyMigrated
+          : record.source === 'legacy-adopted' && evidence.packageSha256 === record.sha256;
+      }
+    }
     const installState: PluginMarketItem['installState'] = conflict
       ? 'conflict'
       : !matchesUpdateRoute
         ? 'not-installed'
-        : record?.releaseId === plugin.currentRelease.id
+        : record?.releaseId === plugin.currentRelease.id && !needsSourceRecovery
           ? 'installed'
           : 'update-available';
     const projectedTarget = matchesUpdateRoute && !hasDeliveryNamespace(target) &&

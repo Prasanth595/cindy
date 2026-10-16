@@ -11,6 +11,7 @@ import {
   normalizeProviderGroupConfig,
   type ProviderGroupCommand,
   type ProviderGroupConfig,
+  type ProviderGroupReshareSummary,
   type ProviderGroupSessionGroup,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
@@ -52,6 +53,31 @@ export interface ProviderGroupCommandDeps {
   /** 这个任务此刻归哪个组(只读本机记录)。 */
   sessionGroup(sessionId: string): Promise<ProviderGroupSessionGroup>;
   changed(providerId: string): void;
+  /**
+   * 转分享(provider-sharing.md §4.3)：分享来的组内电脑的主人对本机分享出去的人逐人同意的结果，设置页据此显示；
+   * 设置页打开时顺带核对一次。不提供时不显示(测试)。
+   */
+  reshare?: {
+    summary(providerId: string, agentDeviceId: string): ProviderGroupReshareSummary | null;
+    refreshIfStale(): void;
+  };
+}
+
+/** 本机自己的组：分享来的组内电脑补上转分享的结果(只给本机设置页，不经设备互联发出)。 */
+function withReshare(deps: ProviderGroupCommandDeps, view: ProviderGroupView): ProviderGroupView {
+  const reshare = deps.reshare;
+  if (!reshare || !view.config) return view;
+  reshare.refreshIfStale();
+  const members = view.config.members;
+  return {
+    ...view,
+    members: view.members.map((status) => {
+      const member = members.find((m) => m.key === status.key);
+      if (member?.kind !== 'share' || !member.agentDeviceId) return status;
+      const summary = reshare.summary(view.providerId, member.agentDeviceId);
+      return summary ? { ...status, reshare: summary } : status;
+    }),
+  };
 }
 
 const REMOTE_DEVICE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
@@ -137,7 +163,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
   const { providerId } = command;
   switch (command.action) {
     case 'get':
-      return deps.router.view(providerId, { includeGuestSupport: true });
+      return withReshare(deps, await deps.router.view(providerId, { includeGuestSupport: true }));
     case 'remote-view':
       return markMembersUnreachableHere(
         await deps.remoteView(command.deviceId, providerId),
@@ -156,20 +182,34 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       const next = normalizeProviderGroupConfig(command.config, providerId);
       if (next) {
         // 新加入的电脑必须是这台电脑已经能用的同一个供应商(§3)，不能凭渲染端点名加入。
-        const previous = new Set(deps.readGroup(providerId)?.members.map((m) => m.key) ?? []);
+        const stored = new Map(deps.readGroup(providerId)?.members.map((m) => [m.key, m]) ?? []);
+        const previous = new Set(stored.keys());
+        // 设置页拿着对账补记之前的组来保存时，不丢掉已经记下的分享者那台电脑(removedShares.ts)。
+        for (const member of next.members) {
+          const host = stored.get(member.key)?.hostDeviceId;
+          if (member.kind === 'share' && !member.hostDeviceId && host) member.hostDeviceId = host;
+        }
         const added = next.members.filter((m) => m.kind !== 'local' && !previous.has(m.key));
-        if (added.length > 0) {
+        // 分享成员的 hostDeviceId 由 Main 端收到的分享目录持有。即使只是修改已有成员，
+        // 也不能接受渲染端快照自报的物理电脑键(协议兼容规则中的供应商组聚合条目)。
+        if (added.length > 0 || next.members.some((m) => m.kind === 'share')) {
           const candidates = await deps.directory.listCandidates(providerId, deps.readGroup(providerId));
+          const byKey = new Map(candidates.map((c) => [c.key, c]));
           const allowed = new Set(candidates.filter((c) => !c.blocked).map((c) => c.key));
           const rejected = added.filter((m) => !allowed.has(m.key));
           if (rejected.length > 0) {
             throwIpcError('PRECONDITION_FAILED', 'Only the same provider that this computer can already use can join the group');
           }
-          // 显示名以目录为准，渲染端给的只是快照。
-          const labels = new Map(candidates.map((c) => [c.key, c.label]));
+          // 显示名(电脑名与供应商名)以目录为准，渲染端给的只是快照。
           for (const member of next.members) {
-            const label = labels.get(member.key);
-            if (label) member.label = label;
+            const candidate = byKey.get(member.key);
+            if (candidate?.label) member.label = candidate.label;
+            if (candidate?.providerName) member.providerName = candidate.providerName;
+            if (member.kind === 'share') {
+              if (candidate?.hostDeviceId) member.hostDeviceId = candidate.hostDeviceId;
+              else if (stored.get(member.key)?.hostDeviceId) member.hostDeviceId = stored.get(member.key)?.hostDeviceId;
+              else delete member.hostDeviceId;
+            }
           }
         }
       }
@@ -179,12 +219,23 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       const written = await deps.writeGroup(providerId, next);
       await deps.pruneBindings(providerId, written ? new Set(written.members.map((m) => m.key)) : null);
       deps.changed(providerId);
-      return deps.router.view(providerId, { includeGuestSupport: true });
+      return withReshare(deps, await deps.router.view(providerId, { includeGuestSupport: true }));
     }
   }
 }
 
-export function registerProviderGroupIpc(): void {
+/**
+ * 转分享(provider-sharing.md §4.3)由 bootstrap 接上(reshareRuntime.ts)：组里的电脑变了就重新报分享的人，
+ * 设置页显示分享来的电脑对每个人的同意情况。
+ */
+export interface ProviderGroupIpcReshare {
+  summary(providerId: string, agentDeviceId: string): ProviderGroupReshareSummary | null;
+  refreshIfStale(): void;
+  kick(reason: string): void;
+}
+
+export function registerProviderGroupIpc(options: { reshare?: ProviderGroupIpcReshare } = {}): void {
+  const reshare = options.reshare;
   const deps: ProviderGroupCommandDeps = {
     router: getProviderGroupRouter(),
     directory: getProviderGroupDirectory(),
@@ -197,6 +248,8 @@ export function registerProviderGroupIpc(): void {
     listGroups: listProviderGroups,
     sessionGroup: readProviderGroupOfSession,
     changed: (providerId) => {
+      // 组里的电脑变了：重新报转分享(加进来的分享来的电脑要请它的主人同意，移出的不再列着)。
+      reshare?.kick('group');
       try {
         broadcast(PROVIDER_GROUP_IPC.CHANGED, { providerId });
         // 同账号其他电脑的模型列表按本机目录里的组摘要收起组内电脑：组变化后让它们重读目录。
@@ -205,6 +258,7 @@ export function registerProviderGroupIpc(): void {
         log.warn('provider group broadcast failed', { error: String(error) });
       }
     },
+    ...(reshare ? { reshare } : {}),
   };
 
   ipcMain.handle(PROVIDER_GROUP_IPC.COMMAND, async (event, raw: unknown) => {

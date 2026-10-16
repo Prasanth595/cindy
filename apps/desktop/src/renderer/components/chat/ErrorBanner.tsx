@@ -1,6 +1,7 @@
 import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
 import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
 import { Button } from '@/components/ui/button';
+import { isSharedTaskPeer } from '@cindy/device-link';
 import { isCodexGatewayWireModel, isOpenAiSubscriptionProvider } from '@cindy/model-providers';
 import { useProviders } from '@/hooks/useProviders';
 /**
@@ -19,7 +20,7 @@ import { useProviders } from '@/hooks/useProviders';
 
 import { useEffect, useState } from 'react';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
-import { isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
+import { canOfferCodexHistoryRecovery, isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { chatRemoteErrorGuidanceKey } from '@/lib/autoReviewUnavailableGuidance';
 import {
   AlertCircle,
@@ -207,6 +208,9 @@ export function ErrorBanner({
     !isAnyRemoteSession &&
     !silentEncryptedRetryEnabled &&
     isInvalidEncryptedContentError(error);
+  const showHistoryRecovery = Boolean(onForkStripEncrypted) && !isSharedTaskPeer(deviceLinkDeviceId) && canOfferCodexHistoryRecovery({
+    message: error, agentKind, remoteHostId, agentDeviceId, running: isRecoverable,
+  });
   const isOversizedHistoryError =
     agentKind === 'codex' && errorReason === 'codex_history_oversized';
   // SSH 不能自动剥图。本机 / device-link 由 main 侧协调器就地恢复，横幅不给按钮。
@@ -648,6 +652,19 @@ export function ErrorBanner({
         >
           {displayError}
         </span>
+        {showHistoryRecovery && (
+          <div className="mt-2 space-y-2">
+            <p className="text-12 text-[var(--text-secondary)]">
+              {t('chat.errorBanner.readableHistoryRecoveryDescription')}
+            </p>
+            <Button size="sm" compact data-split-pane-route-action=""
+              loading={forkStripEncryptedRunning}
+              onClick={() => void onForkStripEncrypted?.()}>
+              <GitFork size={12} />
+              {t('chat.errorBanner.readableHistoryRecovery')}
+            </Button>
+          </div>
+        )}
         {(isNetworkishError ||
           isOverloadError ||
           isStreamInterrupted ||
@@ -806,13 +823,14 @@ export function ErrorBanner({
       {safeRetryText && (
         <button
           type="button"
+          disabled={forkStripEncryptedRunning}
           onClick={() => onRetry(safeRetryText)}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
             isOpenAiConnectionExpired
               ? 'text-[var(--text-primary)]'
               : 'text-[var(--error-fg)]',
-            'hover:opacity-70 transition-opacity',
+            'enabled:hover:opacity-70 transition-opacity disabled:opacity-60',
           )}
           title={t('chat.errorBanner.retryTitle')}
         >

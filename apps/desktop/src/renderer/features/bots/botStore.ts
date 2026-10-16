@@ -55,6 +55,8 @@ export interface BotCapabilities {
   mcpServers: string[];
   memory: boolean;
   permissions: 'ask' | 'auto' | 'trusted';
+  /** 代输入: may this companion ask the owner to finish an on-screen step. Missing = allowed. */
+  inputHandoff?: boolean;
 }
 
 export interface BotModelOverride {
@@ -144,6 +146,8 @@ export interface BotSessionProjection {
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
   role?: 'canonical' | 'delegation' | 'history' | 'group';
+  /** Group-lane only: the group whose chat owns this hidden Session. */
+  groupId?: string;
   profileVersion?: number;
   runtimeSnapshot?: {
     profileVersion: number;
@@ -467,6 +471,7 @@ function defaultCapabilities(
     mcpMode: 'inherit',
     mcpServers: [],
     memory: true,
+    inputHandoff: true,
     // 新建伙伴默认放手做(产品裁决 2026-08-18)。**只作用于「新建」**:读取既有
     // profile 的两条路径都显式跑 normalizeBotPermissions,缺字段的历史数据仍落
     // 'ask',与 main 侧投影一致,不会因为默认值变了就把老伙伴悄悄升成信任。

@@ -123,7 +123,7 @@ export {
 } from './shared/auto-review-decision.js';
 export { toolAutoReviewAction } from './shared/auto-review-decision.js';
 export { AUTO_REVIEW_CONTINUATION_POLICY } from './shared/continuation-policy.js';
-export type { ReviewableAction } from './shared/auto-review.js';
+export type { CredentialCommandOptions, GitRead, ReviewableAction } from './shared/auto-review.js';
 export { classifyShellCommand, reviewAction, shellCommandReadsCredentials } from './shared/auto-review.js';
 export type {
   ToolLoopReviewDecision,

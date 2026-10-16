@@ -146,6 +146,27 @@ function canAutoApproveCindyArtGhostCall(context: McpToolApprovalContext): boole
   return ghostId === 'cindy-art' && CINDY_ART_MEDIA_TOOLS.has(tool);
 }
 
+/** cindy_scheduler 里接受 `device` 的写工具（与 packages/lizi-mcps/src/scheduler 的 writeDeviceShape 一致）。 */
+const SCHEDULER_CROSS_DEVICE_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'schedule_update',
+  'schedule_pause',
+  'schedule_resume',
+  'schedule_delete',
+  'schedule_run_now',
+]);
+
+/** `device` 指向本机以外的电脑。缺省与 "local" 是本机；其余值（含形状异常）一律按非本机处理。 */
+function targetsAnotherComputer(device: unknown): boolean {
+  return device !== undefined && device !== null && device !== 'local';
+}
+
+/** `deviceId::sessionId` 的设备段；本机 id（无前缀或前缀残缺）返回 undefined。 */
+function sessionIdDevice(sessionId: unknown): string | undefined {
+  if (typeof sessionId !== 'string') return undefined;
+  const split = sessionId.indexOf('::');
+  return split > 0 && split < sessionId.length - 2 ? sessionId.slice(0, split) : undefined;
+}
+
 /** Claude SDK 工具名格式固定为 `mcp__<server>__<tool>`。 */
 function toClaudeToolName(key: string): string {
   const [serverName, toolName] = key.split('::');
@@ -210,6 +231,20 @@ export function getDesktopMcpToolApprovalPolicy(
       return 'prompt-each-time';
     }
     if (action === 'move_session' || action === 'publish_skill') return 'prompt-each-time';
+    // 发给另一台电脑上的任务：作用范围越出本机，交给当前任务的权限档，不走可信 server 的静默放行。
+    if (action === 'send_to_session' && targetsAnotherComputer(sessionIdDevice(args?.target_session_id))) {
+      return 'prompt-each-time';
+    }
+  }
+  // 改动另一台电脑上的定时任务（可改写并触发那台电脑上的命令）同样交给权限档：Full Access
+  // 免审批，Auto 走统一审阅，Ask 由用户确认。本机操作与跨电脑读取保持原样。
+  if (serverName === 'cindy_scheduler' && (toolName === 'call_tool' || !toolName)) {
+    const params = readJsonObject(toolParams);
+    const innerName = typeof params?.name === 'string' ? params.name.trim() : '';
+    const args = readJsonObject(params?.args);
+    if (SCHEDULER_CROSS_DEVICE_WRITE_TOOLS.has(innerName) && targetsAnotherComputer(args?.device)) {
+      return 'prompt-each-time';
+    }
   }
   // Choosing a new Worker root delegates filesystem access. Do not let the
   // trusted-server shortcut or a cached server grant authorize another root.

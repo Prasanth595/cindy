@@ -18,6 +18,8 @@ export interface HtmlBrowserChromeProps {
   /** The file has not opened yet: address editing and the more menu stay disabled. */
   pending?: boolean;
   notice?: string | null;
+  /** Set while the notice describes a cancellable export: the notice shows a Cancel button. */
+  onCancelNotice?: () => void;
   onClose(): void;
   onBack(): void;
   onForward(): void;

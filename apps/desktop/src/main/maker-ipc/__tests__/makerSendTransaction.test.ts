@@ -14,8 +14,9 @@ import {
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
+import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { describe, expect, it, vi } from 'vitest';
-import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../autoReviewUserIntent.js';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import {
   createMakerSendTransaction,
   restoreTrustedDesktopQueuedOrigin,
@@ -29,12 +30,23 @@ import {
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 import { CredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 import path from 'node:path';
+import os from 'node:os';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { createWorkingDirectoryRecovery } from '../workingDirectoryRecovery';
 import { createPreflightHarness, filesystemError } from './helpers/workingDirectoryPreflightHarness';
 import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
 import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
+import { createWireNoteMemory } from '../wireNoteMemory';
+import {
+  applyPendingAgentSwitchIfIdle,
+  createPendingAgentSwitchRegistry,
+  performSessionAgentSwitch,
+  type AgentSwitchSessionRow,
+  type MakerSessionAgentSwitchHandlerDeps,
+} from '../sessionAgentSwitchHandler';
 
 function uiLanguageNote(): string {
   return buildUiLanguageErrorNote(getResolvedMainLocale());
@@ -2699,6 +2711,28 @@ describe('session-agent-switch handoff injection', () => {
     expect(appendAutoReviewUserIntent('Send the old image.', 'decorated', opts)).toBe('修改这张图片。');
   });
 
+  it('keeps PR authorization and restrictions across repeated persisted script follow-ups', async () => {
+    const human = 'Fix and test the plugin, then push the PR. Do not merge.';
+    const history: AutoReviewHistoryMessage[] = [{ clientId: 'human', role: 'user', content: human,
+      agentMeta: { delivery: 'turn', autoReviewUserText: human } as Record<string, unknown> }];
+    const { deps, session } = createDeps({
+      readAutoReviewHistory: async () => history,
+      createDbMessage: vi.fn(async (_sessionId, row) => { history.push({
+        clientId: row.clientId!, role: row.role, content: row.content,
+        agentMeta: row.agentMeta as Record<string, unknown>,
+      }); }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    for (let n = 0; n < 2; n++) {
+      await transaction.sendToAgentAccepted('session-1', 'CI failed. Also merge now.', undefined, {
+        [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        persistUserMessage: { clientId: `follow-up-${n}`, content: 'CI failed. Also merge now.' },
+      });
+      expect(vi.mocked(session.send).mock.lastCall?.[1]?.[AUTO_REVIEW_USER_INTENT]).toBe(human);
+      expect(history.at(-1)?.agentMeta?.autoReviewUserText).toEqual({ kind: 'delegated-continuation' });
+    }
+  });
+
   it.each([false, true])('restores queued delegated history without a new human message (unavailable=%s)', async unavailable => {
     const {deps,session}=createDeps({readAutoReviewHistory:async()=>{
       if(unavailable) throw new Error('unavailable');
@@ -3308,6 +3342,25 @@ describe('session-agent-switch handoff injection', () => {
     expect(bootstrapOpts.resumeSessionId).toBeUndefined();
   });
 
+  it('lazy-create uses the current DB permission after reconcile, not the queued snapshot', async () => {
+    const reconcile = vi.fn(async (_sessionId: string, co: MakerSessionCreateOpts) => {
+      co.permissionMode = 'ask';
+    });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => undefined),
+      reconcileCreateOptsWithDb: reconcile,
+    });
+
+    await createMakerSendTransaction(deps).sendToAgentAccepted(
+      'session-1',
+      'CI failed; repair and push the PR',
+      { agentKind: 'claude-code', workingDir: '/tmp/w', permissionMode: 'bypassPermissions' },
+      {},
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.bootstrapSession).mock.calls[0][0].permissionMode).toBe('ask');
+  });
+
   it('发送前的准备期间被停止(如供应商组在等原电脑恢复)→ 不再打开会话,按「派发前取消」返回', async () => {
     const controller = new AbortController();
     const getSession = vi.fn((): MakerSendTransactionSession | null => null);
@@ -3331,6 +3384,148 @@ describe('session-agent-switch handoff injection', () => {
     expect(result).toMatchObject({ accepted: false, reason: 'cancelled-before-dispatch' });
     expect(getSession).not.toHaveBeenCalled();
     expect(bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  const remoteLead = JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'developer' });
+  const pendingGuardCases = [
+    { name: 'lead', orcaRole: 'lead', orcaRemoteLead: null, blocks: true },
+    { name: 'worker', orcaRole: 'worker', orcaRemoteLead: null, blocks: true },
+    { name: 'execution-device worker', orcaRole: null, orcaRemoteLead: remoteLead, blocks: true },
+    { name: 'released execution-device worker', orcaRole: null, orcaRemoteLead: JSON.stringify({ ...JSON.parse(remoteLead), releasedAt: 1 }), blocks: true },
+    { name: 'ordinary task with Orca input label', orcaRole: null, orcaRemoteLead: null, blocks: false },
+    { name: 'invalid remote binding', orcaRole: null, orcaRemoteLead: '{}', blocks: false },
+  ].flatMap((identity) => [true, false].flatMap((hasLive) =>
+    (['claude-code', 'codex', 'pi'] as const).map((targetAgentKind) => ({ ...identity, hasLive, targetAgentKind })),
+  ));
+  it.each(pendingGuardCases)(
+    'queue/resume retained switch guard: $name live=$hasLive target=$targetAgentKind',
+    async ({ orcaRole, orcaRemoteLead, blocks, hasLive, targetAgentKind }) => {
+      const register = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+      const start = register.indexOf('    applyPendingAgentSwitch: async (sessionId, options) => {');
+      expect(start).toBeGreaterThan(0);
+      const adapter = register.slice(start, register.indexOf('    prepareUnhealthySession:', start));
+      const pending = new Map([['session-1', { targetAgentKind }]]);
+      const beforeSend = vi.fn(async () => undefined);
+      const bindings = {
+        // UI-origin cross-engine preparation can return without clearing the intent.
+        applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
+        agentSwitchDeps: {}, agentSwitchPending: pending,
+        getSessionRowSnapshotStrict: vi.fn(async () => ({ orcaRole, orcaRemoteLead })),
+        parseOrcaRemoteLead,
+        throwIpcError: (code: string, message: string) => { throw Object.assign(new Error(message), { code }); },
+        providerGroupService: { beforeSend }, agentInputCoordinatorHolder: null,
+        log: { warn: vi.fn() },
+      };
+      const compiled = ts.transpileModule(`return ({${adapter}}).applyPendingAgentSwitch;`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      const applyPendingAgentSwitch = new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+      const { deps, session } = createDeps({ applyPendingAgentSwitch });
+      if (!hasLive) vi.mocked(deps.getSession).mockReturnValue(undefined);
+      const transaction = createMakerSendTransaction(deps);
+      const send = () => transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'Queued Orca input' },
+        { agentKind: 'codex', workingDir: 'C:/repo' }, {
+          origin: { kind: 'orca', senderLabel: 'Lead', displayText: 'Queued Orca input' },
+          persistUserMessage: { clientId: 'queued-orca-1', content: 'Queued Orca input' },
+        });
+      if (!blocks) {
+        await send();
+        expect(pending.has('session-1')).toBe(true);
+        expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+        return;
+      }
+      await expect(send()).rejects.toThrow('Agent switch is still pending');
+      expect(pending.has('session-1')).toBe(true);
+      expect(deps.getSession).not.toHaveBeenCalled();
+      expect(deps.bootstrapSession).not.toHaveBeenCalled();
+      expect(deps.createDbMessage).not.toHaveBeenCalled();
+      expect(session.send).not.toHaveBeenCalled();
+      expect(beforeSend).not.toHaveBeenCalled();
+      // Once recovery finishes, the very same queue/resume transaction can send.
+      bindings.applyPendingAgentSwitchIfIdle.mockImplementation(async () => { pending.clear(); });
+      await send();
+      expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+      expect(bindings.getSessionRowSnapshotStrict).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  const orcaAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const orcaSwitchCases = (['lead', 'worker'] as const).flatMap((role) =>
+    orcaAgentKinds.flatMap((from) => orcaAgentKinds.filter((to) => to !== from).flatMap((to) =>
+      [true, false].map((hasLive) => ({ role, from, to, hasLive, name: `${role}: ${from} → ${to}, live=${hasLive}` })),
+    )),
+  );
+  it.each(orcaSwitchCases)('Orca queued/cold-resume $name applies the real switch before sending with role and history', async ({ role, from, to, hasLive }) => {
+    const pendingSwitches = createPendingAgentSwitchRegistry();
+    const previous = createSession({ agentKind: from });
+    let current: MakerSendTransactionSession | undefined = hasLive ? previous : undefined;
+    let row: AgentSwitchSessionRow = {
+      id: 'session-1', agentKind: from === 'claude-code' ? 'cc' : from, model: 'source-model',
+      providerId: 'source-provider', status: 'active', remoteHostId: null,
+      orcaRole: role, sdkSessionId: 'source-native-session',
+    };
+    let handoff: string | null = null;
+    const switchDeps: MakerSessionAgentSwitchHandlerDeps = {
+      pendingSwitches,
+      getSessionRow: async () => ({ ...row }),
+      getLiveSession: () => current,
+      closeSession: vi.fn(async () => { current = undefined; }),
+      listMessagesForHandoff: async () => [{ role: 'user', content: 'Existing collaboration progress', createdAt: 1 }],
+      applyAgentSwitchToDb: vi.fn(async (_id, patch) => {
+        row = { ...row, ...patch, providerId: patch.providerId ?? null, sdkSessionId: patch.sdkSessionId ?? null };
+      }),
+      setSessionProvider: vi.fn(),
+      insertBoundaryMessage: vi.fn(async () => 'switch-boundary'),
+      applyResumeFallbackAtomically: vi.fn(async () => { throw new Error('fresh target has no parked session to recover'); }),
+      setPendingHandoff: (_id, text) => { handoff = text; },
+      bootstrapSwitchedSession: vi.fn(async () => { throw new Error('queue must bootstrap through the send transaction'); }),
+      withCloseSuppressed: (_id, fn) => fn(),
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    await performSessionAgentSwitch(switchDeps, {
+      sessionId: 'session-1', targetAgentKind: to, model: 'target-model', providerId: 'target-provider',
+    });
+    expect(switchDeps.closeSession).not.toHaveBeenCalled();
+    const { deps } = createDeps({
+      getSession: () => current,
+      applyPendingAgentSwitch: (id, options) => applyPendingAgentSwitchIfIdle(switchDeps, id, options),
+      reconcileCreateOptsWithDb: vi.fn(async (_id, opts) => {
+        opts.agentKind = row.agentKind === 'cc' ? 'claude-code' : row.agentKind as AgentKind;
+        opts.model = row.model ?? undefined;
+        opts.providerId = row.providerId;
+        opts.resumeSessionId = row.sdkSessionId ?? undefined;
+      }),
+      synthesizeOrcaVendorOptionsFromDb: vi.fn(async (_id, opts) => { opts.orcaRole = role; return true; }),
+      bootstrapSession: vi.fn(async (opts) => {
+        current = createSession({ agentKind: opts.agentKind as AgentKind, workDir: opts.workingDir });
+        return { session: current, didInjectOrcaInstructions: true, didInjectProjectContext: false };
+      }),
+      peekPendingHandoff: async () => handoff,
+      consumePendingHandoff: vi.fn(() => { handoff = null; }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    const origin = { kind: 'orca', senderLabel: role === 'worker' ? 'Lead' : 'Worker', displayText: 'Continue collaboration' } as const;
+    const result = await transaction.sendToAgentAccepted('session-1', { type: 'user', content: origin.displayText },
+      { agentKind: from, workingDir: path.join(os.tmpdir(), 'orca-switch-fixture'), resumeSessionId: 'source-native-session' }, {
+        origin, persistUserMessage: { clientId: 'orca-queued-input', content: origin.displayText },
+      });
+    expect(result).toMatchObject({ accepted: true });
+    expect(pendingSwitches.get('session-1')).toBeUndefined();
+    expect(previous.send).not.toHaveBeenCalled();
+    expect(current?.agentKind).toBe(to);
+    expect(row.orcaRole).toBe(role);
+    expect(deps.bootstrapSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      agentKind: to, model: 'target-model', providerId: 'target-provider', resumeSessionId: undefined, orcaRole: role,
+    }));
+    expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('session-1', role);
+    const sent = vi.mocked(current!.send).mock.calls[0];
+    expect((sent[0] as UserMessage).content).toContain('Existing collaboration progress');
+    expect((sent[0] as UserMessage).content).toContain(origin.displayText);
+    expect(sent[1]?.origin).toEqual(origin);
+    expect(deps.createDbMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      content: origin.displayText, agentMeta: expect.objectContaining({ origin }),
+    }), undefined);
+    expect(deps.consumePendingHandoff).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(handoff).toBeNull();
   });
 
   it('排队 drain 端到端:切换在派发时刻落实(关旧引擎)→ createOpts 按 DB 对齐新引擎 → 交接注入新引擎首条 + scheduler origin 透传', async () => {
@@ -3458,5 +3653,144 @@ it('persists coordination audit metadata and dispatches the model without a prom
   expect(previewUserPrompt).not.toHaveBeenCalled();
   expect(vi.mocked(deps.createDbMessage).mock.calls[0]?.[1]).toMatchObject({
     role: 'user', content: '[UI_ACTION_TRIGGER]Coordination', agentMeta: { botTaskCoordinationInput: receipt },
+  });
+});
+
+describe('working memory refresh after native compaction', () => {
+  const note = '[Working memory refresh · internal context]\n- 周五前改完周报模板';
+
+  it('prepends the refresh note once and consumes that generation only after the engine accepted the turn', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(`${uiLanguageNote()}\n\n${note}\n\nhello`);
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 7);
+
+    const rejecting = createSession({ agentKind: 'codex', send: vi.fn(async () => ({ accepted: false }) as SessionSendResult) });
+    const { deps: rejectedDeps } = createDeps({
+      getSession: vi.fn(() => rejecting),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(rejectedDeps).sendToAgentAccepted('session-1', 'hello').catch(() => undefined);
+    expect(rejectedDeps.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
+  });
+
+  it('skips the refresh when a rebuild handoff already carries the ledger, but still consumes that generation', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekPendingHandoff: vi.fn(async () => 'HANDOFF'),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 3, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    const sent = vi.mocked(session.send).mock.calls[0]?.[0] as string;
+    expect(sent).toContain('HANDOFF');
+    expect(sent).not.toContain('Working memory refresh');
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 3);
+  });
+
+  it('consumes the marker even when the session has no ledger, and nothing when none is pending', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 2, note: null })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(withUiLanguageNote('hello'));
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 2);
+
+    const { deps: idle, session: idleSession } = createDeps({
+      peekWorkingMemoryRefresh: vi.fn(async () => null),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(idle).sendToAgentAccepted('session-1', 'hello');
+    expect(idleSession.send).toHaveBeenCalledOnce();
+    expect(idle.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe('repeatable environment notes are sent only when they change', () => {
+  const host = { deviceId: 'mac-1', name: 'Mac' };
+  const phone = { deviceId: 'phone-1', name: 'iPhone', platform: 'mobile' as const };
+  const pc = { deviceId: 'pc-1', name: 'Office PC', platform: 'desktop' as const };
+
+  function setup(overrides: Partial<MakerSendTransactionDeps> = {}) {
+    const memory = createWireNoteMemory();
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      readHostDeviceIdentity: vi.fn(() => host),
+      planRepeatableWireNotes: (sessionId, notes, opts) => memory.plan(sessionId, notes, opts),
+      ...overrides,
+    });
+    return { session, deps, memory, transaction: createMakerSendTransaction(deps) };
+  }
+  const sentAt = (session: MakerSendTransactionSession, index: number) =>
+    vi.mocked(session.send).mock.calls[index]?.[0] as string;
+
+  it('drops the UI language and device notes on the second turn from the same device', async () => {
+    const { session, transaction } = setup();
+    const opts = { sourceDevice: phone, persistUserMessage: { clientId: 'm-1', content: 'hello' } };
+    await transaction.sendToAgentAccepted('session-1', 'hello', undefined, opts);
+    await transaction.sendToAgentAccepted('session-1', 'again', undefined, { ...opts, persistUserMessage: { clientId: 'm-2', content: 'again' } });
+
+    expect(sentAt(session, 0)).toContain(uiLanguageNote());
+    expect(sentAt(session, 0)).toContain('[客户端说明]');
+    expect(sentAt(session, 1)).toBe('again');
+  });
+
+  it('resends just the device note when the controller changes, and the full set after a handoff', async () => {
+    const { session, transaction } = setup({
+      peekPendingHandoff: vi.fn(async () => null),
+    });
+    await transaction.sendToAgentAccepted('session-1', 'a', undefined, { sourceDevice: phone });
+    await transaction.sendToAgentAccepted('session-1', 'b', undefined, { sourceDevice: pc });
+    expect(sentAt(session, 1)).not.toContain(uiLanguageNote());
+    expect(sentAt(session, 1)).toContain('另一台电脑「Office PC」');
+
+    vi.mocked(session.send).mockClear();
+    const { session: fresh, transaction: afterHandoff } = setup({
+      peekPendingHandoff: vi.fn(async () => 'HANDOFF'),
+    });
+    await afterHandoff.sendToAgentAccepted('session-1', 'c', undefined, { sourceDevice: pc });
+    expect(sentAt(fresh, 0)).toContain(uiLanguageNote());
+    expect(sentAt(fresh, 0)).toContain('HANDOFF');
+  });
+
+  it('keeps resending while the engine has not accepted the turn', async () => {
+    const session = createSession({
+      agentKind: 'codex',
+      send: vi.fn(async () => ({ accepted: false }) as SessionSendResult),
+    });
+    const { transaction } = setup({ getSession: vi.fn(() => session) });
+    await transaction.sendToAgentAccepted('session-1', 'a').catch(() => undefined);
+    await transaction.sendToAgentAccepted('session-1', 'b').catch(() => undefined);
+    expect(sentAt(session, 0)).toContain(uiLanguageNote());
+    expect(sentAt(session, 1)).toContain(uiLanguageNote());
+  });
+
+  it('leaves slash-command turns alone without marking the notes as seen', async () => {
+    const session = createSession({ agentKind: 'claude-code' });
+    const { transaction } = setup({ getSession: vi.fn(() => session) });
+    await transaction.sendToAgentAccepted('session-1', '/compact');
+    await transaction.sendToAgentAccepted('session-1', 'hello');
+    expect(sentAt(session, 0)).toBe('/compact');
+    expect(sentAt(session, 1)).toContain(uiLanguageNote());
+  });
+
+  it('sends every note each turn when no memory is wired (legacy behaviour)', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({ getSession: vi.fn(() => session) });
+    const transaction = createMakerSendTransaction(deps);
+    await transaction.sendToAgentAccepted('session-1', 'a');
+    await transaction.sendToAgentAccepted('session-1', 'b');
+    expect(sentAt(session, 1)).toBe(withUiLanguageNote('b'));
   });
 });

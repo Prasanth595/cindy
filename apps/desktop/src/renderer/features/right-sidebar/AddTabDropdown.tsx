@@ -10,7 +10,7 @@
 
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, FileDiff, FolderTree, Globe, ListTodo, Terminal, Wrench } from 'lucide-react';
+import { Bot, FileDiff, FolderTree, Globe, ListTodo, Terminal } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
   DropdownMenuContent,
@@ -97,14 +97,6 @@ const MENU_ITEMS: TabKindMenuMeta[] = [
     icon: Terminal,
     order: 30,
     enabled: true,
-  },
-  {
-    kind: 'cindy-make',
-    labelKey: 'settings.cindyMake.title',
-    icon: Wrench,
-    order: 12,
-    enabled: true,
-    singleton: true,
   },
 ];
 

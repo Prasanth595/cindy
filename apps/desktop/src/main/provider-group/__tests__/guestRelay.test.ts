@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import { createProviderGroupExternalLoad } from '../externalLoad';
-import { createProviderGroupGuestRelay, PROVIDER_GROUP_GUEST_INCAPABLE_MS } from '../guestRelay';
+import { createProviderGroupGuestRelay, PROVIDER_GROUP_GUEST_INCAPABLE_MS, type ProviderGroupGuestRelayDeps } from '../guestRelay';
 import { PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS } from '../remoteHandler';
 import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, type ProviderGroupPickInput, type ProviderGroupRouter } from '../router';
 
@@ -19,7 +19,11 @@ const MINI = member('device:mini:anthropic-2', 'device', 'mini', 'anthropic-2');
 const FRIEND = member('share:s1:anthropic', 'share', 'share:s1', 'anthropic');
 const CONFIG: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [LOCAL, MINI, FRIEND] };
 
-function setup(picks: ProviderGroupMember[], config: ProviderGroupConfig = CONFIG) {
+function setup(
+  picks: ProviderGroupMember[],
+  config: ProviderGroupConfig = CONFIG,
+  extra: Partial<Pick<ProviderGroupGuestRelayDeps, 'reshareAllows' | 'noteReshareDenied' | 'reshareNeedsUpdate'>> = {},
+) {
   let now = 1_000;
   let current = true;
   const router = {
@@ -44,6 +48,7 @@ function setup(picks: ProviderGroupMember[], config: ProviderGroupConfig = CONFI
     connect: () => ({ invoke, poller: {} as never }),
     now: () => now,
     log: { warn: vi.fn() },
+    ...extra,
   });
   return {
     relay,
@@ -78,6 +83,28 @@ describe('provider group guest relay planner', () => {
     expect((await env.relay.plan(PLAN))).toMatchObject({ memberKey: FRIEND.key });
     env.advance(PROVIDER_GROUP_GUEST_INCAPABLE_MS + 1);
     expect((await env.relay.plan(PLAN))).toMatchObject({ memberKey: MINI.key });
+  });
+
+  // 转分享(provider-sharing.md §4.3)：分享来的电脑只给它的主人同意过的人；同账号电脑与本机不受影响。
+  it('skips a shared-in computer whose owner has not agreed to this shared user', async () => {
+    const allowed = new Set<string>();
+    const reshareAllows = vi.fn((agentDeviceId: string, key: string | undefined) => !!key && allowed.has(`${agentDeviceId}|${key}`));
+    const env = setup([FRIEND, MINI], CONFIG, { reshareAllows });
+    const KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    expect(await env.relay.plan({ ...PLAN, reshareKey: KEY })).toMatchObject({ memberKey: MINI.key });
+    expect(env.router.pick.mock.calls[0][0].exclude.has(FRIEND.key)).toBe(true);
+    // 不知道是谁(没有键)时一律不选分享来的电脑。
+    expect(await env.relay.plan(PLAN)).toMatchObject({ memberKey: MINI.key });
+    allowed.add(`share:s1|${KEY}`);
+    expect(await env.relay.plan({ ...PLAN, reshareKey: KEY })).toMatchObject({ memberKey: FRIEND.key, sameAccount: false });
+    expect(await env.relay.plan({ ...PLAN, reshareKey: 'b1b2c3d4e5f60718293a4b5c6d7e8f90' })).toMatchObject({ memberKey: MINI.key });
+  });
+
+  it('passes a refusal from the shared-in computer on so consent is checked again', () => {
+    const noteReshareDenied = vi.fn();
+    const env = setup([FRIEND], CONFIG, { noteReshareDenied });
+    env.relay.noteReshareDenied?.('share:s1', 'a1b2c3d4e5f60718293a4b5c6d7e8f90');
+    expect(noteReshareDenied).toHaveBeenCalledWith('share:s1', 'a1b2c3d4e5f60718293a4b5c6d7e8f90');
   });
 
   it('cools a computer only for problems with its account, not when it cannot be reached', async () => {

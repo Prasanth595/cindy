@@ -44,19 +44,23 @@ export function setMivoSecretAliasVerifier(verifier: ((instanceKey: string) => b
   canUseMivoAlias = verifier;
 }
 
+// Only this historical key can use the Mivo alias. Loading install facts for
+// unrelated secrets rescans the full plugin list during Renderer projection.
+function isHistoricalMivoSecret(instanceKey: string, secretKey: string): boolean {
+  return instanceKey === 'xd-mivo' && secretKey === 'mivo_api_key';
+}
+
 function approvedGhostSecretStorageKey(instanceKey: string, secretKey: string): string {
-  return ghostSecretStorageKey(instanceKey, secretKey, canUseMivoAlias?.(instanceKey) === true);
+  const allowMivoAlias = isHistoricalMivoSecret(instanceKey, secretKey) &&
+    canUseMivoAlias?.(instanceKey) === true;
+  return ghostSecretStorageKey(instanceKey, secretKey, allowMivoAlias);
 }
 
 function approvedGhostSecretHintKey(instanceKey: string, secretKey: string): string {
   // The historical hint stays on the standard key only while the same install
   // fact maps the secret onto the historical Mivo key. Otherwise the hint
   // follows the non-alias key, so read, write, and delete stay together.
-  if (
-    instanceKey === 'xd-mivo' &&
-    secretKey === 'mivo_api_key' &&
-    canUseMivoAlias?.(instanceKey) !== true
-  ) {
+  if (isHistoricalMivoSecret(instanceKey, secretKey) && canUseMivoAlias?.(instanceKey) !== true) {
     return 'ghost_hint__local__' + instanceKey + '_' + secretKey;
   }
   return ghostSecretHintStorageKey(instanceKey, secretKey);

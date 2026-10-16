@@ -638,6 +638,21 @@ describe('interaction shared model', () => {
     expect(interactionBlocksRemoteComposer(null)).toBe(false);
   });
 
+  it('lets the controller answer 代输入 without taking over its composer', () => {
+    const live = { request: { kind: 'input_handoff', requestId: 'h1', revision: 3 } };
+    const ended = { request: { kind: 'input_handoff', requestId: 'h1', revision: 4, terminal: true } };
+    expect(remoteInteractionHandling(live)).toBe('resolvable');
+    expect(remoteInteractionHandling(ended)).toBe('desktop-only');
+    // A Host-owned wait outlives the turn; the owner must still be able to chat.
+    expect(interactionBlocksRemoteComposer(live)).toBe(false);
+    expect(pendingInteractionsBlockRemoteComposer([live])).toBe(false);
+    // A question the turn is blocked on still comes first.
+    expect(sortPendingInteractions([
+      live,
+      { request: { kind: 'permission', requestId: 'p1' } },
+    ]).map((item) => item.request.requestId)).toEqual(['p1', 'h1']);
+  });
+
   it('keys composer blocking off the whole pending set, not the card being viewed', () => {
     // 混合队列:切到 plugin_setup 只是换了查看对象,那张权限卡仍在等回答 —— 输入框
     // 不能因此放开,否则用户绕过了仍待处理的阻塞交互。

@@ -55,6 +55,20 @@ function setup(opts?: { now?: () => number; loadFails?: boolean }) {
 }
 
 describe('GhostRuntime · 状态机', () => {
+  it('does not start an instance the host holds stopped until restart', async () => {
+    const handles: FakeHandle[] = [];
+    let blocked: string | null = 'restart Cindy';
+    const runtime = new GhostRuntime({
+      adapter: { create: () => { const handle = new FakeHandle(); handles.push(handle); return handle; } },
+      startBlockedReason: (id) => (id === 'demo' ? blocked : null),
+    });
+    await expect(runtime.spawn(chipGhost())).resolves.toEqual({ ok: false, reason: 'restart Cindy' });
+    expect(handles).toHaveLength(0);
+    expect(runtime.stateOf('demo')).toBe('off');
+    blocked = null;
+    await expect(runtime.spawn(chipGhost())).resolves.toMatchObject({ ok: true });
+  });
+
   it('spawn → running;stop → off,沙箱被销毁', async () => {
     const { runtime, handles } = setup();
     const ghost = chipGhost();

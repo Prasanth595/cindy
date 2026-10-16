@@ -47,6 +47,7 @@ import { getAuthState } from '../authManager';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { createLogger } from '../logger';
 import { readClaudeApiKey } from '../maker-host/auth-adapters';
+import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection';
 import { outboundFetch } from '../maker-host/outbound-fetch';
 import { claudeUpstreamEndpoint } from '../maker-host/runtime-configs';
 import { getGatewayAccountCurrency } from './modelPricing';
@@ -149,6 +150,7 @@ async function fetchUserInfo(
       signal,
     });
     if (!res.ok) {
+      if (res.status === 401) reportCindyGatewayKeyRejected(apiKey);
       log.debug(`user/info non-2xx: ${res.status}`);
       return null;
     }
@@ -181,6 +183,7 @@ async function fetchTodayActivity(
       { headers: { Authorization: `Bearer ${apiKey}` }, signal },
     );
     if (!res.ok) {
+      if (res.status === 401) reportCindyGatewayKeyRejected(apiKey);
       log.debug(`daily/activity non-2xx: ${res.status}`);
       return null;
     }

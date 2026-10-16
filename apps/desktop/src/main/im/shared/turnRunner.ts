@@ -35,6 +35,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isImAccountScopeClosedError } from '../accountBoundary';
 import { bindRuntimeRecoveryNotice } from './runtimeRecoveryNotice';
+import { bindInputHandoffChannelNotice } from './inputHandoffChannelNotice';
 import { isImSubagentEvent } from './agentEventScope';
 import { isExpiredPermissionDecision, type SharedPermission } from '../../maker-ipc/sharedPermission';
 import { presentSharedPermissionCard } from './permissionPresentation';
@@ -165,7 +166,8 @@ import {
   tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
-import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { isQuotaExhaustionFailure, terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { resolveSessionProviderLabel } from './sessionProviderLabel';
 import { createTurnPresenter, DEFAULT_PRESENTER_POLICY, type TurnPresenter } from './turnPresenter';
 import {
   toCoreAgentKind,
@@ -1421,6 +1423,11 @@ export function createTurnRunner(
             if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
             return im.sendText(userId, text, { threadTs: noticeScope });
           }, log);
+          // 代输入: one fixed pointer in this chat when a card opens for the task.
+          bindInputHandoffChannelNotice(noticeSession, async (text) => {
+            if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
+            return im.sendText(userId, text, { threadTs: noticeScope });
+          });
           // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
           // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
           // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。
@@ -3537,7 +3544,7 @@ export function createTurnRunner(
     // 或内部英文 SDK 串——从本地化文案回归英文实现细节(review #844 codex P1)。
     // hook runner 与调度转播共用同一个 helper，三条渠道链路口径一致；上游原文留在
     // 本地日志。
-    const msg = terminalErrorText(errData);
+    let msg = terminalErrorText(errData);
     if (turn) clearSilentStopSettleWait(turn);
     if (turn) clearActivityTicker(turn);
     if (turn) {
@@ -3562,6 +3569,14 @@ export function createTurnRunner(
       } catch {
         // 建卡失败 → 下面按"没有输出面"处理(另发一条消息)。
       }
+    }
+    // 额度类失败要说清是哪个供应商: 名字只在这里按需读一次(尽力而为, 读不到退回「当前供应商」)。
+    if (isQuotaExhaustionFailure(errData)) {
+      msg = terminalErrorText(errData, {
+        providerLabel: await resolveSessionProviderLabel(state.makerSession.id),
+        surface: 'personal',
+        supportsModelCommand: richIm !== null,
+      });
     }
     if (turn?.streamingHandle) {
       const view = composeStreamingView(turn);

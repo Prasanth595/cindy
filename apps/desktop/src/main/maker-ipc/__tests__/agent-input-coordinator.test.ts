@@ -12319,6 +12319,117 @@ describe('AgentInputCoordinator 中断自动续跑', () => {
     expect(h.onAutomaticEnqueue).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])('scheduler 放弃自动恢复后释放后续轮次，旧 done 已到达=%s', async (doneFirst) => {
+    vi.useFakeTimers();
+    const h = createHarness();
+    const sid = 'abandoned-scheduler-recovery';
+    const origin = { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: '巡检', runId: 'run-1' } as const;
+    h.setResumableTurnErrorTakeover(TAKEOVER_INFO);
+    await failAfterDispatch(h, sid, makeItem('failed', 'failed heartbeat', { origin }));
+    h.coordinator.enqueue(sid, makeItem('next', 'next heartbeat', {
+      origin: { ...origin, runId: 'run-2' },
+    }));
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+    expect(h.coordinator.isAutoResumePending(sid)).toBe(true);
+    if (doneFirst) h.coordinator.onTurnEvent(sid, 'done');
+
+    h.coordinator.abandonAutoResume(sid, truncationMessage, TAKEOVER_INFO.sessionTotal);
+
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: truncationMessage, recovery: null });
+    expect(h.coordinator.isAutoResumePending(sid)).toBe(false);
+    expect(h.coordinator.hasQueuedItemWhere(sid, item => item.clientId === 'failed', {
+      includeRecovery: true,
+    })).toBe(false);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+    if (doneFirst) {
+      // done 已被 recovery 消费，沿用终态配对的有界兜底，不等用户点重试。
+      await vi.advanceTimersByTimeAsync(250);
+    } else {
+      h.coordinator.onTurnEvent(sid, 'done');
+      expect(h.coordinator.getProjection(sid).error).toBe(truncationMessage);
+    }
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: 'next heartbeat' });
+    expect(h.sendToAgent.mock.calls[1]?.[3]?.origin).toEqual({ ...origin, runId: 'run-2' });
+    expect(h.onUiRetry).not.toHaveBeenCalled();
+  });
+
+  it('scheduler 自动恢复失败且没有排队项时，下一次触发不再被判忙', async () => {
+    vi.useFakeTimers();
+    const h = createHarness();
+    const sid = 'scheduler-next-fire';
+    const origin = { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: '巡检', runId: 'run-1' } as const;
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setResumableTurnErrorTakeover(TAKEOVER_INFO);
+    await failAfterDispatch(h, sid, makeItem('failed', 'failed heartbeat', { origin }));
+    h.coordinator.onTurnEvent(sid, 'done');
+    h.coordinator.abandonAutoResume(sid, truncationMessage, TAKEOVER_INFO.sessionTotal);
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(h.coordinator.shouldQueueNewTurn(sid)).toBe(false);
+    expect(h.coordinator.getProjection(sid).error).toBe(truncationMessage);
+    h.coordinator.enqueue(sid, makeItem('next', 'next hourly run', {
+      origin: { ...origin, runId: 'run-2' },
+    }));
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: 'next hourly run' });
+  });
+
+  it.each(['pause', 'interaction', 'running'] as const)(
+    'scheduler 恢复收尾不越过 %s 阻塞', async (gate) => {
+      vi.useFakeTimers();
+      const h = createHarness();
+      const sid = 'scheduler-recovery-gate';
+      const origin = { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: '巡检', runId: 'run-1' } as const;
+      h.setResumableTurnErrorTakeover(TAKEOVER_INFO);
+      await failAfterDispatch(h, sid, makeItem('failed', 'failed heartbeat', { origin }));
+      h.coordinator.onTurnEvent(sid, 'done');
+      if (gate === 'pause') h.coordinator.setExecutionPaused(sid, true);
+      if (gate === 'interaction') h.coordinator.setInteractionLock(sid, 'approval', true);
+      if (gate === 'running') h.setRunning(true);
+      h.coordinator.enqueue(sid, makeItem('next', 'next heartbeat', {
+        origin: { ...origin, runId: 'run-2' },
+      }));
+      h.coordinator.abandonAutoResume(sid, truncationMessage, TAKEOVER_INFO.sessionTotal);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(h.coordinator.getProjection(sid).recovery).toBeNull();
+      expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+      expect(h.coordinator.getProjection(sid).pendingQueue.map(item => item.clientId)).toEqual(['next']);
+      if (gate === 'pause') h.coordinator.setExecutionPaused(sid, false);
+      if (gate === 'interaction') h.coordinator.setInteractionLock(sid, 'approval', false);
+      if (gate === 'running') {
+        h.setRunning(false);
+        h.coordinator.onTurnEvent(sid, 'done');
+      }
+      await flush();
+      expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('旧 attempt 放弃回调不能清掉新 scheduler 恢复状态', async () => {
+    const h = createHarness();
+    const sid = 'scheduler-recovery-owner';
+    h.setResumableTurnErrorTakeover({ ...TAKEOVER_INFO, sessionTotal: 2 });
+    const item = makeItem('new-failure', 'new heartbeat', {
+      origin: { kind: 'scheduler', scheduleId: 'sch-1', scheduleName: '巡检', runId: 'run-2' },
+    });
+    await failAfterDispatch(h, sid, item);
+
+    h.coordinator.abandonAutoResume(sid, 'old failure', 1);
+    await flush();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({
+      error: null,
+      recovery: { kind: 'active-turn', item: { clientId: item.clientId } },
+      autoResumePending: { sessionTotal: 2 },
+    });
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  });
+
   it('用户接管会撤销已经离队但尚未派发的 scheduler 自动续跑', async () => {
     const h = createHarness();
     const sid = 'cancel-pre-vendor-scheduler-auto-resume';
@@ -14155,5 +14266,38 @@ describe('provider group computer switch hold', () => {
     await flush();
     h.coordinator.setProviderGroupSendReconnect(sid, { attempt: 2, maxAttempts: 5 });
     expect(latestProjection(h.projections).autoResumePending).toBeUndefined();
+  });
+});
+
+
+describe('Goal input boundary', () => {
+  const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const boundary = source.slice(source.indexOf('export function isGoalInputBlocked'), source.indexOf('export function isSessionInTurn'));
+  const compiled = transpileModule(boundary.replace(/export /g, '') + '\nreturn { isGoalInputBlocked, ensureGoalInputReady };', {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
+  it('uses the actual coordinator FIFO, approval locks, Stop and restore boundaries', async () => {
+    const h = createHarness();
+    let pendingInteraction = false;
+    const gate = new Function('agentInputCoordinatorHolder', 'hasPendingAgentInteractionForSession', compiled)(
+      h.coordinator, () => pendingInteraction,
+    );
+    expect(await gate.ensureGoalInputReady('goal-task')).toBe(true);
+    h.coordinator.setInteractionLock('goal-task', 'approval', true);
+    h.coordinator.enqueue('goal-task', makeItem('user-input', 'supplement'));
+    expect(await gate.ensureGoalInputReady('goal-task')).toBe(false);
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+    h.coordinator.setInteractionLock('goal-task', 'approval', false);
+    await vi.waitFor(() => expect(h.sendToAgent).toHaveBeenCalledOnce());
+    expect(gate.isGoalInputBlocked('goal-task')).toBe(true);
+    h.coordinator.stop('goal-task');
+    expect(await gate.ensureGoalInputReady('goal-task')).toBe(false);
+    h.setRunning(false);
+    h.coordinator.resume('goal-task');
+    await vi.waitFor(async () => expect(await gate.ensureGoalInputReady('goal-task')).toBe(true));
+    pendingInteraction = true;
+    expect(await gate.ensureGoalInputReady('goal-task')).toBe(false);
+    pendingInteraction = false;
+    expect(await gate.ensureGoalInputReady('goal-task')).toBe(true);
   });
 });

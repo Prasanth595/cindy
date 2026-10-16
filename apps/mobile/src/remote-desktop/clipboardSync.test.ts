@@ -424,11 +424,41 @@ it("retains a successfully read new local digest when the remote read is unsuppo
       throw new Error("CLIPBOARD_UNSUPPORTED");
     return original(message);
   });
-  await engine.tick();
+  // Both changed: both copies are kept, and the user is told rather than the
+  // readable copy silently never arriving.
+  await expect(engine.tick()).rejects.toThrow("CLIPBOARD_CONFLICT");
   expect(baseline.localDigest).toBe(
     clipboardDigest(JSON.stringify({ text: "local-2" })),
   );
   expect(baseline.remoteDigest).toBeUndefined();
+  expect(h.write).not.toHaveBeenCalled();
+});
+
+it("an unreadable local item next to a new computer copy is a conflict; the next copy on either side syncs", async () => {
+  const h = harness();
+  const trace = vi.fn();
+  const engine = new ClipboardSync({ ...h.deps, trace });
+  await engine.tick();
+  // Only the local item is unreadable (several files): skipped quietly.
+  vi.mocked(h.deps.readLocal).mockRejectedValueOnce(
+    new Error("CLIPBOARD_UNSUPPORTED"),
+  );
+  h.local("2");
+  await expect(engine.tick()).resolves.toBeUndefined();
+  expect(trace).toHaveBeenLastCalledWith("content-skipped");
+  // Unreadable local item and a new computer copy in the same interval.
+  vi.mocked(h.deps.readLocal).mockRejectedValueOnce(
+    new Error("CLIPBOARD_UNSUPPORTED"),
+  );
+  h.local("3");
+  h.remote("2");
+  await expect(engine.tick()).rejects.toThrow("CLIPBOARD_CONFLICT");
+  expect(h.write).not.toHaveBeenCalled();
+  await expect(engine.tick()).resolves.toBeUndefined();
+  // Copying again on the computer brings that copy over.
+  h.remote("4");
+  await engine.tick();
+  expect(h.write).toHaveBeenCalledTimes(1);
 });
 
 it.each(["local", "remote"] as const)(

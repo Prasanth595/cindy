@@ -83,9 +83,6 @@ describe('UserInfoSection — version label', () => {
       /const appVersionLabel = appRegionLabel\s*\n\s*\? `\$\{appRegionLabel\} · \$\{appDisplayVersion\}`\s*\n\s*: appDisplayVersion;/,
     );
     expect(source).not.toContain('XD.Inc');
-    expect(source).toContain("import { useCindyVersions } from '@/lib/useCindyVersions';");
-    expect(source).toContain('const versions = useCindyVersions();');
-    expect(source).toContain("t('cindyMake.versions.personal')");
     expect(source).toContain('{visibleVersionLabel}');
     expect(source).toContain('title={visibleVersionLabelDetail}');
   });

@@ -90,6 +90,7 @@ describe.each(['new.tsx', '[sessionId].tsx'])('%s voice startup feedback', (page
       selectedDeviceId: 'host', deviceId: 'host',
       isMobileRealtimeAudioAvailable: () => true,
       prewarmMobileRealtimeAudio: vi.fn(), prewarmMobileVoiceStart: vi.fn(),
+      warmMobileSpeakerFilter: vi.fn(),
       auth: { apiFetch: vi.fn() },
       voiceStartedOnPressInRef: { current: false },
       voiceRecordingActiveRef: recording,

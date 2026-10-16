@@ -23,7 +23,7 @@ import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome
 import * as Clipboard from 'expo-clipboard';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { Image } from 'expo-image';
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownToLine, Copy, Database, File as FileIcon, Info, MessageSquarePlus, Share as ShareIcon } from 'lucide-react-native';
@@ -60,6 +60,7 @@ import { decodeGzipBase64Text, mergePathIntoComposerDraft, shareMimeForFileName 
 import { appendQuote, truncateQuoteText } from '@/session/chatQuoteStore';
 import { getCachedPreviewText, storeCachedPreviewText } from '@/session/fileBrowserCache';
 import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
+import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import type { RemoteMediaSshContext } from '@/session/fileBrowserGallery';
 import { HtmlSnapshotReader } from '@/session/HtmlFileReader';
 import { HtmlBrowserChrome } from '@/session/HtmlBrowserChrome';
@@ -95,6 +96,8 @@ import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import type { MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
 import { downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
 import { remoteSessionStore, useRemoteSessions } from '@/session/remoteSessionStore';
+import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import type { RemoteSession } from '@/session/types';
 import { fontWeight, lineHeight, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { iconSize, iconStroke, radius, spacing, typeScale } from '@/theme/tokens';
@@ -115,7 +118,7 @@ type TextPreviewState =
 type RichTextKind = 'markdown' | 'html';
 
 type HtmlBrowserActions = Pick<HtmlBrowserChromeProps,
-  'busy' | 'notice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
+  'busy' | 'notice' | 'onCancelNotice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
 
 interface SiblingListing {
   key: string;
@@ -126,6 +129,8 @@ interface ExportToUrlOptions {
   /** 缺省 true:预览播放要可保留的地址;分享下载传 false。 */
   stream?: boolean;
   onProgress?: (uploaded: number, total: number) => void;
+  /** 用户取消(如导出提示上的「取消」);页面卸载始终中止。 */
+  isCancelled?: () => boolean;
 }
 type ExportToUrl = (relPath: string, mtimeMs: number, options?: ExportToUrlOptions) => Promise<string>;
 
@@ -159,6 +164,15 @@ function avKindFor(pathOrName: string): 'video' | 'audio' | null {
 }
 
 export default function RemoteFilePreviewScreen() {
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={String(sessionId ?? '')} deviceId={readRouteString(deviceId) ?? undefined}>
+      <RemoteFilePreviewContent />
+    </CindyMakeSessionGate>
+  );
+}
+
+function RemoteFilePreviewContent() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -274,17 +288,24 @@ export default function RemoteFilePreviewScreen() {
       return;
     }
     if (!deviceId || !sessionId) return;
+    let cancelled = false;
     void withTransientRemoteRetry(async () => {
       await openLink(deviceId);
       return maker.getSession(sessionId);
     })
       .then((loaded) => {
+        if (cancelled) return;
+        if (!CINDY_MAKE_ENABLED && isCindyMakeSource(loaded?.source)) {
+          router.replace('/');
+          return;
+        }
         setSession(loaded);
         // 清掉熔断 open 期间留下的错误快照,恢复后不再残留降级横幅。
         setError(null);
       })
-      .catch((err) => setError(formatRemoteError(err)));
-  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, recoveryEpoch, sessionId]);
+      .catch((err) => { if (!cancelled) setError(formatRemoteError(err)); });
+    return () => { cancelled = true; };
+  }, [deviceId, deviceUnresponsive, knownSession, maker, openLink, recoveryEpoch, router, sessionId]);
 
   // absPath 单文件模式:不列目录,直接以合成 item 装单页 pager。
   useEffect(() => {
@@ -419,8 +440,12 @@ export default function RemoteFilePreviewScreen() {
   const exportToUrl = useCallback(
     (relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string> => {
       const stream = options?.stream ?? true;
+      const isCancelled = () => unmountedRef.current || options?.isCancelled?.() === true;
       if (singleAbsPath) {
-        return fetchRemoteAbsFileToUrl({ maker, deviceId, openLink, presignGet, stream }, singleAbsPath);
+        return fetchRemoteAbsFileToUrl(
+          { maker, deviceId, openLink, presignGet, stream, isCancelled },
+          singleAbsPath,
+        );
       }
       return exportRemoteFileToUrl(
         {
@@ -429,7 +454,7 @@ export default function RemoteFilePreviewScreen() {
           openLink,
           presignGet,
           stream,
-          isCancelled: () => unmountedRef.current,
+          isCancelled,
           onProgress: options?.onProgress,
         },
         workdir,
@@ -509,22 +534,47 @@ export default function RemoteFilePreviewScreen() {
     [deviceId, maker, openLink, singleAbsPath, workdir],
   );
 
+  // 进行中的「下载原文件 / 分享」:提示上点「取消」即标记本次已取消并立刻收起提示,
+  // 之后的结果(含失败)一律丢弃,不再弹分享单;手机侧下载阶段随之中止。
+  const exportRunRef = useRef<{ cancelled: boolean; abort: AbortController } | null>(null);
+  const cancelExport = useCallback(() => {
+    const run = exportRunRef.current;
+    if (!run) return;
+    run.cancelled = true;
+    run.abort.abort();
+    exportRunRef.current = null;
+    setBusyLabel(null);
+  }, []);
+  // 离开预览页同样取消(与文件页一致,失焦即算离开):不再下载,也不在下一屏弹分享单。
+  useFocusEffect(useCallback(() => cancelExport, [cancelExport]));
+
   const downloadAndShare = useCallback(async (item: FileBrowserGridItem) => {
     if (busyLabel) return;
+    const run = { cancelled: false, abort: new AbortController() };
+    exportRunRef.current = run;
     setBusyLabel(t('files.preview.exporting'));
     try {
-      const url = await exportToUrl(item.relPath, item.mtimeMs, { stream: false });
+      const url = await exportToUrl(item.relPath, item.mtimeMs, {
+        stream: false,
+        isCancelled: () => run.cancelled,
+      });
+      if (run.cancelled) return;
       // 传原始文件名:分享单按真实扩展名识别类型(PDF/视频等非图片 mime 不在
       // extOfMime 映射里,不带名字会落成 .img 让接收方无法预览)。
       const mime = shareMimeForFileName(item.name);
-      const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name);
+      const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name, run.abort.signal);
+      if (run.cancelled) return;
       if (!localUri) throw new Error(t('files.preview.downloadFailed'));
       const sharing = await import('expo-sharing');
+      if (run.cancelled) return;
       await sharing.shareAsync(localUri, { mimeType: mime });
     } catch (err) {
-      showNotice(formatRemoteError(err));
+      if (!run.cancelled) showNotice(formatRemoteError(err));
     } finally {
-      setBusyLabel(null);
+      if (exportRunRef.current === run) {
+        exportRunRef.current = null;
+        setBusyLabel(null);
+      }
     }
   }, [busyLabel, exportToUrl, showNotice, t]);
 
@@ -682,6 +732,8 @@ export default function RemoteFilePreviewScreen() {
               htmlBrowserActions={{
                 busy: !!busyLabel,
                 notice: busyLabel ?? notice,
+                // busyLabel 只由导出 / 分享设置,进行中的提示带「取消」。
+                ...(busyLabel ? { onCancelNotice: cancelExport } : {}),
                 onClose: () => goBackGuarded(router),
                 onShare: () => void downloadAndShare(item),
                 onCopyPath: () => void copyPath(item),
@@ -741,8 +793,10 @@ export default function RemoteFilePreviewScreen() {
           testID="filePreview.sendToSession"
         />
       </View>
-      {busyLabel || notice ? (
-        <Text style={styles.noticeText} testID="filePreview.notice">{busyLabel ?? notice}</Text>
+      {busyLabel ? (
+        <FileTransferBusyNotice label={busyLabel} onCancel={cancelExport} testID="filePreview.busy" />
+      ) : notice ? (
+        <Text style={styles.noticeText} testID="filePreview.notice">{notice}</Text>
       ) : null}
       </> : null}
 

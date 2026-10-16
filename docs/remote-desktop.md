@@ -43,16 +43,46 @@ Desktop uses the local system cursor inside the remote picture, with standard
 shape hints from the host. Pointer size is independent of remote resolution and zoom.
 With the picture focused, Cmd/Ctrl+C/V are ordinary keys sent to the remote
 computer, so copy and paste act on its own clipboard exactly as they would locally;
-they never move content between computers. Cross-computer transfer is explicit: the
-settings panel's copy and paste actions copy selected remote content to the local
-clipboard or paste local content remotely. Transfers use the existing authorized
+the keys themselves never move content between computers. Content crosses
+computers only through two explicit features: the settings panel's copy and paste
+actions, which copy selected remote content to the local clipboard or paste local
+content remotely, and the optional clipboard synchronization described below,
+which the shortcuts merely trigger early when it is enabled. Transfers use the existing authorized
 Main bridge, are ordered and user-triggered, and report the specific failure
 (view only, empty, unsupported, too large, copy/paste failed) without reconnecting;
 Main logs only the action and error code. Capable hosts support text, HTML, RTF,
 URLs and PNG; older hosts retain text-only behavior. Arbitrary files and cut are
 not bridged. Optional clipboard synchronization reuses Mobile's version, conflict
-and bounded-transfer logic, only while this viewer is focused and holds confirmed
-control. Contents stay in Main/native code and do not cross the viewer Renderer bridge.
+and bounded-transfer logic while this viewer holds confirmed control. The
+computer's side stays enabled for the whole control session; focus only decides
+when this window reads its own clipboard: while focused, plus 1 s after it leaves
+the foreground (one pass at once, and a copy chord's delayed pull landing in that
+second) so a copy made on the computer is already here. This deadline only gates
+the start of a pass: admitted work finishes across blur and deadline expiry,
+including a delayed copy waiting behind the blur-triggered pass. There is no
+separate blur cancellation generation; control/session changes still invalidate
+in-flight work, and the native counter helper retires on its existing idle timeout.
+Regaining focus runs a
+pass at once; so does the controlled
+computer's own copy/cut chord (Cmd on macOS, Ctrl elsewhere; the other modifier
+is an ordinary key) about 200 ms after the key, and its paste chord holds the
+queued keys (at most 1 s) until the local clipboard has been pushed (pastes made
+while that push is still in flight wait on it rather than starting another, and
+only the latest paste's wait, at most 1 s, opens the gate); losing focus drops a
+held paste instead of sending it late; the held keys do not age against the
+2 s input-freshness budget while the gate is closed. Only one sync pass runs at
+a time, and a wakeup that finds one in flight shares its result rather than a
+stale status. The 1.5 s poll remains only as a fallback. A locked or busy computer and a clipboard that changed mid-read retry
+at a fixed 1.5 s without growing the backoff (the locked case shows its own
+notice); unexplained failures back off to at most 5 s and reset on focus or a
+shortcut. A multi-item local clipboard (several files) is skipped rather than
+failing the pass; if the computer copied something in the same interval, that is
+reported as a conflict like any simultaneous change, and copying again on either
+side syncs, even when that copy repeats identical readable content. The desktop
+adapter retains conflict counters but clears their content digests: idle polls
+preserve both clipboards, and the next copy chooses the source. A successful
+transfer restores ordinary content deduplication. Contents stay in Main/native code and do not cross the viewer
+Renderer bridge.
 
 The settings panel also supports host privacy screen, host mute, lock-on-exit and
 macOS-to-macOS automatic unlock. Non-secret preferences are scoped to the local

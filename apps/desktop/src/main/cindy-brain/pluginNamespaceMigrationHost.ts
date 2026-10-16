@@ -10,6 +10,7 @@ import { installedGhostPhysicalRelId, installedGhostStoragePart } from '../../sh
 import type { GhostManifest, InstalledGhost } from '../../shared/ghost.js';
 import { isResidentBrowserGhost } from './residentGhost.js';
 import {
+  canReclaimLegacyBareInstance,
   classifyNamespaceMigration,
   readNamespaceMigrationInstallOrigin,
   readNamespaceMigrationMarketRecord,
@@ -93,6 +94,7 @@ export interface NamespaceMigrationHost {
   isNamespaceMigrationBusy(ghostId: string): boolean;
   preparePendingResidentForMigration(ghostId: string): Promise<boolean>;
   readUnconfirmedConfirmationEvidence(record: PluginInstanceRecord): InstanceConfirmationEvidence;
+  canReclaimLegacyBareInstance(input: { ghostId: string; namespace: string; pluginId: string }): boolean;
   rememberOfflineResident(ghostId: string): void;
   forgetOfflineResident(ghostId: string): void;
   clearPendingResidentMigrationRetry(ghostId: string): void;
@@ -118,6 +120,14 @@ export function createNamespaceMigrationHost(deps: NamespaceMigrationHostDeps): 
       offlineResidentScopeKey = scopeKey;
     }
     return ownedResidentIds;
+  }
+
+  function currentOrganizationFacts(): { organizationId: string; orgSlug: string | null } | null {
+    const state = deps.getAuthState();
+    const user = state.isAuthenticated ? state.user : null;
+    return user?.membershipKind === 'org' && user.orgId
+      ? { organizationId: user.orgId, orgSlug: user.orgSlug ?? null }
+      : null;
   }
 
   function namespaceMigrationMarketRecordsForGhost(ghostId: string): PluginMarketInstallationRecord[] {
@@ -284,11 +294,7 @@ export function createNamespaceMigrationHost(deps: NamespaceMigrationHostDeps): 
       });
     },
     readUnconfirmedConfirmationEvidence(record: PluginInstanceRecord): InstanceConfirmationEvidence {
-      const state = deps.getAuthState();
-      const user = state.isAuthenticated ? state.user : null;
-      const currentOrganization = user?.membershipKind === 'org' && user.orgId
-        ? { organizationId: user.orgId, orgSlug: user.orgSlug ?? null }
-        : null;
+      const currentOrganization = currentOrganizationFacts();
       let packageSha256: string | null = null;
       let forgeSelfTest = false;
       try {
@@ -310,6 +316,20 @@ export function createNamespaceMigrationHost(deps: NamespaceMigrationHostDeps): 
       return buildUnconfirmedConfirmationEvidence({
         rows, record, currentOrganization, packageSha256, forgeSelfTest,
       });
+    },
+    canReclaimLegacyBareInstance({ ghostId, namespace, pluginId }): boolean {
+      try {
+        const lookup = deps.getPluginMarketLedger().lookupInstallationsForNamespaceMigration(ghostId);
+        if (lookup.kind !== 'found') return false;
+        return canReclaimLegacyBareInstance({
+          pluginId,
+          namespace,
+          records: lookup.records ?? [],
+          currentOrganization: currentOrganizationFacts(),
+        });
+      } catch {
+        return false;
+      }
     },
   };
 }

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   getBootDeviceId: vi.fn<() => string | null>(),
   getBootSessionId: vi.fn<() => string | null>(),
-  getMergedRemoteSessions: vi.fn<() => Array<Record<string, unknown>>>(),
+  getVisibleMergedRemoteSessions: vi.fn<() => Array<Record<string, unknown>>>(),
   getSessionFor: vi.fn(),
   navigate: vi.fn(),
   pinSessionOrigin: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock('@/lib/secondaryWindow', () => ({
 
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   remoteProjectsStore: {
-    getMergedRemoteSessions: mocks.getMergedRemoteSessions,
+    getVisibleMergedRemoteSessions: mocks.getVisibleMergedRemoteSessions,
     pinSessionOrigin: mocks.pinSessionOrigin,
   },
 }));
@@ -47,14 +47,14 @@ describe('SecondaryWindowBootGate', () => {
   beforeEach(() => {
     mocks.getBootDeviceId.mockReset();
     mocks.getBootSessionId.mockReset();
-    mocks.getMergedRemoteSessions.mockReset();
+    mocks.getVisibleMergedRemoteSessions.mockReset();
     mocks.getSessionFor.mockReset();
     mocks.navigate.mockReset();
     mocks.pinSessionOrigin.mockReset();
     mocks.resolveSessionRoute.mockReset();
     mocks.getBootSessionId.mockReturnValue('worker-remote');
     mocks.getBootDeviceId.mockReturnValue('device-remote');
-    mocks.getMergedRemoteSessions.mockReturnValue([]);
+    mocks.getVisibleMergedRemoteSessions.mockReturnValue([]);
   });
 
   afterEach(() => {

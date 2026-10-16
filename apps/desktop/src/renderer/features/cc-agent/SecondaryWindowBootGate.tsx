@@ -56,7 +56,7 @@ export function SecondaryWindowBootGate() {
       // the secondary window's remote mirror has not hydrated yet.
       remoteProjectsStore.pinSessionOrigin(bootDeviceId, bootSessionId);
       const mirroredSession = remoteProjectsStore
-        .getMergedRemoteSessions()
+        .getVisibleMergedRemoteSessions()
         .find((session) => session.id === bootSessionId);
       const remoteSession = mirroredSession ?? (await getSessionFor(bootSessionId));
       return resolveSessionRoute(bootSessionId, remoteSession);

@@ -57,6 +57,19 @@ Catalog (version)
 Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）。媒体 route 使用 `agents: []`。
 `contextWindowMax` 是客户端容量投影，不能填进 Registry；容量与工作预算见 [运行时细则](model-catalog-runtime.md)。
 
+### Gateway 复杂价目展示
+
+Model Access V5 通过 `X-Cindy-Model-Capabilities: display_pricing` 协商可选 `displayPricing`。
+聊天和媒体目录都保留该字段与同一连接快照的 `currency`、`costDiscount`；不进入公共
+Registry/defaults、ModelPriceQuote 或 token 成本估算，不跨供应商补价。
+成功刷新缺字段或价目不可解析时清除旧价目，模型仍正常更新；新增属性忽略，未知单位保留。
+展示字段变化不构成整份目录失败；网络或核心模型协议失败仍沿用既有目录恢复语义。
+
+Desktop 模型详情优先展示结构化价目，缺字段沿用原有价格。`price` 为每 `quantity` 个
+`unit` 的折扣前报价，只在展示时应用一次折扣，保留币种与“约/起价”语义；label、tier、
+notes 仅按纯文本呈现，未知单位不猜换算。列表不新增价格入口，统一从既有模型详情查看，也不从混合单位挑最低价。
+共享目录可传递这些可选展示字段，旧端缺字段仍合法；首期 UI 仅覆盖 Desktop 现有详情入口。
+
 ### 覆盖顺序
 
 这里是**模型资料字段**的优先级，右边覆盖左边；成员、权限、实际计费、显示开关不套用此链：
@@ -71,6 +84,19 @@ Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）
 用户公共型号补丁先于用户具体连接/引擎补丁。思考档位默认在公共型号维护，按需增加引擎例外；
 `defaultEffort` 的已配置默认优先于供应商实报的推荐档，再适配实际支持能力，force / 用户覆盖仍优先。
 详细字段及成员空值规则以 [模型资料优先级](../product-rules/model-metadata-precedence.md) 为唯一正本。
+
+### 远程推理档位快照兼容
+
+Desktop 主机向能力清单和 `maker:provider:list` 的模型条目显式投影既有的
+`effortsUnknown` 布尔值：`false` 表示能力已知，`true` 表示未声明。控制端收到旧主机
+缺少该字段的空档位表时保留已有选择，只有显式 `false` 的空表才清空；非空表照常校准。
+草稿播种与最终提交使用同一兼容口径，不在控制端给缺失字段补 `false`。
+无档位选择落库使用既有空串哨兵，任务后续发送也保留“未指定”，不提交输入框显示兜底档位。
+Codex 在实际 `turn/start` 请求中省略该档位字段，计划模式的 `reasoning_effort` 使用协议允许的
+`null`；运行时切换与恢复重试同样不发送空串，服务端默认档位快照不覆盖明确的无档位选择。
+回归见 `packages/maker-core/src/agents/codex/index.test.ts` 的 no-effort 用例。
+实现与回归见 `catalog-to-descriptors.ts`、`providerHandlers.ts`、
+`deviceLinkDraftDefaults.test.ts`、`deviceLinkCreateArgs.test.ts` 与 `chatInputModelLoading.test.tsx`。
 
 <a id="ordering"></a>
 ## 模型排序与成员：以账号为准

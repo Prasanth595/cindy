@@ -288,6 +288,7 @@ export async function discoverRemoteHomeCollections(
   targets: readonly RemoteResourceDiscoveryTarget[],
   locale?: string,
   previous: readonly RemoteHomeCollection[] = [],
+  onProgress?: (collections: RemoteHomeCollection[]) => void,
 ): Promise<RemoteHomeCollection[]> {
   const cachedManifest = (target: RemoteResourceHostTarget): RemoteResourceManifestResponse => ({
     protocolVersion: REMOTE_RESOURCE_PROTOCOL_VERSION,
@@ -301,45 +302,43 @@ export async function discoverRemoteHomeCollections(
       ...(collection.iconName ? { icon: { name: collection.iconName, fallbackText: '' } } : {}),
     })),
   });
-  const settled = await Promise.allSettled(targets.map(async ({ offline, ...target }) => ({
-    target,
-    manifest: offline ? cachedManifest(target) : await loadRemoteResourceManifest(invoke, target, locale),
-  })));
-  const discovered = settled.flatMap((result, index) => {
-    if (result.status === 'fulfilled') {
-      return result.value.manifest ? [result.value] : [];
+  const merge = (discovered: { target: RemoteResourceHostTarget; manifest: RemoteResourceManifestResponse | null }[]) => {
+    const byId = new Map<string, RemoteHomeCollection>();
+    for (const { target, manifest } of discovered) {
+      for (const collection of manifest?.collections ?? []) {
+        if (collection.placement !== 'home-scope' || !isMobileRemoteCollectionSupported(collection.id)) continue;
+        const existing = byId.get(collection.id);
+        if (existing && existing.resourceKind === collection.resourceKind) {
+          existing.targets.push(target);
+          continue;
+        }
+        if (existing) continue;
+        byId.set(collection.id, {
+          id: collection.id,
+          title: resolveRemoteText(collection.title, locale),
+          resourceKind: collection.resourceKind,
+          placement: collection.placement,
+          iconName: collection.icon?.name,
+          targets: [target],
+        });
+      }
     }
-    const selected = targets[index];
-    if (!selected) return [];
-    const target = { deviceId: selected.deviceId, deviceName: selected.deviceName };
-    const manifest = cachedManifest(target);
-    return manifest.collections.length ? [{ target, manifest }] : [];
-  });
-  if (targets.length > 0 && discovered.length === 0) {
+    return [...byId.values()];
+  };
+  const discovered = targets.map(({ offline: _offline, ...target }) => ({ target, manifest: cachedManifest(target) as RemoteResourceManifestResponse | null }));
+  const settled = await Promise.allSettled(targets.map(async ({ offline, ...target }, index) => {
+    const manifest = offline ? cachedManifest(target) : await loadRemoteResourceManifest(invoke, target, locale);
+    discovered[index] = { target, manifest };
+    onProgress?.(merge(discovered));
+    return { target, manifest };
+  }));
+  const hasManifestReply = settled.some((result, index) => result.status === 'fulfilled'
+    && result.value.manifest !== null && !targets[index].offline);
+  if (targets.length > 0 && !hasManifestReply && !discovered.some(entry => entry.manifest?.collections.length)) {
     const failure = settled.find((result) => result.status === 'rejected');
     if (failure && failure.status === 'rejected') throw failure.reason;
   }
-  const byId = new Map<string, RemoteHomeCollection>();
-  for (const { target, manifest } of discovered) {
-    for (const collection of manifest?.collections ?? []) {
-      if (collection.placement !== 'home-scope' || !isMobileRemoteCollectionSupported(collection.id)) continue;
-      const existing = byId.get(collection.id);
-      if (existing && existing.resourceKind === collection.resourceKind) {
-        existing.targets.push(target);
-        continue;
-      }
-      if (existing) continue;
-      byId.set(collection.id, {
-        id: collection.id,
-        title: resolveRemoteText(collection.title, locale),
-        resourceKind: collection.resourceKind,
-        placement: collection.placement,
-        iconName: collection.icon?.name,
-        targets: [target],
-      });
-    }
-  }
-  return [...byId.values()];
+  return merge(discovered);
 }
 
 export async function invokeRemoteResourceAction(

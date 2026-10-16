@@ -1,5 +1,5 @@
 import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
-import { ChatInviteHost, requestChatInvite } from '@/features/bots/ChatInviteHost';
+import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { buildSharedTaskInvitationLink } from '@cindy/device-link';
 import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
@@ -107,6 +107,8 @@ import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNe
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
 import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
+import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
+import { islandEntryRouteState, requestIslandEntryAlertDisposal } from '@/features/bots/islandEntryAlert';
 import { requestProviderShareJoin } from '@/features/provider-share/joinIntent';
 import { ProviderShareGlobalHost } from '@/features/provider-share/ProviderShareGlobalHost';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -509,7 +511,7 @@ export function MainLayout() {
       // redirect 到 orca 路由时会丢 searchJump 锚点。传入远程镜像的 session 对象,
       // 让 Orca 路由一步到位(Codex review P2,与 SessionLinkChip 同款处理)。
       const remoteSession =
-        remoteProjectsStore.getMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
+        remoteProjectsStore.getVisibleMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
       void resolveSessionRoute(sessionId, remoteSession).then((target) => {
         if (!isLatest()) return;
         const visibleSession = resolveAgentIslandVisibleSessionFromRouteTarget(target);
@@ -554,13 +556,26 @@ export function MainLayout() {
       readProfiles: getBotProfiles,
       loadProfiles: ensureBotProfilesLoaded,
     }),
-    openBotRoute: (route) => {
-      if (currentPathRef.current !== route) sessionEntryDepsRef.current.navigate(route);
+    openBotRoute: (route, islandEntryId) => {
+      // 只读历史由自己的归属门禁在显示后处置被点的卡:点击编号随路由状态交过去,已在该页也要重新交一次。
+      if (islandEntryId) {
+        sessionEntryDepsRef.current.navigate(route, {
+          replace: currentPathRef.current === route,
+          state: islandEntryRouteState(islandEntryId),
+        });
+      } else if (currentPathRef.current !== route) {
+        sessionEntryDepsRef.current.navigate(route);
+      }
     },
+    // 群专线 / 不可用的委派任务没有可处置报错的横幅:目标地址提交后请 main
+    // 处置这次点击的那张卡(main 只认最近一次点击与当时的卡片身份,见 BotSessionEntryTarget)。
+    consumeAlert: requestIslandEntryAlertDisposal,
     openOrdinary: (sessionId, messageClientId, isLatest) =>
       sessionEntryDepsRef.current.navigateToOrdinarySession(sessionId, messageClientId, isLatest),
   }));
   navigateToSessionRef.current = navigateToSession;
+  // 已提交的地址交给入口导航器:灵动岛卡片的处置等到目标地址真正提交后才发。
+  useSessionEntryLocationCommits(navigateToSession);
   useEffect(() => {
     const unsubscribe = window.electronAPI.onNotificationFocusSession((sessionId) => {
       if (typeof sessionId !== 'string' || !sessionId) return;
@@ -633,18 +648,23 @@ export function MainLayout() {
   const handleDeepLinkPayload = useCallback(
     (
       payload:
-        | { type: 'session'; id: string; messageClientId?: string }
+        | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
         | { type: 'project'; workingDir: string }
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
       if (payload.type === 'chat-invite') {
         requestChatInvite(payload.token);
+        return;
+      }
+      if (payload.type === 'chat-invite-malformed') {
+        reportMalformedChatInvite();
         return;
       }
       if (payload.type === 'provider-share-join') {
@@ -656,7 +676,7 @@ export function MainLayout() {
         return;
       }
       if (payload.type === 'session') {
-        navigateToSession(payload.id, payload.messageClientId);
+        navigateToSession(payload.id, payload.messageClientId, payload.islandEntryId);
         return;
       }
       if (payload.type === 'project') {
@@ -711,7 +731,7 @@ export function MainLayout() {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.onDeepLinkNavigate((payload) => {
-      if (payload.type === 'chat-invite') {
+      if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
         void pullChatInvitations();
         return;
       }

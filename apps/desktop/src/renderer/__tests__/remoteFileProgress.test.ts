@@ -27,6 +27,8 @@ const absPath = `${workdir}/file.zip`;
 const listeners = new Set<(e: Progress) => void>();
 const chatFetch = vi.fn();
 const chatDownload = vi.fn();
+const chatCancel = vi.fn();
+const showItemInFolder = vi.fn();
 const success = { ok: true as const, cachePath: '/cache/file.zip', stale: false, size: 4096 };
 
 function deferred<T>() {
@@ -56,17 +58,20 @@ beforeEach(() => {
   vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
   chatFetch.mockReset();
   chatDownload.mockReset();
+  chatCancel.mockReset().mockResolvedValue(undefined);
+  showItemInFolder.mockReset().mockResolvedValue({ success: true });
   vi.stubGlobal('window', {
     electronAPI: {
       fileBrowser: {
         chatFetch,
         chatDownload,
+        chatCancel,
         onTransferProgress: (listener: (e: Progress) => void) => {
           listeners.add(listener);
           return () => listeners.delete(listener);
         },
       },
-      showItemInFolder: vi.fn().mockResolvedValue({ success: true }),
+      showItemInFolder,
     },
   });
 });
@@ -239,6 +244,36 @@ describe('remote file transfer toasts', () => {
     result.resolve({ ok: true, path: '/downloads/file.zip', stale: false, skipped: 0 });
     await pending;
     expect(active()).toEqual([]);
+    expect(listeners.size).toBe(0);
+  });
+
+  it('cancels a fetch from the progress toast without a failure toast or follow-up action', async () => {
+    const result = deferred<{ ok: false; code: 'FETCH_FAILED' }>();
+    chatFetch.mockReturnValue(result.promise);
+    const pending = fetchChatFileWithToasts(origin, workdir, absPath);
+    const { requestId } = chatFetch.mock.calls[0][0];
+    await vi.advanceTimersByTimeAsync(600);
+    expect(active()[0].action?.label).toBe(messages.chat.remoteFile.cancelTransfer);
+    active()[0].action!.onClick();
+    expect(chatCancel).toHaveBeenCalledWith(requestId);
+    result.resolve({ ok: false, code: 'FETCH_FAILED' });
+    await expect(pending).resolves.toBeNull();
+    expect(active().filter((item) => item.variant === 'error')).toEqual([]);
+    expect(listeners.size).toBe(0);
+  });
+
+  it('does not reveal a download that finished after the user cancelled', async () => {
+    const result = deferred<{ ok: true; path: string; stale: boolean; skipped: number }>();
+    chatDownload.mockReturnValue(result.promise);
+    const pending = downloadRemoteChatEntry(origin, workdir, absPath);
+    const { requestId } = chatDownload.mock.calls[0][0];
+    emit(requestId, 2048);
+    await vi.advanceTimersByTimeAsync(600);
+    active()[0].action!.onClick();
+    expect(chatCancel).toHaveBeenCalledWith(requestId);
+    result.resolve({ ok: true, path: '/downloads/file.zip', stale: false, skipped: 0 });
+    await pending;
+    expect(showItemInFolder).not.toHaveBeenCalled();
     expect(listeners.size).toBe(0);
   });
 });

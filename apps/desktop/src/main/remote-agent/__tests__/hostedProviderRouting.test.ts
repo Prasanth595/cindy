@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { RemoteAgentPollResult } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import { buildUserProvider } from '@cindy/model-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +21,7 @@ import { setCustomProviders } from '../../maker-host/active-catalog';
 import { createModelRoutingTransform, setClaudeProxyGatewayKeyReader, setClaudeProxySessionIdResolver } from '../../maker-host/anthropic-compat-proxy-host';
 import { resolveSessionRouteDecision, setCustomProviderKeyReader } from '../../maker-host/provider-route';
 import { bindHostedSessionProvider, clearAllSessionProviders, getSessionProvider, hasSessionProvider } from '../../maker-host/session-provider-store';
+import { LineSplitter } from '../eventLog';
 import { createRemoteAgentHost, hostSessionIdFor, type HostedStartInput } from '../host/runHost';
 
 const MODEL = 'gpt-6-astra';
@@ -29,6 +31,12 @@ let root: string;
 let host: ReturnType<typeof createRemoteAgentHost>;
 let shadowRoots: Set<string>;
 let releaseGates: Array<() => void>;
+const eventStreams = new Map<string, {
+  cursor: number;
+  splitter: LineSplitter;
+  received: Array<Record<string, unknown>>;
+  done: boolean;
+}>();
 
 function deferred() {
   let resolve!: () => void;
@@ -41,6 +49,7 @@ beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-hosted-route-')));
   shadowRoots = new Set();
   releaseGates = [];
+  eventStreams.clear();
   clearAllSessionProviders();
   setCustomProviders(['fp', 'other'].map((id) => buildUserProvider({
     id, name: id,
@@ -127,18 +136,30 @@ async function open(providerId: string | null = 'fp', sessionId = 'task-1', cont
   return runId;
 }
 
-async function events(runId: string, controller = OWNER): Promise<Array<Record<string, unknown>>> {
-  const poll = await host.handle(controller, { op: 'poll', runs: [{ runId, cursor: 0 }], waitMs: 0 }) as { runs: Array<{ data?: string }> };
-  return Buffer.from(poll.runs[0]?.data ?? '', 'base64').toString('utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-}
-
 async function waitForEvent(runId: string, type: string, callId?: string, controller = OWNER) {
-  let found: Record<string, unknown> | undefined;
-  await vi.waitFor(async () => {
-    found = (await events(runId, controller)).find((event) => event.t === type && (!callId || event.callId === callId));
-    expect(found).toBeDefined();
-  });
-  return found!;
+  let stream = eventStreams.get(runId);
+  if (!stream) {
+    stream = { cursor: 0, splitter: new LineSplitter(1024 * 1024), received: [], done: false };
+    eventStreams.set(runId, stream);
+  }
+  // 用协议长轮询等事件到达,避免 vi.waitFor 默认 1 秒给磁盘/隧道启动加上额外期限。
+  // 总等待仍受用例超时约束;保留已收事件,避免同批返回的后续 result 被游标确认丢弃。
+  for (;;) {
+    const found = stream.received.find((event) => event.t === type && (!callId || event.callId === callId));
+    if (found) return found;
+    expect(stream.done, `Run ended before ${type}: ${JSON.stringify(stream.received)}`).toBe(false);
+    const poll = await host.handle(controller, {
+      op: 'poll', runs: [{ runId, cursor: stream.cursor }], waitMs: 1_000,
+    }) as RemoteAgentPollResult;
+    const chunk = poll.runs[0];
+    if (!chunk) continue;
+    expect(chunk.missing, `Run missing while waiting for ${type}`).not.toBe(true);
+    stream.cursor = chunk.cursor;
+    stream.done = chunk.done === true;
+    if (chunk.data) {
+      stream.received.push(...stream.splitter.push(Buffer.from(chunk.data, 'base64')).map((line) => JSON.parse(line)));
+    }
+  }
 }
 
 async function switchProvider(runId: string, providerId?: string | null) {

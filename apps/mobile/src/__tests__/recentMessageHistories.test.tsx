@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { act, createContext, useEffect, useImperativeHandle, useState, type ReactNode, type Ref } from 'react';
+import { act, createContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
@@ -29,6 +29,9 @@ vi.mock('@/session/remoteSessionStore', () => ({
     <div data-store-gate={String(enabled)}>{children}</div>,
 }));
 vi.mock('react-native-reanimated', () => ({
+  useSharedValue: (value: number) => useRef({ value }).current,
+  useAnimatedStyle: (factory: () => unknown) => factory(),
+  cancelAnimation: () => {}, withSpring: (target: number) => target,
   default: {
     View: ({ children, pointerEvents, style }: { children: ReactNode; pointerEvents?: string; style?: unknown }) =>
       <div data-resident-host="true" data-input={pointerEvents} data-layout={JSON.stringify(style)}>{children}</div>,

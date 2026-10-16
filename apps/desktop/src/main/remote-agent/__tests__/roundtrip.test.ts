@@ -21,6 +21,7 @@ import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RemoteAgentPoller } from '../controller/poller';
+import { credentialGrantFor, forgetCredentialGrants } from '../executor/credentialGrants';
 import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
@@ -258,6 +259,139 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
+  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', async (withTaskGrant) => {
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=one');
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => fakeHostedAgent(input, [env]),
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    const opts = { sessionId: 'credentials-skip', workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    let skip = true;
+    const deps = {
+      ...makeDeps(host),
+      credentialConsent: {
+        description: 'Only this task; content passes through the sharer.',
+        skip: () => skip,
+        ...(withTaskGrant ? { grant: credentialGrantFor(opts.sessionId, 'share:skip') } : {}),
+      },
+    };
+    let localConfirmations = 0;
+    const run = async (handle: AgentSessionHandle) => {
+      handle.setInteractionResolver(async (request) => {
+        if (request.requestId !== 'forged') localConfirmations += 1;
+        return { kind: 'permission', behavior: 'allow' };
+      });
+      const reader = (async () => {
+        const results: string[] = [];
+        for await (const event of handle.events()) {
+          if (event.type === 'text') results.push((event.data as { text: string }).text);
+          if (event.type === 'done') return results;
+        }
+        return results;
+      })();
+      await handle.send({ type: 'user', content: 'read credentials' });
+      expect(await reader).toEqual(['credential:200']);
+    };
+    const handle = await startRemoteAgentSession('pi', opts, deps);
+    try {
+      // 受邀者在设置里打开了「信任 {分享者}」：读 .env 不弹卡、直接放行。
+      await run(handle);
+      expect(localConfirmations).toBe(0);
+      // 运行中关掉：下一次凭证操作就要确认。
+      skip = false;
+      await run(handle);
+      expect(localConfirmations).toBe(1);
+    } finally {
+      await handle.close({ reason: 'navigation' });
+      host.dispose();
+    }
+  });
+
+  it('restores a task-level credential grant when the agent is rebuilt with the same share and permission mode', async () => {
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=one');
+    const host = createRemoteAgentHost({
+      isAgentAvailable: () => true,
+      startHosted: async (input) => fakeHostedAgent(input, [env]),
+      isControllerAuthorized: () => true,
+      captureOwner: () => 'owner',
+      isOwnerCurrent: () => true,
+      runsRoot: hostRoot,
+    });
+    const sessionId = `grant-${randomUUID()}`;
+    const full = { sessionId, workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    const depsFor = (deviceId: string) => ({
+      ...makeDeps(host),
+      credentialConsent: { description: 'Only this task.', grant: credentialGrantFor(sessionId, deviceId) },
+    });
+    let localConfirmations = 0;
+    // 打开一次 Agent、跑一轮、关闭(相当于 Orca Worker 一轮结束后被回收)。
+    const openRunClose = async (
+      opts: Omit<typeof full, 'permissionMode'> & { permissionMode: 'bypassPermissions' | 'default' | 'ask' },
+      deviceId = 'share:a',
+      between?: (handle: AgentSessionHandle) => Promise<void>,
+    ) => {
+      const handle = await startRemoteAgentSession('pi', opts, depsFor(deviceId));
+      try {
+        handle.setInteractionResolver(async (request) => {
+          if (request.requestId !== 'forged') localConfirmations += 1;
+          return { kind: 'permission', behavior: 'allow', permissionUpdates: [PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL] };
+        });
+        const reader = (async () => {
+          for await (const event of handle.events()) if (event.type === 'done') return;
+        })();
+        await handle.send({ type: 'user', content: 'read credentials' });
+        await reader;
+        await between?.(handle);
+      } finally {
+        await handle.close({ reason: 'navigation' });
+      }
+    };
+    try {
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      // 同一任务、同一分享、权限档未变：重建后不再确认。
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      // 另一个分享不沿用。
+      await openRunClose(full, 'share:b');
+      expect(localConfirmations).toBe(2);
+      // 回收期间权限档变了：作废，换回原权限档也要重新确认。
+      await openRunClose({ ...full, permissionMode: 'default' });
+      expect(localConfirmations).toBe(3);
+      await openRunClose(full);
+      expect(localConfirmations).toBe(4);
+      // 运行中切换权限档：作废，重建后也不恢复。
+      await openRunClose(full, 'share:a', async (handle) => {
+        await handle.setPermissionMode?.('default');
+        await handle.setPermissionMode?.('bypassPermissions');
+      });
+      expect(localConfirmations).toBe(4);
+      await openRunClose(full);
+      expect(localConfirmations).toBe(5);
+      // 比较原始权限档：default 与 ask 归并后同为 normal，回收期间这样改也要重新确认。
+      await openRunClose({ ...full, permissionMode: 'default' });
+      expect(localConfirmations).toBe(6);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(7);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(7);
+      // 回收期间切走又切回(设置入口调用 forgetCredentialGrants)：所有分享上的授权都作废。
+      forgetCredentialGrants(sessionId);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(8);
+      await openRunClose(full, 'share:b');
+      expect(localConfirmations).toBe(9);
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('runs a turn on the other computer while files, commands and confirmations stay here', async () => {
     const host = createHost();
     const handle = await startRemoteAgentSession('pi', {

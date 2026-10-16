@@ -28,6 +28,7 @@
  * (见 docs/dev-rules/engineering-conventions.md §5)。
  */
 
+import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import {
   isAutoReviewConfirmUndeliveredNotice,
   isAutoReviewUnavailableNotice,
@@ -36,6 +37,8 @@ import {
   parseTerminalRateLimitRetryProgress,
   parseToolLoopErrorDetails,
 } from '@cindy/maker-core';
+
+import { isQuotaExhaustedErrorMessage } from '../../../shared/providerErrors.js';
 
 /**
  * Auto 档「自动审批不可用」-> 渠道说明。
@@ -162,25 +165,30 @@ function toolLoopFailureNotice(data: unknown): string | null {
 }
 
 /**
- * 终态 error 事件的 data -> 渠道要展示的失败文案: 已知 reason 与过载类使用可操作说明,
- * 其它错误沿用上游原文。
- *
- * 单独抽出来是因为渠道侧有**两条**终态收口路径 —— 用户 turn 的 handleTurnErrorAsync
- * 与调度转播的 finalizeTranspond。此前只有前者做了映射, 定时任务的卡片在重试耗尽
- * 时仍会从本地化进度突然跳回 `Selected model is at capacity...`(review #844 codex
- * P1)。两边共用本函数, 顺带保证 errorStatus(Anthropic 529 只有状态码、message 里
- * 不一定带 529)不被丢掉。
+ * 额度类失败说明的固定开头。hook 主日志只记失败类别(原文可能带用户内容),
+ * dispatcher 据此把这类失败记成 provider-quota-exhausted, 而不是 unclassified。
  */
-export function terminalErrorText(data: unknown): string {
-  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
-    return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
-  }
-  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'silent-stop-exhausted') {
-    return '模型连续多次返回空响应，自动续跑已暂停。';
-  }
+export const QUOTA_FAILURE_NOTICE_PREFIX = '⚠️ 供应商额度不足';
+
+const SPEND_CAP_RE = /\bspend(?:ing)?[-_ ]?cap\b/i;
+const USAGE_LIMIT_RE = /\busage\s+limit\b/i;
+
+function terminalErrorRecord(data: unknown): {
+  message: string;
+  errorStatus?: number;
+  codexErrorInfo?: string;
+  sdkError?: string;
+  reason?: string;
+} {
   const record =
     data && typeof data === 'object'
-      ? (data as { message?: unknown; errorStatus?: unknown; codexErrorInfo?: unknown })
+      ? (data as {
+          message?: unknown;
+          errorStatus?: unknown;
+          codexErrorInfo?: unknown;
+          sdkError?: unknown;
+          reason?: unknown;
+        })
       : null;
   // 判**值**而不是判 key 是否存在: 上游 payload 带一个 message: undefined 时, 'in' 判定
   // 会成立并 String(undefined) 出字面量 "undefined" 给用户看, 同时让过载文案映射取决于这个
@@ -189,12 +197,118 @@ export function terminalErrorText(data: unknown): string {
     record?.message !== undefined && record.message !== null
       ? String(record.message)
       : String(data);
-  const errorStatus = typeof record?.errorStatus === 'number' ? record.errorStatus : undefined;
-  const codexErrorInfo =
-    typeof record?.codexErrorInfo === 'string' ? record.codexErrorInfo : undefined;
+  return {
+    message,
+    ...(typeof record?.errorStatus === 'number' ? { errorStatus: record.errorStatus } : {}),
+    ...(typeof record?.codexErrorInfo === 'string' ? { codexErrorInfo: record.codexErrorInfo } : {}),
+    ...(typeof record?.sdkError === 'string' ? { sdkError: record.sdkError } : {}),
+    ...(typeof record?.reason === 'string' ? { reason: record.reason } : {}),
+  };
+}
+
+/**
+ * 终态错误是不是「供应商账号的额度 / 花费上限 / 余额用完了」。
+ *
+ * 文案判据复用 shared 的 `isQuotaExhaustedErrorMessage`(桌面错误横幅同一份, 底层是 Codex
+ * 终态重投、伙伴候选恢复共用的 maker-shared 判定), 只额外认上游给出的结构化信号, 不在
+ * 这里另写一套措辞表。普通 429 限流不算 —— 那类错误等一会儿就好, 换供应商不是正确出口。
+ */
+export function isQuotaExhaustionFailure(data: unknown): boolean {
+  if (data === null || data === undefined) return false;
+  const e = terminalErrorRecord(data);
+  if (e.reason === 'provider_quota_limit') return true;
+  if (e.sdkError === 'billing_error') return true;
+  if (e.codexErrorInfo === 'usageLimitExceeded') return true;
+  if (e.errorStatus === 402) return true;
+  return isQuotaExhaustedErrorMessage(e.message);
+}
+
+/**
+ * 额度类终态错误 -> 渠道可读的失败说明; 不是这类错误返回 null。
+ *
+ * 说清三件事: 哪个供应商、什么原因、怎么处理(按入口指到对的设置, 见 surface)。**不自动更换模型或供应商**(与 openSession
+ * 模型准入「不会自动更换模型或供应商」同一口径): 换哪个供应商、花不花钱由用户决定。
+ * 上游原文(脱敏、截断)附在最后, 用户转给工作区管理员或排查时用得上。
+ */
+export interface QuotaFailureNoticeOptions {
+  providerLabel?: string | null;
+  /**
+   * 哪个入口的任务 —— 「怎么处理」要指到对的地方:
+   * - `personal`: 个人 bot / 个人 IM 渠道, 支持时 `/model` 直接改这个任务, 默认模型在
+   *   这个 bot 自己的卡片(如「Telegram 机器人」)的「新对话配置」里;
+   * - `official`: 官方 bot, `/model` 与官方卡片工作目录里的模型改的是**目录默认**,
+   *   已有任务保持原模型, 所以要接着 `/new` 开新任务, 或在 Cindy 里直接给任务换模型。
+   */
+  surface: 'personal' | 'official';
+  /** 个人渠道只有富卡输出支持 /model；未声明时指向 Cindy 内的当前任务。 */
+  supportsModelCommand?: boolean;
+}
+
+function quotaRecoveryHint(options: QuotaFailureNoticeOptions): string {
+  if (options.surface === 'official') {
+    return (
+      'Cindy 不会自动更换模型或供应商。可以发 /model，或在 Cindy 的 设置 → IM 机器人 →' +
+      '「Telegram」等官方 bot 卡片的工作目录里换一个模型（改的是这个目录的默认，已有任务保持原模型），' +
+      '然后发 /new 开新任务；也可以在 Cindy 里直接给这个任务换模型。额度恢复后也可以直接重发这条消息。'
+    );
+  }
+  if (!options.supportsModelCommand) {
+    return (
+      'Cindy 不会自动更换模型或供应商。可以在 Cindy 里打开这个任务，给它换一个供应商或模型，' +
+      '然后回到这里重发这条消息。额度恢复后也可以直接重发这条消息。'
+    );
+  }
+  return (
+    'Cindy 不会自动更换模型或供应商。可以发 /model 给这个任务换一个供应商或模型；' +
+    '以后新任务的默认模型在 Cindy 的 设置 → IM 机器人 里这个 bot 自己的卡片' +
+    '（如「Telegram 机器人」）的「新对话配置」中修改。额度恢复后也可以直接重发这条消息。'
+  );
+}
+
+export function quotaFailureNotice(
+  data: unknown,
+  options: QuotaFailureNoticeOptions,
+): string | null {
+  if (!isQuotaExhaustionFailure(data)) return null;
+  const { message, codexErrorInfo } = terminalErrorRecord(data);
+  const reason = SPEND_CAP_RE.test(message)
+    ? '已达到工作区所有者设置的花费上限'
+    : codexErrorInfo === 'usageLimitExceeded' || USAGE_LIMIT_RE.test(message)
+      ? '账号用量已达上限'
+      : '账号余额或配额不足';
+  const label = options.providerLabel?.trim();
+  const who = label ? `「${label}」` : '当前供应商';
+  const upstream = redactSensitiveText(message.replace(/\s+/g, ' ').trim()).slice(0, 300);
+  return [
+    `${QUOTA_FAILURE_NOTICE_PREFIX}：${who}${reason}，这个任务暂时无法继续。`,
+    quotaRecoveryHint(options),
+    ...(upstream ? [`上游原文：${upstream}`] : []),
+  ].join('\n');
+}
+
+/**
+ * 终态 error 事件的 data -> 渠道要展示的失败文案: 已知 reason 与过载类使用可操作说明,
+ * 其它错误沿用上游原文。额度指引须由 IM 调用方显式传入入口选项，避免定时任务的
+ * 运行记录与通知误用 bot 命令和设置路径。
+ *
+ * 单独抽出来是因为渠道侧有**两条**终态收口路径 —— 用户 turn 的 handleTurnErrorAsync
+ * 与调度转播的 finalizeTranspond。此前只有前者做了映射, 定时任务的卡片在重试耗尽
+ * 时仍会从本地化进度突然跳回 `Selected model is at capacity...`(review #844 codex
+ * P1)。两边共用本函数, 顺带保证 errorStatus(Anthropic 529 只有状态码、message 里
+ * 不一定带 529)不被丢掉。
+ */
+export function terminalErrorText(data: unknown, options?: QuotaFailureNoticeOptions): string {
+  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
+    return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
+  }
+  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'silent-stop-exhausted') {
+    return '模型连续多次返回空响应，自动续跑已暂停。';
+  }
+  const { message, errorStatus, codexErrorInfo } = terminalErrorRecord(data);
   return (
     toolLoopFailureNotice(data) ??
     overloadFailureNotice(message, errorStatus, codexErrorInfo) ??
+    (options ? quotaFailureNotice(data, options) : null) ??
     message
   );
 }

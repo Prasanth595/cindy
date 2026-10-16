@@ -107,7 +107,7 @@ import { BOT_DELEGATION_CLIENT_ID } from '../../../shared/botCollaboration.js';
 
 import { generateBotCreationDraft, readBotCreationDraft, generateBotCreationAvatar } from '../../maker-ipc/botCreationDraft.js';
 import { botInvitationProgress, type BotInvitationProgress } from '../../../shared/botInvitation.js';
-import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
+import { botGroupLaneRouteKey, botGroupPlanRouteKey, chatGroupLaneRouteKey, parseBotGroupIdFromRouteKey, type ChatLaneAccess } from '../../../shared/botGroupChat.js';
 import { queueBotInvitation as enqueueBotInvitation } from '../../maker-ipc/botInvitation.js';
 import { getMakerIfReady, validateBotCapabilityAdditions } from '../../maker-host/index.js';
 import type { BotCapabilityUpdate } from '../../maker-ipc/botCapabilityService.js';
@@ -912,6 +912,7 @@ async function readProfile(
     sessions: links.flatMap((link) => {
       const row = byId.get(link.sessionId);
       if (!row) return [];
+      const groupId = link.role === 'group' ? parseBotGroupIdFromRouteKey(link.routeKey) : null;
       return [
         {
           id: row.id,
@@ -927,6 +928,8 @@ async function readProfile(
           updatedAt: row.updatedAt,
           status: row.status,
           role: link.role,
+          // 群专线没有自己的页面:通知 / 灵动岛入口要据此回到它所在的群。
+          ...(groupId ? { groupId } : {}),
           profileVersion: link.profileVersion,
           runtimeSnapshot: runtimeBySession.has(row.id)
             ? (() => {

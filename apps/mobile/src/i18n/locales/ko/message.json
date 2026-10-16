@@ -15,6 +15,7 @@
     "openForkOrigin": "분기 원본 메시지 열기",
     "viewForkOrigin": "분기 원본 보기",
     "emptyMessages": "메시지가 없습니다",
+    "historyNotCached": "이 휴대폰에 저장된 기록이 없습니다. 컴퓨터에 연결하면 동기화됩니다.",
     "syncing": "동기화 중",
     "copyLinkHint": "탭하여 메시지 링크 복사",
     "sentTime": "보낸 시간 {{time}}",

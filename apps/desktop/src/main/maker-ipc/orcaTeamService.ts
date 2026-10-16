@@ -94,6 +94,8 @@ export type DispatchWorkerMessageResult =
   | {
       ok: true;
       mode: 'dispatched' | 'queued' | 'steered';
+      /** Accepting runtime locally; remote delivery reports the execution device's Agent at enqueue. */
+      agentKind?: AgentKind;
       /** 底层 dispatcher 为该消息生成的 clientId;queued 模式下即队列内寻址句柄。 */
       clientId: string;
       dispatchOutcome: CollabDispatchSuccessOutcome | CollabDispatchQueuedOutcome;
@@ -893,7 +895,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     return {
       dispatched: true,
       dispatchOutcome: result.dispatchOutcome as CollabDispatchSuccessOutcome,
-      agentKind: target.session.agentKind,
+      agentKind: result.agentKind ?? target.session.agentKind,
       wakeKind:
         result.mode === 'steered'
           ? 'steered'

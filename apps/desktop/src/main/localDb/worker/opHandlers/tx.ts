@@ -855,8 +855,11 @@ function botsFinishDelegation(
       db.prepare(`UPDATE sessions SET status = 'archived', updated_at = ?
         WHERE id = ? AND status = 'active'`)
         .run(completedAt, row.childSessionId);
+      // 保留 route_key('delegation:<id>')作为来源标记:bot_delegations 行会随发起伙伴
+      // 的删除级联消失,之后只有它能证明这段 history 是"别人派给我的",不是自己的私聊
+      // (botHistoryScope.listBotRecallSessionIds)。route_key 的其它读者都只认 group 键。
       db.prepare(`UPDATE bot_session_links SET role = 'history',
-        route_key = NULL, archived_at = ? WHERE session_id = ?`)
+        archived_at = ? WHERE session_id = ?`)
         .run(completedAt, row.childSessionId);
     }
     return row;

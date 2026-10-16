@@ -11,6 +11,9 @@ import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
+import { isGatewayProxyTokenRecoveryErrorEventForProvider } from '../gatewayProxyTokenRecovery.js';
+import { GATEWAY_PROXY_TOKEN_INVALID_REASON } from '@cindy/maker-shared/error-redaction';
+import { reportCindyGatewayKeyRejectedForCurrentKey } from '../../model-access/gatewayKeyRejection.js';
 
 const effects = vi.hoisted(() => {
   const calls: string[] = [];
@@ -32,6 +35,10 @@ vi.mock('../../maker-host/model-discovery/xai.js', () => ({
   discardXaiModelsDiskCache: vi.fn(async () => {}),
 }));
 
+// register.ts wires the agent-turn dependency to this current-key entry; assert against it.
+vi.mock('../../model-access/gatewayKeyRejection.js', () => ({
+  reportCindyGatewayKeyRejectedForCurrentKey: vi.fn(),
+}));
 vi.mock('../../local-model-runtime/preflight.js', () => ({
   ensureManagedOllamaReadyForSession: effects.fn('ensureManagedOllamaReadyForSession'),
 }));
@@ -252,6 +259,8 @@ function harness() {
     onUnsuccessfulProductTurn: vi.fn(async () => {}),
     log,
     botCompactRuntimeRefreshCoordinator: { noteBoundary: vi.fn() },
+    workingMemoryRefresh: { markCompacted: vi.fn() },
+    wireNoteMemory: { reset: vi.fn() },
     attemptBotCompactRuntimeRefresh: vi.fn(),
     botDelegationServiceHolder: { settleSession: vi.fn(async () => {}) },
     isFencedStaleSessionTerminal: vi.fn(() => false),
@@ -317,7 +326,8 @@ function harness() {
     },
     handleSilentStopTurnEnd: vi.fn(async () => {}),
     isRemoteAuthRetryErrorEvent: vi.fn(() => false),
-    isGatewayProxyTokenRecoveryErrorEvent: vi.fn(() => false),
+    isGatewayProxyTokenRecoveryErrorEvent: vi.fn<(sessionId: string, event: AgentEvent) => boolean>(() => false),
+    reportAgentCindyGatewayKeyRejected: vi.mocked(reportCindyGatewayKeyRejectedForCurrentKey),
     overflowSuppressedBroadcasts: new Map(),
     handleAgentIslandEventAfterBroadcast: effects.fn('island'),
     notifyGoalIdleAfterTurnSettled: vi.fn(() => {
@@ -683,6 +693,44 @@ describe('production Session event pipeline', () => {
       await h.dispose();
     },
   );
+
+  it.each([
+    ['xd', 1],
+    [null, 1],
+    ['openai', 0],
+    ['custom-provider', 0],
+  ] as const)('reports a Cindy AI key rejection at turn end for provider %s (%s times)', async (providerId, reports) => {
+    const h = harness();
+    h.deps.reportAgentCindyGatewayKeyRejected.mockClear();
+    // The production predicate, bound to this session's provider.
+    h.deps.isGatewayProxyTokenRecoveryErrorEvent.mockImplementation((_sessionId, value) =>
+      isGatewayProxyTokenRecoveryErrorEventForProvider(providerId, value));
+    try {
+      h.emit(event('error', {
+        message: 'Authentication failed',
+        reason: GATEWAY_PROXY_TOKEN_INVALID_REASON,
+      }));
+      expect(h.deps.reportAgentCindyGatewayKeyRejected).toHaveBeenCalledTimes(reports);
+      // Agents do not reveal the key they used: the current-key entry takes no key argument.
+      if (reports > 0) expect(h.deps.reportAgentCindyGatewayKeyRejected).toHaveBeenCalledWith();
+    } finally { await h.dispose(); }
+  });
+
+  it('does not report other Cindy AI turn failures or retryable key errors', async () => {
+    const h = harness();
+    h.deps.reportAgentCindyGatewayKeyRejected.mockClear();
+    h.deps.isGatewayProxyTokenRecoveryErrorEvent.mockImplementation((_sessionId, value) =>
+      isGatewayProxyTokenRecoveryErrorEventForProvider('xd', value));
+    try {
+      h.emit(event('error', { message: 'Rate limited' }));
+      h.emit(event('error', {
+        message: 'Authentication failed',
+        reason: GATEWAY_PROXY_TOKEN_INVALID_REASON,
+        isTerminal: false,
+      }));
+      expect(h.deps.reportAgentCindyGatewayKeyRejected).not.toHaveBeenCalled();
+    } finally { await h.dispose(); }
+  });
 
   it('keeps a retryable error running without resetting persistence', async () => {
     const h = harness();
@@ -1817,6 +1865,43 @@ describe('Bot adapters in the shared event pipeline', () => {
     await h.dispose();
   });
 
+  it('waits for the streamed group reply to persist and keeps the finished input identity', async () => {
+    const h = harness();
+    let finishWrite!: () => void;
+    const writing = new Promise<void>(resolve => { finishWrite = resolve; });
+    effects.fn('drainPersistQueue').mockReturnValue(writing);
+    effects.fn('consumeLastAssistantPersistId').mockReturnValue('group-reply');
+    const settleLaneTurn = vi.fn(async () => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-group:g1:turn:bot-a');
+    h.emit(event('done', { result: '' }));
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-group:g1:next:bot-a');
+    await microtasks();
+    expect(settleLaneTurn).not.toHaveBeenCalled();
+    finishWrite();
+    await microtasks();
+    expect(settleLaneTurn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      sessionId: 'task', activeInputClientId: 'bot-group:g1:turn:bot-a', outcome: 'done',
+      resultText: '', resultMessageClientId: 'group-reply',
+    }));
+    await h.dispose();
+  });
+
+  it.each(['reply', 'failure'])('does not delay a group %s that needs no persisted-text fallback', async kind => {
+    const h = harness();
+    let finishWrite!: () => void;
+    effects.fn('drainPersistQueue').mockReturnValue(new Promise<void>(resolve => { finishWrite = resolve; }));
+    effects.fn('consumeLastAssistantPersistId').mockReturnValue('group-reply');
+    const settleLaneTurn = vi.fn(async () => true);
+    (h.deps as unknown as { botGroupChatServiceHolder: unknown }).botGroupChatServiceHolder = { settleLaneTurn };
+    h.emit(kind === 'reply' ? event('done', { result: 'Ready' }) : event('error', { isTerminal: true, errorStatus: 401 }));
+    await microtasks();
+    expect(settleLaneTurn).toHaveBeenCalledOnce();
+    finishWrite();
+    await microtasks();
+    await h.dispose();
+  });
+
   it.each([
     [{ message: 'Authorization: [REDACTED]', errorStatus: 429, usageLimit: true }, 'QUOTA_EXCEEDED'],
     [{ errorStatus: 401 }, 'AUTH_REQUIRED'],
@@ -1847,6 +1932,10 @@ describe('Bot adapters in the shared event pipeline', () => {
     const h = harness();
     h.emit(event('compact_boundary'));
     expect(h.deps.botCompactRuntimeRefreshCoordinator.noteBoundary).toHaveBeenCalledWith(h.session);
+    // 原生摘要可能丢掉账本内容:下一次发送补一份工作记忆。
+    expect(h.deps.workingMemoryRefresh.markCompacted).toHaveBeenCalledWith('task');
+    // 原生摘要可能丢掉了环境说明:下一轮整体重发。
+    expect(h.deps.wireNoteMemory.reset).toHaveBeenCalledWith('task');
     expect(h.deps.attemptBotCompactRuntimeRefresh).not.toHaveBeenCalled();
     h.deps.agentInputCoordinatorHolder.getQueueControlSnapshot.mockReturnValue({ pendingQueue: [{}] });
     h.emit(event('done', { result: 'first result' }));

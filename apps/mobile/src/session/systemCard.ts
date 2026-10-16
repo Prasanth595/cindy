@@ -34,7 +34,9 @@ export type MobileSystemCardType =
   | 'auto-resume'
   | 'learn'
   // session-agent-switch 边界卡(desktop 落库 role='agent_switch',读侧派生)。
-  | 'agent-switch';
+  | 'agent-switch'
+  // 代输入结束留痕(隐藏续接行派生)。
+  | 'input-handoff';
 export type MobileSystemCardPresentation = SystemCardPresentation;
 
 /** goal 达成记录文案(对齐桌面 GoalCompleteCard 的 goal.complete.record)。 */
@@ -102,7 +104,7 @@ export function buildMobileSystemCardData(
 ): Record<string, unknown> {
   // goal / auto-resume / agent-switch 卡的数据由桌面落库行派生,learn 卡的数据由
   // 发送侧 buildLearnCardData 直接组装,都不走本地 slash 命令的数据组装。
-  if (type === 'goal-complete' || type === 'goal-resumed' || type === 'context-rebuild' || type === 'auto-resume' || type === 'learn' || type === 'agent-switch') return {};
+  if (type === 'goal-complete' || type === 'goal-resumed' || type === 'context-rebuild' || type === 'auto-resume' || type === 'learn' || type === 'agent-switch' || type === 'input-handoff') return {};
   return buildSystemCardData(type, {
     ...options,
     localCommands: MOBILE_LOCAL_SYSTEM_COMMANDS,
@@ -132,6 +134,8 @@ export function formatMobileSystemCard(
   if (type === 'auto-resume') return formatAutoResumeCard(data);
   if (type === 'agent-switch') return formatAgentSwitchCard(data);
   if (type === 'learn') return formatLearnCard(data);
+  // 代输入留痕由 InputHandoffRecordRow 渲染,不走通用卡片。
+  if (type === 'input-handoff') return { title: '', rows: [] };
   return formatSystemCard(type, data);
 }
 

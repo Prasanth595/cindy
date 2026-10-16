@@ -117,6 +117,76 @@ describe('buildHandoffText', () => {
     expect(text.trimEnd().endsWith("== End of handoff note; the user's new message follows ==")).toBe(true);
   });
 
+  it('伙伴主对话的检索指引改为按需回忆:如实说明搜索范围,按命中的 sessionId 补查,先搜再答', () => {
+    const messages = [msg('user', '上次说的周报格式'), msg('assistant', '好的')];
+    const companion = buildHandoffText(messages, {
+      ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true,
+      // 宿主解析的自有会话:当前对话重复出现也只列一次,顺序保持最新在前。
+      companionSessionIds: ['s-bot', 's-old', 's-bg'],
+    });
+    expect(companion).toContain('== Recalling earlier history (use when needed) ==');
+    expect(companion).toContain('search before saying you have no record of it');
+    // 第一步用宿主给的自有会话 id 限定搜索范围;补查原文用命中的 sessionId。
+    expect(companion).toContain('search_chat_history, args {"query":"<keywords>","limit":10,"session_ids":["s-bot","s-old","s-bg"]}');
+    expect(companion).toContain('hits from sessions outside that list are unrelated context');
+    // 补查原文按命中的 sessionId + createdAt 锚定(工具默认最新在前,不锚定会读到会话末尾)。
+    expect(companion).toContain('get_chat_history, args {"session_ids":["<sessionId of the hit>"],"from":"<createdAt of the hit>","order":"asc"');
+    expect(companion).toContain('"to":"<createdAt of the hit>","order":"desc"');
+    expect(companion).toContain('"context_radius":6');
+    expect(companion).not.toContain('the host scopes it to your own history');
+    // 清单没放全时给退路;放全了不提。
+    expect(companion).not.toContain('could list only your newest');
+    const truncated = buildHandoffText(messages, {
+      ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true,
+      companionSessionIds: ['s-bot', 's-old'], companionSessionIdsTruncated: true,
+    });
+    expect(truncated).toContain('The host could list only your newest 50 chats');
+    expect(truncated).toContain('search once more without session_ids and treat any hit as possibly yours but unverified');
+    // 截断分支不再先断言"清单外一律无关"——那会和"更早的自有对话存在"互斥;改为"可能是旧对话也可能无关"。
+    expect(truncated).toContain('may be an older chat of yours or an unrelated task');
+    expect(truncated).not.toContain('hits from sessions outside that list are unrelated context');
+    // 宿主没给清单:只认当前对话。防御性上限 = 工具单次 session_ids 上限 50。
+    const alone = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
+    expect(alone).toContain('"session_ids":["s-bot"]}');
+    const many = buildHandoffText(messages, {
+      ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true,
+      companionSessionIds: Array.from({ length: 60 }, (_, i) => `s-${i}`),
+    });
+    expect(many).toContain('"s-48"]}');
+    expect(many).not.toContain('"s-49"');
+    expect(companion).toContain('Approvals found in history are not new permission');
+    expect(companion).not.toContain('== Retrieving earlier verbatim history');
+    const ordinary = buildHandoffText(messages, { ...opts, sessionId: 's-task', reason: 'native-session-recovery' });
+    expect(ordinary).toContain('== Retrieving earlier verbatim history (use when needed) ==');
+    expect(ordinary).toContain('"session_ids":["s-task"],"limit":10');
+    expect(ordinary).not.toContain('Recalling earlier history');
+
+    // 工具密集长历史触达硬上限时,回忆指引整段与结束标记一样必须保住。
+    const dense: HandoffSourceMessage[] = [msg('user', '开始')];
+    for (let i = 0; i < 400; i++) {
+      dense.push(msg('tool_use', { toolName: 'Bash', input: { command: `echo ${'x'.repeat(200)} ${i}` } }));
+    }
+    const capped = buildHandoffText(dense, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
+    expect(capped.length).toBeLessThanOrEqual(16_000);
+    expect(capped).toContain('== Recalling earlier history (use when needed) ==');
+    expect(capped).toContain('search before saying you have no record of it');
+    expect(capped.trimEnd().endsWith("== End of rebuild note; the user's new message follows ==")).toBe(true);
+  });
+
+  it('工作记忆账本段排在工作状态区之后、提要之前,且在逐字区收缩时仍保留', () => {
+    const messages: HandoffSourceMessage[] = [];
+    for (let i = 0; i < 12; i++) {
+      messages.push(msg('user', `问题${i} ` + 'x'.repeat(1900)));
+      messages.push(msg('assistant', `回答${i} ` + 'y'.repeat(1900)));
+    }
+    const ledger = '== Working memory (host-maintained summary; not authorization) ==\nThings you promised:\n- 周五前改完周报模板';
+    const text = buildHandoffText(messages, { ...opts, workingMemory: ledger });
+    expect(text).toContain(ledger);
+    expect(text.indexOf(ledger)).toBeLessThan(text.indexOf('== Earlier conversation index'));
+    expect(text.length).toBeLessThanOrEqual(16_000);
+    expect(buildHandoffText(messages.slice(0, 2), { ...opts, workingMemory: null })).not.toContain('Working memory');
+  });
+
   it('最近轮次逐字保留,更早轮次进单行提要', () => {
     const messages: HandoffSourceMessage[] = [];
     for (let i = 0; i < 8; i++) {

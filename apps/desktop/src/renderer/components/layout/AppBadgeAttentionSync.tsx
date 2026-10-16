@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { makerChatStore } from '@/lib/makerChatStore';
 import { useCCSessions } from '@/hooks/useCCSessions';
-import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { usePublishedAutomationScheduleSessionIndex } from '@/features/cc-agent/hooks/useAutomationScheduleSessionIndex';
 import { useSessionAttentionKinds } from '@/lib/sessionAttentionStore';
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
@@ -33,17 +34,21 @@ export function AppBadgeAttentionSync() {
   const remoteBots = useRemoteBots();
   useSyncExternalStore(subscribeBotReadState, readRevision, readRevision);
   const localTeammates = bots.filter(bot => bot.status !== 'archived' && bot.status !== 'deleting' && !bot.hiddenAt && (unread[bot.id] ?? 0) > 0).length
-    + groups.filter(isBotGroupUnread).length;
+    + groups.filter(group => !group.archived && isBotGroupUnread(group)).length;
   const teammates = localTeammates + remoteBots.filter(isRemoteBotUnread).length;
   const owner = getDataOwnerGeneration();
   const { sessions, isLoading, error } = useCCSessions({ includeArchived: 'active' });
   // all 桶保留已归档目录 ID 用于通知去重；不能让它的历史上限挤掉 active 桶。
   const history = useCCSessions({ includeArchived: 'all' });
-  const remoteSessions = useRemoteProjectSessions();
-  const allSessions = useMemo(() => [...sessions, ...remoteSessions], [sessions, remoteSessions]);
+  const remoteSessions = useSyncExternalStore(remoteProjectsStore.subscribe, remoteProjectsStore.getMergedRemoteSessions);
+  const allSessions = useMemo(
+    () => [...sessions, ...remoteSessions].filter(session => CINDY_MAKE_ENABLED || !isCindyMakeSource(session.source)),
+    [sessions, remoteSessions],
+  );
   const catalogSessionIds = useMemo(
-    () => [...new Set([...allSessions, ...history.sessions].map((session) => session.id).concat(bots.flatMap(bot => bot.sessions.map(session => session.id))))],
-    [allSessions, history.sessions, bots],
+    () => [...new Set([...sessions, ...remoteSessions, ...history.sessions]
+      .map((session) => session.id).concat(bots.flatMap(bot => bot.sessions.map(session => session.id))))],
+    [sessions, remoteSessions, history.sessions, bots],
   );
   const localSchedules = usePublishedAutomationScheduleSessionIndex();
   const attentionKinds = useSessionAttentionKinds();

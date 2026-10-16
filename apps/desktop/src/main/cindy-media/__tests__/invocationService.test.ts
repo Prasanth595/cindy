@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => ({
   prune: vi.fn(async () => undefined),
   rows: new Map<string, Record<string, unknown>>(),
   failRequestLog: false,
+  reportKeyRejected: vi.fn(),
 }));
 
 vi.mock('../../authManager.js', () => ({
@@ -67,6 +68,9 @@ vi.mock('../../appCapabilities.js', () => ({
 }));
 vi.mock('../../model-access/effectiveEndpoint.js', () => ({
   effectiveXdGatewayBaseUrl: () => 'https://gateway.example.com',
+}));
+vi.mock('../../model-access/gatewayKeyRejection.js', () => ({
+  reportCindyGatewayKeyRejected: mocks.reportKeyRejected,
 }));
 vi.mock('../../secrets/providerSecretStore.js', () => ({
   getProviderSecretStore: () => ({ get: () => 'test-api-key' }),
@@ -1525,6 +1529,34 @@ describe('Cindy Core media invocation state and security boundary', () => {
     expect(result.message).not.toContain('signature=secret');
     expect(result.message).not.toContain('token-1234567890123456');
     expect(result.message).not.toContain(opaque);
+  });
+
+  it.each([
+    [401, 1],
+    [400, 0],
+    [403, 0],
+  ] as const)('网关 HTTP %s 时按 Cindy AI Key 失效上报 %s 次', async (status, reports) => {
+    mocks.reportKeyRejected.mockClear();
+    mocks.guide.mockResolvedValue(
+      resolvedGuide(
+        operation({
+          mode: 'sync',
+          media: [{ path: ['data'], encoding: 'base64', kind: 'image' }],
+        }),
+      ),
+    );
+    mocks.outboundFetch.mockResolvedValue(
+      new Response(JSON.stringify({ message: 'rejected' }), { status }),
+    );
+
+    const result = await callCindyMedia({
+      action: 'request',
+      invocationId: await prepare(),
+      body: { prompt: 'cat' },
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'UPSTREAM_REJECTED' });
+    expect(mocks.reportKeyRejected).toHaveBeenCalledTimes(reports);
+    if (reports > 0) expect(mocks.reportKeyRejected).toHaveBeenCalledWith('test-api-key');
   });
 
   it('受限网络未获批准时不下载，批准新 CDN 后不携带网关凭据', async () => {

@@ -3,6 +3,8 @@ import os from 'node:os';
 import { ipcMain } from 'electron';
 
 import { isIpcError } from '../../shared/ipc-errors.js';
+import { ServerApiError } from '../serverApiClient.js';
+import { isPluginMarketPassthroughErrorCode } from './api.js';
 import {
   isGhostInstallApprovalToken,
   type GhostManifest,
@@ -66,9 +68,15 @@ export function defaultMarketPluginSyncOutcome(
   snapshot: PluginMarketSnapshot,
   reconciliationOutcome: 'completed' | 'failed' = 'completed',
 ): DefaultMarketPluginSyncOutcome {
+  // The organization catalog was not reconciled. Only an upgrade can fix a
+  // client-version rejection; every other reason may clear on retry.
+  const organizationRetryable =
+    Boolean(snapshot.organizationAccessError)
+    && snapshot.organizationAccessError !== 'PLUGIN_NAMESPACE_CLIENT_REQUIRED';
   if (
     (snapshot.unavailableReason === null || snapshot.unavailableReason === 'not-configured')
     && reconciliationOutcome === 'completed'
+    && !organizationRetryable
   ) {
     return 'completed';
   }
@@ -96,6 +104,7 @@ export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyn
     if (outcome === 'failed') {
       log.warn('default plugin startup sync incomplete', {
         unavailableReason: snapshot.unavailableReason,
+        organizationAccessError: snapshot.organizationAccessError ?? null,
       });
     }
     return outcome;
@@ -117,6 +126,9 @@ async function invokePluginMarket<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (isIpcError(error)) throw error;
+    if (error instanceof ServerApiError && isPluginMarketPassthroughErrorCode(error.code)) {
+      throwIpcError(error.code, 'Plugin market operation failed');
+    }
     log.warn('plugin market IPC failed', {
       error: error instanceof Error ? error.message : String(error),
     });

@@ -99,6 +99,14 @@ describe('orcaSessionIdentity', () => {
     expect(api.localDb.sessions.get).toHaveBeenCalledWith('lead-2');
   });
 
+  it.each(['cindy-make', 'cindy-make-merge'] as const)('redirects old %s links to the task index', async (source) => {
+    const api = electronApiMock();
+    await expect(resolveSessionRoute('old-make', { orcaRole: null, source })).resolves.toBe('/cc-agent');
+    api.localDb.sessions.get.mockResolvedValue({ orcaRole: null, source });
+    await expect(resolveSessionRoute('old-make')).resolves.toBe('/cc-agent');
+    expect(api.localDb.orcaWorkflows.getByWorkerSession).not.toHaveBeenCalled();
+  });
+
   it('routes orphaned Orca workers back through the index fallback', async () => {
     const api = electronApiMock();
     api.localDb.orcaWorkflows.getByWorkerSession.mockResolvedValue(null);

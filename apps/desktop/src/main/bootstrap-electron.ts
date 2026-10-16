@@ -18,6 +18,12 @@ import {
   refreshUpstreamMergeProjection,
 } from './cindy-make/upstreamMergeRuntime.js';
 import {
+  configurePersonalRemote,
+  actPersonalRemote,
+  actCindyMakeContribution,
+} from './cindy-make/personalRemoteRuntime.js';
+import { configurePersonalSync, actPersonalSync } from './cindy-make/personalSyncRuntime.js';
+import {
   configureMakeHistory,
   getCindyMakeHistory,
   actCindyMakeHistory,
@@ -88,6 +94,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { machineIdSync } from 'node-machine-id';
 import windowStateKeeper from 'electron-window-state';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
+import { assertCindyMakeEnabled } from './cindy-make/featureGate.js';
 import {
   shouldRequestSingleInstanceLock,
   resolveSingleInstanceLockUserDataDir,
@@ -295,6 +302,7 @@ import {
 import { createAccountDeletionIpcHandlers } from './accountDeletionIpc';
 import * as profileEdit from './profileEdit';
 import { uploadPublicAsset } from './ossPublicUpload';
+import { toSdrAvatarImage } from './hdrAvatarToSdr';
 import { removeRefs as removeMediaRefs } from './cindy-media/ledger';
 import {
   installWebviewHardener,
@@ -535,6 +543,7 @@ import {
   installVoiceInputPowerRelease,
 } from './voice-input/powerReleaseNotifier';
 import { reapClaudeOrphansSync } from './claude-orphan-reaper';
+import { reapCodexToolTreesSync } from './codex-tool-tree-reaper';
 import { startAgentProcessPriorityWatcher } from './agent-process-priority';
 import { registerProcessMonitorIpc } from './process-monitor/ipc.js';
 import { disposeWindowsProcessScanWorkers } from './process-monitor/windowsProcessScanWorkerClient.js';
@@ -581,6 +590,7 @@ import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
 import { initLogUploadService, scheduleStartupBackfill } from './log-upload';
+import { createOpenLogsMenuItem, openLogsDirectory } from './logSupport';
 import { WindowManualDragController } from './windowManualDrag';
 import { issueWritableDirectoryPickerGrant } from './maker-ipc/writableDirectoryPickerGrant.js';
 // 设备互联(跨设备远程控制): relay 连接 host + 开关/设备列表 IPC
@@ -599,6 +609,7 @@ import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
 import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
 import { registerProviderGroupIpc } from './provider-group/ipc.js';
 import { registerProviderGroupRemoteHandler } from './provider-group/remoteRegistration.js';
+import { providerGroupReshare, registerProviderGroupReshare } from './provider-group/reshareRuntime.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -1016,6 +1027,7 @@ import {
   popUpWindowsTrayMenu,
   requestWindowsTrayQuit,
 } from './windowsTrayLifecycle.js';
+import { createLinuxTrayController } from './linuxTrayLifecycle.js';
 import {
   applyLinuxMainWindowCloseBehavior,
   createCloseBehaviorPromptFallbackController,
@@ -1074,6 +1086,7 @@ import {
   refreshXdGatewayModels,
 } from './model-access/index.js';
 import { effectiveXdGatewayBaseUrl } from './model-access/effectiveEndpoint.js';
+import { withCindyGatewayKeyRejectionReport } from './model-access/gatewayKeyRejection.js';
 import { isLocalDbOwnerCurrent } from './appSessionPolicy.js';
 import { getAppCapabilities, requireAppCapability } from './appCapabilities.js';
 import {
@@ -1126,6 +1139,7 @@ import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
+import { StableOwnerPostCommitStep } from './stableOwnerPostCommit.js';
 import { registerPluginPublisherIpc } from './plugin-publisher/registerIpc.js';
 import { findCindyFileInArgv } from './cindy-brain/argv.js';
 import { handleIncomingCindyFile } from './cindy-brain/openFileInstall.js';
@@ -1462,8 +1476,8 @@ function attemptStartEmbeddingHost(): void {
         // 函数形态:model-access 下发切换 endpoint 后,常驻的 embedding host 无需重启。
         gatewayBaseUrl: () => effectiveXdGatewayBaseUrl(),
         // /v1/embeddings 也要吃系统代理:裸全局 fetch 在「系统代理」模式下裸直连出网
-        // (见 maker-host/outbound-fetch.ts)。
-        fetchImpl: outboundFetch,
+        // (见 maker-host/outbound-fetch.ts)。401 时按本次请求的 Key 上报 Cindy AI Key 失效。
+        fetchImpl: withCindyGatewayKeyRejectionReport(outboundFetch),
         log: createSchedulerLogger('embeddingHost'),
       });
     } catch (err) {
@@ -2590,29 +2604,55 @@ setAppSessionCommitBoundaryHook(() => {
   clearAllSessionRuntimeAxes();
   clearAllSessionRuntimeControlStates();
 });
+const ownerBackgroundLog = createLogger('owner-background');
+const builtinPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'builtin-plugins', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+// Each package already has a 120s transport limit. This bounds our wait for
+// the entire batch (catalog/auth/locks included), not the lifetime of a write.
+const marketPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-market', timeoutMs: 180_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+const oauthPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-oauth', timeoutMs: 30_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
 authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId }) => {
-  const builtinOutcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+  const isCurrent = () => !isAppSessionBoundaryPending()
+    && activeOwnerScopeKey() === scopeKey
+    && getActiveAppSession().dataOwnerId === dataOwnerId;
+  if (!isCurrent()) return 'deferred';
+  const builtinOutcome = await builtinPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    const outcome = await runStableOwnerPostCommitTask(reason, { scopeKey, dataOwnerId });
+    return outcome === 'retry-pending' ? 'failed' : outcome;
+  });
   if (builtinOutcome === 'deferred') return builtinOutcome;
+  if (!isCurrent()) return 'deferred';
 
-  let needsRetry = builtinOutcome === 'retry-pending' || builtinOutcome === 'failed';
+  let needsRetry = builtinOutcome === 'failed';
   // Signed-out is a real stable scope for account-free bundled provisioning.
   // Market and OAuth are owner-private follow-ups and stay behind this gate.
   if (dataOwnerId === null) return needsRetry ? 'failed' : 'completed';
   let deferred = false;
-  const marketOutcome = await syncDefaultMarketPlugins();
+  const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
+    return syncDefaultMarketPlugins();
+  });
+  if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
   if (marketOutcome === 'deferred') deferred = true;
 
-  try {
+  const oauthOutcome = await oauthPostCommitStep.run(scopeKey, async () => {
+    if (!isCurrent()) return 'deferred';
     const oauthCompleted = await reconcileGhostOauthAccountsForActiveOwner();
-    if (!oauthCompleted) deferred = true;
-  } catch (error) {
-    createLogger('ghost-oauth-owner-reconcile').warn(
-      'OAuth account reconciliation for active owner failed',
-      { error: error instanceof Error ? error.message : String(error) },
-    );
-    needsRetry = true;
-  }
+    return oauthCompleted ? 'completed' : 'deferred';
+  });
+  if (!isCurrent()) return 'deferred';
+  if (oauthOutcome === 'failed') needsRetry = true;
+  if (oauthOutcome === 'deferred') deferred = true;
 
   return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';
 });
@@ -3048,6 +3088,8 @@ function installApplicationMenu(
     {
       label: labels.helpMenu,
       submenu: [
+        createOpenLogsMenuItem(),
+        { type: 'separator' },
         {
           label: labels.help,
           click: () => dispatchApplicationMenuCommand(mainWindow, 'open-help'),
@@ -3119,7 +3161,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   if (mainWindow) {
     installApplicationMenu(mainWindow, currentApplicationMenuLocale);
   }
-  invalidateWindowsTrayMenu();
+  refreshDesktopTrayMenus();
   getAgentIslandService()?.refreshLocalization();
   refreshMenubarLocalization();
   return { ok: true };
@@ -3281,23 +3323,25 @@ const activeWindowsTrayMenus = new Set<Menu>();
 const windowsTrayLog = createLogger('windows-tray');
 const CLOSE_BEHAVIOR_PROMPT_FALLBACK_DELAY_MS = 2_000;
 
-function buildWindowsTrayMenu(): Menu {
+function buildDesktopTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     {
       label: t('settings.windowBehavior.trayMenu.show'),
       click: () => focusMainWindow(),
     },
+    createOpenLogsMenuItem(),
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
-      click: () => quitFromWindowsTray(),
+      click: () => quitFromDesktopTray(),
     },
   ]);
 }
 
-/** 语言切换后丢弃缓存的菜单,下一次右键按新语言重建。 */
-function invalidateWindowsTrayMenu(): void {
+/** Windows rebuilds lazily on right-click; Linux must republish its native menu. */
+function refreshDesktopTrayMenus(): void {
   windowsTrayMenu = null;
+  linuxTray.refreshMenu();
 }
 
 function openWindowsTrayMenu(): void {
@@ -3311,7 +3355,7 @@ function openWindowsTrayMenu(): void {
   popUpWindowsTrayMenu<Menu>({
     tray: windowsTray,
     menu: windowsTrayMenu,
-    buildMenu: buildWindowsTrayMenu,
+    buildMenu: buildDesktopTrayMenu,
     retainMenu: (menu) => {
       windowsTrayMenu = menu;
     },
@@ -3332,7 +3376,7 @@ function openWindowsTrayMenu(): void {
   });
 }
 
-function quitFromWindowsTray(): void {
+function quitFromDesktopTray(): void {
   requestWindowsTrayQuit({
     hasActiveTurn: () => {
       try {
@@ -3362,6 +3406,26 @@ function destroyWindowsTray(): void {
   windowsTray = null;
   windowsTrayMenu = null;
 }
+
+const linuxTrayLog = createLogger('linux-tray');
+const linuxTray = createLinuxTrayController<Menu>({
+  createTray: () => {
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'icon.png')
+      : path.join(__dirname, '../../resources/icon.png');
+    const icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) throw new Error(`tray icon is empty: ${iconPath}`);
+    // Keep the source resolution: Linux panels choose their own icon size/scale.
+    return new Tray(icon);
+  },
+  buildMenu: buildDesktopTrayMenu,
+  showWindow: () => focusMainWindow(),
+  onError: (error) => {
+    linuxTrayLog.error('Linux tray operation failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
 
 function ensureWindowsTray(): boolean {
   if (windowsTray && !windowsTray.isDestroyed()) return true;
@@ -3526,6 +3590,7 @@ app.on('before-quit', () => {
   windowsClosePromptFallback.dispose();
   linuxClosePromptFallback.dispose();
   destroyWindowsTray();
+  linuxTray.dispose();
   disposeUpdatePresentationRecovery();
   authCredentialRecovery.dispose();
 });
@@ -4048,6 +4113,11 @@ const createWindow = () => {
     app.quit();
   });
   void ensureMainAppPresence('main-window-created', mainWindow);
+  // Keep diagnostics reachable from the tray even before login or if the renderer fails.
+  if (process.platform === 'win32') ensureWindowsTray();
+  // Tray construction is not proof that a Linux panel hosts the icon. Keep the
+  // existing minimize/quit close choices so an absent tray never strands a hidden window.
+  if (process.platform === 'linux') linuxTray.ensure();
 
   installApplicationMenu(
     mainWindow,
@@ -4364,7 +4434,10 @@ function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
   pluginMarketSyncInFlightScope = scope;
   lastPluginMarketSyncScope = scope;
   lastPluginMarketSyncAt = now;
-  void syncDefaultMarketPlugins().finally(() => {
+  void marketPostCommitStep.run(scope, async () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
+    return syncDefaultMarketPlugins();
+  }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
 }
@@ -5006,7 +5079,7 @@ const registerIpcHandlers = () => {
       }
       windowsClosePromptFallback.acknowledge();
       writeWindowsCloseBehavior(behavior);
-      if (behavior === 'quit') destroyWindowsTray();
+      // The tray also provides diagnostics while running; only app shutdown owns its destruction.
       return behavior;
     },
   );
@@ -5954,7 +6027,9 @@ const registerIpcHandlers = () => {
           },
         })
         .finally(() => authCredentialRecovery.request());
-      await authManager.ensureStableOwnerPostCommitTasks('auth-initialize');
+      // Plugin downloads/reconciliation retain their owner-scoped retries, but
+      // must not delay AuthContext starting the owner DB or showing the app.
+      authManager.requestStableOwnerPostCommit('auth-initialize');
       if (!app.isPackaged || isCindyVersionLaunchPending()) {
         recordDesktopDevAuthStartupResult(state, pendingCompletion, () =>
           authManager.getAuthState(),
@@ -6100,6 +6175,7 @@ const registerIpcHandlers = () => {
   const profileEditLog = createLogger('profileEdit');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
+    getAccountScopeKey: activeOwnerScopeKey,
     getServerProfile: () => authManager.getServerProfile(),
     showAvatarOpenDialog: async () => {
       const result = await dialog.showOpenDialog({
@@ -6109,6 +6185,11 @@ const registerIpcHandlers = () => {
       return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
     },
     readFile: (filePath) => fs.promises.readFile(filePath),
+    toSdrAvatar: toSdrAvatarImage,
+    decodeAvatarImage: ({ buffer }) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(buffer));
+      return image.isEmpty() ? null : image.getSize();
+    },
     uploadAvatar: async ({ buffer, mimeType }) => {
       const result = await uploadPublicAsset(
         {
@@ -7641,25 +7722,18 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Settings → About: 打开 <userData>/logs 在系统文件管理器。
-  // 路径在主进程派生（renderer 不需要也不应该知道 userData 全路径）。
-  // 目录不存在时先创建，避免空安装首次点击失败。
-  ipcMain.handle('app:open-logs-dir', async (): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const logDir = path.join(app.getPath('userData'), 'logs');
-      fs.mkdirSync(logDir, { recursive: true });
-      const errMsg = await shell.openPath(logDir);
-      if (errMsg) return { success: false, error: errMsg };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  // Settings → About: shared local diagnostics entry, also available before login.
+  // The sender cannot choose a path.
+  ipcMain.handle('app:open-logs-dir', (event): Promise<{ success: boolean }> => {
+    assertTrustedAppRendererEvent(event);
+    return openLogsDirectory();
   });
 
   // Settings → Cindy Make: open Cindy's private managed-tool directory.
   // The path is derived in main so the renderer cannot choose an arbitrary folder.
   ipcMain.handle('app:open-cindy-make-tools-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeToolsDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7671,10 +7745,44 @@ const registerIpcHandlers = () => {
   configureUpstreamMerge((id) => getMakerIfReady()?.getSession(id)?.isTurnRunning() ?? false);
   ipcMain.handle('app:cindy-make-merge', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actUpstreamMerge(input);
+  });
+  // Local Settings only: binding this machine's GitHub fork has no device-link grant.
+  // A failure here must not prevent the remaining IPC handlers from registering.
+  try {
+    configurePersonalRemote();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal remote unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-personal-remote', async (event, action: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalRemote(action);
+  });
+  // One Sync for every personal version; local Settings only, no device-link grant.
+  try {
+    configurePersonalSync();
+  } catch (error) {
+    createLogger('cindy-make').warn('personal sync unavailable', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+  ipcMain.handle('app:cindy-make-sync', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actPersonalSync(request);
+  });
+  ipcMain.handle('app:cindy-make-contribution', async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
+    return actCindyMakeContribution(request);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     const userData = app.getPath('userData');
     const root = makeSourceRoot(userData);
     const channel = !app.isPackaged
@@ -7718,12 +7826,14 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-settings', (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return readCindyMakeSettings();
   });
   ipcMain.handle(
     'app:set-cindy-make-sync-latest-before-build',
     (event, enabled: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       if (typeof enabled !== 'boolean')
         throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make setting');
       return writeCindyMakeSyncLatestBeforeBuild(enabled);
@@ -7731,6 +7841,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history', async (event, selected?: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (
       selected !== undefined &&
       (typeof selected !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(selected))
@@ -7758,6 +7869,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-history-action',
     async (event, runId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       try {
         return await actCindyMakeHistory(runId, action);
       } catch (error) {
@@ -7774,6 +7886,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history-build', async (event, selection: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await generateHistoryPersonalVersion(selection);
     } catch {
@@ -7783,6 +7896,7 @@ const registerIpcHandlers = () => {
   app.once('will-quit', stopMakeHistoryBuild);
   ipcMain.handle('app:cindy-make-history-cancel-build', async (event, buildId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await cancelHistoryPersonalVersion(buildId);
     } catch {
@@ -7791,6 +7905,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-make-history-open-build', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       await openHistoryPersonalBuild();
     } catch {
@@ -7804,6 +7919,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-versions-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await getCindyVersions();
     } catch {
@@ -7812,6 +7928,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-versions-action', async (event, action: unknown, id: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actCindyVersion(action, id);
   });
   onQuit('cindy-make-tests', () => cindyMakeTestController.stopAllAndWait(), 'async');
@@ -7820,6 +7937,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-test',
     async (event, sessionId: unknown, completionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       return actCindyMakeTest(sessionId, completionId, action);
     },
   );
@@ -7837,6 +7955,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     refreshUpstreamMergeProjection();
     try {
       await restoreCindyMakeTaskState();
@@ -7857,6 +7976,7 @@ const registerIpcHandlers = () => {
     'app:manage-cindy-make-task',
     async (event, sessionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       await manageCindyMakeTask(sessionId, action).catch((error) => {
         if (error instanceof Error && error.message.startsWith('[')) throw error;
         throwIpcError('INTERNAL', 'cleanupFailed');
@@ -7865,11 +7985,13 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cancel-cindy-make-source', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return { success: cancelCindySourcePreparation() };
   });
 
   ipcMain.handle('app:open-cindy-make-source-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeSourceDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7879,6 +8001,7 @@ const registerIpcHandlers = () => {
   // 只认 runId 形状;路径全部由 main 从 userData 派生,renderer 只拿回结果。
   ipcMain.handle('app:start-cindy-make-task', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return startCindyMakeTask(input, event.sender.id).catch((error) => {
       if (error instanceof Error && error.message.startsWith('[')) throw error;
       throwIpcError('INTERNAL', 'Could not start Cindy Make preparation');
@@ -7886,12 +8009,14 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cancel-cindy-make-task', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     return { success: cindyMakeManager.cancel(runId, event.sender.id) === 'cancelled' };
   });
   ipcMain.handle('app:prepare-cindy-make-workspace', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     const userData = app.getPath('userData');
@@ -9701,8 +9826,9 @@ app.on('ready', async () => {
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
-  registerProviderGroupIpc();
+  registerProviderGroupIpc({ reshare: providerGroupReshare });
   registerProviderGroupRemoteHandler();
+  registerProviderGroupReshare();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,
@@ -9795,6 +9921,8 @@ app.on('ready', async () => {
 // Sync 阶段: 同步触发, 不等结果。只放真正同步的清理 (释放本地句柄 / 取消定时器)。
 //   - reap-claude-children: 必须在 shutdown-maker 之前同步完成；SDK abort 掐掉
 //     claude.exe 后 Windows 上子进程会被 reparent 到 System, PPID 链断了就无法安全识别。
+//   - reap-codex-tool-trees: 同理须先于 shutdown-maker；app-server EOF 退出后,
+//     exec_command 起的工具后代(如 xcodebuild → swift-frontend)会挂到 launchd 继续跑(#6024)。
 //   - authManager / google auth: 同步释放定时器+回调引用。
 //     注意 token.dispose() 只清内存状态, 不删盘上的 refresh token (那是 logout 干的)。
 // interrupted-turn-resume:退出编排一启动就冻结「turn 在飞」标记的写入 —— 否则
@@ -9820,6 +9948,13 @@ onQuit(
   'reap-claude-children',
   () => {
     reapClaudeOrphansSync();
+  },
+  'sync',
+);
+onQuit(
+  'reap-codex-tool-trees',
+  () => {
+    reapCodexToolTreesSync();
   },
   'sync',
 );

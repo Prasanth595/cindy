@@ -15,6 +15,7 @@ import { PROVIDER_RUNNING_TURNS_FIELD } from '@cindy/device-link';
 import {
   parseProviderGroupRemoteRequest,
   PROVIDER_GROUP_LOCAL_MEMBER_KEY,
+  providerGroupDeviceCount,
   providerGroupSummaryForWire,
   type ProviderGroupConfig,
   type ProviderGroupRemotePick,
@@ -89,6 +90,7 @@ export function decorateProviderListWithGroups(
 
 /**
  * 分享出去的供应商建了组时提供台数(provider-groups.md §8)，不返回组员名单；匿名状态由受邀者分配器按需提供。
+ * 台数按电脑算(2026-10-15)：同一台电脑上的几个账号算一台，与匿名状态的项数一致(sharedStatus.ts)。
  * 供应商不再允许被远程调用时分享本身就不可用，不报台数。
  */
 export function sharedProviderGroupSize(
@@ -96,7 +98,7 @@ export function sharedProviderGroupSize(
   providerId: string,
 ): number | null {
   if (!deps.isRemoteAllowed(providerId)) return null;
-  const count = deps.readGroup(providerId)?.members.length ?? 0;
+  const count = providerGroupDeviceCount(deps.readGroup(providerId)?.members ?? []);
   return count > 0 ? count : null;
 }
 

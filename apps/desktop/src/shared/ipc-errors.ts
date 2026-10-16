@@ -269,6 +269,10 @@ export type IpcErrorCode =
   | 'MARKET_CLONE_FAILED' // 克隆/拉取失败:网络、代理或远端其它错误
   | 'MARKET_REF_NOT_FOUND' // 指定的 Git 引用(分支/tag/commit)在远端不存在
   | 'MARKET_MANIFEST_MISSING' // 来源内找不到受支持的 marketplace.json
+  | 'PLUGIN_NAMESPACE_CLIENT_REQUIRED' // 企业插件需要支持 namespace 的客户端
+  | 'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE' // 暂时无法确认企业身份，可重试
+  | 'PLUGIN_NAMESPACE_CONFIG_REQUIRED' // 企业插件服务配置不可用
+  | 'PLUGIN_LIST_CHANGED' // 企业准入在翻页期间变化，需要从头重拉
   // 网关凭据自动下发(model-access)
   | 'MODEL_ACCESS_FAILED' // 拉取/轮换失败(网络或服务端错误),可重试
   | 'MODEL_ACCESS_DISABLED' // 服务端灰度未启用(503)——走手填兜底
@@ -478,6 +482,10 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'MARKET_CLONE_FAILED',
   'MARKET_REF_NOT_FOUND',
   'MARKET_MANIFEST_MISSING',
+  'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+  'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+  'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+  'PLUGIN_LIST_CHANGED',
   'MODEL_ACCESS_FAILED',
   'MODEL_ACCESS_DISABLED',
   'MODEL_ACCESS_UNSUPPORTED',

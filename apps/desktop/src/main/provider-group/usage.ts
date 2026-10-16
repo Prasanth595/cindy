@@ -60,7 +60,16 @@ export function providerGroupUsageState(raw: unknown, model: string | null | und
   const scopedUsage = current(scoped);
   const usagePercent = fiveHour !== null && sevenDay !== null && (!scoped || scopedUsage !== null)
     ? Math.max(fiveHour, sevenDay, scopedUsage ?? 0) : null;
-  return { limited: limit?.limited ?? false, resetAtMs: limit?.resetAtMs ?? null, usagePercent };
+  // Quota left in a window is lost when it resets; only a known future reset with quota left can be "expiring".
+  const unusedUntil = (w: ClaudeUsageWindow | null | undefined) =>
+    w?.resetsAt && w.resetsAt * 1000 > now && w.utilization < 100 ? w.resetsAt * 1000 : null;
+  return {
+    limited: limit?.limited ?? false,
+    resetAtMs: limit?.resetAtMs ?? null,
+    usagePercent,
+    weeklyResetAtMs: unusedUntil(snapshot?.sevenDay),
+    fiveHourResetAtMs: unusedUntil(snapshot?.fiveHour),
+  };
 }
 
 export interface ProviderGroupUsageReaderDeps {

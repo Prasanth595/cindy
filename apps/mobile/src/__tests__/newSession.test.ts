@@ -2053,9 +2053,18 @@ describe('new session composer surface', () => {
     const browseHiddenToggleStyleStart = newSource.indexOf('browseHiddenToggle: {');
     const browseHiddenToggleStyleEnd = newSource.indexOf('browseCheckbox: {', browseHiddenToggleStyleStart);
     const browseHiddenToggleStyle = newSource.slice(browseHiddenToggleStyleStart, browseHiddenToggleStyleEnd);
-    const createStart = newSource.indexOf('const create = useCallback(async () => {');
-    const createEnd = newSource.indexOf('return (', createStart);
+    const createStart = newSource.indexOf('const createMessageSession = useCallback(async () => {');
+    const createEnd = newSource.indexOf('const createGoalSession = useCallback', createStart);
+    expect(createStart).toBeGreaterThan(-1);
+    expect(createEnd).toBeGreaterThan(createStart);
     const createSource = newSource.slice(createStart, createEnd);
+    const dispatchStart = newSource.indexOf('const create = useCallback(async () => {', createEnd);
+    expect(dispatchStart).toBeGreaterThan(createEnd);
+    const dispatchEnd = newSource.indexOf('const goalDraftCommand', dispatchStart);
+    expect(dispatchEnd).toBeGreaterThan(dispatchStart);
+    const dispatchSource = newSource.slice(dispatchStart, dispatchEnd);
+    expect(dispatchSource).toContain("if (parsed?.name !== 'goal' || pendingGoalSkillRef.current === 'goal')");
+    expect(dispatchSource).toContain('await createMessageSession();');
 
     expect(newSource).toContain("MobileComposerInputRow,");
     expect(sessionSource).toContain("MobileComposerInputRow,");
@@ -2574,10 +2583,11 @@ describe('submit guard catalog wiring (source locks)', () => {
     expect(newSource.match(/parseAck: parseDiscardPrecreatedAck,/g) ?? []).toHaveLength(2);
     // 真局部 slice(独立 review round-22 Standards P1:全文件 indexOf 命中 create 首个
     // 检查,Goal 检查删掉也照样绿)
-    const createSlice = newSource.slice(
-      newSource.indexOf('const create = useCallback'),
-      newSource.indexOf('const createGoalSession = useCallback'),
-    );
+    const createStart = newSource.indexOf('const createMessageSession = useCallback');
+    const goalStart = newSource.indexOf('const createGoalSession = useCallback');
+    expect(createStart).toBeGreaterThan(-1);
+    expect(goalStart).toBeGreaterThan(createStart);
+    const createSlice = newSource.slice(createStart, goalStart);
     const goalSlice = newSource.slice(newSource.indexOf('const createGoalSession = useCallback'));
     // 入口设备检查先于加锁(round-20 Standards P1 busy 泄漏):goal 的 setGoalBusy(true)
     // 前必须有该 return(create() 的检查在 try 内,finally 兜底,不要求此序)。

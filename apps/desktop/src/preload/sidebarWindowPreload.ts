@@ -68,7 +68,7 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
   onPayload('fullscreen-change', cb);
@@ -226,6 +226,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     previewHtml: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:html-preview:open', params),
     chatFetch: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:fetch', params),
     chatDownload: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:download', params),
+    chatCancel: (requestId: string): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     chatStat: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:stat', params),
   },
   terminal: {
@@ -307,6 +308,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onChanged: (cb: (payload: unknown) => void): (() => void) => onPayload('ghosts:changed', cb),
     onRuntimeChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:runtime-changed', cb),
+    onLibraryReplaced: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload('ghosts:library-replaced', cb),
     onPreviewMedia: (cb: (payload: unknown) => void): (() => void) =>
       onPayload('ghosts:preview-media', cb),
     unreadSync: (): { entries: unknown[] } => {

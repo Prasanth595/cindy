@@ -155,7 +155,14 @@ describe('market Ghost session boundary', () => {
     expect(resolverBody.match(/availableGhosts\(\)/g)).toHaveLength(1);
     expect(resolverBody).toContain('resolvePluginInstanceQuery(availableGhosts(), id, namespace)');
     expect(resolverBody).not.toContain('findInstalledGhostByInstanceId');
-    expect(resolverBody).not.toContain('if (namespace === undefined)');
+    // The exact-key fast path fails closed at an account boundary and keeps the
+    // active-session availability filter that availableGhosts() applies.
+    const fastPathStart = resolverBody.indexOf('if (namespace === undefined) {');
+    expect(fastPathStart).toBeGreaterThanOrEqual(0);
+    const fastPath = resolverBody.slice(fastPathStart, resolverBody.indexOf('\n  }', fastPathStart));
+    expect(fastPath).toContain('if (isAppSessionBoundaryPending()) return null;');
+    expect(fastPath.indexOf('isAppSessionBoundaryPending()')).toBeLessThan(fastPath.indexOf('findInstalledInstance(id)'));
+    expect(fastPath).toContain('isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null');
     expect(source.match(/getGhost: findAvailableGhost/g)?.length ?? 0).toBe(0);
     expect(source.match(/getGhost: findGhostForInstanceId/g)?.length ?? 0).toBeGreaterThanOrEqual(12);
     expect(resolverBody).toContain(

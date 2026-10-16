@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "開啟任務",
+    "loading": "正在讀取任務…",
+    "failed": "未能讀取任務資訊",
+    "missing": "這台電腦沒有傳回該任務的資訊",
+    "timedOut": "讀取任務資訊逾時",
+    "retry": "重新讀取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "先前有自動執行失敗。",
     "precheck": "自動檢查暫時受阻。",
@@ -227,6 +236,7 @@
     "sessionNotSyncedRetry": "任務尚未同步完成，請稍後再試。",
     "savingPreviousQueueEdit": "正在儲存上一條排隊訊息的修改，完成後再編輯。",
     "attachmentsUploadingBeforeEdit": "還有附件正在上傳，等上傳完成後再編輯排隊訊息。",
+    "goalCommandAttachments": "請單獨傳送 /goal。草稿和附件已保留。",
     "goalAlreadyActive": "該任務已有進行中的目標，請先在此處理它。",
     "resetReconfirmTitle": "請重新確認",
     "resetOfferExpired": "重置憑證已過期，請確認重新整理後的配額資訊。",
@@ -287,6 +297,7 @@
     "shareMessage": "分享這條訊息"
   },
   "new": {
+    "goalCommandNeedsSession": "請進入既有任務清除目標。",
     "selectDevice": "選擇裝置",
     "workspaceDialogue": "對話",
     "workspaceProject": "專案",
@@ -491,6 +502,8 @@
     "deleteOne": "刪除本條訊息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可讀歷史建立新任務",
+    "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
     "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
     "replyFailed": "本次回覆未能完成。請查看錯誤詳情以瞭解原因。",
     "showErrorDetails": "查看錯誤詳情",

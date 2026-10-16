@@ -7,7 +7,7 @@
  * 再来的推送合并成一次补取。账号（data owner）切换时立即清空，旧账号的迟到响应
  * 一律丢弃（electron-security-and-process-boundaries §4–5：renderer 不持有真相）。
  */
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { seedBotGroupReadState } from './botReadState';
 
 import {
@@ -36,6 +36,8 @@ const EMPTY_SNAPSHOT: BotGroupListSnapshot = { groups: [], loaded: false };
 let snapshot: BotGroupListSnapshot = EMPTY_SNAPSHOT;
 let owner = getDataOwnerGeneration();
 let generation = 0;
+const personalList = new Map<string, { hidden: boolean; revision: number }>();
+const visibleGroups = (groups: readonly BotGroupSummary[]) => groups.filter(group => !personalList.get(group.id)?.hidden);
 let inFlight: Promise<void> | null = null;
 let refreshQueued = false;
 let syncUsers = 0;
@@ -63,6 +65,7 @@ function ensureOwner(): void {
   inFlight = null;
   refreshQueued = false;
   snapshot = EMPTY_SNAPSHOT;
+  personalList.clear();
 }
 
 function applySnapshot(next: BotGroupListSnapshot): void {
@@ -88,9 +91,9 @@ export function refreshBotGroups(): void {
       // Every change kind re-reads the list, including 'plan' (open-plan status in the row).
       const result = await api.listBotGroups();
       if (!isCurrent()) return;
-      if (result.ok) seedBotGroupReadState(result.groups);
+      if (result.ok) seedBotGroupReadState(visibleGroups(result.groups));
       // 失败时保留上一份列表：侧栏不因一次读失败把所有群清空。
-      applySnapshot(result.ok ? { groups: result.groups, loaded: true } : { ...snapshot, loaded: true });
+      applySnapshot(result.ok ? { groups: visibleGroups(result.groups), loaded: true } : { ...snapshot, loaded: true });
     } catch {
       if (isCurrent()) applySnapshot({ ...snapshot, loaded: true });
     }
@@ -115,8 +118,15 @@ export function startBotGroupSync(): () => void {
   if (syncUsers === 1) {
     const api = botGroupApi();
     if (api && typeof api.onBotGroupChanged === 'function') {
-      unsubscribePush = api.onBotGroupChanged((_payload, ownerStamp) => {
+      unsubscribePush = api.onBotGroupChanged((payload, ownerStamp) => {
         if (!isDataOwnerPushCurrent(ownerStamp)) return;
+        ensureOwner();
+        if (payload.change === 'list' && payload.listState && (personalList.get(payload.groupId)?.revision ?? 0) < payload.listState.revision) {
+          personalList.set(payload.groupId, payload.listState);
+          const groups = visibleGroups(snapshot.groups);
+          seedBotGroupReadState(groups);
+          applySnapshot({ ...snapshot, groups });
+        }
         refreshBotGroups();
       });
     }
@@ -143,6 +153,15 @@ export function subscribeBotGroups(listener: () => void): () => void {
 
 export function useBotGroupList(): BotGroupListSnapshot {
   return useSyncExternalStore(subscribeBotGroups, getBotGroupListSnapshot, getBotGroupListSnapshot);
+}
+
+/** One listed group, or null; a null id reads nothing and never re-renders on list refreshes. */
+export function useBotGroupSummary(groupId: string | null): BotGroupSummary | null {
+  const read = useCallback(
+    () => (groupId ? getBotGroupListSnapshot().groups.find((group) => group.id === groupId) ?? null : null),
+    [groupId],
+  );
+  return useSyncExternalStore(subscribeBotGroups, read, read);
 }
 
 const NOT_READY: BotGroupMutationResult = { ok: false, errorCode: 'HOST_NOT_READY', message: '' };

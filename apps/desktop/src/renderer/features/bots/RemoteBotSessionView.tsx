@@ -1,7 +1,7 @@
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { Button } from '@/components/ui/button';
 import { REMOTE_RESOURCE_GET_CHANNEL, type RemoteResourceGetRequest } from '@cindy/device-link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
@@ -11,6 +11,11 @@ import { Spinner } from '@/components/ui/spinner';
 import { BotAvatar } from './BotAvatar';
 import { parseRemoteBots, type RemoteBot } from './remoteBotRoster';
 import { markRemoteBotRead, useRemoteBots } from './useRemoteBots';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudCompanionAt } from './companionCloudPresentation';
+// Loaded only when a main computer is offline; keeps the live remote path light.
+const CloudCompanionOfflineView = lazy(() => import('./CloudCompanionOfflineView')
+  .then((module) => ({ default: module.CloudCompanionOfflineView })));
 
 /** The session id comes from the host's collection, never from an arbitrary URL. */
 export function RemoteBotSessionView() {
@@ -18,6 +23,8 @@ export function RemoteBotSessionView() {
   const { t } = useTranslation();
   const bots = useRemoteBots();
   const bot = bots.find((row) => row.id === botId && row.deviceId === deviceId);
+  const cloud = useCompanionCloud();
+  const cloudActor = cloudCompanionAt(cloud, deviceId, botId);
   const [ready, setReady] = useState<(RemoteBot & { sessionId: string }) | null>(null);
   const [validatedSessionId, setValidatedSessionId] = useState<string | null | undefined>(null);
   const [failed, setFailed] = useState(false);
@@ -87,6 +94,25 @@ export function RemoteBotSessionView() {
     }
   }, [bot, failed, ready, validatedSessionId]);
 
+  // Its main computer is offline (or never reachable here): read the cloud conversation
+  // and offer to continue on this computer instead of a stale read-only mirror.
+  if (cloudActor && deviceId && botId && cloudActor.homeDeviceId !== cloud.selfDeviceId
+    && (!bot || (!bot.online && bot.connectionKnown !== false))) {
+    return (
+      <Suspense fallback={<main className="flex h-full items-center justify-center bg-[var(--surface)]"><Spinner size={18} /></main>}>
+      <CloudCompanionOfflineView
+        key={`${deviceId}:${botId}`}
+        botId={botId}
+        deviceId={deviceId}
+        name={bot?.name || cloudActor.name}
+        avatar={bot?.avatar || cloudActor.avatar}
+        avatarColor={bot?.avatarColor}
+        deviceName={bot?.deviceName || cloudActor.homeDevice?.name || ''}
+        reachable={!bot && cloudActor.homeDevice?.online === true}
+      />
+      </Suspense>
+    );
+  }
   if (bot && !failed && ready?.sessionId && ready.id === botId && ready.deviceId === deviceId) {
     return (
       <CCAgentSessionView

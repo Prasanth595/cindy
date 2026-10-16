@@ -795,6 +795,20 @@ html:lang(ko) {
 .ProseMirror .ghost-cmd-pill + .ghost-cmd-pill::before {
   content: none;
 }
+/* 同名冲突的 `/slug`、`/@root` 限定符:字符留在 doc 里供发送期消歧,渲染层
+   收起;企业实例在同一颗胶囊尾部显示「团队共享」标签。 */
+.ProseMirror .ghost-cmd-qualifier {
+  display: none;
+}
+.ProseMirror .ghost-cmd-pill[data-ghost-cmd-origin]::after {
+  content: attr(data-ghost-cmd-origin);
+  margin-left: 6px;
+  color: var(--text-tertiary);
+}
+/* CJK 标点会把胶囊切成多段、每段都带来源属性:只在最后一段显示标签。 */
+.ProseMirror .ghost-cmd-pill[data-ghost-cmd-origin]:has(+ .ghost-cmd-pill)::after {
+  content: none;
+}
 
 /* F-FI-3: Scrollbar-hide utility for thumbnail strip */
 .scrollbar-hide {

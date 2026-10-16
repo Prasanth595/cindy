@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   refresh: vi.fn(),
   memories: [] as any[],
   skills: [] as any[],
+  working: null as any,
+  writeWorking: vi.fn(),
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => h.owner,
@@ -65,6 +67,14 @@ vi.mock('../botSkillStore.js', () => ({
 }));
 vi.mock('../botSkillService.js', () => ({ saveBotSkillForSession: h.saveSkill }));
 vi.mock('../botRuntimeEpochRefreshSignal.js', () => ({ requestBotRuntimeEpochRefresh: h.refresh }));
+vi.mock('../botWorkingMemory.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../botWorkingMemory.js')>();
+  return {
+    ...actual,
+    readBotWorkingMemory: async () => h.working,
+    writeBotWorkingMemory: h.writeWorking,
+  };
+});
 import { reviewTeammateLearning } from '../botLearningReview.js';
 const proposal = {
   type: 'feedback',
@@ -82,6 +92,8 @@ beforeEach(() => {
   h.meta = { turnCompleted: true };
   h.memories = [];
   h.skills = [];
+  h.working = null;
+  h.writeWorking.mockResolvedValue({ revision: 1 });
   h.write.mockResolvedValue({ ok: true });
   h.model.mockResolvedValue({
     ok: true,
@@ -187,4 +199,39 @@ it('updates an existing Skill using its snapshot version and ignores disabled Sk
   h.saveSkill.mockClear();
   await reviewTeammateLearning('session', 'reply2');
   expect(h.saveSkill).not.toHaveBeenCalled();
+});
+
+it('feeds the working memory to the review and writes an evidence-filtered ledger with CAS', async () => {
+  h.working = { version: 1, revision: 4, coveredThroughRowid: 1, updatedAt: 0, threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] };
+  h.model.mockResolvedValueOnce({
+    ok: true,
+    text: JSON.stringify({
+      memories: [],
+      skills: [],
+      working: {
+        commitments: [
+          { text: 'Lead every report with the conclusion', evidence: { messageId: 'user', quote: 'summarize the conclusion first' } },
+          { text: 'Invented promise', evidence: { messageId: 'user', quote: 'not in the conversation' } },
+        ],
+      },
+    }),
+  });
+  await reviewTeammateLearning('session', 'reply');
+  const input = JSON.parse(h.model.mock.calls[0]![1] as string);
+  expect(input.workingMemory).toEqual({ threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] });
+  expect(h.writeWorking).toHaveBeenCalledWith(
+    '/test-owner',
+    'bot',
+    expect.objectContaining({
+      coveredThroughRowid: 5,
+      commitments: [expect.objectContaining({ text: 'Lead every report with the conclusion', messageId: 'user' })],
+    }),
+    4,
+  );
+  // 没有 working 字段的旧格式输出:账本不动。
+  h.meta = { turnCompleted: true };
+  h.writeWorking.mockClear();
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [] }) });
+  await reviewTeammateLearning('session', 'reply2');
+  expect(h.writeWorking).not.toHaveBeenCalled();
 });

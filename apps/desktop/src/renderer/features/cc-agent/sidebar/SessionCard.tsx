@@ -112,12 +112,13 @@ const CARD_TITLE_META_SLOT_CLASS =
  */
 function getNeutralAwaitingKind(
   sessionId: string,
-): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | '' {
+): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | 'input_handoff' | '' {
   const info = makerChatStore.getRunningSnapshot().get(sessionId);
   if (info?.hasPendingPermission) return 'permission';
   if (info?.hasPendingPlanReview) return 'plan_review';
   if (info?.hasPendingAskUser) return 'ask_user';
   if (info?.hasPendingPluginSetup) return 'plugin_setup';
+  if (info?.hasPendingInputHandoff) return 'input_handoff';
   return '';
 }
 
@@ -257,7 +258,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
           ? t('ccAgent.sidebar.card.awaitingPlan')
           : awaitingKind === 'plugin_setup'
             ? t('ccAgent.sidebar.card.awaitingPluginSetup')
-            : t('ccAgent.sidebar.card.awaitingQuestion');
+            : awaitingKind === 'input_handoff'
+              ? t('ccAgent.sidebar.card.awaitingInputHandoff')
+              : t('ccAgent.sidebar.card.awaitingQuestion');
   const runningDetail =
     islandActivity?.phase === 'running' && islandActivity.compactDetail
       ? islandActivity.compactDetail

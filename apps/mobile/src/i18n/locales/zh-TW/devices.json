@@ -893,5 +893,22 @@
     "continue": "繼續",
     "addTime": "新增時間",
     "dateOnly": "僅日期"
+  },
+  "cloudCompanion": {
+    "homeOffline": "主力電腦「{{device}}」離線",
+    "switchAction": "換一台電腦繼續",
+    "composerHint": "主力電腦離線，換一台電腦後繼續",
+    "readOnlyNote": "這裡是雲端儲存的對話，只能檢視。",
+    "empty": "還沒有雲端對話。",
+    "loadFailed": "暫時無法讀取雲端對話。",
+    "loadOlder": "載入更早的訊息",
+    "noTargets": "沒有其他可用的電腦。在另一台電腦上開啟 Cindy、登入同一帳號，並開啟「允許同帳號裝置控制本機」後再試。",
+    "devicesFailed": "暫時無法讀取你的電腦清單，請稍後再試。",
+    "preparing": "正在「{{device}}」上準備…",
+    "preparingHint": "那台電腦會依雲端資料接手夥伴，準備好後自動開啟。",
+    "timeout": "「{{device}}」還沒準備好。請確認那台電腦上的 Cindy 已開啟並連上網路，再試一次。",
+    "conflict": "{{name}} 已經換到「{{device}}」繼續了。",
+    "switchFailed": "暫時無法更換主力電腦，請稍後再試。",
+    "unknownDevice": "另一台電腦"
   }
 }

@@ -447,7 +447,26 @@ describe('mobileSessionMessageCache', () => {
     await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
   });
 
-  it('removeMessages on a schedule task clears cache instead of persisting the remaining body', async () => {
+  it('removeMessages on an unopened schedule task clears cache instead of persisting the remaining body', async () => {
+    const { cacheSessionMessages, getCachedSessionMessages } =
+      await import('@/session/mobileSessionMessageCache');
+    const { remoteSessionStore } = await import('@/session/remoteSessionStore');
+    remoteSessionStore.clear();
+    remoteSessionStore.setDeviceSessions('host-a', 'Mac', [
+      makeSession('session-1', { source: 'scheduler' }),
+    ]);
+    const rows = [
+      makeMessage({ id: 'a', clientId: 'a', createdAt: isoAt(1) }),
+      makeMessage({ id: 'b', clientId: 'b', createdAt: isoAt(2) }),
+    ];
+    await cacheSessionMessages('host-a', 'session-1', rows);
+
+    remoteSessionStore.removeMessages('session-1', ['a'], 'host-a');
+
+    await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
+  });
+
+  it('removeMessages on an opened schedule task persists the remaining body like a regular task', async () => {
     const { cacheSessionMessages, getCachedSessionMessages } =
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
@@ -465,7 +484,9 @@ describe('mobileSessionMessageCache', () => {
 
     remoteSessionStore.removeMessages('session-1', ['a'], 'host-a');
 
-    await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
+    await vi.waitFor(async () => {
+      expect((await getCachedSessionMessages('host-a', 'session-1')).map((row) => row.id)).toEqual(['b']);
+    });
     expect(remoteSessionStore.getMessages('session-1').map((row) => row.id)).toEqual(['b']);
   });
 

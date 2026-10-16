@@ -353,6 +353,8 @@ export class ClipboardSync {
         skippableContent(error)
       ) {
         this.check();
+        const bothChanged =
+          local !== this.baseline.local && remote !== this.baseline.remote;
         Object.assign(this.baseline, {
           local,
           remote,
@@ -368,6 +370,10 @@ export class ClipboardSync {
               : readRemoteDigest,
         });
         this.deps.trace?.("content-skipped");
+        // Both peers changed and one of them is unreadable: as with any
+        // simultaneous change, both copies are kept, but the user is told so
+        // instead of the readable copy silently never arriving.
+        if (bothChanged) throw new Error("CLIPBOARD_CONFLICT");
         return;
       }
       throw error;

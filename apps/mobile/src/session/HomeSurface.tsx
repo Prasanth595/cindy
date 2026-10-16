@@ -9,7 +9,6 @@ import { useRetainedHomeState, getHomeViewSession } from './homeViewSession';
 import { rememberRecentTask } from './recentTasks';
 import { homeListStyles, SESSION_ROW_LONG_PRESS_MS, SessionStatusMark, SessionStatusPulse } from '@/session/HomeListVisuals';
 import { useOptionalHeaderHeight } from '@/session/useOptionalHeaderHeight';
-import { SessionHeaderNativeBlur } from "@/session/SessionHeaderNativeControls";
 import { rememberComposerEntry } from './composerMorph';
 import type { ComposerMorphOrigin } from './composerGeometry';
 import { RemoteTaskSuggestions } from '@/session/RemoteTaskSuggestions';
@@ -3114,7 +3113,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       style={[styles.safeArea, { paddingLeft: embedded ? 0 : edgePadding.paddingLeft, paddingRight: embedded ? 0 : edgePadding.paddingRight }]}
       testID="devices.screen"
     >
-      {nativeHomeHeader ? <SessionHeaderNativeBlur height={nativeHeaderHeight} /> : null}
       {nativeHomeHeader && active ? (
         <HomeNativeStackHeader
           keepMenuTopLeft={keepMenuTopLeft}

@@ -81,6 +81,38 @@ pnpm --filter mobile test:smoke
 
 ## 专项入口
 
+### 任务入口与创建失败恢复
+
+- 来源未确认时不挂载远端任务内容，但必须显示读取状态和返回入口；读取失败、空记录或
+  超时允许手动重读当前任务，不重置共享设备连接。账号或设备切换后忽略旧读取结果。
+- 本地创建进行中或失败时，来源门禁显示创建进度或失败原因；失败时直接提供重试和返回编辑，
+  不依赖尚不存在的远端任务记录。返回编辑复用 worktree 补偿和持久草稿恢复流程；
+  回收或保存失败保留原任务与草稿。回收开始后离页仍完成同账号的草稿恢复，
+  仅取消跳转；账号切换后停止旧账号操作，并移除旧代次的内存创建记录及同步阻挡，
+  避免切回原账号后阻塞发件箱恢复；保留持久发件箱草稿，不执行远端删除。
+  同一账号代次内，非持久化草稿留在对应失败任务中，
+  只有带匹配任务与设备标识、同账号代次的新建表单可领取；领取后才清理原任务。
+  领取前保留返回编辑入口，禁止重试已回收的创建；不写全局单槽，不混入普通新建表单。
+  持久发件箱保存完成后同样保留失败任务与恢复入口，直到匹配账号、设备和任务的新建
+  表单实际恢复内容才清理任务；离页重进不重复回收或保存，也不解除暂停自动发送。
+  返回编辑意图写入持久发件箱；应用重启后按该标记或已确认回收的记录重建本地恢复入口，
+  不启动创建管线。表单领取只在表单存续期间抑制重复入口；未提交就离开时释放领取，
+  恢复仍待编辑的记录入口，重启也可找回。认领按持久存储身份跟随草稿更新与取消后的任务 ID
+  轮换；重新提交保留恢复标记及发送暂停，直到后台创建管线接管。未交接就失败或离页时，恢复
+  最新文字与附件，不复活旧记录。提交仍在进行时保持互斥；合成恢复入口不阻塞 worktree
+  账本对账。已交接、移除或换账号的记录不由旧表单恢复。
+  worktree 回收成功确认一到达即禁止重试原创建；后续持久保存失败时保留返回编辑，
+  再次操作只补做保存与恢复账本收尾，不重复回收或重用已删除目录。
+  远端回收前必须先持久暂停匹配发件箱记录；写入失败不发回收请求。回收中切换账号
+  仍保留该暂停和恢复账本，切回后先对账，不自动向可能已删除的目录投递。
+  已确认来源的任务在重连时保持内容挂载。
+- 返回编辑的忙碌状态由创建任务持有，覆盖回收与持久保存；离页重进仍禁止并发重试或
+  重复返回编辑，失败后释放。页面入口统一释放创建管线预订阅的任务 topic；恢复页切到
+  正常内容时保留订阅，最终离页时清理。
+
+实现与回归：`CindyMakeSessionGate.tsx`、`SessionEntryRecovery.tsx`、
+`returnNewSessionToEdit.ts`、`cindyMakeSessionGate.test.tsx` 与 `newSessionCreation.test.ts`。
+
 ### 消息缓存与首页偏好
 
 - iOS、Android 的最近消息窗口统一写入私有 `cache/session-messages-v1/` 文件，
@@ -101,6 +133,12 @@ pnpm --filter mobile test:smoke
   显示交接继续轮询或保留原始消息窗口；重新进入后沿用现有调度完成交接。旧电脑使用原始
   消息窗口缓存；消息已经早于最近缓存窗口时正常交接，不在末尾留下旧的待发送气泡。
   实现与回归见 `outboxHistoryCache.ts`、`outboxHistoryCache.test.ts`、`durableOutbox.test.ts`。
+- 首页预读最新历史页时，复用聊天页的连续边界判据，保留能够衔接的已读历史及其分页游标，
+  不能直接把多页缓存缩成最新一页。已读工作详情只按内容版本是否有效保留，收起不等于
+  删除缓存；离线重开仍可读取。无法证明连续、主机返回完整历史或明确回退时沿用原替换语义。
+  后台预读写入前按平台现有容量检查：超限先省略收起详情，再退回最新页，必要时省略展开详情；
+  退回最新页时同时恢复该页的分页游标。最新页本身仍超限则保留旧缓存，不标记预读成功。
+  实现见共享 `historyViewPrefetch.ts`，回归见 `remoteHistoryPrefetch.test.ts`。
 - 删除逐项尝试旧条目和文件，不依赖新增文件写入；任一后端失败不阻止另一后端清理，
   单个文件失败也不阻止后续文件删除，全部尝试结束后统一报告失败。清理报错时可能仍有
   无法删除的残留，不能视为清理成功。新登录或切换账号必须在持久化
@@ -166,6 +204,31 @@ pnpm --filter mobile test:smoke
 实现：`src/session/incomingShareNative.ts`、`incomingShare.ts`、`incomingShareCleanup.ts`
 与 `IncomingShareBridge.tsx`。回归：`src/__tests__/incomingShare*.test.ts` 和
 `nativeIntent.test.ts`。上述 TS 层修复不修改原生配置或模块，不需要为此改变 runtime fingerprint。
+
+## Android release 代码优化
+
+所有地区共用 `app.json` 的 `expo-build-properties.android` 配置，在 release 构建中开启
+R8 代码混淆／裁剪与资源裁剪。`plugins/with-android-release-optimization.js` 在每次
+prebuild 时将 Expo 模板默认的 `proguard-android.txt` 换成
+`proguard-android-optimize.txt`，避免默认规则中的 `-dontoptimize` 禁用代码优化。
+不要手改生成的 `android/` 工程；clean prebuild 会覆盖它。应用和依赖 SDK 的必要 keep
+规则继续生效，遇到反射／JNI 兼容问题时只补充实际需要保留的入口，不整体关闭 R8。
+
+这些原生配置参与 runtime fingerprint，首次启用须按下文冷更边界处理，并使用 release
+原生包回归启动、登录、通知和原生模块调用。
+
+SDK 规则随依赖一起进入应用的最终 R8 配置，不在应用侧重复保留全部依赖：
+
+| Android SDK / 桥接 | 保留规则来源与边界 |
+| --- | --- |
+| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。 |
+| Expo 原生模块 | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。 |
+| 微信 OpenSDK 6.8.38 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。 |
+| TapSDK 4.10.5 | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。 |
+| Nimbus JOSE JWT 10.9.1 | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
+
+升级 SDK 时核对其 AAR/JAR 的 consumer rules、应用的最终 `configuration.txt` 和 release
+运行结果。共享的 Expo 配置也可能改变 iOS 指纹，冷更范围以指纹比对为准。
 
 ## 原生配置与 runtime fingerprint(冷更边界)
 
@@ -238,8 +301,16 @@ Mobile 用 `runtimeVersion.policy: "fingerprint"`:OTA 热更只在**指纹一致
 启动检查、设置页与强制更新屏共用 `src/update/useBundleUpdatePrompt.ts` 的安装出口。
 Android 8 及以上的新原生包优先应用内下载 HTTPS APK；Android 7、旧包缺少
 `CindyAppInstaller`，或安装地址是网页时，继续使用浏览器。权限由自建构建的
-`app.config.js` 声明；同流程生成的官网 APK 和 Google Play AAB 当前共享这一原生配置，
-EAS 商店构建不声明。
+`app.config.js` 声明；Global 在同一次 Expo prebuild 后配置 `website` / `play` 变体：
+官网 APK 保留 `REQUEST_INSTALL_PACKAGES`，Play AAB 通过 Manifest overlay 移除该权限。
+变体只修改生成的 Android 工程，不修改 Expo 配置或 fingerprint 输入；EAS 商店构建不声明
+该权限。
+
+`scripts/build-android.mjs --region global --execute` 在输出产物前自动读取官网 APK 的
+权限和 Play AAB 内嵌的最终 Manifest，分别要求有／无安装权限，并回读两份产物的
+runtimeVersion 要求一致；读取失败或不满足条件即停止构建交付。此校验随每次实际构建执行，
+覆盖最终 Manifest 合并结果。`androidLocal.test.ts` 只验证变体 patch 和权限断言，不能替代
+Expo prebuild + Gradle 的实包验证；验证构建链时需保留上述实际产物校验结果。
 
 Global 自建 APK 与 Google Play AAB 共用自建 OTA 配置和原生构建流程，不能仅凭
 `IS_OTA_SELFHOST` 判断整包更新渠道。Android 原生安装桥读取系统记录的 installer：

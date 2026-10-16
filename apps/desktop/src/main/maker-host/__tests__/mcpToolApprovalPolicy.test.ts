@@ -434,3 +434,54 @@ describe('teammate pre-run command approval', () => {
     expect(policy({ name: 'routine_list', args: {} })).toBe('auto-approve');
   });
 });
+
+describe('cross-device actions use the task permission mode', () => {
+  const scheduler = (name: string, args: Record<string, unknown>, toolName: string | undefined = 'call_tool') =>
+    getDesktopMcpToolApprovalPolicy({
+      serverName: 'cindy_scheduler',
+      ...(toolName ? { toolName } : {}),
+      toolParams: { name, args },
+    });
+
+  it.each(['schedule_update', 'schedule_pause', 'schedule_resume', 'schedule_delete', 'schedule_run_now'])(
+    'reviews %s on another computer and keeps the local call quiet',
+    (name) => {
+      expect(scheduler(name, { id: 's1', device: 'mbp' })).toBe('prompt-each-time');
+      // Codex 省略外层工具名、参数被序列化成字符串时判定不变。
+      expect(scheduler(name, { id: 's1', device: 'mbp' }, undefined)).toBe('prompt-each-time');
+      expect(
+        getDesktopMcpToolApprovalPolicy({
+          serverName: 'cindy_scheduler',
+          toolName: 'call_tool',
+          toolParams: JSON.stringify({ name, args: JSON.stringify({ id: 's1', device: 'mbp' }) }),
+        }),
+      ).toBe('prompt-each-time');
+      // 写工具不接受 all；形状异常的 device 也不静默放行。
+      expect(scheduler(name, { id: 's1', device: 'all' })).toBe('prompt-each-time');
+      expect(scheduler(name, { id: 's1', device: 42 })).toBe('prompt-each-time');
+      expect(scheduler(name, { id: 's1' })).toBe('auto-approve');
+      expect(scheduler(name, { id: 's1', device: 'local' })).toBe('auto-approve');
+    },
+  );
+
+  it('keeps cross-device reads and local creation quiet', () => {
+    expect(scheduler('schedule_list', { device: 'all' })).toBe('auto-approve');
+    expect(scheduler('schedule_get', { id: 's1', device: 'mbp' })).toBe('auto-approve');
+    expect(scheduler('schedule_list_runs', { scheduleId: 's1', device: 'mbp' })).toBe('auto-approve');
+    expect(scheduler('schedule_create', { name: 'n' })).toBe('auto-approve');
+  });
+
+  it('reviews a message to a task on another computer, not a local one', () => {
+    const helper = (target: unknown, toolName: string | undefined = 'call_tool') =>
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy_helper',
+        ...(toolName ? { toolName } : {}),
+        toolParams: { name: 'send_to_session', args: { target_session_id: target, message: 'hi' } },
+      });
+    expect(helper('mbp::sess-9')).toBe('prompt-each-time');
+    expect(helper('mbp::sess-9', undefined)).toBe('prompt-each-time');
+    expect(helper('sess-9')).toBe('auto-approve');
+    expect(helper('local::sess-9')).toBe('auto-approve');
+    expect(helper(undefined)).toBe('auto-approve');
+  });
+});

@@ -64,7 +64,10 @@ import {
   ipcMain,
   nativeImage,
   safeStorage,
+  session as electronSession,
   shell,
+  webContents as electronWebContents,
+  type Session,
   type WebContents,
 } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
@@ -343,7 +346,6 @@ import { submitAndAwaitVideo } from '../cindy-proxy-media/video/run.js';
 
 import {
   deriveCindyMediaConfig,
-  filterLegacyCindyMediaConfig,
   selectExecutableCoreMediaModels,
   type CindyCapabilityKind,
   type CindyMediaCatalogConfig,
@@ -436,6 +438,15 @@ import { LibraryVault, statfsFreeBytes, DEFAULT_LIBRARY_LIMITS } from './library
 import { LibraryStagingStore, relocateLibraryStagingOwner } from './libraryStaging.js';
 import { LibrarySqlService, defaultLibraryDbWorkerPath } from './librarySqlService.js';
 import { trashGhostLibrary } from './libraryTrash.js';
+import {
+  finishLegacyLibraryReattach,
+  LibrarySwapNeedsRestartError,
+  readLegacyLibraryReattachJournal,
+  relocateOrAdoptLibraryMeta,
+  startLegacyLibraryReattach,
+  withPluginHeldForLibrarySwap,
+  type LegacyLibraryReattachDeps,
+} from './libraryLegacyReattach.js';
 import { migrateGhostLibrary } from './libraryMigrate.js';
 import { setGhostLibraryFileResolver } from './runtime/electronSandboxAdapter.js';
 import {
@@ -521,23 +532,10 @@ import {
   formatAuxiliaryModelRefLabel,
   getEffectiveAuxiliaryModelChain,
 } from '../utility-model/resolveAuxiliaryModelChain.js';
-import { utilityModelPinOptions } from '../../shared/utilityModelProfiles.js';
 import { isKnownEmbeddingModel } from '@cindy/embedding-client';
-import {
-  buildTextOneshotPinOptions,
-  encodeCatalogPin,
-  resolveOneshotCatalogModel,
-} from '../utility-model/textOneshotPinOptions.js';
+import { resolveOneshotCatalogModel } from '../utility-model/textOneshotPinOptions.js';
 import { hasOneshotProviderCredential } from '../utility-model/oneshotProviderUsability.js';
-import {
-  CINDY_CAPABILITY_KEYS,
-  readGhostCindyOverrides,
-  readGhostCindyInflightLimit,
-  writeGhostCindyOverride,
-  relocateGhostCindyPrefs,
-  type CindyCapabilityKey,
-} from './cindyPrefsStore.js';
-import { isCindyOverrideModelAllowed } from './cindyOverrideWhitelist.js';
+import { readGhostCindyInflightLimit, relocateGhostCindyPrefs } from './cindyPrefsStore.js';
 import { createGhostComposerListHandler } from './ghostComposerIpc.js';
 import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
@@ -1119,6 +1117,14 @@ function findAvailableGhost(id: string, namespace?: string | null): InstalledGho
 }
 
 export function findGhostForInstanceId(id: string, namespace?: string | null): InstalledGhost | null {
+  // Plugin requests recheck their target many times per call. An exact
+  // instance key reads only that instance so each check does not rescan every
+  // install; anything else still resolves against the full list.
+  if (namespace === undefined) {
+    if (isAppSessionBoundaryPending()) return null;
+    const ghost = getGhostManager().findInstalledInstance(id);
+    if (ghost) return isGhostAvailableForActiveSession(ghost.manifest.id) ? ghost : null;
+  }
   const resolved = resolvePluginInstanceQuery(availableGhosts(), id, namespace);
   return resolved.status === 'unique' ? resolved.ghost : null;
 }
@@ -1232,10 +1238,11 @@ export async function suspendAllGhosts(): Promise<void> {
   resetNodeRuntimeBrokerForAccountBoundary();
   brainRootCache = null;
   const roots = listGhostOwnerProjectionRoots();
-  // Legacy links live in the shared home roots; serialize with other Cindy processes.
-  const skillCleanup = await withSharedSkillRootsLock(() =>
-    removeGhostSkillLinksForRoots(roots, undefined,
-      roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills'))));
+  // Private revocation is protected by this instance's owner boundary. Only
+  // an actual legacy shared-link removal needs the machine-wide writer lock.
+  const skillCleanup = await removeGhostSkillLinksForRoots(roots, undefined,
+    roots.map((root) => path.join(ghostSkillPluginRoot(root), 'skills')),
+    withSharedSkillRootsLock);
   for (const warning of skillCleanup.warnings) {
     log.warn('ghost owner skill cleanup warning', { warning });
   }
@@ -1857,6 +1864,8 @@ export function getGhostManager(): GhostManager {
       },
       readUnconfirmedConfirmationEvidence: (record) =>
         getNamespaceMigrationHost().readUnconfirmedConfirmationEvidence(record),
+      canReclaimLegacyBareInstance: (input) =>
+        getNamespaceMigrationHost().canReclaimLegacyBareInstance(input),
       isNamespaceMigrationBusy: (ghostId) => getNamespaceMigrationHost().isNamespaceMigrationBusy(ghostId),
       marketIdentityForInstance: (instance) => {
         try {
@@ -1965,6 +1974,9 @@ export function getGhostRuntime(): GhostRuntime {
     runtimeSingleton = new GhostRuntime({
       adapter: electronSandboxAdapter,
       log,
+      startBlockedReason: (id) => libraryRestartRequiredReason(
+        isValidPluginInstallRelId(id) ? pluginInstallStoragePart(id) : id,
+      ),
       // 熔断不再自动转沉睡(Lizi 2026-07-09 定案):面板原地显示错误状态,
       // 关闭(沉睡)/ 重载都由用户在面板上决定,主机只记日志。
       onFused: (id) => log.warn('ghost fused after repeated crashes', { id }),
@@ -2152,6 +2164,7 @@ export function getGhostNodeRuntimeBroker(): GhostNodeRuntimeBroker {
   if (!nodeRuntimeBrokerSingleton) {
     nodeRuntimeBrokerSingleton = new GhostNodeRuntimeBroker({
       getGhost: findGhostForInstanceId,
+      startBlockedReason: libraryRestartRequiredReason,
       getCallSignal: (ghostId, callId) =>
         getGhostPipeDispatcher().getPendingCallSignal(ghostId, callId),
       getCallSessionId: (ghostId, callId) =>
@@ -4216,36 +4229,6 @@ function getGhostMediaPreferenceConfig(
   };
 }
 
-/** 存量钉定已失效或旧插件无法表达时，一次性升级为当前可用选型。 */
-function resolveAndMigrateGhostMediaPreference(
-  ghostId: string,
-  capability: GhostMediaCapability,
-  config: CindyMediaPreferenceConfig,
-  preference: string | undefined,
-): CindyMediaPreferenceModel | null {
-  const selected = resolveMediaPreferenceOrDefault(config, preference);
-  if (preference && selected && preference !== selected.id) {
-    try {
-      writeGhostCindyOverride(ghostId, capability, selected.id);
-      log.info('migrating stale ghost media preference to available model', {
-        ghostId,
-        capability,
-        previousPreference: preference,
-        nextPreference: selected.id,
-      });
-    } catch (error) {
-      log.warn('persisting migrated ghost media preference failed; using runtime fallback', {
-        ghostId,
-        capability,
-        previousPreference: preference,
-        fallbackPreference: selected.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return selected;
-}
-
 /**
  * 插件配置页的模型目录；这里只读目录，不提供任何生成入口。Host 只按 Gateway mode
  * 切图片/视频大类并透传 modalities，具体动作支持度由插件自行解释。
@@ -4343,9 +4326,9 @@ async function getGhostConfigurableMediaModels(
 }
 
 /**
- * 读取插件在 Host「Cindy 能力」中的现有媒体选型。
- * 已配置模型失效，或旧插件无法表达完整来源时，回落到当前第一个
- * 可用模型，并一次性迁移存量配置，保证页面展示与实际执行一致。
+ * 读取插件当前会用到的媒体选型。插件没有逐项媒体覆盖(2026-10 起详情页只有
+ * 一个「模型」字段,只管快问快答与新建任务),这里始终返回系统默认选型;
+ * 旧插件无法表达完整来源时同样按兼容规则收敛到一个可用来源。
  */
 function getGhostConfiguredMediaModel(
   ghostId: string,
@@ -4373,13 +4356,7 @@ function getGhostConfiguredMediaModel(
   }
 
   const config = getGhostMediaPreferenceConfig(ghostId, mediaCapability);
-  const override = readGhostCindyOverrides(ghostId)[mediaCapability];
-  const selected = resolveAndMigrateGhostMediaPreference(
-    ghostId,
-    mediaCapability,
-    config,
-    override,
-  );
+  const selected = resolveMediaPreferenceOrDefault(config, undefined);
   if (!selected) {
     return {
       ok: false,
@@ -4965,6 +4942,39 @@ configureProviderMediaRuntime({
 });
 
 /**
+ * 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore)→ 快问快答的
+ * 供应商×agent×模型。每单现读;未选 = null = 跟随身份卡声明/系统辅助模型链。
+ */
+function getPluginOneshotModelSelection(
+  ghostId: string,
+): { providerId?: string; agentKind: AgentKind; model: string } | null {
+  const config = readPluginTaskConfig(ghostId);
+  if (!config.model) return null;
+  if (!config.agentKind || config.agentKind === 'pi') {
+    // 两种情况按目录解析一条快问快答可路由的 供应商×agent×模型:
+    // - 手改文件只写了 model;
+    // - 用户给插件选的是 Pi 路线(快问快答只有 codex / claude-code 通道):同一
+    //   供应商×模型换成可用通道执行。
+    // 用户显式选了供应商时钉死该供应商:解析结果落到别家(该供应商不可用/无通道)
+    // 一律不采用,绝不换另一家同名模型执行计费。解析不到或不一致都按用户显式选择
+    // 原样返回(执行侧推断不出即如实失败),不悄悄换回系统链。
+    const resolved = resolveOneshotCatalogModel(
+      getActiveCatalog(),
+      readModelDisableOverrides(),
+      config.model,
+      config.providerId ? [config.providerId, ...readProviderOrder()] : readProviderOrder(),
+      hasOneshotProviderCredential,
+    );
+    if (resolved && (!config.providerId || resolved.providerId === config.providerId)) return resolved;
+  }
+  return {
+    agentKind: config.agentKind === 'cc' ? 'claude-code' : (config.agentKind ?? 'codex'),
+    model: config.model,
+    ...(config.providerId ? { providerId: config.providerId } : {}),
+  };
+}
+
+/**
  * Plugin media and storage use the same process-local AppSession owner
  * boundary as the rest of the owner-scoped runtime.
  */
@@ -5045,38 +5055,9 @@ export function getGhostCindySlot(): GhostCindySlot {
       // 画面参数按型号二次校验的数据源(registry capabilities)。
       imageCapabilities: getGhostImageCapabilities,
       videoCapabilities: getGhostVideoCapabilities,
-      getMediaOverride: (ghostId, capability) => {
-        const value = readGhostCindyOverrides(ghostId)[capability as CindyCapabilityKey] ?? null;
-        if (!value) return null;
-        const mediaCapability = capability as GhostMediaCapability;
-        const config = getGhostMediaPreferenceConfig(ghostId, mediaCapability);
-        const videoRegistry = capability.startsWith('video.') ? getVideoProviderRegistry() : null;
-        // Core 专用选型不能交给旧执行器。复用存量配置迁移，确保回退后
-        // 用户保存的 provider + modelId 与实际执行一致，不影响 Core 清单。
-        const executableConfig = filterLegacyCindyMediaConfig(
-          config,
-          (model) => capability.startsWith('video.')
-            ? videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false
-            : getImageChannelRegistry().isProviderLegacyReady(model.providerId, model.modelId),
-        );
-        const selected = resolveAndMigrateGhostMediaPreference(
-          ghostId,
-          mediaCapability,
-          executableConfig,
-          value,
-        );
-        return selected
-          ? {
-              providerId: selected.providerId,
-              modelId: selected.modelId,
-              label: selected.label,
-            }
-          : null;
-      },
-      getOverride: (ghostId, capability) => {
-        const value = readGhostCindyOverrides(ghostId)[capability as CindyCapabilityKey] ?? null;
-        return value && !decodeMediaPreference(value) ? value : null;
-      },
+      // 插件详情「模型」字段(与插件新建任务共用 pluginTaskPrefsStore);每单现读,
+      // 未选 = null = 跟随身份卡声明/系统辅助模型链,辅助模型改动后自动跟随。
+      getOneshotModelSelection: getPluginOneshotModelSelection,
       getImageConfig: getCatalogImageConfig,
       getVideoConfig: getCatalogVideoConfig,
       getEmbedConfig: getCatalogEmbedConfig,
@@ -5146,11 +5127,14 @@ export function getGhostCindySlot(): GhostCindySlot {
         const r = await requestUtilityText(getMaker(), prompt, {
           maxTokens,
           timeoutMs,
-          // 路由两形态:轻量档位键走链档钉(不认的值下游忽略回默认链);
-          // 目录钉走显式供应商路径(钉死,不回落)。
-          ...(route?.kind === 'utility-profile' ? { pinnedProfileId: route.profileId } : {}),
-          ...(route?.kind === 'catalog'
-            ? { providerId: route.providerId, agentKind: route.agentKind, model: route.model }
+          // 用户选的模型 / 身份卡声明走显式供应商路径(钉死,不回落);
+          // 缺省 route = 系统辅助模型链。
+          ...(route
+            ? {
+                ...(route.providerId ? { providerId: route.providerId } : {}),
+                agentKind: route.agentKind,
+                model: route.model,
+              }
             : {}),
         });
         if (r.ok) {
@@ -5942,6 +5926,7 @@ export function getGhostLibrarySlot(): GhostLibrarySlot {
     });
     librarySlotSingleton = new GhostLibrarySlot({
       getGhost: findGhostForInstanceId,
+      prepareRequest: finishPendingLegacyLibraryReattach,
       bindingStore,
       getDefaultRoot: (ghostId) => ownerScopedUserDataPath('libraries', ghostId),
       getStagingRoot: (ghostId) => ownerScopedUserDataPath('library-staging', ghostId),
@@ -6155,8 +6140,13 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
       softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
       softLimitExceeded: false,
       orphaned: false,
+      legacyLibrary: null,
+      legacyLibraryInUse: false,
     };
   }
+  await finishPendingLegacyLibraryReattach()?.catch((error: unknown) => {
+    log.warn('library reattach recovery failed', { error: error instanceof Error ? error.message : String(error) });
+  });
   const store = getGhostLibraryBindingStore();
   const binding = await store.getBinding(storagePart);
   const resolution = await store.resolveLibraryRoot(storagePart);
@@ -6218,7 +6208,336 @@ export async function getGhostLibraryOverview(ghostId: string): Promise<GhostLib
     softLimitBytes: DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     softLimitExceeded: usedBytes > DEFAULT_LIBRARY_LIMITS.softLimitBytes,
     orphaned,
+    ...(supported && ghost
+      ? await findLegacyLibraryUsage(ghost)
+      : { legacyLibrary: null, legacyLibraryInUse: false }),
   };
+}
+
+interface LegacyLibraryCandidate {
+  kind: 'candidate';
+  fromId: string;
+  toId: string;
+  oldLocation: 'default' | 'custom';
+  /** uninstalled = 宿主卸载时留下的库；unknown = 没有宿主身份文件、来源无法证明。 */
+  provenance: 'uninstalled' | 'unknown';
+  usedBytes: number;
+  fileCount: number;
+}
+
+/** 一个目录树的文件数与字节数；只用于展示，数到上限即停。 */
+async function countLibraryFiles(root: string, limit = 20000): Promise<{ usedBytes: number; fileCount: number }> {
+  let usedBytes = 0;
+  let fileCount = 0;
+  const stack = [root];
+  while (stack.length > 0 && fileCount < limit) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) {
+        fileCount += 1;
+        usedBytes += (await fs.promises.stat(full).catch(() => null))?.size ?? 0;
+      }
+    }
+  }
+  return { usedBytes, fileCount };
+}
+
+/**
+ * An installed instance under a namespaced key may have an older library left
+ * under the bare id by an earlier install. A library the host marked as left
+ * by an uninstall counts; so does a directory without any host identity
+ * (copied in by hand or by a migration script), whose source is unknown. A
+ * library with an identity of another owner never counts. The current
+ * instance must still use the default location. GhostManager decides whether
+ * the bare id is free; `in-use` means another install still runs on it.
+ */
+async function findLegacyLibraryCandidate(
+  ghost: InstalledGhost,
+): Promise<LegacyLibraryCandidate | { kind: 'in-use' } | null> {
+  const fromId = ghost.manifest.id;
+  const toId = installedGhostStoragePart(ghost);
+  if (fromId === toId || ghost.manifest.library !== true || !isValidGhostId(fromId)) return null;
+  const offer = getGhostManager().bareLibraryOffer(fromId, ghost.namespace ?? null);
+  if (offer === 'unavailable') return null;
+  const store = getGhostLibraryBindingStore();
+  if (await store.getBinding(toId) !== null) return null;
+  let oldLocation: 'default' | 'custom' = 'default';
+  let root = ownerScopedUserDataPath('libraries', fromId);
+  if (await store.getBinding(fromId) !== null) {
+    const resolution = await store.resolveLibraryRoot(fromId);
+    if (resolution.kind !== 'custom' || resolution.root === null) return null;
+    oldLocation = 'custom';
+    root = resolution.root;
+  }
+  const rootStat = await fs.promises.lstat(root).catch(() => null);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) return null;
+  if (offer === 'in-use') return { kind: 'in-use' };
+  const hostDir = path.join(root, '.cindy-library');
+  if (!(await fs.promises.lstat(hostDir).catch(() => null))) {
+    const usage = await countLibraryFiles(root);
+    if (usage.fileCount === 0) return null;
+    return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'unknown', ...usage };
+  }
+  let meta: { ghostId?: unknown };
+  try {
+    meta = JSON.parse(await fs.promises.readFile(path.join(hostDir, 'meta.json'), 'utf8')) as typeof meta;
+  } catch {
+    return null;
+  }
+  // Nothing runs under the bare id (offer is available), so a library still
+  // owned by it was left behind. The uninstall marker is not required: for a
+  // custom location it lands under the default root instead.
+  if (meta.ghostId !== fromId) return null;
+  let usedBytes = 0;
+  let fileCount = 0;
+  try {
+    const usage = JSON.parse(
+      await fs.promises.readFile(path.join(hostDir, 'usage.json'), 'utf8'),
+    ) as { files?: number; bytes?: number };
+    usedBytes = Number(usage.bytes ?? 0);
+    fileCount = Number(usage.files ?? 0);
+  } catch {
+    /* 账本缺失按 0 计 */
+  }
+  return { kind: 'candidate', fromId, toId, oldLocation, provenance: 'uninstalled', usedBytes, fileCount };
+}
+
+async function findLegacyLibraryUsage(
+  ghost: InstalledGhost,
+): Promise<Pick<GhostLibraryOverview, 'legacyLibrary' | 'legacyLibraryInUse'>> {
+  try {
+    const found = await findLegacyLibraryCandidate(ghost);
+    if (found?.kind === 'in-use') return { legacyLibrary: null, legacyLibraryInUse: true };
+    return {
+      legacyLibrary: found
+        ? { usedBytes: found.usedBytes, fileCount: found.fileCount, provenance: found.provenance }
+        : null,
+      legacyLibraryInUse: false,
+    };
+  } catch (error) {
+    log.warn('legacy library lookup failed', { error: error instanceof Error ? error.message : String(error) });
+    return { legacyLibrary: null, legacyLibraryInUse: false };
+  }
+}
+
+function legacyLibraryReattachDeps(assertCurrent: () => void): LegacyLibraryReattachDeps {
+  const ownerKey = activeOwnerScopeKey();
+  const store = getGhostLibraryBindingStore();
+  return {
+    journalFile: () => ownerScopedUserDataPath('library-reattach.json'),
+    defaultRoot: (id) => ownerScopedUserDataPath('libraries', id),
+    stagingRoot: (id) => ownerScopedUserDataPath('library-staging', id),
+    trashRoot: () => ownerScopedUserDataPath('libraries-trash'),
+    relocateCustomBinding: (fromId, toId) => store.relocateBinding(fromId, toId),
+    assertCustomBindingRelocatable: (fromId, toId) => store.assertCanRelocateBinding(fromId, toId),
+    customRoot: async (id) => {
+      const binding = await store.getBinding(id, { strict: true });
+      return binding ? path.join(binding.root, id) : null;
+    },
+    relocateMeta: async (root, fromId, toId) => {
+      assertCurrent();
+      // 接回的目标实例已装好，顺手清掉卸载时留的 orphaned，设置页不用等插件首次打开才自愈。
+      await relocateOrAdoptLibraryMeta(root, fromId, toId, async (dir, from, to) => {
+        await relocateLibraryMetaOwner(dir, from, to, assertCurrent, { clearOrphaned: true });
+      });
+    },
+    relocateStaging: (root, fromId, toId) =>
+      relocateLibraryStagingOwner(root, fromId, toId, ownerKey, assertCurrent),
+    assertCurrent,
+  };
+}
+
+/**
+ * Holds the plugin out of the way while both library directories move: the
+ * runtime and panels share an in-memory partition whose cache would otherwise
+ * be written back over the swapped library.
+ */
+/**
+ * Instances whose partition cache could not be cleared after a library swap.
+ * They stay stopped until Cindy restarts, which empties the in-memory
+ * partition; panel attach and both runtimes check this before starting.
+ */
+const libraryRestartRequired = new Set<string>();
+
+function libraryRestartRequiredKey(id: string): string {
+  return `${activeOwnerScopeKey()}\0${id}`;
+}
+
+function libraryRestartRequiredReason(id: string): string | null {
+  return libraryRestartRequired.has(libraryRestartRequiredKey(id))
+    ? t('settings.ghosts.library.legacyReattachNeedsRestart')
+    : null;
+}
+
+/** Close every page still open in a plugin partition and wait until each is gone. */
+async function closePartitionPages(partitionSession: Session, timeoutMs = 5_000): Promise<void> {
+  const pages = electronWebContents.getAllWebContents()
+    .filter((page) => !page.isDestroyed() && page.session === partitionSession);
+  await Promise.all(pages.map((page) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('plugin page did not close')), timeoutMs);
+    page.once('destroyed', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    page.close();
+  })));
+}
+
+async function withLibrariesHeld<T>(fromId: string, toId: string, run: () => Promise<T>): Promise<T> {
+  const slot = getGhostLibrarySlot();
+  const ids = [fromId, toId];
+  const ghostBefore = findGhostForInstanceId(toId);
+  const partition = ghostBefore
+    ? ownerScopedGhostPartitionForInstalledGhost(ghostBefore, getActiveAppSession())
+    : null;
+  return withPluginHeldForLibrarySwap({
+    stopRuntime: async () => {
+      const running = {
+        browser: getGhostRuntime().stateOf(toId) === 'running',
+        node: getGhostNodeRuntimeBroker().stateOf(toId) === 'running',
+      };
+      getGhostRuntime().stop(toId);
+      await getGhostNodeRuntimeBroker().stopAndWait(toId);
+      return running;
+    },
+    notifyPanels: (phase) => broadcastGhostWindowPush('ghosts:library-replaced', { id: toId, phase }),
+    closePages: async () => {
+      if (partition) await closePartitionPages(electronSession.fromPartition(partition));
+    },
+    holdLibraries: (on) => {
+      for (const id of ids) slot.setRelocating(id, on);
+    },
+    disposeLibraries: async () => {
+      for (const id of ids) await slot.disposeGhost(id);
+    },
+    clearPartitionStorage: async () => {
+      if (partition) await electronSession.fromPartition(partition).clearStorageData();
+    },
+    restartRuntime: (running) => {
+      const ghost = findGhostForInstanceId(toId);
+      if (!ghost?.enabled || !isGhostAvailableForActiveSession(ghost.manifest.id)) return;
+      spawnIfResident(ghost);
+      const warn = (error: unknown) => log.warn('plugin restart after library reattach failed', {
+        id: toId, error: error instanceof Error ? error.message : String(error),
+      });
+      if (running.browser && !isResidentBrowserGhost(ghost.manifest)) {
+        void getGhostRuntime().spawn(ghost).catch(warn);
+      }
+      if (running.node && ghost.manifest.node?.lifecycle !== 'resident') {
+        void getGhostNodeRuntimeBroker().startForRecovery(ghost).catch(warn);
+      }
+    },
+    warn: (message, error) => log.warn(message, {
+      id: toId, error: error instanceof Error ? error.message : String(error),
+    }),
+  }, run).catch((error: unknown) => {
+    if (error instanceof LibrarySwapNeedsRestartError) libraryRestartRequired.add(libraryRestartRequiredKey(toId));
+    throw error;
+  });
+}
+
+let pendingLegacyLibraryReattach: Promise<void> | null = null;
+/** Owner whose journal is known to be absent; library requests then skip the file read. */
+let legacyLibraryReattachClearOwner: string | null = null;
+/** The two libraries named by the unfinished journal, once it has been read. */
+let legacyLibraryReattachIds: { owner: string; ids: readonly string[] } | null = null;
+
+/**
+ * A reattach that stopped midway leaves its journal. Finish it before a
+ * library request runs, so neither end is opened half moved. When recovery
+ * fails, only the two libraries it names stay closed; with a ghostId, other
+ * plugins' requests go on.
+ */
+function finishPendingLegacyLibraryReattach(ghostId?: string): Promise<void> | undefined {
+  if (ghostId !== undefined && isOutsideFailedLegacyLibraryReattach(ghostId)) return undefined;
+  const running = runPendingLegacyLibraryReattach();
+  if (!running || ghostId === undefined) return running;
+  return running.catch((error: unknown) => {
+    if (!isOutsideFailedLegacyLibraryReattach(ghostId)) throw error;
+  });
+}
+
+/** A recovery that failed is retried only by the two libraries it names. */
+function isOutsideFailedLegacyLibraryReattach(ghostId: string): boolean {
+  const known = legacyLibraryReattachIds;
+  if (known === null || known.owner !== activeOwnerScopeKey()) return false;
+  return !known.ids.includes(ghostId) && !known.ids.includes(libraryStorageKeyFor(ghostId) ?? ghostId);
+}
+
+function runPendingLegacyLibraryReattach(): Promise<void> | undefined {
+  if (isAppSessionBoundaryPending()) return undefined;
+  if (legacyLibraryReattachClearOwner === activeOwnerScopeKey()) return undefined;
+  pendingLegacyLibraryReattach ??= (async () => {
+    try {
+      const ownerKey = activeOwnerScopeKey();
+      const assertCurrent = (): void => {
+        if (activeOwnerScopeKey() !== ownerKey || isAppSessionBoundaryPending()) {
+          throw new Error('Library reattach owner changed');
+        }
+      };
+      const deps = legacyLibraryReattachDeps(assertCurrent);
+      legacyLibraryReattachIds = null;
+      const journal = await readLegacyLibraryReattachJournal(deps.journalFile());
+      if (journal) {
+        legacyLibraryReattachIds = { owner: ownerKey, ids: [journal.fromId, journal.toId] };
+        await getGhostManager().runExclusiveMutation(() =>
+          withLibrariesHeld(journal.fromId, journal.toId, () => finishLegacyLibraryReattach(journal, deps)));
+        await refreshMivoLibraryExtraDirGrant().catch(() => undefined);
+      }
+      legacyLibraryReattachClearOwner = ownerKey;
+      legacyLibraryReattachIds = null;
+    } finally {
+      pendingLegacyLibraryReattach = null;
+    }
+  })();
+  return pendingLegacyLibraryReattach;
+}
+
+/**
+ * Settings-page reattach, run after the Main confirmation. The current
+ * library goes to the library trash; the old one takes its place.
+ */
+export async function reattachLegacyLibraryForActiveOwner(
+  ghostId: string,
+  expectedTarget: string | null,
+): Promise<{ ok: boolean; message?: string }> {
+  await finishPendingLegacyLibraryReattach();
+  return getGhostManager().runExclusiveMutation(async () => {
+    const assertCurrent = (): void => {
+      if (expectedTarget === null || ghostLibraryDeleteTargetFor(ghostId) !== expectedTarget) {
+        throw new Error('Library 对应的 Plugin 或账号已变化，请重新操作');
+      }
+    };
+    assertCurrent();
+    const ghost = findGhostForInstanceId(ghostId);
+    const found = ghost ? await findLegacyLibraryCandidate(ghost) : null;
+    if (found?.kind !== 'candidate') return { ok: false, message: '没有可以接回的作品数据' };
+    const candidate = found;
+    assertCurrent();
+    // A failure midway leaves the journal; the next library request finishes it.
+    legacyLibraryReattachClearOwner = null;
+    await withLibrariesHeld(candidate.fromId, candidate.toId, () =>
+      startLegacyLibraryReattach(
+        { fromId: candidate.fromId, toId: candidate.toId, oldLocation: candidate.oldLocation, now: Date.now() },
+        legacyLibraryReattachDeps(assertCurrent),
+      ));
+    legacyLibraryReattachClearOwner = activeOwnerScopeKey();
+    await refreshMivoLibraryExtraDirGrant().catch((error) => {
+      log.warn('library extraDirs reattach sync failed', {
+        ghostId: candidate.toId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return { ok: true };
+  });
 }
 
 function ghostLibraryDeleteTargetFor(ghostId: string): string | null {
@@ -6451,6 +6770,8 @@ export async function installAndDock(
     trustOverride?: GhostHostTrustOverride;
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
   },
 ): Promise<InstalledGhost> {
@@ -6470,6 +6791,8 @@ async function installAndDockLocked(
     installOrigin?: 'agent-forge';
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     beforePackagePlacement?: () => void;
   },
 ): Promise<InstalledGhost> {
@@ -6495,6 +6818,7 @@ async function installAndDockLocked(
     ...(opts.installOrigin ? { installOrigin: opts.installOrigin } : {}),
     ...(opts.registrySource ? { registrySource: opts.registrySource } : {}),
     ...(opts.pluginId ? { pluginId: opts.pluginId } : {}),
+    ...(opts.reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
     namespace: opts.namespace,
     ...(opts.beforePackagePlacement ? { beforePackagePlacement: opts.beforePackagePlacement } : {}),
   });
@@ -6880,6 +7204,44 @@ export interface MarketGhostPackageCommitEvidence {
   canonicalManifest: GhostManifest;
 }
 
+/**
+ * An organization market install may find a library left under the bare id by
+ * an earlier install whose source cannot be proven, such as a local package.
+ * Ask before reattaching it. Market evidence reattaches without asking.
+ */
+export async function confirmLegacyLibraryReattach(plugin: {
+  ghostId: string;
+  namespace: string | null;
+  pluginId: string;
+  name: string;
+}): Promise<boolean> {
+  const { ghostId, namespace, pluginId } = plugin;
+  if (namespace === null || !isValidGhostId(ghostId)) return false;
+  if (!getGhostManager().canOfferBareReclaim(ghostId, namespace, pluginId)) return false;
+  if (getNamespaceMigrationHost().canReclaimLegacyBareInstance({ ghostId, namespace, pluginId })) return false;
+  const leftover = fs.existsSync(ownerScopedUserDataPath('libraries', ghostId)) ||
+    (await getGhostLibraryBindingStore().getBinding(ghostId)) !== null;
+  if (!leftover) return false;
+  const options = {
+    type: 'question' as const,
+    title: t('settings.ghosts.library.reattachTitle'),
+    message: t('settings.ghosts.library.reattachTitle'),
+    detail: `${plugin.name}\n\n${t('settings.ghosts.library.reattachDescription')}`,
+    buttons: [
+      t('settings.ghosts.library.reattachConfirm'),
+      t('settings.ghosts.library.reattachSkip'),
+    ],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  const parent = mainShellWindows().find((window) => window.isVisible() && !window.isMinimized());
+  const decision = parent
+    ? await dialog.showMessageBox(parent, options)
+    : await dialog.showMessageBox(options);
+  return decision.response === 0;
+}
+
 export async function installOrUpdateMarketGhostPackage(
   cindyFilePath: string,
   expected: {
@@ -6898,6 +7260,8 @@ export async function installOrUpdateMarketGhostPackage(
     pendingMarketRecord?: GhostFirstPartyPendingMarketRecord;
     /** Server-market resource id. Recorded on the instance so another market does not reuse it. */
     pluginId?: string;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     /** 自定义 Git/本地市场在打包前读取的 Manifest，用于防止打包窗口内能力扩张。 */
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
@@ -6937,6 +7301,8 @@ async function installOrUpdateMarketGhostPackageLocked(
     pendingMarketRecord?: GhostFirstPartyPendingMarketRecord;
     /** Server-market resource id. Recorded on the instance so another market does not reuse it. */
     pluginId?: string;
+    /** The user agreed to reattach the library left under the bare id. */
+    reclaimLegacyBareInstance?: boolean;
     manifestCap?: GhostManifest;
     beforeCommitInLock?: () => void;
     /** 新包已经原子换位；后续异常不能再按落位失败回滚来源路由。 */
@@ -7057,6 +7423,7 @@ async function installOrUpdateMarketGhostPackageLocked(
         enable: true,
         registrySource: 'market',
         ...(expected.pluginId ? { pluginId: expected.pluginId } : {}),
+        ...(expected.reclaimLegacyBareInstance ? { reclaimLegacyBareInstance: true } : {}),
         expectedPackageSha256: inspected.packageSha256,
         consent: { decision: expected.consent, manifest: inspected.manifest },
         beforePackagePlacement: expected.beforeCommitInLock,
@@ -8535,97 +8902,6 @@ export function registerGhostIpc(): void {
     return resolved;
   });
 
-  // ── cindy 槽后端覆盖(解析表第②层;意识详情页「Cindy 能力」区)──
-  // 读走 sendSync:详情页首帧要和其它信息同帧渲染(规则 7 无跳变),
-  // 文件读取极小。写走 invoke,白名单在此校验(存储层不感知模型清单)。
-  ipcMain.on('ghosts:cindy-prefs', (event, ghostId: unknown) => {
-    const storedOverrides = typeof ghostId === 'string' ? readGhostCindyOverrides(ghostId) : {};
-    const overrides = { ...storedOverrides };
-    for (const capability of GHOST_MEDIA_CAPABILITIES) {
-      const value = storedOverrides[capability];
-      if (!value) continue;
-      const selected = resolveAndMigrateGhostMediaPreference(
-        ghostId as string,
-        capability,
-        getGhostMediaPreferenceConfig(ghostId as string, capability),
-        value,
-      );
-      if (selected) overrides[capability] = selected.id;
-      else delete overrides[capability];
-    }
-    // 每类目一份 options + defaultModel(当前包含 image/video 两类;下拉按
-    // 能力键的类目取对应清单)。defaultModel:目录默认选型的展示信息
-    // ("默认(GPT Image 2)"),让用户看得见"跟随"当下跟的是谁;
-    // null = 目录没有该类目的模型(能力暂不可用),渲染层据此显示灰字而非下拉。
-    const byKind = (cfg: CindyMediaCatalogConfig | CindyMediaPreferenceConfig) => {
-      const standard = cfg.defaults?.standard;
-      return {
-        options: cfg.models,
-        defaultModel:
-          standard === undefined ? null : (cfg.models.find((m) => m.id === standard) ?? null),
-      };
-    };
-    // 文本类(快问快答)的可选项 = 当前供应商目录里的全部文本模型(2026-08-05
-    // 与刘佳黎定稿:安装插件即承担其成本,主机如实展示可选面)。每一项精确钉
-    // 一组 供应商×agent×模型(cat: 编码)。defaultModel = 当前辅助模型链链首,
-    // declaredModel = 身份卡声明的偏好(解析得到才给)——让"跟随默认"
-    // 行如实说出当前实际跟的是谁。
-    const textChain = getEffectiveAuxiliaryModelChain();
-    const textDefaultId = textChain.refs[0] ?? null;
-    const textDefaultLabel =
-      textDefaultId === null ? null : formatAuxiliaryModelRefLabel(textDefaultId);
-    const textOptions = buildTextOneshotPinOptions(
-      getActiveCatalog(),
-      readModelDisableOverrides(),
-      readProviderOrder(),
-      hasOneshotProviderCredential,
-    );
-    // 纯展示口径,不走 findAvailableGhost 的"当前会话可用"闸:插件被当前项目
-    // 停用时卡片的其余部分(overrides/options)照常渲染,声明偏好也不该凭空消失。
-    const declaredRaw = typeof ghostId === 'string'
-      ? (findInstalledGhostByInstanceId(getGhostManager().list(), ghostId) ??
-          getGhostManager().list().find((g) => g.manifest.id === ghostId))?.manifest.cindy?.oneshotModel
-      : undefined;
-    const declaredResolved = declaredRaw
-      ? resolveOneshotCatalogModel(
-          getActiveCatalog(),
-          readModelDisableOverrides(),
-          declaredRaw,
-          readProviderOrder(),
-          hasOneshotProviderCredential,
-        )
-      : null;
-    event.returnValue = {
-      overrides,
-      image: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'image.generate')),
-      imageEdit: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'image.edit')),
-      video: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'video.generate')),
-      videoEdit: byKind(getGhostMediaPreferenceConfig(ghostId as string, 'video.edit')),
-      text: {
-        options: textOptions,
-        defaultModel:
-          textDefaultId === null || textDefaultLabel === null
-            ? null
-            : { id: textDefaultId, label: textDefaultLabel },
-        declaredModel:
-          declaredResolved && declaredRaw
-            ? {
-                id: encodeCatalogPin(
-                  declaredResolved.providerId,
-                  declaredResolved.agentKind,
-                  declaredResolved.model,
-                ),
-                label: declaredRaw,
-              }
-            : null,
-        // 存量轻量档位钉(目录扩展前钉下的合法值)的展示名表:渲染层据此给
-        // 老钉值回显友好名,而不是把合法档位钉当 stale 原样露出 id。
-        utilityProfiles: utilityModelPinOptions(),
-      },
-      // 向量类与图像/视频同源(都走目录派生),不同于文本类的轻量链档位。
-      embed: byKind(getCatalogEmbedConfig()),
-    };
-  });
   // ── 目录级禁用(ghostWorkdirPrefs;插件页的项目范围视图)──
   // 读走 sendSync:切换范围时禁用清单要与卡片同帧渲染(规则 7 无跳变),
   // 文件读取极小且带 mtime 缓存。写走 invoke;写后广播 ghosts:changed
@@ -8664,64 +8940,16 @@ export function registerGhostIpc(): void {
     },
   );
 
-  ipcMain.handle(
-    'ghosts:cindy-prefs:set',
-    (_event, ghostId: unknown, capability: unknown, model: unknown) => {
-      if (typeof ghostId !== 'string' || ghostId.trim().length === 0) {
-        throwIpcError('INVALID_PARAMS', 'ghostId must be a non-empty string');
-      }
-      if (!(CINDY_CAPABILITY_KEYS as readonly string[]).includes(capability as string)) {
-        throwIpcError('INVALID_PARAMS', `unknown capability: ${String(capability)}`);
-      }
-      // 白名单按能力键类目分流:image.*/video.*/embed.* 钉各媒体目录模型 id;
-      // text.*(快问快答)钉轻量档位键或目录钉(cat: 编码)——与消费方(cindySlot
-      // route)同一判据,否则存进去的值链路不认。刻意不查凭证态(与清单的凭证
-      // 过滤不同):凭证是瞬态(可以后补/会过期),钉档是持久意图;执行侧
-      // fail-closed 兜底,不在这层把「暂时没配 key」当成非法值。
-      if (
-        !isCindyOverrideModelAllowed(capability as string, model, {
-          image: getGhostMediaPreferenceConfig(
-            ghostId,
-            capability === 'image.edit' ? 'image.edit' : 'image.generate',
-          ).models,
-          video: getGhostMediaPreferenceConfig(
-            ghostId,
-            capability === 'video.edit' ? 'video.edit' : 'video.generate',
-          ).models,
-          embed: getCatalogEmbedConfig().models,
-          textPinIds: buildTextOneshotPinOptions(
-            getActiveCatalog(),
-            readModelDisableOverrides(),
-          ).map((o) => o.id),
-        })
-      ) {
-        throwIpcError(
-          'INVALID_PARAMS',
-          'model must be null or an allowed model of the capability category',
-        );
-      }
-      const ghost = findGhostForInstanceId(ghostId);
-      if (!ghost) throwIpcError('NOT_FOUND', '插件实例已变化，请刷新后重试');
-      const storedId = installedGhostStoragePart(ghost);
-      const overrides = writeGhostCindyOverride(
-        storedId,
-        capability as CindyCapabilityKey,
-        model as string | null,
-      );
-      getGhostSetupChangeBus().emit(storedId, {
-        source: 'host_config',
-        ref: `cindy-pref:${String(capability)}`,
-      });
-      return { overrides };
-    },
-  );
-
   // Plugin task preferences: ordinary tasks and the legacy errand adapter share
   // this configuration. Keep existing IPC names for renderer compatibility.
   // Save validates the current route; creation/execution revalidate independently.
+  // The same model fields also drive the plugin's quick answers (cindy.text.oneshot);
+  // auxiliaryModelLabel names the system auxiliary model the "follow default" row uses.
   ipcMain.on('ghosts:errand-prefs', (event, ghostId: unknown) => {
+    const auxiliaryRef = getEffectiveAuxiliaryModelChain().refs[0] ?? null;
     event.returnValue = {
       config: typeof ghostId === 'string' ? readPluginTaskConfig(ghostId) : {},
+      auxiliaryModelLabel: auxiliaryRef === null ? null : formatAuxiliaryModelRefLabel(auxiliaryRef),
     };
   });
   ipcMain.handle('ghosts:errand-prefs:set', async (event, ghostId: unknown, config: unknown) => {
@@ -9281,6 +9509,52 @@ export function registerGhostIpc(): void {
       releaseMutation();
     }
   });
+  ipcMain.handle('ghosts:library-reattach-legacy', async (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
+    const expectedOwner = captureGhostMutationOwner();
+    const expectedTarget = ghostLibraryDeleteTargetFor(id);
+    // 换掉当前作品数据是破坏性操作，唯一有效的确认在 Main(与删除同口径)。
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const ghost = findGhostForInstanceId(id);
+    const ghostName = ghost?.manifest.name ?? id;
+    const found = ghost ? await findLegacyLibraryCandidate(ghost).catch(() => null) : null;
+    const unknownSource = found?.kind === 'candidate' && found.provenance === 'unknown'
+      ? `\n\n${t('settings.ghosts.library.legacyReattachUnknownSource')}`
+      : '';
+    const options = {
+      type: 'question' as const,
+      title: t('settings.ghosts.library.legacyReattachConfirmTitle'),
+      message: t('settings.ghosts.library.legacyReattachConfirmTitle'),
+      detail: `${ghostName}\n\n${t('settings.ghosts.library.legacyReattachConfirmDescription')}${unknownSource}`,
+      buttons: [
+        t('settings.ghosts.library.legacyReattachConfirmText'),
+        t('settings.ghosts.library.cancel'),
+      ],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const decision = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+    if (decision.response !== 0) return { ok: false as const, cancelled: true as const };
+    const releaseMutation = beginGhostMutation(expectedOwner);
+    try {
+      const res = await reattachLegacyLibraryForActiveOwner(id, expectedTarget);
+      return res.ok
+        ? { ok: true as const }
+        : { ok: false as const, cancelled: false as const, message: res.message };
+    } catch (error) {
+      // The raw error can name absolute paths; it stays in the Main log.
+      log.warn('legacy library reattach failed', { id, error: error instanceof Error ? error.message : String(error) });
+      return error instanceof LibrarySwapNeedsRestartError
+        ? { ok: false as const, cancelled: false as const, message: t('settings.ghosts.library.legacyReattachNeedsRestart') }
+        : { ok: false as const, cancelled: false as const };
+    } finally {
+      releaseMutation();
+    }
+  });
 
   // 面板错误态的「重载意识」:清熔断记账 + 重新拉起沙箱。
   ipcMain.handle('ghosts:reload', async (event, id: unknown) => {
@@ -9481,10 +9755,11 @@ export function resolveGhostWebviewAttach(
   const resolvedPartition = resolveGhostWebviewPartitionClaim(partitionClaim, owner);
   if (!resolvedPartition) return null;
   if (!isPluginInstanceKey(resolvedPartition.ghostId)) return null;
-  const ghost = availableGhosts().find(
-    (candidate) => installedGhostStoragePart(candidate) === resolvedPartition.ghostId,
-  );
+  // Panels recheck this on every click and key press; an exact instance key
+  // reads only that instance.
+  const ghost = findGhostForInstanceId(resolvedPartition.ghostId);
   if (!ghost || !ghost.enabled) return null;
+  if (libraryRestartRequiredReason(resolvedPartition.ghostId) !== null) return null;
   if (resolvedPartition.ghostId !== installedGhostStoragePart(ghost)) return null;
   const partition = ownerScopedGhostPartitionForInstalledGhost(ghost, owner);
   if (!partition) return null;

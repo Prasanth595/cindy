@@ -40,6 +40,23 @@ Cindy 的产品形态不止本地桌面单机。同一个功能可能运行在�
    同步 topic 路由；不登记，手机／远程控制端就永远调不通。
 3. 手机版需不需要对应的入口／UI／交互？
 
+## 代输入的多端适配（2026-10-13）
+
+产品规则见 [`../product-rules/input-handoff.md`](../product-rules/input-handoff.md)。三种形态的落点：
+
+- **SSH 远程工作区**：不支持。目标窗口必须在执行代输入的这台电脑上；`request_input_handoff`
+  在带 `remoteHostId` 的任务里返回 `CAPABILITY_NOT_AVAILABLE`，由 Agent 改为直接告诉主人需要什么。
+- **设备互联远程控制**：卡片快照随既有交互推送（`kind: "input_handoff"`）到所有控制端；交还、取消、
+  停留、刷新、接手、看画面等**不带值**的决定走既有 `resolveInteraction`；**带值**的提交与截图只走插件
+  授权 v3 加密交换（`plugin-oauth:submit-input` / `plugin-oauth:open-input-picture` /
+  `plugin-oauth:answer-input-picture`），不新增明文 invoke。对端不支持 v3 时卡片显示「请更新」，不降级。
+- **手机版**：同一张卡（`src/inputHandoff/`），系统保密输入与 AutoFill 类型、截图点按、设备码
+  （`expo-clipboard` + `Linking`，无新原生依赖）与单窗口实时画面（远程桌面路由带 `handoff` 参数）。
+  推送深链回到所属任务。
+- 单窗口实时画面复用远程桌面通道：控制端只在 `start` 里带 `handoff: requestId`，由被控端按请求选窗口；
+  被控端以 `handoffWindow` 能力位声明支持，旧被控端不声明时控制端不展示入口。协议细节见
+  [`protocol-compatibility.md`](protocol-compatibility.md)「代输入」。
+
 ## 恢复动作先回答故障半径（device-link 共享链路）
 
 设备互联是 1:N 拓扑：被控端与 relay 之间只有一条连接，同账号的全部控制端共用它。
@@ -298,8 +315,20 @@ enum 编译分支，也不接受任意 HTML、React 或无限 UI DSL。
 解析 `conversation` 等 link，不能把可能 rollover 的 Session id 当成永久资源身份。已有对话继续
 复用 canonical Session 的消息、输入、确认与恢复链路，不复制一套模块专属聊天协议。
 列表已有 conversation link 时，可直接展示聊天框架和同账号缓存，在聊天页内重读资源，
-复用该页的 Session 元数据查询校验 ID、类型与设备归属；校验完成前不放开发送、控制和已读。
+复用该页的 Session 元数据查询校验 ID、类型与设备归属；校验完成前不允许远端投递、控制和已读。
 列表返回与后台刷新应保留已有内容，仅首次无数据时显示整页加载，不用固定延迟掩盖切换。
+
+手机伙伴列表的同步新鲜度不决定已缓存伙伴能否打开：连接圆点只消费实际连接与 presence，
+列表失败保留之前成功的同连接代次证据，各电脑的成功分片立即更新。暂时读取失败复用既有
+错误分类、读取重试与恢复退避；只在前台可见时补读，离开、后台、账号变更与永久错误不续读。
+缓存仅供同账号展示，撤权设备仍过滤；无 conversation link 时仍由原资源路由解析，不猜身份。
+
+已有 canonical link 的伙伴在断网时可读本机已缓存历史、编辑持久草稿；未缓存历史明确提示
+连接电脑后同步。用户点发送才写入现有 durable outbox，纯草稿不自动发送。新伙伴待发送记录
+额外保存资源身份，应用级队列在首次远端 enqueue 前重读资源、准备状态、canonical link 与
+Session 类型，不能借页面关闭绕过校验。队列仍按原 clientId 对账和去重：接收不等于送达，
+旧主机结果未知时不盲重放，已获宿主持久接收的记录只对账。恢复范围是单 host/read/outbox，
+不拆共享 relay，不增加云端执行或 wire 协议；现有历史、草稿和 outbox 的账号清理规则不变。
 
 协议按字段追加演进。未知字段、未知 collection 和未知 action 不得导致整个首页或会话崩溃；
 结构化 Session 内容必须携带可读 `fallbackMarkdown`，旧客户端至少能阅读并继续任务。只有新增

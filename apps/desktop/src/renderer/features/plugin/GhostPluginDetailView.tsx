@@ -29,8 +29,8 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
 import { GhostLibrarySection } from './GhostLibrarySection';
+import { PluginBackgroundTasksSection } from './PluginBackgroundTasksSection';
 import { PluginTaskPrefs } from '@/cindy-brain/PluginTaskPrefs';
 import { GhostSettingsWebview } from '@/cindy-brain/GhostSettingsWebview';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -46,6 +46,7 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
+  ghostDeclaresHiddenTasks,
   ghostTrustLabelKey,
   isUserInstallReservedGhostId,
   type GhostPermissionItem,
@@ -140,7 +141,6 @@ export function GhostPluginDetailView({
     enabled &&
     (primaryAction === 'panel' ||
       (primaryAction === 'command' && detail.canUse));
-  const cindyCapabilities = detail.cindyCapabilities;
   // Local imports with the same id cannot use the host gh credential. Match the
   // official receipt before advertising that connection in this plugin's UI.
   const hasGithubConnection =
@@ -155,7 +155,6 @@ export function GhostPluginDetailView({
     hasGithubConnection ||
     detail.hasMainView ||
     detail.hasSettingsUi ||
-    cindyCapabilities.length > 0 ||
     detail.hasTaskPreferences ||
     overlayDeclared;
   const summary = hasGithubConnection
@@ -562,20 +561,20 @@ export function GhostPluginDetailView({
                   {t('routines.pluginCapability')}
                 </p>
               ) : null}
-              {cindyCapabilities.length > 0 ? (
-                <CindyCapabilityPrefs
-                  ghostId={detail.id}
-                  capabilities={cindyCapabilities}
-                  appearance="plugin"
-                />
-              ) : null}
               {detail.hasTaskPreferences ? (
                 <PluginTaskPrefs ghostId={detail.id} appearance="plugin"
+                  showTaskRows={detail.hasPluginTasks}
                   legacyDefault={ghost?.manifest.agent?.errand === true && !ghost.manifest.agent?.tasks && !ghost.manifest.workspace} />
               ) : null}
             </div>
           </section>
         ) : null}
+
+        <PluginBackgroundTasksSection
+          ghostId={detail.id}
+          installed={ghost !== null}
+          hiddenTasksDeclared={ghostDeclaresHiddenTasks(ghost?.manifest)}
+        />
 
         {detail.tools.length > 0 ? <ToolsSection tools={detail.tools} /> : null}
 

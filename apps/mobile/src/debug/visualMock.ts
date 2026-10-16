@@ -254,6 +254,8 @@ async function visualMockInvoke<T = unknown>(
     }
   }
   switch (channel) {
+    case 'maker:regenerate-title':
+      return { title: 'Visual rename draft' } as T;
     case 'maker:predict-prompt':
       return { prompt: (args[0] as { sessionId?: string } | undefined)?.sessionId === 'visual-prompt-recommendation'
         ? '继续跟进 PR #4670' : null } as T;

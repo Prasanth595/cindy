@@ -893,5 +893,22 @@
     "continue": "Continue",
     "addTime": "Add time",
     "dateOnly": "Date only"
+  },
+  "cloudCompanion": {
+    "homeOffline": "Main computer “{{device}}” is offline",
+    "switchAction": "Continue on another computer",
+    "composerHint": "Main computer is offline. Switch to another computer to continue.",
+    "readOnlyNote": "This conversation is saved in the cloud and is read only.",
+    "empty": "No conversation in the cloud yet.",
+    "loadFailed": "Can’t load the cloud conversation right now.",
+    "loadOlder": "Load earlier messages",
+    "noTargets": "No other computer is available. Open Cindy on another computer, sign in to the same account, and turn on “Allow same-account devices to control this computer”, then try again.",
+    "devicesFailed": "Can’t load your computers right now. Try again later.",
+    "preparing": "Getting ready on “{{device}}”…",
+    "preparingHint": "That computer takes over the teammate from its cloud profile and opens it when ready.",
+    "timeout": "“{{device}}” isn’t ready yet. Make sure Cindy is open and online on that computer, then try again.",
+    "conflict": "{{name}} has already moved to “{{device}}”.",
+    "switchFailed": "Can’t change the main computer right now. Try again later.",
+    "unknownDevice": "another computer"
   }
 }

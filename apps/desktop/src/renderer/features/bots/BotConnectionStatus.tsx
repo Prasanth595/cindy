@@ -5,15 +5,19 @@ export function BotConnectionStatus({
   online = true,
   deviceName,
   inline = false,
+  homeOffline = false,
   className,
 }: {
   online?: boolean | null;
+  /** The device is this companion's main computer (cloud companions): say so when offline. */
+  homeOffline?: boolean;
   deviceName?: string;
   inline?: boolean;
   className?: string;
 }) {
   const { t } = useTranslation();
-  const status = t(online === null ? 'bots.remote.unknown' : online ? 'bots.remote.online' : 'bots.remote.offline');
+  const status = t(homeOffline && !online ? 'bots.cloud.homeOfflineShort'
+    : online === null ? 'bots.remote.unknown' : online ? 'bots.remote.online' : 'bots.remote.offline');
   const name = deviceName?.trim();
   const label = name ? `${status} · ${name}` : status;
   if (inline) {

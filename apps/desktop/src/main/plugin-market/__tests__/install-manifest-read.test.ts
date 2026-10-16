@@ -36,6 +36,7 @@ const brain = vi.hoisted(() => ({
   ),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  confirmLegacyLibraryReattach: async () => false,
   getGhostManager: () => ({ inspect: brain.inspect }),
   installOrUpdateMarketGhostPackage: async (
     filePath: string,

@@ -1300,3 +1300,16 @@ describe('sortEntriesForAgent(原生底座优先,无主场不降级)', () => {
     expect(codexOnly.every((e) => e.candidates.includes('codex'))).toBe(true);
   });
 });
+
+
+it('keeps display pricing attached to the selected provider and engine', () => {
+  const quote = { items: [{ label: 'Usage', price: 0.5, unit: 'second', quantity: 1 }] };
+  const providers = [
+    view({ id: 'xd', models: { codex: [m('same-model', { displayPricing: quote, currency: 'CNY', costDiscount: 0.2 })] } }),
+    view({ id: 'openai', models: { codex: [m('same-model')] } }),
+  ];
+  expect(resolveAgentCapability(providers, 'xd', 'same-model', 'codex')).toMatchObject({
+    displayPricing: quote, currency: 'CNY', costDiscount: 0.2,
+  });
+  expect(resolveAgentCapability(providers, 'openai', 'same-model', 'codex')).not.toHaveProperty('displayPricing');
+});

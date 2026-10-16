@@ -189,3 +189,29 @@ it('shares the Lead send lock across whole plan registration and final Worker ad
   expect(block).toContain('withLeadSendLock: withSendToSessionLock');
   expect(block.lastIndexOf('createPluginTaskStore(epoch.client).get')).toBeGreaterThan(block.indexOf('pluginTaskServiceForCurrentOwner!().get'));
 });
+
+
+it('routes trusted script follow-ups through durable authorization restoration, without trusting wire labels', async () => {
+  const start = source.indexOf('    sendToSession: async (params) => {');
+  const end = source.indexOf('    enableOrca: enableOrcaInternal,', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const sendToSessionInternal = vi.fn(async (params) => params);
+  const send = new Function(
+    'captureDataOwnerBroadcastScope', 'classifySessionMessagePurpose', 'isDataOwnerBroadcastScopeCurrent',
+    'sendToSessionInternal', 'AUTO_REVIEW_DELEGATED_CONTINUATION', 'coordinationInput',
+    compile(`return ({ ${source.slice(start, end)} }).sendToSession;`),
+  )(() => 'owner', async () => ({ coordination: null, delegatedContinuation: false }), () => true,
+    sendToSessionInternal, AUTO_REVIEW_DELEGATED_CONTINUATION, () => { throw new Error('not coordination'); });
+  const params = { targetSessionId: 'task', message: 'CI failed; repair and push the PR' };
+  expect(await send({ ...params, [AUTO_REVIEW_DELEGATED_CONTINUATION]: true })).toMatchObject({
+    autoReviewUserText: { kind: 'delegated-continuation' },
+    forceQueue: true,
+    resumeWithStoredPermissionMode: true,
+  });
+  const untrusted = await send({ ...params, AUTO_REVIEW_DELEGATED_CONTINUATION: true });
+  expect(untrusted).not.toHaveProperty('autoReviewUserText');
+  expect(untrusted).not.toHaveProperty('forceQueue');
+  expect(await send({ message: 'new task', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true }))
+    .not.toHaveProperty('autoReviewUserText');
+});

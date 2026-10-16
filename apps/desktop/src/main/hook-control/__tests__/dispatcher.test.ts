@@ -262,6 +262,48 @@ function makeDispatcher(overrides?: {
   return { d, bindings, fr };
 }
 
+describe('任务失败原因进主日志(issue #5912)', () => {
+  it('runner 抛出路由不可用: 主日志记 requestId / 渠道 / 原因, turn.end 带同一 errorMessage', async () => {
+    const message =
+      'hook session route unavailable: selected provider "openai" cannot serve model "claude-test"。请在 设置 → IM 机器人 中为这个渠道的工作目录重新选择模型。';
+    const runner: HookSessionRunner = {
+      isBusy: () => false,
+      inspect: async () => null,
+      run: async () => {
+        throw new Error(message);
+      },
+    };
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { d } = makeDispatcher({ runner, log });
+    const c = collector();
+    d.onConnected('conn-1', c.send);
+    await d.handleDispatch('conn-1', dispatch({ requestId: 'req-route', source: { im: 'x' } }), c.send);
+    await tick();
+
+    expect(log.warn).toHaveBeenCalledWith(
+      `hook task req-route failed: im=x via=throw reason=${message}`,
+    );
+    expect(c.last('turn.end')?.payload).toMatchObject({ status: 'error', errorMessage: message });
+    d.dispose();
+  });
+
+  it('其它失败原因不原样进日志, 只记类别', async () => {
+    const fr = fakeRunner();
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const { d } = makeDispatcher({ runner: fr.runner, log });
+    const c = collector();
+    d.onConnected('conn-1', c.send);
+    await d.handleDispatch('conn-1', dispatch({ requestId: 'req-other' }), c.send);
+    await tick();
+    fr.finish({ status: 'error', finalText: '', errorMessage: 'ENOENT /Users/someone/secret/path' });
+    await tick();
+
+    expect(log.warn).toHaveBeenCalledWith('hook task req-other failed: im=none via=outcome reason=unclassified');
+    expect(log.warn.mock.calls.flat().join('\n')).not.toContain('/Users/someone');
+    d.dispose();
+  });
+});
+
 describe('background results during normal turn delivery', () => {
   it.each(['telegram:dm:bot:user:g0', 'slack:T:C:1.2'])('%s observes the next turn before the previous run returns', async (externalKey) => {
     let signal!: Parameters<NonNullable<HookDispatcherDeps['subscribeChannelTurn']>>[0];

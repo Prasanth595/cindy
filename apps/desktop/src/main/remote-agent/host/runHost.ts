@@ -39,6 +39,9 @@ import {
   type RemoteAgentPayload,
   type RemoteAgentPollResult,
   type RemoteAgentReply,
+  type RemoteAgentReshareBatch,
+  type RemoteAgentReshareEntry,
+  type RemoteAgentReshareResult,
   type RemoteAgentReverseRequest,
   type RemoteAgentTeardownReason,
 } from '@cindy/device-link';
@@ -58,6 +61,7 @@ import {
   relayMemberConnId,
   relayRunFailureOf,
   relaySessionIdFor,
+  reshareKeyForGuest,
   type RelayRunFailure,
 } from './groupRelay';
 import { PROVIDER_GROUP_LOCAL_MEMBER_KEY } from '../../../shared/providerGroup';
@@ -212,6 +216,15 @@ export interface RemoteAgentHostDeps {
    * 组内电脑运行，本机中转。不提供 = 受邀者的任务一律在本机运行(现有接线)。
    */
   groupRelay?: RemoteAgentGroupRelayDeps;
+  /**
+   * 转分享(本机是分享者，docs/product-rules/provider-sharing.md §4.3)：受邀者把这里分享的供应商放进了它自己的
+   * 供应商组又分享给了别人。组所在电脑(受邀者)经 op `reshare` 报上它分享的人，本机记下等主人逐人同意；组转来的
+   * 受邀者任务(带 relay)只在主人同意过的人上运行。不提供 = 不接受 op `reshare`、也不核对(测试 / 旧接线)。
+   */
+  reshare?: {
+    sync(controller: string, entries: readonly RemoteAgentReshareEntry[], batch?: RemoteAgentReshareBatch): Promise<RemoteAgentReshareResult>;
+    allows(controller: string, reshareKey: string | undefined): boolean;
+  };
   captureOwner(): unknown;
   isOwnerCurrent(owner: unknown): boolean;
   /** 本机存放影子目录与附件的根目录。 */
@@ -270,7 +283,14 @@ export interface RemoteAgentGroupRelayDeps {
     providerId: string;
     exclude: ReadonlySet<string>;
     reserve?: boolean;
+    /**
+     * 这个受邀者的转分享键(provider-sharing.md §4.3)：分享来的组内电脑只在它的主人同意过这个人时才选；
+     * 没有时一律不选分享来的电脑。
+     */
+    reshareKey?: string;
   }): Promise<GroupRelayPlan | null>;
+  /** 分享来的那台拒绝了这个受邀者(主人没同意或已撤回)：组所在电脑据此重新核对同意情况。 */
+  noteReshareDenied?(agentDeviceId: string, reshareKey: string): void;
   /** 经设备互联连某台组内电脑的远程 Agent 通道(与本机作为控制端共用拉取器)。 */
   connect(agentDeviceId: string): { invoke: RemoteAgentInvoke; poller: RemoteAgentPoller };
   /**
@@ -355,6 +375,11 @@ interface Run {
    * 会话索引、受邀者目录与运行数都按(控制端, relay)分开。
    */
   relayKey?: string;
+  /**
+   * 受邀者(本机的分享成员)的组转来的、它分享的那个人的任务：那个人的转分享键。主人撤回对这个人的同意时
+   * 按它结束任务(abortReshare)。
+   */
+  reshareKey?: string;
   /** 本机是组所在电脑、把这个受邀者任务转给了组内电脑。 */
   relay?: RelayBackend;
   /**
@@ -1105,6 +1130,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       providerId: run.providerId,
       exclude: tried,
       reserve: true,
+      reshareKey: reshareKeyForGuest(run.controller),
     }).catch(() => null);
     if (next?.kind !== 'member' || run.closing) {
       if (next && next.kind !== 'unavailable') next.load?.release();
@@ -1212,13 +1238,16 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
 
   /** 转给组内电脑的打开载荷：已按受邀者复核过；来源换成那台上的供应商，带防转圈标记与受邀者的 relay 键。 */
   function relayedOpenPayload(run: Run, payload: RemoteAgentOpenPayload, member: GroupRelayMember): RemoteAgentOpenPayload {
-    // 「需要换一台」只在受邀者与本机之间：组内电脑不认识也不需要。
-    const { acceptsGroupSwitch: _accepts, groupSwitchToken: _token, ...rest } = payload;
+    // 「需要换一台」只在受邀者与本机之间：组内电脑不认识也不需要。受邀者自己填的转分享键不转发。
+    const { acceptsGroupSwitch: _accepts, groupSwitchToken: _token, reshareKey: _reshare, ...rest } = payload;
+    // 分享来的组内电脑按这个人的转分享键核对它的主人是否同意过(provider-sharing.md §4.3)。
+    const reshareKey = member.sameAccount ? undefined : reshareKeyForGuest(run.controller);
     return {
       ...rest,
       sessionId: relaySessionIdFor(run.controller, payload.sessionId),
       groupAssigned: true,
       relay: relayKeyFor(run.controller),
+      ...(reshareKey ? { reshareKey } : {}),
       options: { ...payload.options, providerId: member.providerId },
     };
   }
@@ -1257,7 +1286,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     // 旧版受邀者不认识这个状态：照旧只转出原来的错误。
     if (!run.acceptsGroupSwitch) return null;
     const exclude = noteGroupSwitchTried(run, member);
-    const next = await relayDeps.plan({ kind: run.kind, model, providerId: run.providerId, exclude }).catch(() => null);
+    const next = await relayDeps.plan({
+      kind: run.kind,
+      model,
+      providerId: run.providerId,
+      exclude,
+      reshareKey: reshareKeyForGuest(run.controller),
+    }).catch(() => null);
     const canMove = next?.kind === 'member' || (next?.kind === 'local' && deps.isAgentAvailable(run.kind));
     if (!canMove || run.closing) return null;
     deps.log?.info('remote agent: offered the shared user another computer in the provider group', {
@@ -1458,7 +1493,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       run.relay = backend;
       try {
         const caps = await RemoteAgentRunClient.caps(connection.invoke);
-        if (caps.virtualWorkspace !== true || (current.sameAccount && caps.guestRelay !== true)) {
+        if (caps.virtualWorkspace !== true
+          || (current.sameAccount ? caps.guestRelay !== true : caps.reshareConsent !== true)) {
           throw new Error('[REMOTE_AGENT_PEER_TOO_OLD] the computer in the provider group cannot take shared tasks yet');
         }
         // 等 caps 期间任务已经结束(撤权、受邀者关闭)：不再打开(收尾已经放掉了这次尝试的负载)。
@@ -1500,6 +1536,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         // 这次尝试里受邀者那边已经打开的连接全部关掉，下一次尝试的连接编号不同。
         for (const connId of wsOpened) append(run, { t: 'ws', connId, kind: 'close' });
         if (run.closing) break;
+        // 分享来的那台拒绝了这个人(主人没同意或刚撤回)：组所在电脑重新核对同意情况，之后不再选它。
+        const reshareKey = reshareKeyForGuest(run.controller);
+        if (!current.sameAccount && reshareKey && /\[REMOTE_AGENT_RESHARE_NOT_ALLOWED\]/.test(String(error))) {
+          relayDeps.noteReshareDenied?.(current.agentDeviceId, reshareKey);
+        }
         // 续接只能回到原来那台：那台接不下时请受邀者交接后重新打开，由组换一台(凭证排在启动失败前面)。
         if (!options.fresh) {
           await offerSwitchAfterResumeFailure(run, current, error, backend.model ?? payload.options.model);
@@ -1519,6 +1560,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           providerId: groupProviderId,
           exclude: tried,
           reserve: true,
+          reshareKey,
         }).catch(() => null);
         if (next?.kind === 'local' && deps.isAgentAvailable(run.kind) && !run.closing) {
           if (next.load) run.groupLoad = next.load;
@@ -1991,6 +2033,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           virtualWorkspace: true,
           // 能按受邀者隔离运行(供应商级授权与出站边界都已接上)，才接受组所在电脑中转过来的受邀者任务。
           ...(deps.providerAccess && deps.bindGuestProviderRoute ? { guestRelay: true } : {}),
+          // 转分享的同意只对受邀者(把这里分享的供应商放进自己组的人)有意义。
+          ...(guest && deps.reshare ? { reshareConsent: true } : {}),
+          ...(guest && deps.reshare ? { reshareBatch: true } : {}),
         };
         return caps;
       }
@@ -1998,6 +2043,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         // 组所在电脑删掉了某个受邀者：清掉替它运行过的任务。只作用于调用方自己的 relay。
         await forgetRelay(controller, request.relay);
         return {};
+      case 'reshare':
+        // 转分享：受邀者的组所在电脑报上它分享的人(整体替换它上一份)，主人逐人同意。同账号电脑经组使用不需要同意。
+        if (!deps.reshare || trustOf(controller) !== 'guest') fail('REMOTE_AGENT_INVALID', 'reshare is only for shared users');
+        return deps.reshare.sync(controller, request.entries, request.batch);
       case 'upload': {
         const uploadKey = key(controller, request.uploadId);
         let upload = uploads.get(uploadKey);
@@ -2037,6 +2086,13 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         const trust: RemoteAgentControllerTrust = relayKey ? 'guest' : controllerTrust;
         if (relayKey && guestUnsupported) {
           fail('REMOTE_AGENT_UNSUPPORTED', `${request.agentKind} is not available to shared users on this computer`);
+        }
+        // 转分享(provider-sharing.md §4.3)：受邀者的组替它分享的人转来的任务，只在本机主人同意过那个人时运行。
+        // 新错误码只回给带了 reshareKey 的组所在电脑；旧版本按「没开放这个供应商」处理，照常换组里下一台。
+        const reshareKey = controllerTrust === 'guest' && relayKey ? payload.reshareKey : undefined;
+        if (controllerTrust === 'guest' && relayKey && deps.reshare && !deps.reshare.allows(controller, reshareKey)) {
+          if (reshareKey) fail('REMOTE_AGENT_RESHARE_NOT_ALLOWED', 'the owner of this computer has not agreed to this user');
+          failProviderNotAllowed();
         }
         // 运行数按受邀者作用域各算一份；同一控制端替多个受邀者中转时另有合计上限。只有同账号控制端(组所在电脑)
         // 的 relay 才各算一份：受邀者自己填的 relay 只把它的数据分开存放，不能用来绕开它的运行数上限。
@@ -2099,6 +2155,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
               providerId,
               exclude: new Set(avoid),
               reserve: true,
+              reshareKey: reshareKeyForGuest(controller),
             });
             if (plan?.kind === 'unavailable') fail('REMOTE_AGENT_UNAVAILABLE', 'no computer can run this task right now');
             if (plan?.kind === 'member' || plan?.kind === 'local') reserved = plan.load;
@@ -2117,11 +2174,19 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           reserved?.release();
           return {};
         }
+        // 查询供应商与续接归属期间主人可能已经撤回，而尚未登记的任务不会被 abortReshare 找到。
+        // 最后一次核对与 runs.set 之间不能 await；登记后撤回会走正常的任务收尾。
+        if (controllerTrust === 'guest' && relayKey && deps.reshare && !deps.reshare.allows(controller, reshareKey)) {
+          reserved?.release();
+          if (reshareKey) fail('REMOTE_AGENT_RESHARE_NOT_ALLOWED', 'the owner of this computer has not agreed to this user');
+          failProviderNotAllowed();
+        }
         const run: Run = {
           id: request.runId,
           controller,
           trust,
           ...(relayKey ? { relayKey } : {}),
+          ...(reshareKey ? { reshareKey } : {}),
           owner: deps.captureOwner(),
           kind: request.agentKind,
           log: new EventLog(REMOTE_AGENT_HOST_UNREAD_BYTES),
@@ -2268,6 +2333,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     async abortControllers(match: (controller: string) => boolean): Promise<void> {
       await Promise.all([...runs.values()]
         .filter((run) => match(run.controller))
+        .map((run) => finishRun(run, 'access-revoked', 'navigation')));
+    },
+    /**
+     * 转分享的同意被撤回(provider-sharing.md §4.3)：立即结束匹配控制端(受邀者的组所在电脑)替那个人转来的任务。
+     * 那个人的会话记录与目录留着，主人再同意后还能续接；受邀者删除时随它一起清理。
+     */
+    async abortReshare(match: (controller: string) => boolean, reshareKey: string): Promise<void> {
+      await Promise.all([...runs.values()]
+        .filter((run) => run.reshareKey === reshareKey && match(run.controller))
         .map((run) => finishRun(run, 'access-revoked', 'navigation')));
     },
     /**

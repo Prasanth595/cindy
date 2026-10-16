@@ -281,6 +281,7 @@ function createDb(filename = ':memory:'): void {
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
       pinned_at INTEGER,
+      hidden_at INTEGER,
       summary TEXT,
       provider_id TEXT,
       user_send_at INTEGER,
@@ -4210,6 +4211,18 @@ describe('Bot Session task end-to-end runtime', () => {
     h.sqlite!.prepare(`INSERT INTO bot_session_links (id, bot_id, session_id, profile_version, role, route_key, created_at)
       VALUES (?, 'bot-a', ?, 1, 'group', ?, 1)`).run(`${id}-link`, id, route);
   }
+
+  it('projects the owning group of each hidden group lane so entries can return to that group', async () => {
+    await seedPair();
+    seedGroupLane('group-lane', 'group:fixture:access:owner:2');
+    seedGroupLane('group-plan', 'group:fixture:plan:plan-1');
+    const profile = await invoke('local-db:bots:get', 'bot-a') as { sessions: Array<Record<string, unknown>> };
+    const byId = new Map(profile.sessions.map((session) => [session.id, session]));
+    expect(byId.get('group-lane')).toMatchObject({ kind: 'group', role: 'group', groupId: 'fixture' });
+    expect(byId.get('group-plan')).toMatchObject({ kind: 'group', role: 'group', groupId: 'fixture' });
+    expect(byId.get('session-1')).toMatchObject({ kind: 'chat', role: 'canonical' });
+    expect(byId.get('session-1')).not.toHaveProperty('groupId');
+  });
 
   it('starts owner-authorized group work without impersonation and returns cards/results to the owner private chat', async () => {
     await seedPair(); seedGroupLane();

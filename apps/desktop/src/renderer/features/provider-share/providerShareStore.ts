@@ -6,6 +6,7 @@
  *    分享的状态、在线或所在电脑变化时刷新对应 `share:<id>` 的模型目录缓存，消失的分享作废缓存。
  *  - 待审批申请(分享者)：由全局审批宿主播种(`owned` 一次)、REQUESTED 推送追加、审批后移除；
  *    管理页每次读取 `owned` 也会发布到这里。设置页入口的提示点读这份。
+ *  - 待处理的转分享请求(分享者)：同一份 `owned` 快照里成员带的 reshares；RESHARE_REQUESTED 推送时重读。
  *
  * 注意：`owned` 会让 main 进入快速拉取(每 5 秒)，所以这里**不**在每次 OWNED_CHANGED 都重读，
  * 只在还有待审批申请时重读(那时 main 本来就在快速拉取)，以便撤回、过期的申请及时消失。
@@ -27,8 +28,10 @@ import type {
 import {
   diffReceivedShares,
   pendingRequestsFromOwned,
+  pendingResharesFromOwned,
   providerShareAgentDeviceId,
   type ProviderSharePendingRequest,
+  type ProviderSharePendingReshare,
 } from './providerShareFormat';
 
 const log = createLogger('providerShareStore');
@@ -80,9 +83,20 @@ function setReceived(next: readonly ProviderShareReceived[]): void {
   for (const listener of receivedSubscribers) listener();
 }
 
+type ShareRegion = ProviderShareReceived['owner']['region'];
+
 let membershipRequest = 0;
 let membershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let membershipFailures = 0;
+/** 远程任务所在电脑的收藏不在本机存储里，它们的区域同样是查询线索；按账号隔离，换账号即作废。 */
+let favoriteRegionHints: { dataOwnerId: string | null; regions: ReadonlySet<ShareRegion> } = {
+  dataOwnerId: null, regions: new Set(),
+};
+
+function hintedFavoriteRegions(dataOwnerId: string | null): readonly ShareRegion[] {
+  return favoriteRegionHints.dataOwnerId === dataOwnerId ? [...favoriteRegionHints.regions] : [];
+}
+
 function refreshFavoriteMembership(api: ProviderShareApi): void {
   if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
   membershipRetryTimer = null;
@@ -99,9 +113,10 @@ function refreshFavoriteMembership(api: ProviderShareApi): void {
   };
   void (async () => {
     try {
-      let regions: ProviderShareReceived['owner']['region'][] = [];
-      try { regions = getProviderShareFavoriteRegions(owner.dataOwnerId); }
+      let local: ShareRegion[] = [];
+      try { local = getProviderShareFavoriteRegions(owner.dataOwnerId); }
       catch { /* 清理器会报告存储错误并安排重试；读取恢复后再补齐区域线索。 */ }
+      const regions = [...new Set([...local, ...hintedFavoriteRegions(owner.dataOwnerId)])];
       const snapshot = await api.command({
         action: 'received-snapshot',
         favoriteRecovery: { ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation }, regions },
@@ -151,6 +166,18 @@ export function refreshProviderShareFavoriteMembership(): void {
   if (api) refreshFavoriteMembership(api);
 }
 
+/**
+ * 远程任务读写任务所在电脑的收藏：其中分享收藏的区域本机可能从没加载过，补进查询线索并重新
+ * 核对一次名单，让对方区域的授权被恢复。区域已在线索里时什么都不做。
+ */
+export function requestProviderShareFavoriteRegions(regions: readonly ShareRegion[]): void {
+  const { dataOwnerId } = getDataOwnerGeneration();
+  const known = favoriteRegionHints.dataOwnerId === dataOwnerId ? favoriteRegionHints.regions : new Set<ShareRegion>();
+  if (regions.every((region) => known.has(region))) return;
+  favoriteRegionHints = { dataOwnerId, regions: new Set([...known, ...regions]) };
+  refreshProviderShareFavoriteMembership();
+}
+
 /** 主动再取一次(退出分享后立即刷新列表；推送仍会随后到达)。 */
 export function refreshProviderShareReceived(): void {
   const api = providerShareApi();
@@ -192,9 +219,36 @@ function setPending(next: readonly ProviderSharePendingRequest[]): void {
   for (const listener of pendingSubscribers) listener();
 }
 
-/** 一份 owned 快照是本机待审批申请的权威来源：整体替换。 */
+// 待处理的转分享请求(分享者，provider-sharing.md §4.3)：与待审批申请同出一份 owned 快照。
+let pendingReshares: readonly ProviderSharePendingReshare[] = [];
+const reshareSubscribers = new Set<() => void>();
+
+function setPendingReshares(next: readonly ProviderSharePendingReshare[]): void {
+  if (next.length === 0 && pendingReshares.length === 0) return;
+  pendingReshares = next;
+  for (const listener of reshareSubscribers) listener();
+}
+
+/** 一份 owned 快照是本机待审批申请(含转分享请求)的权威来源：整体替换。 */
 export function publishProviderShareOwnerState(state: ProviderShareOwnerState): void {
+  setPendingReshares(state.ready ? pendingResharesFromOwned(state.shares) : []);
   setPending(state.ready ? pendingRequestsFromOwned(state.shares) : []);
+}
+
+export function getProviderSharePendingReshares(): readonly ProviderSharePendingReshare[] {
+  return pendingReshares;
+}
+
+function subscribeReshares(listener: () => void): () => void {
+  reshareSubscribers.add(listener);
+  return () => {
+    reshareSubscribers.delete(listener);
+  };
+}
+
+/** 设置页入口的提示点与管理页「待处理」一栏读这份。 */
+export function useProviderSharePendingReshares(): readonly ProviderSharePendingReshare[] {
+  return useSyncExternalStore(subscribeReshares, getProviderSharePendingReshares, getProviderSharePendingReshares);
 }
 
 export function addProviderShareRequested(event: ProviderShareRequestedEvent): void {
@@ -247,7 +301,10 @@ export function resetProviderShareStoreForTests(): void {
   if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
   membershipRetryTimer = null;
   membershipFailures = 0;
+  favoriteRegionHints = { dataOwnerId: null, regions: new Set() };
   receivedSubscribers.clear();
   pendingRequests = [];
   pendingSubscribers.clear();
+  pendingReshares = [];
+  reshareSubscribers.clear();
 }

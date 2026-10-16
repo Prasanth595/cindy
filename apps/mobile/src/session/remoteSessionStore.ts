@@ -40,6 +40,7 @@ import {
   isTurnContinuationBoundaryEvent,
 } from '@cindy/maker-shared/turn-continuation';
 import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { EMPTY_INPUT_PROJECTION, normalizeInputProjection } from '@/session/inputProjection';
 import { sortPendingInteractions } from '@/session/interactionModel';
 import { applySessionModelPrefPush } from '@/session/sessionModelMirror';
@@ -756,6 +757,8 @@ const messageListBudgetStatsCache = new WeakMap<
 >();
 const sessionLastAccessOrder = new Map<string, number>();
 let nextSessionAccessOrder = 0;
+/** 用户打开过详情的任务；定时任务进入此集合后按普通任务驻留。 */
+const sessionsOpenedInDetail = new Set<string>();
 const messageStructureTokens = new WeakMap<readonly RemoteMessage[], object>();
 const messageStructureChangedIndexes = new WeakMap<
   readonly RemoteMessage[],
@@ -890,7 +893,7 @@ function sessionById(sessionId: string): RemoteSession | undefined {
 }
 
 function retentionForSession(sessionId: string): SessionRetentionKind {
-  return classifySessionRetention(sessionById(sessionId));
+  return classifySessionRetention(sessionById(sessionId), sessionsOpenedInDetail.has(sessionId));
 }
 
 function touchSessionAccess(sessionId: string): void {
@@ -1136,6 +1139,7 @@ function removeSessionRuntimeState(sessionId: string): void {
   sessionMakerActivityEpochs.delete(sessionId);
   sessionMakerTurnRunning.delete(sessionId);
   sessionMessageLifecycle.forget(sessionId);
+  sessionsOpenedInDetail.delete(sessionId);
   sessionDeviceIndex.delete(sessionId);
   dropPendingTitlePreview(sessionId);
   // revision 下限按会话回收:它不参与单轮快照回收(那会把覆盖权还给晚到的
@@ -1347,6 +1351,8 @@ function applyMessageWriteRetention(sessionId: string): void {
 }
 
 let mergedSessions: RemoteSession[] = [];
+/** Raw mirrors stay available to transport/reconciliation; UI hooks consume this filtered view. */
+let visibleSessions: RemoteSession[] = [];
 // Retention and live-row anchoring run for every message write. Looking up each
 // cached window in the full list makes bulk hydration approach cubic work.
 const mergedSessionById = new Map<string, RemoteSession>();
@@ -1361,7 +1367,7 @@ const homeSessionProjectionCache = new Map<string, {
 
 function reconcileHomeSessions(): void {
   const activeSessionIds = new Set<string>();
-  const next = mergedSessions.map((session) => {
+  const next = visibleSessions.map((session) => {
     activeSessionIds.add(session.id);
     const cached = homeSessionProjectionCache.get(session.id);
     if (cached?.source === session) return cached.projected;
@@ -1591,7 +1597,7 @@ function commitInputProjection(sessionId: string, next: InputProjection): boolea
 
 function recomputeSessions(): void {
   const previousRetention = new Map(
-    mergedSessions.map((session) => [session.id, classifySessionRetention(session)] as const),
+    mergedSessions.map((session) => [session.id, retentionForSession(session.id)] as const),
   );
   sessionDeviceIndex.clear();
   // 跨 shard 去重 + 设备身份归一化。re-link 后同一 session.id 可能同时存在于 stale / current 两个 shard;
@@ -1645,6 +1651,7 @@ function recomputeSessions(): void {
   // useSyncExternalStore 快照经 Object.is 即可短路,消费屏对无关 emit 零重渲染。
   const sessionsChanged = !sameElementRefs(mergedSessions, next);
   if (sessionsChanged) mergedSessions = next;
+  reconcileVisibleSessions();
   mergedSessionById.clear();
   for (const session of mergedSessions) mergedSessionById.set(session.id, session);
   // Usage-only patches bypass this projection and cannot change Home fields.
@@ -1658,7 +1665,7 @@ function recomputeSessions(): void {
       session.userSendAt ?? session.updatedAt ?? session.createdAt,
       { consumePending: false },
     ) || liveRowsReanchored;
-    const nextRetention = classifySessionRetention(session);
+    const nextRetention = retentionForSession(session.id);
     if (nextRetention !== 'schedule' || previousRetention.get(session.id) === 'schedule') continue;
     // source 晚到后立即切断旧缓存路径。旧 hydrate / debounce 回调还会在提交前
     // 二次检查 retention；这里的串行删除负责收掉已经开始的旧写。
@@ -1687,6 +1694,13 @@ function sameElementRefs<T>(a: readonly T[], b: readonly T[]): boolean {
     if (!Object.is(a[i], b[i])) return false;
   }
   return true;
+}
+
+function reconcileVisibleSessions(): void {
+  const next = CINDY_MAKE_ENABLED
+    ? mergedSessions
+    : mergedSessions.filter((session) => !isCindyMakeSource(session.source));
+  if (!sameElementRefs(visibleSessions, next)) visibleSessions = next;
 }
 
 function stamp(session: RemoteSession, deviceId: string, deviceName: string): RemoteSession {
@@ -3225,9 +3239,11 @@ export const remoteSessionStore = {
   },
 
   enterSessionMessageDetail(sessionId: string): SessionMessageAuthority {
+    const retentionBefore = retentionForSession(sessionId);
+    sessionsOpenedInDetail.add(sessionId);
     const authority = sessionMessageLifecycle.enter(sessionId);
     touchSessionAccess(sessionId);
-    if (enforceRegularMessageBudget()) {
+    if (enforceRegularMessageBudget() || retentionBefore !== retentionForSession(sessionId)) {
       bumpMessageVersion();
       emit();
     }
@@ -3506,6 +3522,7 @@ export const remoteSessionStore = {
       let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
       messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
       sessionMessageLifecycle.forget(sessionId);
+      sessionsOpenedInDetail.delete(sessionId);
       if (patch.status === 'deleted') clearSessionMessageCache(sessionId, deviceId);
       if (messageStateChanged) bumpMessageVersion(sessionId);
     } else {
@@ -3527,6 +3544,7 @@ export const remoteSessionStore = {
             mergedSessionById.set(sessionId, updated);
             return updated;
           });
+          reconcileVisibleSessions();
         }
         emit();
         return;
@@ -5315,12 +5333,14 @@ export const remoteSessionStore = {
     sessionMessageLifecycle.reset();
     sessionLastAccessOrder.clear();
     nextSessionAccessOrder = 0;
+    sessionsOpenedInDetail.clear();
     sessionDeviceIndex.clear();
     reseedHandlers.clear();
     sessionListRefreshArmed.clear();
     sessionListRefreshSeen.clear();
     pendingTitlePreview.clear();
     mergedSessions = [];
+    visibleSessions = [];
     mergedSessionById.clear();
     homeSessionProjectionCache.clear();
     if (homeSessions.length > 0) {
@@ -5367,6 +5387,10 @@ export const remoteSessionStore = {
 
   getSessions(): RemoteSession[] {
     return mergedSessions;
+  },
+
+  getVisibleSessions(): RemoteSession[] {
+    return visibleSessions;
   },
 
   getHomeSessions(): RemoteSession[] {
@@ -6007,7 +6031,7 @@ function usePausableRemoteSessionStoreSnapshot<T>(
 }
 
 export function useRemoteSessions(): RemoteSession[] {
-  return usePausableRemoteSessionStoreSnapshot('sessions', remoteSessionStore.getSessions);
+  return usePausableRemoteSessionStoreSnapshot('sessions', remoteSessionStore.getVisibleSessions);
 }
 
 /** Home rows/actions do not consume usage; session details must use useRemoteSessions. */

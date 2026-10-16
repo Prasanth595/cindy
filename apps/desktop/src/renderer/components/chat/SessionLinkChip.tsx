@@ -23,11 +23,12 @@ import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { cn } from '@/lib/utils';
+import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
 import { parseSessionDeepLinkHref } from '@/lib/deepLink';
 import { getSessionRouteOwnerId, resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { resolveSessionMessageText } from '@/lib/sessionMessageText';
 import * as sessionService from '@/lib/sessionService';
-import { useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
+import { remoteProjectsStore, useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
 import {
   useSessionNavigationIntent,
   useSessionNavigationMode,
@@ -52,6 +53,7 @@ function compactMessageLinkLabel(text: string): string {
 export function SessionLinkChip({ href, label }: SessionLinkChipProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const localDeviceId = useOptionalAuthDeviceId();
   const navigationMode = useSessionNavigationMode();
   const reportSessionNavigation = useSessionNavigationIntent();
   const target = useMemo(() => parseSessionDeepLinkHref(href), [href]);
@@ -62,20 +64,22 @@ export function SessionLinkChip({ href, label }: SessionLinkChipProps) {
 
   const sessionId = target?.sessionId ?? null;
   const messageClientId = target?.messageClientId ?? null;
+  const targetDeviceId = target?.deviceId ?? null;
+  const targetsOtherDevice = !!targetDeviceId && targetDeviceId !== localDeviceId;
   const explicitLabel = label?.trim() || null;
 
   useEffect(
     () => () => {
       navigationRequestVersionRef.current += 1;
     },
-    [sessionId, messageClientId, navigationMode],
+    [sessionId, messageClientId, targetDeviceId, navigationMode],
   );
 
   useEffect(() => {
     // 先清旧值:同一实例被复用渲染另一个 href(虚拟列表 / 消息 patch)时,
     // 不能让上一个会话的标题串到新链接上(Codex review P2)。
     setFetchedTitle(null);
-    if (!sessionId || messageClientId || explicitLabel) return;
+    if (!sessionId || messageClientId || explicitLabel || targetsOtherDevice) return;
     let cancelled = false;
     sessionService
       .get(sessionId)
@@ -88,7 +92,7 @@ export function SessionLinkChip({ href, label }: SessionLinkChipProps) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, messageClientId, explicitLabel]);
+  }, [sessionId, messageClientId, explicitLabel, targetsOtherDevice]);
 
   useEffect(() => {
     setMessageText(null);
@@ -113,11 +117,22 @@ export function SessionLinkChip({ href, label }: SessionLinkChipProps) {
   const remoteTitle = fetchedTitle ? null : remoteSession?.title?.trim() || null;
   const handleClick = () => {
     const navigationRequestVersion = ++navigationRequestVersionRef.current;
+    const resolveTargetRoute = async () => {
+      if (targetDeviceId) {
+        const selfDeviceId = localDeviceId ?? await window.electronAPI.getDeviceId();
+        if (navigationRequestVersionRef.current !== navigationRequestVersion) return null;
+        // 归档任务可能尚未进入远程镜像；先登记链接的归属，再由现有传输层按设备读取。
+        if (targetDeviceId !== selfDeviceId) {
+          remoteProjectsStore.pinSessionOrigin(targetDeviceId, sessionId);
+        }
+      }
+      return resolveSessionRoute(sessionId, remoteSession);
+    };
     // device-link 远程会话本地无 row,resolveSessionRoute 内部的 sessionService.get
     // 会 miss → 远程 Orca 会话被当普通会话路由,后续 redirect 会丢 searchJump 锚点。
     // 把远程镜像里的 session 对象直接传入,让 Orca 路由一步到位(Codex review P2)。
-    void resolveSessionRoute(sessionId, remoteSession).then((route) => {
-      if (navigationRequestVersionRef.current !== navigationRequestVersion) return;
+    void resolveTargetRoute().then((route) => {
+      if (!route || navigationRequestVersionRef.current !== navigationRequestVersion) return;
       reportSessionNavigation?.(sessionId, getSessionRouteOwnerId(route) ?? sessionId);
       navigate(
         route,

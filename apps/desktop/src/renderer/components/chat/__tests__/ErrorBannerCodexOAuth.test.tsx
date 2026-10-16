@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 
 import { ErrorBanner } from '../ErrorBanner';
 import { ErrorTailErrorBanner } from '../InterruptedTurnBanner';
@@ -50,10 +52,12 @@ function emitCodexStateChanged(payload: Omit<AuthStateChangedPayload, 'agentKind
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 vi.mock('react-i18next', () => ({
@@ -75,6 +79,75 @@ vi.mock('@/lib/toast', () => ({
 }));
 
 describe('ErrorBanner OpenAI connection recovery', () => {
+  const streamClosed = 'stream disconnected before completion: stream closed before response.completed';
+  it.each([undefined, 'controlled-device'])('offers manual recovery and keeps retry on device %s', async deviceLinkDeviceId => {
+    const recover = vi.fn();
+    const retry = vi.fn();
+    render(<ErrorBanner error={streamClosed} agentKind="codex" deviceLinkDeviceId={deviceLinkDeviceId}
+      silentEncryptedRetryEnabled onForkStripEncrypted={recover} onRetry={retry} retryText="original" />);
+    expect(recover).not.toHaveBeenCalled();
+    expect(screen.getByText('chat.errorBanner.readableHistoryRecoveryDescription')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.retry' }));
+    expect(retry).toHaveBeenCalledWith('original');
+    expect(recover).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' }));
+    expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { isRecoverable: true }, { remoteHostId: 'ssh' }, { agentDeviceId: 'hosted' },
+    { deviceLinkDeviceId: sharedTaskHostPeer('shared-task', 'owner-device') },
+    { agentKind: 'cc' as const }, { onForkStripEncrypted: undefined },
+    { error: 'Connection reset' },
+  ])('hides manual history recovery when unavailable: %s', props => {
+    render(<ErrorBanner error={streamClosed} agentKind="codex" onRetry={vi.fn()}
+      onForkStripEncrypted={vi.fn()} {...props} />);
+    expect(screen.queryByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' })).toBeNull();
+  });
+
+  it('offers the same recovery for a persisted error and disables it while pending', () => {
+    const recover = vi.fn();
+    const retry = vi.fn();
+    const { rerender } = render(<ErrorTailErrorBanner errorText={streamClosed} agentKind="codex" onContinue={retry}
+      onDismiss={vi.fn()} onForkStripEncrypted={recover} forkStripEncryptedRunning />);
+    const button = screen.getByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(recover).not.toHaveBeenCalled();
+    const retryButton = screen.getByRole('button', { name: 'chat.errorBanner.retry' }) as HTMLButtonElement;
+    expect(retryButton.disabled).toBe(true);
+    fireEvent.click(retryButton);
+    expect(retry).not.toHaveBeenCalled();
+    rerender(<ErrorTailErrorBanner errorText={streamClosed} agentKind="codex" onContinue={retry}
+      onDismiss={vi.fn()} onForkStripEncrypted={recover} />);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.retry' }));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('blocks live retry until recovery settles and restores it on recovery failure', async () => {
+    const retry = vi.fn();
+    const pending = deferred<void>();
+    function Harness() {
+      const [busy, setBusy] = useState(false);
+      return <ErrorBanner error={streamClosed} agentKind="codex" retryText="original" onRetry={retry}
+        forkStripEncryptedRunning={busy} onForkStripEncrypted={async () => {
+          setBusy(true);
+          try { await pending.promise; } catch { /* parent displays recovery error */ }
+          finally { setBusy(false); }
+        }} />;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' }));
+    const retryButton = screen.getByRole('button', { name: 'chat.errorBanner.retry' }) as HTMLButtonElement;
+    expect(retryButton.disabled).toBe(true);
+    fireEvent.click(retryButton);
+    expect(retry).not.toHaveBeenCalled();
+    await act(async () => pending.reject(new Error('recovery unavailable')));
+    expect(retryButton.disabled).toBe(false);
+    fireEvent.click(retryButton);
+    expect(retry).toHaveBeenCalledWith('original');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.stateChangedListeners.clear();

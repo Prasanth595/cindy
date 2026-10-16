@@ -214,6 +214,23 @@ describe('被控电脑上的任务:模型面板列出第三台电脑的远程供
     expect(screen.queryByRole('button', { name: 'C Closed · Studio' })).toBeNull();
   });
 
+  it('任务仍用 B 本机模型、没有第三台电脑时，也能选择尚未用过的分享供应商', async () => {
+    const shareDevice = { deviceId: 'share:abc', name: '来自 Magi 的分享' };
+    const { onRelocate, onProviderChange } = renderControlledTaskPanel({ devices: [shareDevice] });
+    expect(within(list()).getByText('B Model')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'S Shared · 来自 Magi 的分享' }));
+    });
+    expect(within(list()).queryByText('B Model')).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(list()).getByText('S Model').closest('[data-unified-anchor]')!);
+    });
+    expect(onRelocate).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 's-shared', modelId: 's-model', agent: 'claude-code', agentDevice: shareDevice,
+    }));
+    expect(onProviderChange).not.toHaveBeenCalled();
+  });
+
   it('浏览第三台电脑的目录,选中那里的模型 = 带着那台电脑换 Agent 位置', async () => {
     const { onRelocate, onProviderChange } = renderControlledTaskPanel();
     await act(async () => {
@@ -364,6 +381,21 @@ describe('远程控制下新建任务:草稿的模型面板同样列出第三台
         agentDevice: { deviceId: 'device-c', name: 'Studio' },
       }),
     );
+    expect(onProviderChange).not.toHaveBeenCalled();
+  });
+
+  it('新建到 B 的任务可直接选分享模型，提交分享身份供 B 创建远程 Agent', async () => {
+    const shareDevice = { deviceId: 'share:abc', name: '来自 Magi 的分享' };
+    const { onUnifiedSelect, onProviderChange } = renderControlledDraftPanel({ devices: [shareDevice] });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'S Shared · 来自 Magi 的分享' }));
+    });
+    await act(async () => {
+      fireEvent.click(within(list()).getByText('S Model').closest('[data-unified-anchor]')!);
+    });
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 's-shared', modelId: 's-model', engine: 'cc', agentDevice: shareDevice,
+    }));
     expect(onProviderChange).not.toHaveBeenCalled();
   });
 

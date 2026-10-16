@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "打开任务",
+    "loading": "正在读取任务…",
+    "failed": "未能读取任务信息",
+    "missing": "这台电脑没有返回该任务的信息",
+    "timedOut": "读取任务信息超时",
+    "retry": "重新读取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "此前有自动运行失败。",
     "precheck": "自动检查暂时受阻。",
@@ -223,6 +232,7 @@
     "sessionNotSyncedRetry": "任务尚未同步完成，请稍后再试。",
     "savingPreviousQueueEdit": "正在保存上一条排队消息的修改，完成后再编辑。",
     "attachmentsUploadingBeforeEdit": "还有附件正在上传，等上传完成后再编辑排队消息。",
+    "goalCommandAttachments": "请单独发送 /goal。草稿和附件已保留。",
     "goalAlreadyActive": "该任务已有进行中的目标，请先在此处理它。",
     "resetReconfirmTitle": "请重新确认",
     "resetOfferExpired": "重置凭证已过期，请确认刷新后的配额信息。",
@@ -283,6 +293,7 @@
     "shareMessage": "分享这条消息"
   },
   "new": {
+    "goalCommandNeedsSession": "请进入已有任务清除目标。",
     "selectDevice": "选择设备",
     "workspaceDialogue": "对话",
     "workspaceProject": "项目",
@@ -487,6 +498,8 @@
     "deleteOne": "删除本条消息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可读历史新建任务",
+    "readableHistoryRecoveryDescription": "如果重试仍然失败，可用可读历史新建任务，省略内部加密信息。原任务保留，失败消息不会自动重发。",
     "requestFormatError": "应用发送的请求格式有误，本次回复未能完成。",
     "replyFailed": "本次回复未能完成。请查看错误详情以了解原因。",
     "showErrorDetails": "查看错误详情",

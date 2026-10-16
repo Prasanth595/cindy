@@ -151,7 +151,10 @@ import {
   type PluginPresentationOrigin,
 } from './lib/pluginMarketPresentation';
 import { AddMarketplaceDialog } from './AddMarketplaceDialog';
-import { pluginMarketErrorKey } from './lib/pluginMarketErrorKey';
+import {
+  pluginMarketErrorKey,
+  pluginMarketOrganizationAccessErrorKey,
+} from './lib/pluginMarketErrorKey';
 import { usePluginIconRefresh } from './lib/usePluginIconRefresh';
 import { usePluginMarketIcon } from './lib/usePluginMarketIcon';
 import { usePluginMarketForegroundRefresh } from './lib/usePluginMarketForegroundRefresh';
@@ -796,6 +799,9 @@ export function GhostPluginPage({
     [effectiveOriginFilter, searchedAvailableMarketItems],
   );
   // 「自定义」档内按来源市场分组(≥2 个源时展示小标题);组顺序沿用市场添加顺序。
+  const organizationAccessErrorKey = pluginMarketOrganizationAccessErrorKey(
+    marketSnapshot?.organizationAccessError,
+  );
   const customGroups = useMemo(() => {
     if (effectiveOriginFilter !== 'custom') return null;
     const groups = new Map<string, PluginMarketItem[]>();
@@ -1929,6 +1935,7 @@ export function GhostPluginPage({
             {availableMarketItems.length > 0 ||
             searchedAvailableMarketItems.length > 0 ||
             marketSnapshot?.unavailableReason ||
+            marketSnapshot?.organizationAccessError ||
             marketSnapshot?.unavailableCustomSourceNames.length ? (
               <section className="plugin-motion-page-section mt-10 min-w-0">
                 <div className={PLUGIN_CATALOG_TOOLBAR_CLASS}>
@@ -1985,6 +1992,12 @@ export function GhostPluginPage({
                     {t('settings.ghosts.market.customSourcesUnavailable', {
                       names: marketSnapshot.unavailableCustomSourceNames.join(', '),
                     })}
+                  </p>
+                ) : null}
+
+                {organizationAccessErrorKey ? (
+                  <p className="mb-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-chip)] px-4 py-3 text-12 text-[var(--text-secondary)]">
+                    {t(organizationAccessErrorKey)}
                   </p>
                 ) : null}
 
@@ -2046,6 +2059,7 @@ export function GhostPluginPage({
                     </div>
                   )
                 ) : marketSnapshot?.unavailableReason ||
+                  marketSnapshot?.organizationAccessError ||
                   marketSnapshot?.unavailableCustomSourceNames.length ? null : (
                   <div className="rounded-xl border-[0.5px] border-[var(--border-default)] px-5 py-10 text-center">
                     <p className="text-13 text-[var(--text-secondary)]">

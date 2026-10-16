@@ -1659,6 +1659,10 @@ export class ClaudeCodeAgent extends BaseAgent {
       ? `${DEVICE_HOSTED_GUEST_ROUTE_HEADER}: ${guestProvider.routeToken}`
       : undefined;
     if (guestProvider) env.ANTHROPIC_SMALL_FAST_MODEL = sdkModel;
+    // Input handoff askpass for this owner's own local tasks only.
+    if (!opts.remoteHostId && !hosted && !reviewMode && opts.sessionId) {
+      Object.assign(env, this.deps.runtimeConfig.taskShellEnv?.({ sessionId: opts.sessionId }));
+    }
     if (guestRouteHeader) {
       env.ANTHROPIC_CUSTOM_HEADERS = env.ANTHROPIC_CUSTOM_HEADERS
         ? `${env.ANTHROPIC_CUSTOM_HEADERS}\n${guestRouteHeader}`
@@ -3068,9 +3072,9 @@ export class ClaudeCodeAgent extends BaseAgent {
         // keep exact repetition/rotation guards, not category-only retries.
         contractConsecutiveLimit: Number.POSITIVE_INFINITY,
       }), {
-        // 供应商分享受邀者不复核：复核走本机用户自己的辅助模型，会把受邀者的工具内容发给分享之外的
-        // 供应商。疑似循环按缺省直接中断。
-        reviewer: hosted?.guest ? undefined : this.deps.toolLoopReviewer,
+        // 供应商分享受邀者同样复核：与本机自己的任务一样走本机(分享者)的辅助模型链
+        // (2026-10-13 用户裁决)。
+        reviewer: this.deps.toolLoopReviewer,
         reviewBudget: toolLoopReviewBudget,
         context: () => ({
           sessionId: sid,
@@ -3342,6 +3346,34 @@ export class ClaudeCodeAgent extends BaseAgent {
     /** 当前分片的起始壁钟时刻;片尾据此识别系统挂起。 */
     let upstreamResponseIdleSliceStartedAt = 0;
     const pendingToolIds: Set<string> = new Set();
+    async function withRemoteApprovalIdleGuard(
+      rawParams: unknown,
+      approve: () => Promise<unknown>,
+    ): Promise<unknown> {
+      // SSH daemon canUseTool bypasses the local callback. Its requestId is the
+      // SDK toolUseID: executable input is available even before full assistant.
+      const toolUseId = (rawParams as { requestId?: unknown } | null)?.requestId;
+      const generation = turnState.generation;
+      const tracked = !closed && turnInFlight && typeof toolUseId === 'string' && toolUseId.length > 0;
+      if (tracked) {
+        pendingToolIds.add(toolUseId);
+        clearUpstreamResponseIdle();
+      }
+      let awaitingToolResult = false;
+      try {
+        const result = await approve();
+        const decision = result as { kind?: string; behavior?: string } | null;
+        awaitingToolResult = decision?.behavior === 'allow' || decision?.kind === 'ask_user_question';
+        return result;
+      } finally {
+        // Allowed tools stay protected until tool_result. Denial / failure may
+        // never produce one, so resume idle timing. Never re-add a cleared id or
+        // let an old approval remove/reset the next turn's pending tools/budget.
+        if (!awaitingToolResult && tracked && turnState.generation === generation && pendingToolIds.delete(toolUseId)) {
+          armUpstreamResponseIdle();
+        }
+      }
+    }
     function clearUpstreamResponseIdle(): void {
       if (upstreamResponseIdleTimer) {
         clearTimeout(upstreamResponseIdleTimer);
@@ -3854,7 +3886,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           // 同一个 scope key 也必须随注册的 session ctx 走: prompt 段用它读索引
           // (上方 memoryScopeKey), 远端工具侧不给就会回落到 workdir 键。
           ...((makerMemoryEnabled || opts.makerMemoryScopeKey) ? { makerMemoryScopeKey: memoryScopeKey } : {}),
-          onApprovalRequest: async (rawParams: unknown) => {
+          onApprovalRequest: (rawParams: unknown) => withRemoteApprovalIdleGuard(rawParams, async () => {
             // 110s timeout — must respond before daemon's 120s server-request timeout.
             // On timeout, dismiss the pending interaction (clears UI) and reject to
             // let cc-manager-client return deny to daemon.
@@ -4110,7 +4142,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                 ? formatPermissionDenial(isSystemPermissionDenialReason(decision.reason) ? 'system' : 'user', decision.reason)
                 : decision.reason,
             };
-          },
+          }),
           onSubagentModelAccessRequest: async (rawParams: unknown) => {
             const params = typeof rawParams === 'object' && rawParams !== null
               ? rawParams as Record<string, unknown>
@@ -5685,10 +5717,16 @@ export class ClaudeCodeAgent extends BaseAgent {
                 toolName?: unknown,
                 input?: unknown,
                 parentToolUseId?: string,
+                inputStreaming?: boolean,
               ) => {
-                pendingToolIds.add(id);
                 getToolLoopMonitor(parentToolUseId).onToolUse(id, toolName, input);
-                clearUpstreamResponseIdle();
+                // content_block_start precedes input_json_delta: the model still
+                // owns the response until the complete tool input is delivered.
+                // canUseTool independently pauses the watchdog during approval.
+                if (!inputStreaming) {
+                  pendingToolIds.add(id);
+                  clearUpstreamResponseIdle();
+                }
               },
               onToolResultDone: (
                 id: string,

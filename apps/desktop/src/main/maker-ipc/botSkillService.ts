@@ -24,7 +24,10 @@ import {
   deleteBotSkill,
   listBotSkills,
   readBotSkill,
+  readBotSkillSource,
+  listBotSkillSources,
   saveBotSkill,
+  saveBotSkillSource,
   type BotSkillSummary,
 } from './botSkillStore.js';
 import type {
@@ -275,6 +278,30 @@ export async function readBotSkillForBot(
         body: record.body,
       }
     : null;
+}
+
+/** One own skill's SKILL.md exactly as stored (cloud companions upload it unchanged). */
+export async function readBotSkillSourceForBot(botId: string, slug: string, deps: BotSkillServiceDeps = {}): Promise<string | null> {
+  const boundary = captureOwnerBoundary(deps);
+  const source = await readBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug);
+  assertOwnerBoundary(deps, boundary);
+  return source;
+}
+
+/** Every own skill's SKILL.md for cloud sync; read errors propagate instead of reading as "no skill". */
+export async function listBotSkillSourcesForBot(botId: string, deps: BotSkillServiceDeps = {}): Promise<Array<{ slug: string; source: string; enabled: boolean }>> {
+  const boundary = captureOwnerBoundary(deps);
+  const sources = await listBotSkillSources(await skillHomeOf(deps, botId, boundary), botId);
+  assertOwnerBoundary(deps, boundary);
+  return sources;
+}
+
+/** Restore one own skill's SKILL.md verbatim (cloud companions), keeping its native frontmatter. */
+export async function saveBotSkillSourceForBot(botId: string, slug: string, source: string,
+  options: { enabled?: boolean } = {}, deps: BotSkillServiceDeps = {}): Promise<void> {
+  const boundary = captureOwnerBoundary(deps);
+  await saveBotSkillSource(await skillHomeOf(deps, botId, boundary), botId, slug, source, options);
+  assertOwnerBoundary(deps, boundary);
 }
 
 /** 设置页删除一条技能。 */

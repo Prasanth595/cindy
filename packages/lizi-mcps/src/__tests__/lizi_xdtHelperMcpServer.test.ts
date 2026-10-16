@@ -177,7 +177,10 @@ describe("cindy_helper MCP server", () => {
     await Promise.all([server.connect(st), client.connect(ct)]);
     try {
       const overview = parsePayload(await client.callTool({ name: 'list_tools', arguments: {} }));
-      expect(overview.categories).toEqual([{ name: 'cindy', tool_count: 2 }, { name: 'auth', tool_count: 3 }]);
+      expect(overview.categories).toEqual([
+        { name: 'cindy', tool_count: 2, description: expect.stringContaining('self-management') },
+        { name: 'auth', tool_count: 3, description: expect.any(String) },
+      ]);
       const result = parsePayload(await client.callTool({
         name: 'call_tool', arguments: { name: 'start_grok_device_login', args: {} },
       }));
@@ -870,6 +873,13 @@ describe("cindy_helper MCP server", () => {
         expect.objectContaining({ name: 'handoff' }),
         expect.objectContaining({ name: 'bots' }),
       ]));
+      // 概览阶段就写明每类的用途与作用范围;可跨电脑的类目必须在这一步可见。
+      const described = Object.fromEntries(
+        (overview.categories as Array<{ name: string; description: string }>).map((c) => [c.name, c.description]),
+      );
+      for (const description of Object.values(described)) expect(description).toMatch(/\S/);
+      for (const name of ['history', 'handoff', 'bots']) expect(described[name]).toContain('可跨电脑');
+      expect(described.control).toMatch(/本机。$/);
       const controlTools = parsePayload(await client.callTool({ name: 'list_tools', arguments: { category: 'control' } }));
       const controlNames = controlTools.tools as Array<{ name: string; description: string }>;
       expect(controlNames.map((tool) => tool.name)).toEqual(expect.arrayContaining(['create_project', 'move_session', 'stop_session_turn']));
@@ -1029,7 +1039,7 @@ describe("cindy_helper MCP server", () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       const overview = parsePayload(await client.callTool({ name: "list_tools", arguments: {} }));
-      expect(overview.categories).toEqual([{ name: "cindy", tool_count: 2 }]);
+      expect(overview.categories).toEqual([{ name: "cindy", tool_count: 2, description: expect.any(String) }]);
       expect(
         parsePayload(await client.callTool({
           name: "call_tool",

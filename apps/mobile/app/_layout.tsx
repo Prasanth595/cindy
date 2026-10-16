@@ -74,7 +74,7 @@ import { useUpdateChannelGate } from '@/update/useUpdateChannelGate';
 import type { UpdateChannel } from '@cindy/maker-shared/update-channel';
 import { useStartupEndpointGate } from '@/config/useStartupEndpointGate';
 import { IS_OTA_SELFHOST } from '@/config/env';
-import { getNewSessionCreationTask } from '@/session/newSessionCreation';
+import { hasLiveNewSessionCreation } from '@/session/newSessionCreation';
 import { isExactRemoteSessionClaimed } from '@/session/newSessionWorktree';
 import {
   isPrecreatedWorktreeRegistrationInFlight,
@@ -82,8 +82,7 @@ import {
 } from '@/session/precreatedWorktreeRecovery';
 import { IncomingShareBridge } from '@/session/IncomingShareBridge';
 import { usePendingSharedTaskInvitationIntent } from '@/device-link/sharedTaskInvitationIntent';
-import { useClipboardSharedTaskInvitation } from '@/device-link/useClipboardSharedTaskInvitation';
-import { ClipboardSharedTaskPrompt } from '@/session/ClipboardSharedTaskPrompt';
+import { removeLegacyClipboardInvitationHistory } from '@/device-link/legacyClipboardInvitationHistory';
 import { HomeEntryProvider, useHomeEntrySplashRelease } from '@/session/HomeEntryProvider';
 import { RemoteDesktopHost } from '@/remote-desktop/RemoteDesktopHost';
 
@@ -98,7 +97,7 @@ function NavigationGate() {
   const auth = useAuth();
   const router = useRouter();
   const segments = useSegments();
-  useClipboardSharedTaskInvitation(auth.initialized && auth.isAuthenticated, segments.join('/') === 'shared-session');
+  useEffect(() => { void removeLegacyClipboardInvitationHistory(); }, []);
   const { mode, colors, preferenceReady } = useTheme();
   const { releaseSplash, splashActive } = useStartupSplash();
   // iOS 状态栏样式走 react-native-screens 的 VC-based 通道(Info.plist 已翻
@@ -141,9 +140,9 @@ function NavigationGate() {
       return;
     }
     if (auth.isAuthenticated && inAuthGroup) {
-      if (pendingSharedTaskInvitation?.source === 'link') router.replace('/shared-session');
+      if (pendingSharedTaskInvitation) router.replace('/shared-session');
       else router.replace('/');
-    } else if (auth.isAuthenticated && pendingSharedTaskInvitation?.source === 'link' && segments.join('/') !== 'shared-session') {
+    } else if (auth.isAuthenticated && pendingSharedTaskInvitation && segments.join('/') !== 'shared-session') {
       router.replace('/shared-session');
     }
   }, [auth.initialized, auth.isAuthenticated, pendingSharedTaskInvitation, router, segments]);
@@ -210,7 +209,6 @@ function NavigationGate() {
         </ResidentHomeListProvider>
         </RecentMessageHistoriesProvider>
       </RemoteDesktopHost>
-      {auth.initialized && auth.isAuthenticated && !splashActive && <ClipboardSharedTaskPrompt accountName={auth.user?.name} />}
     </NavigationThemeProvider>
   );
 }
@@ -309,7 +307,7 @@ function PrecreatedWorktreeRecoveryBridge() {
         (id) => invoke(deviceId, 'local-db:sessions:get', [id]),
       ),
       shouldDefer: (record) => (
-        getNewSessionCreationTask(record.sessionId) !== null
+        hasLiveNewSessionCreation(record.sessionId)
         || isPrecreatedWorktreeRegistrationInFlight(record.sessionId)
       ),
       // Account selection updates user/token while the AuthProvider stays mounted.

@@ -57,6 +57,7 @@ function setup(opts: {
   getTeamService?: () => OrcaTeamService | null;
 } = {}) {
   const devices = opts.devices ?? [device({})];
+  const acceptedInputs = new Map<string, string>();
   const remoteInvoke = vi.fn(async (deviceId: string, channel: string, args: unknown[]) => {
     const custom = await opts.handle?.(deviceId, channel, args);
     if (custom) return custom;
@@ -75,7 +76,13 @@ function setup(opts: {
       case 'local-db:history:messages':
         return ok({ items: [], terminal: null });
       case 'maker:input:enqueue':
+        acceptedInputs.set((args[1] as { clientId: string }).clientId, 'cc');
         return ok({});
+      case 'local-db:messages:around-client-id': {
+        const clientId = args[1] as string;
+        const agentKind = acceptedInputs.get(clientId);
+        return ok(agentKind ? [{ clientId, role: 'user', agentKind }] : []);
+      }
       case 'maker:abort-session':
         return ok(undefined);
       case 'maker:orca:remote-worker:release':
@@ -773,6 +780,58 @@ describe('wrapTeamDeps', () => {
     expect(base.dispatchWorkerMessage).not.toHaveBeenCalled();
     expect(remoteInvoke.mock.calls.some(([, channel]) => channel === 'maker:input:enqueue')).toBe(true);
     workers.stop();
+  });
+
+  const remoteAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const remoteSwitchCases = remoteAgentKinds.flatMap(from => remoteAgentKinds
+    .filter(to => to !== from).flatMap(to => ['dispatch', 'interrupt', 'queued'].map(mode => ({ from, to, mode }))));
+  it.each(remoteSwitchCases)('returns the execution device Agent after $from → $to ($mode)', async ({ from, to, mode }) => {
+    let dispatchCount = 0;
+    const acceptedInputs = new Map<string, string>();
+    const { workers, remoteInvoke } = await trackedWorker({ handle: (_device, channel, args) => {
+      if (channel === 'local-db:sessions:get') return ok({ status: 'active',
+        agentKind: from === 'claude-code' ? 'cc' : from,
+        workingDir: '/remote/work', model: 'remote-model' });
+      if (channel === 'maker:input:enqueue') {
+        dispatchCount += 1;
+        if (dispatchCount === 1 || mode !== 'queued') {
+          acceptedInputs.set((args[1] as { clientId: string }).clientId, dispatchCount === 1 ? from : to);
+        }
+        return ok({});
+      }
+      if (channel === 'local-db:messages:around-client-id') {
+        const clientId = args[1] as string;
+        const agentKind = acceptedInputs.get(clientId);
+        return ok(agentKind ? [{ clientId, role: 'user', agentKind }] : []);
+      }
+      if (channel === 'maker:list-active') return ok({ format: 'active-sessions-v2',
+        sessions: [{ sessionId: 'remote-1', isTurnRunning: mode === 'queued' }] });
+      return undefined;
+    } });
+    try {
+      // The pending switch commits only when the execution device consumes the
+      // second input. Both the proxy and the pre-enqueue session row remain old.
+      const wrapped = workers.wrapTeamDeps(baseDeps());
+      const params = { targetSessionId: 'proxy-1', workerId: 'w-1', message: 'Continue',
+        dispatchMeta: { source: 'mcp', context: 'send_to_worker' } };
+      const first = await wrapped.dispatchWorkerMessage(params);
+      expect(first).toMatchObject({ ok: true, mode: 'dispatched', agentKind: from });
+      if (mode === 'queued') await workers.runtime.pollNow();
+      const result = await (mode === 'interrupt'
+        ? wrapped.reserveWorkerMessage(params)
+        : wrapped.dispatchWorkerMessage(params));
+      if (mode === 'queued') {
+        expect(result).toMatchObject({ ok: true, mode: 'queued' });
+        expect(result).not.toHaveProperty('agentKind');
+      } else {
+        expect(result).toMatchObject({ ok: true, mode: 'dispatched', agentKind: to });
+      }
+      const enqueueCalls = remoteInvoke.mock.calls.filter(([, channel]) => channel === 'maker:input:enqueue');
+      expect(enqueueCalls).toHaveLength(2);
+      expect(enqueueCalls[1]![2][1]).toMatchObject({ createOpts: { agentKind: from } });
+      // Enqueue is still the old projection response; acceptance evidence comes
+      // from the existing message lookup, never from a second enqueue.
+    } finally { workers.stop(); }
   });
 
   it('fails the dispatch when the device is offline instead of queueing it', async () => {

@@ -445,3 +445,46 @@ describe('retirement migration from the original plugin', () => {
     expect(screen.queryByRole('button', { name: 'settings.ghosts.retirement.install' })).toBeNull();
   });
 });
+
+describe('organization catalog access notice', () => {
+  function marketSnapshot(organizationAccessError?: string, items = [detail]) {
+    window.electronAPI.pluginMarket.snapshot = async () => ({
+      items,
+      unavailableReason: null,
+      customSourceNames: [],
+      unavailableCustomSourceNames: [],
+      ...(organizationAccessError ? { organizationAccessError } : {}),
+    });
+  }
+
+  it('shows the upgrade hint beside a public plugin', async () => {
+    marketSnapshot('PLUGIN_NAMESPACE_CLIENT_REQUIRED');
+    render(page('/plugins'));
+    expect(await screen.findByText('Navigation Plugin')).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.market.errors.namespaceClientRequired')).toBeTruthy();
+  });
+
+  it('keeps the catalog notice when nothing is installable', async () => {
+    marketSnapshot('PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE', []);
+    render(page('/plugins'));
+    expect(
+      await screen.findByText('settings.ghosts.market.errors.organizationContextUnavailable'),
+    ).toBeTruthy();
+    expect(screen.getByText('settings.ghosts.page.recommendedSection')).toBeTruthy();
+    expect(screen.queryByText('settings.ghosts.page.emptyFiltered')).toBeNull();
+  });
+
+  it('uses the generic hint for an unknown organization access code', async () => {
+    marketSnapshot('PLUGIN_FUTURE_REASON');
+    render(page('/plugins'));
+    expect(await screen.findByText('settings.ghosts.market.errors.organizationUnavailable')).toBeTruthy();
+    expect(screen.getByText('Navigation Plugin')).toBeTruthy();
+  });
+
+  it('does not show an organization access hint when the catalog is complete', async () => {
+    render(page('/plugins'));
+    expect(await screen.findByText('Navigation Plugin')).toBeTruthy();
+    expect(screen.queryByText('settings.ghosts.market.errors.namespaceClientRequired')).toBeNull();
+    expect(screen.queryByText('settings.ghosts.market.errors.organizationUnavailable')).toBeNull();
+  });
+});

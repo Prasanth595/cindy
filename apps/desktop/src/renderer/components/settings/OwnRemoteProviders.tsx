@@ -26,7 +26,7 @@ import { providerMonogram } from '@/lib/providerModels';
 import { collectRemoteProviderGroups, remoteProviderEntryKey } from '@/lib/remoteProviderGroups';
 import { cn } from '@/lib/utils';
 import { PROVIDER_SHARE_AGENT_DEVICE_PREFIX } from '../../../shared/providerShare';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import { providerGroupDeviceCount, type ProviderGroupConfig } from '../../../shared/providerGroup';
 
 import { ReadOnlyProviderModelSection, readOnlyProviderModels } from './ReadOnlyProviderModels';
 
@@ -58,7 +58,7 @@ export interface OwnRemoteProviderList {
 export function useOwnRemoteProviderList(): OwnRemoteProviderList {
   const devices = useControllableDevices();
   const deviceIds = useMemo(() => devices.map((device) => device.deviceId), [devices]);
-  const catalogs = useDevicesProviders(deviceIds);
+  const catalogs = useDevicesProviders(deviceIds, { retainDisplaySnapshot: true });
   // 本机自己建的组：组那一项就是本机的供应商(在上面本机那一段)，组里的远程供应商与分享同样收起。
   const localGroups = useLocalProviderGroups();
   return useMemo(() => {
@@ -174,7 +174,7 @@ export function OwnRemoteProviderRows({
               </span>
               <span className="shrink-0 select-none text-11 tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
                 {entry.group
-                  ? t('settings.providers.remote.groupBadge', { count: entry.group.members.length })
+                  ? t('settings.providers.remote.groupBadge', { count: providerGroupDeviceCount(entry.group.members) })
                   : t('settings.providers.models.modelCount', {
                       count: readOnlyProviderModels(entry.provider, entry.modelVisibilityOverrides).length,
                     })}

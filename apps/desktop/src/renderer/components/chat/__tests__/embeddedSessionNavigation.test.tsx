@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
+  pinSessionOrigin: vi.fn(),
   resolveSessionRoute: vi.fn(async (sessionId: string) => `/cc-agent/${sessionId}`),
   getSession: vi.fn(async (sessionId: string) => ({
     id: sessionId,
@@ -40,7 +41,7 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   getSessionDeviceId: () => undefined,
   remoteProjectsStore: {
     getSessionDeviceId: () => undefined,
-    pinSessionOrigin: () => undefined,
+    pinSessionOrigin: mocks.pinSessionOrigin,
   },
 }));
 vi.mock('@/lib/sessionService', () => ({ get: mocks.getSession }));
@@ -123,6 +124,27 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(chip?.getAttribute('title')).toBeNull();
     expect(mocks.resolveSessionRoute).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('routes an unmirrored remote history link through its host before resolving the task', async () => {
+    render(<SessionLinkChip href="cindy://session/archived-task?device=remote-mac" />);
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.pinSessionOrigin).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/archived-task', undefined));
+    expect(mocks.pinSessionOrigin).toHaveBeenCalledWith('remote-mac', 'archived-task');
+    expect(mocks.pinSessionOrigin.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resolveSessionRoute.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('keeps a link to this computer local', async () => {
+    render(<SessionLinkChip href="cindy://session/local-task?device=this-mac" label="Local task" />);
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/local-task', undefined));
+    expect(mocks.pinSessionOrigin).not.toHaveBeenCalled();
   });
 
   it('reports split-pane session navigation before changing the route', async () => {
@@ -443,7 +465,7 @@ describe('sidebar-embedded session navigation boundary', () => {
       'if (sessionNavigationVersionRef.current !== navigationRequestVersion) return;',
     );
     expect(source).toContain(
-      'if (sessionNavigationVersionRef.current !== forkStripNavigationVersion) return;',
+      'if (sessionNavigationVersionRef.current !== forkStripNavigationVersion || !recovery.isCurrent()) return;',
     );
     expect(source).toContain('isNavigationCurrent:');
     expect(source).toContain('[navigationMode, sessionId],');

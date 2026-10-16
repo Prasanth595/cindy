@@ -79,6 +79,7 @@ import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
 import { captureImContext, type ImContextSnapshot } from '../../shared/imMessageSource.js';
 import type { GroupHistoryAccessScope } from '../im/shared/groupHistoryAccess.js';
 import { hookReplyTarget } from '../im/shared/autoReviewReferences.js';
+import { QUOTA_FAILURE_NOTICE_PREFIX } from '../im/shared/turnRetryNotice.js';
 import { groupHistoryAccessForExternalKey } from './groupHistoryScope.js';
 import { isPathWithin } from './paths.js';
 import { createAckReactions, type AckReactionTask } from './ackReactions.js';
@@ -253,7 +254,10 @@ export interface HookRunRequest {
    * 连接不在线时直接丢弃, 不缓存不重发(与 turn.end 的离线补发相反)。
    */
   onProgress?: (text: string) => void;
-  /** Independent, acknowledged channel notice after runtime retirement fails. */
+  /**
+   * Independent, acknowledged channel notice outside the turn result: runtime
+   * retirement failures and the fixed 代输入 pointer.
+   */
   onRuntimeRecovery?: (text: string) => Promise<boolean>;
   /**
    * 执行中交互卡回调(interaction.request 链路)。runner 把 maker 的
@@ -474,6 +478,20 @@ export interface HookDispatcher {
    * 幂等。
    */
   dispose(): void;
+}
+
+/**
+ * 新任务路由不可用(来源 / 模型 / 停用裁决)的错误前缀。这类错误文本只含供应商与
+ * 模型 id, 可原样进主日志; 其余失败原因可能带路径或用户内容, 日志里只记类别。
+ */
+export const HOOK_ROUTE_UNAVAILABLE_PREFIX = 'hook session route unavailable:';
+
+function hookFailureReasonForLog(errorMessage: string | null | undefined): string {
+  const message = errorMessage ?? '';
+  // 额度说明里带供应商名与上游原文, 日志只记类别。
+  if (message.startsWith(QUOTA_FAILURE_NOTICE_PREFIX)) return 'provider-quota-exhausted';
+  if (!message.startsWith(HOOK_ROUTE_UNAVAILABLE_PREFIX)) return 'unclassified';
+  return message.replace(/\s+/g, ' ').slice(0, 300);
 }
 
 /** 单 session 排队上限 —— 超过按 rejected(invalid) 打回, 防失控上游刷爆。 */
@@ -1845,6 +1863,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     };
 
     let outcome: HookRunOutcome;
+    let runnerThrew = false;
     /**
      * 开跑前按当前映射再确认一次(见 dirStillAllowed)。resolveTarget 到这里之间
      * 隔着排队与若干 await(新建路径还要等 worktree 预建 / 对话目录分配), 映射
@@ -1922,10 +1941,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           isDirAuthorized: (dir) => dirStillAllowed(task.connectionId, dir),
         });
       } catch (err) {
+        runnerThrew = true;
         outcome = {
           status: 'error',
           finalText: '',
           errorMessage: err instanceof Error ? err.message : String(err),
+          // 没有真实测量: runner 在建会话前就失败了, 0 只是占位。
           durationMs: 0,
         };
       }
@@ -1944,6 +1965,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const status: 'ok' | 'error' | 'cancelled' = wasCancelled ? 'cancelled' : outcome.status;
     // 协议约束: error 必须带非空 errorMessage, ok / cancelled 必须为 null
     const isError = status === 'error';
+    if (isError) {
+      // 失败原因原先只进 request ledger, 主日志里只有 dispatch / delivered 两行(issue #5912)。
+      log.warn(
+        `hook task ${task.requestId} failed: im=${task.run.source?.im ?? 'none'} via=${runnerThrew ? 'throw' : 'outcome'} reason=${hookFailureReasonForLog(outcome.errorMessage)}`,
+      );
+    }
     let turnEnd: TurnEndPayload = {
       requestId: task.requestId,
       externalKey: task.externalKey,

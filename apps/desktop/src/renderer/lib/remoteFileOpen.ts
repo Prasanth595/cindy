@@ -67,7 +67,7 @@ export async function fetchChatFileToCache(
 
 /**
  * 带 toast UX 的取回:成功返回缓存副本路径(stale 时附 warning 提示),失败
- * toast 后返回 null。适用于「取到副本后马上做一个本机动作」的一次性交互
+ * toast 后返回 null;用户在进度 toast 上点了「取消」则静默返回 null。适用于「取到副本后马上做一个本机动作」的一次性交互
  * (打开 / 定位 / 复制文件)。
  */
 export async function fetchChatFileWithToasts(
@@ -78,6 +78,7 @@ export async function fetchChatFileWithToasts(
   const progress = createFileTransferToast();
   try {
     const res = await fetchChatFileToCache(origin, workdir, absPath, progress.requestId);
+    if (progress.cancelled) return null;
     if (!res.ok) {
       toast.error(chatFileErrorText(res.code));
       return null;
@@ -134,6 +135,7 @@ export async function downloadRemoteChatEntry(
         code: 'FETCH_FAILED' as const,
         message: String(err),
       }));
+    if (progress.cancelled) return;
     if (!res.ok) {
       toast.error(chatDownloadErrorText(res.code));
       return;

@@ -265,6 +265,8 @@ async function makeFixture(options: {
    * permissions or mocking fs.
    */
   poisonResultPath?: boolean;
+  /** Override the per-task profile prompt, e.g. to blow the spawn argv budget. */
+  profilePrompt?: string;
 } = {}) {
   const root = await tempRoot();
   const runId = randomUUID();
@@ -495,7 +497,7 @@ process.stdin.on('end', () => {
       title: `scout ${index + 1}`,
       task: `task ${index + 1}`,
       tools: 'read,grep,find,ls',
-      profilePrompt: 'fixture prompt',
+      profilePrompt: options.profilePrompt ?? 'fixture prompt',
       provider: 'fixture',
       model: 'fixture-model',
       thinking: 'high',
@@ -596,6 +598,49 @@ describe('Cindy durable PI Subagent runner', () => {
       });
       await waitForClose(fixture.child, fixture.stderr);
     });
+  });
+
+  // A profile prompt long enough to blow the platform spawn command line budget
+  // must fail closed as a readable task error. Without the guard the spawn
+  // itself throws (ENAMETOOLONG / EINVAL on Windows) and the run ends with an
+  // opaque error instead of saying which argument was too long.
+  it('fails a task closed when its profile prompt exceeds the spawn argv budget', async () => {
+    // Over the budget on both platforms: 30k on Windows, 128k on POSIX.
+    const fixture = await makeFixture({
+      profilePrompt: 'profile prompt. '.repeat(process.platform === 'win32' ? 3000 : 9000),
+    });
+    const failed = await waitFor(async () => {
+      const [run] = await listPiSubagentRuns(fixture.root);
+      return run?.state === 'failed' ? run : null;
+    });
+    expect(failed.tasks[0]?.status).toBe('failed');
+    expect(failed.tasks[0]?.error).toMatch(/spawn budget/i);
+    expect(await readCommandsIfPresent(fixture.commandsFile)).toBeNull();
+  });
+
+  // 两种口径：Windows CreateProcess 上限是 32767 个 UTF-16 字符（按字节算会把中文
+  // 放大三倍、误拒），POSIX 的 ARG_MAX 按字节算（按字符算会漏检中文长提示词）。
+  it('measures argv in characters on Windows and in UTF-8 bytes on POSIX', async () => {
+    // ~4.5 万字符 ≈ 13.5 万 UTF-8 字节：字符数超 Windows 的 30k、字节数超 POSIX
+    // 的 128k，两边都该被拒。
+    const oversized = await makeFixture({
+      profilePrompt: '中文提示词'.repeat(9000),
+    });
+    const failed = await waitFor(async () => {
+      const [run] = await listPiSubagentRuns(oversized.root);
+      return run?.state === 'failed' ? run : null;
+    });
+    expect(failed.tasks[0]?.error).toMatch(/spawn budget/i);
+    expect(await readCommandsIfPresent(oversized.commandsFile)).toBeNull();
+
+    // ~1.8 万字符 ≈ 5.4 万 UTF-8 字节：两边都没超，必须照常跑完 —— 这条在
+    // Windows 上按字节估时会被误拒。
+    const fits = await makeFixture({ profilePrompt: '中文'.repeat(9000) });
+    const completed = await waitFor(async () => {
+      const [run] = await listPiSubagentRuns(fits.root);
+      return run?.state === 'completed' ? run : null;
+    });
+    expect(completed.tasks[0]?.status).toBe('completed');
   });
 
   it('uses unique exact child session ids and persists terminal output/usage', async () => {
@@ -899,9 +944,14 @@ describe('Cindy durable PI Subagent runner', () => {
       const claimPath = path.join(fixture.root, first.runId, 'resume.claim');
       await writeFile(claimPath, '', { mode: 0o600 });
 
-      const attempt = resumePiSubagentRun(
-        fixture.root, first.runId, 'continue', resumeLaunch(fixture),
-      );
+      const attempt = Promise.allSettled([
+        resumePiSubagentRun(
+          fixture.root,
+          first.runId,
+          "continue",
+          resumeLaunch(fixture),
+        ),
+      ]);
       // The racer completes its write inside the re-read budget. Late enough
       // that a single-read implementation has certainly already given up on it,
       // early enough to land before the budget expires.
@@ -913,7 +963,13 @@ describe('Cindy durable PI Subagent runner', () => {
         { mode: 0o600 },
       );
 
-      await expect(attempt).rejects.toThrow(/already resuming this Subagent generation/i);
+      const [outcome] = await attempt;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status === "rejected") {
+        expect(() => {
+          throw outcome.reason;
+        }).toThrow(/already resuming this Subagent generation/i);
+      }
       // The decisive part: no second generation was launched over that session.
       const runs = await listPiSubagentRuns(fixture.root);
       expect(runs.filter((run) => run.taskId === first.taskId)).toHaveLength(1);

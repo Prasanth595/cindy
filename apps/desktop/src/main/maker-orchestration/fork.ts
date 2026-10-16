@@ -14,6 +14,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { CodexResumePreparationBlockedError, isCodexHistoryRecoveryRequired } from '@cindy/maker-core';
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 
+import { assertCindyMakeSessionAvailable } from '../cindy-make/featureGate.js';
 import { getDbClient } from '../localDb/client/current';
 import { sessions, messages } from '../localDb/schema';
 import { sessionToCamel } from '../localDb/mapper';
@@ -784,6 +785,8 @@ export async function forkSessionAtMessage(
     throw forkError('SOURCE_NOT_FOUND', `Source session ${sourceSessionId} 不存在`);
   }
 
+  assertCindyMakeSessionAvailable(source.source);
+
   // 轮 26 发现 5 防御深度:远端会话 fork 由 SDK 层拒绝(pi forkSdkSession 抛
   // NotSupportedError remoteFork;cc/codex 由 daemon 远端执行)。host 层显式
   // 守卫兜底 —— 若未来某 agent 的 SDK 守卫漏掉,这里阻止 DB 写入产生
@@ -1092,6 +1095,9 @@ export async function forkSessionStripEncrypted(sourceSessionId: string): Promis
   if (!source) {
     throw forkError('SOURCE_NOT_FOUND', `Source session ${sourceSessionId} 不存在`);
   }
+
+  assertCindyMakeSessionAvailable(source.source);
+
   // 先校验"类型"再校验"运行状态":non-codex 会话(可能 sdkSessionId 也为空)应拿到
   // 更准确的 NOT_CODEX_SESSION 而不是 SOURCE_NEVER_RAN。
   if (source.agentKind !== 'codex') {

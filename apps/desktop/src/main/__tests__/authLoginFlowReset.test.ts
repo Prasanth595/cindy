@@ -120,7 +120,8 @@ describe('auth login-flow reset', () => {
     const discoveryBody = source.slice(discoveryStart, source.indexOf('\n}', discoveryStart));
     expect(discoveryBody).toContain('pendingAuthRealm = null;');
 
-    const actionStart = source.indexOf('async function runLoginAction(action: DesktopLoginAction)');
+    const actionStart = source.indexOf('async function runLoginAction(');
+    expect(actionStart).toBeGreaterThan(-1);
     const actionPreamble = source.slice(
       actionStart,
       source.indexOf('const stateBeforeAction', actionStart),
@@ -449,7 +450,8 @@ describe('auth login-flow reset', () => {
   });
 
   it('invalidates pending add-account actions without cancelling an accepted login commit', () => {
-    const runStart = source.indexOf('async function runLoginAction(action: DesktopLoginAction)');
+    const runStart = source.indexOf('async function runLoginAction(');
+    expect(runStart).toBeGreaterThan(-1);
     const runEnd = source.indexOf('\n}\n\nexport async function dispatchLoginAction', runStart);
     const runBody = source.slice(runStart, runEnd);
     expect(runBody).toContain('const actionLoginFlowEpoch = loginFlowEpoch;');

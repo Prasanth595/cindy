@@ -12,6 +12,7 @@ import {
   type ProviderShareModelUsageView,
   type ProviderShareMoney,
   type ProviderShareOwnedView,
+  type ProviderShareReshareView,
 } from '../../../shared/providerShare';
 
 /** 分享入口的能力门：允许远程控制 → 允许被远程调用 → 分享(产品规则 §3)。 */
@@ -137,6 +138,34 @@ export function pendingRequestsFromOwned(
     }
   }
   return items.sort((a, b) => Date.parse(a.request.createdAt) - Date.parse(b.request.createdAt));
+}
+
+/** 待处理的转分享请求(provider-sharing.md §4.3)：成员想把分享来的供应商经自己的供应商组转给这个人用。 */
+export interface ProviderSharePendingReshare {
+  reshare: ProviderShareReshareView;
+  /** 经谁的供应商组(已分享的那个成员)。 */
+  owner: { memberId: string; displayName: string; avatarUrl: string | null };
+  share: { shareId: string; providerId: string; providerLabel: string };
+}
+
+/** owned 快照 → 待处理的转分享请求(按请求时间先后)。 */
+export function pendingResharesFromOwned(
+  shares: readonly ProviderShareOwnedView[],
+): ProviderSharePendingReshare[] {
+  const items: ProviderSharePendingReshare[] = [];
+  for (const share of shares) {
+    for (const member of share.members) {
+      for (const reshare of member.reshares ?? []) {
+        if (reshare.state !== 'pending') continue;
+        items.push({
+          reshare,
+          owner: { memberId: member.memberId, displayName: member.displayName, avatarUrl: member.avatarUrl },
+          share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+        });
+      }
+    }
+  }
+  return items.sort((a, b) => a.reshare.requestedAt - b.reshare.requestedAt);
 }
 
 /** 受邀者打开链接时，错误码对应的弹窗状态。 */

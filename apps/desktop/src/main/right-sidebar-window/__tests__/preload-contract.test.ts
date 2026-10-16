@@ -188,7 +188,7 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
       'listDir', 'listAllFiles', 'readFile', 'writeFile', 'createFile', 'createFolder',
       'deleteEntry', 'renameEntry', 'stat', 'startWatch', 'stopWatch', 'onEvent',
       'fetchRemote', 'readCached', 'cachePut', 'onTransferProgress', 'chatFetch', 'chatDownload',
-      'chatStat',
+      'chatCancel', 'chatStat',
     ]));
     expect(terminalKeys).toEqual(expect.arrayContaining([
       'create', 'write', 'resize', 'dispose', 'restart', 'onData', 'onExit',
@@ -224,7 +224,7 @@ describe('sidebarWindowPreload 椤跺眰濂戠害', () => {
     }
     for (const key of [
       'install', 'uninstall', 'inspect', 'devRuntime', 'devCall',
-      'approve', 'revokeApproval', 'setCindyPref', 'listCardsBySession',
+      'approve', 'revokeApproval', 'setErrandConfig', 'listCardsBySession',
     ]) {
       expect(ghostKeys).not.toEqual(expect.arrayContaining([key]));
     }

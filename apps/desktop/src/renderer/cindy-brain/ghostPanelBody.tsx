@@ -206,6 +206,20 @@ export function GhostWebviewBody({
   const partitionClaim = installedGhostWebviewPartitionClaim(ghost);
   const [generation, setGeneration] = useState(0);
   const [mediaMenu, setMediaMenu] = useState<GhostPanelMediaMenuState | null>(null);
+
+  // The host is swapping this instance's library on disk. Drop the webview
+  // until the swap and the partition clear finish, then load from disk again,
+  // so the old page cannot write its state over the swapped library.
+  const [librarySwapping, setLibrarySwapping] = useState(false);
+  useEffect(() => window.electronAPI?.ghosts?.onLibraryReplaced?.((payload) => {
+    if (payload?.id !== instanceId) return;
+    if (payload.phase === 'start') {
+      setLibrarySwapping(true);
+      return;
+    }
+    setLibrarySwapping(false);
+    setGeneration((value) => value + 1);
+  }), [instanceId]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const setHostNode = useCallback(
     (el: HTMLDivElement | null) => {
@@ -216,7 +230,7 @@ export function GhostWebviewBody({
   );
 
   useEffect(() => {
-    if (crashed || !html) return;
+    if (crashed || !html || librarySwapping) return;
     const host = hostRef.current;
     if (!host) return;
     const webview = document.createElement('webview') as WebviewTag;
@@ -293,7 +307,7 @@ export function GhostWebviewBody({
     };
     // version 入依赖:原位更新换版后 webview 重挂载,面板立刻跑新代码
     // (供片协议直读安装目录,不重挂会一直渲染旧版缓存的页面)。
-  }, [crashed, generation, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html]);
+  }, [crashed, generation, librarySwapping, instanceId, approvalToken, partitionClaim, manifest.id, manifest.version, manifest.resolvedLocale, html]);
 
   if (crashed) {
     return (

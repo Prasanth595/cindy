@@ -23,6 +23,8 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invo
 vi.mock('@/device-link/useMobileMakerTransport', () => ({
   useMobileMakerTransport: () => ({ resolveInteraction }),
 }));
+// 代输入 card has its own tests; its native modules (clipboard, secure store) are out of scope here.
+vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null }));
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
@@ -267,6 +269,55 @@ it.each([false, true])('restores the last answer after a rejected receipt and cl
   expect(resolveInteraction.mock.calls[1][1]).toMatchObject({ answers: { 'Your answer?': 'Keep the connection' } });
   expect(input()).toBeNull();
   expect(readAskUserDraft(requestId)).toBeNull();
+});
+
+it('keeps a typed custom answer when the pending request is refetched or the card remounts', async () => {
+  const pending = () => [{ request: {
+    kind: 'ask_user_question', requestId,
+    questions: [{ question: 'Spine license?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+  } }];
+  remoteSessionStore.setPendingInteractions('s1', pending());
+  await act(async () => root.render(<Harness />));
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'No, figure it out';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 回到前台后重新拉取待处理请求:内容相同但对象引用全新。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', pending()));
+  expect(input()?.value).toBe('No, figure it out');
+  await act(async () => root.render(null));
+  await act(async () => root.render(<Harness />));
+  expect(input()?.value).toBe('No, figure it out');
+});
+
+it('starts over when the same request replaces its questions', async () => {
+  const first = { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] };
+  const second = { question: 'Second?', options: [{ label: 'A' }, { label: 'B' }] };
+  remoteSessionStore.setPendingInteractions('s1', [{ request: { kind: 'ask_user_question', requestId, questions: [first, second] } }]);
+  await act(async () => root.render(<Harness />));
+  const question = () => (host.textContent!.includes('Second?') ? 'Second?' : host.textContent!.includes('First?') ? 'First?' : null);
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.submitButton');
+  expect(question()).toBe('Second?');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'Old payload answer';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 同一 requestId 的问题从两道变成一道:旧题号与输入都不能带进新内容。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [first],
+  } }]));
+  expect(question()).toBe('First?');
+  expect(input()).toBeNull();
+  resolveInteraction.mockResolvedValueOnce({ accepted: true });
+  await click('interaction.ask.option.2');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).toHaveBeenCalledTimes(1);
+  expect(resolveInteraction.mock.calls[0][1]).toMatchObject({ answers: { 'First?': 'No' } });
 });
 
 

@@ -1,4 +1,5 @@
 import { formatCompactionDuration, formatSessionDuration, formatShellDuration } from '@/lib/sessionDurationFormat';
+import { InputHandoffRecordRow, readInputHandoffRecordData } from '@/features/input-handoff/InputHandoffRecordRow';
 import { Button } from '@/components/ui/button';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 /**
@@ -51,13 +52,12 @@ import {
   ACTIVITY_ROW_RADIUS_CLASS,
 } from './activityRowChrome';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { CindyMakeDoctorCard } from './CindyMakeDoctorCard';
 import { builtInSkillDescriptionKey } from '@/features/skillhub/lib/builtInSkillPresentation';
-import { CindyMakeCompleteCard } from '@/components/cindy-make/CindyMakeCompleteCard';
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 
 interface SystemCardProps {
   cardType:
+    | 'input-handoff'
     | 'cindy-make-doctor'
     | 'cindy-make'
     | 'help'
@@ -1410,10 +1410,12 @@ export function SystemCard({
   workingDir,
   autoResumeInFlight,
 }: SystemCardProps) {
+  if (
+    cardType === 'cindy-make-doctor' ||
+    cardType === 'cindy-make' ||
+    cardType === 'cindy-make-complete'
+  ) return null;
   switch (cardType) {
-    case 'cindy-make-doctor':
-    case 'cindy-make':
-      return <CindyMakeDoctorCard data={data} sessionId={sessionId} />;
     case 'help':
       return <HelpCard data={data} />;
     case 'cost':
@@ -1432,8 +1434,6 @@ export function SystemCard({
       return <GoalCompleteCard data={data} />;
     case 'goal-resumed':
       return <GoalResumedCard data={data as { kind?: string } | undefined} />;
-    case 'cindy-make-complete':
-      return <CindyMakeCompleteCard data={data} />;
     case 'auto-resume': {
       // 同一个卡类型承载两套自愈:带中断上下文的是本份的「重连」记录,没有的是 silent-stop
       // 的「已自动继续」分隔条 —— 后者保持原形态原文案,不被重连三态改写(copilot review)。
@@ -1464,6 +1464,10 @@ export function SystemCard({
       return <BotAuthorizationCardView data={data} sessionId={sessionId} />;
     case 'bot-direct-message':
       return <BotDirectMessageCard data={data} sessionId={sessionId} />;
+    case 'input-handoff': {
+      const record = readInputHandoffRecordData(data);
+      return record ? <InputHandoffRecordRow record={record} at={typeof data?.at === 'string' ? data.at : undefined} /> : null;
+    }
     default:
       return null;
   }

@@ -8,6 +8,16 @@ import {
 } from '../index.js';
 
 describe('remote invoke policy boundaries', () => {
+  it('keeps mobile history recovery within the fork budget without retrying writes', () => {
+    const channel = 'maker:fork-strip-encrypted';
+    expect(resolveRemoteInvokeTimeoutMs(channel, ['source'], 'mobile')).toBe(30_000);
+    expect(resolveRemoteInvokeTimeoutMs(channel, ['source'], 'desktop')).toBeUndefined();
+    expect(resolveRemoteInvokeTimeoutMs('maker:list-active', [], 'mobile')).toBeUndefined();
+    expect(isPeerResetRetryableReadChannel(channel)).toBe(false);
+    expect(isCompletedInvokeRetryableReadChannel(channel)).toBe(false);
+    expect(canCoalesceRemoteListing({ channel, args: ['source'] })).toBe(false);
+  });
+
   it.each(['desktop', 'mobile'] as const)('waits for group sends only on %s without replaying writes', (platform) => {
     const channel = 'maker:remote-resources:invoke';
     expect(resolveRemoteInvokeTimeoutMs(channel, [{ collectionId: 'bot-groups', actionId: 'send' }], platform)).toBe(180_000);

@@ -16,12 +16,10 @@
 }
 .todo-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px;
+  grid-template-columns: minmax(0, 1fr) 144px;
   gap: 8px;
 }
 .todo-tools input,
-.todo-tools select,
-.todo-filters select,
 .todo-field input,
 .todo-field textarea {
   min-width: 0;
@@ -38,12 +36,6 @@
   justify-content: space-between;
   gap: 8px;
   margin: 8px 0;
-}
-.todo-filters select {
-  max-width: 50%;
-  border-color: transparent;
-  background: transparent;
-  padding: 2px;
 }
 .todo-list {
   list-style: none;
@@ -188,4 +180,7 @@
 .todo-panel :focus-visible {
   outline: 2px solid var(--text-primary);
   outline-offset: 2px;
+}
+.todo-panel .todo-filter-trigger:focus-visible {
+  outline: none;
 }

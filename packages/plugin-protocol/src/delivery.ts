@@ -162,6 +162,19 @@ export interface PluginRemovalNotice {
   removedAt: string;
 }
 
+/** scope=all 中企业部分被拒绝时的已知错误码。解析器也接受格式合法的未知码。 */
+export const ORGANIZATION_PLUGIN_ACCESS_ERROR_CODES = [
+  'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+  'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+  'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+] as const;
+
+export interface OrganizationPluginAccessError {
+  /** 已知码见 ORGANIZATION_PLUGIN_ACCESS_ERROR_CODES；未知但格式合法的码也保留。 */
+  code: string;
+  message: string;
+}
+
 /** Plugin 分页列表响应。 */
 export interface ListPluginsResponse {
   /** Plugin HTTP envelope 版本。 */
@@ -177,6 +190,11 @@ export interface ListPluginsResponse {
    * 规范化为 `null`。组织已登录但未登记前缀时为 `{ organizationId, pluginPrefix: null }`。
    */
   currentOrganization: PluginCurrentOrganization | null;
+  /**
+   * scope=all 的企业部分被拒绝。每页重复；出现时必须同时有 currentOrganization，
+   * 且本页不能有企业条目或清理通告。缺失表示企业部分按原规则返回。
+   */
+  organizationAccessError?: OrganizationPluginAccessError;
 }
 
 /** 单个 Plugin 详情响应。 */
@@ -456,7 +474,8 @@ function parseCurrentOrganization(value: unknown): PluginCurrentOrganization | n
  * 未知字段会被忽略；已知字段缺失、值不合法或 schema 版本不支持时抛出
  * `PluginProtocolError`。`removals` 缺失时规范化为空数组，动作未知的通告
  * 会被跳过而不影响其余内容。`currentOrganization` 缺失或为 null 时规范化为
- * `null`；对象存在但缺少 `pluginPrefix` 键时抛错。
+ * `null`；对象存在但缺少 `pluginPrefix` 键时抛错。`organizationAccessError`
+ * 缺失时不保留；出现时必须同时有组织身份，且不能夹带企业条目或清理通告。
  */
 export function parseListPluginsResponse(value: unknown): ListPluginsResponse {
   const raw = object(value, 'response');
@@ -467,6 +486,15 @@ export function parseListPluginsResponse(value: unknown): ListPluginsResponse {
   const plugins = raw.plugins.map(parseVisiblePluginSummary);
   const removals = parseRemovals(raw.removals);
   const currentOrganization = parseCurrentOrganization(raw.currentOrganization);
+  const organizationAccessError = parseOrganizationAccessError(raw.organizationAccessError);
+  if (
+    organizationAccessError &&
+    (!currentOrganization ||
+      plugins.some((item) => item.scope === 'organization') ||
+      removals.length > 0)
+  ) {
+    throw new PluginProtocolError('企业准入拒绝响应不能包含企业资源或清理通告');
+  }
   assertPluginListOrganizationNamespace(currentOrganization, plugins, removals);
   return {
     schemaVersion: PLUGIN_API_SCHEMA_VERSION,
@@ -474,6 +502,22 @@ export function parseListPluginsResponse(value: unknown): ListPluginsResponse {
     nextCursor: nextCursor(raw.nextCursor, 'response.nextCursor'),
     removals,
     currentOrganization,
+    ...(organizationAccessError ? { organizationAccessError } : {}),
+  };
+}
+
+const ORGANIZATION_PLUGIN_ACCESS_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+function parseOrganizationAccessError(value: unknown): OrganizationPluginAccessError | undefined {
+  if (value === undefined) return undefined;
+  const error = object(value, 'response.organizationAccessError');
+  const code = string(error.code, 'response.organizationAccessError.code', 64);
+  if (!ORGANIZATION_PLUGIN_ACCESS_ERROR_CODE_PATTERN.test(code)) {
+    throw new PluginProtocolError('organizationAccessError.code 不合法');
+  }
+  return {
+    code,
+    message: string(error.message, 'response.organizationAccessError.message', 512),
   };
 }
 

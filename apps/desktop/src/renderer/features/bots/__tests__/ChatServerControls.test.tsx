@@ -1,19 +1,23 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { ChatInviteButton, ChatMessageActions } from '../ChatServerControls';
+import { ChatInviteDialog } from '../ChatInviteDialog';
 import { ChatThreadPanel } from '../ChatThreadPanel';
+import { flashThreadTarget } from '../BotGroupThreadViews';
+import { chatErrorKey } from '../chatError';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { queryShareableMessageIds, stripInteractiveElements } from '@/lib/shareConversationImage';
 
 const mocks = vi.hoisted(() => ({
-  status: vi.fn(), react: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
-  refresh: vi.fn(), ownerCurrent: true,
+  status: vi.fn(), react: vi.fn(), reactors: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
+  refresh: vi.fn(), shareToMain: vi.fn(), ownerCurrent: true,
 }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
+vi.mock('react-i18next', async (original) => ({ ...(await original<typeof import('react-i18next')>()),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({ MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div> }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => null }));
 vi.mock('../botGroupStore', () => ({ refreshBotGroups: mocks.refresh }));
@@ -22,7 +26,7 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => 1, isDataOwnerGenerationCurrent: () => mocks.ownerCurrent, isDataOwnerPushCurrent: () => true,
 }));
 const k = (name: string) => `bots.groupChat.server.${name}`;
-const message = { id: 'root', authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }] } as BotGroupMessageView;
+const message = { id: 'root', authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }], attachments: [] } as unknown as BotGroupMessageView;
 const group = { id: 'room', members: [], messages: [message] } as unknown as BotGroupDetail;
 const render = (ui: ReactNode) => renderUI(<Tooltip.Provider>{ui}</Tooltip.Provider>);
 beforeEach(() => {
@@ -31,6 +35,7 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   mocks.status.mockResolvedValue({ enabled: true, connected: true });
   mocks.react.mockResolvedValue({ ok: true });
+  mocks.reactors.mockResolvedValue({ ok: true, reactors: [] });
   mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [], hasMore: false });
   mocks.createInvite.mockResolvedValue({ ok: true, link: 'cindy://chat-invite/test', expiresAt: '' });
   mocks.previewInvite.mockResolvedValue({ ok: true, groupId: 'room', name: 'Invited group', inviterName: 'Host' });
@@ -42,10 +47,98 @@ beforeEach(() => {
 afterEach(() => { cleanup(); shareSelectionStore.reset(); vi.unstubAllGlobals(); });
 
 describe('chat interaction controls', () => {
-  it('focuses the close button when the archived thread reply input is disabled', () => {
-    render(<ChatThreadPanel group={{ ...group, archived: true }} rootId="root" onClose={vi.fn()} />);
+  it.each([{ archived: true }, { archived: false, dissolvedAt: '2026-10-15T00:00:00.000Z' }])('keeps terminal thread replies read-only and focuses close (%j)', async state => {
+    render(<ChatThreadPanel group={{ ...group, ...state }} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Root message');
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole('checkbox', { name: k('thread.alsoSend') }) as HTMLButtonElement).disabled).toBe(true);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Unsent reply' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect((screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.reply).not.toHaveBeenCalled();
+  });
+
+  it.each(['GROUP_DISSOLVED', 'CONVERSATION_DISSOLVED'])('maps dissolution error %s to its explanation', code => {
+    expect(chatErrorKey(code)).toBe('bots.groupChat.lifecycle.dissolved');
+  });
+
+  it.each([{ archived: true }, { dissolvedAt: '2026-10-15T00:00:00.000Z' }])('stops sharing and retrying thread copies after the group becomes read-only (%j)', async state => {
+    const room = { ...group, id: `terminal-${JSON.stringify(state)}` };
+    mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [{ ...message, id: 'reply', kind: 'message', content: 'Existing reply' }], hasMore: false });
+    mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const view = render(<ChatThreadPanel group={room} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Existing reply');
+    fireEvent.click(screen.getByRole('checkbox', { name: k('thread.alsoSend') }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Send to both' } });
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await screen.findByRole('button', { name: k('thread.retryPost') });
+    view.rerender(<Tooltip.Provider><ChatThreadPanel group={{ ...room, ...state }} rootId="root" onClose={vi.fn()} /></Tooltip.Provider>);
+    const retry = screen.getByRole('button', { name: k('thread.retryPost') }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(true);
+    fireEvent.click(retry);
+    const reply = screen.getByText('Existing reply').closest('article')!;
+    const more = within(reply).queryByRole('button', { name: 'chat.messageActionBar.moreActions' });
+    if (more) fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+    expect(screen.queryByRole('menuitem', { name: k('thread.postToMain') })).toBeNull();
+    expect(mocks.shareToMain).toHaveBeenCalledOnce();
+  });
+
+  it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
+    const observed: Array<{ target: Element; callback: () => void }> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe(target: Element) { observed.push({ target, callback: this.callback }); }
+      disconnect() {}
+    });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    let width = 400, contentHeight = 48;
+    Object.defineProperty(input, 'clientWidth', { configurable: true, get: () => width });
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => contentHeight });
+    fireEvent.change(input, { target: { value: 'A long reply that wraps onto several lines' } });
+    expect(input.style.height).toBe('48px');
+    const refit = observed.find(entry => entry.target === input)!.callback;
+    width = 200; contentHeight = 96;
+    refit();
+    expect(input.style.height).toBe('96px');
+    contentHeight = 120;
+    refit();
+    expect(input.style.height).toBe('96px');
+  });
+
+  it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
+    let settle: (value: { ok: true; messageId: string }) => void = () => {};
+    mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'In flight' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    expect(document.activeElement).toBe(input);
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(sendButton);
+    expect(mocks.reply).toHaveBeenCalledOnce();
+    settle({ ok: true, messageId: 'reply' });
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(input.readOnly).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('keeps the caret in the reply when the send button is pressed with the mouse', () => {
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') });
+    fireEvent.change(input, { target: { value: 'Clicked send' } });
+    input.focus();
+    // A cancelled mousedown is what stops Chromium moving focus onto the button.
+    expect(fireEvent.mouseDown(sendButton)).toBe(false);
+    input.blur();
+    expect(fireEvent.mouseDown(sendButton)).toBe(true);
   });
 
   it('closes from the square button surface outside the icon and retains the standard focus treatment', () => {
@@ -99,13 +192,77 @@ describe('chat interaction controls', () => {
     expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ sourceMessageIds: [older.id, latest.id] });
   });
 
+  it('stops a bulk retry of main-chat copies once the account is switched', async () => {
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    render(<ChatThreadPanel group={group} rootId="retry-root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') });
+    for (const [count, text] of [[1, 'one'], [2, 'two']] as const) {
+      fireEvent.click(screen.getByRole('checkbox', { name: k('thread.alsoSend') }));
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(count));
+    }
+    const retry = await screen.findByRole('button', { name: k('thread.retryPost') });
+    let finish!: (value: unknown) => void;
+    mocks.shareToMain.mockClear().mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue({ ok: true, messageId: 'share', alreadyShared: false });
+    fireEvent.click(retry);
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    // The account changes while the first copy is in flight: the second must not go out.
+    mocks.ownerCurrent = false;
+    finish({ ok: true, messageId: 'share', alreadyShared: false });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(1);
+  });
+
+  it('names an unavailable share only for posting; a missing message elsewhere stays generic', () => {
+    expect(chatErrorKey('SHARE_UNAVAILABLE')).toBe(k('thread.shareUnavailable'));
+    expect(chatErrorKey('MESSAGE_NOT_FOUND')).toBe(k('requestFailed'));
+  });
+
+  it.each([[true, 'auto'], [false, 'smooth']] as const)('jumps to a shared reply without smooth scrolling when reduced motion is %s', (reduced, behavior) => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: reduced && query === '(prefers-reduced-motion: reduce)' }));
+    const target = document.createElement('article');
+    target.scrollIntoView = vi.fn();
+    flashThreadTarget(target);
+    expect(target.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior });
+  });
+
+  it('keeps looking for a shared reply when group pushes overtake its older-page reads', async () => {
+    const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply' };
+    const target = { ...message, id: 'target', sequence: 4, content: 'Target reply' };
+    const olderReads: Array<(value: unknown) => void> = [];
+    mocks.thread.mockImplementation(({ before }: { before?: number }) => before
+      ? new Promise(resolve => { olderReads.push(resolve); })
+      : Promise.resolve({ ok: true, root: message, replies: [latest], hasMore: true }));
+    let push!: (event: { groupId: string }, stamp: unknown) => void;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
+      chatServer: mocks, onBotGroupChanged: (listener: typeof push) => { push = listener; return () => {}; },
+    } } });
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    onTestFinished(() => { delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
+    render(<ChatThreadPanel group={group} rootId="root" focus={{ messageId: target.id, nonce: 1 }} onClose={vi.fn()} />);
+    await waitFor(() => expect(olderReads).toHaveLength(1));
+    // Each push refresh lands while an older page is in flight, so that page is discarded.
+    for (let overtaken = 1; overtaken <= 6; overtaken += 1) {
+      push({ groupId: 'room' }, null);
+      await waitFor(() => expect(olderReads).toHaveLength(overtaken + 1));
+      olderReads[overtaken - 1]!({ ok: true, root: message, replies: [], hasMore: true });
+    }
+    olderReads.at(-1)!({ ok: true, root: message, replies: [target], hasMore: false });
+    expect(await screen.findByText('Target reply')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  });
+
   it('preserves copy and image sharing beside thread replies and reactions in one toolbar', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined), reply = vi.fn();
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     render(<ChatMessageActions shareScope="group:room" groupId="room" message={{ ...message, replyCount: 2 }} onReply={reply} onChanged={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'chat.messageActionBar.copy' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('Root message'));
-    fireEvent.click(screen.getByRole('button', { name: k('replyCount') }));
+    fireEvent.click(screen.getByRole('button', { name: k('openTopic') }));
     expect(reply).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'chat.shareImage.entry' }));
     expect(shareSelectionStore.isActive('group:room')).toBe(true);
@@ -113,6 +270,46 @@ describe('chat interaction controls', () => {
     fireEvent.click(screen.getByRole('button', { name: k('addReaction') }));
     fireEvent.click(screen.getByRole('button', { name: '🎉' }));
     await waitFor(() => expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '🎉', present: true }));
+  });
+
+  it('shows the Thread root and reply attachments as pictures, chips and honest states, never as body text', async () => {
+    const image = { id: 'img', name: 'clipboard-1791877522388.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/img.png', path: null };
+    const loading = { id: 'late', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' };
+    const lost = { id: 'lost', name: 'spec.pdf', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' };
+    const file = { id: 'doc', name: 'notes.md', category: 'text', mimeType: 'text/markdown', size: 1, url: null, path: '/tmp/notes.md' };
+    mocks.thread.mockResolvedValue({ ok: true, root: { ...message, content: '只要伙伴能管理session', attachments: [image, loading] },
+      replies: [{ ...message, id: 'reply', sequence: 2, content: '', attachments: [file, lost] }], hasMore: false });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const root = (await screen.findByText('只要伙伴能管理session')).closest('article')!;
+    expect(within(root).getByAltText('clipboard-1791877522388.png')).toBeTruthy();
+    expect(within(root).getByText('chat.imageMissing.loading')).toBeTruthy();
+    expect(within(root).getByText('late.png')).toBeTruthy();
+    const reply = screen.getByText('notes.md').closest('article')!;
+    expect(within(reply).getByRole('button', { name: 'notes.md' })).toBeTruthy();
+    expect(within(reply).getByRole('status', { name: 'spec.pdf, bots.groupChat.files.unavailable' })).toBeTruthy();
+    expect(within(reply).queryByRole('button', { name: /spec\.pdf/ })).toBeNull();
+    expect(document.body.textContent).not.toContain('[附件:');
+  });
+
+  it('updates an attachment on an earlier Thread page when its download finishes', async () => {
+    let push: ((event: { groupId: string }, stamp?: unknown) => void) | undefined;
+    (window.electronAPI.maker as unknown as { onBotGroupChanged: unknown }).onBotGroupChanged = (callback: typeof push) => { push = callback; return () => {}; };
+    let arrived = false;
+    const latest = { ...message, id: 'latest', sequence: 60, content: 'Latest reply' };
+    const older = (ready: boolean) => ({ ...message, id: 'older', sequence: 5, content: 'Earlier reply', attachments: [ready
+      ? { id: 'old', name: 'old.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/old.png', path: null }
+      : { id: 'old', name: 'old.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' }] });
+    mocks.thread.mockImplementation(async ({ before }: { before?: number }) => before === undefined
+      ? { ok: true, root: message, replies: [latest], hasMore: true }
+      : { ok: true, root: message, replies: [older(arrived)], hasMore: false });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('chat.imageMissing.loading')).toBeTruthy();
+    arrived = true;
+    push?.({ groupId: 'room' });
+    expect(await screen.findByAltText('old.png')).toBeTruthy();
+    expect(screen.queryByText('chat.imageMissing.loading')).toBeNull();
+    expect(mocks.thread.mock.calls.map(([input]) => (input as { before?: number }).before)).toEqual([undefined, 60, undefined, 6]);
   });
 
   it('shares thread messages separately from the main timeline and excludes controls from the image', async () => {
@@ -144,6 +341,26 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
+  it('re-reads Thread reactors only when this message or the whole room changed, even if the page is not reloaded', async () => {
+    const thread = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      <ChatThreadPanel group={{ ...group, ...revisions }} rootId="root" onClose={vi.fn()} />;
+    const view = render(thread({ reactionRevision: 0, reactionRevisions: { root: 1 } }));
+    const rerender = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      view.rerender(<Tooltip.Provider>{thread(revisions)}</Tooltip.Provider>);
+    await screen.findByRole('button', { name: k('reactionCount') });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(1));
+    // Someone reacted to another message: this badge keeps its reactors.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 1, other: 1 } });
+    await act(async () => {});
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+    // Who reacted to this message changed.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 2, other: 1 } });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(2));
+    // A reset counts every message as changed.
+    rerender({ reactionRevision: 1, reactionRevisions: {} });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(3));
+  });
+
   it('uses the refreshed Thread root reaction state while the main timeline remains stale', async () => {
     mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [], hasMore: false })
       .mockResolvedValue({ ok: true, root: { ...message, reactions: [{ emoji: '👍', count: 1, me: false }] }, replies: [], hasMore: false });
@@ -152,14 +369,15 @@ describe('chat interaction controls', () => {
     expect(reaction.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(reaction);
     await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).getAttribute('aria-pressed')).toBe('false'));
-    expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1');
+    // One reactor: the badge settles on its count once the reactor read disagrees (mock returns none).
+    await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1'));
     expect(group.messages[0].reactions?.[0].me).toBe(true);
   });
 
-  it('shows invitation preview first; only explicit acceptance joins', async () => {
+  it('shows a pasted invitation preview first; only explicit acceptance joins', async () => {
     const joined = vi.fn();
-    render(<StrictMode><ChatJoinButton onJoined={joined} /></StrictMode>);
-    fireEvent.click(await screen.findByRole('button', { name: k('join') }));
+    render(<StrictMode><ChatInviteDialog onClose={vi.fn()} onJoined={joined} /></StrictMode>);
+    expect(mocks.previewInvite).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole('textbox', { name: k('inviteLink') }), { target: { value: 'cindy://chat-invite/test' } });
     fireEvent.click(screen.getByRole('button', { name: k('previewInvite') }));
     await screen.findByText('Invited group');
@@ -213,5 +431,215 @@ describe('chat interaction controls', () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(''));
     expect(mocks.reply.mock.calls[0][0].clientId).toBe(mocks.reply.mock.calls[1][0].clientId);
     expect(mocks.reply.mock.calls[0][0].rootId).toBe('root');
+  });
+
+  describe('thread @ picker', () => {
+    const namesakes = [
+      { botId: 'ann-chris', name: 'Ann', status: 'active' },
+      { botId: 'ann-dana', name: 'Ann', status: 'active' },
+      { botId: 'bo', name: 'Bo', status: 'active' },
+      { botId: 'gone', name: 'Annie', status: 'left' },
+    ];
+    const renderThread = () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      render(<ChatThreadPanel group={{ ...group, members: namesakes } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      expect(document.activeElement).toBe(input);
+      return input;
+    };
+    const type = (input: HTMLTextAreaElement, value: string, caret = value.length) =>
+      fireEvent.change(input, { target: { value, selectionStart: caret, selectionEnd: caret } });
+    const labels = () => screen.queryAllByRole('option').map(option => option.textContent);
+
+    it('opens on @ with the main composer candidates, filters, and picks a namesake by keyboard', async () => {
+      const input = renderThread();
+      type(input, '@');
+      const listbox = screen.getByRole('listbox', { name: 'bots.groupChat.mention.label' });
+      // Everyone first, then active teammates only (the departed one is not offered).
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Ann', 'Ann', 'Bo']);
+      expect(input.getAttribute('aria-controls')).toBe(listbox.id);
+      expect(input.getAttribute('aria-activedescendant')).toBe(screen.getAllByRole('option')[0]!.id);
+      type(input, '@an');
+      expect(labels()).toEqual(['Ann', 'Ann']);
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(screen.getAllByRole('option')[1]!.getAttribute('aria-selected')).toBe('true');
+      // Enter picks while the list is open; it never sends.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input.value).toBe('@Ann ');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(mocks.reply).not.toHaveBeenCalled();
+      type(input, '@Ann 看一下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0]).toMatchObject({ groupId: 'room', rootId: 'root', text: '@Ann 看一下', mentions: { all: false, botIds: ['ann-dana'] } });
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('picks by mouse in the middle of a draft, supports several @ and Everyone', async () => {
+      const input = renderThread();
+      type(input, '请  帮忙', 1);
+      type(input, '请 @ 帮忙', 3);
+      const bo = screen.getAllByRole('option')[3]!;
+      // Pressing the option keeps focus in the input.
+      expect(fireEvent.mouseDown(bo)).toBe(false);
+      fireEvent.click(bo);
+      expect(input.value).toBe('请 @Bo 帮忙');
+      expect(input.selectionStart).toBe(6);
+      type(input, '请 @Bo @ 帮忙', 7);
+      fireEvent.click(screen.getAllByRole('option')[0]!);
+      expect(input.value).toBe('请 @Bo @bots.groupChat.mention.all 帮忙');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: true, botIds: ['bo'] });
+    });
+
+    it('Escape closes only the list for that @; IME keys neither pick nor send', () => {
+      const input = renderThread();
+      type(input, '@');
+      const composing = createEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+      fireEvent(input, composing);
+      expect(input.value).toBe('@');
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      const escape = createEvent.keyDown(input, { key: 'Escape' });
+      fireEvent(input, escape);
+      // The thread panel's own Esc-to-close sees a handled key and stays open.
+      expect(escape.defaultPrevented).toBe(true);
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@A');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // Enter with the list closed sends as usual; a fresh @ opens it again.
+      type(input, '@A @');
+      expect(labels()).toHaveLength(4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the list closed while a reply is sending, so the read-only text cannot change', async () => {
+      const input = renderThread();
+      let settle: (value: { ok: true; messageId: string }) => void = () => {};
+      mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+      type(input, '@B');
+      expect(labels()).toContain('Bo');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(input.readOnly).toBe(true));
+      expect(screen.queryByRole('listbox')).toBeNull();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      expect(input.value).toBe('@B');
+      settle({ ok: true, messageId: 'reply' });
+      await waitFor(() => expect(input.value).toBe(''));
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('treats an e-mail address as text and forgets a pick once its name is edited', async () => {
+      const input = renderThread();
+      type(input, 'mail a@');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      type(input, '@An ', 3);
+      type(input, '@Ann ', 4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      // A retyped name is a manual @: both namesakes, as in the main composer.
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['ann-chris', 'ann-dana'] });
+    });
+
+    it('moves the caret past the space when a re-pick leaves the text unchanged, and does not pull it back later', () => {
+      const input = renderThread();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.selectionStart).toBe(5);
+      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      expect(input.selectionStart).toBe(5);
+      type(input, '@Ann ok', 7);
+      expect(input.selectionStart).toBe(7);
+    });
+
+    it('does not let a pick push the reply past its 8000-character limit', () => {
+      const input = renderThread();
+      const near = `${'x'.repeat(7996)} @`;
+      type(input, near);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      // `@Bo ` would make 8000 + 1 characters: the pick is refused, as typing past maxLength is.
+      expect(input.value).toBe(near);
+      type(input, `${'x'.repeat(7995)} @`);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      expect(input.value).toBe(`${'x'.repeat(7995)} @Bo `);
+      expect(input.value).toHaveLength(8000);
+    });
+
+    it('names only the picked companion whose name is a Thread 「所有人」 alias', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'all-bot', name: 'all', status: 'active' }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@al');
+      fireEvent.click(screen.getAllByRole('option').find(option => option.textContent === 'all')!);
+      expect(input.value).toBe('@all ');
+      // Typing after the pick keeps it.
+      type(input, '@all 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['all-bot'] });
+    });
+
+    it('never offers or resolves the current user, as on mobile', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'me', name: 'Dash', status: 'active', isSelf: true }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@');
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Bo']);
+      type(input, '@Da');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // A typed own name is plain text, not a target the host would drop to nothing.
+      type(input, '@Dash @Bo 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['bo'] });
+    });
+
+    // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
+    // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
+    // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving
+    // against the live roster fails the roster-refresh test above.
+    const pickAt = (input: HTMLTextAreaElement, caret: number, option: number) => {
+      // As a user would: click back into the box with the caret after the name, then pick.
+      act(() => { input.blur(); input.setSelectionRange(caret, caret); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[option]!);
+    };
+    it.each([
+      { row: 're-pick the other namesake', draft: (input: HTMLTextAreaElement) => { type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); },
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris'], second: ['ann-dana'], reused: false },
+      { row: 're-pick the same teammate for an earlier mention', draft: (input: HTMLTextAreaElement) => {
+        type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); type(input, '@Ann @', 6); fireEvent.click(screen.getAllByRole('option')[3]!);
+      }, edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 0), text: '@Ann @Bo ', first: ['ann-chris', 'bo'], second: ['ann-chris', 'bo'], reused: true },
+      { row: 'pick the same teammate for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Bo '),
+        // The typed query `Bo` also matches the untranslated 所有人 key here, so Bo is the second option.
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 3, 1), text: '@Bo ', first: ['bo'], second: ['bo'], reused: true },
+      { row: 'pick one namesake for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Ann '),
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris', 'ann-dana'], second: ['ann-dana'], reused: false },
+    ])('retries a failed reply after "$row" with reused clientId = $reused', async ({ draft, edit, text, first, second, reused }) => {
+      const input = renderThread();
+      mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
+      draft(input);
+      expect(input.value).toBe(text);
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await screen.findByRole('alert');
+      edit(input);
+      expect(input.value).toBe(text);
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+      const [one, two] = mocks.reply.mock.calls.map(call => call[0]);
+      expect(one.mentions).toEqual({ all: false, botIds: first });
+      expect(two.mentions).toEqual({ all: false, botIds: second });
+      expect(two.clientId === one.clientId).toBe(reused);
+    });
   });
 });

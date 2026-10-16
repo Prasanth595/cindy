@@ -6,7 +6,11 @@ import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
-import { getProviderSharePendingRequests, resetProviderShareStoreForTests } from '../providerShareStore';
+import {
+  getProviderSharePendingRequests,
+  getProviderSharePendingReshares,
+  resetProviderShareStoreForTests,
+} from '../providerShareStore';
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
@@ -212,8 +216,8 @@ describe('ProviderShareManagePage', () => {
     const members = within(self).getAllByTestId('provider-usage-member');
     expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
       'local',
-      'device:studio:xd-2',
-      'share:share-9:xd',
+      'device:studio',
+      'share:share:share-9',
     ]);
     expect(members[0]!.textContent).toContain('providerGroup.member.local');
     expect(members[0]!.textContent).toContain("Magi's Mac Mini");
@@ -228,8 +232,50 @@ describe('ProviderShareManagePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Lizi/ }));
     const lizi = screen.getAllByTestId('provider-usage-row')[1]!;
     const keys = within(lizi).getAllByTestId('provider-usage-member').map((member) => member.getAttribute('data-member-key'));
-    expect(keys).toEqual(['local', 'device:studio:xd-2', 'share:share-9:xd', '']);
+    expect(keys).toEqual(['local', 'device:studio', 'share:share:share-9', '']);
     expect(lizi.textContent).toContain('providerGroup.usage.unattributed');
+  });
+
+  it('counts usage from multiple accounts on one physical computer once', async () => {
+    localGroups = {
+      xd: {
+        ...xdGroup,
+        members: [
+          { ...xdGroup.members[0]! },
+          { ...xdGroup.members[1]! },
+          { ...xdGroup.members[2]!, hostDeviceId: 'kai-pc' },
+          {
+            ...xdGroup.members[2]!,
+            key: 'share:share-10:xd',
+            agentDeviceId: 'share:share-10',
+            hostDeviceId: 'kai-pc',
+          },
+        ],
+      },
+    };
+    const usage = ownUsage();
+    usage.local!.models.push(
+      usageModel('claude-sonnet-5', 2_000, 0.2, 'share:share-9:xd'),
+      usageModel('claude-sonnet-5', 3_000, 0.3, 'share:share-10:xd'),
+    );
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') return owned();
+      if (cmd.action === 'own-usage') return usage;
+      if (cmd.action === 'received') return [];
+      throw new Error('unexpected action');
+    });
+
+    renderPage();
+    const rows = await screen.findAllByTestId('provider-usage-row');
+    expect(rows[0]!.textContent).toContain('providerGroup.usage.computerCount:{\\"count\\":3}');
+    fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Magi/ }));
+
+    const members = within(screen.getAllByTestId('provider-usage-row')[0]!).getAllByTestId('provider-usage-member');
+    expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
+      'local',
+      'device:studio',
+      'share-host:kai-pc',
+    ]);
   });
 
   it('re-reads usage when the period changes', async () => {
@@ -289,6 +335,43 @@ describe('ProviderShareManagePage', () => {
       expect(command).toHaveBeenCalledWith({ action: 'set-member', memberId: 'mem-1', status: 'remove' }),
     );
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
+  });
+
+  // 转分享(provider-sharing.md §4.3)：成员想经自己的供应商组把这里的供应商转给别人用，主人逐人处理。
+  it('lists reshare requests under pending, and lets the owner withdraw or grant decided ones', async () => {
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') {
+        const state = owned();
+        state.shares[0]!.members[0]!.reshares = [
+          { id: 'rs-pending', name: 'Carol', avatarUrl: null, state: 'pending', requestedAt: Date.now() - 1_000, decidedAt: null },
+          { id: 'rs-approved', name: 'Dave', avatarUrl: null, state: 'approved', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+          { id: 'rs-rejected', name: 'Erin', avatarUrl: null, state: 'rejected', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+        ];
+        return state;
+      }
+      if (cmd.action === 'own-usage') return ownUsage();
+      if (cmd.action === 'received') return [];
+      if (cmd.action === 'reshare-decide') return { ok: true };
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    renderPage();
+    const pending = await screen.findByTestId('provider-share-reshare-row');
+    expect(pending.textContent).toContain('Carol');
+    expect(pending.textContent).toContain('providerShare.manage.reshare.applying:{"owner":"Lizi"}');
+    expect(getProviderSharePendingReshares().map((item) => item.reshare.id)).toEqual(['rs-pending']);
+    fireEvent.click(within(pending).getByRole('button', { name: 'providerShare.manage.reshare.approve' }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'reshare-decide', id: 'rs-pending', decision: 'approve' }));
+
+    // 处理过的人列在这个成员下方：已同意的可撤回，拒绝的可改为同意。
+    const decided = screen.getAllByTestId('provider-share-reshare-item');
+    expect(decided.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Dave'),
+      expect.stringContaining('Erin'),
+    ]);
+    fireEvent.click(within(decided[0]!).getByRole('button', { name: /providerShare\.manage\.reshare\.revokeAria/ }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'reshare-decide', id: 'rs-approved', decision: 'reject' }));
+    fireEvent.click(within(decided[1]!).getByRole('button', { name: /providerShare\.manage\.reshare\.approveAria/ }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'reshare-decide', id: 'rs-rejected', decision: 'approve' }));
   });
 
   it('disables link creation and explains why when sharing is gated', async () => {

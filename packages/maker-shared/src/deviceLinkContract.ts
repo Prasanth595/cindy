@@ -349,6 +349,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:goal:resume',
   'maker:goal:update',
   'maker:fork',
+  'maker:fork-strip-encrypted',
   'maker:get-session-tree',
   'maker:navigate-session-tree',
   'maker:rewind:preview',

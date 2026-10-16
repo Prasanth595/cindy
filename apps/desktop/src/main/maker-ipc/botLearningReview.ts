@@ -17,6 +17,12 @@ import {
 import { listBotSkills, readBotSkill } from './botSkillStore.js';
 import { saveBotSkillForSession } from './botSkillService.js';
 import { requestBotRuntimeEpochRefresh } from './botRuntimeEpochRefreshSignal.js';
+import {
+  applyWorkingMemoryProposal,
+  readBotWorkingMemory,
+  workingMemoryForReview,
+  writeBotWorkingMemory,
+} from './botWorkingMemory.js';
 
 const running = new Map<string, Promise<void>>();
 /** Once per durable successful reply; serial per teammate, outside the chat/agent loop. */
@@ -139,10 +145,13 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         enabled: s.enabled,
       }));
       if (JSON.stringify({ memoryIndex, skillIndex }).length > 24000) return;
+      // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
+      const workingBefore = await readBotWorkingMemory(root, row.botId);
       const result = await requestUtilityText(
         maker,
         JSON.stringify({
           messages,
+          workingMemory: workingMemoryForReview(workingBefore),
           memoryEnabled: !!store,
           memoryIndex,
           memories: memorySnapshot.map((m) => ({ name: m.slug, ...m.frontmatter, body: m.body })),
@@ -170,6 +179,21 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       );
       if (!result.ok || !current()) return;
       const plan = learningReviewSchema.parse(JSON.parse(result.text));
+      if (plan.working && (await readOwner())) {
+        try {
+          await writeBotWorkingMemory(
+            root,
+            row.botId,
+            applyWorkingMemoryProposal(workingBefore, plan.working, messages, {
+              now: Date.now(),
+              coveredThroughRowid: row.rowid,
+            }),
+            workingBefore?.revision ?? 0,
+          );
+        } catch {
+          /* 版本冲突或写盘失败:保留磁盘上的版本,下一次复盘再合并。 */
+        }
+      }
       let memorySaved = false;
       for (const proposal of plan.memories) {
         if (!current()) return;

@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "タスクを開く",
+    "loading": "タスクを読み込み中…",
+    "failed": "タスク情報を読み込めませんでした。",
+    "missing": "このコンピューターからタスク情報が返されませんでした。",
+    "timedOut": "タスク情報の読み込みがタイムアウトしました。",
+    "retry": "タスクを再読み込み",
+    "back": "戻る"
+  },
   "failedScheduleNotice": {
     "text": "自動実行に失敗した記録があります。",
     "precheck": "自動チェックが一時的に停止しています。",
@@ -227,6 +236,7 @@
     "sessionNotSyncedRetry": "セッションの同期がまだ完了していません。しばらくしてから再試行してください。",
     "savingPreviousQueueEdit": "直前のキュー内メッセージの変更を保存中です。完了してから編集してください。",
     "attachmentsUploadingBeforeEdit": "添付ファイルをアップロード中です。完了してからキュー内メッセージを編集してください。",
+    "goalCommandAttachments": "添付ファイルなしで /goal を送信してください。下書きと添付ファイルは保持されています。",
     "goalAlreadyActive": "このセッションには進行中のゴールがあります。先にこちらで対応してください。",
     "resetReconfirmTitle": "再確認してください",
     "resetOfferExpired": "リセット用の認証が期限切れです。更新後のクォータ情報を確認してください。",
@@ -287,6 +297,7 @@
     "shareMessage": "このメッセージを共有"
   },
   "new": {
+    "goalCommandNeedsSession": "目標を解除するには既存のセッションを開いてください。",
     "selectDevice": "デバイスを選択",
     "workspaceDialogue": "会話",
     "workspaceProject": "プロジェクト",
@@ -491,6 +502,8 @@
     "deleteOne": "このメッセージを削除"
   },
   "tail": {
+    "readableHistoryRecovery": "読み取れる履歴から新しいタスクを作成",
+    "readableHistoryRecoveryDescription": "再試行しても失敗する場合は、読み取れる履歴から新しいタスクを作成できます。内部の暗号化情報は省略されます。元のタスクは保持され、失敗したメッセージは自動で再送信されません。",
     "requestFormatError": "アプリが送信したリクエストの形式に問題があり、返信を完了できませんでした。",
     "replyFailed": "返信を完了できませんでした。原因を確認するには、エラーの詳細をご覧ください。",
     "showErrorDetails": "エラーの詳細を表示",

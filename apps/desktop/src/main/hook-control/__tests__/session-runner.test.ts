@@ -67,6 +67,9 @@ const h = vi.hoisted(() => {
     listProviders: vi.fn(async (): Promise<unknown[]> => []),
     getModelVisibilityOverride: vi.fn(() => undefined),
     readImDefaultSettings: vi.fn(),
+    getWorkspaceProviderSource: vi.fn((): string | null => null),
+    getWorkspacePref: vi.fn((): unknown => null),
+    isWorkspacePrefsMigrated: vi.fn(() => true),
     useActualDefaults: false,
     /** 每个 fake session 的事件监听回调(emit done 用)。 */
     statusCbs: new Map<string, (status: 'active' | 'aborting' | 'closed' | 'error') => void>(),
@@ -224,6 +227,14 @@ vi.mock('../../worktree/index.js', () => ({
 vi.mock('../../im/defaultSettingsStore.js', () => ({
   readImDefaultSettings: h.readImDefaultSettings,
 }));
+vi.mock('../workspaceProviderSourceStore.js', () => ({
+  getWorkspaceProviderSource: h.getWorkspaceProviderSource,
+}));
+vi.mock('../workspacePrefsStore.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspacePrefsStore.js')>()),
+  getWorkspacePref: h.getWorkspacePref,
+  isWorkspacePrefsMigrated: h.isWorkspacePrefsMigrated,
+}));
 vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
   getDesktopProviderService: () => ({ listProviders: h.listProviders }),
 }));
@@ -354,6 +365,10 @@ vi.mock('../../maker-host/index.js', () => ({
   getMaker: () => fakeMaker,
   withRehydrateCloseSuppressed: h.withRehydrateCloseSuppressed,
 }));
+// 供应商显示名按任务实际来源读(查库 + 供应商目录), 这里只验失败说明带上了它。
+vi.mock('../../im/shared/sessionProviderLabel.js', () => ({
+  resolveSessionProviderLabel: vi.fn(async () => 'OpenAI'),
+}));
 
 import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
 import { MAIN_OWNED_SEND_CONTEXT, Session, type AgentSessionHandle, type Capabilities } from '@cindy/maker-core';
@@ -433,6 +448,9 @@ beforeEach(() => {
   h.useActualDefaults = false;
   h.resolvedConfig.permissionMode = 'bypassPermissions';
   h.resolvedConfig.providerId = null;
+  h.getWorkspaceProviderSource.mockReturnValue(null);
+  h.getWorkspacePref.mockReturnValue(null);
+  h.isWorkspacePrefsMigrated.mockReturnValue(true);
   h.peekPendingHandoff.mockResolvedValue(null);
   h.listMessagesForAgentHandoff.mockReset();
   h.listMessagesForAgentHandoff.mockResolvedValue([]);
@@ -2575,6 +2593,30 @@ describe('上游过载自动重试期间的渠道进度(零产出窗口)', () =>
     expect(outcome.errorMessage).not.toContain('tool_use_loop_detected');
   });
 
+  it('额度类终态错误: 写清供应商与原因, 处理方式指向官方 bot 的设置', async () => {
+    fakeMaker.createSession.mockImplementationOnce(async (opts: { id?: string }) =>
+      makeManualSession(opts.id ?? 'sess-x'),
+    );
+    const runner = createMakerHookSessionRunner({ log });
+    const p = runner.run(baseReq({ source: { im: 'telegram', userText: 'hello' } }));
+    await new Promise((r) => setTimeout(r, 0));
+    const cb = h.eventCbs.get('sess-new')!;
+    cb({
+      type: 'error',
+      data: {
+        message: 'You hit your spend cap set by the owner of your workspace.',
+        isTerminal: true,
+      },
+    });
+    const outcome = await p;
+    expect(outcome.status).toBe('error');
+    expect(outcome.errorMessage).toContain('⚠️ 供应商额度不足：「OpenAI」已达到工作区所有者设置的花费上限');
+    // 官方 bot 的 /model 与官方卡片改的是目录默认: 必须接着 /new, 或在 Cindy 里给任务换模型。
+    expect(outcome.errorMessage).toContain('官方 bot 卡片的工作目录');
+    expect(outcome.errorMessage).toContain('/new');
+    expect(outcome.errorMessage).not.toContain('Telegram 机器人');
+  });
+
   it('非过载的终态错误仍原样上报(不误改其它失败的诊断信息)', async () => {
     fakeMaker.createSession.mockImplementationOnce(async (opts: { id?: string }) =>
       makeManualSession(opts.id ?? 'sess-x'),
@@ -3178,6 +3220,91 @@ describe('providerId(来源/供应商)贯通 —— issue #854 回归', () => {
     expect(h.setSessionProvider).toHaveBeenCalledWith('sess-new', 'openai');
     expect(h.setSessionProviderIdInDb).toHaveBeenCalledWith('sess-new', 'openai');
     expect(h.listProviders).toHaveBeenCalledTimes(1);
+  });
+
+  describe('目录来源残留 —— issue #5912 回归', () => {
+    const xChatReq = () =>
+      baseReq({ source: { im: 'x' }, workspaceAlias: 'chat', workspaceKind: 'dialogue' as const });
+    const inheritedPref = {
+      workspace: 'chat',
+      model: null,
+      effort: null,
+      agentKind: null,
+      permissionMode: null,
+      teamId: null,
+    };
+    const providersWithOpenAi = (openAi: Partial<ProviderView> = {}) => [
+      connectedProvider('xd', [catalogModel('test-model')]),
+      { ...connectedProvider('openai', [catalogModel('gpt-test')], 'codex'), ...openAi },
+    ];
+
+    it('目录模型为空、继承默认时: 账号可用但不提供该模型的残留来源被忽略, 按默认来源建任务', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('openai');
+      h.getWorkspacePref.mockReturnValue(inheritedPref);
+      h.listProviders.mockResolvedValueOnce(providersWithOpenAi());
+      const runner = createMakerHookSessionRunner({ log });
+      const outcome = await runner.run(xChatReq());
+
+      expect(outcome.status).toBe('ok');
+      expect(h.getWorkspaceProviderSource).toHaveBeenCalledWith('x', null, 'chat');
+      expect(fakeMaker.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'test-model', providerId: 'xd' }),
+      );
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('hook workspace provider source ignored: provider=openai'),
+      );
+    });
+
+    it('残留来源能提供继承模型时照常使用, 不被换掉', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('sub');
+      h.getWorkspacePref.mockReturnValue(inheritedPref);
+      h.listProviders.mockResolvedValueOnce([
+        connectedProvider('xd', [catalogModel('test-model')]),
+        connectedProvider('sub', [catalogModel('test-model')]),
+      ]);
+      const runner = createMakerHookSessionRunner({ log });
+      const outcome = await runner.run(xChatReq());
+
+      expect(outcome.status).toBe('ok');
+      expect(fakeMaker.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'sub' }),
+      );
+    });
+
+    it('目录显式选了模型时, 来源不匹配仍拒绝并给出重新选模型指引', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('openai');
+      h.getWorkspacePref.mockReturnValue({ ...inheritedPref, agentKind: 'claude-code', model: 'test-model' });
+      h.listProviders.mockResolvedValueOnce(providersWithOpenAi());
+      const runner = createMakerHookSessionRunner({ log });
+
+      await expect(runner.run(xChatReq())).rejects.toThrow(
+        /selected provider "openai" cannot serve model "test-model".*重新选择模型/,
+      );
+      expect(fakeMaker.createSession).not.toHaveBeenCalled();
+    });
+
+    it('残留来源提供该模型但已停用时不换账号, 仍拒绝', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('sub');
+      h.getWorkspacePref.mockReturnValue(inheritedPref);
+      h.listProviders.mockResolvedValueOnce([
+        connectedProvider('xd', [catalogModel('test-model')]),
+        connectedProvider('sub', [{ ...catalogModel('test-model'), disabled: true }]),
+      ]);
+      const runner = createMakerHookSessionRunner({ log });
+
+      await expect(runner.run(xChatReq())).rejects.toThrow('selected provider "sub"');
+      expect(fakeMaker.createSession).not.toHaveBeenCalled();
+    });
+
+    it('残留来源账号已断开时不换账号, 仍拒绝', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('openai');
+      h.getWorkspacePref.mockReturnValue(inheritedPref);
+      h.listProviders.mockResolvedValueOnce(providersWithOpenAi({ connected: false }));
+      const runner = createMakerHookSessionRunner({ log });
+
+      await expect(runner.run(xChatReq())).rejects.toThrow('selected provider "openai"');
+      expect(fakeMaker.createSession).not.toHaveBeenCalled();
+    });
   });
 
   it('官方 Telegram 新会话读取 global 默认设置，不与个人 Bot 的 telegram scope 混用', async () => {

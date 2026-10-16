@@ -36,6 +36,8 @@ describe('Plugin Market IPC error boundary', () => {
     const body = registerSource.slice(start, end);
 
     expect(body).toContain('if (isIpcError(error)) throw error;');
+    expect(body).toContain('isPluginMarketPassthroughErrorCode(error.code)');
+    expect(body).toContain("throwIpcError(error.code, 'Plugin market operation failed');");
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
     expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(12);
   });
@@ -163,9 +165,10 @@ describe('Plugin Market IPC error boundary', () => {
       ownerTaskBody.indexOf('syncDefaultMarketPlugins()'),
     );
     expect(ownerTaskBody).not.toContain("builtinOutcome === 'failed') return builtinOutcome");
-    expect(ownerTaskBody).toContain("builtinOutcome === 'retry-pending'");
+    expect(ownerTaskBody).toContain("outcome === 'retry-pending' ? 'failed' : outcome");
     expect(ownerTaskBody).toContain("builtinOutcome === 'failed'");
-    expect(ownerTaskBody).toContain('const marketOutcome = await syncDefaultMarketPlugins()');
+    expect(ownerTaskBody).toContain('const marketOutcome = await marketPostCommitStep.run(');
+    expect(ownerTaskBody).toContain('return syncDefaultMarketPlugins();');
     expect(ownerTaskBody).toContain("marketOutcome === 'failed'");
     expect(ownerTaskBody).toContain("marketOutcome === 'deferred'");
     expect(ownerTaskBody).toContain('await reconcileGhostOauthAccountsForActiveOwner()');
@@ -173,7 +176,7 @@ describe('Plugin Market IPC error boundary', () => {
       "return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';",
     );
     expect(bootstrapSource).toContain(
-      "await authManager.ensureStableOwnerPostCommitTasks('auth-initialize');",
+      "authManager.requestStableOwnerPostCommit('auth-initialize');",
     );
     expect(authManagerSource).toContain("requestStableOwnerPostCommit('owner-commit');");
     expect(authManagerSource).not.toContain("await ensureStableOwnerPostCommit('owner-commit');");
@@ -189,7 +192,7 @@ describe('Plugin Market IPC error boundary', () => {
       'if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;',
     );
     expect(ownerSyncBody).toContain('if (scope === pluginMarketSyncInFlightScope) return;');
-    expect(ownerSyncBody).toContain('void syncDefaultMarketPlugins().finally(() => {');
+    expect(ownerSyncBody).toContain('void marketPostCommitStep.run(scope,');
     expect(ownerSyncBody).toContain('pluginMarketSyncInFlightScope = null;');
     expect(bootstrapSource).toContain('PLUGIN_MARKET_PERIODIC_SYNC_MS = 30 * 60 * 1000');
     expect(bootstrapSource).toContain('syncPluginMarketForActiveOwner(30_000);');

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { MoreHorizontal, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Select } from '@/components/ui/select';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -394,7 +395,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   );
   const save = () => {
     if (!form) return;
-    let patch: TodoPatch =
+    const patch: TodoPatch =
       mode === 'edit'
         ? { title: form.title, outcome: form.outcome, progress: form.progress }
         : mode === 'deadline'
@@ -491,53 +492,42 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
             setDonePage(0);
           }}
         />
-        <select
-          aria-label={tr('open')}
+        <Select
+          label={tr('open')}
+          className="todo-filter-trigger w-full"
           value={view}
-          onChange={(e) => {
-            setView(e.target.value as typeof view);
+          options={['open', 'hidden'].map((value) => ({ value, label: tr(value) }))}
+          onValueChange={(value) => {
+            setView(value as typeof view);
             setPage(0);
             setDonePage(0);
           }}
-        >
-          <option value="open">{tr('open')}</option>
-          <option value="hidden">{tr('hidden')}</option>
-        </select>
+        />
       </div>
       <div className="todo-filters">
-        <select
-          aria-label={tr('origin')}
+        <Select
+          label={tr('origin')}
+          className="todo-filter-trigger h-7 w-28 max-w-[50%] shrink px-2 [--button-face-bg:transparent] [--button-face-border:transparent]"
           value={origin}
-          onChange={(e) => {
-            setOrigin(e.target.value);
+          options={['all', 'assigned', 'discovered'].map((value) => ({ value, label: tr(value) }))}
+          onValueChange={(value) => {
+            setOrigin(value);
             setPage(0);
             setDonePage(0);
           }}
-        >
-          {['all', 'assigned', 'discovered'].map((k) => (
-            <option key={k} value={k}>
-              {tr(k)}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label={tr('order')}
+        />
+        <Select
+          label={tr('order')}
+          className="todo-filter-trigger h-7 w-32 max-w-[50%] shrink px-2 [--button-face-bg:transparent] [--button-face-border:transparent]"
           value={order}
-          onChange={(e) => {
-            setOrder(e.target.value);
-            initialOrder.current = new Map(
-              sorted(items, e.target.value).map((x, rank) => [x.id, rank]),
-            );
+          options={['dueOrder', 'createdOrder'].map((value) => ({ value, label: tr(value) }))}
+          onValueChange={(value) => {
+            setOrder(value);
+            initialOrder.current = new Map(sorted(items, value).map((x, rank) => [x.id, rank]));
             setPage(0);
             setDonePage(0);
           }}
-        >
-          {['dueOrder', 'createdOrder'].map((k) => (
-            <option key={k} value={k}>
-              {tr(k)}
-            </option>
-          ))}
-        </select>
+        />
       </div>
       {error && (
         <p role="alert" className="todo-error">

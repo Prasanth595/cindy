@@ -5,6 +5,7 @@ import {
   VoiceInputController,
   VoiceTimelineLogger,
   type AsrProvider,
+  type AudioGate,
   type AudioTrace,
   type DictationRefinementContext,
   type EditableRange,
@@ -107,6 +108,11 @@ type MobileVoiceControllerOptions = {
     end: number;
   }) => void;
   onTimelineEvent?: (event: VoiceTimelineEvent) => void;
+  /**
+   * Optional filter between the microphone and the ASR ("recognize my voice").
+   * Undefined keeps the unfiltered behavior.
+   */
+  audioGate?: AudioGate;
 };
 
 type MobileVoiceInputHistorySource = readonly string[] | (() => readonly string[] | undefined);
@@ -390,6 +396,7 @@ export function createMobileVoiceControllerSession(
     // A reconnect allocates another managed session and can hit the account
     // limit; report that instead of the generic "stopped receiving" failure.
     recoveryErrorMessage: mobileVoiceRateLimitMessage,
+    audioGate: options.audioGate,
     logger: new VoiceTimelineLogger((event) => {
       recordTimeline(event);
       options.onTimelineEvent?.(event);

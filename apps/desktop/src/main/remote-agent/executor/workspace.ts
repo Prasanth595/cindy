@@ -70,22 +70,103 @@ function stripAliasPrefix(input: string, from: string): string | null {
   return null;
 }
 
+/** 普通文本逐 token 匹配；命令只匹配前缀，后缀按 shell 引号与转义规则扫描。 */
+function pathTextPattern(aliases: readonly ExecutorPathAlias[], prefixOnly = false): RegExp {
+  const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'));
+  const prefix = '(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])';
+  return new RegExp('(^|[^A-Za-z0-9_])' + prefix
+    + (prefixOnly ? '' : '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)'), 'gi');
+}
+
+export function isPathTextField(key: string): boolean {
+  return /^(?:cwd|workdir|working_?dir|script|files?|paths?|directories)$|(?:^|_)(?:paths?|files?|dirs?|directory|directories|root)$|(?:Paths?|Files?|Dirs?|Directory|Directories|Root)$/.test(key);
+}
+
+export type PathTextContext = 'text' | 'path' | 'ambiguous-path' | 'untyped';
+
+/** The existing script fields contain both executable paths and source text. */
+export function pathTextContext(key: string): PathTextContext {
+  if (key === 'script') return 'ambiguous-path';
+  return isPathTextField(key) ? 'path' : 'text';
+}
+
+export function mapJsonPathText(
+  text: string, project: (value: string, context: PathTextContext) => string, rootContext: PathTextContext = 'untyped',
+): string {
+  JSON.parse(text);
+  // 顶层字符串/数组也能承载正文，容器本身不提供完整路径的证据。
+  const frames: { type: 'object' | 'array'; context: PathTextContext; key?: string }[] = [];
+  const valueContext = (): PathTextContext => {
+    const frame = frames.at(-1);
+    return frame?.type === 'object' ? pathTextContext(frame.key ?? '') : frame?.context ?? rootContext;
+  };
+  return text.replace(/"(?:\\[\s\S]|[^"\\])*"|[{}[\],:]/g, (token, offset: number) => {
+    if (token === '{' || token === '[') {
+      frames.push({ type: token === '{' ? 'object' : 'array', context: valueContext() });
+      return token;
+    }
+    if (token === '}' || token === ']') {
+      frames.pop();
+      return token;
+    }
+    if (token === ',') {
+      const frame = frames.at(-1);
+      if (frame?.type === 'object') frame.key = undefined;
+      return token;
+    }
+    if (token === ':') return token;
+    const decoded = JSON.parse(token) as string;
+    if (/^\s*:/.test(text.slice(offset + token.length))) {
+      const frame = frames.at(-1);
+      if (frame?.type === 'object') frame.key = decoded;
+      return token;
+    }
+    const projected = project(decoded, valueContext());
+    return projected === decoded ? token : JSON.stringify(projected);
+  });
+}
+
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
-export function projectPathText(text: string, aliases: readonly ExecutorPathAlias[]): string {
+export function projectPathText(
+  text: string, aliases: readonly ExecutorPathAlias[], context: PathTextContext = 'text',
+  isCompletePath?: (mapped: string) => boolean,
+): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
-  const patterns = entries.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-    .map((part) => part.replace(/[.*+?^$()|[\]{}]/g, '\\$&')).join('[/\\\\]'));
-  // 左右都要求路径段边界，避免修改 longer/project2 或文本里的同前缀标识符。
-  // 这里的边界覆盖 shell 的 ;、反引号、?、& 等分隔符。
-  const pattern = new RegExp('(^|[^A-Za-z0-9_])(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])([/\\\\][^\\s\\x60;:|&)<>}\\]]*|)', 'gi');
-  return text.replace(pattern, (match: string, left: string, prefix: string, suffix: string) => {
-    const alias = entries.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-    if (!alias) return match;
-    const separator = alias.to.includes('\\') ? '\\' : '/';
-    return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-  });
+  const textPattern = pathTextPattern(entries, false);
+  const project = (value: string, valueContext: PathTextContext = 'text'): string => {
+    // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
+    // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
+    if (/^\s*[{["]/.test(value)) {
+      try { return mapJsonPathText(value, project, valueContext === 'text' ? 'untyped' : valueContext); } catch { /* 普通文本继续按路径边界投影。 */ }
+    }
+    // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
+    if (value.includes('\n')) return value.split('\n').map((line) => project(line, valueContext)).join('\n');
+    // 整个字符串就是路径时(含已解码的 JSON 字符串)，空格也属于路径，不能截断后续分隔符。
+    const lineEnd = value.endsWith('\r') ? '\r' : '';
+    const pathValue = lineEnd ? value.slice(0, -1) : value;
+    if (valueContext !== 'text') {
+      for (const alias of entries) {
+        if (stripAliasPrefix(pathValue, alias.from) === null) continue;
+        const separator = alias.to.includes('\\') ? '\\' : '/';
+        const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
+        const mapped = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
+        // 明确的路径字段可整体映射；歧义字段(如 script)只有现存完整路径才整体映射，
+        // 否则按正文逐 token 投影，避免把脚本源码里的 /api/v1 等内容当成路径。
+        if (valueContext === 'path' || isCompletePath?.(mapped)) return mapped + lineEnd;
+        break;
+      }
+    }
+    return value.replace(textPattern, (match: string, left: string, prefix: string, suffix: string) => {
+      const alias = entries.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
+      if (!alias) return match;
+      const separator = alias.to.includes('\\') ? '\\' : '/';
+      return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
+    });
+  };
+  return project(text, context);
 }
 
 export class ExecutorWorkspace {
@@ -195,7 +276,7 @@ export class ExecutorWorkspace {
   }
 
   /** 工具输出、诊断和可逆的 UTF-8 文本内容使用虚拟路径；二进制字节保持原样。 */
-  mapTextForAgent(text: string): string {
+  mapTextForAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
     const aliases = this.aliases.flatMap((alias) => {
       const real = alias.to.replace(/\\/g, '/');
@@ -209,16 +290,21 @@ export class ExecutorWorkspace {
       }
       return entries;
     });
-    return projectPathText(text, aliases);
+    return projectPathText(text, aliases, context, (mapped) => fs.existsSync(this.mapAlias(mapped)));
   }
 
   /** 把 Agent 虚拟路径还原成本机路径，用于文本文件写回。 */
-  mapTextFromAgent(text: string): string {
+  mapTextFromAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
     return projectPathText(text, this.aliases.map((alias) => ({
       from: alias.from.replace(/\\/g, '/'),
       to: alias.to,
-    })));
+    })), context, (mapped) => fs.existsSync(mapped));
+  }
+
+  /** 展示层延迟尚未传完整的虚拟路径；别名仍由当前执行器维护。 */
+  agentPathPrefixes(): readonly string[] {
+    return this.virtualRoot ? this.aliases.map((alias) => alias.from) : [];
   }
 
   mapOutputForAgent(data: Buffer): Buffer {
@@ -244,19 +330,19 @@ export class ExecutorWorkspace {
     })).filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
       .sort((a, b) => b.from.length - a.from.length);
     if (!aliases.length) return command;
-    const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-      .map((part) => part.replace(/[.*+?^$()|[\\]{}]/g, '\\$&')).join('[/\\\\]'));
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
-    const pattern = new RegExp('(^|[^A-Za-z0-9_])(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)', 'gi');
+    const pattern = pathTextPattern(aliases, true);
     const quoteContext = (input: string, end: number): 'none' | 'single' | 'double' => {
       let quote: 'none' | 'single' | 'double' = 'none';
       let escaped = false;
       for (let i = 0; i < end; i += 1) {
         const char = input[i];
         if (escaped) { escaped = false; continue; }
-        if (char === '\\' && quote !== 'single') { escaped = true; continue; }
-        if (quote === 'none' && char === "'") quote = 'single';
+        if (dialect === 'bash' && char === '\\' && (quote === 'none'
+          || (quote === 'double' && /[$\x60"\\\n]/.test(input[i + 1] ?? '')))) { escaped = true; continue; }
+        if (dialect === 'cmd' && char === '^' && quote === 'none') { escaped = true; continue; }
+        if (dialect === 'bash' && quote === 'none' && char === "'") quote = 'single';
         else if (quote === 'none' && char === '"') quote = 'double';
         else if (quote === 'single' && char === "'") quote = 'none';
         else if (quote === 'double' && char === '"') quote = 'none';
@@ -271,17 +357,43 @@ export class ExecutorWorkspace {
       if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value;
       if (context === 'single') return value.replace(/'/g, "'\\''");
       if (context === 'double') return value.replace(/[\\$\x60"]/g, '\\$&');
-      return /[\s'"\x60$;&|<>()[\\]{}!*?]/.test(value)
+      return /[\s'"\x60$;&|<>(){}!*?[\]\\]/.test(value)
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
-    return command.replace(pattern, (match: string, left: string, prefix: string, suffix: string, offset: number, input: string) => {
+    let result = '';
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      const [, left, prefix] = match;
+      const start = match.index! + left.length;
+      if (start < end) continue;
       const alias = aliases.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-      if (!alias) return match;
+      if (!alias) continue;
       const separator = alias.to.includes('\\') ? '\\' : '/';
-      const target = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-      return left + quote(target, quoteContext(input, offset + left.length));
-    });
+      const context = quoteContext(command, start);
+      const windowsPath = /^[A-Za-z]:|^[/\\]{2}/.test(prefix);
+      let suffixEnd = start + prefix.length;
+      const suffixStart = suffixEnd;
+      if ((windowsPath || dialect === 'cmd') && /[/\\]/.test(command[suffixEnd] ?? '')) {
+        // 只转换静态路径段。转义、变量与命令替换从原文原样保留，尤其不能把转义
+        // 引号前的反斜杠当成路径分隔符，否则参数中的数据会变成新的 shell 命令。
+        for (; suffixEnd < command.length; suffixEnd += 1) {
+          const char = command[suffixEnd];
+          if (char === '\r' || char === '\n') break;
+          if (context === 'single' && char === "'") break;
+          if (context === 'double' && char === '"') break;
+          if (context === 'none' && /[\s'"\x60;:|&()<>}\]]/.test(char)) break;
+          if (dialect === 'bash' && context !== 'single'
+            && (/[$\x60]/.test(char) || (char === '\\'
+              && (context === 'double' ? /[$\x60"\\\n]/ : /[\s'"$\x60\\;|&()<>]/).test(command[suffixEnd + 1] ?? '')))) break;
+          if (dialect === 'cmd' && /[%^!]/.test(char)) break;
+        }
+      }
+      result += command.slice(end, start) + quote(alias.to.replace(/[\\/]+$/, ''), context)
+        + command.slice(suffixStart, suffixEnd).replace(/[\\/]/g, separator);
+      end = suffixEnd;
+    }
+    return result + command.slice(end);
   }
 
   /** 把 Agent 给的路径解析成本机绝对路径(相对路径以 baseDir / 工作目录为基准)。 */

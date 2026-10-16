@@ -18,6 +18,7 @@ export const REMOTE_VIEWER = {
   INPUT_FOCUS: 'remote-desktop-viewer:input-focus',
   PREFERENCES: 'remote-desktop-viewer:preferences',
   SAFETY: 'remote-desktop-viewer:safety',
+  CLIPBOARD_SYNC: 'remote-desktop-viewer:clipboard-sync',
   CREDENTIAL: 'remote-desktop-viewer:credential',
   RESOLUTION: 'remote-desktop-viewer:resolution',
   CHANNEL_REQUEST: 'remote-desktop-viewer:channel-request',
@@ -27,6 +28,8 @@ export const REMOTE_VIEWER = {
 export interface RemoteViewerTarget {
   deviceId: string;
   name: string;
+  /** 代输入 live view: only the window this waiting request is about (the host picks it). */
+  handoff?: string;
 }
 export interface RemoteViewerState {
   target: RemoteViewerTarget | null;
@@ -130,6 +133,8 @@ export interface RemoteDesktopViewerApi {
     patch?: Partial<RemoteViewerPreferences>,
   ): Promise<RemoteViewerPreferences>;
   safety?(generation: number, retry?: boolean): Promise<RemoteViewerSafety>;
+  /** One clipboard sync pass now (copy/paste in the picture) instead of at the next poll. */
+  clipboardSync?(generation: number): Promise<RemoteViewerSafety>;
   /** Main routes channel-eligible requests through the window's media data channel. */
   onChannelRequest?(listener: (request: RemoteViewerChannelRequest) => void): () => void;
   channelReply?(generation: number, id: string, outcome: RemoteViewerChannelOutcome): Promise<void>;
