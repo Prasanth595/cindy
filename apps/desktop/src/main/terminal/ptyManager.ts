@@ -6,8 +6,8 @@
  *   - **session 生命周期 = tab 生命周期 = main 进程生命周期**：
  *     PTY 在 `create(id, opts)` 时 spawn，在 `dispose(id)` 时 kill；中间用户 `exit`
  *     或程序 crash 触发 onExit，session 保留在 Map 里（`exitState` 填上退出码），
- *     渲染端 overlay 显示 "Process exited with code N" + Restart 按钮。用户点 Restart
- *     就调 `restart(id)`，原地换一个新 PTY，id 不变。
+ *     渲染端正常退出时走关闭 tab 的 dispose；异常退出保留 overlay + Restart 按钮。
+ *     用户点 Restart 就调 `restart(id)`，原地换一个新 PTY，id 不变。
  *
  *   - **input write 微任务级批处理**：xterm.js 的 onData 每个按键都 fire 一次（粘贴
  *     文本时会 fire 一长串），如果直接 IPC → pty.write 会产生 N 次系统调用 + N 次 IPC。

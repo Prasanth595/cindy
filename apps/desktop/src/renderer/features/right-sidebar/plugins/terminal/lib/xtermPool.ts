@@ -25,6 +25,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 
 import { createLogger } from '@/lib/logger';
+import type { TerminalExitInfo } from '../../../../../../shared/terminal-bridge';
 
 const log = createLogger('terminal');
 
@@ -41,6 +42,8 @@ export interface XtermEntry {
    * 否则 PTY 输出仍推给旧窗口。见 TerminalTabBody effect #2。
    */
   ptyAttached: boolean;
+  /** Process-local exit snapshot; survives tab remounts, never restored from disk. */
+  exit: TerminalExitInfo | null;
 }
 
 const pool = new Map<string, XtermEntry>();
@@ -85,6 +88,7 @@ export function getOrCreateXterm(tabId: string): XtermEntry {
     fitAddon,
     lastSize: { cols: 80, rows: 24 },
     ptyAttached: false,
+    exit: null,
   };
   pool.set(tabId, entry);
   return entry;
