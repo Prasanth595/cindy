@@ -1517,6 +1517,14 @@ export function MainLayout() {
                   // RSB Maximize(Phase 6):主区彻底 display:none,把整个非左栏空间让给 RSB。
                   isRightSidebarMaximized && 'hidden',
                 )}
+                // Windows 浮动入口每个占 28px + 4px 间距；分屏工具条使用同一占位，
+                // 避免远程桌面 / 面板入口盖住关闭分屏等操作。mac 与左侧入口无需右端让位。
+                style={{
+                  ['--content-top-right-actions-inset' as string]:
+                    !isMac && rightSidebarSide === 'right'
+                      ? `${(showWindowsRightSidebarTrigger ? 32 : 0) + (remoteDesktopDeviceId ? 32 : 0)}px`
+                      : '0px',
+                }}
               >
                 {/* showCollapsedActions: 完全隐藏(isSidebarCollapsed)**和** rail 态(isRailMode)
                     都要为浮动 ChromeActions 簇预留 68px 占位 —— rail 下侧栏仅 64px,chrome 簇

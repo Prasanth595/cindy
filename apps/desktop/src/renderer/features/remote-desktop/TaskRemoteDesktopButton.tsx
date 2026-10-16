@@ -86,8 +86,10 @@ export function TaskRemoteDesktopButton({
           setOpening(true);
           void window.electronAPI
             .openRemoteDesktop({ deviceId, name })
-            .catch(() => {
-              if (mounted.current) toast.error(t('remoteDesktop.connectionError'));
+            .catch((error: unknown) => {
+              if (!mounted.current) return;
+              availability.markUnavailable(error);
+              toast.error(t('remoteDesktop.connectionError'));
             })
             .finally(() => {
               if (mounted.current) setOpening(false);

@@ -69,8 +69,9 @@ function unavailable() {
   const button = screen.getByRole('button', { name: /^Remote desktop unavailable:/ });
   expect(button.className).toContain('opacity-50');
   expect(button.querySelector('.lucide-monitor-off')).not.toBeNull();
+  const opens = open.mock.calls.length;
   fireEvent.click(button);
-  expect(open).not.toHaveBeenCalled();
+  expect(open).toHaveBeenCalledTimes(opens);
   expect(toast.info).toHaveBeenCalledWith(button.getAttribute('aria-label'), { duration: 8000 });
   return button;
 }
@@ -160,7 +161,7 @@ it('does not recheck a definitive refusal on hover', async () => {
   expect(invoke).toHaveBeenCalledOnce();
 });
 
-it('coalesces repeated clicks and keeps the button after a failed open', async () => {
+it('coalesces repeated clicks and explains a failed open in StrictMode', async () => {
   let reject!: (error: Error) => void;
   open.mockReturnValue(
     new Promise((_resolve, fail) => {
@@ -178,9 +179,29 @@ it('coalesces repeated clicks and keeps the button after a failed open', async (
   expect(screen.getByRole('button', { name: 'Opening remote desktop…' })).toBe(action);
   fireEvent.click(action);
   expect(open).toHaveBeenCalledOnce();
-  await act(async () => reject(new Error('PERMISSION_DENIED')));
+  await act(async () => reject(new Error('ACCESS_REVOKED')));
   expect(toast.error).toHaveBeenCalledWith(i18n.t('remoteDesktop.connectionError'));
-  expect(screen.getByRole('button', { name: 'Open remote desktop' })).toBe(action);
+  expect(unavailable()).toBe(action);
+  expect(action.getAttribute('aria-label')).toContain(i18n.t('remoteDesktop.accessRevoked'));
+  fireEvent.mouseEnter(action);
+  await act(async () => {});
+  expect(invoke).toHaveBeenCalledOnce();
+});
+
+it('rechecks after the connection drops while opening', async () => {
+  open.mockRejectedValueOnce(new Error('PEER_OFFLINE'));
+  render(<TaskRemoteDesktopButton deviceId="remote" />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole('button', { name: 'Open remote desktop' }));
+  await act(async () => {});
+  const action = screen.getByRole('button', { name: /^Remote desktop unavailable:/ });
+  expect(action.getAttribute('aria-label')).toContain(i18n.t('remoteDesktop.shortcut.offline'));
+  fireEvent.mouseEnter(action);
+  await act(async () => {});
+  expect(invoke).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Open remote desktop' }));
+  await act(async () => {});
+  expect(open).toHaveBeenCalledTimes(2);
 });
 
 it('keeps the remote desktop action clickable in the mac titlebar trailing slot', async () => {
