@@ -1,7 +1,7 @@
 import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
 import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { buildSharedTaskInvitationLink } from '@cindy/device-link';
+import { buildSharedTaskInvitationLink, isSharedTaskPeer } from '@cindy/device-link';
 import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useRememberMainEntry } from './MainEntryRedirect';
@@ -33,6 +33,7 @@ import { FeishuConflictDialogHost } from '@/components/feishuBot/FeishuConflictD
 import { GlobalDropImportListener } from '@/components/layout/GlobalDropImportListener';
 import { SessionShareImportWizard } from '@/components/settings/SessionShareImportWizard';
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
+import { TaskRemoteDesktopButton } from '@/features/remote-desktop/TaskRemoteDesktopButton';
 import { CredentialStoreBanner } from '@/components/layout/CredentialStoreBanner';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
 import { useAgentIslandRemoteSessionsSync } from '@/features/device-link/agentIslandRemoteSessions';
@@ -349,6 +350,16 @@ export function MainLayout() {
       ),
     [],
   );
+  // 当前任务所在的同账号另一台电脑:右栏开关旁给远程桌面入口(mac 顶栏右端 / Windows
+  // 内容区右上 chip 栈)。共享任务的对方电脑不是自己的电脑,不能远程。
+  const remoteDesktopDeviceId =
+    rightSidebarWorkdirInfo.deviceLinkDeviceId &&
+    !isSharedTaskPeer(rightSidebarWorkdirInfo.deviceLinkDeviceId)
+      ? rightSidebarWorkdirInfo.deviceLinkDeviceId
+      : null;
+  // Windows 内容区右上的右栏唤起 chip:仅面板收起或分离时在场。
+  const showWindowsRightSidebarTrigger =
+    rightSidebarAvailable && rsbWindow.loaded && (rsbDetached || isRightSidebarCollapsed);
   const rowRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   // B1a(去方位化):左侧占位块(pinning spacer + Sidebar)的 wrapper。
@@ -1520,6 +1531,18 @@ export function MainLayout() {
                   // M2(2026-07-09 口径修订):mac 右上浮层随面板在场常驻(折叠
                   // toggle 永远钉窗口右上角),ContentHeader 右端占位不再分侧别。
                   rightSidebarAvailable={rightSidebarAvailable}
+                  // mac:远程桌面入口落在顶栏右端,紧挨窗口右上角的右栏开关(右栏展开时
+                  // 仍在聊天区顶栏右端)。Windows 走下方内容区 chip 栈。
+                  trailing={
+                    isMac && remoteDesktopDeviceId ? (
+                      <TaskRemoteDesktopButton
+                        key={remoteDesktopDeviceId}
+                        deviceId={remoteDesktopDeviceId}
+                        size="toolbar"
+                        className={rightSidebarAvailable ? 'mr-1' : 'mr-2'}
+                      />
+                    ) : undefined
+                  }
                 >
                   {/* key 取 feature 段（pathname 第一段）而非完整 pathname：
                     跨 Feature 切换（/issues → /cc-agent）触发 FadeSwitcher 重挂跑淡入动画；
@@ -1532,31 +1555,38 @@ export function MainLayout() {
                       shrink-0 在 main 的 flex 列里独占一行把内容推下(不遮盖)。放在
                       FadeSwitcher 之外 —— 它是全局状态提示,不参与路由切换动画。 */}
                   <CredentialStoreBanner />
-                  {!isMac &&
-                    rightSidebarAvailable &&
-                    rsbWindow.loaded &&
-                    (rsbDetached || isRightSidebarCollapsed) && (
-                      <div
-                        data-testid="right-sidebar-fixed-trigger"
-                        className={cn(
-                          'pointer-events-none absolute z-50',
-                          rightSidebarSide === 'left' ? 'left-2' : 'right-2',
-                        )}
-                        style={
-                          {
-                            top: 'calc(var(--content-header-h) + 0.25rem)',
-                            WebkitAppRegion: 'no-drag',
-                          } as React.CSSProperties
-                        }
-                      >
+                  {/* Windows chip 栈:远程桌面入口贴着右栏唤起 chip(唤起 chip 在面板一侧);
+                      右栏展开时唤起 chip 不在,远程桌面入口留在同一角。 */}
+                  {!isMac && (showWindowsRightSidebarTrigger || remoteDesktopDeviceId) && (
+                    <div
+                      data-testid="right-sidebar-fixed-trigger"
+                      className={cn(
+                        'pointer-events-none absolute z-50 flex items-center gap-1',
+                        rightSidebarSide === 'left' ? 'left-2 flex-row-reverse' : 'right-2',
+                      )}
+                      style={
+                        {
+                          top: 'calc(var(--content-header-h) + 0.25rem)',
+                          WebkitAppRegion: 'no-drag',
+                        } as React.CSSProperties
+                      }
+                    >
+                      {remoteDesktopDeviceId && (
+                        <TaskRemoteDesktopButton
+                          key={remoteDesktopDeviceId}
+                          deviceId={remoteDesktopDeviceId}
+                        />
+                      )}
+                      {showWindowsRightSidebarTrigger && (
                         <RightSidebarToggle
                           action="show"
                           collapsed
                           onToggle={handleOpenRightSidebar}
                           side={rightSidebarSide}
                         />
-                      </div>
-                    )}
+                      )}
+                    </div>
+                  )}
                   <FadeSwitcher key={location.pathname.split('/')[1] || 'root'}>
                     <Outlet
                       context={{

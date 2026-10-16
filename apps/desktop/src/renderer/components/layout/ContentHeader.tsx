@@ -71,6 +71,8 @@ interface ContentHeaderProps {
   rightSidebarAvailable: boolean;
   /** MainLayout 经 useContentHeaderHidden 预判的结果(与 --content-header-h 同源)。 */
   hidden: boolean;
+  /** 右端占位左侧、紧挨 mac 右栏开关的按钮(任务所在电脑的远程桌面等);按钮自挖 no-drag。 */
+  trailing?: ReactNode;
 }
 
 export function ContentHeader({
@@ -79,6 +81,7 @@ export function ContentHeader({
   isSidebarRail,
   rightSidebarAvailable,
   hidden,
+  trailing,
 }: ContentHeaderProps) {
   const { isMac, isFullscreen } = useMacFullscreen();
   const headerContent = useFeatureContentHeader();
@@ -169,6 +172,8 @@ export function ContentHeader({
           元素自行 no-drag。 */}
       <div className="flex h-full min-w-0 flex-1 items-center">{headerContent}</div>
 
+      {trailing}
+
       {/* 右端占位 —— 平台分流（两端都只留占位，不再放交互按钮）：
           - mac：全屏聊天视图在场时（rightSidebarAvailable）留出固定唤起按钮等宽占位。
             按钮本身已 hoist 到 MainLayout 顶层浮层（钉窗口右上角）；这里仅占位防注入
@@ -198,6 +203,7 @@ export function ContentHeaderSlot({
   showCollapsedActions,
   isSidebarRail,
   rightSidebarAvailable,
+  trailing,
   children,
 }: Omit<ContentHeaderProps, 'hidden'> & { children: ReactNode }) {
   const hidden = useContentHeaderHidden({ sidebarVisible, rightSidebarAvailable });
@@ -209,6 +215,7 @@ export function ContentHeaderSlot({
         isSidebarRail={isSidebarRail}
         rightSidebarAvailable={rightSidebarAvailable}
         hidden={hidden}
+        trailing={trailing}
       />
       <div
         style={{ display: 'contents', ['--content-header-h' as string]: hidden ? '0px' : '46px' }}
