@@ -145,6 +145,7 @@ describe('sendToSession ordering', () => {
     expect(lifecycleDispatchBlock).toContain('const result = await deps.dispatchWorkerTask({');
     expect(lifecycleDispatchBlock).toContain('}, assertAccepted);');
     expect(lifecycleDispatchBlock).toContain('if (!result.queued && rejected) throw rejected.error;');
+    expect(lifecycleDispatchBlock).toContain('return result;');
     expect(lifecycleDispatchBlock).toContain('createHostSendFailure(');
     expect(lifecycleDispatchBlock).toContain('Collab delegate send failed before vendor dispatch: $' + '{params.context}');
     expect(lifecycleDispatchBlock).not.toContain('sendPersistedUserMessageToSession({');
@@ -206,6 +207,11 @@ describe('sendToSession ordering', () => {
       'sendWorkerReadyPlaceholder: async',
       '    rollbackCreatedWorker:',
     );
+    const workerReadySendBlock = extractBetween(
+      workerReadyPlaceholderBlock,
+      'const sendResult = await workerSession.send(',
+      '\n      );',
+    );
     const sendToSessionBlock = extractSendToSessionSource();
     const queuedCreateOptsBlock = extractBetween(
       source,
@@ -216,8 +222,11 @@ describe('sendToSession ordering', () => {
     expect(createWorkerReadyBlock).toContain(
       "session.send({ type: 'user', content: ORCA_WORKER_READY_MESSAGE }, { planMode: false })",
     );
-    expect(workerReadyPlaceholderBlock).toMatch(/planMode: false,\s+throwOnStartFailure: true,/);
-    expect(workerReadyPlaceholderBlock).toContain('await assertCurrent?.();');
+    expect(workerReadySendBlock).toContain("{ type: 'user', content: ORCA_WORKER_READY_MESSAGE },");
+    expect(workerReadySendBlock).toContain('planMode: false,');
+    expect(workerReadySendBlock).toContain('throwOnStartFailure: true,');
+    expect(workerReadySendBlock).toContain('onAccepted: async () => {');
+    expect(workerReadySendBlock).toContain('await assertCurrent?.();');
     expect(sendToSessionBlock).toContain('planMode: false,');
     expect(queuedCreateOptsBlock).toContain('inheritTargetPlanMode = false,');
     expect(queuedCreateOptsBlock).toContain('planMode: inheritTargetPlanMode ? !!row.planModeEnabled : false,');
@@ -922,9 +931,21 @@ describe('sendToSession ordering', () => {
     expect(serviceIdleBlock).toContain('await deps.markWorkerIdle(worker.id)');
     expect(serviceIdleBlock).toContain('await deps.hasPendingWorkerInput(worker.sessionId)');
     expect(serviceIdleBlock).toContain('deps.hasSendToSessionLock(worker.sessionId)');
-    expect(serviceIdleBlock).toContain("await closeWorkerSessionBestEffort(worker.sessionId, 'idleWorker', opts?.assertCurrent);");
+    expect(serviceIdleBlock).toContain("await closeWorkerSessionIfIdleBestEffort(worker.sessionId, 'idleWorker');");
+    expect(serviceIdleBlock).toContain(
+      "await closeWorkerSessionBestEffort(worker.sessionId, 'idleWorker', opts?.assertCurrent);",
+    );
     expectOrder(serviceIdleBlock, 'await deps.markWorkerIdleIfStatus(worker.id, params.expectedStatus)', 'clearRuntimeState(worker.sessionId);');
-    expectOrder(serviceIdleBlock, 'clearRuntimeState(worker.sessionId);', "await closeWorkerSessionBestEffort(worker.sessionId, 'idleWorker', opts?.assertCurrent);");
+    expectOrder(
+      serviceIdleBlock,
+      "await closeWorkerSessionIfIdleBestEffort(worker.sessionId, 'idleWorker');",
+      'clearRuntimeState(worker.sessionId);',
+    );
+    expectOrder(
+      serviceIdleBlock,
+      'clearRuntimeState(worker.sessionId);',
+      "await closeWorkerSessionBestEffort(worker.sessionId, 'idleWorker', opts?.assertCurrent);",
+    );
 
     expect(serviceDepsBlock).toContain('if (!sendLockHeld && sendToSessionLocks.has(sessionId)) return false;');
     expect(serviceDepsBlock).toContain('await inputCoordinator.ensureQueueRestored(sessionId).catch(() => undefined);');
@@ -948,12 +969,28 @@ describe('sendToSession ordering', () => {
     expectOrder(disableBlock, 'orcaTeamService.clearAutoBridgeState(w.sessionId);', 'await sess.abort();');
     expect(source).toContain('archiveWorker: (params) => orcaTeamService.archiveWorker(params),');
     expect(serviceArchiveBlock).toContain('clearRuntimeState(worker.sessionId);');
-    expect(serviceArchiveBlock).toContain("await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);");
-    expect(serviceArchiveBlock).toContain('await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);');
+    expect(serviceArchiveBlock).toContain(
+      "await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);",
+    );
+    expect(serviceArchiveBlock).toContain(
+      'await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);',
+    );
     expect(serviceArchiveBlock).toContain("await deps.updateWorkerStatus(worker.id, 'done');");
-    expectOrder(serviceArchiveBlock, 'clearRuntimeState(worker.sessionId);', "await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);");
-    expectOrder(serviceArchiveBlock, "await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);", 'await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);');
-    expectOrder(serviceArchiveBlock, 'await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);', "await deps.updateWorkerStatus(worker.id, 'done');");
+    expectOrder(
+      serviceArchiveBlock,
+      'clearRuntimeState(worker.sessionId);',
+      "await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);",
+    );
+    expectOrder(
+      serviceArchiveBlock,
+      "await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);",
+      'await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);',
+    );
+    expectOrder(
+      serviceArchiveBlock,
+      'await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);',
+      "await deps.updateWorkerStatus(worker.id, 'done');",
+    );
   });
 
   it('keeps worker idle/archive adapters passing the caller lead session id', () => {
@@ -983,7 +1020,9 @@ describe('sendToSession ordering', () => {
       '  }));\n  orcaTeamServiceForEvents = orcaTeamService;',
     );
 
-    expect(serviceSendBlock).toContain("return dispatchToWorker({ ...params, mode: 'normal' }, assertCurrent)");
+    expect(serviceSendBlock).toContain(
+      "return dispatchToWorker({ ...params, mode: 'normal' }, assertCurrent) as Promise<SendToWorkerResult>;",
+    );
     expect(serviceDispatchBoundaryBlock).toContain(
       'const execution = await dispatchResolvedWorker({',
     );
