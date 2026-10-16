@@ -281,6 +281,15 @@ Mobile 使用电脑端已连接的模型目录；目录为空时保持创建禁�
 - **提示词承诺必须等于工具面**。能力说明按实际挂载的工具集逐块注入（挂了 docs 才讲怎么
   做文档），且挂载必须真实生效：显式挂载 docs 工具集时，运行时把 `cindy_docs` 写进该伙伴
   的 MCP allowlist——不允许出现「提示词说有、运行时够不到」或反向的错位。
+- **渠道专线自带该渠道的原生 API 工具**（2026-10-17）。伙伴绑定的 Telegram / 飞书（Lark）连接与
+  设置页个人 bot 同一口径：轮次由该渠道消息触发时，`cindy_telegram_bot` / `cindy_feishu_bot` 始终
+  进专线的 MCP allowlist（`botProfileRuntime` 按 `telegramChatId` / `feishuChatId` 强制挂载，伙伴
+  收窄工具集也不收掉），每条入站消息的 `[渠道说明]` 末尾点名本轮可用的工具，Agent 第一时间就知道
+  自己在哪个渠道、能直接调哪些平台 API（发文字 / 媒体 / 文件、回复、表情、置顶、群信息与成员、读消息、
+  任意 Bot API / Open API）。出站永远走触发本轮的那条连接自己的 bot，不串到设置页那份；目标 chat
+  与触发者身份来自逐轮作用域租约（`im/shared/channelToolScope.ts`），不来自模型参数——群轮次只能操作
+  本群，成员触发的轮次只能读取 / 发送，管理动作（置顶、撤回 / 删消息、改群）需主人触发，任意 API
+  直通与删消息按次走会话权限档。伙伴主任务（主人私聊落点）不带渠道 vendorOptions，所以没有这组工具。
 - 伙伴保留自己的身份、记忆与 Skill 上下文，不加载项目或全局 `AGENTS.md` / `CLAUDE.md` 替代人格。
   这不限制工具能力：Pi / Claude Code / Codex 的原生子 Agent 与普通任务相同；Orca 也不因伙伴身份禁用，
   仍遵循用户的全局开关、当前引擎支持与权限档。持久后台工作仍可使用 Cindy Session 任务（见 6.1）。

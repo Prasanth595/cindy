@@ -1,16 +1,17 @@
 /**
- * 渠道工具的逐 turn 作用域租约(目前只有 Telegram)。
+ * 渠道工具的逐 turn 作用域租约(Telegram 与飞书 / Lark —— 两个可绑定给伙伴的渠道)。
  *
- * `cindy_telegram_bot` MCP 让 Agent 在 Telegram 轮次里直接驱动 Bot API。它和群历史
+ * `cindy_telegram_bot` / `cindy_feishu_bot` MCP 让 Agent 在渠道轮次里直接驱动平台 API。它和群历史
  * 检索一样不信任模型参数或持久 session 配置来判断"当前在哪个 chat、谁触发的":渠道
  * 只在 provider 真正开始当前 turn 前登记作用域,终态 / 重排 / 失败时同步释放。
  * `sessionInstanceId` 阻断同一业务 session 重建后,旧 MCP 请求借用新实例权限。
  *
- * 作用域里带的 transport(`TelegramToolTransport`)就是这条连接自己的 TelegramIM:
- * 工具永远经触发本轮的那个 bot 出站,不会串到别的连接。
+ * 作用域里带的 transport(`TelegramToolTransport` / `FeishuToolTransport`)就是这条连接自己的
+ * TelegramIM / FeishuIM:工具永远经触发本轮的那个 bot 出站,不会串到别的连接(个人设置页 bot
+ * 与伙伴自有连接各走各的)。
  */
 
-import type { TelegramIM } from '@cindy/im';
+import type { FeishuIM, TelegramIM } from '@cindy/im';
 
 /** MCP 侧用到的 TelegramIM 子集(结构类型, 测试可用假对象)。 */
 export type TelegramToolTransport = Pick<
@@ -44,7 +45,47 @@ export interface TelegramToolScope {
   companion: boolean;
 }
 
-export type ChannelToolScope = TelegramToolScope;
+/** MCP 侧用到的 FeishuIM 子集(结构类型, 测试可用假对象); 与 @cindy/mcps 的 FeishuBotLaneTransport 对齐。 */
+export type FeishuToolTransport = Pick<
+  FeishuIM,
+  | 'getService'
+  | 'getBotAppId'
+  | 'getOwnerOpenId'
+  | 'sendText'
+  | 'sendMarkdownText'
+  | 'replyText'
+  | 'replyMarkdownText'
+  | 'sendFile'
+  | 'reactToMessage'
+  | 'removeMessageReaction'
+  | 'getChatInfo'
+  | 'listChatMembers'
+  | 'getMessage'
+  | 'pinMessage'
+  | 'unpinMessage'
+  | 'recallMessage'
+  | 'callApi'
+>;
+
+export interface FeishuToolScope {
+  channel: 'feishu';
+  im: FeishuToolTransport;
+  /** 连接 id(个人 bot 为 app_id; 伙伴连接为连接 id)。 */
+  botId: string;
+  /** lane userId(私聊 open_id 或 `g/{chatId}[/{threadId}]`), 出站目标由 transport 解码。 */
+  laneUserId: string;
+  /** 飞书原生 chat_id(私聊是 p2p chat)。 */
+  chatId: string;
+  /** 话题 id; 非话题为空串。 */
+  threadId: string;
+  chatKind: 'direct' | 'group';
+  requesterIsOwner: boolean;
+  /** 触发消息的 message_id(om_ 开头; 回复 / 表情 / 置顶的默认目标)。 */
+  triggerMessageId: string;
+  companion: boolean;
+}
+
+export type ChannelToolScope = TelegramToolScope | FeishuToolScope;
 
 interface ActiveScope {
   sessionInstanceId: string;

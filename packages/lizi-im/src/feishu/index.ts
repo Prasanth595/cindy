@@ -867,6 +867,63 @@ export class FeishuIM extends BaseIM implements ChannelIM {
     return outbound.removeReaction(messageId, reactionId);
   }
 
+  // ── Agent 直通 Open API(cindy_feishu_bot 轮次内工具) ──────────────────────
+  // 都在本实例作用域里跑(构造器包了 runInScope): 伙伴自有连接调到的是它自己的
+  // client, 不会串到设置页那份。目标 chat / message 由桌面侧逐轮作用域钉死。
+
+  /** 以本 bot 的 tenant token 调任意飞书 Open API; 失败抛 FeishuApiError。 */
+  callApi(args: {
+    method: outbound.FeishuApiMethod;
+    path: string;
+    params?: Record<string, unknown>;
+    data?: unknown;
+  }): Promise<Record<string, unknown>> {
+    return outbound.callApi(args);
+  }
+
+  getChatInfo(chatId: string): Promise<Record<string, unknown>> {
+    return outbound.getChatInfo(chatId);
+  }
+
+  listChatMembers(
+    chatId: string,
+    opts?: { pageToken?: string; pageSize?: number },
+  ): Promise<outbound.FeishuChatMembersPage> {
+    return outbound.listChatMembers(chatId, opts);
+  }
+
+  getMessage(messageId: string): Promise<Record<string, unknown> | null> {
+    return outbound.getMessage(messageId);
+  }
+
+  pinMessage(messageId: string): Promise<void> {
+    return outbound.pinMessage(messageId);
+  }
+
+  unpinMessage(messageId: string): Promise<void> {
+    return outbound.unpinMessage(messageId);
+  }
+
+  /** 撤回消息(飞书只允许撤回 bot 自己发的); 失败抛 FeishuApiError。 */
+  recallMessage(messageId: string): Promise<void> {
+    return outbound.recallMessage(messageId);
+  }
+
+  /** 直接回复某条消息(纯文本, reply 容器)。 */
+  replyText(replyToMessageId: string, text: string): Promise<{ messageId: string }> {
+    return outbound.replyText(replyToMessageId, text);
+  }
+
+  /** 直接回复某条消息(markdown 卡片, reply 容器)。 */
+  replyMarkdownText(replyToMessageId: string, markdown: string): Promise<{ messageId: string }> {
+    return outbound.replyMarkdownText(replyToMessageId, markdown);
+  }
+
+  /** 当前连接的 bot app_id(未连接为 null)。 */
+  getBotAppId(): string | null {
+    return wsClient.getCurrentBotAppId();
+  }
+
   // ── lifecycle announcement toggle ────────────────────────────────────────
 
   setLifecycleAnnouncement(enabled: boolean): void {

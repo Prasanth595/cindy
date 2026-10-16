@@ -57,7 +57,7 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | `controlState.inProgress` / 绑定库 | `im/shared/controlState.ts` / `im/binding.ts` | bot:user | 保留（`/ctr` 是个人渠道能力） |
 | `pendingInteractions.pending` / `interactions.ts pending` | 两侧 | requestId / interactionId | 并入（批次 5：交互挂起表合一，超时策略按渠道参数） |
 | `groupHistoryAccess.activeBySession` | `im/shared` | sessionId | 已同源，不动 |
-| `channelToolScope.activeBySession`（`cindy_telegram_bot` 的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放） |
+| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。两个可绑定给伙伴的渠道（Telegram、飞书 / Lark）各一种作用域，带着触发本轮那条连接自己的 transport；`cindy_feishu_bot` 的 `send_*_to_user` 也按它选出站 bot（2026-10-17 前恒走设置页那份，伙伴绑定的飞书连接会从错的 bot 发出） |
 | Telegram 传输层（`chatQueues` / `typingLoops` / 回挂目标） | `packages/lizi-im/src/telegram/index.ts` | chat | 保留（个人出站载体） |
 
 **不为合并新增**全局状态机或持久化表：队列与停止交给已有公共入口持有的状态；合并只移动和
@@ -77,7 +77,10 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    断连即终局、`turn.end` 直发不缓存。
 6. **群历史租约与渠道工具租约**：`beginGroupHistoryAccess` / `beginChannelToolScope` 都在 provider 真正
    开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。渠道工具的目标 chat 与
-   触发者身份只来自租约，不来自模型参数。
+   触发者身份只来自租约，不来自模型参数。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
+   末尾给 `toolsHint` 点名本轮可用的渠道工具（Telegram：`TELEGRAM_TOOLS_HINT`；飞书：`feishuToolsHint`），
+   Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时三件事一起补——渠道说明提示、
+   `channelToolScopeFor` 作用域、轮次内直通工具。
 7. **计划对账**只在真实用户轮次注入（官方仅 `source.im` 存在时）。
 8. **终稿必达**（官方）：`turn.end` 先进持久出箱；客户端发布终稿时以 `clientFinal` 交回。
    带附件的轮次不由客户端发布（出箱只存文本）；兜底帧写不进出箱时也不由客户端发布；本进程

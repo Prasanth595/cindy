@@ -42,6 +42,7 @@ import { getAndroidMcpDeps } from './android.js';
 import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
 import { feishuIm, wechatIm } from '../im';
+import { readChannelToolScope, type FeishuToolTransport } from '../im/shared/channelToolScope';
 import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
@@ -161,6 +162,31 @@ export interface DesktopMcpProvidersDeps {
   onToolResultImagesFailed?: (sessionId: string, attemptedCount: number) => void;
 }
 
+/**
+ * 当前 tool-call 所属的飞书逐轮作用域(个人 bot 或伙伴自有连接), 没有就是 null。
+ * 用 sessionId + sessionInstanceId 查租约: 旧实例借不到新实例的权限。
+ */
+function readFeishuTurnScope(
+  session: { sessionId?: string; sessionInstanceId?: string } | undefined,
+) {
+  const scope = readChannelToolScope({
+    sessionId: session?.sessionId,
+    sessionInstanceId: session?.sessionInstanceId,
+  });
+  return scope?.channel === 'feishu' ? scope : null;
+}
+
+/**
+ * cindy_feishu_bot 出站走哪个 bot: 轮次由伙伴自有连接触发时走那条连接自己的 FeishuIM,
+ * 否则(个人 bot 轮次 / hook 会话 / 桌面任务的「飞书通知我」)走设置页那份。2026-10-17 之前
+ * 这里永远是设置页那份 —— 伙伴绑定的飞书连接里 send_message_to_user 会从别的 bot 发出或直接失败。
+ */
+function feishuTransportFor(
+  session: { sessionId?: string; sessionInstanceId?: string } | undefined,
+): FeishuToolTransport {
+  return readFeishuTurnScope(session)?.im ?? feishuIm;
+}
+
 export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMcpProvider[] {
   setSessionPathAuthorizer((request) =>
     authorizeDesktopSessionPath(request, deps.getLiveSessionGrantState),
@@ -271,14 +297,30 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     // lizi_gitlab 已于 2026-07-14 退役(迁入内置意识 cindy-gitlab;老 PAT +
     // 实例地址由 gitlabAccountsMigration 无感搬进意识多连接声明)。
     feishuBot: {
+      // 轮次内直通工具的作用域: 逐轮租约(im/shared/channelToolScope.ts), 不来自模型参数;
+      // 非飞书轮次 / 轮次已结束为 null, 工具 fail closed。
+      readLaneScope: (session) => {
+        const scope = readFeishuTurnScope(session);
+        if (!scope) return null;
+        return {
+          im: scope.im,
+          laneUserId: scope.laneUserId,
+          chatId: scope.chatId,
+          threadId: scope.threadId,
+          chatKind: scope.chatKind,
+          requesterIsOwner: scope.requesterIsOwner,
+          triggerMessageId: scope.triggerMessageId,
+          companion: scope.companion,
+        };
+      },
       // Fallback receiver for send_message_to_user / send_file_to_user when
       // the current session isn't a feishu one — semantically "notify the
       // bot's human owner". Same TOFU accessor scheduler completion
       // notifications use; returns null before the user has DM'd the bot.
-      getOwnerOpenId: () => feishuIm.getOwnerOpenId(),
-      sendFile: async (chatId: string, absPath: string, displayName?: string) => {
+      getOwnerOpenId: (session) => feishuTransportFor(session).getOwnerOpenId(),
+      sendFile: async (chatId: string, absPath: string, displayName?: string, session?) => {
         try {
-          return await feishuIm.sendFile(chatId, absPath, displayName);
+          return await feishuTransportFor(session).sendFile(chatId, absPath, displayName);
         } catch (err) {
           createLogger('mcp/cindy_feishu_bot').warn(
             'sendFile failed target=...%s detail=%s',
@@ -293,15 +335,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // branch-free. Feishu returns 400 with structured `response.data.code/msg`
       // for business errors (rate-limit, invalid text, …); those get folded
       // into `reason` for logging without leaking axios internals to the tool.
-      sendMessage: async (chatId, markdown, notificationSessionId) => {
+      sendMessage: async (chatId, markdown, notificationSessionId, session) => {
         try {
-          if (notificationSessionId && chatId === feishuIm.getOwnerOpenId()) {
+          const im = feishuTransportFor(session);
+          // 通知主人并挂回原任务: 只有个人 bot 有这条路(伙伴连接的轮次本来就带飞书 chatId,
+          // 不会走到 notificationSessionId 分支)。
+          if (im === feishuIm && notificationSessionId && chatId === feishuIm.getOwnerOpenId()) {
             const { messageId, sessionLinked } = await sendFeishuSessionNotification(
               feishuIm, notificationSessionId, markdown,
             );
             return { ok: true, messageId, sessionLinked };
           }
-          const { messageId } = await feishuIm.sendMarkdownText(chatId, markdown);
+          const { messageId } = await im.sendMarkdownText(chatId, markdown);
           return { ok: true, messageId };
         } catch (err) {
           const r = (err as { response?: { data?: { code?: number; msg?: string }; status?: number } }).response;

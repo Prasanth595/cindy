@@ -1968,6 +1968,153 @@ export async function getChatName(chatId: string): Promise<string | null> {
   }
 }
 
+
+// ── Agent 直通 Open API(cindy_feishu_bot 轮次内工具) ────────────────────────
+// 这些函数不走 lane 锚点 / opener 消费: 它们是 Agent 在轮次里显式操作当前对话的
+// 能力(查群信息、成员、置顶、撤回自己的消息、任意 Open API)。目标 chat / message
+// 由桌面侧逐轮作用域钉死, 这里只负责把 SDK 返回与业务码折成稳定的错误形态。
+
+/**
+ * 飞书 Open API 调用失败(HTTP 4xx/5xx 或 2xx 带非零业务码)。`code` 是飞书业务码
+ * (如 99991663 权限不足、230001 无权发消息), `httpStatus` 是 HTTP 状态(业务码拒绝时
+ * 为 200)。MCP 层据此给模型稳定的 errorCode, 不把 axios 内部结构透给模型。
+ */
+export class FeishuApiError extends Error {
+  readonly code: number | undefined;
+  readonly httpStatus: number | undefined;
+  readonly apiMsg: string;
+  constructor(args: { code?: number; httpStatus?: number; msg: string }) {
+    super(`feishu api ${args.httpStatus ?? ''} code=${args.code ?? '?'} ${args.msg}`.replace(/\s+/g, ' ').trim());
+    this.name = 'FeishuApiError';
+    this.code = args.code;
+    this.httpStatus = args.httpStatus;
+    this.apiMsg = args.msg;
+  }
+}
+
+function toFeishuApiError(err: unknown): FeishuApiError {
+  if (err instanceof FeishuApiError) return err;
+  const r = (err as { response?: { status?: number; data?: { code?: number; msg?: string } } })?.response;
+  if (r && (typeof r.status === 'number' || r.data)) {
+    return new FeishuApiError({
+      code: typeof r.data?.code === 'number' ? r.data.code : undefined,
+      httpStatus: typeof r.status === 'number' ? r.status : undefined,
+      msg: r.data?.msg ?? (err instanceof Error ? err.message : String(err)),
+    });
+  }
+  return new FeishuApiError({ msg: err instanceof Error ? err.message : String(err) });
+}
+
+/** 2xx 带非零业务码 → 抛 FeishuApiError; 否则原样返回响应体。 */
+function unwrapApiResponse<T extends { code?: number; msg?: string }>(res: T): T {
+  if (typeof res?.code === 'number' && res.code !== 0) {
+    throw new FeishuApiError({ code: res.code, httpStatus: 200, msg: res.msg ?? 'rejected' });
+  }
+  return res;
+}
+
+export type FeishuApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/**
+ * 以本连接 bot 的 tenant_access_token 调任意飞书 Open API。`path` 形如
+ * `/open-apis/im/v1/chats/{chat_id}`(SDK 自动拼 Feishu / Lark 域名并带 token)。
+ * 返回响应体(含 `code` / `msg` / `data`); HTTP 错误或业务码非零一律抛 FeishuApiError。
+ */
+export async function callApi(args: {
+  method: FeishuApiMethod;
+  path: string;
+  params?: Record<string, unknown>;
+  data?: unknown;
+}): Promise<Record<string, unknown>> {
+  const c = ensureClient();
+  const url = args.path.startsWith('/') ? args.path.slice(1) : args.path;
+  try {
+    const res = await c.request<Record<string, unknown>>({
+      method: args.method,
+      url,
+      ...(args.params ? { params: args.params } : {}),
+      ...(args.data !== undefined ? { data: args.data } : {}),
+    });
+    return unwrapApiResponse((res ?? {}) as { code?: number; msg?: string }) as Record<string, unknown>;
+  } catch (err) {
+    throw toFeishuApiError(err);
+  }
+}
+
+/** 群 / 私聊会话信息(需「获取群信息」权限)。 */
+export async function getChatInfo(chatId: string): Promise<Record<string, unknown>> {
+  const res = await callApi({ method: 'GET', path: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}` });
+  return (res.data as Record<string, unknown> | undefined) ?? {};
+}
+
+export interface FeishuChatMembersPage {
+  items: Array<{ memberId: string; name: string }>;
+  memberTotal: number | null;
+  nextPageToken: string | null;
+}
+
+/** 群成员一页(open_id + 名字), 需「获取群成员列表」权限。 */
+export async function listChatMembers(
+  chatId: string,
+  opts?: { pageToken?: string; pageSize?: number },
+): Promise<FeishuChatMembersPage> {
+  const res = await callApi({
+    method: 'GET',
+    path: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members`,
+    params: {
+      member_id_type: 'open_id',
+      page_size: String(Math.min(Math.max(opts?.pageSize ?? 100, 1), 100)),
+      ...(opts?.pageToken ? { page_token: opts.pageToken } : {}),
+    },
+  });
+  const data = (res.data ?? {}) as {
+    items?: Array<{ member_id?: string; name?: string }>;
+    member_total?: number;
+    has_more?: boolean;
+    page_token?: string;
+  };
+  return {
+    items: (data.items ?? [])
+      .filter((m) => typeof m.member_id === 'string')
+      .map((m) => ({ memberId: m.member_id as string, name: m.name ?? '' })),
+    memberTotal: typeof data.member_total === 'number' ? data.member_total : null,
+    nextPageToken: data.has_more && data.page_token ? data.page_token : null,
+  };
+}
+
+/** 读一条消息的原始体(类型 / 发送者 / 内容 JSON 字串 / 时间)。 */
+export async function getMessage(messageId: string): Promise<Record<string, unknown> | null> {
+  const res = await callApi({ method: 'GET', path: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}` });
+  const items = (res.data as { items?: Array<Record<string, unknown>> } | undefined)?.items;
+  return items?.[0] ?? null;
+}
+
+/** 群内置顶 / 取消置顶一条消息(bot 需在群里且有「置顶消息」权限)。 */
+export async function pinMessage(messageId: string): Promise<void> {
+  await callApi({ method: 'POST', path: '/open-apis/im/v1/pins', data: { message_id: messageId } });
+}
+
+export async function unpinMessage(messageId: string): Promise<void> {
+  await callApi({ method: 'DELETE', path: `/open-apis/im/v1/pins/${encodeURIComponent(messageId)}` });
+}
+
+/** 撤回一条消息; 与 recallOwnMessage 不同, 失败抛 FeishuApiError 让调用方看到原因。 */
+export async function recallMessage(messageId: string): Promise<void> {
+  await callApi({ method: 'DELETE', path: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}` });
+}
+
+/** 以 markdown 卡片回复某条消息(reply 容器, 不走 lane 锚点)。 */
+export async function replyMarkdownText(
+  replyToMessageId: string,
+  markdown: string,
+): Promise<{ messageId: string }> {
+  return createMessage(
+    { kind: 'reply', messageId: replyToMessageId },
+    'interactive',
+    JSON.stringify(buildMarkdownCardV2(markdown)),
+  );
+}
+
 async function sendImageMessage(
   c: Lark.Client,
   target: SendTarget,

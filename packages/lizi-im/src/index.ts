@@ -50,6 +50,8 @@ export type {
   RecentChatMessage as FeishuRecentChatMessage,
   ChatHistoryPage as FeishuChatHistoryPage,
 } from './feishu/outbound.js';
+export { FeishuApiError } from './feishu/outbound.js';
+export type { FeishuApiMethod, FeishuChatMembersPage } from './feishu/outbound.js';
 export type { AttachmentRef as FeishuAttachmentRef } from './feishu/incomingContent.js';
 export type { DownloadResult as FeishuDownloadResult } from './feishu/attachmentDownloader.js';
 

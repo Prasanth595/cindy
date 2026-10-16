@@ -63,6 +63,8 @@ describe('desktop Claude read-only allowlist', () => {
       'mcp__cindy_contacts__list_tools',
       'mcp__cindy_slack__slack_status',
       'mcp__cindy_telegram_bot__get_chat',
+      'mcp__cindy_feishu_bot__get_chat',
+      'mcp__cindy_feishu_bot__get_message',
     ]);
   });
 
@@ -176,8 +178,8 @@ describe('desktop MCP approval policy', () => {
       'cindy_android',
       'cindy_browser',
       'cindy_computer',
-      'cindy_feishu_bot',
-      // cindy_telegram_bot 也在 trusted 表里, 但省略 toolName 时按次审批(见下方专项用例)。
+      // cindy_feishu_bot / cindy_telegram_bot 也在 trusted 表里, 但省略 toolName 时按次审批
+      // (都带 call_api; 见下方专项用例)。
       'cindy_slack',
       'cindy_scheduler',
       'cindy_memory',
@@ -391,6 +393,25 @@ describe('Telegram bot tool authorization', () => {
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_telegram_bot', toolName: 'delete_message' })).toBe('prompt-each-time');
     // Codex may omit the tool name; the generic entry must not inherit the trusted shortcut.
     expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_telegram_bot' })).toBe('prompt-each-time');
+  });
+});
+
+describe('Feishu bot tool authorization', () => {
+  it('silently runs lane sends / reactions / pins, frees read-only lookups, prompts per call for call_api / recall and when the tool name is missing', () => {
+    for (const toolName of ['send_text', 'send_markdown', 'send_file', 'set_reaction', 'remove_reaction', 'pin_message', 'unpin_message', 'list_tools', 'call_tool']) {
+      expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_feishu_bot', toolName })).toBe('auto-approve');
+    }
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_feishu_bot', toolName: 'get_chat' })).toBe('auto-approve');
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_feishu_bot', toolName: 'get_message' })).toBe('auto-approve');
+    expect(
+      getDesktopMcpToolApprovalPolicy({
+        serverName: 'cindy_feishu_bot',
+        toolName: 'call_api',
+        toolParams: { method: 'GET', path: '/open-apis/im/v1/chats/oc_1' },
+      }),
+    ).toBe('prompt-each-time');
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_feishu_bot', toolName: 'recall_message' })).toBe('prompt-each-time');
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_feishu_bot' })).toBe('prompt-each-time');
   });
 });
 

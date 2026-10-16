@@ -71,6 +71,9 @@ const READ_ONLY_MCP_TOOLS: ReadonlySet<string> = new Set([
   'cindy_slack::slack_status',
   // 只读当前 Telegram 对话的信息(chat 由逐轮作用域钉死, 无自由文本参数, 不出境)。
   'cindy_telegram_bot::get_chat',
+  // 只读当前飞书对话的信息 / 某条消息(chat 由逐轮作用域钉死, message_id 需在本 chat 内)。
+  'cindy_feishu_bot::get_chat',
+  'cindy_feishu_bot::get_message',
 ]);
 
 /**
@@ -85,6 +88,8 @@ const TRUSTED_MCP_SERVERS: ReadonlySet<string> = new Set([
   'cindy_android',
   'cindy_browser',
   'cindy_computer',
+  // 飞书轮次里往当前对话发消息 / 文件、表情、置顶与 send_*_to_user: 与 bot 自己回复同一出口,
+  // 目标由逐轮作用域钉死。call_api / recall_message 单独在下方按次审批。
   'cindy_feishu_bot',
   // Telegram 轮次里往当前对话发消息 / 媒体 / 投票、表情、下载对方文件: 与 bot 自己
   // 回复同一出口, 目标 chat 由逐轮作用域钉死。call_api / delete_message 单独在下方按次审批。
@@ -260,6 +265,10 @@ export function getDesktopMcpToolApprovalPolicy(
   // 变成对后续任意方法的授权, 交给会话权限档按次判定(Full Access 免审批, Auto 审阅,
   // Ask 确认)。Codex 省略 toolName 时同样按次, 不借 trusted-server 捷径。
   if (serverName === 'cindy_telegram_bot' && (!toolName || toolName === 'call_api' || toolName === 'delete_message')) {
+    return 'prompt-each-time';
+  }
+  // 飞书同口径: 任意 Open API 与撤回按次审批; 省略 toolName 时无法分辨是不是这两个, fail closed。
+  if (serverName === 'cindy_feishu_bot' && (!toolName || toolName === 'call_api' || toolName === 'recall_message')) {
     return 'prompt-each-time';
   }
   // Choosing a new Worker root delegates filesystem access. Do not let the

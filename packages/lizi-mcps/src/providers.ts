@@ -249,16 +249,23 @@ export function createLiziMcpProviders(
         type: 'sdk',
         name: 'cindy_feishu_bot',
         instance: createFeishuBotMcpServer({
-          getChatId: () =>
-            readFeishuChatId(resolveLiziMcpSessionContext(ctx)) ?? opts.feishuBot!.getOwnerOpenId() ?? null,
-          sendFile: opts.feishuBot!.sendFile,
+          // 每个 host dep 都带上当前 tool-call 的 session:宿主据此选出这一轮真正要
+          // 出站的 bot(个人设置页那份,或触发本轮的伙伴自有连接)。
+          getChatId: () => {
+            const current = resolveLiziMcpSessionContext(ctx);
+            return readFeishuChatId(current) ?? opts.feishuBot!.getOwnerOpenId(current) ?? null;
+          },
+          sendFile: (chatId, absPath, displayName) =>
+            opts.feishuBot!.sendFile(chatId, absPath, displayName, resolveLiziMcpSessionContext(ctx)),
           sendMessage: (chatId, text) => {
             // Codex's shared bridge only has the calling session at tool-call time.
             const current = resolveLiziMcpSessionContext(ctx);
             return opts.feishuBot!.sendMessage(
-              chatId, text, readFeishuChatId(current) ? undefined : current.sessionId,
+              chatId, text, readFeishuChatId(current) ? undefined : current.sessionId, current,
             );
           },
+          // 轮次内直通工具的作用域:逐轮租约,不来自模型参数;非飞书轮次为 null。
+          getLaneScope: () => opts.feishuBot!.readLaneScope?.(resolveLiziMcpSessionContext(ctx)) ?? null,
           // slack-hook 会话里按来源在构建期注入渠道路由提示,
           // 把「发给我」的默认通道钉死在会话自身渠道(规则 9)。
           sessionSource: readSessionSource(ctx),
