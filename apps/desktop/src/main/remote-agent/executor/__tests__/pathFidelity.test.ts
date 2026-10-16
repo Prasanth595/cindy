@@ -114,6 +114,14 @@ describe('remote provider file paths', () => {
       for (const suffix of ['%SUFFIX%', '!SUFFIX!']) {
         expect(workspace.mapCommand('dir "' + SHADOW + suffix + '"', 'cmd')).toBe('dir "' + local + suffix + '"');
       }
+      for (const quote of ['', '"']) {
+        for (const variable of ['PATH', 'Path']) {
+          expect(workspace.mapCommand('set ' + quote + variable + '=' + SHADOW + ';%PATH%' + quote, 'cmd'))
+            .toBe('set ' + quote + variable + '=' + local + ';%PATH%' + quote);
+        }
+      }
+      expect(workspace.mapCommand('type "' + SHADOW + ';literal"', 'cmd'))
+        .toBe('type "' + agentStyle(workspace.resolve(SHADOW + ';literal')) + '"');
       expect(workspace.mapCommand('PATH=' + SHADOW + ':$PATH command')).toBe('PATH=' + local + ':$PATH command');
       expect(workspace.mapCommand('cat ' + SHADOW + ':literal'))
         .toBe('cat ' + agentStyle(workspace.resolve(SHADOW + ':literal')));

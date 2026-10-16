@@ -838,6 +838,12 @@ export class ExecutorWorkspace {
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
+    const inPathList = (input: string, index: number): boolean => {
+      const { wordStart } = commandContext(input, index);
+      const word = input.slice(wordStart, index);
+      return dialect === 'cmd' ? /^"?PATH=/i.test(word) : word.startsWith('PATH=');
+    };
+    const listSeparator = dialect === 'cmd' ? ';' : ':';
     // Shell 里的边界由引号与展开语法决定。引号内的空格/标点属于目录名；动态后缀保留给 shell。
     const commandBoundary = (text: string, index: number, start: number): 'separator' | 'punctuation' | null => {
       const char = text[index];
@@ -846,8 +852,8 @@ export class ExecutorWorkspace {
       if ((context === 'single' && char === "'") || (context === 'double' && char === '"')) return 'separator';
       if (dialect === 'cmd' && /[%!^]/.test(char)) return 'separator';
       if (dialect === 'bash' && context !== 'single' && /[$\x60]/.test(char)) return 'separator';
-      // PATH 的冒号在引号内仍分隔目录；普通带引号的文件名可以包含冒号。
-      if (dialect === 'bash' && char === ':' && text.startsWith('PATH=', commandContext(text, start).wordStart)) return 'separator';
+      // PATH 列表在引号内仍分隔目录；普通文件名里的冒号/分号保持字面语义。
+      if (char === listSeparator && inPathList(text, start)) return 'separator';
       if (context !== 'none') return null;
       return /[\s'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
     };
@@ -856,7 +862,8 @@ export class ExecutorWorkspace {
     for (let hit = nextAliasPrefix(command, 0, prefixes, undefined, commandBoundary); hit; hit = nextAliasPrefix(command, end, prefixes, undefined, commandBoundary)) {
       const { alias, index: start } = hit;
       const separator = alias.to.includes('\\') ? '\\' : '/';
-      const { quote: context, wordStart } = commandContext(command, start);
+      const { quote: context } = commandContext(command, start);
+      const pathList = inPathList(command, start);
       const windowsPath = WINDOWS_PATH.test(command.slice(start, hit.end));
       let suffixEnd = hit.end;
       const suffixStart = suffixEnd;
@@ -868,7 +875,7 @@ export class ExecutorWorkspace {
           if (char === '\r' || char === '\n') break;
           if (context === 'single' && char === "'") break;
           if (context === 'double' && char === '"') break;
-          if (dialect === 'bash' && char === ':' && command.startsWith('PATH=', wordStart)) break;
+          if (pathList && char === listSeparator) break;
           if (context === 'none' && /[\s'"\x60;:|&()<>}\]]/.test(char)) break;
           if (dialect === 'bash' && context !== 'single'
             && (/[$\x60]/.test(char) || (char === '\\'
