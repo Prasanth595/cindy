@@ -586,17 +586,29 @@ export class ExecutorWorkspace {
 
   /** 本机真实路径(含 Git Bash 写法)→ Agent 看到的虚拟路径。 */
   private agentAliases(): ExecutorPathAlias[] {
+    const seen = new Set<string>();
     return this.aliases.flatMap((alias) => {
-      const real = alias.to.replace(/\\/g, '/');
-      const entries = [{ from: real, to: alias.from }];
-      // Git Bash / MSYS 的 pwd 和诊断使用 /c/...，而 Node 返回 C:\...。
-      if (/^[A-Za-z]:\//.test(real)) entries.push({ from: '/' + real[0].toLowerCase() + real.slice(2), to: alias.from });
-      if (process.platform === 'win32') {
-        const temporary = os.tmpdir().replace(/\\/g, '/').replace(/\/+$/, '');
-        const relative = stripAliasPrefix(real, temporary);
-        if (relative !== null) entries.push({ from: '/tmp' + (relative ? '/' + relative : ''), to: alias.from });
-      }
-      return entries;
+      // A junction/symlink can be resolved differently by the Windows runner and by
+      // the process that created the alias. Include the current canonical target at
+      // projection time so both spellings still map to the same virtual directory.
+      const targets = [alias.to, realPathOrAncestor(alias.to)];
+      return targets.flatMap((target) => {
+        const real = target.replace(/\\/g, '/');
+        const entries: ExecutorPathAlias[] = [{ from: real, to: alias.from }];
+        // Git Bash / MSYS 的 pwd 和诊断使用 /c/...，而 Node 返回 C:\...。
+        if (/^[A-Za-z]:\//.test(real)) entries.push({ from: '/' + real[0].toLowerCase() + real.slice(2), to: alias.from });
+        if (process.platform === 'win32') {
+          const temporary = os.tmpdir().replace(/\\/g, '/').replace(/\/+$/, '');
+          const relative = stripAliasPrefix(real, temporary);
+          if (relative !== null) entries.push({ from: '/tmp' + (relative ? '/' + relative : ''), to: alias.from });
+        }
+        return entries.filter((entry) => {
+          const key = entry.from.replace(/\\/g, '/').toLowerCase() + '\\0' + entry.to;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      });
     });
   }
 
