@@ -36,13 +36,13 @@ export class ExecutorPathError extends Error {
   }
 }
 
-/** 取一个路径的真实路径；不存在时按最近的已存在祖先解析，再拼回剩余部分。 */
-export function realPathOrAncestor(target: string): string {
+/** 按指定 realpath 实现取真实路径；不存在时按最近的已存在祖先解析，再拼回剩余部分。 */
+function realPathOrAncestorWith(target: string, resolveRealpath: (path: string) => string): string {
   let current = path.resolve(target);
   const rest: string[] = [];
   for (;;) {
     try {
-      const real = fs.realpathSync.native(current);
+      const real = resolveRealpath(current);
       return rest.length ? path.join(real, ...rest.reverse()) : real;
     } catch {
       const parent = path.dirname(current);
@@ -51,6 +51,16 @@ export function realPathOrAncestor(target: string): string {
       current = parent;
     }
   }
+}
+
+/** 取一个路径的真实路径；不存在时按最近的已存在祖先解析，再拼回剩余部分。 */
+export function realPathOrAncestor(target: string): string {
+  return realPathOrAncestorWith(target, fs.realpathSync.native);
+}
+
+/** Windows 的 native realpath 可能返回长路径，而 Node 的普通实现保留短路径写法；两者都要覆盖。 */
+function realPathOrAncestorPortable(target: string): string {
+  return realPathOrAncestorWith(target, fs.realpathSync);
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -490,8 +500,10 @@ export class ExecutorWorkspace {
     for (const alias of aliases) {
       if (!alias.from || !path.isAbsolute(alias.to)) continue;
       expanded.push(alias);
-      const canonical = realPathOrAncestor(alias.to);
-      if (path.resolve(canonical) !== path.resolve(alias.to)) expanded.push({ from: alias.from, to: canonical });
+      const canonicalPaths = [realPathOrAncestor(alias.to), realPathOrAncestorPortable(alias.to)];
+      for (const canonical of canonicalPaths) {
+        if (path.resolve(canonical) !== path.resolve(alias.to)) expanded.push({ from: alias.from, to: canonical });
+      }
     }
     const seen = new Set<string>();
     this.aliases = expanded
