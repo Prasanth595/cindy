@@ -9741,7 +9741,10 @@
       "platform": {
         "telegram": "Telegram",
         "feishu": "Feishu",
-        "lark": "Lark"
+        "lark": "Lark",
+        "wecom": "WeCom",
+        "dingtalk": "DingTalk",
+        "discord": "Discord"
       },
       "status": {
         "connected": "연결됨",
@@ -9753,7 +9756,7 @@
       },
       "remove": "제거",
       "removeAria": "{{platform}} 제거",
-      "empty": "{{name}}에게는 아직 메시지 플랫폼이 없습니다. Telegram이나 Feishu에서 만든 봇을 추가하면 {{name}}이(가) 그곳에서 답합니다.",
+      "empty": "{{name}}에게는 아직 메시지 플랫폼이 없습니다. Telegram, Feishu, WeCom, DingTalk, Discord에서 만든 봇을 추가하면 {{name}}이(가) 그곳에서 답합니다.",
       "externalNote": "이 봇에게 메시지를 보내는 사람은 모두 {{name}}과(와) 대화하게 됩니다. 내 메시지는 {{name}}의 권한으로 실행되고, 다른 사람에게는 권한이 제한된 숨겨진 작업이 따로 만들어집니다.",
       "sharedMemoryNote": "{{name}}은(는) 여기의 정보와 다른 대화의 정보를 함께 사용합니다. 기억을 분리하려면 다른 동료를 사용하세요.",
       "groups": {
@@ -9787,12 +9790,37 @@
           "appSecretLabel": "App Secret",
           "appSecretPlaceholder": "App Secret 붙여넣기"
         },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "WeCom 관리 화면의 Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "WeCom 관리 화면의 Bot Secret",
+          "ownerHint": "이 봇에 처음 DM을 보낸 사람이 소유자가 되어 {{name}}의 권한으로 실행됩니다. 먼저 지능형 봇을 만들고 장기 연결을 켜 주세요."
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "봇 애플리케이션의 Client ID를 붙여넣기",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "봇 애플리케이션의 Client Secret을 붙여넣기",
+          "ownerHint": "이 봇에 처음 DM을 보낸 사람이 소유자가 되어 {{name}}의 권한으로 실행됩니다. 그룹에서는 @로 언급될 때만 답합니다."
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "Discord Bot Token 붙여넣기",
+          "ownerLabel": "내 Discord 사용자 ID",
+          "ownerPlaceholder": "17–20자리 숫자 ID",
+          "ownerHint": "이 ID에서 온 DM만 {{name}}에게 전달되며 {{name}}의 권한으로 실행됩니다."
+        },
         "confirm": "연결",
         "connecting": "연결 중…",
         "errors": {
           "invalidToken": "Bot Token 형식이 아닌 것 같습니다. 123456:ABC… 형식이어야 합니다.",
           "invalidOwner": "사용자 ID는 숫자여야 합니다.",
           "invalidFeishu": "App ID와 App Secret을 모두 입력하세요.",
+          "invalidWecom": "Bot ID와 Secret을 모두 입력하세요.",
+          "invalidDingtalk": "Client ID와 Client Secret을 모두 입력하세요.",
+          "invalidDiscordToken": "Bot Token 형식이 아닌 것 같습니다.",
+          "invalidDiscordOwner": "사용자 ID는 17–20자리 숫자여야 합니다.",
           "conflict": "이 봇은 이미 이 컴퓨터에서 사용 중입니다 (설정 → IM 봇, 또는 다른 동료).",
           "botUnavailable": "{{name}}은(는) 지금 사용할 수 없습니다. 복구된 뒤 다시 시도하세요.",
           "connectFailed": "연결하지 못했습니다: {{reason}}",

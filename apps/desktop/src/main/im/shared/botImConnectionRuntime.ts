@@ -15,7 +15,7 @@
 
 import { BrowserWindow, ipcMain } from 'electron';
 import { eq } from 'drizzle-orm';
-import type { FeishuIM, IMStatus, TelegramIM } from '@cindy/im';
+import type { DingTalkIM, DiscordIM, FeishuIM, IMStatus, TelegramIM, WecomIM } from '@cindy/im';
 
 import { createLogger } from '../../logger';
 import { getDbClient } from '../../localDb/client/current';
@@ -26,6 +26,7 @@ import { throwIpcError } from '../../utils/ipcValidate';
 import { ownerScopedImSecrets } from '../ownerScopedStorage';
 import {
   BOT_IM_CONNECTION_CHANGED_EVENT,
+  type BotImChannel,
   type BotImConnectionAddInput,
   type BotImConnectionAddResult,
   type BotImConnectionGroupsPayload,
@@ -54,13 +55,25 @@ const log = createLogger('im:bot-connections');
 
 export type BotImTransportInstance =
   | { kind: 'telegram'; im: TelegramIM; orchestrator: ImOrchestrator }
-  | { kind: 'feishu'; im: FeishuIM; orchestrator: ImOrchestrator };
+  | { kind: 'feishu'; im: FeishuIM; orchestrator: ImOrchestrator }
+  | { kind: 'wecom'; im: WecomIM; orchestrator: ImOrchestrator }
+  | { kind: 'dingtalk'; im: DingTalkIM; orchestrator: ImOrchestrator }
+  | { kind: 'discord'; im: DiscordIM; orchestrator: ImOrchestrator };
+
+/** 设置页那份个人 bot 当前用的各平台身份(用于拒绝同一个 bot 两处同时用); 没配为 null。 */
+export interface BotImSettingsIdentity {
+  telegramToken: string | null;
+  feishuAppId: string | null;
+  wecomBotId: string | null;
+  dingtalkAppKey: string | null;
+  discordToken: string | null;
+}
 
 export interface BotImConnectionRuntimeDeps {
   /** 为一条记录装配传输层 + 编排器(不 init)。渠道尚未支持时抛错。 */
   create(record: BotImConnectionRecord): BotImTransportInstance;
   /** 设置页那份个人 bot 当前用的平台身份(用于拒绝同一个 bot 两处同时用)。 */
-  settingsIdentity(): { telegramToken: string | null; feishuAppId: string | null };
+  settingsIdentity(): BotImSettingsIdentity;
   /** 这个机器人进过的群(群窗口表里出现过的 chat); 没有群参与模式的渠道返回空。 */
   listKnownGroups(record: BotImConnectionRecord): Promise<Array<{ chatId: string; chatName: string | null }>>;
 }
@@ -86,6 +99,47 @@ const FEISHU_SECRET_KEYS = [
   'feishu_bot_owner_open_id',
   'feishu_bot_lifecycle_announcement',
 ] as const;
+const WECOM_SECRET_KEYS = ['wecom-bot-id', 'wecom-bot-secret', 'wecom-owner-user-id'] as const;
+const DINGTALK_SECRET_KEYS = [
+  'dingtalk-bot-app-key',
+  'dingtalk-bot-app-secret',
+  'dingtalk-bot-owner-user-id',
+] as const;
+const DISCORD_SECRET_KEYS = [
+  'discord-bot-token',
+  'discord-owner-user-id',
+  'discord-bot-runtime-active',
+  'discord-bot-lifecycle-announcement',
+] as const;
+const SECRET_KEYS_BY_CHANNEL: Record<BotImChannel, readonly string[]> = {
+  telegram: TELEGRAM_SECRET_KEYS,
+  feishu: FEISHU_SECRET_KEYS,
+  wecom: WECOM_SECRET_KEYS,
+  dingtalk: DINGTALK_SECRET_KEYS,
+  discord: DISCORD_SECRET_KEYS,
+};
+
+/**
+ * 各渠道「同一个 bot 已在别处连着」的判据: 设置页那份身份字段 + 本机其它连接按前缀存的
+ * 同名键。凭证身份只比相等, 不读出来展示。
+ */
+const IDENTITY_SECRET_KEY: Record<BotImChannel, string> = {
+  telegram: 'telegram-bot-token',
+  feishu: 'feishu_bot_app_id',
+  wecom: 'wecom-bot-id',
+  dingtalk: 'dingtalk-bot-app-key',
+  discord: 'discord-bot-token',
+};
+const IDENTITY_IN_USE_CODE: Record<BotImChannel, string> = {
+  telegram: 'TOKEN_IN_USE: this Telegram bot is already connected on this computer',
+  feishu: 'APP_IN_USE: this Feishu app is already connected on this computer',
+  wecom: 'APP_IN_USE: this WeCom bot is already connected on this computer',
+  dingtalk: 'APP_IN_USE: this DingTalk app is already connected on this computer',
+  discord: 'TOKEN_IN_USE: this Discord bot is already connected on this computer',
+};
+
+/** 企业微信建连是异步的: 交完凭证后最多等这么久看终态, 还在连就当 pending 保留连接。 */
+const ASYNC_CONNECT_SETTLE_MS = 15_000;
 
 let deps: BotImConnectionRuntimeDeps | null = null;
 const instances = new Map<string, LiveInstance>();
@@ -102,26 +156,49 @@ function requireDeps(): BotImConnectionRuntimeDeps {
 
 function purgeSecrets(record: Pick<BotImConnectionRecord, 'id' | 'channel'>): void {
   const prefix = secretKeyPrefixFor(record.id);
-  const keys = record.channel === 'telegram' ? TELEGRAM_SECRET_KEYS : FEISHU_SECRET_KEYS;
-  for (const key of keys) ownerScopedImSecrets.remove(`${prefix}${key}`);
+  for (const key of SECRET_KEYS_BY_CHANNEL[record.channel]) ownerScopedImSecrets.remove(`${prefix}${key}`);
 }
 
 function statusOf(transport: BotImTransportInstance | undefined): IMStatus {
   return transport?.im.getStatus() ?? { kind: 'idle' };
 }
 
+/**
+ * 专线 route key 用的平台身份。多数渠道就是 connected 状态里的 appId(Telegram bot id /
+ * 飞书 app id / 企业微信 bot id / 钉钉 AppKey); Discord 的 status.appId 是展示用的 bot 标签,
+ * 路由身份是网关拿到的应用 id(与入站 event.contextId 同源)。
+ */
+function routingIdentityOf(transport: BotImTransportInstance, status: IMStatus): string | null {
+  if (status.kind !== 'connected') return null;
+  if (transport.kind === 'discord') return transport.im.botContextId || null;
+  return status.appId || null;
+}
+
+function identityOf(transport: BotImTransportInstance | undefined): BotImConnectionView['identity'] {
+  if (!transport) return { username: null, ownerUserId: null };
+  switch (transport.kind) {
+    case 'telegram': {
+      const state = transport.im.getConfigState();
+      return { username: state.botUsername ?? null, ownerUserId: state.ownerUserId ?? null };
+    }
+    case 'feishu':
+      return { username: null, ownerUserId: null };
+    case 'wecom':
+    case 'dingtalk':
+      return { username: null, ownerUserId: transport.im.getOwnerUserId() || null };
+    case 'discord': {
+      const status = transport.im.getStatus();
+      return {
+        username: status.kind === 'connected' ? status.appId || null : null,
+        ownerUserId: transport.im.getOwnerUserId() || null,
+      };
+    }
+  }
+}
+
 function toView(record: BotImConnectionRecord): BotImConnectionView {
-  const live = instances.get(record.id);
-  const transport = live?.transport;
-  const telegramState = transport?.kind === 'telegram' ? transport.im.getConfigState() : null;
-  return {
-    ...record,
-    status: statusOf(transport),
-    identity: {
-      username: telegramState?.botUsername ?? null,
-      ownerUserId: telegramState?.ownerUserId ?? null,
-    },
-  };
+  const transport = instances.get(record.id)?.transport;
+  return { ...record, status: statusOf(transport), identity: identityOf(transport) };
 }
 
 export function buildBotImConnectionListPayload(): BotImConnectionListPayload {
@@ -144,8 +221,9 @@ function instantiate(record: BotImConnectionRecord): LiveInstance {
   const transport = requireDeps().create(record);
   const offStatus = transport.im.onStatusChange((status) => {
     // 连上后记下平台身份: 专线 route key 与移除时的归档范围都按它。
-    if (status.kind === 'connected' && status.appId && record.botContextId !== status.appId) {
-      void updateBotImConnectionRecord(record.id, { botContextId: status.appId })
+    const routingIdentity = routingIdentityOf(transport, status);
+    if (routingIdentity && live.record.botContextId !== routingIdentity) {
+      void updateBotImConnectionRecord(record.id, { botContextId: routingIdentity })
         .then((next) => {
           if (next) live.record = next;
         })
@@ -203,29 +281,79 @@ async function readBotProfileStatus(botId: string): Promise<string | null> {
   return row?.status ?? null;
 }
 
-function assertNoDuplicateIdentity(input: BotImConnectionAddInput): void {
-  const settings = requireDeps().settingsIdentity();
-  if (input.channel === 'telegram') {
-    const sameAsSettings = settings.telegramToken !== null && settings.telegramToken === input.token;
-    const sameAsOther = listBotImConnections().some(
-      (record) =>
-        record.channel === 'telegram' &&
-        ownerScopedImSecrets.read(`${secretKeyPrefixFor(record.id)}telegram-bot-token`) === input.token,
-    );
-    if (sameAsSettings || sameAsOther) {
-      throwIpcError('PRECONDITION_FAILED', 'TOKEN_IN_USE: this Telegram bot is already connected on this computer');
-    }
-    return;
+function identityValueOf(input: BotImConnectionAddInput): string {
+  switch (input.channel) {
+    case 'telegram':
+      return input.token;
+    case 'feishu':
+      return input.appId;
+    case 'wecom':
+      return input.wecomBotId;
+    case 'dingtalk':
+      return input.appKey;
+    case 'discord':
+      return input.token;
   }
-  const sameAsSettings = settings.feishuAppId !== null && settings.feishuAppId === input.appId;
+}
+
+function settingsIdentityValueOf(settings: BotImSettingsIdentity, channel: BotImChannel): string | null {
+  switch (channel) {
+    case 'telegram':
+      return settings.telegramToken;
+    case 'feishu':
+      return settings.feishuAppId;
+    case 'wecom':
+      return settings.wecomBotId;
+    case 'dingtalk':
+      return settings.dingtalkAppKey;
+    case 'discord':
+      return settings.discordToken;
+  }
+}
+
+function assertNoDuplicateIdentity(input: BotImConnectionAddInput): void {
+  const value = identityValueOf(input);
+  const fromSettings = settingsIdentityValueOf(requireDeps().settingsIdentity(), input.channel);
+  const sameAsSettings = fromSettings !== null && fromSettings === value;
+  const key = IDENTITY_SECRET_KEY[input.channel];
   const sameAsOther = listBotImConnections().some(
     (record) =>
-      record.channel === 'feishu' &&
-      ownerScopedImSecrets.read(`${secretKeyPrefixFor(record.id)}feishu_bot_app_id`) === input.appId,
+      record.channel === input.channel &&
+      ownerScopedImSecrets.read(`${secretKeyPrefixFor(record.id)}${key}`) === value,
   );
   if (sameAsSettings || sameAsOther) {
-    throwIpcError('PRECONDITION_FAILED', 'APP_IN_USE: this Feishu app is already connected on this computer');
+    throwIpcError('PRECONDITION_FAILED', IDENTITY_IN_USE_CODE[input.channel]);
   }
+}
+
+/**
+ * 等传输层把异步建连跑到终态(connected / error / conflict / offline); 超时仍在
+ * connecting 则按「还在连」返回当前状态, 由调用方决定保留。
+ */
+function awaitSettledStatus(
+  im: Pick<BotImTransportInstance['im'], 'getStatus' | 'onStatusChange'>,
+  timeoutMs: number,
+): Promise<IMStatus> {
+  const settled = (status: IMStatus) => status.kind !== 'connecting' && status.kind !== 'idle';
+  const current = im.getStatus();
+  if (settled(current)) return Promise.resolve(current);
+  return new Promise<IMStatus>((resolve) => {
+    let done = false;
+    const finish = (status: IMStatus) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      off();
+      resolve(status);
+    };
+    const off = im.onStatusChange((status) => {
+      if (settled(status)) finish(status);
+    });
+    const timer = setTimeout(() => finish(im.getStatus()), timeoutMs);
+    // 订阅前已经到终态(极短窗口)。
+    const now = im.getStatus();
+    if (settled(now)) finish(now);
+  });
 }
 
 function describeStatusFailure(status: IMStatus): string {
@@ -261,36 +389,60 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
     return throwIpcError('PRECONDITION_FAILED', `CONNECT_FAILED: ${reason}`);
   };
 
-  if (live.transport.kind === 'telegram') {
-    if (input.channel !== 'telegram') return rollback('channel mismatch');
-    let state: Awaited<ReturnType<TelegramIM['setConfig']>>;
-    try {
-      state = await live.transport.im.setConfig({ token: input.token, ownerUserId: input.ownerUserId });
-    } catch (err) {
-      return rollback(err instanceof Error ? err.message : String(err));
-    }
-    const failed = state.saveErrorStatus ?? (state.status.kind === 'connected' ? null : state.status);
-    if (failed) return rollback(describeStatusFailure(failed));
-  } else {
-    if (input.channel !== 'feishu') return rollback('channel mismatch');
-    let verdict: string;
-    try {
-      verdict = (
-        await live.transport.im.saveCredentials({
+  const transport = live.transport;
+  if (transport.kind !== input.channel) return rollback('channel mismatch');
+  try {
+    switch (transport.kind) {
+      case 'telegram': {
+        if (input.channel !== 'telegram') return rollback('channel mismatch');
+        const state = await transport.im.setConfig({ token: input.token, ownerUserId: input.ownerUserId });
+        const failed = state.saveErrorStatus ?? (state.status.kind === 'connected' ? null : state.status);
+        if (failed) return rollback(describeStatusFailure(failed));
+        break;
+      }
+      case 'feishu': {
+        if (input.channel !== 'feishu') return rollback('channel mismatch');
+        const { verdict } = await transport.im.saveCredentials({
           appId: input.appId,
           appSecret: input.appSecret,
           service: input.service as BotImFeishuService,
-        })
-      ).verdict;
-    } catch (err) {
-      return rollback(err instanceof Error ? err.message : String(err));
+        });
+        if (verdict !== 'connected' && verdict !== 'pending') return rollback(verdict);
+        break;
+      }
+      case 'wecom': {
+        if (input.channel !== 'wecom') return rollback('channel mismatch');
+        // 凭证落盘同步, 建连异步: 等一会儿看终态, 还在连就当 pending 保留(与飞书同口径)。
+        const state = await transport.im.setConfig({ botId: input.wecomBotId, secret: input.secret });
+        if (state.saveErrorStatus) return rollback(describeStatusFailure(state.saveErrorStatus));
+        const settled = await awaitSettledStatus(transport.im, ASYNC_CONNECT_SETTLE_MS);
+        if (settled.kind === 'error' || settled.kind === 'conflict') return rollback(describeStatusFailure(settled));
+        break;
+      }
+      case 'dingtalk': {
+        if (input.channel !== 'dingtalk') return rollback('channel mismatch');
+        // 先连通再落盘, 连不上直接抛错(凭证已回滚)。
+        await transport.im.saveCredentials({ appKey: input.appKey, appSecret: input.appSecret });
+        const status = transport.im.getStatus();
+        if (status.kind === 'error' || status.kind === 'conflict') return rollback(describeStatusFailure(status));
+        break;
+      }
+      case 'discord': {
+        if (input.channel !== 'discord') return rollback('channel mismatch');
+        const state = await transport.im.setConfig({ token: input.token, ownerUserId: input.ownerUserId });
+        const failed = state.saveErrorStatus ?? (state.status.kind === 'connected' ? null : state.status);
+        if (failed) return rollback(describeStatusFailure(failed));
+        break;
+      }
     }
-    if (verdict !== 'connected' && verdict !== 'pending') return rollback(verdict);
+  } catch (err) {
+    return rollback(err instanceof Error ? err.message : String(err));
   }
 
   const connected = live.transport.im.getStatus();
-  if (connected.kind === 'connected' && connected.appId) {
-    const next = await updateBotImConnectionRecord(record.id, { botContextId: connected.appId });
+  const routingIdentity = routingIdentityOf(live.transport, connected);
+  if (routingIdentity && live.record.botContextId !== routingIdentity) {
+    const next = await updateBotImConnectionRecord(record.id, { botContextId: routingIdentity });
     if (next) live.record = next;
   }
   log.info(
@@ -361,8 +513,9 @@ export async function removeBotImConnection(id: string): Promise<BotImConnection
     }
     try {
       // 解绑: 清命令菜单、通知主人、删凭证(传输层自己的那份)。
-      if (live.transport.kind === 'telegram') await live.transport.im.disconnect();
-      else await live.transport.im.clearCredentials();
+      const transport = live.transport;
+      if (transport.kind === 'telegram' || transport.kind === 'discord') await transport.im.disconnect();
+      else await transport.im.clearCredentials();
     } catch (err) {
       log.warn(`bot im connection ${id}: disconnect failed: ${String(err)}`);
     }
@@ -398,12 +551,33 @@ function readAddInput(payload: unknown): BotImConnectionAddInput {
     if (!/^\d{1,20}$/.test(ownerUserId)) throwIpcError('INVALID_PARAMS', 'ownerUserId is invalid');
     return { botId, channel: 'telegram', token, ownerUserId };
   }
-  const appId = typeof p.appId === 'string' ? p.appId.trim() : '';
-  const appSecret = typeof p.appSecret === 'string' ? p.appSecret.trim() : '';
-  const service: BotImFeishuService = p.service === 'lark' ? 'lark' : 'feishu';
-  if (!appId || appId.length > 128) throwIpcError('INVALID_PARAMS', 'appId is invalid');
-  if (!appSecret || appSecret.length > 512) throwIpcError('INVALID_PARAMS', 'appSecret is invalid');
-  return { botId, channel: 'feishu', appId, appSecret, service };
+  if (p.channel === 'feishu') {
+    const appId = typeof p.appId === 'string' ? p.appId.trim() : '';
+    const appSecret = typeof p.appSecret === 'string' ? p.appSecret.trim() : '';
+    const service: BotImFeishuService = p.service === 'lark' ? 'lark' : 'feishu';
+    if (!appId || appId.length > 128) throwIpcError('INVALID_PARAMS', 'appId is invalid');
+    if (!appSecret || appSecret.length > 512) throwIpcError('INVALID_PARAMS', 'appSecret is invalid');
+    return { botId, channel: 'feishu', appId, appSecret, service };
+  }
+  if (p.channel === 'wecom') {
+    const wecomBotId = typeof p.wecomBotId === 'string' ? p.wecomBotId.trim() : '';
+    const secret = typeof p.secret === 'string' ? p.secret.trim() : '';
+    if (!wecomBotId || wecomBotId.length > 128) throwIpcError('INVALID_PARAMS', 'wecomBotId is invalid');
+    if (!secret || secret.length > 512) throwIpcError('INVALID_PARAMS', 'secret is invalid');
+    return { botId, channel: 'wecom', wecomBotId, secret };
+  }
+  if (p.channel === 'dingtalk') {
+    const appKey = typeof p.appKey === 'string' ? p.appKey.trim() : '';
+    const appSecret = typeof p.appSecret === 'string' ? p.appSecret.trim() : '';
+    if (!appKey || appKey.length > 256) throwIpcError('INVALID_PARAMS', 'appKey is invalid');
+    if (!appSecret || appSecret.length > 512) throwIpcError('INVALID_PARAMS', 'appSecret is invalid');
+    return { botId, channel: 'dingtalk', appKey, appSecret };
+  }
+  const token = typeof p.token === 'string' ? p.token.trim() : '';
+  const ownerUserId = typeof p.ownerUserId === 'string' ? p.ownerUserId.trim() : '';
+  if (!token || token.length > 256 || /\s/.test(token)) throwIpcError('INVALID_PARAMS', 'token is invalid');
+  if (!/^\d{1,20}$/.test(ownerUserId)) throwIpcError('INVALID_PARAMS', 'ownerUserId is invalid');
+  return { botId, channel: 'discord', token, ownerUserId };
 }
 
 export function registerBotImConnectionIpc(): void {

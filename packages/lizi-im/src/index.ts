@@ -56,7 +56,7 @@ export type { AttachmentRef as FeishuAttachmentRef } from './feishu/incomingCont
 export type { DownloadResult as FeishuDownloadResult } from './feishu/attachmentDownloader.js';
 
 export { DiscordIM, createDiscordIM } from './discord/index.js';
-export type { DiscordIMOptions } from './discord/index.js';
+export type { DiscordConfigState, DiscordIMOptions } from './discord/index.js';
 
 export { TelegramIM, createTelegramIM } from './telegram/index.js';
 // expressive 档变体池 —— 官方 bot 的 ack 表情复用同一份, 两个 bot 的表情语义
@@ -113,7 +113,7 @@ export type {
   TelegramMessageLifecyclePhase,
 } from './telegram/messageLifecycle.js';
 export { WecomIM, createWecomIM } from './wecom/index.js';
-export type { WecomIMOptions } from './wecom/index.js';
+export type { WecomConfigState, WecomIMOptions } from './wecom/index.js';
 export {
   decodeWecomLane,
   encodeWecomGroupLane,

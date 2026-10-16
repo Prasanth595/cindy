@@ -1430,4 +1430,30 @@ describe("WecomIM routing and ownership", () => {
       },
     ]);
   });
+
+  it("keeps a prefixed, IPC-less instance on its own credential keys and off the settings channels", async () => {
+    const { host, secrets, broadcasts, ipcHandlers } = createHost();
+    secrets.clear();
+    secrets.set("bot-im-abc-wecom-bot-id", "bot-2");
+    secrets.set("bot-im-abc-wecom-bot-secret", "secret-2");
+    const client = new FakeClient();
+    const im = new WecomIM(host, {
+      clientFactory: () => client as never,
+      secretKeyPrefix: "bot-im-abc-",
+      ipc: false,
+    });
+    im.registerIpc();
+    expect(ipcHandlers.size).toBe(0);
+    await im.init();
+    expect(im.getStatus()).toEqual({ kind: "connected", appId: "bot-2" });
+    expect(broadcasts).toEqual([]);
+    const state = await im.setConfig({ botId: "bot-3", secret: "secret-3" });
+    expect(state.botId).toBe("bot-3");
+    expect(secrets.get("bot-im-abc-wecom-bot-id")).toBe("bot-3");
+    expect(secrets.has("wecom-bot-id")).toBe(false);
+    await im.clearCredentials();
+    expect([...secrets.keys()]).toEqual([]);
+    expect(im.getStatus()).toEqual({ kind: "idle" });
+    expect(broadcasts).toEqual([]);
+  });
 });

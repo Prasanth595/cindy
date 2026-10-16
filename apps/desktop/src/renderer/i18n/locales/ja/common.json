@@ -9741,7 +9741,10 @@
       "platform": {
         "telegram": "Telegram",
         "feishu": "飛書",
-        "lark": "Lark"
+        "lark": "Lark",
+        "wecom": "WeCom",
+        "dingtalk": "DingTalk",
+        "discord": "Discord"
       },
       "status": {
         "connected": "接続済み",
@@ -9753,7 +9756,7 @@
       },
       "remove": "削除",
       "removeAria": "{{platform}} を削除",
-      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram や飛書で作成したボットを追加すると、{{name}} がそこで返信します。",
+      "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram、飛書、WeCom、DingTalk、Discord で作成したボットを追加すると、{{name}} がそこで返信します。",
       "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
       "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
       "groups": {
@@ -9787,12 +9790,37 @@
           "appSecretLabel": "App Secret",
           "appSecretPlaceholder": "App Secret を貼り付け"
         },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "WeCom 管理画面の Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "WeCom 管理画面の Bot Secret",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。先にインテリジェントボットを作成し、長時間接続を有効にしてください。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "ボットアプリの Client ID を貼り付け",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "ボットアプリの Client Secret を貼り付け",
+          "ownerHint": "最初にこのボットへ DM を送った人がオーナーになり、{{name}} 自身の権限で実行されます。グループでは @ されたときだけ返信します。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "Discord Bot Token を貼り付け",
+          "ownerLabel": "自分の Discord ユーザー ID",
+          "ownerPlaceholder": "17〜20 桁の数字 ID",
+          "ownerHint": "この ID からの DM だけが {{name}} に届き、{{name}} 自身の権限で実行されます。"
+        },
         "confirm": "接続",
         "connecting": "接続中…",
         "errors": {
           "invalidToken": "Bot Token の形式ではないようです。123456:ABC… の形式です。",
           "invalidOwner": "ユーザー ID は数字で入力してください。",
           "invalidFeishu": "App ID と App Secret の両方を入力してください。",
+          "invalidWecom": "Bot ID と Secret の両方を入力してください。",
+          "invalidDingtalk": "Client ID と Client Secret の両方を入力してください。",
+          "invalidDiscordToken": "Bot Token の形式ではないようです。",
+          "invalidDiscordOwner": "ユーザー ID は 17〜20 桁の数字です。",
           "conflict": "このボットはすでにこのコンピューターで使われています（設定 → IM ボット、または別の仲間）。",
           "botUnavailable": "{{name}} は現在利用できません。復帰後にもう一度お試しください。",
           "connectFailed": "接続できませんでした：{{reason}}",

@@ -9741,7 +9741,10 @@
       "platform": {
         "telegram": "Telegram",
         "feishu": "飞书",
-        "lark": "Lark"
+        "lark": "Lark",
+        "wecom": "企业微信",
+        "dingtalk": "钉钉",
+        "discord": "Discord"
       },
       "status": {
         "connected": "已连接",
@@ -9753,7 +9756,7 @@
       },
       "remove": "移除",
       "removeAria": "移除 {{platform}}",
-      "empty": "{{name}} 还没有消息平台。把你在 Telegram 或飞书申请的机器人加进来，{{name}} 就会在那里回复。",
+      "empty": "{{name}} 还没有消息平台。把你在 Telegram、飞书、企业微信、钉钉或 Discord 申请的机器人加进来，{{name}} 就会在那里回复。",
       "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
       "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
       "groups": {
@@ -9787,12 +9790,37 @@
           "appSecretLabel": "App Secret",
           "appSecretPlaceholder": "粘贴 App Secret"
         },
+        "wecom": {
+          "botIdLabel": "Bot ID",
+          "botIdPlaceholder": "企业微信管理后台里的 Bot ID",
+          "secretLabel": "Secret",
+          "secretPlaceholder": "企业微信管理后台里的 Bot Secret",
+          "ownerHint": "首个私聊这个机器人的人会成为它的主人，按 {{name}} 自己的权限执行。先创建智能机器人并开启长连接。"
+        },
+        "dingtalk": {
+          "appKeyLabel": "Client ID",
+          "appKeyPlaceholder": "粘贴机器人应用的 Client ID",
+          "appSecretLabel": "Client Secret",
+          "appSecretPlaceholder": "粘贴机器人应用的 Client Secret",
+          "ownerHint": "首个私聊这个机器人的人会成为它的主人，按 {{name}} 自己的权限执行。群里被 @ 时才回复。"
+        },
+        "discord": {
+          "tokenLabel": "Bot Token",
+          "tokenPlaceholder": "粘贴 Discord Bot Token",
+          "ownerLabel": "你的 Discord 用户 ID",
+          "ownerPlaceholder": "17–20 位数字 ID",
+          "ownerHint": "只有来自这个 ID 的私聊会交给 {{name}}，按 {{name}} 自己的权限执行。"
+        },
         "confirm": "连接",
         "connecting": "连接中…",
         "errors": {
           "invalidToken": "这不像 Bot Token，格式应为 123456:ABC…",
           "invalidOwner": "用户 ID 应该是一串数字。",
           "invalidFeishu": "App ID 和 App Secret 都要填。",
+          "invalidWecom": "Bot ID 和 Secret 都要填。",
+          "invalidDingtalk": "Client ID 和 Client Secret 都要填。",
+          "invalidDiscordToken": "这不像 Bot Token。",
+          "invalidDiscordOwner": "用户 ID 应该是 17–20 位数字。",
           "conflict": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
           "botUnavailable": "{{name}} 现在不可用，等 TA 恢复后再试。",
           "connectFailed": "没连上：{{reason}}",

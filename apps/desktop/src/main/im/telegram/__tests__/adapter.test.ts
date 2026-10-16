@@ -321,3 +321,63 @@ describe('Telegram group history media', () => {
     expect(result?.agentText).toContain('hi');
   });
 });
+
+describe('Telegram ambient reply gate', () => {
+  const groupEvent = {
+    contextId: 'bot-1',
+    senderId: 'g/-100',
+    messageId: '-100:81',
+    text: 'Mia, is the changelog ready?',
+    ambient: true,
+    invoked: false,
+    speaker: { id: 'tom', name: 'Tom', username: 'tom', isOwner: false },
+  } as unknown as IMMessageEvent;
+
+  it('asks the judge with group background, speaker, message and the bot identity; skip wins', async () => {
+    const judge = vi.fn(async () => 'skip' as const);
+    const adapter = buildTelegramAdapter(
+      { getOwnerUserId: () => '123', botName: 'mia_bot' } as never,
+      {} as never,
+      {
+        companionBotId: 'bot-mimi',
+        ambientReplyJudge: judge,
+        describeSelfForAmbientJudge: async () => ({ name: 'Mia', description: 'Release helper' }),
+      },
+    );
+    await expect(adapter.ambientTurnGate?.(groupEvent)).resolves.toBe('skip');
+    expect(judge).toHaveBeenCalledTimes(1);
+    const input = (judge.mock.calls[0] as unknown[])[0] as Record<string, string>;
+    expect(input.botName).toBe('Mia');
+    expect(input.botDescription).toBe('Release helper');
+    expect(input.groupContext).toContain('<group_chat_context>');
+    expect(input.speaker).toContain('Tom');
+    expect(input.speaker).toContain('@tom');
+    expect(input.text).toBe('Mia, is the changelog ready?');
+  });
+
+  it('proceeds on reply / unknown verdicts, without a judge, and for direct messages', async () => {
+    for (const verdict of ['reply', 'unknown'] as const) {
+      const adapter = buildTelegramAdapter({ getOwnerUserId: () => '123', botName: 'mia_bot' } as never, {} as never, {
+        ambientReplyJudge: async () => verdict,
+      });
+      await expect(adapter.ambientTurnGate?.(groupEvent)).resolves.toBe('proceed');
+    }
+    const noJudge = buildTelegramAdapter({ getOwnerUserId: () => '123' } as never, {} as never);
+    await expect(noJudge.ambientTurnGate?.(groupEvent)).resolves.toBe('proceed');
+    const dmJudge = vi.fn(async () => 'skip' as const);
+    const dm = buildTelegramAdapter({ getOwnerUserId: () => '123' } as never, {} as never, { ambientReplyJudge: dmJudge });
+    await expect(dm.ambientTurnGate?.({ ...groupEvent, senderId: '999' } as IMMessageEvent)).resolves.toBe('proceed');
+    expect(dmJudge).not.toHaveBeenCalled();
+  });
+
+  it('uses the settings-page persona as identity for the personal bot', async () => {
+    const judge = vi.fn(async () => 'reply' as const);
+    const adapter = buildTelegramAdapter({ getOwnerUserId: () => '123', botName: 'mia_bot' } as never, {} as never, {
+      ambientReplyJudge: judge,
+    });
+    await adapter.ambientTurnGate?.(groupEvent);
+    const input = (judge.mock.calls[0] as unknown[])[0] as Record<string, string>;
+    expect(input.botName).toBe('Private persona');
+    expect(input.botDescription).toBe('Private instructions');
+  });
+});

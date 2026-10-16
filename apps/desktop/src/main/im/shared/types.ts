@@ -251,6 +251,13 @@ export interface ImChannelAdapter {
    * transcript**(它们不是触发用户发的)。与用户自己 attachments 的语义边界
    * 正在于此: 触发消息附件照常走 attachments 落库。
    */
+  /**
+   * 全响应·自主判断(event.ambient)消息的前置判定: 返回 'skip' 则本条既不落库也不起
+   * 轮次(群窗口游标也不推进, 消息留在窗口里当下次的背景)。在 ack / 提前落库之前
+   * 调用。钩子抛错或判不出来按 'proceed' 走原路径(主模型仍可用 NO_REPLY 沉默)。
+   * 只对 ambient 消息调用; 被召唤的消息从不经过这里。
+   */
+  ambientTurnGate?(event: IMMessageEvent): Promise<'proceed' | 'skip'>;
   prepareAgentTurnText?(event: IMMessageEvent): Promise<{
     agentText: string;
     contextSnapshot?: ImContextSnapshot;

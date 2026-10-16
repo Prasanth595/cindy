@@ -1,14 +1,14 @@
 /**
  * 伙伴设置 →「消息平台」: 这位伙伴自己的 IM 机器人。
  *
- * 用户在平台(Telegram BotFather / 飞书开放平台)自己申请机器人, 把凭证填在这里, 这个
- * 机器人就是这位伙伴: 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线,
+ * 用户在平台(Telegram BotFather / 飞书开放平台 / 企业微信 / 钉钉 / Discord)自己申请机器人,
+ * 把凭证填在这里, 这个机器人就是这位伙伴: 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线,
  * 同一伙伴的所有渠道共享记忆(规则见 docs/product-rules/cindy-bots-runtime.md)。
  * 与 设置 → IM 机器人 里那份独立的个人 bot 互不相干。远端伙伴没有这一页。
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { MessageSquare, Plus, Send } from 'lucide-react';
+import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
@@ -42,9 +42,18 @@ import {
 
 const BOT_TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]{20,}$/;
 const OWNER_USER_ID_PATTERN = /^\d{4,20}$/;
+const DISCORD_OWNER_ID_PATTERN = /^\d{17,20}$/;
+
+const CHANNEL_ICON: Record<BotImChannel, LucideIcon> = {
+  telegram: Send,
+  feishu: MessageSquare,
+  wecom: Briefcase,
+  dingtalk: Zap,
+  discord: Gamepad2,
+};
 
 function ChannelIcon({ channel }: { channel: BotImChannel }) {
-  const Icon = channel === 'telegram' ? Send : MessageSquare;
+  const Icon = CHANNEL_ICON[channel];
   return <Icon size={18} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />;
 }
 
@@ -90,13 +99,15 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
   const mine = (payload?.connections ?? []).filter((item) => item.botId === bot.id);
 
   const platformName = (view: Pick<BotImConnectionView, 'channel' | 'service'>) =>
-    view.channel === 'telegram'
-      ? t('bots.channels.platform.telegram')
-      : t(view.service === 'lark' ? 'bots.channels.platform.lark' : 'bots.channels.platform.feishu');
+    view.channel === 'feishu'
+      ? t(view.service === 'lark' ? 'bots.channels.platform.lark' : 'bots.channels.platform.feishu')
+      : t(`bots.channels.platform.${view.channel}`);
   const identityLabel = (view: BotImConnectionView) => {
+    // Telegram 显示 @用户名; Discord 显示 bot 标签; 其它渠道只露平台身份的脱敏片段。
     if (view.channel === 'telegram') {
       return view.identity.username ? `@${view.identity.username}` : (view.botContextId ?? '');
     }
+    if (view.channel === 'discord' && view.identity.username) return view.identity.username;
     return view.botContextId ? maskBotImContextId(view.botContextId) : '';
   };
 
@@ -309,7 +320,7 @@ function ConnectionGroups({ connectionId, botName }: { connectionId: string; bot
   );
 }
 
-const PLATFORMS: ReadonlyArray<BotImChannel> = ['telegram', 'feishu'];
+const PLATFORMS: ReadonlyArray<BotImChannel> = ['telegram', 'feishu', 'wecom', 'dingtalk', 'discord'];
 
 function BotChannelAddDialog({
   bot,
@@ -327,6 +338,13 @@ function BotChannelAddDialog({
   const [service, setService] = useState<BotImFeishuService>('feishu');
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
+  // 企业微信 / 钉钉 / Discord 各自的两格: 字段名跟平台的叫法走, 互不串用。
+  const [wecomBotId, setWecomBotId] = useState('');
+  const [wecomSecret, setWecomSecret] = useState('');
+  const [dingtalkAppKey, setDingtalkAppKey] = useState('');
+  const [dingtalkAppSecret, setDingtalkAppSecret] = useState('');
+  const [discordToken, setDiscordToken] = useState('');
+  const [discordOwnerUserId, setDiscordOwnerUserId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -334,23 +352,53 @@ function BotChannelAddDialog({
 
   useEffect(() => setError(null), [channel]);
 
+  const filled = (...values: string[]) => values.every((value) => value.trim().length > 0);
   const canSubmit =
     channel === 'telegram'
-      ? token.trim().length > 0 && ownerUserId.trim().length > 0
-      : appId.trim().length > 0 && appSecret.trim().length > 0;
+      ? filled(token, ownerUserId)
+      : channel === 'feishu'
+        ? filled(appId, appSecret)
+        : channel === 'wecom'
+          ? filled(wecomBotId, wecomSecret)
+          : channel === 'dingtalk'
+            ? filled(dingtalkAppKey, dingtalkAppSecret)
+            : filled(discordToken, discordOwnerUserId);
 
   const buildInput = (): BotImConnectionAddInput | string => {
-    if (channel === 'telegram') {
-      const trimmedToken = token.trim();
-      const trimmedOwner = ownerUserId.trim();
-      if (!BOT_TOKEN_PATTERN.test(trimmedToken)) return t('bots.channels.add.errors.invalidToken');
-      if (!OWNER_USER_ID_PATTERN.test(trimmedOwner)) return t('bots.channels.add.errors.invalidOwner');
-      return { botId: bot.id, channel: 'telegram', token: trimmedToken, ownerUserId: trimmedOwner };
+    switch (channel) {
+      case 'telegram': {
+        const trimmedToken = token.trim();
+        const trimmedOwner = ownerUserId.trim();
+        if (!BOT_TOKEN_PATTERN.test(trimmedToken)) return t('bots.channels.add.errors.invalidToken');
+        if (!OWNER_USER_ID_PATTERN.test(trimmedOwner)) return t('bots.channels.add.errors.invalidOwner');
+        return { botId: bot.id, channel: 'telegram', token: trimmedToken, ownerUserId: trimmedOwner };
+      }
+      case 'feishu': {
+        const trimmedAppId = appId.trim();
+        const trimmedSecret = appSecret.trim();
+        if (!trimmedAppId || !trimmedSecret) return t('bots.channels.add.errors.invalidFeishu');
+        return { botId: bot.id, channel: 'feishu', appId: trimmedAppId, appSecret: trimmedSecret, service };
+      }
+      case 'wecom': {
+        const trimmedBotId = wecomBotId.trim();
+        const trimmedSecret = wecomSecret.trim();
+        if (!trimmedBotId || !trimmedSecret) return t('bots.channels.add.errors.invalidWecom');
+        return { botId: bot.id, channel: 'wecom', wecomBotId: trimmedBotId, secret: trimmedSecret };
+      }
+      case 'dingtalk': {
+        const trimmedKey = dingtalkAppKey.trim();
+        const trimmedSecret = dingtalkAppSecret.trim();
+        if (!trimmedKey || !trimmedSecret) return t('bots.channels.add.errors.invalidDingtalk');
+        return { botId: bot.id, channel: 'dingtalk', appKey: trimmedKey, appSecret: trimmedSecret };
+      }
+      case 'discord': {
+        const trimmedToken = discordToken.trim();
+        const trimmedOwner = discordOwnerUserId.trim();
+        if (!trimmedToken || /\s/.test(trimmedToken)) return t('bots.channels.add.errors.invalidDiscordToken');
+        if (!DISCORD_OWNER_ID_PATTERN.test(trimmedOwner)) return t('bots.channels.add.errors.invalidDiscordOwner');
+        return { botId: bot.id, channel: 'discord', token: trimmedToken, ownerUserId: trimmedOwner };
+      }
     }
-    const trimmedAppId = appId.trim();
-    const trimmedSecret = appSecret.trim();
-    if (!trimmedAppId || !trimmedSecret) return t('bots.channels.add.errors.invalidFeishu');
-    return { botId: bot.id, channel: 'feishu', appId: trimmedAppId, appSecret: trimmedSecret, service };
   };
 
   const submit = async (event?: FormEvent) => {
@@ -415,7 +463,7 @@ function BotChannelAddDialog({
             <div
               role="radiogroup"
               aria-label={t('bots.channels.add.platformLabel')}
-              className="mt-4 flex gap-2"
+              className="mt-4 grid grid-cols-3 gap-2"
             >
               {PLATFORMS.map((item, index) => {
                 const checked = item === channel;
@@ -429,7 +477,7 @@ function BotChannelAddDialog({
                     disabled={busy}
                     onClick={() => setChannel(item)}
                     className={cn(
-                      'flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border px-3 text-13 outline-none transition-colors',
+                      'flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xl border px-3 text-13 outline-none transition-colors',
                       'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]',
                       'disabled:cursor-not-allowed',
                       checked
@@ -438,7 +486,7 @@ function BotChannelAddDialog({
                     )}
                   >
                     <ChannelIcon channel={item} />
-                    {t(`bots.channels.platform.${item}`)}
+                    <span className="truncate">{t(`bots.channels.platform.${item}`)}</span>
                   </button>
                 );
               })}
@@ -481,7 +529,7 @@ function BotChannelAddDialog({
                     )}
                   </FormField>
                 </>
-              ) : (
+              ) : channel === 'feishu' ? (
                 <>
                   <FormField label={t('bots.channels.add.feishu.serviceLabel')}>
                     {(control) => (
@@ -525,6 +573,114 @@ function BotChannelAddDialog({
                         spellCheck={false}
                         disabled={busy}
                         secretTipContentClassName="z-[10001]"
+                      />
+                    )}
+                  </FormField>
+                </>
+              ) : channel === 'wecom' ? (
+                <>
+                  <FormField label={t('bots.channels.add.wecom.botIdLabel')}>
+                    {(control) => (
+                      <Input
+                        {...control}
+                        mono
+                        value={wecomBotId}
+                        onChange={setWecomBotId}
+                        placeholder={t('bots.channels.add.wecom.botIdPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
+                      />
+                    )}
+                  </FormField>
+                  <FormField
+                    label={t('bots.channels.add.wecom.secretLabel')}
+                    hint={t('bots.channels.add.wecom.ownerHint', { name: bot.name })}
+                  >
+                    {(control) => (
+                      <Input
+                        {...control}
+                        secret
+                        mono
+                        value={wecomSecret}
+                        onChange={setWecomSecret}
+                        placeholder={t('bots.channels.add.wecom.secretPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
+                        secretTipContentClassName="z-[10001]"
+                      />
+                    )}
+                  </FormField>
+                </>
+              ) : channel === 'dingtalk' ? (
+                <>
+                  <FormField label={t('bots.channels.add.dingtalk.appKeyLabel')}>
+                    {(control) => (
+                      <Input
+                        {...control}
+                        mono
+                        value={dingtalkAppKey}
+                        onChange={setDingtalkAppKey}
+                        placeholder={t('bots.channels.add.dingtalk.appKeyPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
+                      />
+                    )}
+                  </FormField>
+                  <FormField
+                    label={t('bots.channels.add.dingtalk.appSecretLabel')}
+                    hint={t('bots.channels.add.dingtalk.ownerHint', { name: bot.name })}
+                  >
+                    {(control) => (
+                      <Input
+                        {...control}
+                        secret
+                        mono
+                        value={dingtalkAppSecret}
+                        onChange={setDingtalkAppSecret}
+                        placeholder={t('bots.channels.add.dingtalk.appSecretPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
+                        secretTipContentClassName="z-[10001]"
+                      />
+                    )}
+                  </FormField>
+                </>
+              ) : (
+                <>
+                  <FormField label={t('bots.channels.add.discord.tokenLabel')}>
+                    {(control) => (
+                      <Input
+                        {...control}
+                        secret
+                        mono
+                        value={discordToken}
+                        onChange={setDiscordToken}
+                        placeholder={t('bots.channels.add.discord.tokenPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
+                        secretTipContentClassName="z-[10001]"
+                      />
+                    )}
+                  </FormField>
+                  <FormField
+                    label={t('bots.channels.add.discord.ownerLabel')}
+                    hint={t('bots.channels.add.discord.ownerHint', { name: bot.name })}
+                  >
+                    {(control) => (
+                      <Input
+                        {...control}
+                        mono
+                        value={discordOwnerUserId}
+                        onChange={setDiscordOwnerUserId}
+                        placeholder={t('bots.channels.add.discord.ownerPlaceholder')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={busy}
                       />
                     )}
                   </FormField>

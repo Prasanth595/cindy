@@ -1,13 +1,13 @@
 /**
  * 伙伴自有 IM 机器人连接的 IPC 线上类型(main / preload / renderer 共用)。
  *
- * 一位伙伴可以挂多个平台的机器人(Telegram、飞书 / Lark), 凭证由用户自己在平台申请,
+ * 一位伙伴可以挂多个平台的机器人(Telegram、飞书 / Lark、企业微信、钉钉、Discord), 凭证由用户自己在平台申请,
  * 在伙伴设置「消息平台」页直接填; 与 设置 → IM 机器人 里那份独立的个人 bot 互不相干。
  * 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线。
  * 正本与语义见 main/im/shared/botImConnectionStore.ts 与 botImConnectionRuntime.ts。
  */
 
-export const BOT_IM_CHANNELS = ['telegram', 'feishu'] as const;
+export const BOT_IM_CHANNELS = ['telegram', 'feishu', 'wecom', 'dingtalk', 'discord'] as const;
 export type BotImChannel = (typeof BOT_IM_CHANNELS)[number];
 
 export type BotImFeishuService = 'feishu' | 'lark';
@@ -30,13 +30,21 @@ export function readBotImChannelsFromVendorOptions(
   return (BOT_IM_CHANNELS as readonly string[]).filter((channel) => raw.includes(channel)) as BotImChannel[];
 }
 
+/** 各渠道专线在 vendorOptions 里记目标 chat 的字段名(与各 adapter 的 buildVendorOptions 同源)。 */
+export const BOT_IM_CHANNEL_CHAT_VENDOR_KEY: Record<BotImChannel, string> = {
+  telegram: 'telegramChatId',
+  feishu: 'feishuChatId',
+  wecom: 'wecomConversationId',
+  dingtalk: 'dingtalkChatId',
+  discord: 'discordChatId',
+};
+
 /** 这个会话的轮次能用某个渠道的原生 API 工具: 专线带该渠道 chat, 或主任务标记绑了该渠道。 */
 export function hasImChannelVendorOptions(
   vendorOptions: Readonly<Record<string, unknown>> | undefined,
   channel: BotImChannel,
 ): boolean {
-  const chatKey = channel === 'telegram' ? 'telegramChatId' : 'feishuChatId';
-  if (typeof vendorOptions?.[chatKey] === 'string') return true;
+  if (typeof vendorOptions?.[BOT_IM_CHANNEL_CHAT_VENDOR_KEY[channel]] === 'string') return true;
   return readBotImChannelsFromVendorOptions(vendorOptions).includes(channel);
 }
 
@@ -57,7 +65,7 @@ export interface BotImConnectionRecord {
   createdAt: number;
   /** 飞书 / Lark 二选一(只有 feishu 渠道有)。 */
   service?: BotImFeishuService;
-  /** 平台身份(Telegram bot id / 飞书 app id), 首次连上后记下, 用于专线 route key。 */
+  /** 平台身份(Telegram bot id / 飞书 app id / 企业微信 bot id / 钉钉 AppKey / Discord 应用 id), 首次连上后记下, 用于专线 route key。 */
   botContextId: string | null;
   /**
    * 群参与模式覆写(Telegram 连接): chatId → 'always' = 全响应·自主判断(每条群消息都进
@@ -84,9 +92,9 @@ export interface BotImConnectionGroupsPayload {
 export interface BotImConnectionView extends BotImConnectionRecord {
   status: BotImConnectionStatus;
   identity: {
-    /** Telegram bot 用户名(连上后才有)。 */
+    /** Telegram bot 用户名 / Discord bot 标签(连上后才有); 其它渠道为 null。 */
     username: string | null;
-    /** Telegram 主人用户 id。 */
+    /** 主人用户 id: Telegram / Discord 是填进去的, 企业微信 / 钉钉是首个私聊者(TOFU), 还没人私聊时为 null。 */
     ownerUserId: string | null;
   };
 }
@@ -103,7 +111,11 @@ export type BotImConnectionAddInput =
       appId: string;
       appSecret: string;
       service: BotImFeishuService;
-    };
+    }
+  /** 企业微信智能机器人: 平台上的 Bot ID + Secret(与伙伴 id `botId` 不是一回事)。 */
+  | { botId: string; channel: 'wecom'; wecomBotId: string; secret: string }
+  | { botId: string; channel: 'dingtalk'; appKey: string; appSecret: string }
+  | { botId: string; channel: 'discord'; token: string; ownerUserId: string };
 
 export interface BotImConnectionAddResult extends BotImConnectionListPayload {
   connection: BotImConnectionView;

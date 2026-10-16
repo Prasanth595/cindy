@@ -21,6 +21,7 @@ import {
 import { createImOrchestrator, type ImOrchestrator } from '../shared/orchestrator';
 import type { ImOrchestratorConfig } from '../shared/types';
 import { buildTelegramAdapter } from './adapter';
+import { describeCompanionForAmbientJudge, getAmbientReplyJudge } from '../shared/ambientReplyJudgeRuntime';
 import { recordTelegramGroupMessage } from './groupWindow';
 import { registerTelegramSessionAuthIpc } from './sessionAuth';
 
@@ -42,7 +43,14 @@ export function wireTelegramOrchestrator(
 ): ImOrchestrator {
   const orchestrator = createImOrchestrator(
     buildTelegramAdapter(telegramIm, config, {
-      ...(options.companionBotId ? { companionBotId: options.companionBotId } : {}),
+      ...(options.companionBotId
+        ? {
+            companionBotId: options.companionBotId,
+            describeSelfForAmbientJudge: describeCompanionForAmbientJudge(options.companionBotId),
+          }
+        : {}),
+      // 全响应群消息先问辅助模型该不该插话(个人 bot 与伙伴连接同一条链)。
+      ambientReplyJudge: getAmbientReplyJudge(),
     }),
     {
       ...(options.instanceKey ? { instanceKey: options.instanceKey } : {}),

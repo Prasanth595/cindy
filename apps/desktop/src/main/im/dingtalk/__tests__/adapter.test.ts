@@ -98,3 +98,28 @@ describe('dingtalk turn permission boundary', () => {
     expect(policy?.forceConfirmToolCall('file_change', {})).toBe(true);
   });
 });
+
+describe('dingtalk teammate-owned connection', () => {
+  const im = { getOwnerUserId: () => 'owner-1' } as unknown as DingTalkIM;
+
+  it('maps the TOFU owner DM, other DMs and group conversations to companion lanes', () => {
+    const adapter = buildDingTalkAdapter(im, CONFIG, { companionBotId: 'bot-mia' });
+    expect(adapter.companionLane?.('owner-1')).toEqual({ kind: 'owner-dm' });
+    expect(adapter.companionLane?.('stranger')).toEqual({ kind: 'guest-dm', userId: 'stranger' });
+    expect(adapter.companionLane?.('g/cid%2F1')).toEqual({ kind: 'group', chatId: 'cid/1', threadId: '' });
+    // 还没人私聊过(TOFU 未发生)时谁都不是主人。
+    const unbound = buildDingTalkAdapter({ getOwnerUserId: () => '' } as unknown as DingTalkIM, CONFIG, { companionBotId: 'bot-mia' });
+    expect(unbound.companionLane?.('owner-1')).toEqual({ kind: 'guest-dm', userId: 'owner-1' });
+  });
+
+  it('lets owner-triggered group turns run on the teammate permission tier and keeps the guest policy', () => {
+    const adapter = buildDingTalkAdapter(im, CONFIG, { companionBotId: 'bot-mia' });
+    const personal = buildDingTalkAdapter(im, CONFIG);
+    const ownerEvent = { messageId: 'm1', speaker: { id: 'owner-1', name: 'Owner', isOwner: true } } as unknown as IMMessageEvent;
+    const guestEvent = { messageId: 'm2', speaker: { id: 'g', name: 'Guest', isOwner: false } } as unknown as IMMessageEvent;
+    expect(adapter.turnPermissionPolicyFor?.(ownerEvent)).toBeUndefined();
+    expect(adapter.turnPermissionPolicyFor?.(guestEvent)).toBeDefined();
+    expect(personal.turnPermissionPolicyFor?.(ownerEvent)).toBeDefined();
+    expect(adapter.turnPermissionPolicyFor?.({ messageId: 'dm' } as IMMessageEvent)).toBeUndefined();
+  });
+});

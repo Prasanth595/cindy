@@ -128,6 +128,118 @@ function fakeTelegram(prefix: string, opts: { connect: boolean }) {
   return im;
 }
 
+type FakeStatus = { kind: string; appId?: string; reason?: string; code?: string };
+
+/** 企业微信: 凭证同步落盘, 建连异步(下一拍才到终态)。 */
+function fakeWecom(prefix: string, opts: { connect: boolean }) {
+  const handlers = new Set<StatusHandler>();
+  let status: FakeStatus = { kind: 'idle' };
+  const set = (next: FakeStatus) => {
+    status = next;
+    for (const handler of handlers) handler(next);
+  };
+  return {
+    init: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+    getStatus: () => status,
+    onStatusChange: (handler: StatusHandler) => {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    getOwnerUserId: () => h.secrets.get(`${prefix}wecom-owner-user-id`) ?? '',
+    setConfig: vi.fn(async (payload: { botId: string; secret: string }) => {
+      h.secrets.set(`${prefix}wecom-bot-id`, payload.botId);
+      h.secrets.set(`${prefix}wecom-bot-secret`, payload.secret);
+      set({ kind: 'connecting' });
+      setTimeout(() => {
+        if (opts.connect) set({ kind: 'connected', appId: payload.botId });
+        else set({ kind: 'error', reason: 'bad secret' });
+      }, 0);
+      return { status, botId: payload.botId, ownerUserId: null };
+    }),
+    clearCredentials: vi.fn(async () => {
+      h.secrets.delete(`${prefix}wecom-bot-id`);
+      h.secrets.delete(`${prefix}wecom-bot-secret`);
+      set({ kind: 'idle' });
+      return { status, botId: null, ownerUserId: null };
+    }),
+  };
+}
+
+/** 钉钉: 先连通再落盘, 连不上抛错。 */
+function fakeDingTalk(prefix: string, opts: { connect: boolean }) {
+  const handlers = new Set<StatusHandler>();
+  let status: FakeStatus = { kind: 'idle' };
+  const set = (next: FakeStatus) => {
+    status = next;
+    for (const handler of handlers) handler(next);
+  };
+  return {
+    init: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+    getStatus: () => status,
+    onStatusChange: (handler: StatusHandler) => {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    getOwnerUserId: () => h.secrets.get(`${prefix}dingtalk-bot-owner-user-id`) ?? '',
+    saveCredentials: vi.fn(async (payload: { appKey: string; appSecret: string }) => {
+      if (!opts.connect) {
+        set({ kind: 'error', reason: 'stream refused' });
+        throw new Error('DINGTALK_CONNECT_FAILED');
+      }
+      h.secrets.set(`${prefix}dingtalk-bot-app-key`, payload.appKey);
+      h.secrets.set(`${prefix}dingtalk-bot-app-secret`, payload.appSecret);
+      set({ kind: 'connected', appId: payload.appKey });
+      return { status, appKey: payload.appKey, ownerUserId: null };
+    }),
+    clearCredentials: vi.fn(async () => {
+      h.secrets.delete(`${prefix}dingtalk-bot-app-key`);
+      h.secrets.delete(`${prefix}dingtalk-bot-app-secret`);
+      set({ kind: 'idle' });
+    }),
+  };
+}
+
+/** Discord: status.appId 是展示用的 bot 标签, 路由身份是 botContextId(应用 id)。 */
+function fakeDiscord(prefix: string, opts: { connect: boolean }) {
+  const handlers = new Set<StatusHandler>();
+  let status: FakeStatus = { kind: 'idle' };
+  const set = (next: FakeStatus) => {
+    status = next;
+    for (const handler of handlers) handler(next);
+  };
+  return {
+    init: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+    getStatus: () => status,
+    get botContextId() {
+      return status.kind === 'connected' ? '9001' : '';
+    },
+    onStatusChange: (handler: StatusHandler) => {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    getOwnerUserId: () => h.secrets.get(`${prefix}discord-owner-user-id`) ?? '',
+    setConfig: vi.fn(async (payload: { token: string; ownerUserId: string }) => {
+      if (!opts.connect) {
+        set({ kind: 'error', reason: 'Invalid token', code: 'auth' });
+        return { status, ownerUserId: null, saveErrorStatus: status };
+      }
+      h.secrets.set(`${prefix}discord-bot-token`, payload.token);
+      h.secrets.set(`${prefix}discord-owner-user-id`, payload.ownerUserId);
+      set({ kind: 'connected', appId: 'Mia#1234' });
+      return { status, ownerUserId: payload.ownerUserId };
+    }),
+    disconnect: vi.fn(async () => {
+      h.secrets.delete(`${prefix}discord-bot-token`);
+      h.secrets.delete(`${prefix}discord-owner-user-id`);
+      set({ kind: 'idle' });
+      return { status };
+    }),
+  };
+}
+
 function fakeOrchestrator() {
   return {
     channel: 'telegram',
@@ -138,6 +250,11 @@ function fakeOrchestrator() {
 }
 
 const created: Array<{ record: BotImConnectionRecord; im: ReturnType<typeof fakeTelegram>; orchestrator: ReturnType<typeof fakeOrchestrator> }> = [];
+const createdOther: Array<{
+  record: BotImConnectionRecord;
+  im: ReturnType<typeof fakeWecom> | ReturnType<typeof fakeDingTalk> | ReturnType<typeof fakeDiscord>;
+  orchestrator: ReturnType<typeof fakeOrchestrator>;
+}> = [];
 let connectOutcome = true;
 
 describe('bot im connection runtime', () => {
@@ -149,15 +266,33 @@ describe('bot im connection runtime', () => {
     h.archiveCalls = [];
     h.sent = [];
     created.length = 0;
+    createdOther.length = 0;
     connectOutcome = true;
     configureBotImConnectionRuntime({
       create: (record) => {
-        const im = fakeTelegram(secretKeyPrefixFor(record.id), { connect: connectOutcome });
+        const prefix = secretKeyPrefixFor(record.id);
         const orchestrator = fakeOrchestrator();
-        created.push({ record, im, orchestrator });
-        return { kind: 'telegram', im: im as never, orchestrator: orchestrator as never };
+        if (record.channel === 'telegram') {
+          const im = fakeTelegram(prefix, { connect: connectOutcome });
+          created.push({ record, im, orchestrator });
+          return { kind: 'telegram', im: im as never, orchestrator: orchestrator as never };
+        }
+        const im =
+          record.channel === 'wecom'
+            ? fakeWecom(prefix, { connect: connectOutcome })
+            : record.channel === 'dingtalk'
+              ? fakeDingTalk(prefix, { connect: connectOutcome })
+              : fakeDiscord(prefix, { connect: connectOutcome });
+        createdOther.push({ record, im, orchestrator });
+        return { kind: record.channel, im: im as never, orchestrator: orchestrator as never } as never;
       },
-      settingsIdentity: () => ({ telegramToken: h.secrets.get('telegram-bot-token') ?? null, feishuAppId: null }),
+      settingsIdentity: () => ({
+        telegramToken: h.secrets.get('telegram-bot-token') ?? null,
+        feishuAppId: null,
+        wecomBotId: h.secrets.get('wecom-bot-id') ?? null,
+        dingtalkAppKey: h.secrets.get('dingtalk-bot-app-key') ?? null,
+        discordToken: h.secrets.get('discord-bot-token') ?? null,
+      }),
       listKnownGroups: async () => [{ chatId: '-1001', chatName: 'Dev Group' }],
     });
   });
@@ -273,5 +408,88 @@ describe('bot im connection runtime', () => {
     await removeBotImConnectionsForBot('bot-mia');
     expect(listBotImConnections()).toEqual([]);
     expect(__testing.instances.size).toBe(0);
+  });
+
+  it('adds WeCom, DingTalk and Discord connections through their own transports and records each routing identity', async () => {
+    const wecom = await addBotImConnection({ botId: 'bot-mia', channel: 'wecom', wecomBotId: 'wb-1', secret: 's3cret' });
+    const dingtalk = await addBotImConnection({ botId: 'bot-mia', channel: 'dingtalk', appKey: 'ding-key', appSecret: 'ding-secret' });
+    const discord = await addBotImConnection({ botId: 'bot-mia', channel: 'discord', token: 'MTAw.discord.token', ownerUserId: '123456789012345678' });
+    expect(createdOther.map((item) => item.record.channel)).toEqual(['wecom', 'dingtalk', 'discord']);
+    const [wecomIm, dingIm, discordIm] = createdOther.map((item) => item.im) as [
+      ReturnType<typeof fakeWecom>,
+      ReturnType<typeof fakeDingTalk>,
+      ReturnType<typeof fakeDiscord>,
+    ];
+    expect(wecomIm.setConfig).toHaveBeenCalledWith({ botId: 'wb-1', secret: 's3cret' });
+    expect(dingIm.saveCredentials).toHaveBeenCalledWith({ appKey: 'ding-key', appSecret: 'ding-secret' });
+    expect(discordIm.setConfig).toHaveBeenCalledWith({ token: 'MTAw.discord.token', ownerUserId: '123456789012345678' });
+    // 凭证只在各自前缀下, 设置页那份键名不受影响。
+    expect(h.secrets.get(`${secretKeyPrefixFor(wecom.connection.id)}wecom-bot-id`)).toBe('wb-1');
+    expect(h.secrets.has('wecom-bot-id')).toBe(false);
+    expect(h.secrets.has('dingtalk-bot-app-key')).toBe(false);
+    expect(h.secrets.has('discord-bot-token')).toBe(false);
+    // 异步建连的企业微信等到了终态再记身份; Discord 记应用 id 而不是展示用的 bot 标签。
+    expect(wecom.connection).toMatchObject({ channel: 'wecom', botContextId: 'wb-1', status: { kind: 'connected' } });
+    expect(dingtalk.connection).toMatchObject({ channel: 'dingtalk', botContextId: 'ding-key', status: { kind: 'connected' } });
+    expect(discord.connection).toMatchObject({
+      channel: 'discord',
+      botContextId: '9001',
+      status: { kind: 'connected', appId: 'Mia#1234' },
+      identity: { username: 'Mia#1234', ownerUserId: '123456789012345678' },
+    });
+    expect(listBotImConnections().map((r) => r.botContextId)).toEqual(['wb-1', 'ding-key', '9001']);
+  });
+
+  it('rolls back WeCom / DingTalk / Discord connections that fail to connect, leaving no record or key', async () => {
+    connectOutcome = false;
+    await expect(
+      addBotImConnection({ botId: 'bot-mia', channel: 'wecom', wecomBotId: 'wb-1', secret: 's3cret' }),
+    ).rejects.toThrow(/CONNECT_FAILED: bad secret/);
+    await expect(
+      addBotImConnection({ botId: 'bot-mia', channel: 'dingtalk', appKey: 'ding-key', appSecret: 'ding-secret' }),
+    ).rejects.toThrow(/CONNECT_FAILED: DINGTALK_CONNECT_FAILED/);
+    await expect(
+      addBotImConnection({ botId: 'bot-mia', channel: 'discord', token: 'MTAw.discord.token', ownerUserId: '123456789012345678' }),
+    ).rejects.toThrow(/CONNECT_FAILED: auth: Invalid token/);
+    expect(listBotImConnections()).toEqual([]);
+    expect([...h.secrets.keys()]).toEqual([]);
+    expect(createdOther).toHaveLength(3);
+    for (const item of createdOther) {
+      expect(item.im.dispose).toHaveBeenCalled();
+      expect(item.orchestrator.unregister).toHaveBeenCalled();
+    }
+    expect(__testing.instances.size).toBe(0);
+  });
+
+  it('refuses a WeCom bot, DingTalk app or Discord token already used by the settings-page bot or another teammate', async () => {
+    h.secrets.set('wecom-bot-id', 'wb-1');
+    await expect(
+      addBotImConnection({ botId: 'bot-mia', channel: 'wecom', wecomBotId: 'wb-1', secret: 's3cret' }),
+    ).rejects.toThrow(/APP_IN_USE/);
+    h.secrets.set('dingtalk-bot-app-key', 'ding-key');
+    await expect(
+      addBotImConnection({ botId: 'bot-mia', channel: 'dingtalk', appKey: 'ding-key', appSecret: 'x' }),
+    ).rejects.toThrow(/APP_IN_USE/);
+    await addBotImConnection({ botId: 'bot-mia', channel: 'discord', token: 'MTAw.discord.token', ownerUserId: '123456789012345678' });
+    await expect(
+      addBotImConnection({ botId: 'bot-lizi', channel: 'discord', token: 'MTAw.discord.token', ownerUserId: '123456789012345678' }),
+    ).rejects.toThrow(/TOKEN_IN_USE/);
+    expect(listBotImConnections()).toHaveLength(1);
+  });
+
+  it('removes Discord via disconnect and WeCom via clearCredentials, purging only their own keys', async () => {
+    const wecom = await addBotImConnection({ botId: 'bot-mia', channel: 'wecom', wecomBotId: 'wb-1', secret: 's3cret' });
+    const discord = await addBotImConnection({ botId: 'bot-mia', channel: 'discord', token: 'MTAw.discord.token', ownerUserId: '123456789012345678' });
+    h.secrets.set(`${secretKeyPrefixFor(wecom.connection.id)}wecom-owner-user-id`, 'zhangsan');
+    await removeBotImConnection(discord.connection.id);
+    expect(h.archiveCalls.at(-1)).toEqual({ routeKeyPrefix: 'im:discord:9001:' });
+    expect((createdOther[1]!.im as ReturnType<typeof fakeDiscord>).disconnect).toHaveBeenCalled();
+    expect([...h.secrets.keys()].some((key) => key.includes('discord'))).toBe(false);
+    expect(h.secrets.get(`${secretKeyPrefixFor(wecom.connection.id)}wecom-bot-id`)).toBe('wb-1');
+    await removeBotImConnection(wecom.connection.id);
+    expect(h.archiveCalls.at(-1)).toEqual({ routeKeyPrefix: 'im:wecom:wb-1:' });
+    expect((createdOther[0]!.im as ReturnType<typeof fakeWecom>).clearCredentials).toHaveBeenCalled();
+    expect([...h.secrets.keys()]).toEqual([]);
+    expect(listBotImConnections()).toEqual([]);
   });
 });

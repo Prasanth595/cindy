@@ -33,6 +33,7 @@ import { telegramUiText, ui, PROCESSING_EMOJI } from './uiText';
 import type { GroupHistoryAccessScope } from '../shared/groupHistoryAccess';
 import type { TelegramToolScope } from '../shared/channelToolScope';
 import { imChannelNoteDirectSourceFromEvent, imChannelNoteSourceFromEvent } from '../shared/channelNote';
+import type { AmbientReplyJudge } from '../shared/ambientReplyJudge';
 
 function ensureWorkingDir(botId: string): string {
   const dir = ownerScopedImUserDataPath('im-working-dir', `telegram-${botId}`);
@@ -59,6 +60,12 @@ function personaBlock(): string {
   return `<bot_persona>\n${nameLine}${soul}\n</bot_persona>\n\n`;
 }
 
+/** 个人 bot 的「我是谁」给判定器: 设置页人格的名字 + SOUL 摘要(判定不需要整份)。 */
+async function describePersonaForAmbientJudge(): Promise<{ name: string; description: string }> {
+  const persona = readTelegramPersona();
+  return { name: persona.botName, description: persona.soul };
+}
+
 /** 发言人显示名/用户名消毒: 平台可改字段是不可信输入, 去控制字符与换行防注入。 */
 function sanitizeSpeakerText(value: string): string {
   // eslint-disable-next-line no-control-regex
@@ -76,6 +83,16 @@ export const TELEGRAM_TOOLS_HINT =
 export interface TelegramAdapterOptions {
   /** 伙伴自有连接: 不注入设置页人格, 私聊按主人 / 外部用户分落点。 */
   companionBotId?: string;
+  /**
+   * 全响应(ambient)群消息的前置判定器(辅助模型链)。不给 = 每条都起轮次, 由主模型
+   * NO_REPLY(老行为)。
+   */
+  ambientReplyJudge?: AmbientReplyJudge;
+  /**
+   * 判定提示里的「我是谁」。伙伴连接给伙伴名字 + 简介; 不给时个人 bot 用设置页人格
+   * (botName + SOUL 摘要)。
+   */
+  describeSelfForAmbientJudge?: () => Promise<{ name: string; description: string }>;
 }
 
 export function buildTelegramAdapter(
@@ -128,6 +145,50 @@ export function buildTelegramAdapter(
       return userId === telegramIm.getOwnerUserId() ? { kind: 'owner-dm' } : { kind: 'guest-dm', userId };
     },
     buildVendorOptions: (userId) => ({ telegramChatId: userId, source: 'telegram' }),
+    // 全响应·自主判断: 辅助模型先看一眼该不该插话(带群窗口背景 + 发言人 + 机器人身份),
+    // SKIP 就不起轮次。群窗口只读不 commit —— 这条消息留在窗口里当下次的背景。
+    // 判不出来(unknown)照旧起轮次交给主模型。
+    ambientTurnGate: async (event) => {
+      const judge = options.ambientReplyJudge;
+      if (!judge || event.ambient !== true) return 'proceed';
+      const lane = decodeTelegramLaneUserId(event.senderId);
+      if (!lane) return 'proceed';
+      let triggerMessageId = '';
+      try {
+        triggerMessageId = decodeTelegramMessageId(event.messageId).messageId;
+      } catch {
+        triggerMessageId = '';
+      }
+      const [assembly, self] = await Promise.all([
+        buildTelegramGroupContextPrefix({
+          botId: event.contextId,
+          chatId: lane.chatId,
+          threadId: lane.threadId,
+          cursorScope: lane.threadId,
+          triggerMessageId,
+        }).catch(() => ({ prefix: '' })),
+        (options.describeSelfForAmbientJudge ?? describePersonaForAmbientJudge)().catch(() => ({
+          name: '',
+          description: '',
+        })),
+      ]);
+      const speaker = event.speaker
+        ? `[speaker] ${sanitizeSpeakerText(event.speaker.name)}` +
+          (event.speaker.username ? ` (@${sanitizeSpeakerText(event.speaker.username)})` : '') +
+          (event.speaker.isOwner ? ' · owner' : '')
+        : '';
+      const verdict = await judge({
+        botName: self.name || telegramIm.botName,
+        botDescription: self.description,
+        groupContext: assembly.prefix,
+        speaker,
+        text: event.text,
+        ...(event.replyContext
+          ? { replyTo: { author: event.replyContext.author, text: event.replyContext.text } }
+          : {}),
+      });
+      return verdict === 'skip' ? 'skip' : 'proceed';
+    },
     // 一群一会话的权限收紧(D1 + 2026-07-30 review 修订): 除显式 Full access 外,
     // 所有群轮次都挂破坏性操作强确认 — 不只成员触发的。群窗口/引用块把成员可控文本注入
     // owner 触发的轮次, 提示注入可借 owner 轮次的宽松档执行危险操作; 统一

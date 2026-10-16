@@ -744,4 +744,34 @@ describe("DingTalkIM", () => {
       "text-2",
     ]);
   });
+
+  it("keeps a prefixed, IPC-less instance on its own credential keys and off the settings channels", async () => {
+    const { host, secrets, handlers, broadcasts } = makeHost();
+    secrets.clear();
+    secrets.set("bot-im-abc-dingtalk-bot-app-key", "app-key-2");
+    secrets.set("bot-im-abc-dingtalk-bot-app-secret", "app-secret-2");
+    const client = new FakeClient();
+    const im = new DingTalkIM(host, {
+      clientFactory: () => client,
+      fetcher: validCredentialFetcher(),
+      secretKeyPrefix: "bot-im-abc-",
+      ipc: false,
+    });
+    im.registerIpc();
+    expect(handlers.size).toBe(0);
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+    await im.init();
+    expect(im.getStatus()).toMatchObject({ kind: "connected", appId: "app-key-2" });
+    client.emit({ ...directMessage(), robotCode: "app-key-2" });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    // TOFU 主人也落在前缀键下, 设置页那份键名不受影响。
+    expect(secrets.get("bot-im-abc-dingtalk-bot-owner-user-id")).toBe("owner-1");
+    expect(secrets.has("dingtalk-bot-owner-user-id")).toBe(false);
+    expect(im.getOwnerUserId()).toBe("owner-1");
+    expect(broadcasts).toEqual([]);
+    await im.clearCredentials();
+    expect([...secrets.keys()]).toEqual([]);
+    expect(im.getStatus()).toEqual({ kind: "idle" });
+  });
 });

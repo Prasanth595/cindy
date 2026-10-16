@@ -74,8 +74,11 @@ import {
   wechatCompatibilityPolicy,
   wechatIm,
   wecomIm,
+  createBotDingTalkIM,
+  createBotDiscordIM,
   createBotFeishuIM,
   createBotTelegramIM,
+  createBotWecomIM,
 } from './host';
 import { wireFeishuOrchestrator, type FeishuOrchestratorConfig } from './feishu';
 import { wireDiscordOrchestrator } from './discord';
@@ -267,16 +270,44 @@ export function startImOrchestrators(): void {
         });
         return { kind: 'telegram', im, orchestrator };
       }
-      const im = createBotFeishuIM(prefix);
-      const orchestrator = wireFeishuOrchestrator(im, FEISHU_CONFIG, {
-        instanceKey: `feishu#${record.id}`,
+      if (record.channel === 'feishu') {
+        const im = createBotFeishuIM(prefix);
+        const orchestrator = wireFeishuOrchestrator(im, FEISHU_CONFIG, {
+          instanceKey: `feishu#${record.id}`,
+          companionBotId: record.botId,
+        });
+        return { kind: 'feishu', im, orchestrator };
+      }
+      if (record.channel === 'wecom') {
+        const im = createBotWecomIM(prefix);
+        const orchestrator = wireWecomOrchestrator(im, WECOM_CONFIG, {
+          instanceKey: `wecom#${record.id}`,
+          companionBotId: record.botId,
+        });
+        return { kind: 'wecom', im, orchestrator };
+      }
+      if (record.channel === 'dingtalk') {
+        const im = createBotDingTalkIM(prefix);
+        const orchestrator = wireDingTalkOrchestrator(im, DINGTALK_CONFIG, {
+          instanceKey: `dingtalk#${record.id}`,
+          companionBotId: record.botId,
+        });
+        return { kind: 'dingtalk', im, orchestrator };
+      }
+      const im = createBotDiscordIM(prefix);
+      const orchestrator = wireDiscordOrchestrator(im, DISCORD_CONFIG, {
+        instanceKey: `discord#${record.id}`,
         companionBotId: record.botId,
+        sessionAuthIpc: false,
       });
-      return { kind: 'feishu', im, orchestrator };
+      return { kind: 'discord', im, orchestrator };
     },
     settingsIdentity: () => ({
       telegramToken: ownerScopedImSecrets.read('telegram-bot-token')?.trim() || null,
       feishuAppId: ownerScopedImSecrets.read('feishu_bot_app_id')?.trim() || null,
+      wecomBotId: ownerScopedImSecrets.read('wecom-bot-id')?.trim() || null,
+      dingtalkAppKey: ownerScopedImSecrets.read('dingtalk-bot-app-key')?.trim() || null,
+      discordToken: ownerScopedImSecrets.read('discord-bot-token')?.trim() || null,
     }),
     // 群参与模式只有 Telegram 有(个人 bot 同款); 飞书群按平台自己的 @ 规则触发。
     listKnownGroups: (record) =>
