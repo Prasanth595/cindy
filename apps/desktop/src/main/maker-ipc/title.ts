@@ -52,6 +52,10 @@ import {
 } from './sessionAutoTitle.js';
 import { generatePromptPrediction } from './promptPrediction.js';
 import {
+  readCachedPromptRecommendation,
+  writeCachedPromptRecommendation,
+} from './promptRecommendationCache.js';
+import {
   notePromptPredictionSessionCancelled,
   wasPromptPredictionSessionCancelled,
   wasPromptPredictionSessionStopped,
@@ -486,6 +490,25 @@ async function predictPromptForCompletedRevision(
     if (cached.workingDir !== (sessionRow.workingDir ?? null)) return null;
     return cached.promise;
   }
+  // 持久缓存：同一完成点重开 / 重启 / 换设备打开都直接复用，不重复发起付费预测
+  // （#6184）。只认 revision 与 workingDir 完全一致的记录；内存里已有更新的完成点
+  // 时保持原防线，不用旧完成点的缓存。
+  if (!(cached && cached.revision > completionRevision)) {
+    const persistedPrompt = readCachedPromptRecommendation(
+      sessionId,
+      completionRevision,
+      sessionRow.workingDir ?? null,
+    );
+    if (persistedPrompt != null) {
+      const persisted = Promise.resolve(persistedPrompt);
+      _promptPredictionCache.set(sessionId, {
+        revision: completionRevision,
+        workingDir: sessionRow.workingDir ?? null,
+        promise: persisted,
+      });
+      return persisted;
+    }
+  }
   // Opening a completed remote task may reuse a live host prediction, but must
   // not turn historical navigation into a new paid model request.
   if (request.cacheOnly) return null;
@@ -563,7 +586,7 @@ async function predictPromptForCompletedRevision(
       role: message.role,
       content: message.text,
     }));
-    return generatePromptPrediction({
+    const prompt = await generatePromptPrediction({
       sessionId,
       agentKind,
       messages,
@@ -571,6 +594,14 @@ async function predictPromptForCompletedRevision(
       materialDrainUpdatedAt: latestSessionRow.updatedAt,
       completionRevision,
     });
+    if (prompt) {
+      writeCachedPromptRecommendation(sessionId, {
+        revision: completionRevision,
+        workingDir: latestSessionRow.workingDir ?? null,
+        prompt,
+      });
+    }
+    return prompt;
   })().catch((error: unknown) => {
     const current = _promptPredictionCache.get(sessionId);
     if (current?.revision === completionRevision) {

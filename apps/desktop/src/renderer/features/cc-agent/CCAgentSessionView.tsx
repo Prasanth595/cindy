@@ -5653,6 +5653,7 @@ function CCAgentSessionContent({
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
                   sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}
                   initialWorkingDir={session?.workingDir}
+                  completionRevision={session?.lastTurnEndedAt ?? null}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}
                   deviceLinkDeviceName={controlledDeviceName}
