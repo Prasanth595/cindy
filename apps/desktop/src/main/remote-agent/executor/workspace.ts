@@ -615,7 +615,9 @@ export class ExecutorWorkspace {
           if (relative !== null) entries.push({ from: '/tmp' + (relative ? '/' + relative : ''), to: alias.from });
         }
         return entries.filter((entry) => {
-          const key = entry.from.replace(/\\/g, '/').toLowerCase() + '\\0' + entry.to;
+          const normalizedFrom = entry.from.replace(/\\/g, '/');
+          const keyFrom = process.platform === 'win32' ? normalizedFrom.toLowerCase() : normalizedFrom;
+          const key = keyFrom + '\\0' + entry.to;
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
@@ -843,7 +845,7 @@ export class ExecutorWorkspace {
       if (dialect === 'cmd' && /[%!^]/.test(char)) return 'separator';
       if (dialect === 'bash' && context !== 'single' && /[$\x60]/.test(char)) return 'separator';
       if (context !== 'none') return null;
-      return /[\s'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
+      return /[\s:'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
     };
     let result = '';
     let end = 0;

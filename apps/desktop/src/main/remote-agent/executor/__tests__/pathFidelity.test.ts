@@ -114,6 +114,7 @@ describe('remote provider file paths', () => {
       for (const suffix of ['%SUFFIX%', '!SUFFIX!']) {
         expect(workspace.mapCommand('dir "' + SHADOW + suffix + '"', 'cmd')).toBe('dir "' + local + suffix + '"');
       }
+      expect(workspace.mapCommand('PATH=' + SHADOW + ':$PATH command')).toBe('PATH=' + local + ':$PATH command');
       // 单引号里的变量和 glob、双引号里的 glob 是目录名的字面部分，必须按父目录别名解析。
       for (const suffix of ['$suffix', '*', '?', '[ab]']) {
         const virtual = SHADOW + suffix;
@@ -147,6 +148,18 @@ describe('remote provider file paths', () => {
     } finally {
       await executor.close();
     }
+  });
+
+  it('keeps case-distinct canonical aliases on case-sensitive hosts', () => {
+    if (process.platform === 'win32') return;
+    const actual = path.join(root, 'actual', 'project');
+    const link = path.join(root, 'actual', 'PROJECT');
+    fs.mkdirSync(actual, { recursive: true });
+    fs.symlinkSync(actual, link, 'dir');
+    const workspace = new ExecutorWorkspace({ workingDir: link, aliases: [{ from: SHADOW, to: link }] });
+    workspace.setVirtualRoot(VIRTUAL_ROOT);
+    expect(workspace.mapTextForAgent(path.join(actual, 'src', 'main.ts')))
+      .toBe(SHADOW + '/src/main.ts');
   });
 
   it('writes an unchanged file back byte for byte through every write path', async () => {
