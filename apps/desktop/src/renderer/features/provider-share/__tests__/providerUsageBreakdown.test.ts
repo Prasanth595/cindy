@@ -61,6 +61,26 @@ describe('groupUsageByMember', () => {
       [null, false, 1],
     ]);
   });
+
+  it('merges accounts that share one physical computer', () => {
+    const aliases = new Map([
+      ['share:kai-1:xd', 'share-host:kai-pc'],
+      ['share:kai-2:xd', 'share-host:kai-pc'],
+    ]);
+    const groups = groupUsageByMember(
+      [
+        usage({ memberKey: 'share:kai-1:xd' }),
+        usage({ memberKey: 'share:kai-2:xd', providerId: 'xd-2', turns: 2, inputTokens: 20 }),
+      ],
+      ['local', 'share-host:kai-pc'],
+      aliases,
+    );
+    expect(groups.map((group) => [group.memberKey, group.models.length])).toEqual([
+      ['local', 0],
+      ['share-host:kai-pc', 1],
+    ]);
+    expect(groups[1]!.models[0]).toMatchObject({ turns: 3, inputTokens: 30, memberKey: 'share-host:kai-pc' });
+  });
 });
 
 describe('member keys', () => {

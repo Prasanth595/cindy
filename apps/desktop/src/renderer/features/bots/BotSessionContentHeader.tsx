@@ -8,7 +8,8 @@
  * right end of the bar — because "click the name" is the discoverable one and
  * "the gear is on the right" is the learned one. Local teammates also get a
  * permanent way into their workbench here: the sidebar tab can be closed, and
- * nothing else reopens it.
+ * nothing else reopens it — plus the IM-style "add people" entry that turns
+ * this chat into a group or brings the teammate into one.
  */
 import { useMemo } from 'react';
 import { LayoutGrid, Settings2 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { useRegisterContentHeader } from '../feature-context';
 import { openBotWorkbenchTab } from '@/features/right-sidebar/lib/openBotWorkbenchTab';
+import { BotAddToGroupMenu } from './BotAddToGroupMenu';
 import { BotAvatar } from './BotAvatar';
 import { isCindyDeviceBot } from './cindyDeviceRoster';
 import { CindyHeaderDevicePicker } from './CindyDevicePicker';
@@ -32,6 +34,8 @@ export interface BotChatIdentity {
   name: string;
   avatar?: string | null;
   avatarColor?: string | null;
+  /** Only the teammate's own canonical private chat (not channel routes or read-only history) can start a group. */
+  canonicalChat?: boolean;
 }
 
 export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
@@ -67,6 +71,7 @@ export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
             {bot.deviceName}
           </span>
         ) : null}
+        {bot.canonicalChat && !bot.deviceId ? <BotAddToGroupMenu botId={bot.id} /> : null}
         {!bot.deviceId && bot.sessionId ? (
           <button
             type="button"

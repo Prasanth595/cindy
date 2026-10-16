@@ -53,6 +53,58 @@ function fixture() {
 }
 
 describe('desktop remote history uses the shared live-to-history handoff', () => {
+  it.each([false, true])('places a late harness boundary before the reserved send (history ready=%s)', async (ready) => {
+    const { view, render, setSource } = fixture();
+    if (ready) await view.refresh();
+    const previous = row('user');
+    const sent = reserveRemoteUser({ ...row('sent'), role: 'user' as const, isPendingPersist: true }, [previous]);
+    const boundary: HistoryChatMessage = { ...row('switch'), systemCardType: 'agent-switch',
+      createdAt: '2026-09-08T00:00:02Z' };
+    const raw = [previous, sent, boundary];
+    const ids = () => render(raw).items.filter((item) => item.type === 'message').map((item) => item.message.clientId);
+    // Local Desktop sends have no explicit reservation until their DB echo.
+    const { localSendPrecedingClientIds: _reservation, ...localPending } = sent;
+    expect(projectRemoteUsers([previous, localPending, boundary]).map((message) => message.clientId))
+      .toEqual(['user', 'switch', 'sent']);
+    expect(projectRemoteUsers(raw).map((message) => message.clientId)).toEqual(['user', 'switch', 'sent']);
+    if (!ready) expect(ids()).toEqual(['user', 'switch', 'sent']);
+    setSource([previous, boundary]);
+    await view.refresh();
+    expect(ids()).toEqual(['user', 'switch', 'sent']);
+    raw[1] = { ...sent, id: 'db-sent', isPendingPersist: undefined };
+    expect(ids()).toEqual(['user', 'switch', 'sent']);
+    setSource([previous, boundary, raw[1]]);
+    await view.refresh();
+    expect(ids()).toEqual(['user', 'switch', 'sent']);
+    view.setActive(false);
+  });
+
+  it('does not pull a later harness switch across a reply into an earlier send', () => {
+    const previous = row('user');
+    const sent = reserveRemoteUser({ ...row('sent'), role: 'user' as const }, [previous]);
+    const reply = row('reply');
+    const boundary = { ...row('switch'), systemCardType: 'agent-switch' as const };
+    const next = reserveRemoteUser({ ...row('next'), role: 'user' as const }, [previous, sent, reply]);
+    expect(projectRemoteUsers([previous, sent, reply, next, boundary]).map((message) => message.clientId))
+      .toEqual(['user', 'sent', 'reply', 'switch', 'next']);
+  });
+
+  it.each([false, true])('keeps consecutive switches with their sends without a reply (next echoed=%s)', (echoed) => {
+    const previous = row('user');
+    const firstSwitch = { ...row('switch-first'), systemCardType: 'agent-switch' as const };
+    const secondSwitch = { ...row('switch-next'), systemCardType: 'agent-switch' as const };
+    // The first DB echo has arrived, but history has not retired its reservation.
+    const first = reserveRemoteUser({ ...row('first'), role: 'user' as const }, [previous]);
+    const next = reserveRemoteUser({ ...row('next'), role: 'user' as const,
+      isPendingPersist: !echoed }, [previous, firstSwitch, first]);
+    const raw = [previous, firstSwitch, first, secondSwitch, next];
+    const expected = ['user', 'switch-first', 'first', 'switch-next', 'next'];
+    expect(projectRemoteUsers(raw).map((message) => message.clientId)).toEqual(expected);
+    expect(projectRemoteUsers(raw, new Set(['user', 'switch-first'])).map((message) => message.clientId)).toEqual(expected);
+    const confirmedIds = new Set(expected);
+    expect(projectRemoteUsers(confirmRemoteUsers(raw, confirmedIds), confirmedIds).map((message) => message.clientId)).toEqual(expected);
+  });
+
   it('shows a list-pushed reply after a restored snapshot until the page read covers it', async () => {
     const { view, render, setSource } = fixture();
     const reply = { ...row('reply'), content: 'prefetched reply', createdAt: '2026-09-08T00:00:09Z' };

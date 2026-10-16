@@ -9,10 +9,10 @@ import {
   looksGeneratedDirName,
   countUnjudgedCandidates,
   groupWorkbenchTiles,
+  summarizeWorkbenchGroups,
   tierWorkbenchProjectOptions,
   workbenchGroupHasFollowUp,
   workbenchTileGroup,
-  workbenchItemNeedsLocalReference,
   type WorkbenchProjectOption,
   type WorkbenchDelegationInput,
 } from '../botWorkbenchProjection';
@@ -97,7 +97,7 @@ describe('buildWorkbenchTiles', () => {
       delegations: [delegation('bg-queued', 'queued')],
       activity: new Map([
         ['running', { phase: 'running', startedAtMs: 500, currentActionSummary: '导出 xhdpi 尺寸' }],
-        ['asking', { phase: 'needs-interaction' }],
+        ['asking', { phase: 'needs-interaction', interactionKind: 'permission', currentActionSummary: '删掉旧迁移文件 007?' }],
       ]),
     });
     const byId = new Map(tiles.map((tile) => [tile.id, tile]));
@@ -106,7 +106,10 @@ describe('buildWorkbenchTiles', () => {
       startedAtMs: 500,
       line: { kind: 'action', text: '导出 xhdpi 尺寸' },
     });
-    expect(byId.get('asking')).toMatchObject({ state: 'waiting', line: { kind: 'waiting' } });
+    expect(byId.get('asking')).toMatchObject({
+      state: 'waiting',
+      line: { kind: 'waiting', interaction: 'permission', text: '删掉旧迁移文件 007?' },
+    });
     expect(byId.get('bg-queued')).toMatchObject({ state: 'queued', origin: 'delegated' });
   });
 
@@ -415,6 +418,50 @@ describe('groupWorkbenchTiles', () => {
     expect([groupOf.get('queued-bg'), groupOf.get('failed-bg'), groupOf.get('finished-bg')]).toEqual(['todo', 'waiting', 'done']);
   });
 
+  it('puts archived responsible tasks at the bottom of done, never offering 跟进', () => {
+    const tiles = buildWorkbenchTiles({
+      ...base,
+      responsibleSessionIds: ['idle', 'old-judged', 'old-plain', 'not-mine'],
+      sessions: [session('idle', { updatedAt: '2026-09-01T00:00:00.000Z', userSendAt: '2026-09-01T00:00:00.000Z' })],
+      archivedSessions: [
+        session('old-plain', { status: 'archived', updatedAt: '2026-10-01T05:00:00.000Z', userSendAt: '2026-10-01T05:00:00.000Z' }),
+        session('old-judged', { status: 'archived', title: '原始', updatedAt: '2026-10-01T04:00:00.000Z' }),
+        session('not-mine-either', { status: 'archived' }),
+        session('active-row', { status: 'active' }),
+      ],
+      judgments: { 'old-judged': judgment('unfinished', '补描边') },
+    });
+    const archived = tiles.filter((tile) => tile.type === 'session' && tile.archived);
+    expect(archived.map((tile) => tile.id).sort()).toEqual(['old-judged', 'old-plain']);
+    expect(archived.find((tile) => tile.id === 'old-judged')).toMatchObject({
+      title: '补描边', state: 'done', verdict: null, next: null,
+    });
+    expect(archived.every((tile) => workbenchTileGroup(tile) === 'done')).toBe(true);
+    const groups = groupWorkbenchTiles(tiles);
+    expect(groups.map((group) => group.key)).toEqual(['done']);
+    const done = groups[0]!;
+    // 较新的归档也排在未归档的做完条目之后。
+    expect(done.tiles.map((tile) => tile.id)).toEqual(['idle']);
+    expect(done.archivedTiles.map((tile) => tile.id)).toEqual(['old-plain', 'old-judged']);
+    expect(done).toMatchObject({ total: 3, hiddenCount: 0, defaultCollapsed: true });
+    expect(workbenchGroupHasFollowUp(done.key)).toBe(false);
+  });
+
+  it('shows a done group made only of archived tasks', () => {
+    const tiles = buildWorkbenchTiles({
+      ...base,
+      responsibleSessionIds: ['old'],
+      sessions: [],
+      archivedSessions: [session('old', { status: 'archived' })],
+    });
+    expect(groupWorkbenchTiles(tiles)).toMatchObject([{ key: 'done', tiles: [], total: 1 }]);
+  });
+
+  it('summarizes the open groups for the line above the list', () => {
+    expect(summarizeWorkbenchGroups(groupWorkbenchTiles(fixture()))).toEqual({ waiting: 3, running: 2, todo: 4 });
+    expect(summarizeWorkbenchGroups([])).toEqual({ waiting: 0, running: 0, todo: 0 });
+  });
+
   it('leaves empty groups out', () => {
     const tiles = buildWorkbenchTiles({
       ...base,
@@ -578,7 +625,7 @@ describe('project picker filtering and tiers', () => {
   });
 });
 
-it('retains an entrusted legacy local reference entrance until equivalent migration', () => {
+it('lists PR / issue / idea entries under to-do whatever their reference is', () => {
   const tiles = buildWorkbenchTiles({
     ...base,
     projectDirs: [CINDY],
@@ -610,7 +657,10 @@ it('retains an entrusted legacy local reference entrance until equivalent migrat
       },
     },
   });
-  const kept = tiles.filter((tile) => workbenchItemNeedsLocalReference(tile, [CINDY], false));
-  expect(kept.map((tile) => tile.id)).toEqual(['idea:local']);
-  expect(workbenchItemNeedsLocalReference(kept[0], [], false)).toBe(false);
+  // 参考是什么都不影响上列表:https 交给系统浏览器,本地路径在详情里打开前再校验。
+  expect(tiles.map((tile) => [tile.id, workbenchTileGroup(tile)]).sort()).toEqual([
+    ['idea:local', 'todo'],
+    ['idea:outside', 'todo'],
+    ['idea:web', 'todo'],
+  ]);
 });

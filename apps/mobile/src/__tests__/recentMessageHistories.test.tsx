@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { act, createContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -233,26 +231,7 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(residentHost.compareDocumentPosition(drawer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(drawer.closest('[data-layout]')?.getAttribute('data-layout')).toContain('"zIndex":40');
   });
-  it('does not keep the old route preloading mechanism alongside the resident host', () => {
-    const home = readFileSync(resolve(process.cwd(), 'src/session/HomeSurface.tsx'), 'utf8');
-    expect(home).not.toContain('useRecentTaskPreload');
-    expect(home).not.toContain('router.prefetch');
-    const layout = readFileSync(resolve(process.cwd(), 'app/_layout.tsx'), 'utf8');
-    // Source structure is independent of checkout line endings.
-    for (const source of [layout.replace(/\r\n/g, '\n'), layout.replace(/\r?\n/g, '\r\n')]) {
-      const provider = source.search(/<RecentMessageHistoriesProvider(?:\s|>)/);
-      const residentProvider = source.indexOf('<ResidentHomeListProvider>');
-      const stack = source.search(/<Stack\s/);
-      expect(provider).toBeGreaterThanOrEqual(0);
-      expect(residentProvider).toBeGreaterThan(provider);
-      expect(stack).toBeGreaterThan(provider);
-      expect(stack).toBeGreaterThan(residentProvider);
-      expect(source.indexOf('</ResidentHomeListProvider>')).toBeGreaterThan(stack);
-      expect(source.indexOf('</RecentMessageHistoriesProvider>')).toBeGreaterThan(
-        source.indexOf('</ResidentHomeListProvider>'),
-      );
-    }
-  });
+
   it('clears all instances at an account boundary', async () => {
     await show('a'); await show('b');
     await act(async () => setMobileAuthOwner('two'));

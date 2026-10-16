@@ -26,6 +26,7 @@ import {
 } from '@cindy/maker-core';
 
 import { createLogger } from '../../logger';
+import { readImRemoteProviderRoute } from '../remoteProviderRoute';
 import { getMaker } from '../../maker-host';
 import {
   resolveLenientSessionRoute,
@@ -350,6 +351,18 @@ export function createCardActionHandler(
       const sessionAgentKind = liveBeforePick?.agentKind ??
         (await getMaker().getSessionMeta?.(sessionId))?.agentKind;
       const isPiSession = sessionAgentKind === 'pi';
+      if (previousRoute?.agentDeviceId && sessionAgentKind) {
+        try {
+          await readImRemoteProviderRoute({
+            agentDeviceId: previousRoute.agentDeviceId,
+            agentKind: sessionAgentKind,
+            providerId: providerId === undefined ? previousRoute.providerId : providerId,
+            model: modelId,
+          });
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
       const restorePersistentRoute = async (reason: string): Promise<void> => {
         if (!previousRoute) return;
         try {

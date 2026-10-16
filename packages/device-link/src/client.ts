@@ -440,6 +440,8 @@ export type DeviceLinkStatus = 'stopped' | 'connecting' | 'online';
 export type DeviceLinkConnectionIssueKind =
   /** WS upgrade 被 401 拒绝:token 失效 / 已在别处登出 */
   | 'auth-failed'
+  /** 4410:设备登记已被同账号另一台设备移除。 */
+  | 'device-removed'
   /** 4409:同 deviceId 的新连接顶掉了本连接 */
   | 'replaced'
   /** 4429:同账号连接数超限 */
@@ -503,6 +505,7 @@ export function classifyConnectionIssue(
   reason?: string,
   socketErrorMessage?: string | null,
 ): DeviceLinkConnectionIssueKind | null {
+  if (code === 4410) return 'device-removed';
   if (code === 4409) return 'replaced';
   if (code === 4429) return 'too-many-connections';
   if (code === 4400 && /version/i.test(reason ?? '')) return 'version-mismatch';
@@ -870,6 +873,7 @@ export class DeviceLinkClient {
     // online 时强制重建请用 restartConnection —— 它才是「半开假活」场景的入口,
     // 且已包含 resetLinkStateForReconnect(此处曾有一个等价的 { force } 分支,
     // 生产代码从未使用,只有测试在调,故收敛为单一入口)。
+    if (this.connectionIssue?.kind === 'device-removed') return;
     if (this.status === 'online') return;
     // A foreground flicker (Face ID, notification, Control Center) re-fires this
     // within seconds. Restarting a handshake that is still inside its window only
@@ -2028,6 +2032,11 @@ export class DeviceLinkClient {
     this.resetLinkStateForReconnect();
     this.failNonReliablePending(new DeviceLinkError('NOT_CONNECTED', 'relay connection lost'));
     if (this.stopped) return;
+    if (code === 4410) {
+      this.stop();
+      this.setConnectionIssue({ kind: 'device-removed', closeCode: code, at: Date.now() });
+      return;
+    }
     if (code === DUPLICATE_CONNECTION_CLOSE_CODE) {
       this.log.warn(
         `relay replaced this device connection; keeping reconnect backoff warm${reason ? ` (${reason})` : ''}`,

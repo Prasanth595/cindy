@@ -308,6 +308,19 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   事件、上下文和结果，不在中间造成无意损失（见
   [`../product-rules/core-product-principles.md`](../product-rules/core-product-principles.md)）。
 
+### 代输入：任务 shell 环境与工具说明（2026-10-13）
+
+- `runtimeConfig.taskShellEnv({ sessionId })` 给本任务 Agent 运行的命令注入代输入 askpass
+  （`SUDO_ASKPASS` / `SSH_ASKPASS` / `GIT_ASKPASS` 等，只含本机一次性路由，不含秘密）。三个 Harness
+  只对**本账号的本机任务**调用：SSH 远程、Review、设备托管访客任务一律不注入。Claude Code 与 Pi 写进
+  Agent 进程 env；Codex 的 app-server 共享，按线程经 `shell_environment_policy.set.<名>` 设置。
+  返回值必须按 sessionId 确定，重启进程得到字节相同的 env（否则破坏缓存与重建一致性）。
+- `request_input_handoff`（`packages/lizi-mcps/src/xdt-helper/input_handoff.ts`）的使用时机只写在工具
+  说明里，**不改 system prompt**；子 Agent（`mcpCallerKind === 'descendant'`）与远程工作区任务直接拒绝。
+  何时该发起靠工具返回提示（如 `cindy_computer` 拒绝直接操作保密输入框），不靠提示词。
+- 续接是隐藏的 `[Input handoff ended]` 合成消息，只有事实；产品规则见
+  [`../product-rules/input-handoff.md`](../product-rules/input-handoff.md)。
+
 ## 2. 优先用代码保证确定性，而非依赖 prompt
 
 能用代码保证的行为都写在代码里，让结果可预测、可测试、可调试；prompt 只承担真正需要
@@ -345,8 +358,9 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   触发定时任务的成功收口。回归见 `agents/codex/index.test.ts` 的 pending confirmation
   与 human continuation 用例，以及 Desktop `sessionEventPipeline.test.ts`。
   Codex 异步提问使用 `agentMessage.delivery=async` 与结构化 `questions` 接入同一提问
-  流程，不把回退正文当成最终回答。未回答的异步问题不保留产品边界，原轮次结束时自动
-  收起卡片、不代选答案，迟到回答不得续跑。结束前已提交的回答优先通过 `turn/steer`
+  流程，不把回退正文当成最终回答。未回答的异步问题不保留产品边界，原轮次结束时撤销
+  原生请求；未操作的卡片自动收起、不代选答案，也不提供历史回答入口。原生请求的迟到
+  回答不得续跑；已编辑草稿的显式补充发送见下文。结束前已提交的回答优先通过 `turn/steer`
   送入原轮次；发送与结束竞态导致原轮次明确拒绝接收时复用人工续跑，发送结果不确定时
   提示错误且不自动重发。Stop、失败、关闭及被替换问题的迟到回答不得续跑。
   协议与前缀稳定性实测见 `agents/codex/async-user-input.native.test.ts`，
@@ -366,7 +380,7 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   回归见 `session.async-user-questions.test.ts`、MCP `asyncUserQuestionTool.test.ts`；
   两种真实 harness 配本地假模型的投递与稳定前缀实测见
   `agents/shared/async-user-questions.native.test.ts`。
-  同步与异步问题共用卡片时，同步问题优先：已有同步问题等待时不再显示异步卡片，
+  宿主的同步与异步问题共用卡片时，同步问题优先：已有同步问题等待时不再显示异步卡片，
   同步问题后到时收起未回答的异步卡片，避免遮住阻塞执行的问题。三个 harness 均只保留
   最新一张待回答的异步卡片：显示新卡片前先将旧卡片标为被替换，旧答案即使在原轮次
   结束前到达也不得投递或清除新卡片。Codex 的同步工具结果
@@ -381,6 +395,19 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   阻塞交互或生命周期等待，未回答也不能暂停工具循环检测／零事件看门狗。字段缺省仍按
   同步等待处理；Codex 本机／SSH 共用同一 adapter，手机卡片仍走既有宿主交互通道。
   回归见 `session.tool-loop.test.ts`、`session.turn-stall.test.ts`。
+  **已开始回答的异步卡片保护（桌面、手机及远控共用）。** 用户输入文字（含中文组词）
+  或手动选择选项时锁存本端草稿；仅聚焦、展开输入框及默认预选不算。停顿、失焦、
+  删空、切任务、原轮次结束及新请求到来均不撤销保护，新请求排在当前输入后面。
+  原生请求照常撤销，不延长 provider turn；草稿只保存在本端内存，不增加历史回答、
+  跨设备草稿同步或重启恢复。提交、主动关闭、任务清空／删除或账号切换才释放草稿；
+  原问题被其他端确认回答时也收敛。
+  提交先尝试原生回答；拒绝／回执丢失时读取原问题的宿主消息行，已回答则不重复发送，
+  只有确认 cancelled 才把原问题与答案作为普通用户补充，复用 steer／输入队列和
+  来源标记。结果未知时保留草稿；同一原问题的同文补充使用相同 clientId，修改正文后
+  使用新 ID。Stop 不自动续跑，用户点击「发送并继续」才恢复暂停队列；关闭或空答案
+  不触发补充执行。UI 草稿不属于宿主 pending interaction，不影响工具循环检测或调度。
+  回归见 Desktop `askUserDoneRace.test.ts`、`askUserQuestionIdentity.test.tsx`，
+  Mobile `InteractionPanelReceipt.test.tsx` 及 shared `interaction.test.ts`。
   Codex `functions.exec` yield 没有协议级 execution handle（cell / wait 活在
   `codex-rs` daemon），近期检测只能是 adapter 内、用真实 rollout fixture 锁死的启发式，
   用来铸造有界 claim，再由宿主确定性开续段让模型 wait 同一 cell。
@@ -431,6 +458,31 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   回调必须同步决定，异步查询会从轮次中途开始观察；桌面侧与普通回传一样只在 IM 账号仍有效、渠道已连接时标记。
   该轮沿用的 generation 已记过上一轮的 `done`，唤醒轮自己的终止 error 不按「done 之后的迟到 error」过滤，
   照常按失败收口（唤醒输出之前到达的迟到 error 仍过滤）。回归见 `session.origin.test.ts`。
+
+### Desktop Auto 审核的模型回退
+
+Desktop 的 Auto 审核先按固定顺序尝试 `cindy/auto-review`、内置 OpenAI 订阅的
+`gpt-5.4-nano`、`gpt-6-luna`。只有这些候选全部不可用、请求失败或输出无效时，才使用
+系统设置中用户明确自定义的辅助模型链，按已选顺序尝试最多 3 个模型；自动辅助链和
+环境变量辅助链不参与。任一候选返回有效的 `allow`、`block` 或 `ask` 后立即结束，
+不能为了争取放行而继续换模型。全部失败继续交回人工确认。
+
+自定义兜底复用辅助模型的精确目录路由、停用状态和凭证处理，以无工具的 HTTP 文本请求
+执行，不创建开发 Agent 或调用 CLI `oneShot`；Claude 订阅仍不可供 Cindy 直连借用。
+宿主规则走供应商原生 system／instructions 字段，审核上下文仅放在证据段，并复用同一
+严格判定解析器。设置说明须披露发往所选供应商的上下文范围：用户原话、引用内容、
+委派任务、此前被阻止的操作、发起者身份与权限、待审操作参数、工作区及可写／参考
+路径和操作系统；不能只列用户原话与操作参数，漏掉其余上下文。
+384 token 的短输出预算复用辅助模型的关闭可选思考策略；Messages／Chat 可关闭时关闭，
+Responses 沿用现有适配器的 `low` 档，不发送其不支持的思考关闭值。
+
+审核开始时绑定账号、自定义链及所选供应商路由与停用状态快照，并复用现有供应商变更代次校验，
+覆盖地址／鉴权配置、密钥修改和同 ID 删除重建。订阅请求同时绑定 OpenAI 原生授权凭证或
+xAI 登录代次，派发前与响应完成后均复查，订阅退出或换号后不得采纳旧判定。
+账号切换、配置变化、取消后不得继续派发旧请求或采纳迟到结果。
+每个候选最多 12 秒（含凭证发现），内置阶段预算 40 秒，
+自定义阶段另有最多 40 秒，共用取消信号。宿主守卫为 81 秒，必须小于 Core 的 delegate 硬上限。
+恢复辅助模型默认设置会移除自定义兜底，不扩展自动链，也不改写已有配置。
 
 ### Auto 模式的同范围自动跟进
 

@@ -100,6 +100,8 @@ const CONNECTION_CHECK_CODES = new Set([
 /** 那台本身现在不能接这个任务(不是连接的问题)：直接换。 */
 const MEMBER_UNAVAILABLE_CODES = new Set([
   'REMOTE_AGENT_PROVIDER_NOT_ALLOWED',
+  // 分享来的那台的主人没同意这个受邀者经组使用(转分享)：换组里别的电脑。
+  'REMOTE_AGENT_RESHARE_NOT_ALLOWED',
   'REMOTE_AGENT_MODEL_UNAVAILABLE',
   'REMOTE_AGENT_SHARE_PAUSED',
   'REMOTE_AGENT_SHARE_REMOVED',

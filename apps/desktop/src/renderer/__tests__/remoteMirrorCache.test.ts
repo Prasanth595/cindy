@@ -33,8 +33,8 @@ vi.mock('@/lib/sessionService', () => ({
 }));
 
 import { makerChatStore, getRemoteHistoryView } from '@/lib/makerChatStore';
-import { projectHistoryView } from '@cindy/maker-shared/message-window';
-import { encodeRemoteHistory } from '../../shared/remoteHistoryCache';
+import { projectHistoryView, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
+import { decodeRemoteHistory, encodeRemoteHistory, fitsRemoteHistoryCache } from '../../shared/remoteHistoryCache';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { listMessagesFor } from '@/lib/makerTransport';
 import { collectSessionListSnapshot } from '@/features/device-link/refreshRemoteSessions';
@@ -323,6 +323,64 @@ describe('冷缓存 hydrate', () => {
       makerChatStore.purgeSession(s);
       makerChatStore.__teardownGlobalListeners();
       vi.useRealTimers();
+    }
+  });
+
+  it.each(['prefix', 'collapsed', 'latest'] as const)('never clears the mirror when read ahead exceeds its budget (%s)', async (kind) => {
+    const s = sid();
+    const old = dbMessage(s, 'old', 'x'.repeat(400_000), '2026-10-11T00:00:01.000Z');
+    const anchor = dbMessage(s, 'anchor', 'anchor', '2026-10-11T00:00:02.000Z');
+    const previous: HistoryViewSnapshot<Message> = {
+      items: projectHistoryView([old, anchor], false), details: new Map(), expanded: new Set(),
+      ready: true, loading: false, error: null, hasMore: false, nextCursor: null,
+    };
+    if (kind === 'collapsed') {
+      previous.items = [{ type: 'work', key: 'work', summary: {
+        key: 'work', firstMessageId: old.id, lastMessageId: old.id, revision: 'r1',
+        startedAtMs: Date.parse(old.createdAt), endedAtMs: Date.parse(old.createdAt),
+        messageCount: 1, toolCount: 1, isStreaming: false,
+      } }, ...projectHistoryView([anchor], false)];
+      previous.details = new Map([['work', { messages: [old], revision: 'r1', lastMessageId: old.id,
+        complete: true, loading: false, error: null }]]);
+    }
+    const historyView = encodeRemoteHistory(previous);
+    expect(fitsRemoteHistoryCache(historyView)).toBe(true);
+    getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: '2026-10-11T00:00:09.000Z' },
+    ] as never);
+    const reply = dbMessage(s, 'new', 'y'.repeat(kind === 'latest' ? 600_000 : 180_000), '2026-10-11T00:00:09.000Z');
+    invoke.mockImplementationOnce((async () => ({ version: 1,
+      items: projectHistoryView([anchor, reply], false), hasMore: true, nextCursor: anchor.id,
+    })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    try {
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      await flush(30);
+      expect(clearCache).not.toHaveBeenCalled();
+      if (kind === 'latest') {
+        expect(putMessages).not.toHaveBeenCalled();
+        invoke.mockImplementationOnce((async () => ({ version: 1,
+          items: projectHistoryView([anchor, { ...reply, content: 'small reply' }], false), hasMore: true, nextCursor: anchor.id,
+        })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+        await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+        await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+        expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+      } else {
+        await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+        const text = putMessages.mock.calls.at(-1)![6]!;
+        expect(fitsRemoteHistoryCache(text)).toBe(true);
+        const saved = decodeRemoteHistory(text)!;
+        expect(saved.items.at(-1)?.key).toBe(reply.clientId);
+        expect(saved.details.size).toBe(0);
+        expect(saved).toMatchObject(kind === 'prefix'
+          ? { hasMore: true, nextCursor: anchor.id } : { hasMore: false, nextCursor: null });
+      }
+    } finally {
+      getMessages.mockReset();
+      getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({
+        messages: cachedMessages.get(`${deviceId}::${sessionId}`) ?? [],
+        invalidation: cachedInvalidation, ownerToken: cachedOwnerToken, accountCounter: cachedAccountCounter,
+      }));
     }
   });
 

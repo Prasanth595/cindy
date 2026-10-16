@@ -56,7 +56,9 @@ const mocks = vi.hoisted(() => ({
   resolveXdtImageUrl: vi.fn(),
   generateAndPersistFbotTitle: vi.fn(),
   dbSelect: vi.fn(),
+  readRemoteRoute: vi.fn(),
 }));
+vi.mock('../../remoteProviderRoute', () => ({ readImRemoteProviderRoute: mocks.readRemoteRoute }));
 
 vi.mock('../../../logger', () => ({ createLogger: () => mocks.logger }));
 vi.mock('../../../maker-host', () => ({ getMaker: mocks.getMaker }));
@@ -1256,6 +1258,17 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
 });
 
 describe('notification replies reuse the originating session without takeover', () => {
+  it('cold-opens a shared session on its saved execution computer', async () => {
+    mocks.dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{
+      ...rowFor('original-session'), status: 'active', agentDeviceId: 'share:owner', providerId: 'remote-provider', sdkSessionId: 'remote-sdk',
+    }] }) }) });
+    mocks.readRemoteRoute.mockResolvedValue({ provider: { name: 'Shared provider' } });
+    await reply('shared-thread');
+    expect(mocks.getMaker().createSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentDeviceId: 'share:owner', providerId: 'remote-provider', resumeSessionId: 'remote-sdk',
+    }));
+    expect(mocks.readRemoteRoute).toHaveBeenCalledWith(expect.objectContaining({ agentDeviceId: 'share:owner', providerId: 'remote-provider' }));
+  });
   function origin(status = 'active') {
     mocks.dbSelect.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{
       ...rowFor('original-session'), sdkSessionId: 'original-sdk-session', status,

@@ -2981,6 +2981,40 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     if (first.kind === 'accepted') await first.terminal;
   });
 
+  it.each(['rich-card', 'chunked-text'] as const)('quota recovery respects %s output capabilities', async (kind) => {
+    const previousOutput = fakeAdapter.output;
+    const commitFinal = vi.fn(async (_payload: { text: string }) => undefined);
+    if (kind === 'chunked-text') {
+      fakeAdapter.output = {
+        kind,
+        im: mocks.feishuIm as unknown as ChannelIM,
+        beginReply: vi.fn(async () => undefined),
+        commitFinal,
+      };
+    }
+    try {
+      const h = setupSession(async () => ({ accepted: true }));
+      await runDefaultTurn();
+      h.emit({ type: 'error', data: { message: 'insufficient_quota', isTerminal: true } });
+      await waitForAssertion(() => {
+        const text = kind === 'chunked-text'
+          ? commitFinal.mock.calls[0]?.[0].text
+          : mocks.feishuIm.sendText.mock.calls[0]?.[1];
+        expect(text).toContain('账号余额或配额不足');
+        if (kind === 'chunked-text') {
+          expect(text).toContain('在 Cindy 里打开这个任务');
+          expect(text).not.toContain('/model');
+          expect(text).not.toContain('新对话配置');
+        } else {
+          expect(text).toContain('/model');
+          expect(text).not.toContain('新对话配置');
+        }
+      });
+    } finally {
+      fakeAdapter.output = previousOutput;
+    }
+  });
+
   it('commits one terminal payload for a chunked-text output driver', async () => {
     const previousOutput = fakeAdapter.output;
     const beginReply = vi.fn(async () => undefined);

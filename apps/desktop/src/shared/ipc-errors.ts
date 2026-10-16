@@ -76,6 +76,7 @@ export type IpcErrorCode =
   | 'INTERNAL'
   | 'ALREADY_EXISTS'
   | 'PRECONDITION_FAILED'
+  | 'PROVIDER_GROUP_CHANGED' // 编辑期间组设置已变化，拒绝覆盖，需重新读取
   | 'HTML_PREVIEW_TOO_LARGE'
   | 'HTML_PREVIEW_UNSUPPORTED'
   // 本地模型切换窗口保护的可行动失败原因。device-link 继续降级为
@@ -335,6 +336,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'ALREADY_EXISTS',
   'IDENTITY_CONFLICT',
   'PRECONDITION_FAILED',
+  'PROVIDER_GROUP_CHANGED',
   'HTML_PREVIEW_TOO_LARGE',
   'HTML_PREVIEW_UNSUPPORTED',
   'MODEL_CONTEXT_USAGE_UNKNOWN',

@@ -23,6 +23,8 @@ import type {
   GhostSetupEnsureResult,
 } from '../../cindy-brain/ghostSetupCoordinator';
 import { t } from '../../i18n';
+import { Session } from '@cindy/maker-core';
+import { resolveGhostFsSessionSnapshot } from '../../maker-ipc/ghostFsSessionSnapshot';
 import type { CindyGhostsHostDeps } from '../ghost';
 import type { GhostInstallConsentPrompt } from '../../cindy-brain/ghostInstallConsent';
 import type { InstalledGhost, GhostSetupAssessment } from '../../../shared/ghost';
@@ -437,7 +439,7 @@ beforeEach(() => {
   dirDepositMock.mockClear();
   saveDepositMock.mockClear();
   liveGrantStateMock.mockReset();
-  liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: null });
+  liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: null, isCurrent: () => true });
   callCindyMediaMock.mockReset();
   alsSessionContextMock.mockReset();
   logWarnMock.mockClear();
@@ -500,6 +502,46 @@ beforeEach(() => {
 });
 
 describe('Forge session workdir gate', () => {
+  it.each(['forgeScaffold', 'forgePack', 'forgeInstall'] as const)('blocks Pi %s after the UI plan intent is consumed until native execution exits Plan', async (operation) => {
+    let executionPlan: boolean | null = true;
+    let close!: () => void;
+    const closed = new Promise<void>((resolve) => { close = resolve; });
+    const logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return logger; } };
+    const handle = {
+      id: 'pi', agentKind: 'pi', model: 'test',
+      async *events() { await closed; }, async close() { close(); }, setInteractionResolver() {},
+      getPlanMode: () => false, getExecutionPlanMode: () => executionPlan,
+    };
+    const session = new Session({ id: 's1', sessionInstanceId: 's1-instance', agentKind: 'pi', workDir: WORKDIR,
+      permissionMode: 'bypassPermissions', handle: handle as never,
+      capabilities: { planMode: { supported: true } } as never, logger });
+    sessionSnapshotMock.mockResolvedValue({ workingDir: WORKDIR, permissionMode: 'bypassPermissions', planModeEnabled: false, remoteHostId: null });
+    liveGrantStateMock.mockImplementation((id, instance) => {
+      const snapshot = resolveGhostFsSessionSnapshot(() => session, id, instance);
+      return { permissionMode: session.stablePermissionModeState?.mode ?? null, remoteHostId: null,
+        isCurrent: () => !!snapshot && !snapshot.planModeEnabled && snapshot.isCurrent?.() === true };
+    });
+    packGhostDirMock.mockResolvedValue({ ok: true, buf: Buffer.from('packed'),
+      cindyPath: path.join(WORKDIR, 'plugin-src', 'demo-1.0.0.cindy'),
+      manifest: { id: 'demo', name: 'Demo', version: '1.0.0' } });
+    const deps = makeDeps('pi');
+    const invoke = () => operation === 'forgeScaffold'
+      ? deps.forgeScaffold({ dir: path.join(WORKDIR, 'new-plugin'), template: 'plain', id: 'x', name: 'X' })
+      : deps[operation]({ dir: path.join(WORKDIR, 'plugin-src') });
+    try {
+      expect(session.getPlanMode()).toBe(false);
+      for (const state of [true, null]) {
+        executionPlan = state;
+        expect(await invoke()).toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+      }
+      expect(scaffoldGhostDirMock).not.toHaveBeenCalled();
+      expect(packGhostDirMock).not.toHaveBeenCalled();
+      expect(forgeInstallPackageMock).not.toHaveBeenCalled();
+      executionPlan = false;
+      expect(await invoke()).toMatchObject({ ok: true });
+    } finally { await session.close(); }
+  });
+
   it('holds the owner mutation lease across the Forge operation', async () => {
     const operation = makeDeps().forgePack({ dir: path.join(WORKDIR, 'plugin-src') });
     expect(captureMutationOwnerMock).toHaveBeenCalledTimes(1);
@@ -514,6 +556,7 @@ describe('Forge session workdir gate', () => {
     expect(packGhostDirMock).toHaveBeenCalledWith(path.join(WORKDIR, 'plugin-src'), {
       sessionWorkdir: WORKDIR,
       forbiddenRootDirs: [],
+      isCurrent: expect.any(Function),
     });
   });
 
@@ -550,6 +593,7 @@ describe('Forge session workdir gate', () => {
     });
 
     expect(forgeInstallPackageMock).toHaveBeenCalledWith(cindyPath, {
+      isCurrent: expect.any(Function),
       ghostId: 'demo',
       packageSha256: createHash('sha256').update(bytes).digest('hex'),
       // Agent 安装的插件确认投给调用所在的任务。

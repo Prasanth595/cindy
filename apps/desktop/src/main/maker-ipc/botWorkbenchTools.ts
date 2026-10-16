@@ -234,6 +234,21 @@ export async function readBotResponsibleSessionIds(userDataDir: string, botId: s
   );
 }
 
+/**
+ * The same responsibility, split: `delegatedSessionIds` are the background tasks this Bot
+ * started itself (delegation children); `sessionIds` adds the ordinary tasks it explicitly
+ * took over. The owner chip reads the first, the sidebar follow mark the second.
+ */
+export async function readBotResponsibilityScope(
+  userDataDir: string, botId: string,
+): Promise<{ sessionIds: string[]; delegatedSessionIds: string[] }> {
+  const delegated = [...(await listBotDelegationChildren(botId)).keys()].sort();
+  return {
+    sessionIds: responsibleSessionIds(delegated, await readTaskResponsibilities(userDataDir, botId)),
+    delegatedSessionIds: delegated,
+  };
+}
+
 /** Capture the creator before a generic create-mode handoff crosses async boundaries. */
 export async function captureBotCreatedTaskResponsibility(callerSessionId?: string) {
   if (!callerSessionId || isAppSessionBoundaryPending()) return null;

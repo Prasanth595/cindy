@@ -15,6 +15,7 @@ import { PROVIDER_RUNNING_TURNS_FIELD } from '@cindy/device-link';
 import {
   parseProviderGroupRemoteRequest,
   PROVIDER_GROUP_LOCAL_MEMBER_KEY,
+  providerGroupDeviceCount,
   providerGroupSummaryForWire,
   type ProviderGroupConfig,
   type ProviderGroupRemotePick,
@@ -59,9 +60,10 @@ const pendingUsageReports = new WeakMap<object, Map<string, PendingUsageReport>>
 export const PROVIDER_GROUP_USAGE_PART_TTL_MS = 10 * 60_000;
 
 /**
- * 给同账号电脑的 `maker:provider:list` 补组摘要与运行数，都只加在仍允许被远程调用的供应商上：
- * 建了组的带 `group`；`running`(这台电脑上每个供应商正在运行一轮的任务数，localLoad.ts)给出时每个都带
- * `runningTurns`，没在跑的为 0，读不到(null)时不带。结果里已有的这两个字段一律先去掉，只有本机能产生它们。
+ * 给同账号电脑的 `maker:provider:list` 补组摘要与运行数：建了组的供应商都带 `group`，
+ * 让关闭远程调用的组仍能从设置进入管理；`running`(这台电脑上每个供应商正在运行一轮的任务数，
+ * localLoad.ts)只给仍允许被远程调用的供应商附加 `runningTurns`，没在跑的为 0，读不到(null)时不带。
+ * 结果里已有的这两个字段一律先去掉，只有本机能产生它们。
  */
 export function decorateProviderListWithGroups(
   result: unknown,
@@ -78,9 +80,10 @@ export function decorateProviderListWithGroups(
       const entry = { ...(provider as Record<string, unknown>) };
       delete entry.group;
       delete entry[PROVIDER_RUNNING_TURNS_FIELD];
-      if (entry.remoteInvocationEnabled !== true || typeof entry.id !== 'string') return entry;
+      if (typeof entry.id !== 'string') return entry;
       const config = readGroup(entry.id);
       if (config) entry.group = providerGroupSummaryForWire(config);
+      if (entry.remoteInvocationEnabled !== true) return entry;
       if (running) entry[PROVIDER_RUNNING_TURNS_FIELD] = running.get(entry.id) ?? 0;
       return entry;
     }),
@@ -89,6 +92,7 @@ export function decorateProviderListWithGroups(
 
 /**
  * 分享出去的供应商建了组时提供台数(provider-groups.md §8)，不返回组员名单；匿名状态由受邀者分配器按需提供。
+ * 台数按电脑算(2026-10-15)：同一台电脑上的几个账号算一台，与匿名状态的项数一致(sharedStatus.ts)。
  * 供应商不再允许被远程调用时分享本身就不可用，不报台数。
  */
 export function sharedProviderGroupSize(
@@ -96,7 +100,7 @@ export function sharedProviderGroupSize(
   providerId: string,
 ): number | null {
   if (!deps.isRemoteAllowed(providerId)) return null;
-  const count = deps.readGroup(providerId)?.members.length ?? 0;
+  const count = providerGroupDeviceCount(deps.readGroup(providerId)?.members ?? []);
   return count > 0 ? count : null;
 }
 

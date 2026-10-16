@@ -69,6 +69,7 @@ CREATE TABLE sessions (
   working_dir TEXT,
   model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
   provider_id TEXT,
+  agent_device_id TEXT,
   effort TEXT NOT NULL DEFAULT 'high',
   permission_mode TEXT NOT NULL DEFAULT 'ask',
   status TEXT NOT NULL DEFAULT 'active',
@@ -3011,6 +3012,7 @@ describe('db worker tx handlers', () => {
           fastMode: false,
           agentKind: 'pi',
           providerId: 'xai',
+          agentDeviceId: 'share:owner',
           imDefaultRoute: 'default-route-record',
           source: 'telegram',
           imBotContextId: 'bot',
@@ -3020,6 +3022,8 @@ describe('db worker tx handlers', () => {
       });
 
       expect(result).toEqual({ previousStatus: 'active' });
+      await expect(client.query("SELECT agent_device_id FROM sessions WHERE id = 'telegram-new'"))
+        .resolves.toEqual([{ agent_device_id: 'share:owner' }]);
       await expect(
         client.query(
           `SELECT id, status, im_bot_context_id, im_user_id, im_default_route

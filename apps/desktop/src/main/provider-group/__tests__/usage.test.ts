@@ -41,7 +41,19 @@ describe('provider group quota eligibility', () => {
 
   it('does not keep blocking a reset window or score it as zero before fresh data arrives', () => {
     const value = { ...snapshot(100, 20), fiveHour: { utilization: 100, resetsAt: NOW / 1000 } };
-    expect(providerGroupUsageState(value, 'opus', NOW)).toEqual({ limited: false, resetAtMs: null, usagePercent: null });
+    expect(providerGroupUsageState(value, 'opus', NOW)).toEqual({
+      limited: false, resetAtMs: null, usagePercent: null, weeklyResetAtMs: NOW + 86_400_000, fiveHourResetAtMs: null,
+    });
+  });
+
+  it('reports when unused quota resets, but not for used-up, past or unknown resets', () => {
+    expect(providerGroupUsageState(snapshot(20, 40), 'opus', NOW))
+      .toMatchObject({ weeklyResetAtMs: NOW + 86_400_000, fiveHourResetAtMs: NOW + 3_600_000 });
+    expect(providerGroupUsageState(snapshot(100, 100), 'opus', NOW))
+      .toMatchObject({ weeklyResetAtMs: null, fiveHourResetAtMs: null });
+    const unknown = { ...snapshot(), fiveHour: { utilization: 0, resetsAt: null }, sevenDay: { utilization: 10, resetsAt: (NOW - 1) / 1000 } };
+    expect(providerGroupUsageState(unknown, 'opus', NOW)).toMatchObject({ weeklyResetAtMs: null, fiveHourResetAtMs: null });
+    expect(providerGroupUsageState(null, 'opus', NOW)).toMatchObject({ weeklyResetAtMs: null, fiveHourResetAtMs: null });
   });
 
   it('keeps unknown and stale data distinct from low usage', () => {

@@ -290,7 +290,14 @@ describe('botGroupChatService', () => {
       });
     }
     const group = await waitForIdle(harness, groupId);
-    expect(group.lastReplyAt).toBe(Math.max(...group.messages.filter(m => m.authorKind === 'bot' && m.kind === 'message').map(m => m.createdAt)));
+    expect(group.lastReplyAt).toBe(Math.max(...group.messages.filter(m => m.authorKind === 'bot' && (m.kind === 'message' || m.kind === 'plan')).map(m => m.createdAt)));
+    // Incoming times are the Bots' messages, oldest first, without the owner's own or notices.
+    const incoming = group.messages.filter(m => m.authorKind === 'bot' && (m.kind === 'message' || m.kind === 'plan'))
+      .sort((a, b) => a.sequence - b.sequence).map(m => new Date(m.createdAt).toISOString());
+    expect(incoming.length).toBeGreaterThan(0);
+    expect(group.incomingMessageTimes).toEqual(incoming);
+    const listed = await harness.service.listGroups();
+    expect(listed.ok && listed.groups.find(g => g.id === groupId)?.incomingMessageTimes).toEqual(incoming);
     // Second circle takes turns and sees the whole first circle.
     expect(harness.dispatches.slice(3).map((call) => call.botId)).toEqual(['xiaoman', 'abu', 'mimi']);
     expect(harness.dispatches[3]!.prompt).toContain('咪咪的看法');
@@ -646,6 +653,13 @@ describe('botGroupChatService 分工', () => {
     const groupId = await createGroup(harness);
     const plan = await proposePlan(harness, groupId);
     const group = await detailOf(harness, groupId);
+
+    // The plan card is the newest incoming item: the read position seeded from lastReplyAt
+    // covers it, and the unread list counts it (bot-group-chat.md §5 未读).
+    const planMessage = group.messages.filter(m => m.authorKind === 'bot').sort((a, b) => b.sequence - a.sequence)[0]!;
+    expect(planMessage.kind).toBe('plan');
+    expect(group.lastReplyAt).toBe(planMessage.createdAt);
+    expect(group.incomingMessageTimes?.at(-1)).toBe(new Date(planMessage.createdAt).toISOString());
 
     expect(decidePlan).toHaveBeenCalledTimes(1);
     expect(decidePlan.mock.calls[0]![0]).toMatchObject({

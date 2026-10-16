@@ -162,6 +162,7 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
     permissionMode: 'bypassPermissions' | 'default',
     resolve?: (request: InteractionRequest) => boolean,
     route?: { endpoint: string; model: string; providerId: string; resolveHostedId?: boolean },
+    initialPermissionMode = permissionMode,
   ) {
     const project = path.join(root, `project-${permissionMode}`);
     const hostRoot = path.join(root, `host-${permissionMode}`);
@@ -191,7 +192,7 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
       workingDir: project,
       model: route?.model ?? MODEL,
       ...(route ? { providerId: route.providerId } : {}),
-      permissionMode,
+      permissionMode: initialPermissionMode,
     }, {
       invoke: async (args) => JSON.parse(JSON.stringify(await host.handle('controller-1', JSON.parse(JSON.stringify(args[0]))) ?? null)),
       rgPath: RG,
@@ -226,6 +227,7 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
       }
     })();
     try {
+      if (initialPermissionMode !== permissionMode) await handle.setPermissionMode!(permissionMode);
       await handle.send({ type: 'user', content: 'Do the scripted work.' });
       await done;
     } finally {
@@ -244,7 +246,8 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
       { name: 'mcp__cindy_exec__Edit', input: { file_path: path.join(projectPath, 'made.txt'), old_string: 'one', new_string: 'two' } },
     ];
     requests.length = 0;
-    const { project, hostRoot, events, captured } = await run('bypassPermissions');
+    const { project, hostRoot, events, captured, asked } = await run('bypassPermissions');
+    expect(asked).toEqual([]);
     const first = requests[0];
     // 模型看不到只能操作本机的自带文件与命令工具。
     for (const builtin of ['Bash', 'Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep']) {
@@ -271,6 +274,14 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
     // 界面看到的仍是自带工具名。
     const toolNames = events.filter((event) => event.type === 'tool_use').map((event) => (event.data as { toolName: string }).toolName);
     expect(toolNames).toEqual(['Bash', 'Write', 'Read', 'Edit']);
+  });
+
+  it('honors switching an existing hosted session to Full access without a confirmation', { timeout: 120_000 }, async () => {
+    steps = [{ name: 'mcp__cindy_exec__Bash', input: { command: 'printf switched > switched.txt' } }];
+    requests.length = 0;
+    const { project, asked } = await run('bypassPermissions', undefined, undefined, 'default');
+    expect(asked).toEqual([]);
+    expect(fs.readFileSync(path.join(project, 'switched.txt'), 'utf8')).toBe('switched');
   });
 
   it('asks on this computer for commands that change things, but not for reads and read-only commands', { timeout: 120_000 }, async () => {

@@ -203,6 +203,19 @@ pnpm test:unit
   对应规则，不以本页命令替代专项验证。
 - 记录实际执行和结果；未执行的高相关检查必须说明原因。
 
+## Linux 系统托盘
+
+Linux 主窗口创建时注册 Electron Tray，提供显示主窗口、打开日志目录、退出 Cindy。
+与 Windows 共用菜单动作和活动任务退出确认，但 Linux 使用 `setContextMenu` 发布原生
+菜单，切换语言后重新发布；不依赖仅 Windows/macOS 提供的 `right-click` 事件。
+实现见 `main/linuxTrayLifecycle.ts` 与 `bootstrap-electron.ts`，回归见
+`main/__tests__/linuxTrayLifecycle.test.ts`。
+
+图标创建成功不代表桌面面板一定显示它，因此关闭主窗口仍保留 Linux 原有的
+「最小化／退出」选择，不自动隐藏到托盘，也不迁移用户已有偏好。无托盘宿主或初始化失败
+不阻止主窗口使用。托盘实际显示、激活、菜单与退出须在 Linux 桌面验证；macOS 上的
+单测不能替代 Omarchy/Hyprland、GNOME 或 KDE 的实机验收。
+
 ## Windows 窗口恢复实验
 
 Windows 偶发黑屏/灰屏的后台节流对照实验见

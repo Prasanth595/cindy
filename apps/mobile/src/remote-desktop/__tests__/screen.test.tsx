@@ -4087,6 +4087,7 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "frame"
         ? new Promise((resolve) =>
+            // real-wait: preserve the remote-frame timeout boundary used by the transport.
             setTimeout(() => resolve({ jpeg: "a".repeat(4000) }), 100),
           )
         : original(...args),
@@ -4178,6 +4179,7 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "heartbeat"
         ? new Promise((_resolve, reject) =>
+            // real-wait: exercise the transport heartbeat timeout boundary.
             setTimeout(
               () =>
                 reject(
@@ -4807,6 +4809,46 @@ describe("remote desktop controls", () => {
       expect(sent()).toContainEqual({ type: "control", enabled: true });
       expect(button("keyboard").disabled).toBe(false);
     });
+    it.each(["touch", "pointer"])(
+      "keeps %s input after native playback preparation yields a render",
+      async (inputMode) => {
+        act(() => root.unmount());
+        storage.items.set("cindy.mobile.remote-desktop.input-mode.v1", inputMode);
+        fixture.nativeMedia = true;
+        root = createRoot(host);
+        await act(async () => root.render(<RemoteDesktopScreen />));
+        autoControl();
+        let resumePlayback!: () => void;
+        fixture.playback.mockImplementation((enabled) =>
+          enabled
+            ? new Promise<void>((resolve) => {
+                resumePlayback = resolve;
+              })
+            : Promise.resolve(),
+        );
+        await act(async () => {
+          fixture.message!({ nativeEvent: { data: '{"type":"ready"}' } });
+        });
+        expect(resumePlayback).toBeTypeOf("function");
+        expect(requests().find((request) => request.op === "start")).toMatchObject({
+          control: true,
+        });
+        // React has already published the granted input mode before init.
+        expect(sent().filter((message) => message.type === "mode").at(-1)).toEqual({
+          type: "mode", mode: inputMode,
+        });
+        await act(async () => resumePlayback());
+        const commands = sent();
+        const init = commands.findIndex((message) => message.type === "init");
+        expect(init).toBeGreaterThanOrEqual(0);
+        expect(
+          commands.slice(init).filter((message) => message.type === "mode").at(-1),
+        ).toEqual({ type: "mode", mode: inputMode });
+        expect(commands.slice(init)).toContainEqual({
+          type: "control", enabled: true,
+        });
+      },
+    );
     const viewerInput = (sequence: number, events: object[]) =>
       act(async () =>
         fixture.message!({

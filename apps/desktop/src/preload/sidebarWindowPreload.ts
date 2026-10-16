@@ -68,7 +68,7 @@ function readPreferredSystemLocale(): ApplicationMenuLocale {
   }
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): (() => void) =>
   onPayload('fullscreen-change', cb);
@@ -157,6 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onPayload(DEVICE_LINK_PUSH.CONTROL_TARGET_CHANGED, cb),
     onResponsivenessChanged: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.RESPONSIVENESS_CHANGED, cb),
+    onPeerLinkReopened: (cb: (payload: unknown) => void): (() => void) =>
+      onPayload(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, cb),
     onPeerLinkReset: (cb: (payload: unknown) => void): (() => void) =>
       onPayload(DEVICE_LINK_PUSH.PEER_LINK_RESET, cb),
     mirrorCache: {
@@ -226,6 +228,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     previewHtml: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:html-preview:open', params),
     chatFetch: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:fetch', params),
     chatDownload: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:download', params),
+    chatCancel: (requestId: string): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     chatStat: (params: unknown): Promise<unknown> => ipcRenderer.invoke('maker:chat-file:stat', params),
   },
   terminal: {

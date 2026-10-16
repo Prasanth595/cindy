@@ -374,7 +374,7 @@ it.each(['/context', '/learn keep this', '/help', 'keep this message'])('preserv
     ts.forEachChild(node, visit);
   };
   visit(screen);
-  expect(guard).toBeDefined();
+  if (!guard) throw new Error('Missing production remote-command guard');
   const error = vi.fn();
   const consume = vi.fn();
   const run = new Function('args', `

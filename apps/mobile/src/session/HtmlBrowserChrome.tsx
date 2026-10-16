@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react-native";
 import { Text, TextInput } from "@/components/AppText";
+import { MainWindowActionButton } from "@/components/MobilePrimitives";
 import { SheetModal } from "./SheetModal";
 import {
   fontWeight,
@@ -140,10 +141,10 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
       </View>
       {p.notice ? (
         <View
-          pointerEvents="none"
+          pointerEvents={p.onCancelNotice ? "box-none" : "none"}
           style={[styles.notice, { bottom: p.bottom + size + spacing.sm }]}
         >
-          {p.notice ? (
+          <View style={styles.noticePill}>
             <Text
               accessibilityLiveRegion="polite"
               testID="filePreview.notice"
@@ -151,9 +152,17 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
             >
               {p.notice}
             </Text>
-          ) : (
-            <ActivityIndicator color={colors.textSecondary} />
-          )}
+            {p.onCancelNotice ? (
+              <MainWindowActionButton
+                action={{
+                  label: t("files.browser.cancel"),
+                  onPress: p.onCancelNotice,
+                  testID: "filePreview.notice.cancel",
+                }}
+                density="compact"
+              />
+            ) : null}
+          </View>
         </View>
       ) : null}
       <View
@@ -320,11 +329,17 @@ const makeStyles = (c: ThemeColors) =>
       right: spacing.lg,
       alignItems: "center",
     },
-    noticeText: {
-      color: c.textPrimary,
+    noticePill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
       backgroundColor: c.surfaceElevated,
       padding: spacing.sm,
       borderRadius: radius.container,
+    },
+    noticeText: {
+      flexShrink: 1,
+      color: c.textPrimary,
       fontSize: typeScale.footnote,
       lineHeight: lineHeight.caption,
     },

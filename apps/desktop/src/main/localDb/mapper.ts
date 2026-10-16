@@ -12,6 +12,7 @@ import { hasPendingSessionInterruption } from '@cindy/maker-shared/session-activ
 import { DESKTOP_VISIBLE_SESSION_SOURCES } from '../../shared/sessionSource.js';
 import { getSessionInterruptionBootAt } from './sessionInterruptionBoot';
 import { stripInternalWebCitations } from '@cindy/maker-shared/internal-citation';
+import { projectMcpAppContent } from '@cindy/maker-shared/mcp-apps';
 import { markdownPreviewText } from '../../shared/markdownPreviewText.js';
 import {
   parseOrcaRemoteLead,
@@ -261,6 +262,7 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
     planModeEnabled: !!row.planModeEnabled,
     clearedAt: msToIso(row.clearedAt),
     pinnedAt: msToIso(row.pinnedAt),
+    hiddenAt: msToIso(row.hiddenAt),
     userSendAt: msToIso(row.userSendAt),
     agentKind: row.agentKind as AgentKind,
     source: normalizeSessionSource(row.source),
@@ -334,7 +336,7 @@ export function messageToCamel(row: MessageRow): Message {
     clientId: row.clientId,
     sessionId: row.sessionId,
     role: row.role as MessageRole,
-    content,
+    content: projectMcpAppContent(content, agentMeta?.mcpApp === true),
     toolUseId: row.toolUseId,
     agentMeta,
     agentKind: (row.agentKind as 'cc' | 'codex' | 'pi' | null) ?? null,

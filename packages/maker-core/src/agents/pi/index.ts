@@ -3778,7 +3778,7 @@ export class PiAgent extends BaseAgent {
       : sessionRuntimeBinaryPath!;
 
     // plan 模式:挂载 pi 自带的 plan-mode example 扩展(随 pi 分发,版本匹配,免 vendoring)。
-    // 只在文件存在时 --extension;缺失则 plan 模式静默降级(setPlanMode 时 warn)。
+    // 只在文件存在时 --extension;缺失时拒绝计划请求，普通消息仍可发送。
     // 加载本身零副作用:plan 模式默认关,扩展 hook 全早返;仅 /plan 开启后才注入 plan 提示词。
     // 远端:扩展随远端 pi 分发(installer 解压整包),路径基于远端二进制。
     // 轮 40-w4-t15:远端二进制是 POSIX 路径, 本地是平台路径 —— 按会话远端性
@@ -4996,11 +4996,13 @@ export class PiAgent extends BaseAgent {
     };
     piSubagentRefreshTimer?.unref?.();
     if (localSubagentSupported) void requestPiSubagentRefresh();
-    // Cindy 侧对 pi plan 模式的镜像态;setPlanMode 经 /plan toggle 驱动,与 pi 内部
-    // planModeEnabled 保持一致(RPC 下 Execute/Refine 选择框被 auto-cancel,pi 不会自行
-    // 翻转,故镜像不漂移)。
+    // Native /plan toggles and Execute/Refine continuations share this mirror.
+    // Native continuations re-read persisted state before Host side effects can use it.
     let planModeActive: boolean | null = planModeExtAvailable ? null : false;
-    let planModeWriteChain: Promise<void> = Promise.resolve();
+    // The checkbox arms the next send; the native flag belongs to the executing turn.
+    let armedPlanMode: boolean | null = null;
+    let planModeRevision = 0;
+    let syncNativePlanMode: (() => void) | undefined;
 
     // proc 构造即 spawn 子进程 —— spawn 参数非法等会**同步**抛。此刻 ctx 已在
     // preparePiExtraSpawnConfig 注册、但 handle 尚未交出,close() 不会跑 → 单独
@@ -5465,6 +5467,10 @@ export class PiAgent extends BaseAgent {
         ...mcpEnv,
         // 视觉桥后端 env（层 C）：键含 API key 已纳入 piSecretEnvNames 剥离面。
         ...(visionBridgeEnv ? visionBridgeEnv : {}),
+        // Input handoff askpass, owner's own local tasks only (deterministic per session).
+        ...(!remote && !hosted && !reviewMode && opts.sessionId
+          ? this.deps.runtimeConfig.taskShellEnv?.({ sessionId: opts.sessionId })
+          : {}),
         [PI_SESSION_ID_ENV]: opts.sessionId ?? '',
         ...(proxySessionToken !== undefined ? { [PI_SESSION_TOKEN_ENV]: proxySessionToken } : {}),
         [PI_SECRET_ENV_NAMES_ENV]: JSON.stringify(piSecretEnvNames),
@@ -5559,6 +5565,9 @@ export class PiAgent extends BaseAgent {
         transport,
         logger: this.deps.logger,
         onEvent: (event: PiRpcEvent) => {
+          if (event.type === 'agent_start' && !ctx.pendingHostTurnStartToken) {
+            syncNativePlanMode?.();
+          }
           if (event.type === 'agent_start' || event.type === 'agent_settled') {
             piAgentLifecycleSequence += 1;
           }
@@ -5946,6 +5955,46 @@ export class PiAgent extends BaseAgent {
       return readPersistedPlanModeFromEntries();
     };
 
+    syncNativePlanMode = () => {
+      if (!planModeExtAvailable) return;
+      // Execute/Refine can start a native continuation without a host prompt.
+      // Execute exits Plan itself; an old mirror would invert the next /plan.
+      const revision = ++planModeRevision;
+      planModeActive = null;
+      void readPersistedPlanMode().then((enabled) => {
+        if (!closed && revision === planModeRevision) planModeActive = enabled;
+      }).catch(() => { /* Remain unknown; the next control request re-syncs. */ });
+    };
+
+    // Caller holds sessionRpcChain: mode selection and prompt dispatch must be atomic.
+    const applyPlanMode = async (enabled: boolean): Promise<void> => {
+      if (reviewMode) return;
+      if (!planModeExtAvailable) {
+        if (enabled) throw new Error('Pi plan-mode extension is unavailable');
+        return;
+      }
+      planModeRevision += 1;
+      if (planModeActive === null) {
+        planModeActive = await readPersistedPlanMode();
+        if (planModeActive === null) {
+          throw new Error('pi setPlanMode refused: persisted plan-mode state is unavailable');
+        }
+      }
+      if (enabled === planModeActive) return;
+      planModeActive = null; // Host side effects must wait for the native switch to finish.
+      try {
+        const resp = await proc.request({ type: 'prompt', message: '/plan' });
+        if (!resp.success) {
+          throw new Error(`pi setPlanMode(/plan) rejected: ${resp.error ?? 'unknown'}`);
+        }
+        planModeActive = enabled;
+      } catch (error) {
+        // A failed response can follow an executed toggle. Re-read before retrying.
+        planModeActive = null;
+        throw error;
+      }
+    };
+
     const readPiUserEntryIdsFromEntries = async (): Promise<Set<string> | null> => {
       const response = await proc.request({ type: 'get_entries' });
       if (!response.success) return null;
@@ -6089,6 +6138,7 @@ export class PiAgent extends BaseAgent {
       imageCount: number,
       hasAdditionalContent: boolean,
       mainOwnedContext?: MainOwnedSendContext,
+      beforeAccept?: () => Promise<void>,
     ): Promise<{ text: string; accepted: boolean }> => {
       if (!allowPiPackageManagement || imageCount > 0 || hasAdditionalContent) {
         return { text, accepted: false };
@@ -6114,6 +6164,7 @@ export class PiAgent extends BaseAgent {
         }
       }
       if (parsed && ('error' in parsed || parsed.action === 'command')) {
+        await beforeAccept?.();
         let receipt: Record<string, unknown>;
         try {
           receipt = 'error' in parsed ? { ok: false, error: parsed.error } : {
@@ -6132,6 +6183,7 @@ export class PiAgent extends BaseAgent {
       }
       const command = commandText === undefined ? undefined : parsePiManagedPackageCommand(commandText);
       if (!command) return { text, accepted: false };
+      await beforeAccept?.();
       const uiStrings = resolvePiExtensionUiStrings(this.deps);
       let outcome: PiManagedPackageCommandOutcome;
       let shouldInvalidateRuntimes = false;
@@ -6343,6 +6395,12 @@ export class PiAgent extends BaseAgent {
             message: err instanceof Error ? err.message : String(err),
           });
         }
+      }
+      armedPlanMode = reviewMode ? false : (opts.planMode ?? planModeActive);
+      // Missing optional plan support must not tear down an otherwise usable
+      // session. Keep the armed intent; planned sends will reject before dispatch.
+      if (!reviewMode && planModeExtAvailable && opts.planMode !== undefined && !ctx.isStreaming && !ctx.pendingHostTurnStartToken) {
+        await runExclusivePiRpc(() => applyPlanMode(opts.planMode!));
       }
     } catch (err) {
       if (!rpcReadyLogged) {
@@ -7167,6 +7225,7 @@ export class PiAgent extends BaseAgent {
       },
 
       async send(message: UserMessage, sendOpts?: SendOptions): Promise<void> {
+        let requestedPlanTurn = !reviewMode && (sendOpts?.planMode ?? armedPlanMode);
         rejectIfCancelled(sendOpts, 'send');
         await waitForSessionRpcIdle();
         updateRequestPrefs();
@@ -7199,12 +7258,37 @@ export class PiAgent extends BaseAgent {
           assertImageInputSupported(images);
           setAutoReviewIntent(appendAutoReviewUserIntent(priorAutoReviewIntent(), message.content, sendOpts), { authority: autoReviewContext() });
           reviewIntentUpdated = true;
-          const managedPackageRoute = await routeManagedPackageCommand(
+          const applyRequestedPlanMode = async () => {
+            if (requestedPlanTurn === null) {
+              // A failed startup/resume scan is not ordinary-mode intent. Recover
+              // the native choice before either a prompt or a host mutation.
+              const revision = ++planModeRevision;
+              planModeActive = null;
+              const restoredPlanMode = await readPersistedPlanMode();
+              if (restoredPlanMode === null || revision !== planModeRevision) {
+                throw new TurnDispatchRejectedError('Pi plan-mode state is unavailable before prompt dispatch');
+              }
+              planModeActive = restoredPlanMode;
+              requestedPlanTurn = restoredPlanMode;
+              if (armedPlanMode === null) armedPlanMode = restoredPlanMode;
+            }
+            if (ctx.isStreaming && requestedPlanTurn !== planModeActive) {
+              throw new TurnDispatchRejectedError('Cannot change Pi plan mode while a turn is active');
+            }
+            await applyPlanMode(requestedPlanTurn);
+          };
+          const managedPackageRoute = await runExclusivePiRpc(() => routeManagedPackageCommand(
             text,
             images.length,
             Array.isArray(message.content) && message.content.some((block) => block.type !== 'text'),
             sendOpts?.[MAIN_OWNED_SEND_CONTEXT],
-          );
+            async () => {
+              // Native plan setup can fail. Finish it before a host command's
+              // irreversible acceptance boundary, while holding the RPC chain.
+              await applyRequestedPlanMode();
+              rejectIfCancelled(sendOpts, 'send');
+            },
+          ));
           text = managedPackageRoute.text;
           // Starting a host-owned package mutation is this transaction's
           // acceptance boundary. A Stop that races after that point must not
@@ -7305,6 +7389,12 @@ export class PiAgent extends BaseAgent {
                   throw new TurnDispatchRejectedError('Pi RPC is unavailable before prompt dispatch');
                 }
               }
+              // Accepted host commands already passed plan setup before the
+              // mutation. A later toggle failure must not make them replayable.
+              if (!managedPackageRoute.accepted) {
+                await applyRequestedPlanMode();
+                rejectIfCancelled(sendOpts, 'send');
+              }
               const pendingTurnStartToken = markPiHostTurnStartPending(ctx);
               promptRequestStarted = true;
               const resp = await proc.request(command, {
@@ -7315,6 +7405,14 @@ export class PiAgent extends BaseAgent {
                 refreshTimeoutOnEvent: (event) =>
                   PI_PROMPT_ACCEPTANCE_PROGRESS_EVENTS.has(event.type),
               });
+              // Only consume the one-shot choice after acceptance. A confirmed
+              // rejection must preserve it for a retry without a message snapshot.
+              // Keep this in the RPC chain so a newer checkbox choice cannot be
+              // consumed by an older prompt's acceptance response.
+              if ((resp.success || managedPackageRoute.accepted) && requestedPlanTurn && armedPlanMode) {
+                armedPlanMode = false;
+                queue.push({ type: 'plan_mode_changed', data: { enabled: false }, source: 'pi' });
+              }
               return { resp, pendingTurnStartToken };
             });
             firstModelRequestStatus = resp.success ? 'ok' : 'degraded';
@@ -7894,42 +7992,25 @@ export class PiAgent extends BaseAgent {
 
       async setPlanMode(enabled: boolean): Promise<void> {
         if (reviewMode) return;
-        if (!planModeExtAvailable) {
-          deps.logger.warn('pi setPlanMode ignored: plan-mode extension not available');
-          return;
-        }
-        // /plan 是 toggle，必须把全部调用串行；否则两个并发“开启”都会看到 false，
-        // 连续 toggle 两次后实际回到关闭。未知镜像先重新读取，无法证明方向就拒绝，
-        // 不能把 sync 失败伪报成 false 后盲切。
-        const run = planModeWriteChain.then(async () => {
-          if (planModeActive === null) {
-            planModeActive = await readPersistedPlanMode();
-            if (planModeActive === null) {
-              throw new Error('pi setPlanMode refused: persisted plan-mode state is unavailable');
+        await runExclusivePiRpc(async () => {
+          // Consuming/arming the checkbox must not change an in-flight turn's tools.
+          if (!ctx.isStreaming && !ctx.pendingHostTurnStartToken) {
+            try {
+              await applyPlanMode(enabled);
+            } catch (error) {
+              armedPlanMode = planModeActive;
+              throw error;
             }
           }
-          if (enabled === planModeActive) return;
-          let resp: Awaited<ReturnType<typeof proc.request>>;
-          try {
-            resp = await runExclusivePiRpc(() => proc.request({ type: 'prompt', message: '/plan' }));
-          } catch (error) {
-            // transport 超时/断线不能证明命令未到达 Pi；它可能已经完成 toggle。
-            // 旧 boolean 此后不再可信，下次调用必须先从持久 entry 重同步。
-            planModeActive = null;
-            throw error;
-          }
-          if (!resp.success) {
-            // RPC 失败响应也不拿旧镜像继续猜 toggle 方向，统一回到未知态。
-            planModeActive = null;
-            throw new Error(`pi setPlanMode(/plan) rejected: ${resp.error ?? 'unknown'}`);
-          }
-          planModeActive = enabled;
+          armedPlanMode = enabled;
         });
-        planModeWriteChain = run.catch(() => {});
-        return run;
       },
 
       getPlanMode(): boolean | null {
+        return armedPlanMode;
+      },
+
+      getExecutionPlanMode(): boolean | null {
         return planModeActive;
       },
 
@@ -7995,8 +8076,9 @@ export class PiAgent extends BaseAgent {
         // 状态可能与旧闭包 planModeActive 不一致, 不校正会让 UI/DB 残留旧分支
         // 状态, 且下次 setPlanMode 因 enabled===planModeActive 直接 no-op。
         const planModeAfterFork = planModeExtAvailable ? await readPersistedPlanMode() : null;
-        if (planModeAfterFork !== null && planModeAfterFork !== planModeActive) {
+        if (planModeAfterFork !== null && (planModeAfterFork !== planModeActive || planModeAfterFork !== armedPlanMode)) {
           planModeActive = planModeAfterFork;
+          armedPlanMode = planModeAfterFork;
           queue.push({
             type: 'plan_mode_changed',
             data: { enabled: planModeAfterFork },
@@ -8006,6 +8088,7 @@ export class PiAgent extends BaseAgent {
           // 新分支读不到 plan entry(异常/旧格式):不能假定沿用旧分支的开启态,
           // 置回未开启并通知(保守, 用户可再开)。
           planModeActive = false;
+          armedPlanMode = false;
           queue.push({
             type: 'plan_mode_changed',
             data: { enabled: false },

@@ -26,6 +26,8 @@
   "sectionAccessRevoked": "再度の許可が必要",
   "retryAccess": "アクセスを再試行",
   "recheck": "再確認",
+  "deviceRemovedTitle": "デバイスが削除されました",
+  "deviceRemovedHint": "ログアウトして再度ログインすると、デバイス一覧に追加できます。",
   "authFailedTitle": "ログインの有効期限が切れました",
   "authFailedHint": "ログインの有効期限が切れています。ログアウトして、もう一度ログインしてください。",
   "replacedTitle": "接続が置き換えられました",
@@ -35,7 +37,7 @@
   "versionMismatchTitle": "バージョンが一致しません",
   "versionMismatchHint": "このアプリのバージョンはサービスと互換性がありません。最新版に更新して再試行してください。",
   "unstableTitle": "接続が繰り返し切断されています",
-  "unstableHint": "接続が切断と再接続を繰り返しています。ネットワークを確認し、続く場合はアプリを再起動してください。",
+  "unstableHint": "接続が不安定です。ネットワークを確認し、接続の復旧をお待ちください。",
   "relay": {
     "label": {
       "online": "Relay 接続済み",

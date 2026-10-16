@@ -25,6 +25,7 @@ import {
 import { createId } from '@paralleldrive/cuid2';
 import { historyOutlineContent, historyOutlineContentStamp, withHistoryArtifacts } from './historyViewOutline';
 import { historyViewLeaves, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
+import { projectMcpAppContent } from '@cindy/maker-shared/mcp-apps';
 
 import { getDbClient, getCurrentDbClientSnapshot } from '../client/current';
 import type { ContextRebuildArgs } from '../client/tx/types';
@@ -852,7 +853,11 @@ export function broadcastMessageRow(
   msg: Message,
   ownerScope?: DataOwnerBroadcastScope | null,
 ): void {
-  broadcastOwnedPayload('local-db:messages:created', { sessionId, message: msg }, ownerScope);
+  // Main-created rows may bypass the DB mapper. Never broadcast View-only data
+  // to top-level renderers or same-account control devices.
+  const content = projectMcpAppContent(msg.content, msg.agentMeta?.mcpApp === true);
+  const message = content === msg.content ? msg : { ...msg, content };
+  broadcastOwnedPayload('local-db:messages:created', { sessionId, message }, ownerScope);
   if (msg.role === 'user' || msg.role === 'assistant') {
     scheduleBotRemoteResourceChangedForSession(sessionId, ownerScope?.ownerScopeKey);
   }

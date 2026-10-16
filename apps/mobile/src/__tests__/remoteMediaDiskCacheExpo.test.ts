@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadRemoteMediaAsDataUri,
+  downloadRemoteMediaShareTemp,
   withDownloadedRemoteMediaFile,
 } from '@/session/remoteMediaDiskCacheExpo';
 
@@ -10,6 +11,17 @@ const io = vi.hoisted(() => ({
   copied: new Set<string>(),
   download: vi.fn(),
   remove: vi.fn(),
+  resumable: vi.fn(),
+  cancel: vi.fn(async () => undefined),
+  deleteAsync: vi.fn(async () => undefined),
+}));
+
+vi.mock('expo-file-system/legacy', () => ({
+  createDownloadResumable: (url: string, uri: string) => ({
+    downloadAsync: () => io.resumable(url, uri),
+    cancelAsync: io.cancel,
+  }),
+  deleteAsync: io.deleteAsync,
 }));
 
 vi.mock('expo-file-system', () => ({
@@ -32,6 +44,7 @@ vi.mock('expo-file-system', () => ({
       io.copied.add(target.uri);
     }
     get size() { return io.copying.has(this.uri) ? 0 : io.size; }
+    get exists() { return true; }
     async base64() { return 'aGVsbG8='; }
     delete() { io.remove(this.uri); }
     static downloadFileAsync = io.download;
@@ -44,6 +57,9 @@ beforeEach(() => {
   io.copied.clear();
   io.remove.mockClear();
   io.download.mockReset().mockImplementation(async (_url, target) => target);
+  io.resumable.mockReset().mockResolvedValue({ status: 200 });
+  io.cancel.mockClear();
+  io.deleteAsync.mockClear();
 });
 
 describe('bounded temporary media downloads', () => {
@@ -84,5 +100,53 @@ describe('bounded temporary media downloads', () => {
     expect(await downloadRemoteMediaAsDataUri('https://example.com/image', 'image/png', 8))
       .toBe('data:image/png;base64,aGVsbG8=');
     expect(io.remove).toHaveBeenCalledOnce();
+  });
+});
+
+describe('share temp downloads', () => {
+  it('keeps the existing download path when no cancellation signal is given', async () => {
+    expect(await downloadRemoteMediaShareTemp('https://example.com/a.pdf', 'application/pdf', 'a.pdf'))
+      .toMatch(/\/a\.pdf$/);
+    expect(io.download).toHaveBeenCalledOnce();
+    expect(io.resumable).not.toHaveBeenCalled();
+  });
+
+  it('downloads through a cancellable task when a signal is given', async () => {
+    const uri = await downloadRemoteMediaShareTemp(
+      'https://example.com/a.pdf', 'application/pdf', 'a.pdf', new AbortController().signal,
+    );
+    expect(uri).toMatch(/\/a\.pdf$/);
+    expect(io.resumable).toHaveBeenCalledExactlyOnceWith('https://example.com/a.pdf', uri);
+    expect(io.download).not.toHaveBeenCalled();
+  });
+
+  it('stops the transfer and removes the partial file on cancel', async () => {
+    io.resumable.mockReturnValue(new Promise(() => {})); // native download never settles after cancel
+    const abort = new AbortController();
+    const result = downloadRemoteMediaShareTemp('https://example.com/a.pdf', 'application/pdf', 'a.pdf', abort.signal);
+    await vi.waitFor(() => expect(io.resumable).toHaveBeenCalledOnce());
+    abort.abort();
+    expect(await result).toBeNull();
+    expect(io.cancel).toHaveBeenCalled();
+    expect(io.deleteAsync).toHaveBeenCalledExactlyOnceWith(io.resumable.mock.calls[0]![1], { idempotent: true });
+    // The partial file is removed only after the native task has confirmed it stopped.
+    expect(io.cancel.mock.invocationCallOrder.at(-1)!).toBeLessThan(io.deleteAsync.mock.invocationCallOrder[0]!);
+  });
+
+  it('removes a direct-transfer copy that finished after cancel', async () => {
+    const abort = new AbortController();
+    const result = downloadRemoteMediaShareTemp('file:///peer/staged', 'application/pdf', 'a.pdf', abort.signal);
+    abort.abort(); // local File.copy cannot be interrupted; the copy settles afterwards
+    expect(await result).toBeNull();
+    expect(io.copied.size).toBe(1);
+    expect(io.remove).toHaveBeenCalledExactlyOnceWith([...io.copied][0]);
+  });
+
+  it('treats a non-2xx response as a failed download', async () => {
+    io.resumable.mockResolvedValue({ status: 403 });
+    expect(await downloadRemoteMediaShareTemp(
+      'https://example.com/a.pdf', 'application/pdf', 'a.pdf', new AbortController().signal,
+    )).toBeNull();
+    expect(io.deleteAsync).toHaveBeenCalledOnce();
   });
 });

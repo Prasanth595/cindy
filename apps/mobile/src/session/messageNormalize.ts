@@ -1,4 +1,5 @@
 import { formatDuration } from '@cindy/maker-shared/message-render';
+import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import { collectPluginInvocations, type PluginInvocation } from './pluginInvocations';
 import { extractPayloadToolResultFiles, extractPayloadToolCardIds, type PayloadToolFile } from '@cindy/maker-shared/payload-summary';
 import { placeBotTaskCardsAfterIntroduction, readBotCollaborationMeta, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
@@ -21,7 +22,7 @@ import {
   normalizeAgentTaskTerminalStatus,
   type AgentTaskTerminalStatus,
 } from '@cindy/maker-shared/agent-task';
-import { isSyntheticTriggerText } from '@cindy/maker-shared/synthetic-trigger';
+import { isSyntheticTriggerText, parseInputHandoffEndRecord } from '@cindy/maker-shared/synthetic-trigger';
 import {
   isHookSchedulerOrigin,
   readMessageSourceDevice,
@@ -290,6 +291,13 @@ export function normalizeRemoteMessages(
   for (const message of sorted) {
     if (message.role === 'tool_result') continue;
     if (message.role === 'assistant') {
+      const app = message.agentMeta?.mcpApp === true ? parseMcpAppHistory(message.content) : undefined;
+      if (app) {
+        result.push({ key: messageNormalizeKey(message), source: message, kind: 'system', role: message.role,
+          label: 'system:mcp-app', body: '', systemCardType: 'mcp-app',
+          systemCardData: { title: app.title, fallbackText: app.text }, align: 'agent', createdAt: message.createdAt });
+        continue;
+      }
       const authorization = readRecord(message.agentMeta?.botAuthorization);
       const snapshot = readRecord(authorization?.snapshot);
       if (authorization?.v === 1 && authorization.sessionId === message.sessionId && snapshot?.kind === 'plugin_setup') {
@@ -530,6 +538,24 @@ export function normalizeRemoteMessages(
     const userContent = message.role === 'user' ? parseUserContent(message.content) : null;
     // 合成 UI 指令行(隐藏续跑 prompt 等):打标 + body 置空,不渲染但保留 turn 边界。
     if (userContent && isSyntheticTriggerText(userContent.text)) {
+      const handoffRecord = parseInputHandoffEndRecord(userContent.text);
+      if (handoffRecord) {
+        // 代输入结束:只留一条无值的记录行(对齐桌面),turn 边界照旧。
+        result.push({
+          key: messageNormalizeKey(message),
+          source: message,
+          kind: 'user',
+          role: message.role,
+          label: 'user',
+          body: '',
+          systemCardType: 'input-handoff',
+          isSyntheticTrigger: true,
+          systemCardData: { ...handoffRecord, at: message.createdAt },
+          align: 'agent',
+          createdAt: message.createdAt,
+        });
+        continue;
+      }
       result.push({
         key: messageNormalizeKey(message),
         source: message,

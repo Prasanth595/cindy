@@ -12,6 +12,7 @@
  */
 
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService';
+import { readDeviceProviderViews } from '../../remote-agent/controller/deviceCatalog';
 import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../../maker-host/model-visibility-mirror';
 import { getSessionProvider } from '../../maker-host/session-provider-store';
 import {
@@ -333,8 +334,10 @@ export function createSlashHandlers(
         // 保证 IM 列表与应用内逐模型一致。currentProviderId 优先取会话持久化的 providerId。
         const agentKind = row.agentKind;
         const currentProviderId = getSessionProvider(row.id) ?? row.providerId;
-        const providers = await getDesktopProviderService().listProviders({ allowSideEffects: true });
-        await waitForModelVisibilityMirror();
+        const providers = row.agentDeviceId
+          ? await readDeviceProviderViews((await import('../../device-link')).remoteBackgroundInvoke, row.agentDeviceId)
+          : await getDesktopProviderService().listProviders({ allowSideEffects: true });
+        if (!row.agentDeviceId) await waitForModelVisibilityMirror();
         const connected = connectedProvidersForAgent(providers, agentKind);
         const sections = buildProviderSections({
           providers: connected,
@@ -345,7 +348,7 @@ export function createSlashHandlers(
             const provider = connected.find((p) => p.id === pid);
             const model = provider ? getModel(provider, mid, agentKind) : undefined;
             return isModelVisible(
-              getModelVisibilityOverride(agentKind, pid, mid),
+              row.agentDeviceId ? undefined : getModelVisibilityOverride(agentKind, pid, mid),
               model?.defaultEnabled,
             );
           },

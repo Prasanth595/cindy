@@ -20,6 +20,10 @@ const mocks = vi.hoisted(() => ({
   sessions: [] as Array<{ id: string; agentDeviceId?: string | null; orcaRole?: 'lead' }>,
   sessionsLoading: false,
   sidebarWindow: false,
+  windowVisible: true,
+  watchAttention: vi.fn(),
+  refreshProjection: vi.fn(),
+  refreshSettings: vi.fn(),
   workerAgentInput: null as Record<string, unknown> | null,
   workerAgentDevices: {
     leadAgentDeviceId: 'agent-pc' as string | null,
@@ -41,19 +45,19 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   useRemoteProjectSessions: () => [],
 }));
 vi.mock('@/hooks/useWindowVisible', () => ({
-  useWindowVisible: () => true,
+  useWindowVisible: () => mocks.windowVisible,
   useDocumentVisible: () => true,
 }));
 vi.mock('../hooks/useOrcaWorkerAttentionWatcher', () => ({
-  useOrcaWorkerAttentionByLeadIds: vi.fn(),
+  useOrcaWorkerAttentionByLeadIds: mocks.watchAttention,
 }));
 vi.mock('../hooks/useStopOrcaCollab', () => ({
   useStopOrcaCollabWithoutNavigation: () => ({ requestStop: vi.fn() }),
 }));
 vi.mock('../hooks/workerProjectionStore', () => ({
   useWorkerProjectionOwner: vi.fn(),
-  revalidateActiveWorkersProjection: vi.fn(),
-  revalidateActiveWorkerSettings: vi.fn(),
+  revalidateActiveWorkersProjection: mocks.refreshProjection,
+  revalidateActiveWorkerSettings: mocks.refreshSettings,
 }));
 vi.mock('../../right-sidebar/plugins/orca-workers/actions', () => ({
   clearOrcaWorkersSelectionIntent: vi.fn(),
@@ -316,6 +320,10 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
   };
 
   beforeEach(() => {
+    mocks.windowVisible = true;
+    mocks.watchAttention.mockClear();
+    mocks.refreshProjection.mockClear();
+    mocks.refreshSettings.mockClear();
     mocks.sessions = [];
     mocks.sessionsLoading = false;
     mocks.sidebarWindow = false;
@@ -330,6 +338,31 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
   afterEach(() => {
     cleanup();
     mocks.sidebarWindow = false;
+  });
+
+  // Detached tabs own their watcher even while hidden. Only an actually
+  // visible collaboration view may clear attention or refresh its projection.
+  // Hook tests alone cannot catch dropping these caller-side lifecycle inputs.
+  it('keeps detached attention watching while hidden and refreshes only on visibility', () => {
+    mocks.sidebarWindow = true;
+    mocks.sessions = [{ id: 'lead-1', orcaRole: 'lead' }];
+    mocks.windowVisible = false;
+    const view = render(<OrcaWorkersTabBody ctx={ctx} state={{}} active />);
+    expect(mocks.watchAttention).toHaveBeenLastCalledWith(['lead-1'], undefined);
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(false);
+    expect(mocks.refreshProjection).not.toHaveBeenCalled();
+    expect(mocks.refreshSettings).not.toHaveBeenCalled();
+
+    mocks.windowVisible = true;
+    view.rerender(<OrcaWorkersTabBody ctx={ctx} state={{}} active />);
+    expect(mocks.watchAttention).toHaveBeenLastCalledWith(['lead-1'], 'lead-1');
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(true);
+    expect(mocks.refreshProjection).toHaveBeenCalledWith('lead-1');
+    expect(mocks.refreshSettings).toHaveBeenCalledWith('lead-1');
+
+    view.rerender(<OrcaWorkersTabBody ctx={ctx} state={{}} active shellVisible={false} />);
+    expect(mocks.watchAttention).toHaveBeenLastCalledWith(['lead-1'], undefined);
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(false);
   });
 
   it.each([false, true])('hides execution devices for a remote Agent while keeping creation available (detached: %s)', async (detached) => {

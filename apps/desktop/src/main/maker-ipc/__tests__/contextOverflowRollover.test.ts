@@ -372,18 +372,89 @@ describe('createContextOverflowRollover', () => {
       msg('assistant', 'Keyboard controls are ready. Next: add touch controls.', 'a1'),
     ]);
     deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), agentKind, source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
-    const rollover = createContextOverflowRollover(deps);
+    const withOwn = { ...deps, listCompanionSessionIds: vi.fn(async () => ({ sessionIds: ['s1', 's-old', 's-bg'], chatsTruncated: false })) };
+    const rollover = createContextOverflowRollover(withOwn);
     await expect(rollover.prepareUnhealthySession('s1')).resolves.toBe(true);
     const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
     expect(handoff).toContain('Keep the game keyboard accessible');
     expect(handoff).toContain('Saved index.html; keyboard test passed');
     expect(handoff).toContain('Next: add touch controls');
+    // 伙伴主对话用"按需回忆"口径:宿主把自有会话 id 写进指引,第一步按 session_ids 限定。
+    expect(withOwn.listCompanionSessionIds).toHaveBeenCalledWith('s1');
+    expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
+    expect(handoff).toContain('{"query":"<keywords>","limit":10,"session_ids":["s1","s-old","s-bg"]}');
+    expect(handoff).not.toContain('could list only your newest');
     expect(handoff.length).toBeLessThanOrEqual(16_000);
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
     // Persisted reset prevents another checkpoint after a cold restart.
     deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), sdkSessionId: null, contextTokens: 0 });
     await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(false);
     expect(deps.commitRebuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the companion working memory into the checkpoint handoff and tolerates a failing reader', async () => {
+    const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
+    const deps = { ...makeDeps(source), readWorkingMemoryNote: vi.fn(async () => '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板') };
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(deps.readWorkingMemoryNote).toHaveBeenCalledWith('s1');
+    expect(deps.setPendingHandoff.mock.calls[0]![1] as string).toContain('周五前改完周报模板');
+
+    const failing = {
+      ...makeDeps(source),
+      readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => { throw new Error('disk'); }),
+      listCompanionSessionIds: vi.fn(async (): Promise<{ sessionIds: string[]; chatsTruncated: boolean }> => { throw new Error('db'); }),
+    };
+    failing.getSessionRow.mockResolvedValue({ ...await failing.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
+    await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(failing.setPendingHandoff.mock.calls[0]![1] as string).not.toContain('Working memory');
+    // 自有会话清单读失败:只认当前对话,照样换窗。
+    expect(failing.setPendingHandoff.mock.calls[0]![1] as string).toContain('"session_ids":["s1"]}');
+  });
+
+  it('checkpoints a companion at 70% only when the working memory is fresh, and keeps the 90% line otherwise', async () => {
+    const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
+    const bot = async (deps: ReturnType<typeof makeDeps>, contextTokens: number) =>
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens });
+
+    // 新鲜且能渲染账本:70%(窗口 200K → 140K)即换窗,账本段只读一次并原样进交接。
+    const ledger = '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板';
+    const fresh = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async () => ledger) };
+    await bot(fresh, 140_000);
+    await expect(createContextOverflowRollover(fresh).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(fresh.isWorkingMemoryFresh).toHaveBeenCalledWith('s1');
+    expect(fresh.readWorkingMemoryNote).toHaveBeenCalledTimes(1);
+    expect(fresh.setPendingHandoff.mock.calls[0]![1] as string).toContain('周五前改完周报模板');
+
+    // 新鲜但账本段渲染不出来(读取失败 / 空账本):不提前换窗,维持 90%。
+    const unrendered = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => null) };
+    await bot(unrendered, 150_000);
+    await expect(createContextOverflowRollover(unrendered).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(unrendered.closeSession).not.toHaveBeenCalled();
+
+    // 不新鲜:75% 不换窗;到 90% 不问账本照旧换窗。
+    const stale = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => false) };
+    await bot(stale, 150_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(stale.closeSession).not.toHaveBeenCalled();
+    stale.isWorkingMemoryFresh.mockClear();
+    await bot(stale, 180_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(stale.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 70% 以下不读账本。
+    const below = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true) };
+    await bot(below, 139_999);
+    await expect(createContextOverflowRollover(below).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(below.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 判据抛错按不新鲜;没接判据的调用方维持 90%。
+    const failing = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async (): Promise<boolean> => { throw new Error('disk'); }) };
+    await bot(failing, 150_000);
+    await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(false);
+    const legacy = makeDeps(source);
+    await bot(legacy, 150_000);
+    await expect(createContextOverflowRollover(legacy).prepareUnhealthySession('s1')).resolves.toBe(false);
   });
 
   it.each([

@@ -8,6 +8,7 @@ import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { BotPronounProvider, useBotTranslation } from './botPronounContext';
 import { BotSettings } from './BotsHomeView';
 import { useBotProfiles } from './botStore';
+import { useCompanionCloud } from './companionCloudStore';
 import { useRemoteBots } from './useRemoteBots';
 import { RemoteBotSettings } from './RemoteBotSettings';
 
@@ -26,9 +27,13 @@ export function BotSettingsDrawer() {
   );
   const match =
     matchPath('/bots/:botId/*', location.pathname) ?? matchPath('/bots/:botId', location.pathname);
-  const bot = remoteMatch
+  const cloud = useCompanionCloud();
+  const localBot = remoteMatch
     ? null
     : (bots.find((candidate) => candidate.id === match?.params.botId) ?? null);
+  // A demoted copy (the companion runs on another computer) is read-only: edits here would never
+  // reach the companion. Its settings live on the main computer (the banner on its task links there).
+  const bot = localBot && cloud.demotedBotIds.includes(localBot.id) ? null : localBot;
   const open = searchParams.get('settings') === '1' && (bot !== null || !!remoteBot);
 
   const requestedPage = searchParams.get('settingsPage');

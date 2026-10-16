@@ -8,6 +8,8 @@ export interface DeviceFileResult {
   inlineBase64?: string;
   /** Only emitted when the caller explicitly requests preparation. */
   transferRequired?: boolean;
+  /** Opaque source identity, emitted only after current authorization and stat. */
+  version?: string;
 }
 
 export function assertFileReadActive(signal?: AbortSignal): void {

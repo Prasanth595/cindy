@@ -100,6 +100,8 @@ export type StoredMessageOrigin =
  * 只接受 SDK 自己分配的 uuid，所以这是 fork 的唯一主键。
  */
 export interface CcMeta {
+  /** Host-authored official MCP App snapshot; not an assistant prose reply. */
+  mcpApp?: boolean;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
   /** Provider text phase, retained to exclude commentary from notification previews. */
   assistantPhase?: string;
@@ -361,6 +363,12 @@ export interface Session {
   planModeEnabled?: boolean;
   clearedAt: string | null; // ISO 8601 — messages before this timestamp are hidden
   pinnedAt: string | null;  // ISO 8601 — when pinned, null = not pinned
+  /**
+   * 插件后台隐藏时刻（ISO 8601）。非 null = 声明 `agent.hiddenTasks` 的插件创建/切换的后台任务，
+   * 主进程任务列表已排除；只会出现在单任务读取（插件详情页「后台任务」打开或深链）。
+   * 老 payload 缺失按 null（可见）处理。
+   */
+  hiddenAt?: string | null;
   /**
    * 用户最近一次"按下发送"的时刻（ISO 8601，null = 从未发过）。
    * Sidebar 排序唯一时间轴：null ⟺ 草稿（归未分类），非 null 即按倒序上浮。

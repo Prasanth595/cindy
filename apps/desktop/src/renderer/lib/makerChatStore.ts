@@ -1,4 +1,5 @@
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
+import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
 export type { PluginSetupCommandError } from './pluginSetupCommandError';
@@ -10,8 +11,9 @@ import { readBotAuthorizationCard } from '../../shared/botAuthorization';
 import { applyCindyMakeCardAttention } from './cindyMakeAttention';
 import { confirmRemoteUsers, reserveRemoteUser } from './remoteUserHandoff';
 import { readRemoteHistoryCache, remoteHistoryCacheWriter } from './remoteHistoryCache';
+import { encodeRemoteHistory, fitsRemoteHistoryCache } from '../../shared/remoteHistoryCache';
 import { createPluginSecretPresentation, createPluginConnectionPresentation } from '../../shared/pluginOauth';
-import { parsePluginConnectionInput } from '@cindy/device-link';
+import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/device-link';
 /**
  * makerChatStore — Module-level store for Maker chat (Claude / Codex), sharded by sessionId.
  * ---------------------------------------------------------------------------
@@ -35,7 +37,7 @@ import { parsePluginConnectionInput } from '@cindy/device-link';
  * - User-initiated stopSession (NOT called on session switch anymore)
  */
 
-import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotFromPage, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
+import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
@@ -128,6 +130,7 @@ import type {
   GhostSetupStepPhase,
 } from '../../shared/ghost';
 import * as messageService from '@/lib/messageService';
+import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import * as sessionService from '@/lib/sessionService';
 // device-link 透明传输:远程(被控设备)会话的操作/读取走隧道,本地会话零变化。
 import {
@@ -152,6 +155,7 @@ import {
   requestRemoteReseed,
 } from '@/features/device-link/remoteProjectsStore';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
+import { isInputHandoffAwaitingOwner, parsePendingInputHandoff } from '@/features/input-handoff/inputHandoffModel';
 import { clearCachedMessages, readCachedMessages, persistListMessage, sessionCacheInvalidationToken } from '@/features/device-link/mirrorCacheClient';
 import {
   noteRemoteSessionSyncCompleted,
@@ -570,7 +574,11 @@ export interface ChatMessage {
      */
     | 'bot-direct-message'
     | 'bot-authorization'
-    | 'context-rebuild';
+    /** 代输入结束留痕:由隐藏续接行派生,只有步数、设备与域名,没有任何输入值。 */
+    | 'input-handoff'
+    | 'context-rebuild'
+    | 'mcp-app';
+  mcpAppClientId?: string;
   systemCardData?: Record<string, unknown>;
   /** FP-3: plan_review message fields */
   planReviewStatus?: 'pending' | 'approved' | 'revised' | 'expired' | 'cancelled';
@@ -766,6 +774,9 @@ export interface PendingPermission {
 export interface PendingAskUser {
   requestId: string;
   questions: AskUserQuestionItem[];
+  delivery?: 'async';
+  persistId?: string;
+  resumeOnSubmit?: boolean;
 }
 
 export type PluginSetupAction = GhostSetupAllowedAction;
@@ -850,6 +861,10 @@ export interface AskUserDraft {
   requestId: string;
   currentIndex: number;
   answers: Record<string, string>;
+  started?: boolean;
+  customInput?: string;
+  selectedLabels?: string[];
+  showCustomInput?: boolean;
 }
 
 /** FP-3: Pending plan-review data for the Plan Viewer Card. */
@@ -2437,6 +2452,7 @@ function cancelRemoteOptimisticSendsForRemoteClear(
         queueAbortPending: false,
         queueInteractionLocks: [],
         queueEditLocks: [],
+        protectedAskUser: opts.historicalHydration ? state.protectedAskUser : undefined,
       };
     });
   }
@@ -2681,10 +2697,17 @@ export interface SessionChatState {
    * See AskUserDraft typedef for the staleness contract.
    */
   askUserDraft: AskUserDraft | null;
+  /** Local editing survives provider dismissal; it is not a pending Host interaction. */
+  protectedAskUser?: { pending: PendingAskUser; draft: AskUserDraft };
   /** FP-3: Currently pending plan-review; null when none. */
   pendingPlanReview: PendingPlanReview | null;
   /** issue_confirm: 提交 GitHub issue 前的确认卡片; null when none. */
   pendingIssueConfirm: PendingIssueConfirm | null;
+  /**
+   * 代输入: Host-owned step card. Unlike turn-scoped prompts it survives the
+   * turn ending; only a Host dismissal or authoritative snapshot retires it.
+   */
+  pendingInputHandoff: InputHandoffSnapshot | null;
   /** rename_sessions_confirm: 批量改名写入前的确认卡片; null when none. */
   pendingRenameSessionsConfirm: PendingRenameSessionsConfirm | null;
   /** ghost_grant_confirm: ghost_call 过户 workdir 外文件的确认卡片; null when none. */
@@ -2902,6 +2925,7 @@ export type SessionChatLightState = Pick<
   | 'askUserDraft'
   | 'pendingPlanReview'
   | 'pendingIssueConfirm'
+  | 'pendingInputHandoff'
   | 'pendingRenameSessionsConfirm'
   | 'pendingGhostGrantConfirm'
   | 'pendingRemoteDesktopConfirmation'
@@ -2975,6 +2999,7 @@ function createInitialState(): SessionChatState {
     askUserDraft: null,
     pendingPlanReview: null,
     pendingIssueConfirm: null,
+    pendingInputHandoff: null,
     pendingRenameSessionsConfirm: null,
     pendingGhostGrantConfirm: null,
     pendingRemoteDesktopConfirmation: null,
@@ -3060,6 +3085,7 @@ export const EMPTY_SESSION_STATE: SessionChatState = Object.freeze({
   askUserDraft: null,
   pendingPlanReview: null,
   pendingIssueConfirm: null,
+  pendingInputHandoff: null,
   pendingRenameSessionsConfirm: null,
   pendingGhostGrantConfirm: null,
   pendingRemoteDesktopConfirmation: null,
@@ -3633,14 +3659,7 @@ function _evictLruIfNeeded(): void {
       // 驱逐会丢 taskUpdates 让 sidebar spinner 熄灭。远程会话豁免(同折算口径)。
       return (
         s &&
-        !s.isStreaming &&
-        !s.agentStatus.isRunning &&
-        !hasBackgroundAgentWork(id, s) &&
-        !remoteOptimisticSends.has(id) &&
-        ![...remoteOptimisticMaterializationRecoveries.values()].some(
-          (recovery) =>
-            recovery.sessionId === id && isRemoteOptimisticMaterializationRecoveryActive(recovery),
-        ) &&
+        !_isSessionBusy(id, s) &&
         !_activeViewSessions.has(id)
       );
     });
@@ -3676,9 +3695,11 @@ function _isSessionBusy(sessionId: string, s: SessionChatState): boolean {
     hasBackgroundAgentWork(sessionId, s) ||
     s.pendingPermission ||
     s.pendingAskUser ||
+    s.protectedAskUser ||
     hasPendingPluginSetupInteraction(s.pendingPluginSetup, s.pendingPluginSetupQueue) ||
     s.pendingPlanReview ||
     s.pendingIssueConfirm ||
+    s.pendingInputHandoff ||
     s.pendingRenameSessionsConfirm ||
     s.pendingGhostGrantConfirm ||
     s.pendingRemoteDesktopConfirmation ||
@@ -3803,7 +3824,6 @@ function updateIslandsAfterAroundMerge(
   // 块完全落在主段更老一侧:与既有孤岛合并(经块连通的孤岛合并成一座)或新建一座。
   let mergedOldestClientId: string | null = null;
   let mergedNewestClientId: string | null = null;
-  let mergedAny = false;
   const next: LoadedWindowIsland[] = [];
   for (const island of islands) {
     const oldestIdx = messageIndexByClientId(messages, island.oldestClientId);
@@ -3814,7 +3834,6 @@ function updateIslandsAfterAroundMerge(
       next.push(island);
       continue;
     }
-    mergedAny = true;
     if (mergedOldestClientId === null || oldestIdx < blockStart) {
       mergedOldestClientId = island.oldestClientId;
     }
@@ -4140,8 +4159,7 @@ function persistTurnErrorDeferredTracked(
 ): void {
   // 必须在 live error 已经 setState 之后调用,这样抓到的是这一代横幅的 epoch。
   const epoch = _liveErrorEpoch.get(sessionId) ?? 0;
-  let pending: Promise<string | undefined>;
-  pending = makerApiFor(sessionId)
+  const pending: Promise<string | undefined> = makerApiFor(sessionId)
     .input.persistTurnErrorDeferred(sessionId, errData, agentMeta)
     .then((persistId) => {
       const id = typeof persistId === 'string' && persistId ? persistId : undefined;
@@ -6580,6 +6598,9 @@ export function handleStreamEvent(
       if (state.pendingPermission?.requestId === data.requestId) {
         return { ...state, pendingPermission: null };
       }
+      if (state.pendingInputHandoff?.requestId === data.requestId) {
+        return { ...state, pendingInputHandoff: null };
+      }
       if (state.pendingPluginSetup?.requestId === data.requestId) {
         const [nextSetup = null, ...remainingSetups] = state.pendingPluginSetupQueue;
         return {
@@ -6637,6 +6658,7 @@ export function handleStreamEvent(
       }
       if (
         state.pendingAskUser?.requestId === data.requestId ||
+        state.protectedAskUser?.pending.requestId === data.requestId ||
         state.messages.some((m) => m.role === 'ask_user' && m.askUserRequestId === data.requestId)
       ) {
         // resolved + answers → 翻成 answered 并填答案(与答题端 answerUserQuestion 同款 reply / answers,
@@ -6647,6 +6669,8 @@ export function handleStreamEvent(
         const askUserReply = answers && !dismissed ? formatAskUserReply(answers) : '';
         return {
           ...state,
+          protectedAskUser: data.reason === 'resolved' && !dismissed && state.protectedAskUser?.pending.requestId === data.requestId
+            ? undefined : state.protectedAskUser,
           pendingAskUser:
             state.pendingAskUser?.requestId === data.requestId ? null : state.pendingAskUser,
           askUserViewerState:
@@ -6709,6 +6733,7 @@ export function handleStreamEvent(
       const data = event.data as {
         requestId: string;
         questions: AskUserQuestionItem[];
+        delivery?: 'async';
       };
       // Codex done reconciles pending interactions with fresh IPC objects. Keep
       // the same question's identity: AskUserQuestionPrompt restores selections
@@ -6779,6 +6804,8 @@ export function handleStreamEvent(
         pendingAskUser: keepAskProgress ? previousAsk : {
           requestId: data.requestId,
           questions: data.questions,
+          delivery: data.delivery,
+          persistId: event.persistId,
         },
         // F-AUQ-MIN-1: Every new pendingAskUser starts expanded — even if the
         // previous question in this same session was minimized. Folding never
@@ -7016,6 +7043,7 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
     askUserDraft: null,
     pendingPlanReview: null,
     pendingIssueConfirm: null,
+    pendingInputHandoff: null,
     pendingRenameSessionsConfirm: null,
     pendingGhostGrantConfirm: null,
     pendingRemoteDesktopConfirmation: null,
@@ -8359,7 +8387,8 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         kind !== 'plan_review' &&
         kind !== 'issue_confirm' &&
         kind !== 'rename_sessions_confirm' &&
-        kind !== 'ghost_grant_confirm') ||
+        kind !== 'ghost_grant_confirm' &&
+        kind !== 'input_handoff') ||
       typeof request.requestId !== 'string' ||
       request.requestId.length === 0
     ) {
@@ -8414,6 +8443,17 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       return;
     }
 
+    if (request.kind === 'input_handoff') {
+      const parsed = parsePendingInputHandoff(request);
+      if (!parsed) return;
+      setState(sessionId, (s) => {
+        const current = s.pendingInputHandoff;
+        if (current?.requestId === parsed.requestId && parsed.revision < current.revision) return s;
+        return { ...s, pendingInputHandoff: parsed };
+      });
+      return;
+    }
+
     if (request.kind === 'permission') {
       const metadata = request.metadata as Record<string, unknown> | undefined;
       const data: CCAgentPermissionRequestPayload = {
@@ -8435,10 +8475,11 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     }
 
     if (request.kind === 'ask_user_question') {
-      const data: CCAgentAskUserQuestionPayload = {
+      const data: CCAgentAskUserQuestionPayload & { delivery?: 'async' } = {
         sessionId,
         requestId: request.requestId,
         questions: request.questions as CCAgentAskUserQuestionPayload['questions'],
+        ...(request.delivery === 'async' ? { delivery: 'async' as const } : {}),
       };
       setState(sessionId, (s) =>
         handleStreamEvent(s, { sessionId, type: 'ask_user_question', data, persistId }),
@@ -9671,6 +9712,19 @@ function subscribe(sessionId: string, cb: () => void): () => void {
   };
 }
 
+const resumeQuestionPresentations = new WeakMap<PendingAskUser, PendingAskUser>();
+function visibleAskUser(state: SessionChatState): PendingAskUser | null {
+  const pending = state.protectedAskUser?.pending;
+  if (!pending) return state.pendingAskUser;
+  if (state.agentStatus.isRunning && !state.turnStoppedByUser && !state.queuePaused) return pending;
+  let presentation = resumeQuestionPresentations.get(pending);
+  if (!presentation) {
+    presentation = { ...pending, resumeOnSubmit: true };
+    resumeQuestionPresentations.set(pending, presentation);
+  }
+  return presentation;
+}
+
 function selectLightState(state: SessionChatState): SessionChatLightState {
   return {
     agentSwitchIntent: state.agentSwitchIntent,
@@ -9695,16 +9749,17 @@ function selectLightState(state: SessionChatState): SessionChatLightState {
     historyWindowHasIsland: state.historyWindowIslands.length > 0,
     isFirstMessage: state.isFirstMessage,
     historyLoaded: state.historyLoaded,
-    pendingPermission: state.pendingPermission,
-    pendingAskUser: state.pendingAskUser,
+    pendingPermission: state.protectedAskUser ? null : state.pendingPermission,
+    pendingAskUser: visibleAskUser(state),
     pendingPluginSetup: state.pendingPluginSetup,
     pluginSetupViewerState: state.pluginSetupViewerState,
     pluginSetupCommandInFlight: state.pluginSetupCommandInFlight,
     pluginSetupCommandError: state.pluginSetupCommandError,
     askUserViewerState: state.askUserViewerState,
-    askUserDraft: state.askUserDraft,
-    pendingPlanReview: state.pendingPlanReview,
+    askUserDraft: state.protectedAskUser?.draft ?? state.askUserDraft,
+    pendingPlanReview: state.protectedAskUser ? null : state.pendingPlanReview,
     pendingIssueConfirm: state.pendingIssueConfirm,
+    pendingInputHandoff: state.pendingInputHandoff,
     pendingRenameSessionsConfirm: state.pendingRenameSessionsConfirm,
     pendingGhostGrantConfirm: state.pendingGhostGrantConfirm,
     pendingRemoteDesktopConfirmation: state.pendingRemoteDesktopConfirmation,
@@ -9755,6 +9810,7 @@ function lightStateEquals(a: SessionChatLightState, b: SessionChatLightState): b
     a.askUserDraft === b.askUserDraft &&
     a.pendingPlanReview === b.pendingPlanReview &&
     a.pendingIssueConfirm === b.pendingIssueConfirm &&
+    a.pendingInputHandoff === b.pendingInputHandoff &&
     a.pendingRenameSessionsConfirm === b.pendingRenameSessionsConfirm &&
     a.pendingGhostGrantConfirm === b.pendingGhostGrantConfirm &&
     a.pendingRemoteDesktopConfirmation === b.pendingRemoteDesktopConfirmation &&
@@ -9868,6 +9924,8 @@ export interface SessionStatusInfo {
   hasPendingPermission: boolean;
   hasPendingPlanReview: boolean;
   hasPendingPluginSetup: boolean;
+  /** 代输入: owner input requested for an on-screen step (survives the turn). */
+  hasPendingInputHandoff?: boolean;
 }
 
 /**
@@ -9930,6 +9988,7 @@ function computeRunningSnapshot(): Map<string, SessionStatusInfo> {
       state.pendingPluginSetup,
       state.pendingPluginSetupQueue,
     );
+    const hasPendingInputHandoff = isInputHandoffAwaitingOwner(state.pendingInputHandoff);
 
     // 后台 subagent 折算:主 turn 已结束但 wake 型后台任务(local_agent /
     // local_workflow)还在跑,或正处于「任务终态 → wake turn 启动」的桥接空窗
@@ -9951,12 +10010,14 @@ function computeRunningSnapshot(): Map<string, SessionStatusInfo> {
         hasPendingPermission,
         hasPendingPlanReview,
         hasPendingPluginSetup,
+        hasPendingInputHandoff,
       });
     } else if (
       hasPendingAskUser ||
       hasPendingPermission ||
       hasPendingPlanReview ||
-      hasPendingPluginSetup
+      hasPendingPluginSetup ||
+      hasPendingInputHandoff
     ) {
       // Session has a pending prompt for the user — include so the Sidebar
       // can show the "needs attention" notification dot.
@@ -9967,6 +10028,7 @@ function computeRunningSnapshot(): Map<string, SessionStatusInfo> {
         hasPendingPermission,
         hasPendingPlanReview,
         hasPendingPluginSetup,
+        hasPendingInputHandoff,
       });
     }
   }
@@ -9990,6 +10052,7 @@ function computeRunningSnapshot(): Map<string, SessionStatusInfo> {
         state.pendingPluginSetup,
         state.pendingPluginSetupQueue,
       ),
+      hasPendingInputHandoff: isInputHandoffAwaitingOwner(state.pendingInputHandoff),
     });
   }
 
@@ -10027,7 +10090,8 @@ function getRunningSnapshot(): ReadonlyMap<string, SessionStatusInfo> {
         prev.hasPendingAskUser !== info.hasPendingAskUser ||
         prev.hasPendingPermission !== info.hasPendingPermission ||
         prev.hasPendingPlanReview !== info.hasPendingPlanReview ||
-        prev.hasPendingPluginSetup !== info.hasPendingPluginSetup
+        prev.hasPendingPluginSetup !== info.hasPendingPluginSetup ||
+        !!prev.hasPendingInputHandoff !== !!info.hasPendingInputHandoff
       ) {
         same = false;
         break;
@@ -10337,8 +10401,12 @@ function reconcilePendingInteractions(
       const authoritativeQuestionIds = new Set<string>();
       const authoritativePlanIds = new Set<string>();
       const authoritativeRemoteDesktopConfirmationIds = new Set<string>();
+      const authoritativeInputHandoffIds = new Set<string>();
       for (const item of list) {
         const request = item?.request;
+        if (request?.kind === 'input_handoff' && typeof request.requestId === 'string') {
+          authoritativeInputHandoffIds.add(request.requestId);
+        }
         if (request?.kind === 'permission' && typeof request.requestId === 'string') {
           authoritativePermissionIds.add(request.requestId);
         }
@@ -10392,6 +10460,12 @@ function reconcilePendingInteractions(
         const nextPermission = state.pendingPermission &&
           authoritativePermissionIds.has(state.pendingPermission.requestId)
           ? state.pendingPermission : null;
+        // Terminal snapshots are not listed by the Host; keep them for their
+        // short visual grace until the dismissal push arrives.
+        const nextInputHandoff = state.pendingInputHandoff &&
+          (state.pendingInputHandoff.terminal === true ||
+            authoritativeInputHandoffIds.has(state.pendingInputHandoff.requestId))
+          ? state.pendingInputHandoff : null;
         const currentSurvives =
           state.pendingPluginSetup !== null &&
           authoritativePluginSetupIds.has(state.pendingPluginSetup.requestId);
@@ -10446,6 +10520,7 @@ function reconcilePendingInteractions(
           nextAskUser === state.pendingAskUser &&
           nextPlanReview === state.pendingPlanReview &&
           nextPermission === state.pendingPermission &&
+          nextInputHandoff === state.pendingInputHandoff &&
           nextCommand === state.pluginSetupCommandInFlight &&
           promotedRemoteDesktopConfirmation === state.pendingRemoteDesktopConfirmation &&
           !remoteQueueChanged
@@ -10462,6 +10537,7 @@ function reconcilePendingInteractions(
           planViewerState: nextPlanReview ? state.planViewerState : 'expanded',
           lastExpandedPlanViewerState: nextPlanReview ? state.lastExpandedPlanViewerState : 'expanded',
           pendingPermission: nextPermission,
+          pendingInputHandoff: nextInputHandoff,
           pendingPluginSetup: nextCurrent,
           pendingPluginSetupQueue: survivingQueue,
           pluginSetupViewerState: currentChanged ? 'expanded' : state.pluginSetupViewerState,
@@ -11126,8 +11202,9 @@ async function pumpRemoteOptimisticSends(sessionId: string): Promise<void> {
   if (existing) return existing;
   // Self-reference is intentional: a detached clear/owner generation must not
   // keep draining after a newer pump replaces this Promise in the registry.
-  // eslint-disable-next-line prefer-const
   let run!: Promise<void>;
+  // TypeScript needs definite assignment for the async closure's self-reference.
+  // eslint-disable-next-line prefer-const
   run = (async () => {
     while (true) {
       const record = firstUnacceptedRemoteOptimisticSend(sessionId);
@@ -11642,7 +11719,10 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
           const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
             ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
           })));
-          write(historySnapshotFromPage({ ...page, items }, previous));
+          const snapshot = historySnapshotForCache({ ...page, items }, previous,
+            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
+          if (!snapshot) continue;
+          write(snapshot);
         }
         const version = historyPrefetchVersion(session);
         if (version !== undefined) {
@@ -16162,8 +16242,10 @@ async function clearSessionAfterGuardImpl(sessionId: string, clearedAt: string):
       askUserViewerState: 'expanded',
       // F-AUQ-DRAFT: Clear session also wipes any in-progress draft.
       askUserDraft: null,
+      protectedAskUser: undefined,
       pendingPlanReview: null,
       pendingIssueConfirm: null,
+      pendingInputHandoff: null,
       pendingRemoteDesktopConfirmation: null,
       pendingRemoteDesktopConfirmationQueue: [],
       pendingQueue: s.pendingQueue.filter((item) =>
@@ -16446,6 +16528,11 @@ function answerUserQuestion(
   answers: Record<string, string>,
 ): void {
   if (!sessionId) return;
+  const state = getOrCreateState(sessionId);
+  if (state.protectedAskUser?.pending.requestId === requestId) {
+    void sendProtectedQuestionSupplement(sessionId, requestId, answers);
+    return;
+  }
   if (getOrCreateState(sessionId).pendingAskUser?.requestId !== requestId) return;
   const submittedAnswers = { ...answers };
   const replySummary = formatAskUserReply(submittedAnswers);
@@ -16453,6 +16540,7 @@ function answerUserQuestion(
     kind: 'ask_user_question', answers: submittedAnswers,
   }, () => setState(sessionId, (s) => ({
     ...s,
+    protectedAskUser: s.protectedAskUser?.pending.requestId === requestId ? undefined : s.protectedAskUser,
     pendingAskUser: s.pendingAskUser?.requestId === requestId ? null : s.pendingAskUser,
     askUserViewerState: s.pendingAskUser?.requestId === requestId ? 'expanded' : s.askUserViewerState,
     askUserDraft: s.pendingAskUser?.requestId === requestId ? null : s.askUserDraft,
@@ -16464,6 +16552,95 @@ function answerUserQuestion(
   })));
   // Persistence belongs exclusively to Main's onInteractionResolved, including
   // local sessions. A late renderer write must not overwrite a winning decision.
+}
+
+/** Expired async questions are submitted through the ordinary, idempotent user-input path. */
+async function sendProtectedQuestionSupplement(sessionId: string, requestId: string, answers: Record<string, string>): Promise<void> {
+  const state = getOrCreateState(sessionId);
+  const protectedQuestion = state.protectedAskUser;
+  if (protectedQuestion?.pending.requestId !== requestId) return;
+  const text = formatAsyncQuestionSupplement(protectedQuestion.pending.questions, answers);
+  const clear = () => setState(sessionId, (s) => s.protectedAskUser?.pending.requestId === requestId
+    ? { ...s, protectedAskUser: undefined } : s);
+  const key = `${sessionId}:${requestId}:supplement`;
+  if (questionDecisionsInFlight.has(key)) return;
+  questionDecisionsInFlight.add(key);
+  const owner = getDataOwnerGeneration();
+  const epoch = _messagesEpoch.get(sessionId) ?? 0;
+  const origin = getStickySessionDeviceId(sessionId);
+  // A protected reply outlives the original turn. Terminal events invalidate
+  // queue snapshots, not this draft; operation responses keep their own guard.
+  const current = () => isDataOwnerGenerationCurrent(owner) &&
+    (_messagesEpoch.get(sessionId) ?? 0) === epoch &&
+    getStickySessionDeviceId(sessionId) === origin &&
+    sessions.get(sessionId)?.protectedAskUser?.pending.requestId === requestId;
+  try {
+    const needsSupplement = await asyncQuestionNeedsSupplement(
+      () => makerApiFor(sessionId).resolveInteraction(requestId, { kind: 'ask_user_question', answers }),
+      async () => {
+        if (!current()) return undefined;
+        const persistId = protectedQuestion.pending.persistId;
+        if (!persistId) return undefined;
+        const rows = origin
+          ? await aroundMessagesByClientIdForDevice(origin, sessionId, persistId, { radius: 0 })
+          : await aroundMessagesByClientIdFor(sessionId, persistId, { radius: 0 });
+        return rows.find((row) => row.clientId === persistId && row.role === 'ask_user')?.content;
+      }, requestId,
+    );
+    if (!current()) return;
+    if (!needsSupplement) {
+      setState(sessionId, (s) => ({ ...s, protectedAskUser: undefined,
+        pendingAskUser: s.pendingAskUser?.requestId === requestId ? null : s.pendingAskUser,
+        askUserDraft: s.askUserDraft?.requestId === requestId ? null : s.askUserDraft,
+      }));
+      return;
+    }
+    if (!text) { clear(); return; }
+    const session = await getSessionFor(sessionId);
+    // Exact retries share an ID; an edited answer is a new supplemental input.
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const answerId = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    if (!current()) return;
+    const queued = buildQueuedMessage(sessionId, text, session.model, session.effort,
+      session.permissionMode, session.workingDir ?? '', undefined, undefined, undefined,
+      { clientId: `question-reply:${requestId}:${answerId}`, createdAt: new Date().toISOString() });
+    queued.createOpts = { ...queued.createOpts, planMode: false,
+      agentKind: dbAgentKindToMakerKind(session.agentKind, state.agentKind),
+      ...(session.sdkSessionId ? { resumeSessionId: session.sdkSessionId } : {}),
+      ...(session.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
+    };
+    const operation = beginInputProjectionOperation(sessionId, origin);
+    // A false steer is a definite rejection. An exception/unknown receipt must
+    // never cause a second delivery through enqueue.
+    if (state.agentStatus.isRunning && !state.turnStoppedByUser) {
+      const steered = await operation.api.input.steer(sessionId, queued, {
+        touchUserSend: true, ...getRemoteInputClearBoundaryOpts(sessionId),
+      });
+      if (steered === true) {
+        if (current()) clear();
+        return;
+      }
+      if (steered !== false) throw new Error('Supplement receipt unavailable');
+    }
+    if (!current()) return;
+    let projection = await operation.api.input.enqueue(sessionId, queued, {
+      sendAtMs: Date.now(), ...getRemoteInputClearBoundaryOpts(sessionId),
+    });
+    if (!current()) return;
+    if (projection.queuePaused && (state.turnStoppedByUser || state.queuePaused)) {
+      projection = await operation.api.input.resume(sessionId, getRemoteInputClearBoundaryOpts(sessionId));
+    }
+    if (!current()) return;
+    applyInputProjectionOperationResponse(sessionId, operation, projection);
+    clear();
+  } catch (error) {
+    if (current()) {
+      log.warn('Async question supplement was not confirmed', error);
+      toast.warning(i18n.t('newChat.permissionPrompt.submissionFailed'));
+    }
+  } finally {
+    questionDecisionsInFlight.delete(key);
+  }
 }
 
 function respondToPluginSetup(
@@ -17113,16 +17290,23 @@ function setPluginSetupViewerState(sessionId: string, next: PluginSetupViewerSta
 function setAskUserDraft(sessionId: string, next: AskUserDraft | null): void {
   if (!sessionId) return;
   setState(sessionId, (s) => {
-    const prev = s.askUserDraft;
+    const prev = s.protectedAskUser?.draft ?? s.askUserDraft;
     if (prev === next) return s;
     if (
       prev &&
       next &&
       prev.requestId === next.requestId &&
       prev.currentIndex === next.currentIndex &&
-      prev.answers === next.answers
+      prev.answers === next.answers &&
+      prev.started === next.started && prev.customInput === next.customInput &&
+      prev.showCustomInput === next.showCustomInput &&
+      JSON.stringify(prev.selectedLabels) === JSON.stringify(next.selectedLabels)
     ) {
       return s;
+    }
+    const pending = s.protectedAskUser?.pending ?? s.pendingAskUser;
+    if (next && pending?.requestId === next.requestId && pending.delivery === 'async' && next.started) {
+      return { ...s, protectedAskUser: { pending, draft: next } };
     }
     return { ...s, askUserDraft: next };
   });
@@ -17170,7 +17354,7 @@ import {
   syntheticTriggerKind,
   UI_ACTION_TRIGGER_PREFIX,
 } from '../../shared/interruptedTurn.js';
-import { isContinuationMessage } from '@cindy/maker-shared/synthetic-trigger';
+import { isContinuationMessage, parseInputHandoffEndRecord } from '@cindy/maker-shared/synthetic-trigger';
 export { UI_ACTION_TRIGGER_PREFIX };
 
 /**
@@ -18349,6 +18533,12 @@ function mapServerCreatedAt(
  * (模块级共享:mapServerMessages 打标用,loadOlderMessages 的可见锚点判定
  * 也用它排除"渲染 null 的 user 行"。)
  */
+function readInputHandoffEndRecord(m: Message) {
+  const c = m.content;
+  const text = typeof c === 'string' ? c : c && typeof c === 'object' ? (c as { text?: unknown }).text : undefined;
+  return typeof text === 'string' ? parseInputHandoffEndRecord(text) : null;
+}
+
 function isSyntheticTriggerRow(m: Message): boolean {
   if (m.role !== 'user') return false;
   const c = m.content;
@@ -18453,6 +18643,13 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const ordered = filtered.sort(compareMessageTimeline);
   const legacyUserTurnCosts = projectLegacyUserTurnCosts(ordered);
   const mapped = ordered.map((m) => {
+    const mcpApp = m.role === 'assistant' && m.agentMeta?.mcpApp === true ? parseMcpAppHistory(m.content) : undefined;
+    if (mcpApp) return {
+      clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+      systemCardType: 'mcp-app' as const,
+      systemCardData: { title: mcpApp.title, fallbackText: mcpApp.text },
+      mcpAppClientId: m.clientId,
+    };
     const persistedCindyCard =
       m.role === 'assistant' && m.content && typeof m.content === 'object'
         ? (m.content as Record<string, unknown>)[CINDY_MAKE_CARD_MARKER]
@@ -18755,6 +18952,19 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
     if (m.role === 'user') {
       if (isSyntheticTriggerRow(m)) {
         // 合成指令行:占位参与时序,不渲染、不外泄原文。
+        const handoffRecord = m.agentMeta?.autoResume === true ? null : readInputHandoffEndRecord(m);
+        if (handoffRecord) {
+          return {
+            clientId: m.clientId,
+            role: m.role,
+            content: '',
+            isStreaming: false,
+            isSyntheticTrigger: true,
+            isContinuationTrigger: isContinuationMessage(m),
+            systemCardType: 'input-handoff' as const,
+            systemCardData: { ...handoffRecord },
+          };
+        }
         return {
           clientId: m.clientId,
           role: m.role,

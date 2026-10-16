@@ -644,7 +644,7 @@ async function doStart(
     if (!toClaudeSdkConfig) continue;
 
     const createServer = (): McpServer => {
-      const cfg = toClaudeSdkConfig(ctx) as { type?: string; instance?: unknown } | null;
+      const cfg = toClaudeSdkConfig.call(provider, ctx) as { type?: string; instance?: unknown } | null;
       if (cfg?.type !== 'sdk' || !cfg.instance) {
         throw new Error(`provider ${provider.name} did not return an SDK McpServer instance`);
       }

@@ -131,9 +131,11 @@ export function resolveBotGroupMentions(
   const botIds: string[] = [];
   let all = false;
   for (const token of scanMentionTokens(text, entries)) {
-    if (token.entry.all) all = true;
-    const picked = (input.tracked ?? []).filter(mention => !token.entry.all &&
+    // A pick names that companion even when its name is also a 「所有人」 label; only the
+    // 「所有人」 option or a typed reserved word addresses everyone.
+    const picked = (input.tracked ?? []).filter(mention =>
       mention.start === token.start && mention.label.trim() === token.entry.label);
+    if (token.entry.all && picked.length === 0) all = true;
     for (const botId of picked.length ? picked.map(mention => mention.botId) : token.entry.botIds) {
       if (!botIds.includes(botId)) botIds.push(botId);
     }
@@ -172,7 +174,7 @@ export function retainBotGroupTrackedMentions(
   });
   const entries = buildLabelEntries(input.members, input.allLabels, tracked);
   const tokens = scanMentionTokens(text, entries);
-  return tracked.filter(mention => tokens.some(token => !token.entry.all &&
+  return tracked.filter(mention => tokens.some(token =>
     token.start === mention.start && token.entry.label === mention.label.trim()));
 }
 

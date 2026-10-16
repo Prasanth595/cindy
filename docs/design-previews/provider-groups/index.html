@@ -412,10 +412,11 @@
       </button>
       <div class="mhead">
         <span class="mark" style="width:36px;height:36px;border-radius:12px">A</span>
-        <!-- 标题已经说明这页是什么；这台电脑的名字由本机那行与下方「分享」说明承载，不在这里重复。 -->
+        <!-- 标题已经说明这页是什么；这台电脑的名字由组内本机那一行承载。 -->
         <div class="grow">
           <h1>Anthropic · 远程与分享</h1>
         </div>
+        <button type="button" class="btn cta sm">生成分享链接</button>
       </div>
 
       <div class="section">
@@ -456,8 +457,7 @@
       </div>
 
       <div class="section">
-        <h3 class="section-title">分享 <span class="count">2</span><span class="grow"></span>
-          <button type="button" class="btn cta sm">生成分享链接</button>
+        <h3 class="section-title">已分享的人 <span class="count">2</span>
         </h3>
         <div class="card">
           <div class="row">
@@ -819,7 +819,7 @@
   let scene = 'settings', othersVariant = 'normal';
   const notes = {
     settings: '供应商详情在「允许被远程调用」下方增加「供应商组」一行。供应商组不依赖远程调用：只给本机用时也可以建组。两处按钮都进入同一个「远程与分享」页。',
-    page: '原「分享 {供应商}」管理页扩成三块：供应商组、用量、分享。用量可按使用方或按组内电脑查看，两种合计相同；按人的用量从「已分享的人」移到这里。',
+    page: '「生成分享链接」放在标题右侧，有待处理申请时紧跟标题。下面是供应商组、用量与已分享的人；不再单设「分享」标题和重复说明。审批弹窗有组时写「由供应商组选一台电脑运行 Agent」。用量维度切换仍是设计预览，当前实现按人查看。',
     add: '添加电脑与模型列表里的远程供应商同一个来源：你的其他电脑和别人分享给你的放在一个列表里直接勾选；还不能用的别人的电脑，粘贴分享链接走申请与配对码。链接的供应商不一致（订阅账号按品牌、自定义供应商按名称判断）或属于自己账号时不发送申请。',
     others: '任务正常时固定在第一次分到的电脑上，头部写明在哪台运行。那台撞到用量上限、登录失效或离线时，自动交接到组里下一台继续这一轮，消息流显示一行活动记录；每台最多试一次，全部失败才报错并逐台列出原因，有撞上限的就等最早恢复的那台自动继续。同账号其他电脑的模型列表标题写「供应商组」。',
     apply: '受邀者申请弹窗不论有没有组都写「Agent 在 Lizi 的电脑或 Lizi 安排的其他电脑上运行」，内容保存在实际运行的那台电脑上。之后建组、加减电脑都不再打扰受邀者，受邀者那边也不显示组内电脑的名称。',

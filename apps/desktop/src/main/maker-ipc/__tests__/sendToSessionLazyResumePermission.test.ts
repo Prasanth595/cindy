@@ -57,4 +57,14 @@ describe('sendToSessionInternal lazy-resume permission mode', () => {
     const select = sessionsSource.slice(sessionsSource.indexOf('async function selectSessionRowSnapshot('));
     expect(select.slice(0, select.indexOf('.from(sessions)'))).toContain('permissionMode: sessions.permissionMode,');
   });
+
+  it('refreshes permissionMode from DB before a queued follow-up starts the harness', () => {
+    const start = registerSource.indexOf('async function reconcileCreateOptsAgainstDb(');
+    const end = registerSource.indexOf('const agentSwitchDeps:', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const reconcile = registerSource.slice(start, end);
+    expect(reconcile).toContain('permissionMode: sessions.permissionMode,');
+    expect(reconcile).toContain('co.permissionMode = permissionModeOrAsk(row.permissionMode);');
+  });
 });

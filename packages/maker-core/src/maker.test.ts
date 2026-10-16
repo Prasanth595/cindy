@@ -2554,6 +2554,7 @@ describe('Maker Pi runtime skill status', () => {
       vi.spyOn(fsPromises, 'realpath').mockImplementation(async (...args) => {
         if (!delayed) {
           delayed = true;
+          // real-wait: keep the realpath operation pending to exercise the cancellation race.
           await new Promise((resolve) => setTimeout(resolve, 300));
         }
         return realRealpath(...args);

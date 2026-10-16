@@ -17,12 +17,6 @@ type Registry = {
   readonly size: number;
 };
 
-// 每个用例都经 freshCodexProxyHost() 的 vi.resetModules() + 动态 import 重新加载
-// 整条 SUT 模块链(maker-core / compat-proxy / bridges)。首个用例还要承担全部
-// 依赖的首次编译加载，满载 CI 上会超出 vitest 默认 5s。只放宽本文件的预算，
-// 断言与流程不变。
-vi.setConfig({ testTimeout: 20_000 });
-
 const mockState = vi.hoisted(() => {
   let capturedRegistry: Registry | null = null;
   const state = {
@@ -163,8 +157,19 @@ vi.mock('@cindy/responses-anthropic-bridge', () => ({
   createResponsesAnthropicHandler: mockState.createResponsesAnthropicHandler,
 }));
 
+// The SUT module graph is loaded once. Each case starts from the production
+// shutdown path (disposeCodexProxy clears session maps, proxy handles and
+// generations) plus the boot-time injections a case may have overridden.
+// Re-importing the whole graph per case instead cost 105s for this file versus
+// ~7s (2026-10-16), and order-shuffled runs confirm cases stay independent.
 async function freshCodexProxyHost() {
-  vi.resetModules();
+  const host = await import('../codex-proxy-host.js');
+  await host.disposeCodexProxy();
+  host.resetCodexThreadUpstreamForTest();
+  host.clearCodexProxyAuthInjection();
+  host.setCodexProxyGatewayKeyReader(() => null);
+  host.setCodexAppliedCustomProviderRoutes([]);
+  for (const fn of Object.values(mockState.logger)) fn.mockClear();
   mockState.createAnthropicCompatProxy.mockReset();
   mockState.createResponsesChatHandler.mockClear();
   mockState.createResponsesAnthropicHandler.mockClear();
@@ -175,15 +180,14 @@ async function freshCodexProxyHost() {
   mockState.stripNonAnthropicFields.mockReturnValue(null);
   mockState.logLevel = 'debug';
   mockState.resetCapturedRegistry();
-  return import('../codex-proxy-host.js');
+  return host;
 }
 
 // CI 忙时本文件首次 import SUT 要付 Vitest transform 整个模块图的冷启动钱:Linux 分片
 // 实测超默认 5s,Windows 分片超 15s。满载 Windows shard 2/2 曾在 60s 文件级 hook
 // 上超时(本文件不 import maker-host/index,与产品改动无关)。这笔成本属于环境
 // 冷启动,不属于任何断言 —— 文件级 beforeAll 先把模块图焐热(hook 超时独立计;
-// Windows 给 120s,其它平台仍 60s),之后各用例里 resetModules + import 只剩模块
-// 求值开销,回到默认超时内。
+// Windows 给 120s,其它平台仍 60s),之后各用例复用已加载的模块。
 beforeAll(async () => {
   await import('../codex-proxy-host.js');
 }, process.platform === 'win32' ? 120_000 : 60_000);

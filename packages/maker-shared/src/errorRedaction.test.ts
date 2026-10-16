@@ -56,6 +56,7 @@ describe('matchesDeterministicUsageExhaustionText', () => {
     'exceeded_budget',
     '账户余额不足，请充值',
     '账户欠费',
+    'You hit your spend cap set by the owner of your workspace. Ask them to raise it.',
   ])('recognizes deterministic usage exhaustion: %s', (message) => {
     expect(matchesDeterministicUsageExhaustionText(message)).toBe(true);
   });

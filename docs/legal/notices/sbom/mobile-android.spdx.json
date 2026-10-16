@@ -3,14 +3,24 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-mobile-android",
-  "documentNamespace": "https://cindy.app/spdx/mobile-android/09d4bd79b6f5c197808c3758efec6d7f160045ad4acbeadcf7a876f6d1b424a0",
+  "documentNamespace": "https://cindy.app/spdx/mobile-android/7b10cc78b1ec6789a8f0f2746c512659e480e41fed68f912aa0a06b1ca054f09",
   "creationInfo": {
-    "created": "2026-10-12T09:13:02Z",
+    "created": "2026-10-16T03:37:01Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
   },
   "packages": [
+    {
+      "name": "3D-Speaker CAM++ zh-en advanced (runtime-downloaded model)",
+      "SPDXID": "SPDXRef-Package-2eb4a603ce39b403",
+      "versionInfo": "sha256:aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+      "downloadLocation": "https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
     {
       "name": "androidx.biometric:biometric",
       "SPDXID": "SPDXRef-Package-6f75599db059a549",
@@ -66,6 +76,26 @@
       "SPDXID": "SPDXRef-Package-82458194310410e0",
       "versionInfo": "5.14.0",
       "downloadLocation": "https://github.com/lobehub/lobe-icons/tree/v5.14.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "ONNX Runtime (native inference library)",
+      "SPDXID": "SPDXRef-Package-3e9d926567425854",
+      "versionInfo": "1.30.0",
+      "downloadLocation": "https://github.com/microsoft/onnxruntime",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Silero VAD (runtime-downloaded model)",
+      "SPDXID": "SPDXRef-Package-1d15b57c9978e089",
+      "versionInfo": "sha256:9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "downloadLocation": "https://github.com/snakers4/silero-vad",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
@@ -10582,6 +10612,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-2eb4a603ce39b403"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-6f75599db059a549"
     },
     {
@@ -10608,6 +10643,16 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-82458194310410e0"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-3e9d926567425854"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-1d15b57c9978e089"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

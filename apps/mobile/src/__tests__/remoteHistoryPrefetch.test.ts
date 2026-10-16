@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { projectHistoryView, type HistoryViewPage, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
+import { HistoryViewController, projectHistoryView, type HistoryViewPage, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
-import { clearHistoryDisk, historyDiskAuthority, readHistoryDisk, writeHistoryDisk } from '@/session/remoteHistoryDiskCache';
+import { clearHistoryDisk, fitsHistoryDisk, historyDiskAuthority, readHistoryDisk, writeHistoryDisk } from '@/session/remoteHistoryDiskCache';
 import { prefetchRemoteHistories } from '@/session/remoteHistoryPrefetch';
 import { clearRemoteHistoryViews, getRemoteHistoryView, mountRemoteHistoryView } from '@/session/remoteHistoryViews';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
@@ -43,6 +43,46 @@ afterEach(async () => {
 });
 
 describe('history read ahead after a list refresh', () => {
+  it.each(['prefix', 'collapsed', 'latest'] as const)('handles an oversized %s without losing the offline cache', async (kind) => {
+    setMobileAuthOwner('user-1');
+    const old = row('old', 1, 'x'.repeat(1_250_000));
+    const anchor = row('anchor', 2);
+    const previous = snapshotOf([old, anchor]);
+    if (kind === 'collapsed') {
+      previous.items = [{ type: 'work', key: 'work', summary: {
+        key: 'work', firstMessageId: old.id, lastMessageId: old.id, revision: 'r1',
+        startedAtMs: Date.parse(old.createdAt), endedAtMs: Date.parse(old.createdAt),
+        messageCount: 1, toolCount: 1, isStreaming: false,
+      } }, ...page([anchor]).items];
+      previous.details = new Map([['work', { messages: [old], revision: 'r1', lastMessageId: old.id,
+        complete: true, loading: false, error: null }]]);
+    }
+    const authority = historyDiskAuthority(DEVICE, 's');
+    expect(await writeHistoryDisk(authority, previous)).toBe(true);
+    const reply = row('new', 9, 'y'.repeat(kind === 'latest' ? 1_500_000 : 200_000));
+    const latest = { ...page([anchor, reply]), hasMore: true, nextCursor: anchor.id };
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', reply.createdAt)]);
+    const reader = { readHistoryView: vi.fn(async () => latest) };
+    await prefetchRemoteHistories(DEVICE, reader, () => true);
+    const cached = await readHistoryDisk(authority);
+    expect(cached).not.toBeNull();
+    expect(fitsHistoryDisk(cached!)).toBe(true);
+    if (kind === 'latest') {
+      expect(cached?.items).toEqual(previous.items);
+      // Skipping an oversized latest page does not mark this activity version as cached.
+      reader.readHistoryView.mockResolvedValueOnce({ ...page([anchor, row('small', 9)]), hasMore: true, nextCursor: anchor.id });
+      await prefetchRemoteHistories(DEVICE, reader, () => true);
+      expect(reader.readHistoryView).toHaveBeenCalledTimes(2);
+      expect((await readHistoryDisk(authority))?.items.at(-1)?.key).toBe('small');
+    } else {
+      expect(cached?.items.at(-1)?.key).toBe(reply.id);
+      expect(cached?.details.size).toBe(0);
+      expect(cached).toMatchObject(kind === 'prefix'
+        ? { hasMore: true, nextCursor: anchor.id } : { hasMore: false, nextCursor: null });
+      expect(cached?.items[0].key).toBe(kind === 'prefix' ? latest.items[0].key : 'work');
+    }
+  });
+
   it('fires on the first list and on a reconnect reseed, not on ordinary refreshes', () => {
     const seen: string[] = [];
     const off = remoteSessionStore.onSessionListRefreshAfterGap((deviceId) => seen.push(deviceId));
@@ -101,5 +141,28 @@ describe('history read ahead after a list refresh', () => {
     await prefetchRemoteHistories(DEVICE, reader, () => true);
     release();
     expect(reader.readHistoryView.mock.calls.map(([sessionId]) => sessionId)).toEqual(['other']);
+  });
+
+  it('restores previously read history offline after background read ahead saves a newer page', async () => {
+    setMobileAuthOwner('user-1');
+    const earlier: RemoteMessage = { ...row('u1', 1), role: 'user' };
+    const answer = row('a1', 2);
+    const latest: RemoteMessage = { ...row('u2', 3), role: 'user' };
+    const reply = row('a2', 9);
+    await writeHistoryDisk(historyDiskAuthority(DEVICE, 's'), snapshotOf([earlier, answer, latest]));
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', reply.createdAt)]);
+    const reader = { readHistoryView: vi.fn(async () => ({
+      ...page([latest, reply]), hasMore: true, nextCursor: latest.id,
+    })) };
+    await prefetchRemoteHistories(DEVICE, reader, () => true);
+
+    const transport = { page: vi.fn(), details: vi.fn(), expanded: vi.fn() };
+    const offline = new HistoryViewController<RemoteMessage>(transport);
+    offline.setNetworkAvailable(false);
+    await offline.restoreCachedView(() => readHistoryDisk(historyDiskAuthority(DEVICE, 's')));
+    expect(offline.getSnapshot().items).toEqual(page([earlier, answer, latest, reply]).items);
+    expect(offline.getSnapshot()).toMatchObject({ hasMore: false, nextCursor: null });
+    expect(await offline.locate(earlier.clientId, earlier.createdAt)).toEqual(earlier);
+    expect(transport.page).not.toHaveBeenCalled();
   });
 });

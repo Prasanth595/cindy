@@ -26,7 +26,6 @@ import {
   isWorkbenchTaskSource,
   parseWorkbenchTaskId,
   workbenchProjectKey,
-  validateWorkbenchRef,
   type WorkbenchDelegationStatus,
   type WorkbenchTaskJudgment,
   type WorkbenchTaskOrigin,
@@ -39,6 +38,8 @@ export interface WorkbenchActivity {
   startedAtMs?: number | null;
   currentActionSummary?: string | null;
   compactDetail?: string | null;
+  /** 等你时在等什么(权限 / 提问 / 方案 / 插件设置 / 代输入);来自灵动岛同源快照。 */
+  interactionKind?: string | null;
 }
 
 export interface WorkbenchDelegationInput {
@@ -88,7 +89,7 @@ export interface ExternalSessionCandidate {
 /** 格子底部那一行说的是什么;具体文案由界面按语言拼。 */
 export type WorkbenchTileLine =
   | { kind: 'action'; text: string }
-  | { kind: 'waiting' }
+  | { kind: 'waiting'; interaction?: string | null; text?: string | null }
   | { kind: 'queued' }
   | { kind: 'interrupted' }
   | { kind: 'errored' }
@@ -122,6 +123,8 @@ export type WorkbenchTile =
       startedAtMs: number | null;
       lastActiveMs: number;
       line: WorkbenchTileLine;
+      /** 已归档的负责任务:列在「做完」最底部,打开只看,不恢复。 */
+      archived?: boolean;
     }
   | {
       /** 还没接过来的本机 Claude Code / Codex / Pi 会话,只因伙伴的判断而出现。 */
@@ -366,7 +369,13 @@ function sessionLine(
     const text = boundWorkbenchSummary(activity?.currentActionSummary ?? activity?.compactDetail);
     return text ? { kind: 'action', text } : { kind: 'none' };
   }
-  if (state === 'waiting') return { kind: 'waiting' };
+  if (state === 'waiting') {
+    return {
+      kind: 'waiting',
+      interaction: activity?.interactionKind ?? null,
+      text: boundWorkbenchSummary(activity?.currentActionSummary ?? activity?.compactDetail),
+    };
+  }
   if (state === 'queued') return { kind: 'queued' };
   if (state === 'stopped') {
     if (delegation && ['failed', 'timed-out', 'cancelled'].includes(delegation.status)) {
@@ -397,6 +406,8 @@ export function buildWorkbenchTiles(input: {
   judgments?: Readonly<Record<string, WorkbenchTaskJudgment>>;
   /** 渲染层扫描到的本机会话,只用来补最近活动时间。 */
   candidates?: readonly ExternalSessionCandidate[];
+  /** 已归档的负责任务(按页读取):一律进「做完」底部,不带跟进。 */
+  archivedSessions?: readonly Session[];
   /** 保留旧调用方签名；逐任务责任不按活动时间排除。 */
   now?: number;
 }): WorkbenchTile[] {
@@ -441,6 +452,26 @@ export function buildWorkbenchTiles(input: {
         : null,
       lastActiveMs,
       line: sessionLine(state, session, activity, delegation, interrupted),
+    });
+  }
+
+  for (const session of input.archivedSessions ?? []) {
+    if (session.status !== 'archived' || !responsibleIds.has(session.id)) continue;
+    if (!isWorkbenchCandidateSession({ ...session, status: 'active' }, input.hiddenIds, responsibleIds)) continue;
+    const delegation = delegationByChild.get(session.id) ?? null;
+    tiles.push({
+      type: 'session',
+      key: `session:${session.id}`,
+      id: session.id,
+      title: judgments[session.id]?.title ?? cleanWorkbenchTitle(session.title),
+      state: 'done',
+      origin: delegation ? 'delegated' : (importedSessionOrigin(session.id, session.agentKind) ?? 'existing'),
+      verdict: null,
+      next: null,
+      startedAtMs: null,
+      lastActiveMs: Math.max(toMs(session.userSendAt), toMs(session.updatedAt), delegation?.updatedAt ?? 0),
+      line: sessionLine('done', session, null, delegation, false),
+      archived: true,
     });
   }
 
@@ -542,9 +573,10 @@ export const WORKBENCH_GROUP_ORDER: readonly WorkbenchGroupKey[] = ['waiting', '
  * - 等你:在等主人回复,或任务停在出错 / 被打断 / 后台任务失败(要主人拿主意);
  * - 在做:正在跑的任务与自动化;
  * - 待做:伙伴判为没做完 / 聊过没下文的、排队中的、PR / issue / 建议条目;
- * - 做完:其余——收尾了的后台任务、待命或停用的自动化。
+ * - 做完:其余——收尾了的后台任务、待命或停用的自动化;已归档的负责任务也在这里(列在最底部)。
  */
 export function workbenchTileGroup(tile: WorkbenchTile): WorkbenchGroupKey {
+  if (tile.type === 'session' && tile.archived) return 'done';
   if (tile.state === 'waiting') return 'waiting';
   if (tile.state === 'stopped' && (tile.type === 'session' || tile.type === 'external')) return 'waiting';
   if (tile.state === 'running') return 'running';
@@ -571,28 +603,51 @@ export interface WorkbenchTileGroup {
   hiddenCount: number;
   /** 做完一组默认折叠,只在标题旁显示数量。 */
   defaultCollapsed: boolean;
+  /** 只在「做完」:已读到的归档负责任务,排在其余做完条目之后(按页加载,不受 30 条上限)。 */
+  archivedTiles: WorkbenchTile[];
 }
 
 /** 做完一组最多列出的条数。 */
 export const WORKBENCH_DONE_MAX = 30;
 
-/** 按固定顺序分组,组内保持输入顺序(`buildWorkbenchTiles` 已按最近活动排好);空组不出。 */
+/**
+ * 按固定顺序分组,组内保持输入顺序(`buildWorkbenchTiles` 已按最近活动排好);空组不出。
+ * 已归档的负责任务单独放进「做完」的 `archivedTiles`,接在其余做完条目之后。
+ */
 export function groupWorkbenchTiles(tiles: readonly WorkbenchTile[]): WorkbenchTileGroup[] {
   const buckets = new Map<WorkbenchGroupKey, WorkbenchTile[]>(WORKBENCH_GROUP_ORDER.map((key) => [key, []]));
-  for (const tile of tiles) buckets.get(workbenchTileGroup(tile))!.push(tile);
+  const archived: WorkbenchTile[] = [];
+  for (const tile of tiles) {
+    if (tile.type === 'session' && tile.archived) archived.push(tile);
+    else buckets.get(workbenchTileGroup(tile))!.push(tile);
+  }
   return WORKBENCH_GROUP_ORDER.flatMap((key): WorkbenchTileGroup[] => {
     const grouped = buckets.get(key)!;
-    if (grouped.length === 0) return [];
-    if (key !== 'done') return [{ key, tiles: grouped, total: grouped.length, hiddenCount: 0, defaultCollapsed: false }];
+    if (key !== 'done') {
+      return grouped.length === 0
+        ? []
+        : [{ key, tiles: grouped, total: grouped.length, hiddenCount: 0, defaultCollapsed: false, archivedTiles: [] }];
+    }
+    if (grouped.length + archived.length === 0) return [];
     grouped.sort((a, b) => b.lastActiveMs - a.lastActiveMs);
+    archived.sort((a, b) => b.lastActiveMs - a.lastActiveMs);
     return [{
       key,
       tiles: grouped.slice(0, WORKBENCH_DONE_MAX),
-      total: grouped.length,
+      total: grouped.length + archived.length,
       hiddenCount: Math.max(0, grouped.length - WORKBENCH_DONE_MAX),
       defaultCollapsed: true,
+      archivedTiles: archived,
     }];
   });
+}
+
+/** 列表上方的一句汇总:各组条数(做完不计)。 */
+export function summarizeWorkbenchGroups(
+  groups: readonly WorkbenchTileGroup[],
+): Record<Exclude<WorkbenchGroupKey, 'done'>, number> {
+  const count = (key: WorkbenchGroupKey) => groups.find((group) => group.key === key)?.total ?? 0;
+  return { waiting: count('waiting'), running: count('running'), todo: count('todo') };
 }
 
 // ─── 空状态项目清单的过滤与分档 ─────────────────────────────────────
@@ -705,16 +760,4 @@ export function tierWorkbenchProjectOptions(
   primary.sort(byRecency);
   const max = input.maxPrimary ?? WORKBENCH_PRIMARY_PROJECTS;
   return { primary: primary.slice(0, max), folded: [...primary.slice(max), ...folded].sort(byRecency) };
-}
-
-/** Retain the existing safe local-file entrance until its Todo source has an equivalent opener. */
-export function workbenchItemNeedsLocalReference(
-  tile: WorkbenchTile,
-  projectDirs: readonly string[],
-  caseInsensitive: boolean,
-): boolean {
-  return (
-    tile.type === 'item' && !!tile.ref && !/^https:\/\//i.test(tile.ref) &&
-    validateWorkbenchRef(tile.ref, projectDirs, caseInsensitive).ok
-  );
 }

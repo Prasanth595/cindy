@@ -12,6 +12,7 @@ import { countAppAttention } from '@/features/cc-agent/lib/appAttentionCount';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSessionDisplayRunningState } from '@/features/cc-agent/hooks/useSessionDisplayRunningState';
+import { useOrcaLeadWorkerAttention } from '@/features/cc-agent/lib/orcaLeadWorkerAttention';
 
 import { useBotProfiles, useBotUnreadCounts } from '@/features/bots/botStore';
 import { useBotGroupList } from '@/features/bots/botGroupStore';
@@ -34,7 +35,7 @@ export function AppBadgeAttentionSync() {
   const remoteBots = useRemoteBots();
   useSyncExternalStore(subscribeBotReadState, readRevision, readRevision);
   const localTeammates = bots.filter(bot => bot.status !== 'archived' && bot.status !== 'deleting' && !bot.hiddenAt && (unread[bot.id] ?? 0) > 0).length
-    + groups.filter(isBotGroupUnread).length;
+    + groups.filter(group => !group.archived && isBotGroupUnread(group)).length;
   const teammates = localTeammates + remoteBots.filter(isRemoteBotUnread).length;
   const owner = getDataOwnerGeneration();
   const { sessions, isLoading, error } = useCCSessions({ includeArchived: 'active' });
@@ -52,6 +53,8 @@ export function AppBadgeAttentionSync() {
   );
   const localSchedules = usePublishedAutomationScheduleSessionIndex();
   const attentionKinds = useSessionAttentionKinds();
+  // Worker 的投影由下面的 useSessionDisplayRunningState 持有(本机全部活跃 Lead)。
+  const orcaLeadWorkerAttention = useOrcaLeadWorkerAttention();
   const localActivities = useAgentIslandActivityMap();
   const running = useSyncExternalStore(
     makerChatStore.subscribeAll,
@@ -72,6 +75,7 @@ export function AppBadgeAttentionSync() {
     attentionKinds,
     localActivities,
     runningSessionIds: displayRunningSessionIds,
+    orcaLeadWorkerAttention,
   });
   useEffect(() => {
     publishNavigationAttention({ tasks: count, teammates });

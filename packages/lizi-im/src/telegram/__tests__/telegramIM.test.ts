@@ -497,6 +497,7 @@ describe('TelegramIM', () => {
     });
     const before = api.calls.filter((c) => c.method === 'sendMessage' && c.params.chat_id === '222').length;
     api.pushUpdates([privateMessage('still there?', 222, 91)]);
+    // real-wait: cross the production cooldown window before checking that no reply is sent.
     await new Promise((r) => setTimeout(r, 200));
     const after = api.calls.filter((c) => c.method === 'sendMessage' && c.params.chat_id === '222').length;
     expect(after).toBe(before); // 冷却期内不再回
@@ -788,6 +789,7 @@ describe('TelegramIM', () => {
 
     // 轮询确已停: 之后不再产生新的 getUpdates 调用。
     const pollsAtOffline = api.calls.filter((c) => c.method === 'getUpdates').length;
+    // real-wait: allow the production polling interval to elapse after disconnect.
     await new Promise((r) => setTimeout(r, 50));
     expect(api.calls.filter((c) => c.method === 'getUpdates').length).toBe(pollsAtOffline);
   });
@@ -1206,6 +1208,7 @@ describe('TelegramIM', () => {
     });
     api.pushUpdates([member(45), member(46)]);
     // 等 settle 触发进入下载(getFile 悬住), 此时游标不得越过 45
+    // real-wait: exercise the production settle delay before inspecting the persisted cursor.
     await new Promise((r) => setTimeout(r, 1400));
     expect(events).toHaveLength(0);
     const persistedDuring = Number((ctx.secrets.get('telegram-updates-offset') ?? ':0').split(':')[1]);
@@ -1243,6 +1246,7 @@ describe('TelegramIM', () => {
     // 关键断言是"三个成员合进同一个事件", 不是下载成功与否。
     expect(events[0].attachments.length + events[0].unsupported.length).toBe(3);
     // 静默窗后不再有第二个事件
+    // real-wait: cross the production media aggregation quiet window.
     await new Promise((r) => setTimeout(r, 1300));
     expect(events).toHaveLength(1);
   });
@@ -2391,6 +2395,7 @@ describe('TelegramIM', () => {
     expect(await im.reactToMessage('-100200|50', '👀')).toBeNull();
     // ambient 路径不消费成员命令(owner 裸命令走显式召唤通道, 另有用例)
     api.pushUpdates([groupMessage({ text: '/new', fromId: 222, messageId: 51 })]);
+    // real-wait: let the production command dispatch debounce settle before asserting no event.
     await new Promise((r) => setTimeout(r, 100));
     expect(events).toHaveLength(1);
     // NO_REPLY 哨兵: 惰性占位下从头到尾零消息(不发送、无需删除 — 真零痕迹)
@@ -2422,6 +2427,7 @@ describe('TelegramIM', () => {
     // 发出首条真实消息 → typing 循环停(不再有新的 sendChatAction)
     await im.sendText(OWNER_ID, '答复');
     const countAfterSend = api.calls.filter((c) => c.method === 'sendChatAction').length;
+    // real-wait: allow the production typing loop interval to elapse after the reply.
     await new Promise((r) => setTimeout(r, 120));
     expect(api.calls.filter((c) => c.method === 'sendChatAction').length).toBe(countAfterSend);
     // 群触发同样 typing
@@ -2683,6 +2689,7 @@ describe('TelegramIM', () => {
       await vi.waitFor(() => expect(events).toHaveLength(1));
       // 只有新鲜那条进了 turn; 陈旧那条静默消费。
       expect(events[0]).toMatchObject({ text: '刚发的' });
+      // real-wait: cross the production stale-message quiet period before checking for duplicates.
       await new Promise((r) => setTimeout(r, 200));
       expect(events).toHaveLength(1);
     });
@@ -2691,6 +2698,7 @@ describe('TelegramIM', () => {
       await connect();
       const before = api.calls.filter((c) => c.method === 'sendMessage').length;
       api.pushUpdates([privateMessage('在吗', 999, 82, 8 * 3_600)]);
+      // real-wait: cross the production stale-message rejection window before checking for output.
       await new Promise((r) => setTimeout(r, 300));
       // 隔夜再回一句拒绝语同样是诈尸 —— 一条出站都不该有。
       expect(api.calls.filter((c) => c.method === 'sendMessage').length).toBe(before);

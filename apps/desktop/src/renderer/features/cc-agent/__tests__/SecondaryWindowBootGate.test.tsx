@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getBootDeviceId: vi.fn<() => string | null>(),
   getBootSessionId: vi.fn<() => string | null>(),
+  getBootMessageClientId: vi.fn<() => string | null>(),
   getVisibleMergedRemoteSessions: vi.fn<() => Array<Record<string, unknown>>>(),
   getSessionFor: vi.fn(),
   navigate: vi.fn(),
@@ -20,6 +22,7 @@ vi.mock('react-router-dom', () => ({
 vi.mock('@/lib/secondaryWindow', () => ({
   getBootDeviceId: mocks.getBootDeviceId,
   getBootSessionId: mocks.getBootSessionId,
+  getBootMessageClientId: mocks.getBootMessageClientId,
 }));
 
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
@@ -47,6 +50,7 @@ describe('SecondaryWindowBootGate', () => {
   beforeEach(() => {
     mocks.getBootDeviceId.mockReset();
     mocks.getBootSessionId.mockReset();
+    mocks.getBootMessageClientId.mockReturnValue(null);
     mocks.getVisibleMergedRemoteSessions.mockReset();
     mocks.getSessionFor.mockReset();
     mocks.navigate.mockReset();
@@ -81,6 +85,34 @@ describe('SecondaryWindowBootGate', () => {
     );
     expect(mocks.getSessionFor.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.resolveSessionRoute.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('retains the message anchor through remote Worker routing and StrictMode effect replay', async () => {
+    mocks.getBootMessageClientId.mockReturnValue('message/42');
+    mocks.getSessionFor.mockResolvedValue({ id: 'worker-remote', orcaRole: 'worker' });
+    mocks.resolveSessionRoute.mockResolvedValue('/cc-agent/lead-remote?worker=worker-remote');
+    render(
+      <StrictMode>
+        <SecondaryWindowBootGate />
+      </StrictMode>,
+    );
+    await waitFor(() =>
+      expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(
+        '/cc-agent/lead-remote?worker=worker-remote',
+        {
+          replace: true,
+          state: {
+            searchJump: {
+              kind: 'conversation-search',
+              sessionId: 'worker-remote',
+              messageId: 'message/42',
+              messageIdKind: 'clientId',
+              messageClientId: 'message/42',
+            },
+          },
+        },
+      ),
     );
   });
 });

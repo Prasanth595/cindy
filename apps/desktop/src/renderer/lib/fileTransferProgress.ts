@@ -69,19 +69,37 @@ export function observeFileTransferProgressText(onProgress: (text: string) => vo
   return observeFileTransferProgress((e) => onProgress(format(e)));
 }
 
-/** Same delayed, persistent loading toast for open/reveal/copy and explicit downloads. */
+/**
+ * Same delayed, persistent loading toast for open/reveal/copy and explicit downloads.
+ * Its Cancel button aborts the chatFetch / chatDownload started with `requestId`;
+ * callers check `cancelled` and skip the follow-up action and failure toast.
+ */
 export function createFileTransferToast() {
   let id: string | null = null;
+  let cancelled = false;
   let text = i18n.t('chat.remoteFile.fetching');
   const progress = observeFileTransferProgressText((next) => {
     text = next;
     if (id) toast.update(id, text);
   });
   const delayed = setTimeout(() => {
-    id = toast.loading(text);
+    id = toast.loading(text, {
+      action: {
+        label: i18n.t('chat.remoteFile.cancelTransfer'),
+        onClick: () => {
+          // The toast dismisses itself after the action runs.
+          cancelled = true;
+          id = null;
+          void window.electronAPI.fileBrowser.chatCancel(progress.requestId).catch(() => {});
+        },
+      },
+    });
   }, 600);
   return {
     requestId: progress.requestId,
+    get cancelled() {
+      return cancelled;
+    },
     dispose() {
       clearTimeout(delayed);
       progress.dispose();
