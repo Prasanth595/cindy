@@ -61,12 +61,26 @@ export interface ExecServerRelayStats {
   slowPushes: number;
 }
 
+type FileHandle = string | number;
+type PendingFileRequest =
+  | { kind: 'open'; original: string | null; suppliedHandle?: FileHandle }
+  | { kind: 'close'; handle: FileHandle };
+
+function fileHandle(value: unknown): FileHandle | undefined {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const handle = record.handle ?? record.handleId ?? record.fd;
+  return typeof handle === 'string' || typeof handle === 'number' ? handle : undefined;
+}
+
 interface Connection {
   child: ChildProcessWithoutNullStreams;
   buffer: string;
   closed: boolean;
   /** 有消息在等本机确认时，后面的消息按顺序排在它后面。 */
   queue?: Promise<void>;
+  /** 原始内容按 exec-server 句柄保存；fs/writeBlock 只有句柄，没有路径。 */
+  handleOriginals: Map<FileHandle, string | null>;
+  pendingFiles: Map<unknown, PendingFileRequest>;
 }
 
 /** `["/bin/zsh","-lc","cmd"]` → `cmd`；其它形态按空格拼接。 */
@@ -145,12 +159,14 @@ export function mapExecServerParams(value: unknown, workspace: ExecutorWorkspace
  * 授权通过后、实际转发前才读写入目标的原内容，排队中的请求也在出队后读取最新内容。
  * 路径与命令的映射仍在权限检查前完成，确保 gate 检查的是实际执行的操作。
  */
-function mapExecServerFileData(value: unknown, workspace: ExecutorWorkspace, method?: string): unknown {
+function mapExecServerFileData(value: unknown, workspace: ExecutorWorkspace, method?: string, handleOriginals?: ReadonlyMap<FileHandle, string | null>): unknown {
   if (!method?.startsWith('fs/write') || !value || typeof value !== 'object' || Array.isArray(value)) return value;
   const result = value as Record<string, unknown>;
   if (typeof result.dataBase64 !== 'string') return value;
+  const handle = fileHandle(result);
+  const original = handle === undefined ? undefined : handleOriginals?.get(handle);
   return { ...result, dataBase64: workspace.mapInputFromAgent(Buffer.from(result.dataBase64, 'base64'),
-    existingTextFor(result.path, workspace)).toString('base64') };
+    original ?? existingTextFor(result.path, workspace)).toString('base64') };
 }
 
 /** 旧内容仅用于还原写入路径的原写法，不回给 Agent；凭证类文件不预读。 */
@@ -257,7 +273,7 @@ export class ExecServerRelay {
       this.send({ connId, kind: 'close' });
       return;
     }
-    const connection: Connection = { child, buffer: '', closed: false };
+    const connection: Connection = { child, buffer: '', closed: false, handleOriginals: new Map(), pendingFiles: new Map() };
     this.connections.set(connId, connection);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -267,7 +283,7 @@ export class ExecServerRelay {
         if (index < 0) break;
         const line = connection.buffer.slice(0, index);
         connection.buffer = connection.buffer.slice(index + 1);
-        if (line.trim()) this.sendMessage(connId, this.projectOutbound(line));
+        if (line.trim()) this.sendMessage(connId, this.projectOutbound(connId, line));
       }
       if (connection.buffer.length > MAX_LINE_CHARS) {
         this.deps.log?.warn('remote agent: exec-server line too long; closing', { connId });
@@ -301,7 +317,8 @@ export class ExecServerRelay {
     // 延迟到所有 action 获准之后，不能为了内容保真提前读取被拒绝的目标。
     const line = () => {
       if (message && typeof message.method === 'string' && message.id !== undefined) {
-        return JSON.stringify({ ...message, params: mapExecServerFileData(message.params, this.deps.workspace, message.method) }) + '\n';
+        this.trackFileRequest(connection, message);
+        return JSON.stringify({ ...message, params: mapExecServerFileData(message.params, this.deps.workspace, message.method, connection.handleOriginals) }) + '\n';
       }
       return data + '\n';
     };
@@ -355,9 +372,41 @@ export class ExecServerRelay {
     }));
   }
 
-  private projectOutbound(line: string): string {
+  private trackFileRequest(connection: Connection, message: { id?: unknown; method?: unknown; params?: unknown }): void {
+    if (!message.params || typeof message.params !== 'object') return;
+    const params = message.params as Record<string, unknown>;
+    const handle = fileHandle(params);
+    if (message.method === 'fs/close' && handle !== undefined) {
+      connection.pendingFiles.set(message.id, { kind: 'close', handle });
+    } else if (message.method === 'fs/open' && params.mode !== undefined && params.mode !== 'read') {
+      // replace 在 exec-server 内可能立即截断文件，必须在获准后、转发前保存旧内容。
+      const original = existingTextFor(params.path, this.deps.workspace);
+      if (handle !== undefined) connection.handleOriginals.set(handle, original);
+      connection.pendingFiles.set(message.id, { kind: 'open', original, suppliedHandle: handle });
+    }
+  }
+
+  private projectOutbound(connId: string, line: string): string {
     try {
-      return JSON.stringify(mapExecServerResult(JSON.parse(line), this.deps.workspace));
+      const parsed = JSON.parse(line) as unknown;
+      const connection = this.connections.get(connId);
+      if (connection && parsed && typeof parsed === 'object' && 'id' in parsed) {
+        const response = parsed as { id?: unknown; result?: unknown; error?: unknown };
+        const pending = connection.pendingFiles.get(response.id);
+        if (pending) {
+          connection.pendingFiles.delete(response.id);
+          if (pending.kind === 'close') {
+            if (!response.error) connection.handleOriginals.delete(pending.handle);
+          } else if (response.error) {
+            if (pending.suppliedHandle !== undefined) connection.handleOriginals.delete(pending.suppliedHandle);
+          } else {
+            const handle = typeof response.result === 'string' || typeof response.result === 'number'
+              ? response.result : fileHandle(response.result);
+            if (handle !== undefined) connection.handleOriginals.set(handle, pending.original);
+          }
+        }
+      }
+      return JSON.stringify(mapExecServerResult(parsed, this.deps.workspace));
     } catch {
       return this.deps.workspace.mapTextForAgent(line);
     }
@@ -368,6 +417,8 @@ export class ExecServerRelay {
     if (!connection || connection.closed) return;
     connection.closed = true;
     this.connections.delete(connId);
+    connection.handleOriginals.clear();
+    connection.pendingFiles.clear();
     try {
       connection.child.stdin.end();
       connection.child.kill();
