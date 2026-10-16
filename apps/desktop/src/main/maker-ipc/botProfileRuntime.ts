@@ -814,6 +814,18 @@ export async function hydrateBotProfileRuntime(
     }
     disabledToolsets = disabledToolsets.filter((id) => id !== imToolset);
   }
+  // Telegram 专线同理: cindy_telegram_bot 是这条专线在 Telegram 里发媒体 / 投票 / 表情、下载
+  // 对方文件的载体, 不是伙伴可选能力; 会话带 Telegram 渠道 vendorOptions 时始终进 allowlist。
+  // 它不映射到工具集(无插件 id), 所以只动 MCP allowlist。能不能动哪个 chat 由逐轮作用域判定。
+  if (row.role === 'channel' && typeof opts.vendorOptions?.telegramChatId === 'string') {
+    const imServer = 'cindy_telegram_bot';
+    if (
+      !runtimeConfiguredMcpServers.includes(imServer)
+      && mcpCatalog.some((item) => item.name === imServer && item.available !== false)
+    ) {
+      runtimeConfiguredMcpServers.push(imServer);
+    }
+  }
   const identity = chatOnly ? profile.description : version.identitySource.trim();
   opts.botProfilePrompt = buildBotProfilePrompt({
     displayName: profile.displayName,

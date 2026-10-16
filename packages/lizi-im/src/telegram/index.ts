@@ -39,6 +39,8 @@ import {
   createTelegramApiClient,
   TelegramApiError,
   type TelegramApiClient,
+  type TgChatMemberUpdated,
+  type TgFile,
   type TgMessage,
   type TgUpdate,
   type TgUser,
@@ -49,6 +51,7 @@ import { buildCardPayload, hasLiveCallbackToken, parseCallbackQuery } from './co
 import {
   collectGroupHistoryMedia,
   detectGroupTrigger,
+  displayNameOf,
   groupWindowEntryOf,
   hasDownloadableMedia,
   laneThreadIdOf,
@@ -118,6 +121,9 @@ const POLL_RETRY_MAX_MS = 30_000;
 /** 409 = 另一个进程在对同一 token 轮询 — 低频探测等它退出。 */
 const POLL_CONFLICT_RETRY_MS = 30_000;
 const MAX_OUTBOUND_FILE_BYTES = 50 * 1024 * 1024;
+/** Bot API getFile 的下载上限(Telegram 对 bot 侧固定 20 MB)。 */
+const MAX_BOT_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const BOT_DOWNLOAD_TIMEOUT_MS = 60_000;
 const OWNER_NOTICE_TIMEOUT_MS = 4_500;
 /**
  * typing 续命间隔/上限:引用呈现能力契约的**单一出处**(#1855 L1),不再本地
@@ -190,6 +196,28 @@ type TelegramReplyParams =
   | Record<string, never>;
 
 /** 回挂目标 id → 出站请求参数; null/空 = 不挂回。 */
+/** 编码 messageId(`chatId|msgId`)或原生数字 id → 原生数字 id 字符串; 解不出返回 null。 */
+function nativeMessageIdOf(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  try {
+    return decodeMessageId(trimmed).messageId;
+  } catch {
+    return null;
+  }
+}
+
+/** 下载落盘的文件名消毒: 只留 basename, 去控制字符与路径分隔符。 */
+function safeFileName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return path.basename(name).replace(/[\u0000-\u001f\u007f/\\]/g, '_').trim().slice(0, 180);
+}
+
+function isChatMemberPresent(status: TgChatMemberUpdated['new_chat_member']['status']): boolean {
+  return status === 'member' || status === 'administrator' || status === 'creator' || status === 'restricted';
+}
+
 function replyParamsFor(targetId: string | null | undefined): TelegramReplyParams {
   if (!targetId) return {};
   return { reply_parameters: { message_id: Number(targetId), allow_sending_without_reply: true } };
@@ -295,6 +323,43 @@ export interface TelegramIMOptions {
    * 开放时打开: 陌生人私聊带 `speaker.isOwner=false` 进业务层, 命令仍只认主人。
    */
   guestDm?: boolean;
+}
+
+/** 宿主 Agent 工具可直接发出的媒体种类 → Bot API 方法与字段名。 */
+export const TELEGRAM_OUTBOUND_MEDIA: Record<
+  TelegramOutboundMediaKind,
+  { method: string; field: string }
+> = {
+  photo: { method: 'sendPhoto', field: 'photo' },
+  document: { method: 'sendDocument', field: 'document' },
+  video: { method: 'sendVideo', field: 'video' },
+  audio: { method: 'sendAudio', field: 'audio' },
+  voice: { method: 'sendVoice', field: 'voice' },
+  animation: { method: 'sendAnimation', field: 'animation' },
+  sticker: { method: 'sendSticker', field: 'sticker' },
+  video_note: { method: 'sendVideoNote', field: 'video_note' },
+};
+
+export type TelegramOutboundMediaKind =
+  | 'photo'
+  | 'document'
+  | 'video'
+  | 'audio'
+  | 'voice'
+  | 'animation'
+  | 'sticker'
+  | 'video_note';
+
+export interface TelegramOutboundMedia {
+  kind: TelegramOutboundMediaKind;
+  /** 三选一: 本地文件(multipart 上传) / 公网 URL / Telegram file_id(转发已有文件)。 */
+  absPath?: string;
+  url?: string;
+  fileId?: string;
+  /** 纯文本说明(贴纸 / 圆形视频不支持)。 */
+  caption?: string;
+  /** 回复哪条消息(编码 messageId `chatId|msgId` 或原生数字 id)。 */
+  replyToMessageId?: string;
 }
 
 /** `telegramBot:get-status` / `set-config` 的返回形状(设置卡与伙伴连接页共用)。 */
@@ -1000,6 +1065,158 @@ export class TelegramIM extends BaseIM implements ChannelIM {
     }
   }
 
+  // ── 宿主 Agent 工具的 Bot API 直通 ───────────────────────────────────────
+  //
+  // 下面这组方法给 desktop 的 cindy_telegram_bot MCP 用: Agent 在 Telegram 轮次里
+  // 直接驱动 Bot API(发媒体 / 投票 / 表情 / 群信息 / 任意方法)。谁能调、能对哪个
+  // chat 调由宿主按轮次作用域判定, 这层只负责目标解码、回流与上传纪律。
+
+  /** 当前连接的 Bot API 客户端(未连接为 null)。 */
+  getBotApi(): TelegramApiClient | null {
+    return this.api;
+  }
+
+  /** 当前 bot 的数字 id(字符串; 未连接为空串)。 */
+  getBotId(): string {
+    return this.botId ? String(this.botId) : '';
+  }
+
+  getBotUsername(): string {
+    return this.botUsername;
+  }
+
+  /** lane userId(私聊数字 id 或 `g/{chatId}[/{threadId}]`)→ Bot API 发送目标。 */
+  resolveSendTarget(userId: string): { chat_id: string; message_thread_id?: number } {
+    return this.targetOf(userId);
+  }
+
+  /** 宿主工具经 Bot API 直接发出的消息回流进群窗口(与 sendText 同口径, 私聊忽略)。 */
+  recordOutboundEcho(userId: string, text: string, sent: TgMessage, fileNames?: string[]): void {
+    this.recordOwnEcho(userId, text, sent, fileNames);
+  }
+
+  /**
+   * 发一条媒体消息到 lane。本地文件走 multipart(与 sendFile 同一上限), URL / file_id
+   * 走 JSON。说明文字按纯文本发(不走 HTML, 免得说明里的尖括号被 Telegram 拒掉)。
+   */
+  async sendMedia(userId: string, input: TelegramOutboundMedia): Promise<{ messageId: string }> {
+    const spec = TELEGRAM_OUTBOUND_MEDIA[input.kind];
+    if (!spec) throw new Error(`unsupported telegram media kind: ${String(input.kind)}`);
+    const api = this.requireApi();
+    const target = this.targetOf(userId);
+    const caption = input.caption?.trim() ?? '';
+    const captionAllowed = input.kind !== 'sticker' && input.kind !== 'video_note';
+    const replyTo = input.replyToMessageId ? nativeMessageIdOf(input.replyToMessageId) : null;
+    const reply = replyTo ? replyParamsFor(replyTo) : {};
+    const echoName =
+      input.absPath ? path.basename(input.absPath) : input.kind;
+    let sent: TgMessage;
+    if (input.absPath) {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(input.absPath);
+      } catch {
+        throw new Error('NOT_FOUND');
+      }
+      if (stat.size === 0) throw new Error('EMPTY');
+      if (stat.size > MAX_OUTBOUND_FILE_BYTES) throw new Error('TOO_LARGE');
+      const form = new FormData();
+      form.set('chat_id', target.chat_id);
+      if (target.message_thread_id !== undefined) {
+        form.set('message_thread_id', String(target.message_thread_id));
+      }
+      if (reply.reply_parameters) form.set('reply_parameters', JSON.stringify(reply.reply_parameters));
+      if (caption && captionAllowed) form.set('caption', caption);
+      form.set(spec.field, new Blob([fs.readFileSync(input.absPath)]), path.basename(input.absPath));
+      sent = await api.callForm<TgMessage>(spec.method, form);
+    } else {
+      const source = input.url?.trim() || input.fileId?.trim();
+      if (!source) throw new Error('NO_SOURCE');
+      sent = await this.callSend<TgMessage>(spec.method, {
+        ...target,
+        ...reply,
+        [spec.field]: source,
+        ...(caption && captionAllowed ? { caption } : {}),
+      });
+    }
+    this.recordOwnEcho(userId, caption, sent, [echoName]);
+    return { messageId: encodeMessageId(String(sent.chat.id), String(sent.message_id)) };
+  }
+
+  /**
+   * 按 file_id 把用户发来的文件下载到 destDir(文件名取 Telegram 路径的 basename,
+   * 调用方可覆盖; 同名不覆盖, 自动加序号)。超过 Bot API 的 20 MB 上限直接报错。
+   */
+  async downloadFile(
+    fileId: string,
+    destDir: string,
+    fileName?: string,
+  ): Promise<{ absPath: string; size: number; fileName: string }> {
+    const api = this.requireApi();
+    const file = await api.call<TgFile>(
+      'getFile',
+      { file_id: fileId },
+      AbortSignal.timeout(BOT_DOWNLOAD_TIMEOUT_MS),
+    );
+    if (!file.file_path) throw new Error('NO_FILE_PATH');
+    if (file.file_size !== undefined && file.file_size > MAX_BOT_DOWNLOAD_BYTES) {
+      throw new Error('TOO_LARGE');
+    }
+    const res = await fetch(api.fileUrl(file.file_path), {
+      signal: AbortSignal.timeout(BOT_DOWNLOAD_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`DOWNLOAD_FAILED:${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.byteLength > MAX_BOT_DOWNLOAD_BYTES) throw new Error('TOO_LARGE');
+    fs.mkdirSync(destDir, { recursive: true });
+    const base = safeFileName(fileName || path.basename(file.file_path)) || 'telegram-file';
+    let candidate = path.join(destDir, base);
+    const ext = path.extname(base);
+    const stem = base.slice(0, base.length - ext.length);
+    for (let n = 1; fs.existsSync(candidate); n += 1) {
+      candidate = path.join(destDir, `${stem}-${n}${ext}`);
+    }
+    fs.writeFileSync(candidate, bytes);
+    return { absPath: candidate, size: bytes.byteLength, fileName: path.basename(candidate) };
+  }
+
+  /**
+   * bot 自己在某个群里的成员状态变化: 被拉进群 / 被移出。进群窗口一条系统行(让群
+   * 清单与上下文都知道这件事), 并私聊告知主人 —— 主人不在群里时也能知道 bot 去了哪。
+   * 私聊里的拉黑 / 解除拉黑不处理(没有可见动作)。
+   */
+  private async handleMyChatMember(change: TgChatMemberUpdated, updateId: number): Promise<void> {
+    const chat = change.chat;
+    if (chat.type !== 'group' && chat.type !== 'supergroup') return;
+    const wasIn = isChatMemberPresent(change.old_chat_member.status);
+    const isIn = isChatMemberPresent(change.new_chat_member.status);
+    if (wasIn === isIn) return;
+    const title = chat.title ?? String(chat.id);
+    const actor = displayNameOf(change.from);
+    const text = isIn
+      ? `机器人 @${this.botUsername || 'bot'} 已被「${actor}」加入本群`
+      : `机器人 @${this.botUsername || 'bot'} 已被「${actor}」移出本群`;
+    this.emitGroupWindow({
+      chatId: String(chat.id),
+      threadId: '',
+      messageId: `membership-${updateId}`,
+      chatName: chat.title ?? null,
+      author: { name: 'Telegram', isBot: true },
+      text,
+      sentAt: change.date * 1000,
+    });
+    if (!this.ownerUserId || !this.api) return;
+    const notice = isIn
+      ? `👥 我被「${actor}」加进了群「${title}」(chat_id: ${chat.id})。`
+      : `👥 我被「${actor}」移出了群「${title}」(chat_id: ${chat.id})。`;
+    try {
+      await this.sendPlainChunked(this.ownerUserId, notice);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`telegram membership notice failed: ${msg}`);
+    }
+  }
+
   async reactToMessage(messageId: string, emoji: string): Promise<string | null> {
     const api = this.api;
     if (!api) return null;
@@ -1180,7 +1397,7 @@ export class TelegramIM extends BaseIM implements ChannelIM {
           {
             offset,
             timeout: POLL_TIMEOUT_SEC,
-            allowed_updates: ['message', 'callback_query'],
+            allowed_updates: ['message', 'callback_query', 'my_chat_member'],
           },
           abort.signal,
         );
@@ -1244,7 +1461,10 @@ export class TelegramIM extends BaseIM implements ChannelIM {
    */
   private dispatchUpdate(update: TgUpdate, generation: number): void {
     const chatId =
-      update.message?.chat.id ?? update.callback_query?.message?.chat.id ?? 'global';
+      update.message?.chat.id ??
+      update.callback_query?.message?.chat.id ??
+      update.my_chat_member?.chat.id ??
+      'global';
     const key = String(chatId);
     const inflightKey = Symbol();
     this.inflightUpdates.set(inflightKey, update.update_id);
@@ -1271,6 +1491,10 @@ export class TelegramIM extends BaseIM implements ChannelIM {
     if (this.disposing) return;
     if (update.callback_query) {
       await this.handleCallbackQuery(update.callback_query);
+      return;
+    }
+    if (update.my_chat_member) {
+      await this.handleMyChatMember(update.my_chat_member, update.update_id);
       return;
     }
     const m = update.message;

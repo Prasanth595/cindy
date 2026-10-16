@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IMMessageEvent } from '@cindy/im';
 
-import { buildTelegramAdapter } from '../adapter';
+import { buildTelegramAdapter, TELEGRAM_TOOLS_HINT } from '../adapter';
 import { ui } from '../uiText';
 vi.mock('../groupWindow', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../groupWindow')>()),
@@ -197,7 +197,7 @@ describe('Telegram group history access scope', () => {
         attachments: [],
         unsupported: [],
       } as never),
-    ).toEqual({ chatKind: 'group', chatId: '-1001', chatName: 'Dev Group' });
+    ).toEqual({ chatKind: 'group', chatId: '-1001', chatName: 'Dev Group', toolsHint: TELEGRAM_TOOLS_HINT });
   });
 
   it('describes a guest DM as a direct chat from a non-owner instead of guessing a group from the speaker', async () => {
@@ -212,10 +212,45 @@ describe('Telegram group history access scope', () => {
         attachments: [],
         unsupported: [],
       } as never),
-    ).toEqual({ chatKind: 'direct', chatId: '77', senderIsOwner: false, senderId: '77', senderName: 'Bob' });
+    ).toEqual({ chatKind: 'direct', chatId: '77', senderIsOwner: false, senderId: '77', senderName: 'Bob', toolsHint: TELEGRAM_TOOLS_HINT });
     expect(
       await adapter.channelNoteSourceFor?.({ contextId: 'bot-1', senderId: '123', chatId: '123', text: 'hi' } as never),
-    ).toEqual({ chatKind: 'direct', chatId: '123' });
+    ).toEqual({ chatKind: 'direct', chatId: '123', toolsHint: TELEGRAM_TOOLS_HINT });
+  });
+
+  it('scopes the Bot API tools to the triggering chat and the verified requester identity', () => {
+    const im = { getOwnerUserId: () => '123' } as never;
+    const personal = buildTelegramAdapter(im, {} as never);
+    const teammate = buildTelegramAdapter(im, {} as never, { companionBotId: 'bot-mimi' });
+    const group = personal.channelToolScopeFor?.({
+      contextId: 'bot-1', senderId: 'g/-100/7', messageId: '-100|81', chatId: '-100', text: 'hi',
+      speaker: { id: '9', name: 'Guest', isOwner: false },
+    } as never);
+    expect(group).toMatchObject({
+      channel: 'telegram', im, botId: 'bot-1', laneUserId: 'g/-100/7', chatId: '-100', threadId: '7',
+      chatKind: 'group', requesterIsOwner: false, triggerMessageId: '81', companion: false,
+    });
+    expect(
+      personal.channelToolScopeFor?.({
+        contextId: 'bot-1', senderId: 'g/-100', messageId: '-100|82', chatId: '-100', text: 'hi',
+        speaker: { id: '123', name: 'Owner', isOwner: true },
+      } as never),
+    ).toMatchObject({ threadId: '', requesterIsOwner: true, triggerMessageId: '82' });
+    // Owner DM: the owner id is the lane, no speaker on a personal bot.
+    expect(
+      personal.channelToolScopeFor?.({ contextId: 'bot-1', senderId: '123', messageId: '123|5', chatId: '123', text: 'hi' } as never),
+    ).toMatchObject({ chatKind: 'direct', chatId: '123', laneUserId: '123', requesterIsOwner: true, triggerMessageId: '5' });
+    // Teammate guest DM carries a non-owner speaker and is never treated as the owner.
+    expect(
+      teammate.channelToolScopeFor?.({
+        contextId: 'conn-1', senderId: '77', messageId: '77|6', chatId: '77', text: 'hi',
+        speaker: { id: '77', name: 'Bob', isOwner: false },
+      } as never),
+    ).toMatchObject({ chatKind: 'direct', chatId: '77', requesterIsOwner: false, companion: true, botId: 'conn-1' });
+    // An undecodable message id degrades to "no default target" instead of throwing.
+    expect(
+      personal.channelToolScopeFor?.({ contextId: 'bot-1', senderId: '123', messageId: 'weird', chatId: '123', text: 'hi' } as never),
+    ).toMatchObject({ triggerMessageId: '' });
   });
 });
 

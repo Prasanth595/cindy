@@ -31,6 +31,7 @@ import { autoRegisterTelegramSpeaker } from './contactsAutoRegister';
 import { createTelegramGuestTurnPermissionPolicy } from './permissionPolicy';
 import { telegramUiText, ui, PROCESSING_EMOJI } from './uiText';
 import type { GroupHistoryAccessScope } from '../shared/groupHistoryAccess';
+import type { TelegramToolScope } from '../shared/channelToolScope';
 import { imChannelNoteDirectSourceFromEvent, imChannelNoteSourceFromEvent } from '../shared/channelNote';
 
 function ensureWorkingDir(botId: string): string {
@@ -61,11 +62,16 @@ function personaBlock(): string {
 /** 发言人显示名/用户名消毒: 平台可改字段是不可信输入, 去控制字符与换行防注入。 */
 function sanitizeSpeakerText(value: string): string {
   // eslint-disable-next-line no-control-regex
-  return value
-    .replace(/[\u0000-\u001f\u007f\u200b]/g, ' ')
-    .trim()
-    .slice(0, 64);
+  const cleaned = value.replace(/[\u0000-\u001f\u007f\u200b]/g, ' ');
+  return cleaned.trim().slice(0, 64);
 }
+
+/**
+ * 渠道说明末尾的一句工具提示: Agent 在 Telegram 轮次里第一时间知道自己手上有 Bot API,
+ * 不用摸瞎试(工具描述只在工具清单里, 模型常常不去翻)。
+ */
+export const TELEGRAM_TOOLS_HINT =
+  '本轮可直接用 cindy_telegram_bot 工具操作 Telegram Bot API(发文字 / 媒体 / 投票、表情、置顶、下载对方发来的文件、群信息、call_api 任意方法), 默认目标就是本条所在对话。';
 
 export interface TelegramAdapterOptions {
   /** 伙伴自有连接: 不注入设置页人格, 私聊按主人 / 外部用户分落点。 */
@@ -165,11 +171,41 @@ export function buildTelegramAdapter(
     },
     // 群里发言人已由 prepareAgentTurnText 的 `[发言人]` 行写明(含主人标记), 渠道说明不再重复。
     // 私聊按 lane 判定(不按 speaker 有无猜): 伙伴自有 bot 对外开放后外部用户的私聊也带
-    // speaker, 说明里写明是谁、不是主人。
-    channelNoteSourceFor: (event) =>
-      decodeTelegramLaneUserId(event.senderId)
+    // speaker, 说明里写明是谁、不是主人。末尾点一句本轮有 Bot API 工具可用。
+    channelNoteSourceFor: (event) => ({
+      ...(decodeTelegramLaneUserId(event.senderId)
         ? imChannelNoteSourceFromEvent(event, { omitSender: true })
-        : imChannelNoteDirectSourceFromEvent(event),
+        : imChannelNoteDirectSourceFromEvent(event)),
+      toolsHint: TELEGRAM_TOOLS_HINT,
+    }),
+    // cindy_telegram_bot 的逐轮作用域: 目标 chat 就是触发消息所在的 chat; 触发者是不是主人
+    // 由 Main 校验过的 speaker / owner id 决定(不来自模型参数)。transport 就是这条连接自己。
+    channelToolScopeFor: (event): TelegramToolScope => {
+      const lane = decodeTelegramLaneUserId(event.senderId);
+      let triggerMessageId = '';
+      try {
+        triggerMessageId = decodeTelegramMessageId(event.messageId).messageId;
+      } catch {
+        triggerMessageId = '';
+      }
+      const requesterIsOwner = lane
+        ? event.speaker?.isOwner === true
+        : event.speaker
+          ? event.speaker.isOwner
+          : event.senderId === telegramIm.getOwnerUserId();
+      return {
+        channel: 'telegram',
+        im: telegramIm,
+        botId: event.contextId,
+        laneUserId: event.senderId,
+        chatId: lane ? lane.chatId : event.senderId,
+        threadId: lane ? lane.threadId : '',
+        chatKind: lane ? 'group' : 'direct',
+        requesterIsOwner,
+        triggerMessageId,
+        companion,
+      };
+    },
     prepareAgentTurnText: async (event) => {
       const lane = decodeTelegramLaneUserId(event.senderId);
       const replyBlock = event.replyContext

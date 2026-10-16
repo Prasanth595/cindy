@@ -28,6 +28,11 @@ export interface ImChannelNoteSource {
    * 私聊置 false —— 说明里写明发言人并点出不是主人, 模型才不会把陌生人当成主人。
    */
   senderIsOwner?: boolean;
+  /**
+   * 本轮可用的渠道工具提示(一句事实, 由渠道 adapter 给出)。Agent 在 IM 轮次里经常
+   * 不知道自己手上有渠道 API 可用, 每条消息点一句比只靠工具描述更可靠。
+   */
+  toolsHint?: string;
 }
 
 /** 中文语境里拉丁字母渠道名两侧补空格，中文渠道名直接相连。 */
@@ -61,7 +66,8 @@ export function buildImChannelNote(channel: string, source: ImChannelNoteSource)
     : guestDm
       ? '，发言人不是主人'
       : '';
-  return `[渠道说明] 系统追加，不是用户消息。本条来自${where}${sender}。`.replace(/ {2,}/g, ' ');
+  const tools = source.toolsHint?.trim() ? `${source.toolsHint.trim()}` : '';
+  return `[渠道说明] 系统追加，不是用户消息。本条来自${where}${sender}。${tools}`.replace(/ {2,}/g, ' ');
 }
 
 /**

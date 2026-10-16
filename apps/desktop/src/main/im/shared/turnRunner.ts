@@ -125,6 +125,7 @@ import {
   type InteractionRouteLease,
 } from '../../maker-ipc/interactionRouter';
 import { beginGroupHistoryAccess, type GroupHistoryAccessScope } from './groupHistoryAccess';
+import { beginChannelToolScope, type ChannelToolScope } from './channelToolScope';
 import { agentHandoffPending } from '../../maker-ipc/agentHandoffPendingSingleton';
 import { prependHandoffToUserMessage, prependNoteToWireUserMessage } from '../../maker-ipc/agentHandoff';
 import { buildPlanReconcileNote, summarizeOpenPlan } from '../../maker-ipc/planReconcile';
@@ -298,6 +299,8 @@ interface TurnState {
    */
   hostTurnLeaseRelease: (() => void) | null;
   groupHistoryAccessRelease: (() => void) | null;
+  /** 渠道工具作用域租约(cindy_telegram_bot); 与群历史租约同一生命周期。 */
+  channelToolScopeRelease: (() => void) | null;
   /** Terminal classification consumed by chunked-text commitFinal. */
   terminalKind: 'done' | 'aborted' | 'error';
   terminalErrorCode: string | null;
@@ -343,6 +346,8 @@ interface QueuedSend {
   /** 触发消息来自受保护群 —— 正文与附件不进会话存档(见 ImRunAgentTurnArgs)。 */
   protectedContent?: boolean;
   groupHistoryAccess?: GroupHistoryAccessScope;
+  /** 本轮渠道工具作用域(见 ImChannelAdapter.channelToolScopeFor)。 */
+  channelToolScope?: ChannelToolScope;
   /** 早期拒绝终态回调(见 ImRunAgentTurnArgs.onEarlyReject)。 */
   onEarlyReject?: (reason: string, text: string) => Promise<boolean> | boolean;
   /** 调用方在拼群上下文之前已落库的 user 行(见 ImRunAgentTurnArgs 同名字段)。 */
@@ -524,6 +529,7 @@ export interface ImRunAgentTurnArgs {
    */
   protectedContent?: boolean;
   groupHistoryAccess?: GroupHistoryAccessScope;
+  channelToolScope?: ChannelToolScope;
   /**
    * 调用方已经打好的「已收到」表情句柄 —— 传了就由本 turn 接管(不再重复打),
    * turn 收口时照常撤掉/换成结果表情。
@@ -1159,6 +1165,7 @@ export function createTurnRunner(
       interactionRouteLease: null,
       hostTurnLeaseRelease: null,
       groupHistoryAccessRelease: null,
+      channelToolScopeRelease: null,
       terminalKind: 'done',
       terminalErrorCode: null,
       chunkedReplyBegun: false,
@@ -1330,6 +1337,7 @@ export function createTurnRunner(
       ...(args.onEarlyReject ? { onEarlyReject: args.onEarlyReject } : {}),
       ...(args.protectedContent === true ? { protectedContent: true } : {}),
       ...(args.groupHistoryAccess ? { groupHistoryAccess: args.groupHistoryAccess } : {}),
+      ...(args.channelToolScope ? { channelToolScope: args.channelToolScope } : {}),
       ...(args.prePersistedUserMessage
         ? { prePersistedUserMessage: args.prePersistedUserMessage }
         : {}),
@@ -1655,6 +1663,13 @@ export function createTurnRunner(
               sessionId: rowId,
               sessionInstanceId: state.makerSession.instanceId,
               scope: item.groupHistoryAccess,
+            });
+          }
+          if (item.channelToolScope) {
+            item.turn.channelToolScopeRelease = beginChannelToolScope({
+              sessionId: rowId,
+              sessionInstanceId: state.makerSession.instanceId,
+              scope: item.channelToolScope,
             });
           }
           item.turn.interactionRouteLease =
@@ -3220,6 +3235,9 @@ export function createTurnRunner(
     const releaseGroupHistoryAccess = turn.groupHistoryAccessRelease;
     turn.groupHistoryAccessRelease = null;
     releaseGroupHistoryAccess?.();
+    const releaseChannelToolScope = turn.channelToolScopeRelease;
+    turn.channelToolScopeRelease = null;
+    releaseChannelToolScope?.();
     const lease = turn.interactionRouteLease;
     turn.interactionRouteLease = null;
     lease?.release(reason);

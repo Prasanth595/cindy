@@ -84,6 +84,40 @@ describe('IM channel lanes hydrate the full Bot profile', () => {
     expect(mainSnapshot?.disabledToolsets).toEqual(expect.arrayContaining(['feishu_bot', 'browser']));
   });
 
+  it('mounts the Telegram Bot API tool on a Telegram channel lane even under an explicit allowlist', async () => {
+    const narrow = {
+      toolCapabilityVersion: 1, memory: false,
+      mcpMode: 'allowlist', mcpServers: [], toolsetMode: 'allowlist', toolsets: [],
+    };
+    const deps = {
+      listMcpServers: vi.fn(async () => [
+        { name: 'cindy_telegram_bot', source: 'builtin' as const, available: true },
+        { name: 'cindy_feishu_bot', source: 'builtin' as const, available: true },
+        { name: 'cindy_browser', source: 'builtin' as const, available: true },
+      ]),
+      listToolsets: vi.fn(async () => [
+        { id: 'feishu_bot', name: 'Feishu bot', available: true },
+        { id: 'browser', name: 'Browser', available: true },
+      ]),
+    };
+    seed('channel', 'im:telegram:777:g:-100123', narrow);
+    const lane = {
+      id: 'lane', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm',
+      vendorOptions: { telegramChatId: 'g/-100123', source: 'telegram' },
+    } as unknown as MakerSessionCreateOpts;
+    await hydrateBotProfileRuntime(lane, deps, { persistSnapshot: false });
+    expect(lane.botRuntimeProfile?.mcpPolicy.configured).toContain('cindy_telegram_bot');
+    // Only the lane's own channel tool is force-mounted; the Feishu one stays an explicit choice.
+    expect(lane.botRuntimeProfile?.mcpPolicy.configured).not.toContain('cindy_feishu_bot');
+    expect(lane.botRuntimeProfile?.mcpPolicy.configured).not.toContain('cindy_browser');
+
+    // The canonical chat (no channel vendor options) does not get it either.
+    seed('canonical', null, narrow);
+    const main = { id: 'main', agentKind: 'claude-code', workingDir: '/bots/bot/workspace', model: 'm' } as MakerSessionCreateOpts;
+    await hydrateBotProfileRuntime(main, deps, { persistSnapshot: false });
+    expect(main.botRuntimeProfile?.mcpPolicy.configured).not.toContain('cindy_telegram_bot');
+  });
+
   it('still refuses read-only history links', async () => {
     seed('history', null);
     const opts = { id: 'old', agentKind: 'claude-code', workingDir: '/x', model: 'm' } as MakerSessionCreateOpts;

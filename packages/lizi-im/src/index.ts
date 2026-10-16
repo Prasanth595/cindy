@@ -69,7 +69,12 @@ export type {
   TelegramIMOptions,
   TelegramConfigState,
   TelegramGroupWindowEntry,
+  TelegramOutboundMedia,
+  TelegramOutboundMediaKind,
 } from './telegram/index.js';
+export { TELEGRAM_OUTBOUND_MEDIA } from './telegram/index.js';
+export { TelegramApiError } from './telegram/api.js';
+export type { TelegramApiClient, TgChatMemberUpdated, TgMessage } from './telegram/api.js';
 export { TELEGRAM_DEFAULT_BEHAVIOR } from './telegram/index.js';
 export type { TelegramBehaviorConfig } from './telegram/index.js';
 export { TELEGRAM_PERSONAL_CAPABILITIES } from './telegram/presentationCapabilities.js';

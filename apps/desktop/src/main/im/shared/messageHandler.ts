@@ -395,6 +395,7 @@ export function createMessageHandler(
     // 按事件挂 per-turn 权限策略(telegram 群成员触发 → 破坏性调用强确认)。
     const turnPermissionPolicy = adapter.turnPermissionPolicyFor?.(event);
     const groupHistoryAccess = adapter.groupHistoryAccessFor?.(event);
+    const channelToolScope = adapter.channelToolScopeFor?.(event);
     const fallbackReplyPrefix = !adapter.prepareAgentTurnText && event.replyContext
       ? buildImReplyContextBlock(event.replyContext)
       : '';
@@ -427,6 +428,7 @@ export function createMessageHandler(
         ...(event.protectedContent === true ? { protectedContent: true } : {}),
         ...(turnPermissionPolicy ? { turnPermissionPolicy } : {}),
         ...(groupHistoryAccess ? { groupHistoryAccess } : {}),
+        ...(channelToolScope ? { channelToolScope } : {}),
         ...(handedOverAck !== undefined ? { ackReactionIdPromise: handedOverAck } : {}),
         // 早期拒绝终态(missing_auth / credential busy): 本条消息自己开了话题
         // 时, 用终态文案收口开场白卡 — 否则「思考中」卡残留且下一条误认领。

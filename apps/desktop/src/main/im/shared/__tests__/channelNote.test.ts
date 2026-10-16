@@ -42,6 +42,16 @@ describe('buildImChannelNote', () => {
     );
   });
 
+  it('appends the channel tools hint as one trailing sentence', () => {
+    expect(
+      buildImChannelNote('telegram', { chatKind: 'direct', chatId: '42', toolsHint: '本轮可用 X 工具。' }),
+    ).toBe('[渠道说明] 系统追加，不是用户消息。本条来自 Telegram 私聊 (chat_id: 42)。本轮可用 X 工具。');
+    // Blank hints leave the note byte-identical to the no-hint form.
+    expect(buildImChannelNote('telegram', { chatKind: 'direct', chatId: '42', toolsHint: '  ' })).toBe(
+      '[渠道说明] 系统追加，不是用户消息。本条来自 Telegram 私聊 (chat_id: 42)。',
+    );
+  });
+
   it('sanitizes untrusted names so they cannot fake the note structure', () => {
     expect(
       buildImChannelNote('wecom', {

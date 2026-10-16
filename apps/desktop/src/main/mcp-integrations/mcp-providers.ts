@@ -34,6 +34,7 @@ import {
   type ToolResultImageDescription,
 } from './ghost.js';
 import { createGroupHistoryMcpServer } from './groupHistoryMcpServer.js';
+import { createTelegramBotMcpServer } from './telegramBotMcpServer.js';
 import { renderHtmlToPdf } from '../doc-tools/htmlPdfRenderer.js';
 import { writeDocsOutput } from '../doc-tools/docsOutputWriter.js';
 import { inspectPdf } from '../doc-tools/pdfInspector.js';
@@ -1144,6 +1145,22 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       type: 'sdk',
       name: 'cindy_group_history',
       instance: createGroupHistoryMcpServer({
+        getSessionContext: () => resolveLiziMcpSessionContext(ctx),
+      }),
+    }),
+  });
+
+  // cindy_telegram_bot: 个人 / 伙伴 Telegram bot 轮次里的 Bot API 直通。只挂在带 Telegram 渠道
+  // vendorOptions 的会话上(adapter.buildVendorOptions 写 telegramChatId; 官方 hook 会话不写,
+  // 桌面任务也没有), 别处看不到这组工具。真正能不能动哪个 chat 由逐轮作用域租约
+  // (im/shared/channelToolScope.ts)在调用期判定, 没有租约一律 fail closed。
+  gated.push({
+    name: 'cindy_telegram_bot',
+    isEnabled: (ctx) => typeof ctx.vendorOptions?.telegramChatId === 'string',
+    toClaudeSdkConfig: (ctx) => ({
+      type: 'sdk',
+      name: 'cindy_telegram_bot',
+      instance: createTelegramBotMcpServer({
         getSessionContext: () => resolveLiziMcpSessionContext(ctx),
       }),
     }),
