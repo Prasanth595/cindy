@@ -40,10 +40,53 @@ function harness(bot = true) {
   const runtime = new Function(...Object.keys(deps), js)(...Object.values(deps));
   if (bot) runtime.botFallbackInputs.add(item.createOpts);
   return { item, ...runtime.callbacks, resume, fallback, finalize, guard,
+    schedulerClaim: deps.beginSchedulerAutoResume,
     run: () => scheduled!(), cancel: () => { current = false; } };
 }
 
 describe('Bot candidate recovery', () => {
+  const sessionLimit = {
+    sdkError: 'rate_limit',
+    message: "You've hit your session limit · resets 1:00pm (Asia/Shanghai)",
+    usageLimit: true,
+  };
+
+  it.each(['switched', 'exhausted'] as const)(
+    'requires a different configured route for a Claude subscription limit (%s)',
+    async (outcome) => {
+      const h = harness();
+      const item = { ...h.item, origin: { kind: 'scheduler', runId: 'scheduled-run' } };
+      h.fallback.mockResolvedValue({ session: null, outcome });
+      expect(h.isResumableTurnErrorCandidate(sessionLimit, item)).toBe(true);
+      expect(h.onResumableTurnError('s', sessionLimit, item)).not.toBeNull();
+      expect(h.schedulerClaim).toHaveBeenCalledExactlyOnceWith('s', 'scheduled-run', 1);
+      await h.run();
+      expect(h.fallback).toHaveBeenCalledWith('s', 1, 1, true, expect.any(Function));
+      expect(h.resume).toHaveBeenCalledTimes(outcome === 'switched' ? 1 : 0);
+      if (outcome === 'exhausted') {
+        expect(h.finalize).toHaveBeenCalledWith('s', 1, { surfaceBanner: true });
+      }
+    },
+  );
+
+  it('does not turn a subscription limit into same-route recovery for ordinary input', () => {
+    const h = harness(false);
+    expect(h.isResumableTurnErrorCandidate(sessionLimit, h.item)).toBe(false);
+    expect(h.onResumableTurnError('s', sessionLimit, h.item)).toBeNull();
+    expect(h.guard).not.toHaveBeenCalled();
+  });
+
+  it.each(['user_denied', 'cancelled', 'context_overflow'])(
+    'preserves the %s control reason even when quota signals are present',
+    (reason) => {
+      const h = harness();
+      const signals = { ...sessionLimit, reason };
+      expect(h.isResumableTurnErrorCandidate(signals, h.item)).toBe(false);
+      expect(h.onResumableTurnError('s', signals, h.item)).toBeNull();
+      expect(h.fallback).not.toHaveBeenCalled();
+    },
+  );
+
   // Claude assistant envelopes may carry only a stable SDK tag, without an HTTP status.
   it.each([
     ['authentication_failed', true], ['rate_limit', true], ['server_error', true],
