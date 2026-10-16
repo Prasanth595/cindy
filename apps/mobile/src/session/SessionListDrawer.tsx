@@ -158,6 +158,15 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
               easing: Easing.bezier(...motionEasing.move),
             });
           }
+        })
+        // 纵向滚动或系统手势取消时不走 onEnd。不把 dragX 弹回去，栏会停在裁切标题的半途。
+        .onFinalize((_event, success) => {
+          'worklet';
+          if (success) return;
+          dragX.value = withTiming(0, {
+            duration: motionDuration.fast,
+            easing: Easing.bezier(...motionEasing.move),
+          });
         }),
     [closeFromGesture, dragX, panelWidth, persistent],
   );
@@ -179,7 +188,7 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
 
   if (!mounted) return null;
   return <View accessibilityViewIsModal={mounted && !persistent} pointerEvents="auto"
-    style={[styles.overlay, persistent && { width: panelWidth }]} testID="sessionDrawer.overlay">
+    style={[persistent ? styles.persistentOverlay : styles.overlay, persistent && { width: panelWidth }]} testID="sessionDrawer.overlay">
     {!persistent ? <Animated.View style={[styles.scrim, scrimStyle]}>
       <Pressable accessibilityLabel={t('home.drawer.closeA11y')} accessibilityRole="button"
         onPress={onClose} style={styles.scrimPressable} testID="sessionDrawer.scrim" />
@@ -200,6 +209,8 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
 
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFill, zIndex: 40 },
+  // absoluteFill 同时写了 left 和 right。再叠 width 时安卓会忽略宽度，常驻栏的点击层铺满整窗。
+  persistentOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, zIndex: 40 },
   scrim: { ...StyleSheet.absoluteFill, backgroundColor: colors.overlay },
   scrimPressable: { flex: 1 },
   panel: { backgroundColor: colors.surface, borderRightColor: colors.border, borderRightWidth: StyleSheet.hairlineWidth,

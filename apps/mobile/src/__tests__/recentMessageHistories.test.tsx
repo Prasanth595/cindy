@@ -3,7 +3,10 @@ import { act, createContext, useEffect, useImperativeHandle, useRef, useState, t
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
-const state = vi.hoisted(() => ({ focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false }));
+const state = vi.hoisted(() => ({
+  focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false,
+  paneX: undefined as number | undefined, paneWidth: undefined as number | undefined,
+}));
 vi.mock('@/session/NativeResidentHistory', () => {
   const Host = ({ children, surfaceId }: { children: ReactNode; surfaceId: string }) => <div data-host={surfaceId}>{children}</div>;
   const Slot = ({ surfaceId, selected }: { surfaceId: string; selected: boolean }) => <div data-slot={surfaceId} data-selected={selected} />;
@@ -15,7 +18,7 @@ vi.mock('expo-router', () => ({ useSegments: () => state.onTask ? ['sessions', '
 vi.mock('expo-router/react-navigation', () => ({ useIsFocused: () => state.focused,
   NavigationContext: createContext(null), NavigationRouteContext: createContext(null) }));
 vi.mock('@/platform/AdaptiveWindowContext', () => ({
-  usePaneViewport: () => ({ width: state.width, height: state.height }),
+  usePaneViewport: () => ({ width: state.paneWidth ?? state.width, height: state.height, x: state.paneX }),
   useAdaptiveWindow: () => ({ width: state.width, height: state.height }),
   PaneViewportProvider: ({ children }: { children: ReactNode }) => children,
 }));
@@ -72,7 +75,7 @@ describe('resident five-task message lists outside route lifetimes', () => {
   function DrawerHomeProbe() {
     const resident = useResidentHomeList();
     return <div data-drawer="true" data-resident-enabled={resident.enabled}>
-      {resident.enabled ? <ResidentHomeList focused top={0} left={0} right={0}>
+      {resident.enabled ? <ResidentHomeList focused slot="sidebar" top={0} left={0} right={0}>
         <button data-drawer-task-list="true">Drawer tasks</button>
       </ResidentHomeList> : <button data-inline-task-list="true">Inline tasks</button>}
     </div>;
@@ -91,7 +94,7 @@ describe('resident five-task message lists outside route lifetimes', () => {
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     setMobileAuthOwner(null); setMobileAuthOwner('one'); state.focused = true; state.onTask = true;
-    state.width = 390; state.height = 844;
+    state.width = 390; state.height = 844; state.paneX = undefined; state.paneWidth = undefined;
     state.native = false; state.upgrade = false;
     mounts.clear(); unmounts.length = 0;
     container = document.createElement('div'); root = createRoot(container);
@@ -121,6 +124,16 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(gateOf('b')).toBe('false');
     await show('a');
     expect(gateOf('a')).toBe('true');
+  });
+  it('keeps a full-window drag measurement inside the tablet detail pane', async () => {
+    state.paneX = 320;
+    state.paneWidth = 960;
+    state.width = 1280;
+    state.height = 800;
+    await show('a');
+    const layouts = [...container.querySelectorAll('[data-layout]')].map((node) => node.getAttribute('data-layout') ?? '');
+    expect(layouts.some((layout) => layout.includes('"left":320') && layout.includes('"width":960'))).toBe(true);
+    expect(layouts.some((layout) => layout.includes('"width":1280'))).toBe(false);
   });
   it('resizes the same list on rotation without changing its state', async () => {
     await show('a');
@@ -207,12 +220,30 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(container.querySelector('[data-drawer]')).toBeNull();
     expect(container.querySelector('[data-task="a"]')).not.toBeNull();
   });
+  it('keeps an inline persistent sidebar in the route subtree, painted under the resident list', async () => {
+    remember('a');
+    await act(async () => root.render(
+      <RecentMessageHistoriesProvider>
+        <ResidentHomeListProvider>
+          <ResidentHomeList focused slot="sidebar" top={0} left={0} right={0}>
+            <button data-resident-task-list="true">Tasks</button>
+          </ResidentHomeList>
+          <MessageHistoryOverlay inline><button data-sidebar-panel="true">Panel</button></MessageHistoryOverlay>
+        </ResidentHomeListProvider>
+      </RecentMessageHistoriesProvider>,
+    ));
+    const panel = container.querySelector('[data-sidebar-panel="true"]')!;
+    const list = container.querySelector('[data-resident-task-list="true"]')!;
+    expect(panel.closest('[data-layout*="zIndex"]')).toBeNull();
+    // 列表排在面板后面 → 画在面板之上(不透明的侧栏面板才不会盖住列表)。
+    expect(panel.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
   it('hosts route drawers after the outer resident task list on persistent layouts', async () => {
     remember('a');
     await act(async () => root.render(
       <RecentMessageHistoriesProvider>
         <ResidentHomeListProvider>
-          <ResidentHomeList focused top={0} left={0} right={0}>
+          <ResidentHomeList focused slot="home" top={0} left={0} right={0}>
             <button data-resident-task-list="true">Tasks</button>
           </ResidentHomeList>
           <RecentMessageHistories activeKey={key('a')}>

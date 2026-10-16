@@ -92,6 +92,7 @@ vi.mock("@/platform/gestureHandler", () => ({
         failOffsetY: () => chain,
         onUpdate: () => chain,
         onEnd: () => chain,
+        onFinalize: () => chain,
       };
       return chain;
     },
