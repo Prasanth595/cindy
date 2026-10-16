@@ -115,9 +115,9 @@ export function execServerActions(method: string, params: unknown, cwd: string):
     .map((key) => fromFileUrl(record[key], cwd))
     .filter((value): value is string => !!value);
   if (TREE_READ_METHODS.has(method)) return paths.map((target) => ({ kind: 'read', path: target, scope: 'tree' }));
-  // fs/open also handles writes: Codex replace/write mode creates or truncates a file, while
-  // the later fs/writeBlock request carries only a handle and no path. Check the write at open.
-  // An omitted mode is the legacy read-only shape; every explicit unknown mode is fail-closed.
+  // Pinned Codex 0.159.2 uses a read-only fs/open and writes through fs/writeFile.
+  // Keep explicit non-read modes fail-closed for newer protocols; they are not evidence that
+  // their later handle-based write methods are supported by this relay.
   const readOnlyOpen = method !== 'fs/open' || record.mode === undefined || record.mode === 'read';
   const kind = READ_METHODS.has(method) && readOnlyOpen ? 'read' : 'write';
   return paths.map((target) => ({ kind, path: target }) as ExecutorAction);

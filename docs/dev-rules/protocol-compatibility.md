@@ -839,8 +839,10 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 - **Codex 依赖**：B 的 Codex 通过 app-server 的实验接口 `environment/add` + `environments` 把 A 注册为
   exec-server 执行环境，A 为每条连接起本机 `codex exec-server --listen stdio://`。该接口随 Codex 版本
   可能变化，升级 Codex 时需回归 `remote-agent/__tests__/codexHosted.e2e.test.ts`。A 的中继按方法语义
-  过本机闸门(`controller/execServerRelay.ts`)：`fs/readFile`、`fs/open` 的 read 模式与目录读取按读取，
-  `fs/open` 的 replace/write 模式按写入(后续 `fs/writeBlock` 只有句柄，权限必须在 open 时检查)，`fs/walk` 按
+  过本机闸门(`controller/execServerRelay.ts`)：当前固定 Codex 0.159.2 的 `fs/open` 只读，文件写入使用
+  `fs/writeFile` 的 `dataBase64`，没有 `fs/writeBlock`；协议依据为
+  [固定版本源码](https://github.com/openai/codex/blob/ff6aec96948b70d94983af2641a6b67c94faeff5/codex-rs/exec-server-protocol/src/protocol.rs#L558)。
+  `fs/readFile`、`fs/open` 的缺省/read 模式与目录读取按读取，显式非 read 的 open 模式仍从严按写入；`fs/walk` 按
   目录级读取，`fs/getMetadata`、`fs/canonicalize` 等只看元数据的不过闸门，其余 `fs/` 方法按写入；
   升级 Codex 后核对 exec-server 新增的方法，只读的要显式归类，否则会被当成写入拒掉(#5764)。
 - **影子目录与配置同步**：`open` 载荷除项目说明文件(含 `.claude/CLAUDE.md`、`.claude/rules`、
@@ -897,7 +899,8 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   事件身份、Agent 元信息、权限与提问的回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；计划审阅的计划正文与
   计划文件按 A 的真实路径展示和保存，用户改过的计划及要求修订的反馈交回前换回 B 的虚拟路径。旧消息不回填。
   回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts`、`remote-agent/executor/__tests__/pathFidelity.test.ts`
-  与 `remote-agent/__tests__/eventProjection.test.ts`。
+  与 `remote-agent/__tests__/eventProjection.test.ts`；固定 Codex 的真实写入协议回归见
+  `remote-agent/__tests__/execServerProjection.e2e.test.ts`。
 - **执行环境**(2026-10-07 裁决)：A 上的命令(Claude 的 Bash、Pi 的 `exec.run`、Codex exec-server、
   搜索)沿用 A 的 Desktop 完整环境，与本机 Agent 一致：真实用户目录、临时目录、`SSH_AUTH_SOCK`、
   git / gh / npm 配置与用户自己的环境变量照常可用，不另造假 HOME，也不剥离凭证类变量。任务由 A 的
