@@ -712,6 +712,13 @@ export interface ImTurnRunnerDeps {
   channelDefaultRoute?: Pick<ImChannelDefaultRouteSync, 'previewSwitchTarget' | 'syncBeforeWiring'>;
   /** 连接交给伙伴后的路由(只对实现了 adapter.companionLane 的渠道生效)。 */
   companion?: ImCompanionRouteDeps;
+  /**
+   * 与桌面直发同源的发送前上下文体检(`register.prepareUnhealthySessionForSend`):到线换窗、
+   * 空闲间隔刷新、已知坏历史重建。伙伴主对话与 IM 专线同一条规则,不为 IM 单设一套。
+   * 体检重建时会以 'runtime-refresh' 关掉当前 live handle,新 handle 由
+   * `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建。
+   */
+  prepareUnhealthySession?: (sessionId: string) => Promise<void>;
 }
 
 export function createTurnRunner(
@@ -1499,6 +1506,17 @@ export function createTurnRunner(
             onEarlyReject: async () => true,
           });
           return { kind: 'rejected', reason: 'companion_unavailable' };
+        }
+      }
+      // 发送前上下文体检(与桌面直发、官方 hook 同一个入口): 伙伴对话隔了半天再开口、
+      // 占用到线、已知坏历史都在这里换干净的原生会话。关闭原因是 'runtime-refresh',
+      // 上面的 close 监听在有 acquirePendingAgentSwitch 时会保住本任务; 新 live session
+      // 由下面的 refreshSessionAfterPendingAgentSwitch 按最新 DB 行(sdkSessionId 已清空)
+      // 重建并换绑。体检失败按直发同一口径让这条消息失败, 不带着过期的 resume 选项发送。
+      if (deps.prepareUnhealthySession) {
+        await deps.prepareUnhealthySession(rowId);
+        if (sessionStates.get(rowId) !== state) {
+          throw new Error(`session ${rowId} closed while checking its context before send`);
         }
       }
       // deferred 切换会关闭旧 session。apply 成功后重新读取 maker 里的 live

@@ -85,6 +85,14 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    `cindyBotImChannels` 标记；Codex / Pi 的共享 bridge 用空 ctx 建清单，provider `isEnabled` 必须在空
    workdir 快照放行，再由 `codexEnvironment.buildSessionMcpConfig` / `piEnvironment` 逐会话收可见性）。
    渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」。
+   6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
+   之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
+   `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个
+   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）的空闲
+   间隔刷新（≥12h）、90% 到线换窗、坏历史重建都在这里发生，IM 不另设换窗 / 换任务规则
+   （[`cindy-bots-runtime.md` §3.2](../product-rules/cindy-bots-runtime.md)）。体检关闭 live handle 的原因是
+   `runtime-refresh`，close 监听在有 `acquirePendingAgentSwitch` 时保住任务，新 handle 由
+   `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建；体检抛错按直发口径让这条消息失败。
 7. **计划对账**只在真实用户轮次注入（官方仅 `source.im` 存在时）。
 8. **终稿必达**（官方）：`turn.end` 先进持久出箱；客户端发布终稿时以 `clientFinal` 交回。
    带附件的轮次不由客户端发布（出箱只存文本）；兜底帧写不进出箱时也不由客户端发布；本进程

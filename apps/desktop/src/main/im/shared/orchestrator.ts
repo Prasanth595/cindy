@@ -20,6 +20,7 @@ import { bindingStore } from '../binding';
 import {
   acquirePendingAgentSwitchForDirectSend,
   acquirePendingAgentSwitchForImSend,
+  prepareUnhealthySessionForSend,
   registerSwitchedSessionVendorOptionsResolver,
 } from '../../maker-ipc/register';
 import { createImChannelDefaultRouteSync } from './channelDefaultRouteSync';
@@ -166,6 +167,8 @@ export function createImOrchestrator(
         ? acquirePendingAgentSwitchForImSend(sessionId, () => defaultRouteSync.syncUnderLock(sessionId))
         : acquirePendingAgentSwitchForDirectSend(sessionId),
     channelDefaultRoute: defaultRouteSync,
+    // 发送前上下文体检与桌面直发同源(到线换窗 / 空闲间隔刷新 / 坏历史重建)。
+    prepareUnhealthySession: (sessionId) => prepareUnhealthySessionForSend(sessionId),
     // 伙伴自有连接: 消息落在伙伴的主任务 / 隐藏专线上。
     ...(options.companionBotId
       ? { companion: createImCompanionRouteDeps(options.companionBotId) }

@@ -1230,13 +1230,17 @@ function ContextRebuildCard({ data }: { data?: Record<string, unknown> }) {
       ? 'timeout'
       : data?.reason === 'codex-history-strip'
         ? 'strip'
-        : 'overflow';
+        : data?.reason === 'idle-gap'
+          ? 'idle'
+          : 'overflow';
   const label = t(
     reason === 'timeout'
       ? 'chat.systemCard.contextRebuild.labelTimeout'
       : reason === 'strip'
         ? 'chat.systemCard.contextRebuild.labelStrip'
-        : 'chat.systemCard.contextRebuild.labelOverflow',
+        : reason === 'idle'
+          ? 'chat.systemCard.contextRebuild.labelIdleGap'
+          : 'chat.systemCard.contextRebuild.labelOverflow',
   );
 
   return (

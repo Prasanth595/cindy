@@ -434,6 +434,63 @@ describe('turnRunner: connection handed to a companion bot', () => {
     expect(runner.getMakerSessionById('mimi-main')).toBe(switched.session);
   });
 
+  it('runs the shared pre-send context check between the bot guard and the send lock, and rebinds the refreshed session', async () => {
+    // prepareUnhealthySessionForSend closes the live handle with reason 'runtime-refresh'
+    // (idle-gap / pressure rebuild). The runner must keep the task, recreate the session from
+    // the DB row and send this message to the new handle.
+    const listeners: Array<(event: MakerEvent) => void> = [];
+    const rebuilt = makeSessionHarness('mimi-main');
+    let live: Session | undefined;
+    const base = mocks.getMaker() as {
+      createSession: (args: { id?: string }) => Promise<Session>;
+    };
+    mocks.getMaker.mockReturnValue({
+      createSession: vi.fn(async (args: { id?: string }) => {
+        if (args.id === 'mimi-main' && live === null) {
+          live = rebuilt.session;
+          return rebuilt.session;
+        }
+        return base.createSession(args);
+      }),
+      getSession: vi.fn((id: string) => (live === null ? undefined : live ?? harnesses.get(id)?.session)),
+      on: vi.fn((listener: (event: MakerEvent) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      }),
+    });
+    const prepareUnhealthySession = vi.fn(async (sessionId: string) => {
+      const old = harnesses.get('mimi-main')!.session;
+      live = null as unknown as Session | undefined;
+      for (const listener of [...listeners]) {
+        listener({ type: 'session:closed', sessionId, session: old, reason: 'runtime-refresh' });
+      }
+    });
+    mocks.dbSelect.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => [{ ...botRows.get('mimi-main'), status: 'active', sdkSessionId: null }],
+        }),
+      }),
+    }));
+    runner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+      companion: companion as unknown as ImCompanionRouteDeps,
+      acquirePendingAgentSwitch,
+      prepareUnhealthySession,
+    });
+
+    await runTurn(OWNER);
+
+    expect(prepareUnhealthySession).toHaveBeenCalledWith('mimi-main');
+    expect(companion.prepareSend.mock.invocationCallOrder[0]!)
+      .toBeLessThan(prepareUnhealthySession.mock.invocationCallOrder[0]!);
+    expect(prepareUnhealthySession.mock.invocationCallOrder[0]!)
+      .toBeLessThan(acquirePendingAgentSwitch.mock.invocationCallOrder[0]!);
+    expect(harnesses.get('mimi-main')!.send).not.toHaveBeenCalled();
+    expect(rebuilt.send).toHaveBeenCalledTimes(1);
+    for (const [, text] of mocks.im.sendText.mock.calls) expect(String(text)).not.toContain('❌');
+    expect(runner.getMakerSessionById('mimi-main')).toBe(rebuilt.session);
+  });
+
   it('falls back to the channel’s own routing when the bot cannot be resolved, warning once', async () => {
     companion.resolveSession.mockResolvedValue({ ok: false, errorCode: 'TARGET_BOT_INACTIVE', message: 'paused' });
     await runTurn(OWNER, 'first');
