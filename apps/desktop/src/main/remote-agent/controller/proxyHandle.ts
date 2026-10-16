@@ -408,8 +408,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       for (const action of approvalActionsFor(effective, deps.workspace)) deps.recordApproval(action);
     }
     // 用户改过的计划按本机路径展示，交回 Agent 前换回它那边的写法。
-    if (decision.kind === 'plan_review' && typeof decision.editedPlan === 'string') {
-      decision = { ...decision, editedPlan: deps.workspace.mapTextForAgent(decision.editedPlan) };
+    if (decision.kind === 'plan_review') {
+      decision = { ...decision,
+        ...(typeof decision.editedPlan === 'string' ? { editedPlan: deps.workspace.mapTextForAgent(decision.editedPlan) } : {}),
+        ...(!decision.dismissed && typeof decision.reason === 'string' ? { reason: deps.workspace.mapTextForAgent(decision.reason) } : {}),
+      };
     }
     return { type: 'interaction', result: JSON.parse(JSON.stringify(decision)) };
   }

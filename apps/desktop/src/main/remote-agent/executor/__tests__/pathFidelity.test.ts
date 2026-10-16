@@ -101,6 +101,50 @@ describe('remote provider file paths', () => {
     }
   });
 
+  it('keeps shell expansions immediately after a mapped directory prefix', async () => {
+    const { workingDir, workspace, executor } = setup();
+    try {
+      const local = agentStyle(workingDir);
+      for (const suffix of ['*', '?', '[ab]', '{a,b}', '$suffix', '${suffix}', '$' + '(printf x)', String.fromCharCode(96) + 'printf x' + String.fromCharCode(96)]) {
+        expect(workspace.mapCommand('ls ' + SHADOW + suffix)).toBe('ls ' + local + suffix);
+      }
+      for (const suffix of ['$suffix', '${suffix}']) {
+        expect(workspace.mapCommand('ls "' + SHADOW + suffix + '"')).toBe('ls "' + local + suffix + '"');
+      }
+      for (const suffix of ['%SUFFIX%', '!SUFFIX!']) {
+        expect(workspace.mapCommand('dir "' + SHADOW + suffix + '"', 'cmd')).toBe('dir "' + local + suffix + '"');
+      }
+      // 单引号里的变量和 glob、双引号里的 glob 是目录名的字面部分，必须按父目录别名解析。
+      for (const suffix of ['$suffix', '*', '?', '[ab]']) {
+        const virtual = SHADOW + suffix;
+        expect(workspace.mapCommand("ls '" + virtual + "'")).toBe("ls '" + agentStyle(workspace.resolve(virtual)) + "'");
+      }
+      for (const suffix of ['*', '?', '[ab]']) {
+        const virtual = SHADOW + suffix;
+        expect(workspace.mapCommand('ls "' + virtual + '"')).toBe('ls "' + agentStyle(workspace.resolve(virtual)) + '"');
+      }
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.each([' copy', ' (1)', '.git', '-v1'])('maps quoted sibling suffix %s to the same location as file tools', async (suffix) => {
+    const { parent, workspace, executor } = setup();
+    try {
+      const virtual = SHADOW + suffix;
+      const expected = path.join(parent, 'p' + suffix);
+      expect(workspace.resolve(virtual)).toBe(expected);
+      for (const quote of ['"', "'"]) {
+        expect(workspace.mapCommand('mkdir -p ' + quote + virtual + quote))
+          .toBe('mkdir -p ' + quote + agentStyle(expected) + quote);
+      }
+      await executor.callTool('Write', { file_path: virtual + '/a.txt', content: 'same folder' });
+      expect(fs.readFileSync(path.join(expected, 'a.txt'), 'utf8')).toBe('same folder');
+    } finally {
+      await executor.close();
+    }
+  });
+
   it('writes an unchanged file back byte for byte through every write path', async () => {
     const { workingDir, workspace, executor } = setup();
     const forward = workingDir.replace(/\\/g, '/');
@@ -347,7 +391,7 @@ describe('remote provider file paths', () => {
     for (const url of links) expect(fs.readFileSync(url, 'utf8')).toBe('ci');
   });
 
-  it('shows plan file links as local paths and returns edited plans in Agent paths', async () => {
+  it.each(['allow', 'deny'] as const)('shows plan file links locally and returns %s feedback in Agent paths', async (behavior) => {
     const { workingDir, workspace, executor } = setup();
     const controller = createRemoteAgentHandle({
       client: {} as RemoteAgentRunClient,
@@ -358,7 +402,10 @@ describe('remote provider file paths', () => {
     const local = agentStyle(workingDir);
     controller.handle.setInteractionResolver(async (request) => {
       shown = request;
-      return { kind: 'plan_review', behavior: 'allow', editedPlan: (request as { plan: string }).plan + '\n2. 再看 ' + local + '/docs/b.md' };
+      return { kind: 'plan_review', behavior,
+        ...(behavior === 'allow' ? { editedPlan: (request as { plan: string }).plan + '\n2. 再看 ' + local + '/docs/b.md' } : {}),
+        reason: '重新看 ' + local + '/docs/b.md',
+      };
     });
     try {
       const reply = await controller.onRequest({ type: 'interaction', request: {
@@ -367,7 +414,8 @@ describe('remote provider file paths', () => {
       expect(shown).toMatchObject({ plan: '1. 修改 [ci](' + local + '/.github/ci.yml)', planFilePath: path.join(workingDir, 'plan.md') });
       expect(markdownLinks((shown as { plan: string }).plan)).toEqual([local + '/.github/ci.yml']);
       expect((reply as { result: InteractionDecision }).result).toMatchObject({
-        kind: 'plan_review', editedPlan: '1. 修改 [ci](' + SHADOW + '/.github/ci.yml)\n2. 再看 ' + SHADOW + '/docs/b.md',
+        kind: 'plan_review', behavior, reason: '重新看 ' + SHADOW + '/docs/b.md',
+        ...(behavior === 'allow' ? { editedPlan: '1. 修改 [ci](' + SHADOW + '/.github/ci.yml)\n2. 再看 ' + SHADOW + '/docs/b.md' } : {}),
       });
     } finally {
       controller.onClosed('closed');

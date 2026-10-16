@@ -885,6 +885,8 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   正文与命令里的目录前缀只按完整目录段匹配，与文件操作的路径解析一致：以工作目录名开头的同级目录(`xxx.git`、
   `xxx-v1`)按上级目录投影，不能切成「工作目录 + `.git`」，否则文字与命令落在 `xxx.git`、文件工具却写进 `p.git`；
   空白、引号与句末标点后面是否接着同级目录名(`xxx copy`、`xxx (1)`)，投影给 B 前在 A 上按磁盘核对。
+  命令按执行端 shell 的引号语义识别边界：引号内空格属于完整目录名，不依赖目标已经存在；紧接前缀的变量与
+  未引用的通配符由 shell 展开，保持原语义，不把它们当成静态目录名。
   Agent 写回文件(Claude Write / Edit / NotebookEdit、Pi `fs.write`、Codex `fs/write*`)时，按写入前的文件内容查回
   路径的原写法(分隔符、Git Bash `/c/…`、`/tmp`、大小写、符号链接)，完整原样往返及能按上下文定位的未改内容保留原写法；
   多种原写法折叠成同一虚拟文本且缺少可定位上下文时，不能保证任意重写逐字节无损。Edit 按 Agent 读到的投影视图
@@ -893,7 +895,7 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `fs/write*` 的路径和命令在权限检查前改写，原内容只在授权通过、实际转发前读取，凭证类文件不预读。正文、代码段与链接里还原的路径同样沿用 Agent 的分隔符，
   Markdown 不会把 `\.git` 当转义吞掉；结构化路径字段仍用 A 本机写法。
   事件身份、Agent 元信息、权限与提问的回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；计划审阅的计划正文与
-  计划文件按 A 的真实路径展示和保存，用户改过的计划交回前换回 B 的虚拟路径。旧消息不回填。
+  计划文件按 A 的真实路径展示和保存，用户改过的计划及要求修订的反馈交回前换回 B 的虚拟路径。旧消息不回填。
   回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts`、`remote-agent/executor/__tests__/pathFidelity.test.ts`
   与 `remote-agent/__tests__/eventProjection.test.ts`。
 - **执行环境**(2026-10-07 裁决)：A 上的命令(Claude 的 Bash、Pi 的 `exec.run`、Codex exec-server、

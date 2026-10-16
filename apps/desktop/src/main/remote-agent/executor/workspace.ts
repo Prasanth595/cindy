@@ -111,6 +111,7 @@ function aliasPrefixes<T extends ExecutorPathAlias>(aliases: readonly T[]): Alia
 function nextAliasPrefix<T extends ExecutorPathAlias>(
   text: string, start: number, { finder, prefixes }: AliasPrefixes<T>,
   continuesName?: (alias: T, rest: string) => boolean,
+  boundary: (text: string, index: number) => 'separator' | 'punctuation' | null = segmentEnd,
 ): { index: number; end: number; alias: T } | null {
   for (let from = start; from < text.length;) {
     finder.lastIndex = from;
@@ -123,7 +124,7 @@ function nextAliasPrefix<T extends ExecutorPathAlias>(
         const hit = pattern.exec(text);
         if (!hit) continue;
         const end = index + hit[0].length;
-        const kind = segmentEnd(text, end);
+        const kind = boundary(text, end);
         if (!kind || (kind === 'punctuation' && continuesName?.(alias, text.slice(end, end + 1024)))) continue;
         return { index, end, alias };
       }
@@ -653,6 +654,7 @@ export class ExecutorWorkspace {
     if (!original || view === 'decoded') return this.contentFromAgent(text, original ? this.contentSpellings(original, view) : undefined);
     const projections = this.originalProjections(original);
     if (projections.some((projection) => projection.text === text)) return original;
+    if (projections.every((projection) => projection.text === original)) return this.contentFromAgent(text);
     let matched = new Map<number, OriginalSpelling>();
     let bestLength = -1;
     for (const projection of projections) {
@@ -800,9 +802,20 @@ export class ExecutorWorkspace {
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
+    // Shell 里的边界由引号与展开语法决定。引号内的空格/标点属于目录名；动态后缀保留给 shell。
+    const commandBoundary = (text: string, index: number): 'separator' | 'punctuation' | null => {
+      const char = text[index];
+      if (char === undefined || char === '/' || char === '\\') return 'separator';
+      const context = quoteContext(text, index);
+      if ((context === 'single' && char === "'") || (context === 'double' && char === '"')) return 'separator';
+      if (dialect === 'cmd' && /[%!^]/.test(char)) return 'separator';
+      if (dialect === 'bash' && context !== 'single' && /[$\x60]/.test(char)) return 'separator';
+      if (context !== 'none') return null;
+      return /[\s'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
+    };
     let result = '';
     let end = 0;
-    for (let hit = nextAliasPrefix(command, 0, prefixes); hit; hit = nextAliasPrefix(command, end, prefixes)) {
+    for (let hit = nextAliasPrefix(command, 0, prefixes, undefined, commandBoundary); hit; hit = nextAliasPrefix(command, end, prefixes, undefined, commandBoundary)) {
       const { alias, index: start } = hit;
       const separator = alias.to.includes('\\') ? '\\' : '/';
       const context = quoteContext(command, start);
