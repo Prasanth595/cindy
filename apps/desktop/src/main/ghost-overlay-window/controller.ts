@@ -28,9 +28,17 @@ import { clearGhostOverlayWebContents } from './registry.js';
 import type { GhostOverlayWindowHandle } from './window.js';
 
 export interface GhostOverlayWindowsControllerDeps {
-  createWindow: (ghostId: string) => Promise<GhostOverlayWindowHandle>;
+  createWindow: (
+    ghostId: string,
+    onWindowCreated?: (win: BrowserWindow) => void,
+  ) => Promise<GhostOverlayWindowHandle>;
   isGhostOverlayDeclared: (ghostId: string) => boolean;
   isUserEnabled: (ghostId: string) => boolean;
+  /**
+   * 可选:解析插件当前安装版本(slot 记录创建时版本;reconcile 发现版本变化时
+   * dispose 旧浮窗,下次 mount 重建)。缺省返回 null 表示无版本信息,不做版本比对。
+   */
+  resolveInstalledVersion?: (ghostId: string) => string | null;
   broadcastState: (state: GhostOverlayWindowsState) => void;
   isQuitting: () => boolean;
   log: Logger;
@@ -54,6 +62,8 @@ interface WindowSlot {
   win: BrowserWindow;
   /** 创建时捕获,销毁后仍可用于清理 registry 绑定。 */
   webContentsId: number;
+  /** 创建时捕获的安装版本;reconcile 发现版本变化时据此 dispose 旧浮窗。 */
+  installedVersion: string | null;
   rendererReady: boolean;
   presentationReady: boolean;
   visible: boolean;
@@ -177,7 +187,7 @@ export class GhostOverlayWindowsController {
     this.broadcast();
   }
 
-  /** 插件卸载/停用/失去 overlay 声明时 dispose 对应浮窗。 */
+  /** 插件卸载/停用/失去 overlay 声明/更新后版本变化时 dispose 对应浮窗。 */
   reconcile(ghosts: InstalledGhost[]): void {
     const byId = new Map(ghosts.map((g) => [installedGhostStoragePart(g), g]));
     let changed = false;
@@ -187,7 +197,25 @@ export class GhostOverlayWindowsController {
         ghost !== undefined &&
         ghost.enabled !== false &&
         ghost.manifest.overlay !== undefined;
-      if (eligible) continue;
+      if (eligible) {
+        // 更新后仍声明 overlay 的插件:旧窗口逻辑页是旧版本,复用会继续 mount
+        // 旧页面/旧尺寸。版本不一致 → dispose,重建留给下次 mount 触发。
+        if (
+          slot.installedVersion !== null &&
+          slot.installedVersion !== ghost.manifest.version
+        ) {
+          if (!slot.destroyingWindow) {
+            this.disposeSlot(id, slot);
+            changed = true;
+            this.deps.log.info('ghost overlay window reconciled away (version changed)', {
+              ghostId: id,
+              from: slot.installedVersion,
+              to: ghost.manifest.version,
+            });
+          }
+        }
+        continue;
+      }
 
       if (!slot.destroyingWindow) {
         this.disposeSlot(id, slot);
@@ -278,19 +306,47 @@ export class GhostOverlayWindowsController {
   }
 
   private async createSlot(ghostId: string, generation: number): Promise<WindowSlot | null> {
-    let win: BrowserWindow;
-    let loadCompleted = false;
+    // 工厂在 loadURL 之前通过 onWindowCreated 回调登记"加载中"slot:窗口在 load
+    // 期间即可被回收(5s 壳超时/崩溃恢复/owner 切换),首次加载另有工厂侧超时兜底。
+    let earlySlot: WindowSlot | null = null;
+    const registerEarly = (win: BrowserWindow): void => {
+      // 回调发生在 await 期间:退场/换代/资格失效时 fail closed,不挂载僵尸窗口。
+      if (
+        this.disposed ||
+        this.deps.isQuitting() ||
+        generation !== this.generation ||
+        !this.deps.isGhostOverlayDeclared(ghostId) ||
+        !this.deps.isUserEnabled(ghostId)
+      ) {
+        this.disposeAbandonedWindow(win);
+        return;
+      }
+      const existing = this.slots.get(ghostId);
+      if (existing && !existing.win.isDestroyed()) {
+        this.disposeAbandonedWindow(win);
+        return;
+      }
+      earlySlot = this.buildAndRegisterSlot(ghostId, win);
+    };
+
+    let created: GhostOverlayWindowHandle;
     try {
-      const created = await this.deps.createWindow(ghostId);
-      win = created.win;
-      loadCompleted = created.loadCompleted === true;
+      created = await this.deps.createWindow(ghostId, registerEarly);
     } catch (error) {
+      // 失败路径事务清理:早期已登记的"加载中"slot 一并回收;未登记说明窗口
+      // 已在回调里被 dispose 或从未创建,无需处理。
+      if (earlySlot && this.slots.get(ghostId) === earlySlot) {
+        this.disposeSlot(ghostId, earlySlot);
+        this.broadcast();
+      }
       this.deps.log.warn('ghost overlay window creation failed', {
         ghostId,
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
     }
+
+    const win = created.win;
 
     // 创建期间退出/销毁换代/资格失效:fail closed,不挂载僵尸窗口。
     if (
@@ -300,19 +356,39 @@ export class GhostOverlayWindowsController {
       !this.deps.isGhostOverlayDeclared(ghostId) ||
       !this.deps.isUserEnabled(ghostId)
     ) {
-      this.disposeAbandonedWindow(win);
+      if (earlySlot && this.slots.get(ghostId) === earlySlot) {
+        this.disposeSlot(ghostId, earlySlot);
+        this.broadcast();
+      } else {
+        this.disposeAbandonedWindow(win);
+      }
       return null;
     }
 
     const existing = this.slots.get(ghostId);
-    if (existing && !existing.win.isDestroyed()) {
+    if (existing && !existing.win.isDestroyed() && existing !== earlySlot) {
       this.disposeAbandonedWindow(win);
       return existing;
     }
 
+    const slot = earlySlot ?? this.buildAndRegisterSlot(ghostId, win);
+    // 工厂 createWindow 在返回前已 await loadURL(带超时):首次加载的 dom-ready/
+    // did-finish-load 早已发生,宿主监听器补收不到。工厂把"首次加载已完成"作为
+    // 返回值里的确定性信号交给这里——不再探测 isLoading(实机证明 loadURL resolve
+    // 后 isLoading 不可靠)。拿到信号直接推进双阶段就绪;后续 reload 仍由上面的
+    // 监听器重新驱动,未完成/其它来源的窗口保持事件驱动。
+    if (created.loadCompleted === true && !slot.win.isDestroyed()) {
+      this.onDomReady(ghostId, slot);
+      this.onDidFinishLoad(ghostId, slot);
+    }
+    return slot;
+  }
+
+  private buildAndRegisterSlot(ghostId: string, win: BrowserWindow): WindowSlot {
     const slot: WindowSlot = {
       win,
       webContentsId: win.webContents.id,
+      installedVersion: this.deps.resolveInstalledVersion?.(ghostId) ?? null,
       rendererReady: false,
       presentationReady: false,
       visible: false,
@@ -325,15 +401,6 @@ export class GhostOverlayWindowsController {
     };
     this.slots.set(ghostId, slot);
     this.attachWindowListeners(ghostId, slot);
-    // 工厂 createWindow 在返回前已 await loadURL:首次加载的 dom-ready/
-    // did-finish-load 早已发生,宿主监听器补收不到。工厂把“首次加载已完成”作为
-    // 返回值里的确定性信号交给这里——不再探测 isLoading(实机证明 loadURL resolve
-    // 后 isLoading 不可靠)。拿到信号直接推进双阶段就绪;后续 reload 仍由上面的
-    // 监听器重新驱动,未完成/其它来源的窗口保持事件驱动。
-    if (loadCompleted && !slot.win.isDestroyed()) {
-      this.onDomReady(ghostId, slot);
-      this.onDidFinishLoad(ghostId, slot);
-    }
     return slot;
   }
 

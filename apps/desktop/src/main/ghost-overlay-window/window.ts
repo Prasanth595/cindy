@@ -45,6 +45,11 @@ export interface GhostOverlayWindowDeps {
    * storage part 与 manifest id 可能不同(例如命名空间实例)。
    */
   resolveManifestId: (ghostId: string) => string | null;
+  /**
+   * 窗口构造完成、loadURL 之前回调:让 controller 立即登记"加载中"slot,
+   * 首次加载期间的窗口可被回收,不再等 loadURL resolve 才入 slots。
+   */
+  onWindowCreated?: (win: BrowserWindow) => void;
   log: Logger;
 }
 
@@ -58,6 +63,33 @@ export interface GhostOverlayWindowHandle {
   win: BrowserWindow;
   /** 首次 loadURL 是否已在工厂返回前完成(dom-ready/did-finish-load 已发生)。 */
   loadCompleted: boolean;
+}
+
+/**
+ * 首次 loadURL 的硬上限:插件页脚本卡死/资源永不来时,loadURL 可能永不 resolve,
+ * mount 不能永久悬挂。超时即销毁窗口 + 清理 registry + reject,后续 mount 可重试。
+ */
+export const GHOST_OVERLAY_FIRST_LOAD_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -147,13 +179,21 @@ export async function createGhostOverlayWindow(
   const webContentsId = win.webContents.id;
   markGhostOverlayWebContentsId(webContentsId, ghostId);
 
+  // 加载前登记:controller 经此回调立即登记"加载中"slot,首次加载期间的窗口
+  // 即可被回收(5s 壳超时/崩溃恢复/owner 切换)。必须在任何 await 之前调用。
+  deps.onWindowCreated?.(win);
+
   // 协议 handler 必须先于 loadURL 挂好,否则直载会 404 / 空响应。失败路径必须
   // 销毁窗口并清理 registry,否则留下 show:false + closable:false 的僵尸窗口。
   let stage: 'protocol' | 'load' = 'protocol';
   try {
     await ensureProtocolRegistered(ghostId);
     stage = 'load';
-    await win.loadURL(`${GHOST_SCHEME}://${manifestId}/${decl.html}`);
+    await withTimeout(
+      win.loadURL(`${GHOST_SCHEME}://${manifestId}/${decl.html}`),
+      GHOST_OVERLAY_FIRST_LOAD_TIMEOUT_MS,
+      `ghost overlay first load timed out after ${GHOST_OVERLAY_FIRST_LOAD_TIMEOUT_MS}ms`,
+    );
   } catch (error) {
     // 清理使用创建期捕获的 id:窗口销毁后访问 webContents 不可靠(可能抛
     // 「Object has been destroyed」),届时会掩盖原始错误并留下 registry 僵尸条目。

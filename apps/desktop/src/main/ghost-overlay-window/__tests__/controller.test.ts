@@ -102,12 +102,12 @@ function fakeWindow(): FakeWindow {
   return win;
 }
 
-function ghost(id: string, opts: { enabled?: boolean; overlay?: boolean } = {}): InstalledGhost {
+function ghost(id: string, opts: { enabled?: boolean; overlay?: boolean; version?: string } = {}): InstalledGhost {
   const manifest: GhostManifest = {
     schemaVersion: 2,
     id,
     name: id,
-    version: '1.0.0',
+    version: opts.version ?? '1.0.0',
     kind: 'chip',
     entry: 'main.js',
     ...(opts.overlay !== false ? { overlay: { html: 'overlay.html' } } : {}),
@@ -127,7 +127,10 @@ function makeHarness(
     onVisibilityChanged?: (ghostId: string, visible: boolean) => void;
     onAllWindowsDestroyed?: () => void;
   } = {},
-  opts: { createLoadCompleted?: boolean } = {},
+  opts: {
+    createLoadCompleted?: boolean;
+    resolveInstalledVersion?: (ghostId: string) => string | null;
+  } = {},
 ) {
   let quitting = false;
   const created: Array<{ ghostId: string; win: FakeWindow }> = [];
@@ -142,12 +145,14 @@ function makeHarness(
   };
 
   const deps: GhostOverlayWindowsControllerDeps = {
-    createWindow: async (ghostId) => {
+    createWindow: async (ghostId, onWindowCreated) => {
       // 缺省 loadCompleted=false:就绪由测试手动驱动(IPC 或宿主事件)。
       // createLoadCompleted 模拟真实工厂在返回前 await loadURL 的已加载态。
       const win = fakeWindow();
-      // 对齐 Task 3 工厂:窗口创建后登记 webContentsId ↔ ghostId。
+      // 对齐 Task 3 工厂:窗口创建后登记 webContentsId ↔ ghostId,并经
+      // onWindowCreated 回调在 loadURL 之前把"加载中"slot 交给 controller。
       markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+      onWindowCreated?.(win as unknown as BrowserWindow);
       created.push({ ghostId, win });
       return {
         win: win as unknown as BrowserWindow,
@@ -156,6 +161,7 @@ function makeHarness(
     },
     isGhostOverlayDeclared: (id) => declaredIds.has(id),
     isUserEnabled: (id) => userEnabledIds.has(id),
+    resolveInstalledVersion: opts.resolveInstalledVersion,
     broadcastState: (s) => {
       broadcasts.push(s);
     },
@@ -473,6 +479,43 @@ describe('reconcile', () => {
     expect(h.created[0].win.isDestroyed()).toBe(true);
     expect(h.controller.getState()).toEqual({});
   });
+
+  it('reconcile disposes the slot when the installed version changed; next mount rebuilds', async () => {
+    const versions = new Map<string, string>([['upgraded', '1.0.0']]);
+    const h = makeHarness(new Set(['upgraded']), new Set(['upgraded']), {}, {
+      resolveInstalledVersion: (id) => versions.get(id) ?? null,
+    });
+    await h.controller.show('upgraded');
+    markReady(h.controller, h.created[0].win);
+    expect(h.created).toHaveLength(1);
+
+    // 插件更新:仍声明 overlay,但安装版本变了 → dispose,重建留给下次 mount。
+    versions.set('upgraded', '2.0.0');
+    h.controller.reconcile([ghost('upgraded', { version: '2.0.0' })]);
+
+    expect(h.created[0].win.isDestroyed()).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+
+    // 下次 mount 用新版本重建出新窗口。
+    await h.controller.show('upgraded');
+    expect(h.created).toHaveLength(2);
+    expect(h.controller.getState().upgraded?.mounted).toBe(true);
+  });
+
+  it('reconcile keeps the slot when the installed version is unchanged', async () => {
+    const h = makeHarness(new Set(['same']), new Set(['same']), {}, {
+      resolveInstalledVersion: () => '1.0.0',
+    });
+    await h.controller.show('same');
+    markReady(h.controller, h.created[0].win);
+
+    h.controller.reconcile([ghost('same', { version: '1.0.0' })]);
+
+    expect(h.created[0].win.isDestroyed()).toBe(false);
+    expect(h.controller.getState()).toEqual({
+      same: { mounted: true, visible: true, interactive: false },
+    });
+  });
 });
 
 describe('owner change', () => {
@@ -749,6 +792,65 @@ describe('in-flight creation rejection cleanup', () => {
     await expect(p1).rejects.toThrow('webContents gone');
     await expect(p2).rejects.toThrow('webContents gone');
     expect(h.calls()).toBe(1); // 在途去重仍生效,只 createWindow 一次
+  });
+
+  it('registers a loading slot before load completes and cleans it up on rejection; retryable', async () => {
+    let calls = 0;
+    let rejectFirst!: (error: Error) => void;
+    const createdWindows: FakeWindow[] = [];
+    const log = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+    };
+    const deps: GhostOverlayWindowsControllerDeps = {
+      createWindow: (ghostId, onWindowCreated) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+            // 模拟工厂在 loadURL 之前登记"加载中"窗口。
+            const win = fakeWindow();
+            markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+            createdWindows.push(win);
+            onWindowCreated?.(win as unknown as BrowserWindow);
+          });
+        }
+        const win = fakeWindow();
+        markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+        createdWindows.push(win);
+        onWindowCreated?.(win as unknown as BrowserWindow);
+        return Promise.resolve({ win: win as unknown as BrowserWindow, loadCompleted: true });
+      },
+      isGhostOverlayDeclared: () => true,
+      isUserEnabled: () => true,
+      broadcastState: () => {},
+      isQuitting: () => false,
+      log,
+    };
+    const controller = new GhostOverlayWindowsController(deps);
+
+    const showPromise = controller.show('a');
+    await vi.waitFor(() => expect(createdWindows).toHaveLength(1));
+    // 加载期间 slot 已登记(窗口不在 slots 中无法回收的旧缺陷已消除)。
+    expect(controller.getState().a?.mounted).toBe(true);
+    expect(isGhostOverlayWebContents(createdWindows[0].webContents.id)).toBe(true);
+
+    // 首次加载失败(工厂侧超时) reject:show 不悬挂,事务清理 loading slot。
+    rejectFirst(new Error('first load timed out'));
+    await showPromise;
+
+    expect(createdWindows[0].isDestroyed()).toBe(true);
+    expect(isGhostOverlayWebContents(createdWindows[0].webContents.id)).toBe(false);
+    expect(controller.getState()).toEqual({});
+
+    // 后续 mount 可重试,重建出新窗口。
+    await controller.show('a');
+    expect(createdWindows).toHaveLength(2);
+    expect(controller.getState().a?.mounted).toBe(true);
   });
 });
 

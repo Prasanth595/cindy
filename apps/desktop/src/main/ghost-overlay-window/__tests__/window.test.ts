@@ -17,6 +17,7 @@ const harness = vi.hoisted(() => {
   const app = { isPackaged: false };
   let nextWebContentsId = 1;
   let nextLoadError: Error | null = null;
+  let nextLoadNeverResolves = false;
   const windows: FakeWindow[] = [];
   const ensureProtocolRegistered = vi.fn(async () => undefined);
   const resolveGhostOverlaySession = vi.fn<(ghostId: string) => string | null>(
@@ -28,6 +29,9 @@ const harness = vi.hoisted(() => {
 
   class FakeWindow {
     readonly loadURL = vi.fn(async () => {
+      if (nextLoadNeverResolves) {
+        return new Promise<never>(() => {});
+      }
       if (nextLoadError) {
         const error = nextLoadError;
         nextLoadError = null;
@@ -80,10 +84,14 @@ const harness = vi.hoisted(() => {
     setNextLoadError: (error: Error | null) => {
       nextLoadError = error;
     },
+    setNextLoadNeverResolves: (v: boolean) => {
+      nextLoadNeverResolves = v;
+    },
     reset: () => {
       app.isPackaged = false;
       nextWebContentsId = 1;
       nextLoadError = null;
+      nextLoadNeverResolves = false;
       windows.length = 0;
       ensureProtocolRegistered.mockReset();
       ensureProtocolRegistered.mockResolvedValue(undefined);
@@ -116,6 +124,7 @@ function deps() {
     ensureProtocolRegistered: harness.ensureProtocolRegistered,
     resolveGhostOverlaySession: harness.resolveGhostOverlaySession,
     resolveManifestId: harness.resolveManifestId,
+    onWindowCreated: vi.fn(),
     log,
   };
 }
@@ -391,5 +400,52 @@ describe('createGhostOverlayWindow', () => {
     harness.reset();
     await createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps());
     expect(webPreferences(harness.windows[0]).devTools).toBe(true);
+  });
+
+  it('notifies onWindowCreated after construction and before protocol/load', async () => {
+    const d = deps();
+    await createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, d);
+
+    const win = harness.windows[0];
+    expect(d.onWindowCreated).toHaveBeenCalledWith(win);
+    const createdOrder = d.onWindowCreated.mock.invocationCallOrder[0];
+    const registerOrder = harness.ensureProtocolRegistered.mock.invocationCallOrder[0];
+    const loadOrder = win.loadURL.mock.invocationCallOrder[0];
+    expect(createdOrder).toBeDefined();
+    expect(registerOrder).toBeDefined();
+    expect(loadOrder).toBeDefined();
+    expect(createdOrder!).toBeLessThan(registerOrder!);
+    expect(registerOrder!).toBeLessThan(loadOrder!);
+  });
+
+  it('times out a hung first load after 10s: destroys window and clears registry', async () => {
+    vi.useFakeTimers();
+    try {
+      harness.setNextLoadNeverResolves(true);
+      const promise = createGhostOverlayWindow('acme-overlay', { html: 'overlay.html' }, deps());
+      // 先挂上拒绝处理器,避免推进定时器期间被计入 unhandled rejection。
+      const caught = promise.then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e as Error,
+      );
+      // 让 ensureProtocolRegistered 的 await 续体推进到 loadURL 并注册超时定时器。
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const error = await caught;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('ghost overlay load failed');
+      expect(String((error.cause as Error | undefined)?.message ?? '')).toContain('timed out');
+
+      const win = harness.windows[0];
+      expect(win.isDestroyed()).toBe(true);
+      expect(win.destroy).toHaveBeenCalledTimes(1);
+      expect(isGhostOverlayWebContents(win.overlayWebContentsId)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

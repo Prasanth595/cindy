@@ -2385,7 +2385,7 @@ const resolveGhostOverlayPartition = (ghostId: string): string | null => {
 
 let ghostOverlayCursorStream = createGhostOverlayCursorStream();
 const ghostOverlayWindowsController = new GhostOverlayWindowsController({
-  createWindow: (ghostId) => {
+  createWindow: (ghostId, onWindowCreated) => {
     const ghost = findGhostForInstanceId(ghostId);
     const decl = ghost?.manifest.overlay;
     if (!ghost || !decl) {
@@ -2399,11 +2399,13 @@ const ghostOverlayWindowsController = new GhostOverlayWindowsController({
       },
       resolveGhostOverlaySession: resolveGhostOverlayPartition,
       resolveManifestId: (id) => findGhostForInstanceId(id)?.manifest.id ?? null,
+      onWindowCreated,
       log: createLogger('ghost-overlay-window'),
     });
   },
   isGhostOverlayDeclared,
   isUserEnabled: isGhostOverlayUserEnabled,
+  resolveInstalledVersion: (id) => findGhostForInstanceId(id)?.manifest.version ?? null,
   broadcastState: (state) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
