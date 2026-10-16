@@ -3332,18 +3332,30 @@ function ensureWindowsTray(): boolean {
   }
 }
 
+function reportTrayHideError(window: BrowserWindow): void {
+  dialog.showMessageBoxSync(window, {
+    type: 'error',
+    title: t('settings.windowBehavior.trayError.title'),
+    message: t('settings.windowBehavior.trayError.message'),
+  });
+}
+
 function hideMainWindowToWindowsTray(mainWindow: BrowserWindow): void {
   // 托盘图标不存在时只报错、不隐藏,窗口保持可触达(决策在 mainWindowCloseBehavior)。
   hideToTrayWithFallback<BrowserWindow>(mainWindow, {
     ensureTray: ensureWindowsTray,
     hideToTray: hideWindowToWindowsTray,
-    reportTrayError: (window) => {
-      dialog.showMessageBoxSync(window, {
-        type: 'error',
-        title: t('settings.windowBehavior.trayError.title'),
-        message: t('settings.windowBehavior.trayError.message'),
-      });
-    },
+    reportTrayError: reportTrayHideError,
+  });
+}
+
+function hideMainWindowToLinuxTray(mainWindow: BrowserWindow): void {
+  // Linux 的托盘统一由 linuxTray 的 SNI 控制器持有,这里只做"确保存在→隐藏";
+  // 隐藏动作复用 Windows 同款全屏退场处理(该 helper 本身是平台无关的)。
+  hideToTrayWithFallback<BrowserWindow>(mainWindow, {
+    ensureTray: () => linuxTray.ensure(),
+    hideToTray: hideWindowToWindowsTray,
+    reportTrayError: reportTrayHideError,
   });
 }
 
@@ -3438,7 +3450,7 @@ const linuxCloseBehaviorActions = {
   quit: () => app.quit(),
   keepRunning: (window: BrowserWindow) => {
     if (resolveLinuxKeepRunningSurface(isLinuxWaylandSession()) === 'tray') {
-      hideMainWindowToWindowsTray(window);
+      hideMainWindowToLinuxTray(window);
     } else {
       window.minimize();
     }
@@ -5372,7 +5384,7 @@ const registerIpcHandlers = () => {
     // 主窗的最小化意向在 Linux Wayland 上映射为隐藏到托盘: 合成器不响应最小化,
     // 副窗口维持原行为(out of scope)。这也覆盖 renderer 内选"最小化"关闭行为的路径。
     if (minimizeRequestMapsToTray(isLinuxWaylandSession(), win === mainWindowRef)) {
-      hideMainWindowToWindowsTray(win);
+      hideMainWindowToLinuxTray(win);
       return;
     }
     win.minimize();
