@@ -8,6 +8,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 // 透传真实 spawn,只计数:用来断言某些路径根本没有启动真实命令。
 const spawnCalls = vi.hoisted(() => ({ count: 0 }));
@@ -266,11 +269,85 @@ describe('resolvePreRunHookTimeoutMs(无默认超时)', () => {
 });
 
 describe('resolveHookCommand(xdt-node 前缀解析)', () => {
-  it('xdt-node 前缀 → 替换为当前运行时 execPath + ELECTRON_RUN_AS_NODE', async () => {
-    const { resolveHookCommand } = await import('../pre-run-hook');
-    const resolved = resolveHookCommand('xdt-node "C:/x/check.mjs"');
-    expect(resolved.command).toBe(`"${process.execPath}" "C:/x/check.mjs"`);
-    expect(resolved.extraEnv).toEqual({ ELECTRON_RUN_AS_NODE: '1' });
+  it.each([0, 2])('blocks an apparent runtime exit %s that never executes JavaScript', async (exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-not-node-'));
+    const originalExecPath = process.execPath;
+    try {
+      // Real subprocess, modelling a fuse-disabled GUI's single-instance exit.
+      // Healthy-check stdout is deliberately not evidence of Node startup.
+      const runtime = path.join(dir, process.platform === 'win32' ? 'gui.cmd' : 'gui');
+      writeFileSync(runtime, process.platform === 'win32'
+        ? '@echo off\r\necho CINDY_PRECHECK_OK\r\nexit /b ' + exitCode + '\r\n'
+        : '#!/bin/sh\nprintf \'CINDY_PRECHECK_OK\\n\'\nexit ' + exitCode + '\n', { mode: 0o700 });
+      writeFileSync(path.join(dir, 'gate.mjs'),
+        "import { writeFileSync } from 'node:fs'; writeFileSync('executed', 'yes');");
+      process.execPath = runtime;
+      const result = await executePreRunHook({
+        command: 'xdt-node gate.mjs',
+        cwd: dir,
+        stdinPayload: payload,
+      });
+      expect(existsSync(path.join(dir, 'executed'))).toBe(false);
+      expect(result.stdout).toContain('CINDY_PRECHECK_OK');
+      expect(result.status).toBe('failed');
+      expect(result.decision).toBe('block');
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.checkSucceeded).toBeUndefined();
+      expect(result.error).toMatch(/Node runtime.*did not start/i);
+      expect(result.error).toContain('pre-run check was not executed');
+    } finally {
+      process.execPath = originalExecPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Node CLI arguments and script stdout separate from startup proof', async () => {
+    const result = await executePreRunHook({
+      command: 'xdt-node -e "console.log(process.argv[1])" "two words"',
+      stdinPayload: payload,
+    });
+    expect(result.status).toBe('passed');
+    expect(result.stdout).toBe('two words\n');
+    expect(result.stderr).toBe('');
+  });
+
+  it.each([0, 2, 'throw'] as const)('waits for the real hook outcome after Node startup (%s)', async (outcome) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-await-exit-'));
+    const controller = new AbortController();
+    let pending: ReturnType<typeof executePreRunHook> | undefined;
+    let settled = false;
+    try {
+      writeFileSync(path.join(dir, 'gate.cjs'), [
+        "const fs = require('node:fs'); fs.writeFileSync('started', String(process.pid));",
+        "const timer = setInterval(() => { if (!fs.existsSync('release')) return;",
+        "clearInterval(timer); console.log('hook-finished');",
+        outcome === 'throw' ? "throw new Error('hook-exception-after-startup');" : 'process.exit(' + outcome + ');',
+        '}, 10);',
+      ].join('\n'));
+      pending = executePreRunHook({
+        command: 'xdt-node gate.cjs', cwd: dir, stdinPayload: payload,
+        signal: controller.signal, timeoutMs: 5_000,
+      });
+      void pending.then(() => { settled = true; });
+      // The script-side file proves its bootstrap has already run, while the
+      // hook is still waiting for our release. Startup alone must not decide.
+      await vi.waitFor(() => expect(existsSync(path.join(dir, 'started'))).toBe(true));
+      expect(settled).toBe(false);
+      writeFileSync(path.join(dir, 'release'), 'finish');
+      const result = await pending;
+      expect(result.exitCode).toBe(outcome === 'throw' ? 1 : outcome);
+      expect(result.status).toBe(outcome === 0 ? 'passed' : outcome === 2 ? 'skipped' : 'failed');
+      expect(result.decision).toBe(outcome === 0 ? 'run' : outcome === 2 ? 'skip' : 'block');
+      expect(result.stdout).toBe('hook-finished\n');
+      expect(result.error).toBeUndefined();
+      if (outcome === 'throw') expect(result.stderr).toContain('hook-exception-after-startup');
+      const pid = Number(readFileSync(path.join(dir, 'started'), 'utf8'));
+      await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+    } finally {
+      controller.abort();
+      await pending;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('普通命令原样透传,无额外 env', async () => {
@@ -280,21 +357,68 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
     expect(resolved.extraEnv).toEqual({});
   });
 
-  it('端到端:xdt-node 命令真实执行(测试环境 execPath 即 node)→ exit 2 = skip', async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
-    const { tmpdir } = await import('node:os');
-    const pathMod = await import('node:path');
-    const dir = mkdtempSync(pathMod.join(tmpdir(), 'xdt-node-hook-'));
+  it.each(['timeout', 'abort'] as const)('preserves %s and kills xdt-node descendants', async (mode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-cancel-'));
+    const controller = new AbortController();
+    let pending: ReturnType<typeof executePreRunHook> | undefined;
     try {
-      const script = pathMod.join(dir, 'gate.mjs');
-      writeFileSync(script, 'process.exit(2)\n', 'utf8');
+      writeFileSync(path.join(dir, 'gate.cjs'), [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "require('node:fs').writeFileSync('pids.json', JSON.stringify([process.pid, child.pid]));",
+        "setInterval(() => {}, 1000);",
+      ].join('\n'));
+      pending = executePreRunHook({
+        command: 'xdt-node gate.cjs', cwd: dir, stdinPayload: payload,
+        signal: controller.signal, timeoutMs: mode === 'timeout' ? 1_000 : undefined,
+      });
+      await vi.waitFor(() => expect(existsSync(path.join(dir, 'pids.json'))).toBe(true));
+      if (mode === 'abort') controller.abort();
+      const result = await pending;
+      expect(result.status).toBe(mode === 'timeout' ? 'timed_out' : 'aborted');
+      expect(result.decision).toBe('block');
+      expect(result.error ?? '').not.toContain('runtime did not start');
+      const pids = JSON.parse(readFileSync(path.join(dir, 'pids.json'), 'utf8')) as number[];
+      await vi.waitFor(() => {
+        for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+      });
+    } finally {
+      controller.abort();
+      await pending;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 2])('actually executes a script with no PATH Node (exit %s)', async (exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'xdt-node-hook-'));
+    const originalPath = process.env.PATH;
+    try {
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        "let input = ''; for await (const chunk of process.stdin) input += chunk;",
+        "writeFileSync('executed.json', JSON.stringify({ payload: JSON.parse(input), cwd: process.cwd() }));",
+        "console.log('CINDY_PRECHECK_OK');",
+        'process.exit(' + exitCode + ');',
+      ].join('\n'), 'utf8');
+      process.env.PATH = '';
       const result = await executePreRunHook({
-        command: `xdt-node "${script}"`,
+        command: 'xdt-node gate.mjs',
+        cwd: dir,
         stdinPayload: payload,
       });
-      expect(result.decision).toBe('skip');
-      expect(result.exitCode).toBe(2);
+      expect(JSON.parse(readFileSync(path.join(dir, 'executed.json'), 'utf8'))).toEqual({
+        payload: { event: 'schedule-pre-run', scheduleId: 's1', scheduleName: 'test schedule',
+          runId: 'r1', firedAt: 1_700_000_000_000 },
+        cwd: realpathSync(dir),
+      });
+      expect(result.status).toBe(exitCode === 0 ? 'passed' : 'skipped');
+      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.stdout).toBe('CINDY_PRECHECK_OK\n');
+      expect(result.checkSucceeded).toBe(true);
     } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
       rmSync(dir, { recursive: true, force: true });
     }
   });

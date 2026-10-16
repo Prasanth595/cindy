@@ -20,6 +20,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import type { PreRunHookRunResult } from '@cindy/maker-scheduler';
 import { capAppend as capAppendBase, killProcessTree } from './proc-util';
 import os from 'node:os';
@@ -63,21 +64,31 @@ export interface PreRunHookInput {
  * `xdt-node` 命令前缀:用 Cindy 自带的 Electron 运行时以 Node 模式执行脚本
  * (ELECTRON_RUN_AS_NODE)。给"机器上没有系统 node"的用户兜底——AI 生成器探测
  * 不到系统 node 时改发 `xdt-node <script>`,执行时在这里解析成当前 app 的
- * process.execPath,**不把 exe 绝对路径写进 DB**(app 升级/换装路径变了命令
- * 依然有效)。纯 node 测试环境下 process.execPath 就是 node 本身,同样成立。
+ * process.execPath,**不把 exe 绝对路径写进 DB**。正式包关闭 RunAsNode fuse,
+ * 此时 Electron 会忽略环境变量并可能以 GUI 单实例退出码 0 结束。因此必须收到
+ * Node bootstrap 的独立回执才能接受结果;运行时不可用时明确失败,不能静默放行。
  */
 const XDT_NODE_PREFIX = /^xdt-node\s+/;
 
-/** 解析 xdt-node 前缀(纯函数,可测)。普通命令原样返回。 */
+/** 解析 xdt-node 前缀并生成一次性 Node 启动回执。普通命令原样返回。 */
 export function resolveHookCommand(command: string): {
   command: string;
   extraEnv: Record<string, string>;
+  runtimeReceipt?: string;
 } {
   if (XDT_NODE_PREFIX.test(command.trim())) {
     const rest = command.trim().replace(XDT_NODE_PREFIX, '');
+    const runtimeReceipt = randomUUID();
+    // A Node preload writes only to fd3, leaving script stdin/stdout/stderr intact.
+    // A GUI that ignores ELECTRON_RUN_AS_NODE never loads it. Base64 keeps the
+    // inline module a single quoted argument on POSIX and Windows alike.
+    const bootstrap = Buffer.from(
+      "import { writeSync, closeSync } from 'node:fs'; writeSync(3, '" + runtimeReceipt + "'); closeSync(3);",
+    ).toString('base64');
     return {
-      command: `"${process.execPath}" ${rest}`,
+      command: `"${process.execPath}" "--import=data:text/javascript;base64,${bootstrap}" ${rest}`,
       extraEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      runtimeReceipt,
     };
   }
   return { command, extraEnv: {} };
@@ -226,6 +237,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let settled = false;
+    let runtimeReceipt = '';
     let child: ReturnType<typeof spawn>;
 
     const settle = (partial: { exitCode: number | null; spawnError?: string }): void => {
@@ -234,11 +246,16 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       if (timer) clearTimeout(timer);
       input.signal?.removeEventListener('abort', onAbort);
       const exitCode = partial.exitCode;
+      const runtimeError = resolved.runtimeReceipt !== undefined
+        && runtimeReceipt !== resolved.runtimeReceipt
+        ? 'Cindy built-in Node runtime did not start. The pre-run check was not executed. '
+          + 'Use a working Node command for this check.'
+        : undefined;
       const status = aborted
         ? 'aborted'
         : timedOut
           ? 'timed_out'
-          : partial.spawnError
+          : partial.spawnError || runtimeError
             ? 'failed'
             : exitCode === 0
               ? 'passed'
@@ -263,9 +280,11 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
           partial.spawnError ??
           (timedOut
             ? `pre-run hook timed out after ${timeoutMs ?? 0}ms`
-            : !aborted && exitCode === null
-              ? 'pre-run hook exited without a valid result'
-              : undefined),
+            : aborted
+              ? undefined
+              : runtimeError ?? (exitCode === null
+                ? 'pre-run hook exited without a valid result'
+                : undefined)),
       });
     };
 
@@ -301,7 +320,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
         shell: true,
         cwd: input.cwd?.trim() ? input.cwd : os.homedir(),
         windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: resolved.runtimeReceipt ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...resolved.extraEnv },
         // POSIX:自成进程组,超时/abort 时 kill(-pid) 才能连 shell 的子进程一起杀
         // (见 proc-util killProcessTree);Windows 忽略此参数,树杀走 taskkill /T。
@@ -321,6 +340,11 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       const text = chunk.toString('utf8');
       if (stderr.length + text.length > OUTPUT_CAP) stderrTruncated = true;
       stderr = capAppendBase(stderr, text, OUTPUT_CAP);
+    });
+    child.stdio[3]?.on('data', (chunk: Buffer) => {
+      // Keep at most one extra byte so overlong/invalid receipts cannot match.
+      runtimeReceipt = capAppendBase(runtimeReceipt, chunk.toString('utf8'),
+        (resolved.runtimeReceipt?.length ?? 0) + 1);
     });
     child.on('error', (err) => {
       settle({ exitCode: null, spawnError: err.message });
