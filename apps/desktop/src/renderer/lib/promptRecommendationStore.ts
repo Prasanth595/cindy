@@ -107,6 +107,22 @@ function scheduleCompletionSettle(sessionId: string): void {
   settleTimers.set(sessionId, timer);
 }
 
+/**
+ * live 完成与历史补生成共用的完成资格：失败 / 用户停止 / side-task / 后台未收尾
+ * 的轮次都不生成（#6184 review P1）。两处共用同一判据，避免逻辑漂移。
+ */
+function isPromptRecommendationCompletionEligible(
+  status: NonNullable<ReturnType<typeof makerChatStore.getPromptRecommendationCompletionStatus>>,
+): boolean {
+  return (
+    !status.turnStoppedByUser &&
+    !status.hasTerminalError &&
+    !status.sideTask &&
+    !status.hasBackgroundAgentWork &&
+    !status.hasAutoDrainingQueue
+  );
+}
+
 function settleCompletion(sessionId: string): void {
   if (runningSessionIds.has(sessionId)) return;
   const revision = pendingCompletionRevisions.get(sessionId);
@@ -123,11 +139,7 @@ function settleCompletion(sessionId: string): void {
   const eligible =
     getPromptRecommendationPreference() &&
     status != null &&
-    !status.turnStoppedByUser &&
-    !status.hasTerminalError &&
-    !status.sideTask &&
-    !status.hasBackgroundAgentWork &&
-    !status.hasAutoDrainingQueue;
+    isPromptRecommendationCompletionEligible(status);
 
   if (!eligible) {
     sawRunningSessionIds.delete(sessionId);
@@ -163,6 +175,10 @@ export function ensureHistoricalPromptRecommendation(
   if (!sessionId || revision == null) return;
   if (!Number.isFinite(revision) || revision <= 0) return;
   if (!getPromptRecommendationPreference()) return;
+  // 有运行态时复用完成资格：失败 / 用户停止 / 后台未收尾的轮次不补生成
+  // （#6184 review P1）。重启后的历史会话没有运行态信息，按允许处理。
+  const status = makerChatStore.getPromptRecommendationCompletionStatus(sessionId);
+  if (status != null && !isPromptRecommendationCompletionEligible(status)) return;
   if (runningSessionIds.has(sessionId)) return;
   if (entries.has(sessionId)) return;
   if (historicalAttemptedRevisions.get(sessionId) === revision) return;

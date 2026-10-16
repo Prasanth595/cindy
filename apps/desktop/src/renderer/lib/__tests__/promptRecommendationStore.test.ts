@@ -325,6 +325,22 @@ describe('ensureHistoricalPromptRecommendation（打开历史任务补一次，#
     expect(__testing.getSessionSnapshot('session-a')).toBeUndefined();
   });
 
+  it('有运行态时失败 / 被停止的完成轮不触发历史补生成', () => {
+    h.statusBySession.set('session-a', { ...ELIGIBLE, hasTerminalError: true });
+    ensureHistoricalPromptRecommendation('session-a', 300);
+    expect(__testing.getSessionSnapshot('session-a')).toBeUndefined();
+
+    h.statusBySession.set('session-b', { ...ELIGIBLE, turnStoppedByUser: true });
+    ensureHistoricalPromptRecommendation('session-b', 300);
+    expect(__testing.getSessionSnapshot('session-b')).toBeUndefined();
+  });
+
+  it('重启后的历史会话没有运行态信息，仍然允许补生成', () => {
+    // statusBySession 未设置 → 运行态为 null（重启后 / 未加载），按历史允许处理。
+    ensureHistoricalPromptRecommendation('old-session', 300);
+    expect(__testing.getSessionSnapshot('old-session')?.revision).toBe(300);
+  });
+
   it('dismiss 后同一完成点不再自动重现，新完成点恢复', () => {
     ensureHistoricalPromptRecommendation('session-a', 300);
     dismissPromptRecommendation('session-a');

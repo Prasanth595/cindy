@@ -70,6 +70,8 @@ const h = vi.hoisted(() => ({
         lastTurnEndedAt?: number | null;
       }
     | undefined,
+  /** 落盘前单列 status 复查的返回行；undefined = 按 sessionRow 现状，null = 无会话行。 */
+  writeRecheckRow: undefined as undefined | { status: string } | null,
   /** DB 读取次数计数(区分 drain 前后的两次读取)。 */
   dbReads: 0,
 }));
@@ -255,17 +257,30 @@ vi.mock('../../logger.js', () => ({
 vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({
     drizzle: {
-      select: () => ({
+      select: (fields?: Record<string, unknown>) => ({
         from: () => ({
           where: () => {
             h.dbReads += 1;
-            const row =
-              h.dbReads >= 2 && h.sessionRowAfterDrain !== undefined
-                ? h.sessionRowAfterDrain
-                : h.sessionRow;
-            return Promise.resolve(
-              row ? [{ activeTurnStartedAt: 1, lastTurnEndedAt: 2, ...row }] : [],
-            );
+            // 落盘前的单列 status 复查（title.ts）：只在显式设置 writeRecheckRow 时
+            // 模拟「已删除」，否则按会话行现状返回。
+            let rows: unknown[];
+            if (fields && Object.keys(fields).length === 1 && 'status' in fields) {
+              if (h.writeRecheckRow !== undefined) {
+                rows = h.writeRecheckRow ? [h.writeRecheckRow] : [];
+              } else {
+                const status = h.sessionRow ? (h.sessionRow.status ?? 'active') : null;
+                rows = status ? [{ status }] : [];
+              }
+            } else {
+              const row =
+                h.dbReads >= 2 && h.sessionRowAfterDrain !== undefined
+                  ? h.sessionRowAfterDrain
+                  : h.sessionRow;
+              rows = row ? [{ activeTurnStartedAt: 1, lastTurnEndedAt: 2, ...row }] : [];
+            }
+            const promise = Promise.resolve(rows);
+            // 查询可能以 .where() 或 .where().limit(1) 结尾；两种都支持。
+            return Object.assign(promise, { limit: () => promise });
           },
         }),
       }),
@@ -337,6 +352,7 @@ beforeEach(() => {
     lastTurnEndedAt: 2,
   };
   h.sessionRowAfterDrain = undefined;
+  h.writeRecheckRow = undefined;
   _resetPromptPredictionCacheForTests();
   resetPromptPredictionStopLedgerForTests();
   h.dbReads = 0;
@@ -751,6 +767,13 @@ describe('maker:predict-prompt — 完成点持久缓存（#6184）', () => {
     h.predict.mockResolvedValueOnce(null);
 
     await expect(invokePredict(VALID_REQUEST)).resolves.toEqual({ prompt: null });
+    expect(h.writeCachedPrompt).not.toHaveBeenCalled();
+  });
+
+  it('生成完成前任务已被删除：不把建议写回缓存（review P2）', async () => {
+    h.writeRecheckRow = { status: 'deleted' };
+
+    await expect(invokePredict(VALID_REQUEST)).resolves.toEqual({ prompt: '下一步做什么' });
     expect(h.writeCachedPrompt).not.toHaveBeenCalled();
   });
 

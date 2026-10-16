@@ -595,11 +595,20 @@ async function predictPromptForCompletedRevision(
       completionRevision,
     });
     if (prompt) {
-      writeCachedPromptRecommendation(sessionId, {
-        revision: completionRevision,
-        workingDir: latestSessionRow.workingDir ?? null,
-        prompt,
-      });
+      // 落盘前复查任务状态：请求发出后任务可能已被删除，删除路径已清过缓存，
+      // 无条件写回会把已删任务的建议重新留下（#6184 review P2）。
+      const [writeRow] = await getDbClient()
+        .drizzle.select({ status: sessions.status })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (writeRow && writeRow.status !== 'deleted') {
+        writeCachedPromptRecommendation(sessionId, {
+          revision: completionRevision,
+          workingDir: latestSessionRow.workingDir ?? null,
+          prompt,
+        });
+      }
     }
     return prompt;
   })().catch((error: unknown) => {
