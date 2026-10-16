@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { isSensitiveCredentialPath } from '@cindy/maker-core';
+import { diffLines, diffWordsWithSpace } from 'diff';
 
 export interface ExecutorPathAlias {
   /** Agent 所在电脑上的影子目录(绝对路径，按该电脑的路径写法)。 */
@@ -70,13 +71,109 @@ function stripAliasPrefix(input: string, from: string): string | null {
   return null;
 }
 
-/** 普通文本逐 token 匹配；命令只匹配前缀，后缀按 shell 引号与转义规则扫描。 */
-function pathTextPattern(aliases: readonly ExecutorPathAlias[], prefixOnly = false): RegExp {
-  const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'));
-  const prefix = '(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])';
-  return new RegExp('(^|[^A-Za-z0-9_])' + prefix
-    + (prefixOnly ? '' : '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)'), 'gi');
+const WINDOWS_PATH = /^[A-Za-z]:|^[\\/]{2}/;
+
+/** 正文里目录名后面出现这些字符时，这一段通常到此结束。 */
+const NAME_END = /[\s"'\x60<>()[\]{}|&;:,，。、；：！？（）【】《》「」『』“”‘’]/;
+
+/**
+ * 目录前缀后面那个字符是否让这一段结束。串尾和分隔符一定结束；空白、引号、括号和句末标点
+ * (`路径。`、`path.`)只在正文里算结束，仍可能是同级目录名的一部分(`xxx copy`)，由调用方按
+ * 磁盘核对。其余字符(`xxx.git`、`xxx-v1`)接着的是另一个名字：只按完整目录段匹配，与
+ * mapAlias 的判断一致，否则文本和文件操作会把同一个路径换到两个地方。
+ */
+function segmentEnd(text: string, index: number): 'separator' | 'punctuation' | null {
+  const char = text[index];
+  if (char === undefined || char === '/' || char === '\\') return 'separator';
+  if (NAME_END.test(char)) return 'punctuation';
+  if (!/[.!?]/.test(char)) return null;
+  let next = index;
+  while (/[.!?]/.test(text[next] ?? '')) next += 1;
+  return next >= text.length || NAME_END.test(text[next]) ? 'punctuation' : null;
+}
+
+interface AliasPrefixes<T extends ExecutorPathAlias> {
+  finder: RegExp;
+  prefixes: Array<{ alias: T; pattern: RegExp }>;
+}
+
+/** 别名需已按 from 由长到短排好；Windows 路径不区分大小写，其余按原样比较。 */
+function aliasPrefixes<T extends ExecutorPathAlias>(aliases: readonly T[]): AliasPrefixes<T> {
+  const prefixes = aliases.map((alias) => ({
+    alias,
+    pattern: new RegExp(alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'), WINDOWS_PATH.test(alias.from) ? 'iy' : 'y'),
+  }));
+  return { finder: new RegExp(prefixes.map((item) => item.pattern.source).join('|'), 'gi'), prefixes };
+}
+
+/** 从 start 起找下一个完整的目录前缀；同一位置先试最长的别名，不成立再试它的上级。 */
+function nextAliasPrefix<T extends ExecutorPathAlias>(
+  text: string, start: number, { finder, prefixes }: AliasPrefixes<T>,
+  continuesName?: (alias: T, rest: string) => boolean,
+): { index: number; end: number; alias: T } | null {
+  for (let from = start; from < text.length;) {
+    finder.lastIndex = from;
+    const found = finder.exec(text);
+    if (!found) return null;
+    const index = found.index;
+    if (index === 0 || !/[A-Za-z0-9_]/.test(text[index - 1])) {
+      for (const { alias, pattern } of prefixes) {
+        pattern.lastIndex = index;
+        const hit = pattern.exec(text);
+        if (!hit) continue;
+        const end = index + hit[0].length;
+        const kind = segmentEnd(text, end);
+        if (!kind || (kind === 'punctuation' && continuesName?.(alias, text.slice(end, end + 1024)))) continue;
+        return { index, end, alias };
+      }
+    }
+    from = index + 1;
+  }
+  return null;
+}
+
+/** 正文里路径前缀之后的部分：分隔符开头，遇空白、引号或标点停止。 */
+const PATH_SUFFIX = /[/\\][^\s\x60'";:|&)<>}\]]*/y;
+
+/**
+ * target：分隔符按目标端统一(Agent 看到的路径、结构化路径字段)。
+ * source：本机 Windows 路径沿用 Agent 原文的分隔符。写回文件和正文时用它：Agent 写的
+ * `/` 换成 `\` 会让源码字符串里的 `\f`、`\b` 变成转义字符，Markdown 里的 `\.git` 也会被吃掉。
+ */
+export type SeparatorStyle = 'target' | 'source';
+
+function joinMapped(to: string, matched: string, suffix: string, style: SeparatorStyle): string {
+  const base = to.replace(/[\\/]+$/, '');
+  if (style === 'source' && WINDOWS_PATH.test(base)) {
+    const separator = /[\\/]/.exec(matched)?.[0] ?? '\\';
+    return base.replace(/[\\/]/g, separator) + suffix.replace(/[\\/]/g, separator);
+  }
+  const separator = to.includes('\\') ? '\\' : '/';
+  return base + suffix.replace(/[\\/]/g, separator);
+}
+
+/** 记录 / 还原路径的原写法：text 为正文 token，decoded 为 JSON 字符串里的值，json 为 JSON 字符串字面量。 */
+export type SpellingLevel = 'text' | 'decoded' | 'json';
+
+export interface PathSpellingHooks {
+  record?(level: SpellingLevel, output: string, input: string): void;
+  restore?(level: SpellingLevel, input: string): string | undefined;
+}
+
+export interface ProjectPathTextOptions {
+  /** 正文 token 的分隔符写法，默认 target。 */
+  separators?: SeparatorStyle;
+  /** 整值路径(路径字段、已存在的完整路径)的分隔符写法，默认 target。 */
+  wholeSeparators?: SeparatorStyle;
+  /** false 时不按 JSON 解析，只逐行逐 token 投影(与 Read 工具带行号的输出一致)。 */
+  json?: boolean;
+  /** 目录名后接空白或标点时，核对它是否其实是同级目录名的一部分。 */
+  continuesName?: (alias: ExecutorPathAlias, rest: string) => boolean;
+  spellings?: PathSpellingHooks;
+  /** 原始正文中的位置，不包含 JSON 解码后的临时字符串。 */
+  restoreOriginal?(offset: number, input: string): string | undefined;
+  recordReplacement?(offset: number, input: string, output: string): void;
 }
 
 export function isPathTextField(key: string): boolean {
@@ -93,6 +190,7 @@ export function pathTextContext(key: string): PathTextContext {
 
 export function mapJsonPathText(
   text: string, project: (value: string, context: PathTextContext) => string, rootContext: PathTextContext = 'untyped',
+  literals?: { record?(output: string, input: string): void; restore?(input: string, offset: number): string | undefined; replaced?(offset: number, input: string, output: string): void },
 ): string {
   JSON.parse(text);
   // 顶层字符串/数组也能承载正文，容器本身不提供完整路径的证据。
@@ -122,51 +220,250 @@ export function mapJsonPathText(
       if (frame?.type === 'object') frame.key = decoded;
       return token;
     }
+    const restored = literals?.restore?.(token, offset);
+    if (restored !== undefined) {
+      if (restored !== token) literals?.replaced?.(offset, token, restored);
+      return restored;
+    }
     const projected = project(decoded, valueContext());
-    return projected === decoded ? token : JSON.stringify(projected);
+    const output = projected === decoded ? token : JSON.stringify(projected);
+    if (output !== token) literals?.record?.(output, token);
+    if (output !== token) literals?.replaced?.(offset, token, output);
+    return output;
   });
 }
 
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
 export function projectPathText(
   text: string, aliases: readonly ExecutorPathAlias[], context: PathTextContext = 'text',
-  isCompletePath?: (mapped: string) => boolean,
+  isCompletePath?: (mapped: string) => boolean, options: ProjectPathTextOptions = {},
 ): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
-  const textPattern = pathTextPattern(entries, false);
-  const project = (value: string, valueContext: PathTextContext = 'text'): string => {
+  const prefixes = aliasPrefixes(entries);
+  const { spellings } = options;
+  // 同一个路径在 JSON 字符串里和正文里的转义不同，原写法按所处层级分别记录与还原。
+  let depth = 0;
+  const replace = (input: string, mapped: () => string, offset: number | null): string => {
+    const level: SpellingLevel = depth ? 'decoded' : 'text';
+    const restored = (offset === null ? undefined : options.restoreOriginal?.(offset, input)) ?? spellings?.restore?.(level, input);
+    const output = restored ?? mapped();
+    if (output !== input) {
+      if (restored === undefined) spellings?.record?.(level, output, input);
+      if (offset !== null) options.recordReplacement?.(offset, input, output);
+    }
+    return output;
+  };
+  const project = (value: string, valueContext: PathTextContext = 'text', offset: number | null = 0): string => {
     // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
     // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
-    if (/^\s*[{["]/.test(value)) {
-      try { return mapJsonPathText(value, project, valueContext === 'text' ? 'untyped' : valueContext); } catch { /* 普通文本继续按路径边界投影。 */ }
+    if (options.json !== false && /^\s*[{["]/.test(value)) {
+      depth += 1;
+      try {
+        return mapJsonPathText(value, (decoded, context) => project(decoded, context, null), valueContext === 'text' ? 'untyped' : valueContext, {
+          record: (output, input) => spellings?.record?.('json', output, input),
+          restore: (input, index) => (offset === null ? undefined : options.restoreOriginal?.(offset + index, input)) ?? spellings?.restore?.('json', input),
+          replaced: (index, input, output) => { if (offset !== null) options.recordReplacement?.(offset + index, input, output); },
+        });
+      } catch { /* 普通文本继续按路径边界投影。 */ } finally {
+        depth -= 1;
+      }
     }
     // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
-    if (value.includes('\n')) return value.split('\n').map((line) => project(line, valueContext)).join('\n');
+    if (value.includes('\n')) {
+      let lineStart = 0;
+      return value.split('\n').map((line) => {
+        const output = project(line, valueContext, offset === null ? null : offset + lineStart);
+        lineStart += line.length + 1;
+        return output;
+      }).join('\n');
+    }
     // 整个字符串就是路径时(含已解码的 JSON 字符串)，空格也属于路径，不能截断后续分隔符。
     const lineEnd = value.endsWith('\r') ? '\r' : '';
     const pathValue = lineEnd ? value.slice(0, -1) : value;
     if (valueContext !== 'text') {
       for (const alias of entries) {
         if (stripAliasPrefix(pathValue, alias.from) === null) continue;
-        const separator = alias.to.includes('\\') ? '\\' : '/';
         const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
-        const mapped = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
+        const mapped = joinMapped(alias.to, pathValue, suffix, options.wholeSeparators ?? 'target');
         // 明确的路径字段可整体映射；歧义字段(如 script)只有现存完整路径才整体映射，
         // 否则按正文逐 token 投影，避免把脚本源码里的 /api/v1 等内容当成路径。
-        if (valueContext === 'path' || isCompletePath?.(mapped)) return mapped + lineEnd;
+        if (valueContext === 'path' || isCompletePath?.(mapped)) return replace(pathValue, () => mapped, offset) + lineEnd;
         break;
       }
     }
-    return value.replace(textPattern, (match: string, left: string, prefix: string, suffix: string) => {
-      const alias = entries.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-      if (!alias) return match;
-      const separator = alias.to.includes('\\') ? '\\' : '/';
-      return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-    });
+    let result = '';
+    let position = 0;
+    for (let hit = nextAliasPrefix(value, 0, prefixes, options.continuesName); hit;
+      hit = nextAliasPrefix(value, position, prefixes, options.continuesName)) {
+      PATH_SUFFIX.lastIndex = hit.end;
+      const suffix = PATH_SUFFIX.exec(value)?.[0] ?? '';
+      const input = value.slice(hit.index, hit.end + suffix.length);
+      const { to } = hit.alias;
+      result += value.slice(position, hit.index) + replace(input, () => joinMapped(to, input, suffix, options.separators ?? 'target'), offset === null ? null : offset + hit.index);
+      position = hit.end + suffix.length;
+    }
+    return result + value.slice(position);
   };
   return project(text, context);
+}
+
+const escapeJson = (value: string): string => JSON.stringify(value).slice(1, -1);
+
+interface UnchangedRange { before: number; after: number; length: number }
+interface OriginalSpelling { input: string; output: string }
+interface OriginalProjection { text: string; spellings: Map<number, OriginalSpelling> }
+
+/** 按上下文对齐未改内容，不能按同一个虚拟路径在新文件里的出现序号认领原写法。 */
+function unchangedRanges(before: string, after: string): UnchangedRange[] {
+  const ranges: UnchangedRange[] = [];
+  const deadline = Date.now() + 75;
+  const changes = diffLines(before, after, { timeout: 50, maxEditLength: 4096 });
+  let oldOffset = 0;
+  let newOffset = 0;
+  let removed = '';
+  let added = '';
+  const refine = () => {
+    // 行内小修改也保留未改的完整路径；限制同步 diff 的工作量，整文件重写不占满 main。
+    const remaining = deadline - Date.now();
+    const parts = remaining > 0 && removed.length + added.length <= 64 * 1024
+      ? diffWordsWithSpace(removed, added, { timeout: Math.min(25, remaining), maxEditLength: 4096 }) : undefined;
+    let oldPart = oldOffset - removed.length;
+    let newPart = newOffset - added.length;
+    for (const part of parts ?? []) {
+      if (!part.added && !part.removed) ranges.push({ before: oldPart, after: newPart, length: part.value.length });
+      if (!part.added) oldPart += part.value.length;
+      if (!part.removed) newPart += part.value.length;
+    }
+    removed = '';
+    added = '';
+  };
+  for (const change of changes ?? []) {
+    if (change.removed) { removed += change.value; oldOffset += change.value.length; }
+    else if (change.added) { added += change.value; newOffset += change.value.length; }
+    else {
+      refine();
+      ranges.push({ before: oldOffset, after: newOffset, length: change.value.length });
+      oldOffset += change.value.length;
+      newOffset += change.value.length;
+    }
+  }
+  refine();
+  // 完整且唯一的一行即便被移动，也仍能确定它对应哪段原文；同时作为 diff 超时的低成本回退。
+  const uniqueLines = new Map<string, number | null>();
+  let offset = 0;
+  for (const line of before.split('\n')) {
+    uniqueLines.set(line, uniqueLines.has(line) ? null : offset);
+    offset += line.length + 1;
+  }
+  offset = 0;
+  for (const line of after.split('\n')) {
+    const old = uniqueLines.get(line);
+    if (old !== undefined && old !== null && line) ranges.push({ before: old, after: offset, length: line.length });
+    offset += line.length + 1;
+  }
+  return ranges;
+}
+
+function alignedSpellings(projection: OriginalProjection, ranges: readonly UnchangedRange[]): Map<number, OriginalSpelling> {
+  const result = new Map<number, OriginalSpelling>();
+  const entries = [...projection.spellings].sort((a, b) => a[0] - b[0]);
+  for (const range of ranges) {
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (entries[middle][0] < range.before) low = middle + 1;
+      else high = middle;
+    }
+    for (let index = low; index < entries.length && entries[index][0] < range.before + range.length; index += 1) {
+      const [offset, spelling] = entries[index];
+      if (offset + spelling.input.length <= range.before + range.length) {
+        result.set(range.after + offset - range.before, spelling);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * 写回文件时沿用原文件里路径的写法。Agent 读到的是投影后的虚拟路径，而原文件里同一个目录
+ * 可能写成 `E:/x`、`E:\x`、`/e/x`、`/tmp` 或不同大小写；按 Agent 看到的写法查回原写法，
+ * 没改动的部分写回后逐字节不变。同一个虚拟写法对应多种原写法时按出现顺序对应。
+ */
+export class PathSpellings {
+  readonly projectedTexts: string[] = [];
+  private readonly spellings = new Map<string, string[]>();
+  private readonly used = new Map<string, number>();
+  private readonly ambiguous = new Map<string, string[]>();
+  private forced = new Map<string, string>();
+
+  /** raw：Agent 写的是文件原文(Write / Edit)；decoded：写的是 JSON 里解码后的内容(Notebook 单元格)。 */
+  constructor(private readonly view: 'raw' | 'decoded' = 'raw') {}
+
+  /** 正向投影原文件时记录。A 为不解析 JSON 的逐行投影(Read 工具所见)，B 为默认投影(fs.read 所见)。 */
+  recorder(pass: 'A' | 'B'): PathSpellingHooks {
+    return {
+      record: (level, output, input) => {
+        this.add(pass + ':' + level, output, input);
+        // JSON 字符串里的值出现在 JSON 源码片段(如 Edit 的 old_string)里时带着转义。
+        if (pass === 'B' && level === 'decoded') this.add('B:escaped', escapeJson(output), escapeJson(input));
+      },
+    };
+  }
+
+  restorer(pass?: 'A' | 'B' | 'unique'): PathSpellingHooks {
+    return { restore: (level, input) => this.restore(level, input, pass) };
+  }
+
+  /** 查过的、原文件里有多种原写法的虚拟写法。 */
+  alternatives(): Array<[string, string[]]> {
+    return [...this.ambiguous];
+  }
+
+  /** 指定某些虚拟写法用哪种原写法(Edit 在原文件里定位 old_string 时用)，并从头计数。 */
+  force(choices: ReadonlyMap<string, string>): void {
+    this.forced = new Map(choices);
+    this.used.clear();
+  }
+
+  private add(namespace: string, output: string, input: string): void {
+    const key = namespace + '\0' + output;
+    const list = this.spellings.get(key);
+    if (list) list.push(input);
+    else this.spellings.set(key, [input]);
+  }
+
+  private order(level: SpellingLevel, pass?: 'A' | 'B' | 'unique'): string[] {
+    // 还原 Read 的逐行视图时，不能借用整体 JSON 视图的队列：其中有些转义路径在 Read 里没有投影。
+    if (pass === 'A') return level === 'json' ? [] : ['A:text'];
+    if (level === 'json') return ['B:json'];
+    if (level === 'decoded' || this.view === 'decoded') return ['B:decoded', 'A:text', 'B:text'];
+    return ['A:text', 'B:text', 'B:escaped', 'B:decoded'];
+  }
+
+  private restore(level: SpellingLevel, input: string, pass?: 'A' | 'B' | 'unique'): string | undefined {
+    const key = level + '\0' + input;
+    const forced = this.forced.get(key);
+    if (forced !== undefined) return forced;
+    let picked: string | undefined;
+    const choices: string[] = [];
+    for (const namespace of this.order(level, pass)) {
+      const counter = namespace + '\0' + input;
+      const list = this.spellings.get(counter);
+      if (!list) continue;
+      if (picked === undefined) {
+        const count = this.used.get(counter) ?? 0;
+        this.used.set(counter, count + 1);
+        picked = list[Math.min(count, list.length - 1)];
+      }
+      for (const item of list) if (!choices.includes(item)) choices.push(item);
+    }
+    if (choices.length > 1) this.ambiguous.set(key, choices);
+    if (pass === 'unique' && choices.length !== 1) return undefined;
+    return picked;
+  }
 }
 
 export class ExecutorWorkspace {
@@ -277,8 +574,18 @@ export class ExecutorWorkspace {
 
   /** 工具输出、诊断和可逆的 UTF-8 文本内容使用虚拟路径；二进制字节保持原样。 */
   mapTextForAgent(text: string, context: PathTextContext = 'text'): string {
+    return this.projectForAgent(text, context);
+  }
+
+  private projectForAgent(text: string, context: PathTextContext, options: ProjectPathTextOptions = {}): string {
     if (!this.virtualRoot) return text;
-    const aliases = this.aliases.flatMap((alias) => {
+    return projectPathText(text, this.agentAliases(), context, (mapped) => fs.existsSync(this.mapAlias(mapped)),
+      { ...options, continuesName: this.continuesName });
+  }
+
+  /** 本机真实路径(含 Git Bash 写法)→ Agent 看到的虚拟路径。 */
+  private agentAliases(): ExecutorPathAlias[] {
+    return this.aliases.flatMap((alias) => {
       const real = alias.to.replace(/\\/g, '/');
       const entries = [{ from: real, to: alias.from }];
       // Git Bash / MSYS 的 pwd 和诊断使用 /c/...，而 Node 返回 C:\...。
@@ -290,16 +597,147 @@ export class ExecutorWorkspace {
       }
       return entries;
     });
-    return projectPathText(text, aliases, context, (mapped) => fs.existsSync(this.mapAlias(mapped)));
   }
 
-  /** 把 Agent 虚拟路径还原成本机路径，用于文本文件写回。 */
+  /**
+   * 正文里目录名后接空白或标点时，按磁盘核对后面是否其实是同级目录名(`xxx copy`、`xxx (1)`)：
+   * 是就交给上级目录别名按完整目录段投影，Agent 用这个路径读写时才会落回同一个目录。
+   */
+  private readonly continuesName = (alias: ExecutorPathAlias, rest: string): boolean => {
+    const real = alias.from.replace(/\\/g, '/').replace(/\/+$/, '');
+    const cut = real.lastIndexOf('/');
+    if (cut <= 0) return false;
+    const name = real.slice(cut + 1);
+    let parent = real.slice(0, cut);
+    if (/^[A-Za-z]:$/.test(parent)) parent += '/';
+    // Git Bash 写法 /c/x 对应 C:/x。
+    else if (process.platform === 'win32' && /^\/[A-Za-z](?:\/|$)/.test(parent)) parent = parent[1] + ':/' + parent.slice(3);
+    // 命令刚建的目录也要认得，不缓存目录列表；只核对到下一个分隔符为止的几处可能的名字结尾。
+    let checked = 0;
+    for (let length = 1; length <= Math.min(rest.length, 255) && checked < 8; length += 1) {
+      if (/[\\/\r\n]/.test(rest[length - 1])) break;
+      if (!segmentEnd(rest, length)) continue;
+      checked += 1;
+      if (fs.existsSync(parent.replace(/\/+$/, '') + '/' + name + rest.slice(0, length))) return true;
+    }
+    return false;
+  };
+
+  private agentPathsToLocal(): ExecutorPathAlias[] {
+    return this.aliases.map((alias) => ({ from: alias.from.replace(/\\/g, '/'), to: alias.to }));
+  }
+
+  /**
+   * 把 Agent 虚拟路径还原成本机路径，用于展示的正文、工具参数等。正文 token 沿用 Agent 的分隔符，
+   * 结构化路径字段与已存在的完整路径用本机写法。
+   */
   mapTextFromAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
-    return projectPathText(text, this.aliases.map((alias) => ({
-      from: alias.from.replace(/\\/g, '/'),
-      to: alias.to,
-    })), context, (mapped) => fs.existsSync(mapped));
+    return projectPathText(text, this.agentPathsToLocal(), context, (mapped) => fs.existsSync(mapped), { separators: 'source' });
+  }
+
+  /** 正文里的单个完整路径(代码段、尖括号链接)：还原成本机路径，分隔符沿用 Agent 的写法。 */
+  mapAliasInText(input: string): string {
+    const local = this.mapAlias(input);
+    if (local === input || !WINDOWS_PATH.test(local)) return local;
+    const separator = /[\\/]/.exec(input)?.[0] ?? '\\';
+    return local.replace(/[\\/]/g, separator);
+  }
+
+  /**
+   * Agent 写回的文件内容。original 为写入前的文件内容：Agent 读到的是投影后的路径，按它还原原文件里
+   * 的写法，没改动的部分逐字节不变；新出现的路径沿用 Agent 的分隔符。
+   */
+  mapContentFromAgent(text: string, original?: string | null, view: 'raw' | 'decoded' = 'raw'): string {
+    if (!this.virtualRoot) return text;
+    if (!original || view === 'decoded') return this.contentFromAgent(text, original ? this.contentSpellings(original, view) : undefined);
+    const projections = this.originalProjections(original);
+    if (projections.some((projection) => projection.text === text)) return original;
+    let matched = new Map<number, OriginalSpelling>();
+    let bestLength = -1;
+    for (const projection of projections) {
+      const candidate = alignedSpellings(projection, unchangedRanges(projection.text, text));
+      const length = [...candidate.values()].reduce((sum, item) => sum + item.input.length, 0);
+      if (length > bestLength) { matched = candidate; bestLength = length; }
+    }
+    // 字符串内的正文改变而路径不变时，只有一种原写法的路径仍可直接还原；有歧义的只按上下文恢复。
+    return this.contentFromAgent(text, this.contentSpellings(original, view), { restoreOriginal: (offset, input) => {
+      const spelling = matched.get(offset);
+      return spelling?.input === input ? spelling.output : undefined;
+    } }, 'unique');
+  }
+
+  /**
+   * Edit 在 Agent 读到的投影视图里匹配，保证同一虚拟路径的多种原写法都参与唯一性和批量替换检查。
+   * 写回时恢复未改内容；没有投影视图能匹配的旧请求继续按本机原文匹配。
+   */
+  mapEditFromAgent(oldString: string, newString: string, original: string | null): {
+    oldString: string; newString: string; text?: string; restore?: (updated: string) => string;
+  } {
+    if (!this.virtualRoot) return { oldString, newString };
+    if (!original) return { oldString: this.contentFromAgent(oldString), newString: this.contentFromAgent(newString) };
+    const normalizedOld = oldString.replace(/\r\n/g, '\n');
+    let selected: OriginalProjection | undefined;
+    let mostMatches = 0;
+    for (const projection of this.originalProjections(original.replace(/\r\n/g, '\n'))) {
+      if (!normalizedOld) break;
+      let count = 0;
+      for (let offset = projection.text.indexOf(normalizedOld); offset >= 0; offset = projection.text.indexOf(normalizedOld, offset + normalizedOld.length)) count++;
+      if (count > mostMatches) { selected = projection; mostMatches = count; }
+    }
+    // Read 的逐行文本与 Bash/fs.read 的 JSON 视图可能不同；来源未知时保守保留更多匹配，要求补充上下文。
+    if (selected) return { oldString, newString, text: selected.text, restore: (updated) => this.mapContentFromAgent(updated, original) };
+    const spellings = this.contentSpellings(original, 'raw');
+    const haystack = original.replace(/\r\n/g, '\n');
+    const found = (value: string) => haystack.includes(value.replace(/\r\n/g, '\n'));
+    let mappedOld = this.contentFromAgent(oldString, spellings);
+    let chosen = new Map<string, string>();
+    if (!found(mappedOld)) {
+      const alternatives = spellings.alternatives().slice(0, 4);
+      let combinations: Array<Map<string, string>> = [new Map()];
+      for (const [key, values] of alternatives) {
+        combinations = combinations.flatMap((choice) => values.map((value) => new Map(choice).set(key, value))).slice(0, 64);
+      }
+      for (const choice of combinations) {
+        spellings.force(choice);
+        const candidate = this.contentFromAgent(oldString, spellings);
+        if (found(candidate)) {
+          mappedOld = candidate;
+          chosen = choice;
+          break;
+        }
+      }
+    }
+    spellings.force(chosen);
+    return { oldString: mappedOld, newString: this.contentFromAgent(newString, spellings) };
+  }
+
+  private contentFromAgent(text: string, spellings?: PathSpellings, options: ProjectPathTextOptions = {}, pass?: 'A' | 'B' | 'unique'): string {
+    return projectPathText(text, this.agentPathsToLocal(), 'text', (mapped) => fs.existsSync(mapped), {
+      ...options, separators: 'source', wholeSeparators: 'source', spellings: spellings?.restorer(pass),
+    });
+  }
+
+  /** 按 Agent 读这个文件时看到的两种投影(Read 工具逐行、fs.read 整体)记下路径的原写法。 */
+  private contentSpellings(original: string, view: 'raw' | 'decoded'): PathSpellings {
+    const spellings = new PathSpellings(view);
+    spellings.projectedTexts.push(this.projectForAgent(original, 'text', { json: false, spellings: spellings.recorder('A') }));
+    const json = this.projectForAgent(original, 'text', { spellings: spellings.recorder('B') });
+    if (!spellings.projectedTexts.includes(json)) spellings.projectedTexts.push(json);
+    return spellings;
+  }
+
+  /** 在完整旧投影上恢复一次，记录每个路径/JSON字面量的精确位置与原写法。 */
+  private originalProjections(original: string): OriginalProjection[] {
+    const spellings = this.contentSpellings(original, 'raw');
+    return spellings.projectedTexts.map((text, index) => {
+      spellings.force(new Map());
+      const entries = new Map<number, OriginalSpelling>();
+      const restored = this.contentFromAgent(text, spellings, { recordReplacement: (offset, input, output) => { entries.set(offset, { input, output }); } }, index === 0 ? 'A' : 'B');
+      // 逆投影必须确实得到整份原文，才能把其中的位置信息用于局部恢复。
+      if (restored !== original) entries.clear();
+      return { text, spellings: entries };
+    });
   }
 
   /** 展示层延迟尚未传完整的虚拟路径；别名仍由当前执行器维护。 */
@@ -315,10 +753,11 @@ export class ExecutorWorkspace {
     return projected === text ? data : Buffer.from(projected, 'utf8');
   }
 
-  mapInputFromAgent(data: Buffer): Buffer {
+  /** Agent 写入的文件字节；original 为写入前的文本内容(见 mapContentFromAgent)。 */
+  mapInputFromAgent(data: Buffer, original?: string | null): Buffer {
     const text = data.toString('utf8');
     if (data.includes(0) || !Buffer.from(text, 'utf8').equals(data)) return data;
-    const projected = this.mapTextFromAgent(text);
+    const projected = this.mapContentFromAgent(text, original);
     return projected === text ? data : Buffer.from(projected, 'utf8');
   }
 
@@ -332,7 +771,7 @@ export class ExecutorWorkspace {
     if (!aliases.length) return command;
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
-    const pattern = pathTextPattern(aliases, true);
+    const prefixes = aliasPrefixes(aliases);
     const quoteContext = (input: string, end: number): 'none' | 'single' | 'double' => {
       let quote: 'none' | 'single' | 'double' = 'none';
       let escaped = false;
@@ -363,16 +802,12 @@ export class ExecutorWorkspace {
     };
     let result = '';
     let end = 0;
-    for (const match of command.matchAll(pattern)) {
-      const [, left, prefix] = match;
-      const start = match.index! + left.length;
-      if (start < end) continue;
-      const alias = aliases.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-      if (!alias) continue;
+    for (let hit = nextAliasPrefix(command, 0, prefixes); hit; hit = nextAliasPrefix(command, end, prefixes)) {
+      const { alias, index: start } = hit;
       const separator = alias.to.includes('\\') ? '\\' : '/';
       const context = quoteContext(command, start);
-      const windowsPath = /^[A-Za-z]:|^[/\\]{2}/.test(prefix);
-      let suffixEnd = start + prefix.length;
+      const windowsPath = WINDOWS_PATH.test(command.slice(start, hit.end));
+      let suffixEnd = hit.end;
       const suffixStart = suffixEnd;
       if ((windowsPath || dialect === 'cmd') && /[/\\]/.test(command[suffixEnd] ?? '')) {
         // 只转换静态路径段。转义、变量与命令替换从原文原样保留，尤其不能把转义

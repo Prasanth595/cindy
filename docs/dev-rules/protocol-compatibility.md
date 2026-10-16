@@ -882,8 +882,20 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   流式正文按来源、轮次和子代理 parentUuid 分别暂存未传完整的文件引用，同一流的工具和终态边界补齐尾段；全局终态与关闭清空所有流，独立后台提示不打断正文路径。
   `status { isRunning: false }` 也在转发前补齐尾段，不依赖后续 `done` 或关闭；仅前台顶层停止状态清空所有流，后台或子代理停止只补齐自身流，运行中或未声明停止的状态不打断正文路径。
   `file://` 与 `xdt-file://` / `xdt-audio://` 的文件路径按 URL 语法转换，HTTP 和 `cindy-media://` 地址保持原样。
-  事件身份、Agent 元信息与权限回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；旧消息不回填。
-  回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts` 与 `remote-agent/__tests__/eventProjection.test.ts`。
+  正文与命令里的目录前缀只按完整目录段匹配，与文件操作的路径解析一致：以工作目录名开头的同级目录(`xxx.git`、
+  `xxx-v1`)按上级目录投影，不能切成「工作目录 + `.git`」，否则文字与命令落在 `xxx.git`、文件工具却写进 `p.git`；
+  空白、引号与句末标点后面是否接着同级目录名(`xxx copy`、`xxx (1)`)，投影给 B 前在 A 上按磁盘核对。
+  Agent 写回文件(Claude Write / Edit / NotebookEdit、Pi `fs.write`、Codex `fs/write*`)时，按写入前的文件内容查回
+  路径的原写法(分隔符、Git Bash `/c/…`、`/tmp`、大小写、符号链接)，完整原样往返及能按上下文定位的未改内容保留原写法；
+  多种原写法折叠成同一虚拟文本且缺少可定位上下文时，不能保证任意重写逐字节无损。Edit 按 Agent 读到的投影视图
+  检查唯一性与批量替换，避免同一虚拟路径的多种原写法漏改；新出现的路径
+  沿用 Agent 的分隔符，A 为 Windows 时不把 `/` 改成 `\`，避免源码字符串里出现 `\f`、`\b` 等转义。Codex 的
+  `fs/write*` 的路径和命令在权限检查前改写，原内容只在授权通过、实际转发前读取，凭证类文件不预读。正文、代码段与链接里还原的路径同样沿用 Agent 的分隔符，
+  Markdown 不会把 `\.git` 当转义吞掉；结构化路径字段仍用 A 本机写法。
+  事件身份、Agent 元信息、权限与提问的回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；计划审阅的计划正文与
+  计划文件按 A 的真实路径展示和保存，用户改过的计划交回前换回 B 的虚拟路径。旧消息不回填。
+  回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts`、`remote-agent/executor/__tests__/pathFidelity.test.ts`
+  与 `remote-agent/__tests__/eventProjection.test.ts`。
 - **执行环境**(2026-10-07 裁决)：A 上的命令(Claude 的 Bash、Pi 的 `exec.run`、Codex exec-server、
   搜索)沿用 A 的 Desktop 完整环境，与本机 Agent 一致：真实用户目录、临时目录、`SSH_AUTH_SOCK`、
   git / gh / npm 配置与用户自己的环境变量照常可用，不另造假 HOME，也不剥离凭证类变量。任务由 A 的

@@ -19,6 +19,9 @@ let root: string;
 beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-virtual-workspace-'))); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
+/** Agent 写进文件的路径还原到本机时沿用它的分隔符，源码字符串里不会冒出 `\f`、`\b` 这类转义。 */
+function written(local: string, virtual: string): string { return virtual.startsWith('C:') ? local : local.replace(/\\/g, '/'); }
+
 function setup(virtual: string) {
   const project = path.join(root, 'real project');
   fs.mkdirSync(project);
@@ -198,12 +201,12 @@ describe('virtual workspace', () => {
     const { project, workspace } = setup(virtual);
     const native = virtual.startsWith('C:') ? path.win32 : path.posix;
     const input = Buffer.from(native.join(virtual, 'a.ts') + ' ' + native.join(virtual, 'src', 'b.ts') + ' links to /api/v1');
-    const real = Buffer.from(path.join(project, 'a.ts') + ' ' + path.join(project, 'src', 'b.ts') + ' links to /api/v1');
+    const real = Buffer.from(written(path.join(project, 'a.ts'), virtual) + ' ' + written(path.join(project, 'src', 'b.ts'), virtual) + ' links to /api/v1');
     expect(workspace.mapInputFromAgent(input)).toEqual(real);
     expect(workspace.mapOutputForAgent(real)).toEqual(input);
     const quoted = 'The docs say "' + native.join(virtual, 'README.md') + ' links to /api/v1"';
     expect(workspace.mapInputFromAgent(Buffer.from(quoted)))
-      .toEqual(Buffer.from('The docs say "' + path.join(project, 'README.md') + ' links to /api/v1"'));
+      .toEqual(Buffer.from('The docs say "' + written(path.join(project, 'README.md'), virtual) + ' links to /api/v1"'));
   });
 
   it.each([
@@ -228,7 +231,7 @@ describe('virtual workspace', () => {
     const { project, executor } = setup(virtual);
     const native = virtual.startsWith('C:') ? path.win32 : path.posix;
     const prose = native.join(virtual, 'README.md') + ' links to /api/v1 and relative/input.txt';
-    const localProse = path.join(project, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const localProse = written(path.join(project, 'README.md'), virtual) + ' links to /api/v1 and relative/input.txt';
     const documents = (value: string) => [
       JSON.stringify(value),
       '[\r\n  ' + JSON.stringify(value) + ', [' + JSON.stringify(value) + '], 1.00e0, "\\u4e2d"\r\n]\r\n',
@@ -289,7 +292,7 @@ describe('virtual workspace', () => {
       file, [file, [directory]], { paths: [future, [future]], nested: { file_paths: [future] } },
     ];
     const input = values(remote, native.dirname(remote), remoteFuture);
-    const expected = values(local, path.dirname(local), localFuture);
+    const expected = values(written(local, virtual), written(path.dirname(local), virtual), written(localFuture, virtual));
     expect(fs.existsSync(localFuture)).toBe(false);
     for (let index = 0; index < input.length; index += 1) {
       const remoteBytes = Buffer.from(JSON.stringify(input[index]));
@@ -319,10 +322,10 @@ describe('virtual workspace', () => {
     fs.writeFileSync(existing, 'console.log(1);');
     const existingVirtual = native.join(virtual, '目录 空格', 'run.js');
     const source = JSON.stringify({ script: native.join(virtual, 'run.js') + ' --url /api/v1' });
-    const sourceExpected = JSON.stringify({ script: path.join(project, 'run.js') + ' --url /api/v1' });
+    const sourceExpected = JSON.stringify({ script: written(path.join(project, 'run.js'), virtual) + ' --url /api/v1' });
     expect(workspace.mapInputFromAgent(Buffer.from(source))).toEqual(Buffer.from(sourceExpected));
     const pathValue = JSON.stringify({ script: existingVirtual });
-    const pathExpected = JSON.stringify({ script: existing });
+    const pathExpected = JSON.stringify({ script: written(existing, virtual) });
     expect(workspace.mapInputFromAgent(Buffer.from(pathValue))).toEqual(Buffer.from(pathExpected));
     expect(workspace.mapOutputForAgent(Buffer.from(pathExpected))).toEqual(Buffer.from(pathValue));
   });
@@ -644,7 +647,9 @@ describe('virtual workspace', () => {
       expect(actualNative).toEqual({ cwd: expect.any(String), script, argument: project });
       expect(fs.realpathSync.native(actualNative.cwd)).toBe(fs.realpathSync.native(fixtureDir));
       await executor.handle('fs.write', { path: agentPath.join(virtualDir, 'returned.json'), data: Buffer.from(lines[1]).toString('base64') });
-      expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'returned.json'), 'utf8'))).toEqual(nativeResult);
+      expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'returned.json'), 'utf8'))).toEqual({
+        cwd: written(fixtureDir, virtual), script: written(script, virtual), argument: written(project, virtual),
+      });
     } finally {
       await executor.close();
     }

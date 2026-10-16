@@ -51,9 +51,10 @@ function localText(value: string, workspace: ExecutorWorkspace, context: PathTex
   }
   // 尖括号链接是明确的完整路径。代码段也可能是命令，含空白时只有已存在的完整
   // 文件/目录才按单一路径处理；其余回到下方逐 token 投影，保留参数和正文中的斜杠。
+  // 分隔符沿用 Agent 的写法：Markdown 会把链接里的 `\.git`、`\_x` 当成转义吃掉。
   value = value.replace(/\x60([^\x60\r\n]+)\x60|<([^<>\r\n]+)>/g, (literal, code: string | undefined, angle: string | undefined) => {
     const remote = code ?? angle!;
-    const local = workspace.mapAlias(remote);
+    const local = workspace.mapAliasInText(remote);
     if (code !== undefined && local !== remote && /\s/.test(remote) && !fs.existsSync(local)) return literal;
     return local === remote ? literal : code !== undefined ? '\x60' + local + '\x60' : '<' + local + '>';
   });
@@ -73,6 +74,20 @@ function localValue(value: unknown, workspace: ExecutorWorkspace, key = ''): unk
   if (Array.isArray(value)) return value.map((item) => localValue(item, workspace, key));
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, IDENTITY_FIELDS.has(key) ? item : localValue(item, workspace, key)]));
+}
+
+/**
+ * 计划审阅：计划正文与计划文件按本机路径展示和保存，计划里的文件才能点开。权限与提问的回执要与
+ * 原请求逐字对应，保持原样。
+ */
+export function localPlanReview<T extends { kind: string }>(request: T, workspace: ExecutorWorkspace): T {
+  if (request.kind !== 'plan_review') return request;
+  const { plan, planFilePath } = request as { plan?: unknown; planFilePath?: unknown };
+  return {
+    ...request,
+    ...(typeof plan === 'string' ? { plan: localText(plan, workspace) } : {}),
+    ...(typeof planFilePath === 'string' ? { planFilePath: workspace.mapAlias(planFilePath) } : {}),
+  };
 }
 
 /** 只暂存末尾未闭合的路径，避免地址被多个 delta 切开后漏掉映射。 */

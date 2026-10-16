@@ -30,7 +30,7 @@ import type { ExecutorWorkspace } from '../executor/workspace';
 import { isProviderShareCredentialSessionApproval } from '../../../shared/providerShareCredentialConsent';
 import { encodeSendOptions, encodeUserMessage } from '../wire';
 import { RemoteAgentRemoteError, type RemoteAgentRunClient } from './runClient';
-import { RemoteEventProjection } from './eventProjection';
+import { localPlanReview, RemoteEventProjection } from './eventProjection';
 
 const MAX_REMEMBERED_SEND_CALLBACKS = 64;
 
@@ -402,10 +402,14 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
           : { kind: 'permission', behavior: 'deny', reason: 'interaction_unavailable' };
       return { type: 'interaction', result: decision };
     }
-    const decision = await resolver(request);
+    let decision = await resolver(localPlanReview(request, deps.workspace));
     if (decision.kind === 'permission' && decision.behavior === 'allow') {
       const effective = decision.updatedInput ? { ...request, input: decision.updatedInput } : request;
       for (const action of approvalActionsFor(effective, deps.workspace)) deps.recordApproval(action);
+    }
+    // 用户改过的计划按本机路径展示，交回 Agent 前换回它那边的写法。
+    if (decision.kind === 'plan_review' && typeof decision.editedPlan === 'string') {
+      decision = { ...decision, editedPlan: deps.workspace.mapTextForAgent(decision.editedPlan) };
     }
     return { type: 'interaction', result: JSON.parse(JSON.stringify(decision)) };
   }

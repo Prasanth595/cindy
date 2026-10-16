@@ -44,6 +44,9 @@ async function eventsFrom(controller: ReturnType<typeof setup>['controller'], in
 
 function text(event: AgentEvent): string { return (event.data as { text: string }).text; }
 
+/** 正文里还原的路径沿用 Agent 写的分隔符(Markdown 会把 `\.git` 这类反斜杠当转义)；结构化路径字段仍用本机写法。 */
+function written(local: string, virtual = '/'): string { return virtual.startsWith('C:') ? local : local.replace(/\\/g, '/'); }
+
 function remoteFileUrl(value: string): string {
   return 'file://' + (/^[A-Za-z]:/.test(value) ? '/' : '') + value.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([/]*[A-Za-z])%3A/, '$1:');
 }
@@ -87,7 +90,7 @@ describe('remote file references on the task computer', () => {
     const output = await eventsFrom(controller, [...reply].map((character) => ({
       type: 'text', source: 'codex', data: { text: character, isFinal: false, agentMessageId: 'message-1' },
     })));
-    expect(output.map(text).join('')).toBe('文件在 ' + '\x60' + local + '\x60' + '，打开[报告](<' + pathToFileURL(local).href + '#L2>)。');
+    expect(output.map(text).join('')).toBe('文件在 ' + '\x60' + written(local, virtual) + '\x60' + '，打开[报告](<' + pathToFileURL(local).href + '#L2>)。');
     expect(output.every((event) => (event.data as { isFinal: boolean }).isFinal === false)).toBe(true);
   });
 
@@ -100,9 +103,9 @@ describe('remote file references on the task computer', () => {
       type: 'text', source: 'codex', data: { text: '\x60' + remote + suffix + '\x60', isFinal: true },
     })));
     expect(output.map(text)).toEqual([
-      '\x60' + path.join(real, 'run.sh') + ' --url /api/v1\x60',
-      '\x60' + path.join(real, 'run.sh') + ' relative/input.txt\x60',
-      '\x60' + path.join(real, 'run.sh') + ' && cat ' + path.join(real, 'src', 'input.txt') + '\x60',
+      '\x60' + written(path.join(real, 'run.sh'), virtual) + ' --url /api/v1\x60',
+      '\x60' + written(path.join(real, 'run.sh'), virtual) + ' relative/input.txt\x60',
+      '\x60' + written(path.join(real, 'run.sh'), virtual) + ' && cat ' + written(path.join(real, 'src', 'input.txt'), virtual) + '\x60',
     ]);
   });
 
@@ -118,7 +121,7 @@ describe('remote file references on the task computer', () => {
       { type: 'text', source: 'codex', data: { text: virtual + '/last.txt', isFinal: false, agentMessageId: 'three' } },
     ]);
     expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
-      '正在生成。', path.join(real, 'first.txt'), 'tool_use', path.join(real, 'second.txt'), '下一条', path.join(real, 'last.txt'),
+      '正在生成。', written(path.join(real, 'first.txt')), 'tool_use', written(path.join(real, 'second.txt')), '下一条', written(path.join(real, 'last.txt')),
     ]);
     expect((output[3].data as { agentMessageId: string }).agentMessageId).toBe('two');
   });
@@ -136,9 +139,9 @@ describe('remote file references on the task computer', () => {
       delta('child-b', '.txt '),
     ]);
     expect(output.filter((event) => event.agentMeta?.parentUuid === 'child-a').map(text).join(''))
-      .toBe('A: ' + path.join(real, 'first.txt') + ' ');
+      .toBe('A: ' + written(path.join(real, 'first.txt')) + ' ');
     expect(output.filter((event) => event.agentMeta?.parentUuid === 'child-b').map(text).join(''))
-      .toBe('B: ' + path.join(real, 'second.txt') + ' ');
+      .toBe('B: ' + written(path.join(real, 'second.txt')) + ' ');
     expect(output.every((event) => (event.data as { isFinal: boolean }).isFinal === false)).toBe(true);
   });
 
@@ -156,9 +159,9 @@ describe('remote file references on the task computer', () => {
       child('child-a', virtual.slice(12) + '/first.txt '),
     ]);
     expect(output.filter((event) => event.type === 'text' && event.agentMeta?.parentUuid === 'child-a').map(text).join(''))
-      .toBe(path.join(real, 'first.txt') + ' ');
+      .toBe(written(path.join(real, 'first.txt')) + ' ');
     expect(output.filter((event) => event.type === 'text' && event.agentMeta?.parentUuid === 'child-b').map(text))
-      .toEqual([path.join(real, 'second.txt')]);
+      .toEqual([written(path.join(real, 'second.txt'))]);
   });
 
   it.each(['done', 'close'] as const)('flushes every unfinished child path at the %s boundary', async (boundary) => {
@@ -170,7 +173,7 @@ describe('remote file references on the task computer', () => {
     if (boundary === 'done') input.push({ type: 'done', source: 'claude-code', data: {} });
     const output = await eventsFrom(controller, input);
     expect(output.filter((event) => event.type === 'text').map((event) => ({ parentUuid: event.agentMeta?.parentUuid, text: text(event) })))
-      .toEqual(['child-a', 'child-b'].map((parentUuid) => ({ parentUuid, text: path.join(real, parentUuid + '.txt') })));
+      .toEqual(['child-a', 'child-b'].map((parentUuid) => ({ parentUuid, text: written(path.join(real, parentUuid + '.txt')) })));
     if (boundary === 'done') expect(output.at(-1)?.type).toBe('done');
   });
 
@@ -214,7 +217,7 @@ describe('remote file references on the task computer', () => {
       type: 'tool_result_full', source: 'claude-code', data: { toolUseId: 'result', fullText: JSON.stringify(value) },
     })));
     expect(output.map((event) => JSON.parse((event.data as { fullText: string }).fullText))).toEqual([local, [local], {
-      paths: [local, [local]], nested: { file_paths: [local] }, text: 'The docs say "' + path.join(real, 'README.md') + ' links to /api/v1"', links: [pathToFileURL(local).href],
+      paths: [local, [local]], nested: { file_paths: [local] }, text: 'The docs say "' + written(path.join(real, 'README.md'), virtual) + ' links to /api/v1"', links: [pathToFileURL(local).href],
     }]);
   });
 
@@ -222,7 +225,7 @@ describe('remote file references on the task computer', () => {
     const { real, controller } = setup(virtual);
     const native = virtual.startsWith('C:') ? path.win32 : path.posix;
     const prose = native.join(virtual, 'README.md') + ' links to /api/v1 and relative/input.txt';
-    const expected = path.join(real, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const expected = written(path.join(real, 'README.md'), virtual) + ' links to /api/v1 and relative/input.txt';
     const output = await eventsFrom(controller, [prose, [prose, [prose]], JSON.stringify([prose])].map((value) => ({
       type: 'tool_result_full', source: 'claude-code', data: { toolUseId: 'result', fullText: JSON.stringify(value) },
     })));
@@ -241,7 +244,7 @@ describe('remote file references on the task computer', () => {
       { type: 'interaction_request', source: 'claude-code', data: permission },
       { type: 'tool_use', source: 'claude-code', data: { toolName: 'Read', input: { file_path: '/unmapped/file.txt' } } },
     ]);
-    expect(text(output[0])).toBe(path.join(root, 'extra', 'new.txt'));
+    expect(text(output[0])).toBe(written(path.join(root, 'extra', 'new.txt')));
     expect(output[1].data).toEqual(permission);
     expect(output[2].data).toMatchObject({ input: { file_path: '/unmapped/file.txt' } });
   });
@@ -261,7 +264,7 @@ describe('remote file references on the task computer', () => {
       .toBe('[报告](<' + pathToFileURL(path.join(real, 'report.txt')).href + '>)');
     expect(output.find((event) => event.standaloneText)).toMatchObject({
       turnScope: 'background', backgroundTurnStartedAt: 1000,
-      data: { text: '后台文件：\x60' + path.join(real, 'background.txt') + '\x60', isFinal: true },
+      data: { text: '后台文件：\x60' + written(path.join(real, 'background.txt')) + '\x60', isFinal: true },
     });
   });
 
@@ -281,8 +284,8 @@ describe('remote file references on the task computer', () => {
       { ...background, backgroundTurnStartedAt: 2000, data: { text: virtual.slice(12) + '/other.txt ', isFinal: false } },
     ]);
     expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
-      path.join(real, 'background.txt'), boundary,
-      path.join(real, 'foreground.txt') + ' ', path.join(real, 'other.txt') + ' ',
+      written(path.join(real, 'background.txt')), boundary,
+      written(path.join(real, 'foreground.txt')) + ' ', written(path.join(real, 'other.txt')) + ' ',
     ]);
     expect(output[0]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 1000 });
     expect(output[3]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 2000 });
@@ -302,7 +305,7 @@ describe('remote file references on the task computer', () => {
         data: { text: virtual.slice(12) + '/background.txt ', isFinal: false } },
     ]);
     expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
-      'error', path.join(real, 'background.txt') + ' ',
+      'error', written(path.join(real, 'background.txt')) + ' ',
     ]);
   });
 
@@ -325,7 +328,7 @@ describe('remote file references on the task computer', () => {
         if (event.type === 'status') break;
       }
       expect(output).toEqual([
-        ...pending.map((event) => ({ ...event, data: { ...event.data as object, text: path.join(real, path.posix.basename(text(event))) } })),
+        ...pending.map((event) => ({ ...event, data: { ...event.data as object, text: written(path.join(real, path.posix.basename(text(event)))) } })),
         stopped,
       ]);
       expect(input).toEqual(original);
@@ -350,7 +353,7 @@ describe('remote file references on the task computer', () => {
       child('child-b', virtual.slice(12) + '/second.txt '),
     ]);
     expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
-      path.join(real, 'first.txt'), 'status', path.join(real, 'foreground.txt') + ' ', path.join(real, 'second.txt') + ' ',
+      written(path.join(real, 'first.txt')), 'status', written(path.join(real, 'foreground.txt')) + ' ', written(path.join(real, 'second.txt')) + ' ',
     ]);
     expect(output[0].agentMeta).toEqual({ parentUuid: 'child-a' });
     expect(output[1]).toEqual(stopped);
@@ -366,7 +369,7 @@ describe('remote file references on the task computer', () => {
       status,
       { type: 'text', source: 'codex', data: { text: virtual.slice(12) + '/report.txt ', isFinal: false } },
     ]);
-    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual(['status', path.join(real, 'report.txt') + ' ']);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual(['status', written(path.join(real, 'report.txt')) + ' ']);
     expect(output[0]).toEqual(status);
   });
 
@@ -401,7 +404,7 @@ describe('remote file references on the task computer', () => {
     ]);
     const streamed = output.filter((event) => event.type === 'text' && !(event.data as { isFinal?: boolean }).isFinal).map(text).join('');
     const final = output.find((event) => event.type === 'text' && (event.data as { isFinal?: boolean }).isFinal)!;
-    expect(text(final)).toBe('报告在 \x60' + local + '\x60 [打开](<' + pathToFileURL(local).href + '>)');
+    expect(text(final)).toBe('报告在 \x60' + written(local) + '\x60 [打开](<' + pathToFileURL(local).href + '>)');
     // Claude 的非 isFullText 终态仅在正文仍是其前缀时才会补齐持久消息。
     expect(text(final).startsWith(streamed)).toBe(true);
     expect(streamed).not.toContain('/Users/ag');
