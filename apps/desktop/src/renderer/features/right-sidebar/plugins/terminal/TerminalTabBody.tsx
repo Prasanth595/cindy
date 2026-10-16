@@ -4,8 +4,8 @@ import { Button } from '@/components/ui/button';
  *
  * 生命周期：
  *   1. 首次 mount：从 xtermPool 拿 Terminal 实例 → `terminal.open(slot)` → fit
- *      → state.created === false → IPC create PTY → patchState({ created: true })
- *      之后再次 mount(用户切回此 tab)只重挂 DOM + 重新 fit + focus，不重建 PTY
+ *      → IPC create/attach PTY → 同步 main 端退出快照 + patchState({ created: true })
+ *      之后再次 mount 仍做幂等 attach，恢复错过的退出状态，不重建已有 PTY
  *   2. 用户输入 → xterm onData → IPC.terminal.write(id, data)
  *   3. PTY 输出 → main 推 terminal:data event → 自己按 id filter → terminal.write(chunk)
  *   4. PTY 正常退出 → 走 store.closeTab 释放资源并关闭当前标签；异常退出保留
@@ -31,6 +31,7 @@ import { getOrCreateXterm, type XtermEntry } from './lib/xtermPool';
 import type {
   TerminalDataEvent,
   TerminalExitEvent,
+  TerminalExitInfo,
 } from '../../../../../shared/terminal-bridge';
 import type { TerminalState } from './index';
 
@@ -90,10 +91,25 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
   shellVisibleRef.current = shellVisible;
 
   const [runtimeError, setRuntimeError] = useState<RuntimeError | null>(null);
-  // hydrateState resets process-local fields on every sidebar render. Keep the
+  // hydrateState resets process-local fields when the sidebar state changes. Keep the
   // live exit snapshot with xterm, including when this tab is temporarily unmounted.
   const [exited, setExited] = useState(state.exited);
+  const [connecting, setConnecting] = useState(true);
   const [restarting, setRestarting] = useState(false);
+  const exitRevisionRef = useRef(0);
+
+  const applyExitSnapshot = useCallback((exit: TerminalExitInfo | null) => {
+    const entry = entryRef.current;
+    if (!entry) return;
+    entry.exit = exit;
+    setExited(exit);
+    // Unix node-pty reports signal 0 for an ordinary exit; Windows omits it.
+    if (exit?.code === 0 && (exit.signal === null || exit.signal === '0')) {
+      void closeTab(sessionId, tabId).catch((err) => {
+        log.warn('close terminal tab after clean exit failed', err);
+      });
+    }
+  }, [sessionId, tabId]);
 
   // ─── 1. xterm DOM 挂载 + IPC data/exit 订阅 ───
   // 用 useLayoutEffect 确保 paint 前 DOM 已经 attach,避免首帧空白
@@ -132,15 +148,9 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
     const offExit = window.electronAPI.terminal.onExit((evt: unknown) => {
       const ex = evt as TerminalExitEvent;
       if (!aliveRef.current || ex.id !== tabId) return;
-      entry.exit = ex.exit;
-      setExited(ex.exit);
+      exitRevisionRef.current += 1;
+      applyExitSnapshot(ex.exit);
       patchState({ exited: ex.exit });
-      // Unix node-pty reports signal 0 for an ordinary exit; Windows omits it.
-      if (ex.exit.code === 0 && (ex.exit.signal === null || ex.exit.signal === '0')) {
-        void closeTab(sessionId, tabId).catch((err) => {
-          log.warn('close terminal tab after clean exit failed', err);
-        });
-      }
     });
 
     // 折叠侧栏时 FitAddon 会把 0 宽折成极窄尺寸；不要把它写进
@@ -155,22 +165,19 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
       offExit();
       // xterm 实例和 PTY 都保活,这里仅 detach DOM 不 dispose
     };
-  }, [tabId, sessionId, patchState]);
+  }, [tabId, patchState, applyExitSnapshot]);
 
   // ─── 2. PTY 创建 / 跨窗口 re-attach ───
-  // 以本 renderer 的 entry.ptyAttached 为准，避免渲染期 hydrate 重置 created
-  // 后重复创建。未 attach 且未退出时才进入：首次创建，或侧边栏宿主在
-  //      "内嵌 ↔ 独立子窗口"间迁移,
-  //      PTY 在 main 仍活着但输出 sink 绑在旧窗口的 webContents 上。
-  //      ptyManager.create 是幂等 attach、可换 owner —— 再调一次把 sink 切到本窗口,
-  //      输入输出即恢复(xterm scrollback 是 per-renderer 的,迁移后丢失可接受)。
+  // 每次 mount 都以 main 为准同步：切换任务会漏掉 exit push，其他窗口也可能
+  // 重启过同一个 PTY。本 renderer 的 ptyAttached / exit 都不能代表当前状态。
+  // create 对运行中和已退出的 session 均为幂等 attach，不会隐式 restart。
+  // 不依赖 hydrate 后的 state.created，避免 patchState 导致重复 attach。
   useEffect(() => {
-    if (restarting) return;
     const entry = entryRef.current;
     if (!entry) return;
-    if (entry.exit || entry.ptyAttached) return;
-    const isReattach = state.created;
     let cancelled = false;
+    const exitRevision = exitRevisionRef.current;
+    setConnecting(true);
     const { cols, rows } = entry.lastSize;
     const fallbackCwd = workdir || (typeof process !== 'undefined' && process.env?.HOME) || '/';
     void window.electronAPI.terminal
@@ -184,25 +191,29 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
       .then((result) => {
         if (cancelled || !aliveRef.current) return;
         entry.ptyAttached = true;
-        // re-attach 路径不重复 patchState —— 持久化字段没变,写一遍只是无谓 IPC。
-        if (!isReattach) {
-          patchState({
-            created: true,
-            shellId: result.shellId,
-            shellDisplayName: result.shellDisplayName,
-            exited: null,
-          });
+        // A live exit can arrive before this IPC reply; never overwrite it with
+        // the older snapshot captured by main at attach time.
+        if (exitRevisionRef.current === exitRevision) {
+          applyExitSnapshot(result.exit ?? null);
         }
+        patchState({
+          created: true,
+          shellId: result.shellId,
+          shellDisplayName: result.shellDisplayName,
+          exited: entry.exit,
+        });
         setRuntimeError(null);
+        setConnecting(false);
       })
       .catch((err: unknown) => {
         if (cancelled || !aliveRef.current) return;
         setRuntimeError(parseError(err));
+        setConnecting(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [state.created, restarting, tabId, workdir, patchState]);
+  }, [tabId, workdir, patchState, applyExitSnapshot]);
 
   // ─── 3. ResizeObserver → fit → IPC resize ───
   useEffect(() => {
@@ -232,7 +243,7 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
 
   // ─── 5. Restart 按钮 handler ───
   const onRestart = useCallback(async () => {
-    if (restarting) return;
+    if (restarting || connecting) return;
     setRestarting(true);
     setRuntimeError(null);
     const entry = entryRef.current;
@@ -262,7 +273,7 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
     } finally {
       if (aliveRef.current) setRestarting(false);
     }
-  }, [restarting, tabId, patchState]);
+  }, [restarting, connecting, tabId, patchState]);
 
   // 渲染:slot 撑满,exited / runtimeError 在上面叠一层 overlay
   return (
@@ -271,7 +282,7 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
       {exited != null && !runtimeError && (
         <ExitedOverlay
           exit={exited}
-          restarting={restarting}
+          restarting={restarting || connecting}
           onRestart={onRestart}
           t={t}
         />
@@ -279,7 +290,7 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
       {runtimeError != null && (
         <ErrorOverlay
           message={t(runtimeError.i18nKey, { detail: runtimeError.detail })}
-          restarting={restarting}
+          restarting={restarting || connecting}
           onRetry={onRestart}
           t={t}
         />

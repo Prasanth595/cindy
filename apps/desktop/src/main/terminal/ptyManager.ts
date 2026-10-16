@@ -109,6 +109,7 @@ export interface CreateResult {
   shellId: Exclude<ShellId, 'auto'>;
   shellDisplayName: string;
   pid: number;
+  exit?: ExitInfo | null;
 }
 
 export interface ExitInfo {
@@ -207,16 +208,13 @@ export class PtyManager {
    *   - 同 id 已存在 + 仍在运行 → 返回现有 metadata, **更新 owner 到新 webContents**
    *     (renderer 重新 mount 后用新 webContents,旧 owner 可能已 destroyed);
    *     新传入的 cwd/cols/rows 忽略 —— PTY 内部状态已经走过了,xterm 之后会 resize 同步。
-   *   - 同 id 已存在但已 exit → 跟 codex 一致, restart() 是显式动作, 这里也拒绝(抛错让
-   *     renderer 知道要走 restart 路径); 但目前 plugin 在 exited 状态会渲染 overlay,
-   *     用户点 Restart 后才会调 restart() IPC,不会再调 create。
+   *   - 同 id 已存在但已 exit → 接管 owner 并返回退出快照，不隐式重建 PTY。
+   *     renderer 切换任务或窗口期间可能错过 exit push，重新挂载时以此同步。
+   *     restart() 仍是重建已退出 PTY 的唯一入口。
    */
   create(opts: CreateOptions): CreateResult {
     const existing = this.sessions.get(opts.id);
     if (existing) {
-      if (existing.exit) {
-        throw new Error(`terminal session already exists (exited): ${opts.id}`);
-      }
       // 幂等 attach:把 owner 切到当前 webContents,后续 sink.emitData 才能正确推过去。
       // 单窗口架构下基本是同一个 owner,这步主要给 dev reload (Cmd+R) 重建 webContents
       // 时兜底。
@@ -234,6 +232,7 @@ export class PtyManager {
         shellId: existing.resolved.id,
         shellDisplayName: existing.resolved.displayName,
         pid: existing.pty.pid,
+        exit: existing.exit,
       };
     }
     const session = this.spawnSession(opts);
@@ -253,6 +252,7 @@ export class PtyManager {
       shellId: session.resolved.id,
       shellDisplayName: session.resolved.displayName,
       pid: session.pty.pid,
+      exit: session.exit,
     };
   }
 
