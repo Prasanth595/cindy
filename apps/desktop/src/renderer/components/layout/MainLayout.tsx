@@ -1538,7 +1538,6 @@ export function MainLayout() {
                       <TaskRemoteDesktopButton
                         key={remoteDesktopDeviceId}
                         deviceId={remoteDesktopDeviceId}
-                        size="toolbar"
                         className={rightSidebarAvailable ? 'mr-1' : 'mr-2'}
                       />
                     ) : undefined

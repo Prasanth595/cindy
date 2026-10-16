@@ -17,16 +17,13 @@ import { useRemoteDesktopAvailability } from './useRemoteDesktopAvailability';
  * 置灰，悬停 / 点击说明原因；被打断的检查在再次悬停或聚焦时重查。这台电脑本身或
  * 手机不是远程桌面目标，不显示。调用方按 deviceId 加 key，换电脑即重建。
  *
- * 尺寸与 RightSidebarToggle 同族：'toolbar' = rounded-md（mac 顶栏），'chip' =
- * rounded-full（Windows chip 栈，容器 pointer-events-none，按钮自带 auto）。
+ * 两端共用 28px 胶囊按钮；Windows chip 栈容器 pointer-events-none，按钮自带 auto。
  */
 export function TaskRemoteDesktopButton({
   deviceId,
-  size = 'chip',
   className,
 }: {
   deviceId: string;
-  size?: 'chip' | 'toolbar';
   className?: string;
 }) {
   const { t } = useTranslation();
@@ -35,12 +32,12 @@ export function TaskRemoteDesktopButton({
   const availability = useRemoteDesktopAvailability(deviceId);
   const [opening, setOpening] = useState(false);
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   if (availability.reason === 'remoteDesktop.shortcut.unsupported') return null;
   const busy = opening || availability.checking;
@@ -69,7 +66,7 @@ export function TaskRemoteDesktopButton({
         aria-busy={busy || undefined}
         className={cn(
           'pointer-events-auto flex h-7 w-7 shrink-0 items-center justify-center',
-          size === 'toolbar' ? 'rounded-md' : 'rounded-full',
+          'rounded-full',
           'text-titlebar-icon transition-colors hover:bg-titlebar-button-hover',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
           'aria-disabled:hover:bg-transparent',

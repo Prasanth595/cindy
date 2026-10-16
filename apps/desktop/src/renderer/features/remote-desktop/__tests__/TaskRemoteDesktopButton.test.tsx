@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+// 测试价值：通过真实按钮入口保护远程任务的一键打开、不可用原因与失败恢复；
+// 原标题栏放错位置且不可用时隐藏导致用户找不到入口，相邻侧栏用例不覆盖此按钮。
+// 最小输入为一台在线且开放远控的电脑（及离线/拒绝/失败变体）；unit tier，单独约 4 秒。
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { REMOTE_DESKTOP_CHANNEL } from '@cindy/device-link';
@@ -8,9 +10,16 @@ import i18n from '@/i18n';
 import { revokedDevicesStore } from '@/features/device-link/revokedDevicesStore';
 import { unresponsiveDevicesStore } from '@/features/device-link/unresponsiveDevicesStore';
 import { toast } from '@/lib/toast';
+import { ContentHeader } from '@/components/layout/ContentHeader';
 import { TaskRemoteDesktopButton } from '../TaskRemoteDesktopButton';
 
 const fixture = vi.hoisted(() => ({ devices: [] as DeviceLinkDeviceView[] }));
+vi.mock('@/features/feature-context', () => ({
+  useFeatureContentHeader: () => 'Task title',
+}));
+vi.mock('@/hooks/useMacFullscreen', () => ({
+  useMacFullscreen: () => ({ isMac: true, isFullscreen: false }),
+}));
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
   useDeviceLinkDeviceList: () => fixture.devices,
   useDeviceLinkDeviceListRequestState: () => ({ status: 'ready', error: null }),
@@ -158,7 +167,11 @@ it('coalesces repeated clicks and keeps the button after a failed open', async (
       reject = fail;
     }),
   );
-  render(<TaskRemoteDesktopButton deviceId="remote" />);
+  render(
+    <StrictMode>
+      <TaskRemoteDesktopButton deviceId="remote" />
+    </StrictMode>,
+  );
   await act(async () => {});
   const action = screen.getByRole('button', { name: 'Open remote desktop' });
   fireEvent.click(action);
@@ -170,31 +183,26 @@ it('coalesces repeated clicks and keeps the button after a failed open', async (
   expect(screen.getByRole('button', { name: 'Open remote desktop' })).toBe(action);
 });
 
-it('uses the toolbar shape in the mac top bar and the chip shape in the Windows chip stack', async () => {
-  const view = render(<TaskRemoteDesktopButton deviceId="remote" size="toolbar" />);
-  expect(screen.getByRole('button').className).toContain('rounded-md');
-  view.rerender(<TaskRemoteDesktopButton deviceId="remote" />);
-  expect(screen.getByRole('button').className).toContain('rounded-full');
+it('keeps the remote desktop action clickable in the mac titlebar trailing slot', async () => {
+  render(
+    <ContentHeader
+      sidebarVisible
+      showCollapsedActions={false}
+      isSidebarRail={false}
+      rightSidebarAvailable
+      hidden={false}
+      trailing={<TaskRemoteDesktopButton deviceId="remote" />}
+    />,
+  );
   await act(async () => {});
-});
-
-it('sits next to the right sidebar toggle on both platforms and skips shared-task peers', () => {
-  const source = (path: string) =>
-    readFileSync(resolve(__dirname, '../../../components/layout', path), 'utf8');
-  const mainLayout = source('MainLayout.tsx');
-  const contentHeader = source('ContentHeader.tsx');
-  expect(mainLayout).toMatch(
-    /deviceLinkDeviceId &&\s+!isSharedTaskPeer\(rightSidebarWorkdirInfo\.deviceLinkDeviceId\)/,
+  const header = screen.getByRole('banner');
+  const action = screen.getByRole('button', { name: 'Open remote desktop' });
+  expect(header.textContent).toContain('Task title');
+  expect(header.contains(action)).toBe(true);
+  expect((action.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe(
+    'no-drag',
   );
-  // mac:顶栏右端,紧挨右上角右栏开关的占位。
-  expect(mainLayout).toMatch(/trailing=\{\s+isMac && remoteDesktopDeviceId \?/);
-  expect(contentHeader).toMatch(/\{headerContent\}<\/div>\s+\{trailing\}/);
-  // Windows:与右栏唤起 chip 同一个内容区浮动栈,先远程桌面、后唤起 chip。
-  expect(mainLayout).toMatch(
-    /data-testid="right-sidebar-fixed-trigger"[\s\S]{0,1200}<TaskRemoteDesktopButton[\s\S]{0,400}<RightSidebarToggle/,
-  );
-  // 按钮自身挖 no-drag 洞,mac 顶栏拖拽区里也能点。
-  expect(readFileSync(resolve(__dirname, '../TaskRemoteDesktopButton.tsx'), 'utf8')).toMatch(
-    /style=\{WINDOW_NO_DRAG_STYLE\}/,
-  );
+  fireEvent.click(action);
+  expect(open).toHaveBeenCalledExactlyOnceWith({ deviceId: 'remote', name: 'Remote computer' });
+  await act(async () => {});
 });
