@@ -688,6 +688,45 @@ describe('IM slash commands', () => {
       expect(turnRunner.resolveRouteTarget).not.toHaveBeenCalled();
     });
 
+    it('连接交给伙伴后报伙伴那条任务实际在用的模型, 不报渠道自己的默认值', async () => {
+      // 渠道自己的确定性会话行(或 IM 新会话默认)可能写着 Opus, 但这条连接上消息
+      // 实际跑在伙伴主任务里(这里是 Codex)。/settings 报前者会让用户以为配置错了。
+      const repo = makeRepo({ peekSession: vi.fn(async () => ({ ...defaultRow })) });
+      const turnRunner = makeTurnRunner({
+        companionBotIdFor: vi.fn(() => 'bot-mimi'),
+        peekCompanionRouteTarget: vi.fn(async () => ({
+          ...defaultRow,
+          id: 'companion-canonical',
+          agentKind: 'codex',
+          model: 'gpt-6.1-sol',
+          effort: 'medium',
+        })),
+      } as Partial<ImTurnRunner>);
+      const { handlers } = makeHarness({ repo, turnRunner, adapterOverrides: { ui: telegramUi } });
+      expect(await handlers.handleSlashCommand('/settings', SLASH_CTX)).toBe(true);
+      const [, text] = mocks.sendMarkdownText.mock.calls.at(-1)!;
+      expect(text).toContain('Agent：codex');
+      expect(text).toContain('模型：gpt-6.1-sol');
+      expect(text).not.toContain('claude-opus-4-8');
+      expect(text).toContain('伙伴设置');
+      expect(text).not.toContain('/model');
+      expect(repo.peekSession).not.toHaveBeenCalled();
+      expect(repo.prepareNewSession).not.toHaveBeenCalled();
+    });
+
+    it('连接交给伙伴但任务还没建起来时指回伙伴设置, 不报一份跑不到的默认值', async () => {
+      const repo = makeRepo({ peekSession: vi.fn(async () => ({ ...defaultRow })) });
+      const turnRunner = makeTurnRunner({
+        companionBotIdFor: vi.fn(() => 'bot-mimi'),
+        peekCompanionRouteTarget: vi.fn(async () => null),
+      } as Partial<ImTurnRunner>);
+      const { handlers } = makeHarness({ repo, turnRunner, adapterOverrides: { ui: telegramUi } });
+      await handlers.handleSlashCommand('/settings', SLASH_CTX);
+      const [, text] = mocks.sendMarkdownText.mock.calls.at(-1)!;
+      expect(text).toBe(telegramUi.slash.companionManagedCommand);
+      expect(repo.peekSession).not.toHaveBeenCalled();
+    });
+
     it('还没有会话行时报渠道默认值, 项目名不是空串', async () => {
       const repo = makeRepo({ peekSession: vi.fn(async () => null) });
       const { handlers } = makeHarness({ repo, adapterOverrides: { ui: telegramUi } });

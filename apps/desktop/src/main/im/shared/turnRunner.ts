@@ -646,6 +646,12 @@ export interface ImTurnRunner {
    */
   rotateCompanionLane?(botContextId: string, userId: string): Promise<'unbound' | 'owner-dm' | 'rotated'>;
   /**
+   * 只读: 连接交给伙伴后这条消息会落到的任务行(主人私聊 → 主任务; 群 / 话题 / 外部
+   * 用户 → 专线)。不建行、不恢复主任务; 未交出或还没有这条任务时返回 null。
+   * `/settings` 用它报伙伴实际在用的模型, 而不是渠道自己那条确定性会话的默认值。
+   */
+  peekCompanionRouteTarget?(botContextId: string, userId: string): Promise<ImSessionRow | null>;
+  /**
    * 本渠道已接线自有任务的渠道 vendorOptions(切换引擎重建会话时补回);
    * 未接线 / 接管 / 通知回复任务返回 undefined。
    */
@@ -895,6 +901,14 @@ export function createTurnRunner(
       );
     }
     return null;
+  }
+
+  async function peekCompanionRouteTarget(
+    botContextId: string,
+    userId: string,
+  ): Promise<ImSessionRow | null> {
+    const target = await resolveCompanionRouteTarget(botContextId, userId, undefined, false);
+    return target && target !== 'absent' ? target.row : null;
   }
 
   async function rotateCompanionLane(
@@ -4483,6 +4497,7 @@ export function createTurnRunner(
     },
     companionBotIdFor,
     rotateCompanionLane,
+    peekCompanionRouteTarget,
     getPermissionModes: (agentKind) => getMaker().getCapabilities(agentKind).permissionModes,
     changePermissionMode: (args) =>
       changeSessionPermissionMode({

@@ -323,6 +323,17 @@ export interface ImUiTextPack {
       effort: string;
       permission: string;
     }) => string;
+    /**
+     * 连接已交给伙伴时的 /settings: 同样五项, 但读的是伙伴那条任务(主任务 / 本群专线)
+     * 实际在用的配置, 尾注指向伙伴设置而不是 /model /permission。缺省回落 `settings`。
+     */
+    settingsCompanion?: (info: {
+      workspace: string;
+      agent: string;
+      model: string;
+      effort: string;
+      permission: string;
+    }) => string;
     detachedBySlash: string;
     detachedByRevoke: string;
     notAttached: string;

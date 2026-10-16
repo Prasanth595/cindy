@@ -593,10 +593,23 @@ export function createSlashHandlers(
           botContextId: ctx.botContextId,
           userId: ctx.userId,
         });
+        // 连接已交给伙伴(且没在 /ctr 接管中): 报伙伴那条任务(主任务 / 本群专线)实际在用
+        // 的配置。渠道自己的确定性会话行在这条连接上根本不会跑, 它的默认值(设置页 IM
+        // 新会话默认)会让用户以为伙伴用的是另一个模型。
+        const companionBound = !attachedSessionId && !!turnRunner.companionBotIdFor?.(ctx.botContextId);
+        const companionRow = companionBound
+          ? await turnRunner.peekCompanionRouteTarget?.(ctx.botContextId, ctx.userId)
+          : null;
+        if (companionBound && !companionRow) {
+          // 伙伴暂停 / 任务还没建起来: 没有一份能如实报的配置, 指回伙伴设置。
+          await safeSendText(ctx, ui.slash.companionManagedCommand ?? ui.slash.unknownCommand(cmd));
+          return true;
+        }
         // 只读查询必须走只读路径: resolveRouteTarget 没有现成会话时会**建**一条,
         // 而它内部的 findActiveSession 还会把软删行翻回 active 并广播 —— 问一句
         // 「我现在什么配置」不该凭空造出任务, 更不该把用户已删的会话拉回列表。
         const row =
+          companionRow ??
           (attachedSessionId ? await repo.peekSessionById(attachedSessionId) : null) ??
           (await repo.peekSession(ctx.botContextId, ctx.userId));
         // 还没有会话行时报的必须是**下一条消息真正会用的**那份配置。静态
@@ -613,7 +626,7 @@ export function createSlashHandlers(
         );
         await safeSendText(
           ctx,
-          render({
+          ((companionRow && ui.slash.settingsCompanion) || render)({
             workspace,
             agent: effective.agentKind,
             model: effective.model,

@@ -38,6 +38,9 @@ export const ui = {
       `没认出 \`${cmd}\` 这个命令 🤔\n我能听懂的: /new、/session、/project、/model、/permission、/settings、/ctr、/exctr、/stop、/help`,
     settings: ({ workspace, agent, model, effort, permission }) =>
       `⚙️ 当前设置\n\n项目：${workspace}\nAgent：${agent}\n模型：${model}\n推理强度：${effort}\n权限：${permission}\n\n想改就发 /project、/model、/permission～`,
+    // 连接已交给伙伴: 五项读的是伙伴这条任务实际在用的, 要改去伙伴设置。
+    settingsCompanion: ({ workspace, agent, model, effort, permission }) =>
+      `⚙️ 当前设置（伙伴）\n\n项目：${workspace}\nAgent：${agent}\n模型：${model}\n推理强度：${effort}\n权限：${permission}\n\n模型、权限和工作目录跟随伙伴设置，请在 Cindy 的伙伴设置里修改。`,
     detachedBySlash: '🚪 接管结束，咱们回到 Telegram 对话。下次想远程操控 desktop 再 /ctr',
     detachedByRevoke: '⚠️ 你在 desktop 那边把接管收回去了，后续消息回到 Telegram 对话。',
     notAttached: '🤷 你现在没在接管任何任务，/exctr 闲着也没事可干。',
