@@ -35,8 +35,10 @@ export interface GhostOverlayWindowsControllerDeps {
   isGhostOverlayDeclared: (ghostId: string) => boolean;
   isUserEnabled: (ghostId: string) => boolean;
   /**
-   * 可选:解析插件当前安装版本(slot 记录创建时版本;reconcile 发现版本变化时
-   * dispose 旧浮窗,下次 mount 重建)。缺省返回 null 表示无版本信息,不做版本比对。
+   * 可选:解析插件当前安装身份(版本 + 安装 revision 等稳定安装事实;同一版本号
+   * 但内容变化的本地重装会生成新的 revision)。slot 记录创建时身份;reconcile
+   * 发现身份变化时 dispose 旧浮窗,下次 mount 重建。缺省返回 null 表示无身份
+   * 信息,不做身份比对。
    */
   resolveInstalledVersion?: (ghostId: string) => string | null;
   broadcastState: (state: GhostOverlayWindowsState) => void;
@@ -62,8 +64,10 @@ interface WindowSlot {
   win: BrowserWindow;
   /** 创建时捕获,销毁后仍可用于清理 registry 绑定。 */
   webContentsId: number;
-  /** 创建时捕获的安装版本;reconcile 发现版本变化时据此 dispose 旧浮窗。 */
+  /** 创建时捕获的安装身份;reconcile 发现身份变化时据此 dispose 旧浮窗。 */
   installedVersion: string | null;
+  /** 首次加载仍在进行(窗口尚无壳);抑制 5s 壳超时对它的误销毁。 */
+  loading: boolean;
   rendererReady: boolean;
   presentationReady: boolean;
   visible: boolean;
@@ -199,18 +203,17 @@ export class GhostOverlayWindowsController {
         ghost.manifest.overlay !== undefined;
       if (eligible) {
         // 更新后仍声明 overlay 的插件:旧窗口逻辑页是旧版本,复用会继续 mount
-        // 旧页面/旧尺寸。版本不一致 → dispose,重建留给下次 mount 触发。
-        if (
-          slot.installedVersion !== null &&
-          slot.installedVersion !== ghost.manifest.version
-        ) {
+        // 旧页面/旧尺寸。安装身份(版本 + revision)不一致 → dispose,重建留给下次
+        // mount 触发;身份解析与 slot 创建时同源,保证两边字符串可比。
+        const identity = this.deps.resolveInstalledVersion?.(id) ?? null;
+        if (slot.installedVersion !== null && slot.installedVersion !== identity) {
           if (!slot.destroyingWindow) {
             this.disposeSlot(id, slot);
             changed = true;
-            this.deps.log.info('ghost overlay window reconciled away (version changed)', {
+            this.deps.log.info('ghost overlay window reconciled away (identity changed)', {
               ghostId: id,
               from: slot.installedVersion,
-              to: ghost.manifest.version,
+              to: identity,
             });
           }
         }
@@ -286,11 +289,15 @@ export class GhostOverlayWindowsController {
   // ══════════════════════════════════════════════════════════════════════
 
   private ensureSlot(ghostId: string): Promise<WindowSlot | null> {
-    const existing = this.slots.get(ghostId);
-    if (existing && !existing.win.isDestroyed()) return Promise.resolve(existing);
-
+    // 在途创建去重必须先于 existing 快速返回:onWindowCreated 在 loadURL 前就把
+    // "加载中"slot 提前塞进 this.slots,此时 existing 分支会误返回未就绪窗口,让
+    // show() 在首帧加载完成前启动 5s 壳超时,慢加载(>5s 且 <10s)下误销毁。先命中
+    // 在途 promise,调用方拿到的是创建结果(成功或失败),而非半成品 slot。
     const inflight = this.pendingCreates.get(ghostId);
     if (inflight) return inflight;
+
+    const existing = this.slots.get(ghostId);
+    if (existing && !existing.win.isDestroyed()) return Promise.resolve(existing);
 
     const generation = this.generation;
     const promise = this.createSlot(ghostId, generation);
@@ -372,11 +379,14 @@ export class GhostOverlayWindowsController {
     }
 
     const slot = earlySlot ?? this.buildAndRegisterSlot(ghostId, win);
+    // 走到这里说明工厂 createWindow 已返回:首次加载阶段(loadURL/超时)结束,
+    // 窗口不再处于"尚无壳"的挂起加载态。
+    slot.loading = false;
     // 工厂 createWindow 在返回前已 await loadURL(带超时):首次加载的 dom-ready/
-    // did-finish-load 早已发生,宿主监听器补收不到。工厂把"首次加载已完成"作为
-    // 返回值里的确定性信号交给这里——不再探测 isLoading(实机证明 loadURL resolve
-    // 后 isLoading 不可靠)。拿到信号直接推进双阶段就绪;后续 reload 仍由上面的
-    // 监听器重新驱动,未完成/其它来源的窗口保持事件驱动。
+    // did-finish-load 事件早已发生。onWindowCreated 回调在 loadURL 之前把"加载中"
+    // slot 交给这里并挂好监听器,宿主事件路径通常已驱动就绪;loadCompleted 仅作
+    // 兜底(防御未来工厂在挂监听器前完成加载的变体),确定性直推双阶段就绪。后续
+    // reload 仍由监听器重新驱动。
     if (created.loadCompleted === true && !slot.win.isDestroyed()) {
       this.onDomReady(ghostId, slot);
       this.onDidFinishLoad(ghostId, slot);
@@ -389,6 +399,7 @@ export class GhostOverlayWindowsController {
       win,
       webContentsId: win.webContents.id,
       installedVersion: this.deps.resolveInstalledVersion?.(ghostId) ?? null,
+      loading: true,
       rendererReady: false,
       presentationReady: false,
       visible: false,
@@ -549,6 +560,9 @@ export class GhostOverlayWindowsController {
     slot.showTimeout = setTimeout(() => {
       slot.showTimeout = null;
       if (slot.win.isDestroyed() || !slot.pendingShow) return;
+      // 仍在首次加载(窗口尚无壳):不得作废——挂起加载没有"已挂载壳"可展示,
+      // 首次加载由工厂侧 10s 超时/失败路径负责清理与错误表面化。
+      if (slot.loading) return;
       // 壳(rendererReady)未就绪时展示可能是空白窗口:作废缓存并走有界恢复,
       // 恢复额度耗尽才放弃;壳已就绪则展示已挂载的 Loading 壳。
       if (!slot.rendererReady) {
@@ -608,7 +622,13 @@ export class GhostOverlayWindowsController {
     }
     // 重建并重新 show:恢复额度在 presentationReady 时进入稳定窗口后重置。
     void this.ensureSlot(ghostId).then((replacement) => {
-      if (!replacement) return;
+      if (!replacement) {
+        this.deps.log.error('ghost overlay automatic recovery failed to recreate', {
+          ghostId,
+          reason,
+        });
+        return;
+      }
       replacement.automaticRecoveryAttempts = attempts + 1;
       replacement.pendingShow = true;
       this.scheduleShowFallback(ghostId, replacement);

@@ -195,6 +195,37 @@ function markReady(controller: GhostOverlayWindowsController, win: FakeWindow): 
   controller.markPresentationReady(win.webContents as unknown as WebContents);
 }
 
+/** 慢加载工厂:6s 后才完成 loadURL(>5s 壳超时,<10s 首载超时)。 */
+function slowLoadHarness() {
+  const created: Array<{ ghostId: string; win: FakeWindow }> = [];
+  const log = {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  };
+  const deps: GhostOverlayWindowsControllerDeps = {
+    createWindow: (ghostId, onWindowCreated) =>
+      new Promise<{ win: BrowserWindow; loadCompleted: boolean }>((resolve) => {
+        const win = fakeWindow();
+        markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+        onWindowCreated?.(win as unknown as BrowserWindow);
+        created.push({ ghostId, win });
+        setTimeout(() => {
+          resolve({ win: win as unknown as BrowserWindow, loadCompleted: true });
+        }, 6000);
+      }),
+    isGhostOverlayDeclared: () => true,
+    isUserEnabled: () => true,
+    broadcastState: () => {},
+    isQuitting: () => false,
+    log,
+  };
+  return { controller: new GhostOverlayWindowsController(deps), created, log };
+}
+
 describe('prewarm', () => {
   it('prewarm creates hidden window without showing or focusing', async () => {
     const h = makeHarness(new Set(['a']));
@@ -931,4 +962,143 @@ describe('visibility change hooks', () => {
 // 清理跨用例的 registry 绑定,避免影响其它断言。
 beforeEach(() => {
   for (let i = 1; i < nextId; i += 1) clearGhostOverlayWebContents(i);
+});
+
+describe('slow first load (prewarm + show race)', () => {
+  it('show waits for the in-flight create; 5s fallback does not destroy; shows after slow load', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = slowLoadHarness();
+      h.controller.prewarm('a');
+      expect(h.created).toHaveLength(1);
+      const win = h.created[0].win;
+      expect(h.controller.getState().a?.mounted).toBe(true);
+
+      const showPromise = h.controller.show('a');
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // 5s 壳超时不得在仍加载时误销毁;show 也还没到 fallback 阶段。
+      expect(win.isDestroyed()).toBe(false);
+      expect(win.showInactive).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await showPromise;
+      // setImmediate 在 tick 中被调度为 +1ms(见 sinon fake-timers),补 1ms 让
+      // presentation-ready 的 setImmediate 落地。
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(win.isDestroyed()).toBe(false);
+      expect(win.showInactive).toHaveBeenCalledTimes(1);
+      expect(h.created).toHaveLength(1); // 无重建
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('5s fallback suppresses invalidate while the window is still in its first load', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = slowLoadHarness();
+      h.controller.prewarm('a');
+      const win = h.created[0].win;
+
+      // 防御路径:即便某个调用方在首次加载期间就给"尚无壳"slot 挂了 pendingShow
+      // 并调度 5s 壳超时,也不得作废它(没有壳可展示,清理由 10s 加载超时负责)。
+      const internals = h.controller as unknown as {
+        scheduleShowFallback: (ghostId: string, slot: unknown) => void;
+        slots: Map<string, { pendingShow: boolean }>;
+      };
+      const slot = internals.slots.get('a')!;
+      slot.pendingShow = true;
+      internals.scheduleShowFallback('a', slot);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(win.isDestroyed()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(win.isDestroyed()).toBe(false);
+      expect(win.showInactive).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('load failure surfaces and is retryable', () => {
+  it('load rejection logs the failure, cleans the slot transaction, and retries on the next show', async () => {
+    let calls = 0;
+    const createdWindows: FakeWindow[] = [];
+    const log = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+    };
+    const deps: GhostOverlayWindowsControllerDeps = {
+      createWindow: (ghostId, onWindowCreated) => {
+        calls += 1;
+        if (calls === 1) {
+          const win = fakeWindow();
+          markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+          createdWindows.push(win);
+          onWindowCreated?.(win as unknown as BrowserWindow);
+          return Promise.reject(new Error('ghost overlay first load timed out'));
+        }
+        const win = fakeWindow();
+        markGhostOverlayWebContentsId(win.webContents.id, ghostId);
+        createdWindows.push(win);
+        onWindowCreated?.(win as unknown as BrowserWindow);
+        return Promise.resolve({ win: win as unknown as BrowserWindow, loadCompleted: true });
+      },
+      isGhostOverlayDeclared: () => true,
+      isUserEnabled: () => true,
+      broadcastState: () => {},
+      isQuitting: () => false,
+      log,
+    };
+    const controller = new GhostOverlayWindowsController(deps);
+
+    await controller.show('a');
+
+    // 明确失败:记录告警(不静默),slot 事务清理,窗口销毁并清 registry。
+    expect(log.warn).toHaveBeenCalledWith(
+      'ghost overlay window creation failed',
+      expect.objectContaining({ ghostId: 'a' }),
+    );
+    expect(createdWindows[0].isDestroyed()).toBe(true);
+    expect(isGhostOverlayWebContents(createdWindows[0].webContents.id)).toBe(false);
+    expect(controller.getState()).toEqual({});
+
+    // 后续 show 可重试:重建出可用窗口。
+    await controller.show('a');
+    expect(calls).toBe(2);
+    expect(controller.getState().a?.mounted).toBe(true);
+  });
+});
+
+describe('reconcile install identity', () => {
+  it('disposes the slot when the version is unchanged but the install revision changed', async () => {
+    const identities = new Map<string, string>([['samever', '1.0.0:approved:rev-1']]);
+    const h = makeHarness(new Set(['samever']), new Set(['samever']), {}, {
+      resolveInstalledVersion: (id) => identities.get(id) ?? null,
+    });
+    await h.controller.show('samever');
+    markReady(h.controller, h.created[0].win);
+    expect(h.created).toHaveLength(1);
+
+    // 本地 .cindy 覆盖重装:manifest.version 不变,但批准 revision 变了 → 身份变化。
+    identities.set('samever', '1.0.0:approved:rev-2');
+    h.controller.reconcile([ghost('samever', { version: '1.0.0' })]);
+
+    expect(h.created[0].win.isDestroyed()).toBe(true);
+    expect(h.controller.getState()).toEqual({});
+
+    await h.controller.show('samever');
+    expect(h.created).toHaveLength(2);
+    expect(h.controller.getState().samever?.mounted).toBe(true);
+  });
 });

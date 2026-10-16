@@ -1133,6 +1133,7 @@ import {
   waitForGhostMutations,
 } from './cindy-brain/index.js';
 import { installedGhostStoragePart } from '../shared/pluginIdentity.js';
+import { ghostInstallApprovalToken } from '../shared/ghost.js';
 import { setCodexImageAuthBinding } from './cindy-brain/codexImageAuthBinding.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
@@ -2405,7 +2406,13 @@ const ghostOverlayWindowsController = new GhostOverlayWindowsController({
   },
   isGhostOverlayDeclared,
   isUserEnabled: isGhostOverlayUserEnabled,
-  resolveInstalledVersion: (id) => findGhostForInstanceId(id)?.manifest.version ?? null,
+  resolveInstalledVersion: (id) => {
+    const ghost = findGhostForInstanceId(id);
+    if (!ghost) return null;
+    // 安装身份 = 版本 + 批准 revision:同一版本号但内容变化的本地重装会生成新的
+    // revision,纳入比较后 reconcile 能正确 dispose 旧浮窗并留给下次 mount 重建。
+    return `${ghost.manifest.version}:${ghostInstallApprovalToken(ghost.approval)}`;
+  },
   broadcastState: (state) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
