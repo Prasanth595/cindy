@@ -6,6 +6,7 @@ import { findBotProfileForSession } from '@/features/bots/botSessionOwners';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import type { Session } from '@/lib/ccAgent.types';
+import { normalizeWorkingDirForProjectSettings } from '../../../../shared/workingDir';
 import { makeDialogueNewMakerRouteState, type NewMakerRouteState } from './newMakerRouteState';
 
 interface GenericNewMakerRouteOptions {
@@ -69,7 +70,11 @@ function resolveCurrentTaskSession(pathname: string): Session | undefined {
 function resolveCurrentTaskProjectWorkingDir(pathname: string): string | null | undefined {
   const session = resolveCurrentTaskSession(pathname);
   if (!session) return undefined;
-  if (session.workspaceKind === 'project' && session.workingDir) return session.workingDir;
+  if (session.workspaceKind === 'project' && session.workingDir) {
+    // Match the draft store's project entry before comparing targets or clearing project-bound state.
+    // Only Cindy-managed worktrees fold back; explicitly selected user worktrees keep their cwd.
+    return normalizeWorkingDirForProjectSettings(session.workingDir) ?? undefined;
+  }
   if (session.workspaceKind === 'dialogue') return null;
   return undefined;
 }

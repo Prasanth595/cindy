@@ -100,13 +100,16 @@ vi.mock('@/features/cc-agent/CreateWorkerPopover', () => ({ CreateWorkerPopover:
 vi.mock('@/features/cc-agent/HomeSuggestionList', () => ({ HomeSuggestionList: () => null }));
 
 import { NewMakerDraftRoute } from '@/features/cc-agent/NewMakerDraftRoute';
-import { __resetForTest, getDraft, patchCollab, patchDraft } from '@/state/newMakerDraft';
+import { __resetForTest, getDraft, patchCollab, patchDraft, setWorktreePreference } from '@/state/newMakerDraft';
 import {
   clearDraft,
   getDraft as getComposerDraft,
   plainTextToTiptapDoc,
   saveDraft,
 } from '@/lib/composerDraftStore';
+import { sessionsStore } from '@/lib/sessionsStore';
+import type { Session } from '@/lib/ccAgent.types';
+import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { NEW_MAKER_DRAFT_KEY } from '@/features/cc-agent/newMakerDraftKeys';
 
 function shortcut(projectWorkingDir: string | null) {
@@ -143,7 +146,10 @@ beforeEach(() => {
     attachments: [],
   });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('shortcut target consumption in the mounted new-task route', () => {
   it('moves project B draft to A, keeps text and consumes the target before a later manual choice', async () => {
@@ -190,6 +196,52 @@ describe('shortcut target consumption in the mounted new-task route', () => {
     expect(getComposerDraft(NEW_MAKER_DRAFT_KEY)?.text).toEqual(
       plainTextToTiptapDoc('Keep this unfinished message'),
     );
+  });
+
+  it.each(['.cindy-worktrees', '.xdt-worktrees'])(
+    'does not reuse the source %s checkout when worktree creation is off', async (managedDir) => {
+      const sourceCwd = '/project-a/' + managedDir + '/source-task';
+      vi.spyOn(sessionsStore, 'findById').mockReturnValue({
+        id: 'source-task', workingDir: sourceCwd, workspaceKind: 'project', remoteHostId: null,
+      } as Session);
+      setWorktreePreference(false);
+      const router = mount(makeGenericNewMakerRouteState('/cc-agent/source-task', {
+        inheritCurrentProject: true,
+      }));
+      await waitFor(() => expect(router.state.location.state).toEqual({ workspacePrompt: 'generic' }));
+      expect(getDraft().workingDir).toBe('/project-a');
+      expect(getDraft().workingDir).not.toBe(sourceCwd);
+      expect(getDraft().worktreeEnabled).toBe(false);
+    },
+  );
+
+  it.each([
+    '/project-a/.cindy-worktrees/source-task',
+    '/project-a/.xdt-worktrees/source-task/src',
+    '/project-a/',
+  ])('keeps mentions and collaboration for the equivalent project at %s', async (sourceCwd) => {
+    patchDraft({ workingDir: '/project-a' });
+    patchCollab({ enabled: true });
+    const text = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [
+        { type: 'text', text: 'Keep this unfinished message ' },
+        ...['file', 'dir', 'agent'].map((kind) => ({
+          type: 'mentionChip', attrs: { kind, path: kind === 'agent' ? '.claude/agents/reviewer.md' : 'src' },
+        })),
+      ] }],
+    };
+    saveDraft(NEW_MAKER_DRAFT_KEY, { text, attachments: [] });
+    vi.spyOn(sessionsStore, 'findById').mockReturnValue({
+      id: 'source-task', workingDir: sourceCwd, workspaceKind: 'project', remoteHostId: null,
+    } as Session);
+    const router = mount(makeGenericNewMakerRouteState('/cc-agent/source-task', {
+      inheritCurrentProject: true,
+    }));
+    await waitFor(() => expect(router.state.location.state).toEqual({ workspacePrompt: 'generic' }));
+    expect.soft(getComposerDraft(NEW_MAKER_DRAFT_KEY)?.text).toEqual(text);
+    expect.soft(getDraft().collab.enabled).toBe(true);
+    expect(getDraft().workingDir).toBe('/project-a');
   });
 
   it('preserves enabled collaboration when shortcut targets the same device and project', async () => {

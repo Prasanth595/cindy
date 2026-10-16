@@ -59,7 +59,33 @@ newMakerShortcutDraftBehavior.test.tsx 使用真实路由、newMakerDraft/compos
 
 ## 限制与自审
 
-- 远程同 ID、目标设备缺投影、同项目协同偏好由自动回归覆盖；未配置第二台真实设备或在实机启用协同。
+- 远程同 ID、目标设备缺投影由自动回归覆盖；未配置第二台真实设备。首轮未在实机启用协同，本轮补验结果见下文。
 - Light 业务页已目检，Dark 未实机目检；本次不新增视觉控件、样式或文案，沿用现有主题 token，不把样式复用说成双模式已目检。
 - 自审确认快捷键 opt-in、三态与一次性消费；设备和项目来自同一分片；按钮/菜单保持原路径。SSH 不推测主机目录，不改 IPC、数据库、协议或重连路径，Mobile 无新增入口。
 - 不包含 sqlite-vec 启动 LFS 资产、日志、凭证、私有工程框架或协调记录。
+
+## PR #6223 review 补验（2026-10-16）
+
+两条意见合批核实：源任务的托管 worktree 路径在请求生成处未归一，造成同项目在迁移判断时被误判为跨项目，清除 file/dir/agent 引用并关闭协同。复用现有 normalizeWorkingDirForProjectSettings，在生成请求时先与草稿 store 使用相同项目口径；用户明确选择的 .worktrees / .claude/worktrees 不折叠。
+
+Greptile 提出的“关闭 worktree 后共用源 checkout”后果未复现：既有草稿 store 在首条创建前已经归一。新增两项关闭 worktree 的挂载回归在修正前即通过。Codex 指出的引用与协同丢失成立：新增回归修正前 50 项中 8 项失败，修正后 50 项通过。扩展相关 7 文件 175 项通过（单 worker），三文件定向 ESLint、diff-check 均退出 0。
+
+本轮对 a057097ff 加三文件补丁执行一次正常 Desktop typecheck，退出 0，无诊断；Node v22.22.3，仓库脚本 heap cap 12288 MiB。未复用首轮 359 项代称本轮结果，未重跑整仓测试或打包。
+
+官方 Global 隔离启动返回 ready；whoami/root、加载模块及专属 profile 与 warm-edison 当前代码一致。使用专用临时 Git 仓与 QA 任务，系统 Cmd+N 仅发给本实例，实见：
+
+| 受影响路径 | 本轮结果 |
+| --- | --- |
+| 来源为应用创建的托管 worktree | Cmd+N 后目标为 A 根目录，导航请求消费完成 |
+| worktree 关闭，首条发送 | 收到 OK；任务目录为 A 根，非源 checkout；列表重开与刷新后保持 |
+| worktree 开启，首条发送 | 收到 OK；分配 dazzling-knuth，与来源 sincere-lovelace 不同；列表重开与刷新后保持 |
+| 同项目正文、三类引用与协同 | 真实编辑器粘贴入口插入 file/dir/agent 引用，UI 开启协同偏好；从来源 Cmd+N 后正文、三类 chip 和 enabled=true 均保留；未发送协同草稿 |
+| 手选 B | 目标等待后保持 B，正文保留；项目相关引用按既有逻辑剥离。协同随后由 UI 手动关闭，未声称手选项目会自动关闭它 |
+| 真实全局来源 | 已读回来源 workspaceKind=dialogue；Cmd+N 后 workingDir=null，未发送正文保留 |
+| 再手选专用 B 并首条发送 | 实际收到 OK；列表重开与刷新后仍为 project/B |
+
+Codex 的引用菜单没有 Claude agent 候选，三类 chip 使用真实 ClipboardEvent 的 text/html 经过现有编辑器粘贴处理生成；未调用编辑器命令、未写 store 或 mock 实机状态。后续原生文件夹选择器自动化定位失败，改用沙箱已有专用 B 项目完成发送与持久化；不计失败定位为通过。刷新读取等待编辑器就绪与任务数据完整加载，过早读取的 undefined 不计结论。
+
+![同项目 Cmd+N 后三类引用保留](assets/2026-10-16-Cindy-6139-review-same-project.png)
+
+本轮只改请求路径归一，按钮/菜单及取消/失败创建路径未变，其首轮实测保留为历史证据，没有冒充本补丁再次实测。Light 本轮已目检，Dark 未目检。App 通过本实例正常退出，官方 --kill-only 清理残留；9243/5174 无监听，warm-edison 进程已退出，profile 保留。

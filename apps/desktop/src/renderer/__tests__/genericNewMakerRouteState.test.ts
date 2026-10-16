@@ -129,6 +129,31 @@ describe('new task inherits the current task computer', () => {
     expect(projectB?.requestId).not.toBe(projectA?.requestId);
   });
 
+  it.each([
+    ['/project-a/.cindy-worktrees/task-1', '/project-a'],
+    ['/project-a/.xdt-worktrees/task-1/src', '/project-a'],
+    ['C:\\project-a\\.cindy-worktrees\\task-1', 'C:/project-a'],
+    ['/project-a/', '/project-a'],
+    ['/project-a/.worktrees/user-checkout', '/project-a/.worktrees/user-checkout'],
+    ['/project-a/.claude/worktrees/user-checkout', '/project-a/.claude/worktrees/user-checkout'],
+  ])('uses the draft project entry for a local task at %s', (workingDir, expected) => {
+    localSessionIds.add('project-task');
+    projectWorkingDirs.set('project-task', workingDir);
+    expect(readNewMakerDialogueTargetRequest(
+      makeGenericNewMakerRouteState('/cc-agent/project-task', { inheritCurrentProject: true }),
+    )?.projectWorkingDir).toBe(expected);
+  });
+
+  it('uses the selected remote device project root rather than its managed checkout', () => {
+    origins.set('remote-task', 'computer-b');
+    deviceSessions.set('computer-b', [{
+      id: 'remote-task', workingDir: '/remote/project/.cindy-worktrees/task-1', workspaceKind: 'project',
+    }]);
+    expect(readNewMakerDialogueTargetRequest(
+      makeGenericNewMakerRouteState('/cc-agent/remote-task', { inheritCurrentProject: true }),
+    )).toMatchObject({ deviceId: 'computer-b', projectWorkingDir: '/remote/project' });
+  });
+
   it('a known global dialogue explicitly clears the saved draft project', () => {
     localSessionIds.add('dialogue-task');
     const request = readNewMakerDialogueTargetRequest(
