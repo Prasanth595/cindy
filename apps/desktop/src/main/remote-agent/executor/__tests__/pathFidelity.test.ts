@@ -194,6 +194,26 @@ describe('remote provider file paths', () => {
     }
   });
 
+  it.each(['$suffix', '%SUFFIX%'])('preserves an unchanged dynamic path ending in %s when another line is edited', async (suffix) => {
+    const { parent, workingDir, workspace, executor } = setup();
+    fs.mkdirSync(path.join(parent, 'p' + suffix));
+    try {
+      const file = path.join(workingDir, 'dynamic.txt');
+      for (const tail of ['', '/child/file.txt', '\\child\\file.txt']) {
+        const original = 'first=' + workingDir + suffix + tail + '\nunchanged=1';
+        fs.writeFileSync(file, original);
+        const seen = readBack(await executor.callTool('Read', { file_path: SHADOW + '/dynamic.txt' }));
+        expect(seen).toBe('first=' + SHADOW + suffix + tail + '\nunchanged=1');
+        const edited = seen.replace('unchanged=1', 'unchanged=2');
+        expect(workspace.mapContentFromAgent(edited, original)).toBe(original.replace('unchanged=1', 'unchanged=2'));
+        await executor.callTool('Write', { file_path: SHADOW + '/dynamic.txt', content: edited });
+        expect(fs.readFileSync(file, 'utf8')).toBe(original.replace('unchanged=1', 'unchanged=2'));
+      }
+    } finally {
+      await executor.close();
+    }
+  });
+
   it.each([' copy', ' (1)', '.git', '-v1'])('maps quoted sibling suffix %s to the same location as file tools', async (suffix) => {
     const { parent, workspace, executor } = setup();
     try {

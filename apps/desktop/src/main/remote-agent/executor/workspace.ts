@@ -144,8 +144,8 @@ function nextAliasPrefix<T extends ExecutorPathAlias>(
   return null;
 }
 
-/** 正文里路径前缀之后的部分：分隔符开头，遇空白、引号或标点停止。 */
-const PATH_SUFFIX = /[/\\][^\s\x60'";:|&)<>}\]]*/y;
+/** 正文里的路径后缀；在变量和通配符前停下，父目录别名回退也能还原未改路径的原拼写。 */
+const PATH_SUFFIX = /[/\\][^\s\x60'";:|&)<>}\]*?$%]*/y;
 
 /**
  * target：分隔符按目标端统一(Agent 看到的路径、结构化路径字段)。
