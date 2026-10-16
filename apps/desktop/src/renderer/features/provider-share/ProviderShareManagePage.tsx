@@ -585,7 +585,7 @@ function MemberRow({
               aria-expanded={reshareOpen}
               aria-controls={reshareOpen ? reshareListId : undefined}
               onClick={() => setReshareOpen((open) => !open)}
-              className="group -ml-1 mt-1.5 flex w-fit max-w-full items-center gap-2 rounded-lg py-0.5 pl-1 pr-2 text-left text-12 text-[var(--text-secondary)] transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              className="group -ml-1 mt-1.5 flex w-fit max-w-full items-center gap-2 rounded-full py-0.5 pl-1 pr-2 text-left text-12 text-[var(--text-secondary)] transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
             >
               <ChevronRight
                 size={14}
