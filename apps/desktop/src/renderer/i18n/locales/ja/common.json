@@ -12863,7 +12863,9 @@
         "stdout": "stdout",
         "stderr": "stderr",
         "truncated": "出力は切り詰められました",
-        "noOutput": "出力なし"
+        "noOutput": "出力なし",
+        "runtimeNotStarted": "{{appName}} 内蔵の Node が起動せず、事前チェックは実行されませんでした。このチェックには実行可能な Node コマンドを使用してください。",
+        "receiptUnavailable": "{{appName}} は Node の起動確認を準備できず、事前チェックは実行されませんでした。"
       }
     },
     "editor": {

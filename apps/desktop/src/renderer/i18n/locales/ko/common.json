@@ -12863,7 +12863,9 @@
         "stdout": "stdout",
         "stderr": "stderr",
         "truncated": "출력이 잘림",
-        "noOutput": "출력 없음"
+        "noOutput": "출력 없음",
+        "runtimeNotStarted": "{{appName}} 내장 Node가 시작되지 않아 사전 검사가 실행되지 않았습니다. 이 검사에는 실행 가능한 Node 명령을 사용하세요.",
+        "receiptUnavailable": "{{appName}}가 Node 시작 확인을 준비하지 못해 사전 검사가 실행되지 않았습니다."
       }
     },
     "editor": {

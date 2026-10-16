@@ -7,10 +7,13 @@
  * @vitest-environment node
  */
 
-import { describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setMainLocale } from '../../i18n';
+
+vi.mock('electron', () => ({ app: { getPreferredSystemLanguages: () => ['en'] } }));
 
 // 透传真实 spawn,只计数:用来断言某些路径根本没有启动真实命令。
 const spawnCalls = vi.hoisted(() => ({ count: 0 }));
@@ -269,6 +272,126 @@ describe('resolvePreRunHookTimeoutMs(无默认超时)', () => {
 });
 
 describe('resolveHookCommand(xdt-node 前缀解析)', () => {
+  let receiptsBefore: string[];
+  beforeEach(() => {
+    receiptsBefore = readdirSync(tmpdir()).filter((name) => name.startsWith('cindy-pre-run-node-'));
+  });
+  afterEach(() => {
+    // Covers pass, skip, throw, GUI false-success, timeout and abort cleanup.
+    expect(readdirSync(tmpdir()).filter((name) => name.startsWith('cindy-pre-run-node-'))).toEqual(receiptsBefore);
+  });
+  it.each([0, 2])('supports ESM Workers without repeating internal startup proof (exit %s)', async (exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-worker-'));
+    try {
+      writeFileSync(path.join(dir, 'user-preload.mjs'), [
+        "import { appendFileSync } from 'node:fs';",
+        "import { isMainThread } from 'node:worker_threads';",
+        "appendFileSync('user-preload.txt', isMainThread ? 'main;' : 'worker;');",
+      ].join('\n'));
+      writeFileSync(path.join(dir, 'worker.mjs'), [
+        "import { parentPort } from 'node:worker_threads';",
+        'parentPort.postMessage(process.execArgv);',
+      ].join('\n'));
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { Worker } from 'node:worker_threads';",
+        "import { writeFileSync } from 'node:fs';",
+        "const worker = new Worker(new URL('./worker.mjs', import.meta.url));",
+        "worker.on('error', error => { throw error; });",
+        "worker.on('message', args => { writeFileSync('executed.json', JSON.stringify({ main: process.execArgv, worker: args })); });",
+        "worker.on('exit', code => { console.log('CINDY_PRECHECK_OK'); process.exit(code || " + exitCode + '); });',
+      ].join('\n'));
+      const result = await executePreRunHook({
+        command: 'xdt-node --no-warnings --import=./user-preload.mjs gate.mjs',
+        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+      });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(exitCode === 0 ? 'passed' : 'skipped');
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.checkSucceeded).toBe(true);
+      expect(JSON.parse(readFileSync(path.join(dir, 'executed.json'), 'utf8'))).toEqual({
+        main: ['--no-warnings', '--import=./user-preload.mjs'],
+        worker: ['--no-warnings', '--import=./user-preload.mjs'],
+      });
+      expect(readFileSync(path.join(dir, 'user-preload.txt'), 'utf8')).toBe('main;worker;');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 2])('accepts a real hook outcome when the shell redirects fd3 without business writes (exit %s)', async (exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-redirect-exit-'));
+    try {
+      writeFileSync(path.join(dir, 'gate.mjs'),
+        "import { writeFileSync } from 'node:fs'; writeFileSync('executed', 'yes'); console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');');
+      const result = await executePreRunHook({
+        command: 'xdt-node gate.mjs 3>&1', cwd: dir, stdinPayload: payload,
+      });
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+      expect(result.stdout).toBe('CINDY_PRECHECK_OK\n');
+      expect(result.checkSucceeded).toBe(true);
+      expect(readFileSync(path.join(dir, 'executed'), 'utf8')).toBe('yes');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [0, '3>fd3.log'], [2, '3>fd3.log'], [0, '3>&1'], [2, '3>&1'],
+  ] as const)('preserves business fd3 redirection and exit %s (%s)', async (exitCode, redirection) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-redirection-'));
+    try {
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { writeFileSync, writeSync } from 'node:fs';",
+        "writeFileSync('executed', 'yes'); writeSync(3, 'business-fd3');",
+        "console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');',
+      ].join('\n'));
+      const result = await executePreRunHook({
+        command: 'xdt-node gate.mjs ' + redirection, cwd: dir, stdinPayload: payload,
+      });
+      expect(readFileSync(path.join(dir, 'executed'), 'utf8')).toBe('yes');
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(exitCode === 0 ? 'passed' : 'skipped');
+      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+      expect(result.exitCode).toBe(exitCode);
+      if (redirection === '3>fd3.log') {
+        expect(readFileSync(path.join(dir, 'fd3.log'), 'utf8')).toBe('business-fd3');
+        expect(result.stdout).toBe('CINDY_PRECHECK_OK\n');
+        expect(result.checkSucceeded).toBe(true);
+      } else {
+        expect(result.stdout).toBe('business-fd3CINDY_PRECHECK_OK\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['zh-CN', 'Cindy 内置 Node 未启动，前置检查未执行。请为此检查使用可运行的 Node 命令'],
+    ['zh-TW', 'Cindy 內建 Node 未啟動，前置檢查未執行。請為此檢查使用可執行的 Node 命令'],
+    ['en', 'Cindy built-in Node runtime did not start. The pre-run check was not executed. Use a working Node command for this check.'],
+    ['ja', 'Cindy 内蔵の Node が起動せず、事前チェックは実行されませんでした。このチェックには実行可能な Node コマンドを使用してください。'],
+    ['ko', 'Cindy 내장 Node가 시작되지 않아 사전 검사가 실행되지 않았습니다. 이 검사에는 실행 가능한 Node 명령을 사용하세요.'],
+  ] as const)('records the unavailable runtime error in %s', async (locale, message) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-locale-'));
+    const originalExecPath = process.execPath;
+    try {
+      const runtime = path.join(dir, process.platform === 'win32' ? 'gui.cmd' : 'gui');
+      writeFileSync(runtime, process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      process.execPath = runtime;
+      setMainLocale(locale);
+      const result = await executePreRunHook({ command: 'xdt-node gate.mjs', cwd: dir, stdinPayload: payload });
+      expect(result.status).toBe('failed');
+      expect(result.decision).toBe('block');
+      expect(result.error).toBe(message);
+      expect(formatPreRunHookFailure(result)).toContain(message);
+    } finally {
+      process.execPath = originalExecPath;
+      setMainLocale('en');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each([0, 2])('blocks an apparent runtime exit %s that never executes JavaScript', async (exitCode) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-not-node-'));
     const originalExecPath = process.execPath;

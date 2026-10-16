@@ -12863,7 +12863,9 @@
         "stdout": "stdout",
         "stderr": "stderr",
         "truncated": "输出已截断",
-        "noOutput": "无输出"
+        "noOutput": "无输出",
+        "runtimeNotStarted": "{{appName}} 内置 Node 未启动，前置检查未执行。请为此检查使用可运行的 Node 命令",
+        "receiptUnavailable": "{{appName}} 无法准备 Node 启动验证，前置检查未执行"
       }
     },
     "editor": {

@@ -21,9 +21,12 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { closeSync, mkdtempSync, openSync, readSync, rmSync } from 'node:fs';
+import path from 'node:path';
 import type { PreRunHookRunResult } from '@cindy/maker-scheduler';
 import { capAppend as capAppendBase, killProcessTree } from './proc-util';
 import os from 'node:os';
+import { t } from '../i18n';
 
 /** stdout / stderr 各自的截断上限(字节级近似,按 UTF-16 length 截)。 */
 const OUTPUT_CAP = 8 * 1024;
@@ -70,28 +73,57 @@ export interface PreRunHookInput {
  */
 const XDT_NODE_PREFIX = /^xdt-node\s+/;
 
-/** 解析 xdt-node 前缀并生成一次性 Node 启动回执。普通命令原样返回。 */
-export function resolveHookCommand(command: string): {
+/** 一轮独占的启动回执。只证明 Node 启动，不代替脚本最终退出结果。 */
+interface NodeRuntimeReceipt {
+  path: string;
+  value: string;
+}
+
+/** 解析 xdt-node 前缀;执行时附带回执，语法预检时不创建临时文件。 */
+export function resolveHookCommand(command: string, receipt?: NodeRuntimeReceipt): {
   command: string;
   extraEnv: Record<string, string>;
-  runtimeReceipt?: string;
 } {
   if (XDT_NODE_PREFIX.test(command.trim())) {
     const rest = command.trim().replace(XDT_NODE_PREFIX, '');
-    const runtimeReceipt = randomUUID();
-    // A Node preload writes only to fd3, leaving script stdin/stdout/stderr intact.
-    // A GUI that ignores ELECTRON_RUN_AS_NODE never loads it. Base64 keeps the
-    // inline module a single quoted argument on POSIX and Windows alike.
-    const bootstrap = Buffer.from(
-      "import { writeSync, closeSync } from 'node:fs'; writeSync(3, '" + runtimeReceipt + "'); closeSync(3);",
-    ).toString('base64');
+    let preload = '';
+    if (receipt) {
+      // A private file keeps shell fd redirections and business output intact.
+      // Only this Node preload writes the per-run nonce; a GUI never loads it.
+      const bootstrap = Buffer.from([
+        "import { writeFileSync } from 'node:fs';",
+        "import { isMainThread } from 'node:worker_threads';",
+        'if (isMainThread) writeFileSync(' + JSON.stringify(receipt.path) + ', ' + JSON.stringify(receipt.value)
+          + ", { flag: 'wx', mode: 0o600 });",
+        // Worker defaults can use Node's original argument snapshot even after
+        // JS mutates execArgv, hence the isMainThread guard above. Remove our
+        // own import in each thread for fork() and explicit execArgv consumers.
+        "const index = process.execArgv.indexOf('--import=' + import.meta.url);",
+        'if (index !== -1) process.execArgv.splice(index, 1);',
+      ].join('\n')).toString('base64');
+      preload = ' "--import=data:text/javascript;base64,' + bootstrap + '"';
+    }
     return {
-      command: `"${process.execPath}" "--import=data:text/javascript;base64,${bootstrap}" ${rest}`,
+      command: `"${process.execPath}"${preload} ${rest}`,
       extraEnv: { ELECTRON_RUN_AS_NODE: '1' },
-      runtimeReceipt,
     };
   }
   return { command, extraEnv: {} };
+}
+
+/** 限长读取独占文件;缺失、无效或不可读的回执一律不能证明 Node 启动。 */
+function receivedNodeRuntimeReceipt(receipt: NodeRuntimeReceipt): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(receipt.path, 'r');
+    const bytes = Buffer.alloc(receipt.value.length + 1);
+    const length = readSync(fd, bytes, 0, bytes.length, 0);
+    return length === receipt.value.length && bytes.subarray(0, length).toString('utf8') === receipt.value;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export type PreRunHookResult = PreRunHookRunResult;
@@ -188,7 +220,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
   // 进门先查:任务已被 pause/delete(信号已 abort)→ 不 spawn,直接返回
   if (input.signal?.aborted) return abortedResult();
 
-  const resolved = resolveHookCommand(input.command);
+  let resolved = resolveHookCommand(input.command);
   // 预检与真实执行共用同一个取消信号和超时预算。
   const syntaxError = await findShellSyntaxError(resolved.command, {
     signal: input.signal,
@@ -229,6 +261,27 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     };
   }
 
+  let receipt: (NodeRuntimeReceipt & { directory: string }) | undefined;
+  try {
+    if (XDT_NODE_PREFIX.test(input.command.trim())) {
+      const value = randomUUID();
+      const directory = mkdtempSync(path.join(os.tmpdir(), 'cindy-pre-run-node-'));
+      receipt = { directory, path: path.join(directory, 'started'), value };
+      resolved = resolveHookCommand(input.command, receipt);
+    }
+  } catch {
+    if (receipt) {
+      try { rmSync(receipt.directory, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+    return {
+      status: 'failed', decision: 'block', exitCode: null,
+      durationMs: Date.now() - startedAt,
+      stdout: '', stderr: '', stdoutTruncated: false, stderrTruncated: false,
+      timedOut: false, aborted: false,
+      error: t('scheduler.runs.preRun.receiptUnavailable'),
+    };
+  }
+
   return new Promise<PreRunHookResult>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -237,7 +290,6 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let settled = false;
-    let runtimeReceipt = '';
     let child: ReturnType<typeof spawn>;
 
     const settle = (partial: { exitCode: number | null; spawnError?: string }): void => {
@@ -246,10 +298,8 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       if (timer) clearTimeout(timer);
       input.signal?.removeEventListener('abort', onAbort);
       const exitCode = partial.exitCode;
-      const runtimeError = resolved.runtimeReceipt !== undefined
-        && runtimeReceipt !== resolved.runtimeReceipt
-        ? 'Cindy built-in Node runtime did not start. The pre-run check was not executed. '
-          + 'Use a working Node command for this check.'
+      const runtimeError = receipt && !receivedNodeRuntimeReceipt(receipt)
+        ? t('scheduler.runs.preRun.runtimeNotStarted')
         : undefined;
       const status = aborted
         ? 'aborted'
@@ -320,7 +370,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
         shell: true,
         cwd: input.cwd?.trim() ? input.cwd : os.homedir(),
         windowsHide: true,
-        stdio: resolved.runtimeReceipt ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...resolved.extraEnv },
         // POSIX:自成进程组,超时/abort 时 kill(-pid) 才能连 shell 的子进程一起杀
         // (见 proc-util killProcessTree);Windows 忽略此参数,树杀走 taskkill /T。
@@ -341,11 +391,6 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       if (stderr.length + text.length > OUTPUT_CAP) stderrTruncated = true;
       stderr = capAppendBase(stderr, text, OUTPUT_CAP);
     });
-    child.stdio[3]?.on('data', (chunk: Buffer) => {
-      // Keep at most one extra byte so overlong/invalid receipts cannot match.
-      runtimeReceipt = capAppendBase(runtimeReceipt, chunk.toString('utf8'),
-        (resolved.runtimeReceipt?.length ?? 0) + 1);
-    });
     child.on('error', (err) => {
       settle({ exitCode: null, spawnError: err.message });
     });
@@ -360,6 +405,13 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       child.stdin?.end();
     } catch {
       /* ignore stdin write failures */
+    }
+  }).finally(() => {
+    if (!receipt) return;
+    try {
+      rmSync(receipt.directory, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup of this run's own temporary directory only.
     }
   });
 }

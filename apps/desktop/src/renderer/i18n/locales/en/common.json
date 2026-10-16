@@ -12920,7 +12920,9 @@
         "stdout": "stdout",
         "stderr": "stderr",
         "truncated": "output truncated",
-        "noOutput": "No output"
+        "noOutput": "No output",
+        "runtimeNotStarted": "{{appName}} built-in Node runtime did not start. The pre-run check was not executed. Use a working Node command for this check.",
+        "receiptUnavailable": "{{appName}} could not prepare Node startup verification. The pre-run check was not executed."
       }
     },
     "editor": {
