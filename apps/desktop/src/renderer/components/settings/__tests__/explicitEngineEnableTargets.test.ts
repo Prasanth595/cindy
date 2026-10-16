@@ -67,19 +67,15 @@ describe('explicit engine enable for models that already exist', () => {
     expect(await setModelVisibility('claude-code', provider.id, already.byAgent['claude-code']!.id, true)).toBe(true);
 
     const targets = explicitEngineEnableTargets(provider, rows, ['codex', 'pi']);
-    expect(targets).toEqual(expect.arrayContaining([
+    expect(targets).toEqual([
       { agent: 'codex', modelId: 'already' },
       { agent: 'pi', modelId: 'already' },
       { agent: 'codex', modelId: 'closed' },
       { agent: 'pi', modelId: 'closed' },
       { agent: 'pi', modelId: 'pi-only' },
-    ]));
-    expect(targets).not.toEqual(expect.arrayContaining([
-      { agent: 'claude-code', modelId: 'already' },
-      { agent: 'codex', modelId: 'retired-chat' },
-      { agent: 'codex', modelId: 'pi-only' },
-    ]));
+    ]);
 
+    expect(await setModelVisibilities(provider.id, targets, true)).toBe(true);
     expect(await setModelVisibilities(provider.id, targets, true)).toBe(true);
     expect(isModelEnabled('claude-code', provider.id, { id: 'already' })).toBe(true);
     expect(isModelEnabled('codex', provider.id, { id: 'already' })).toBe(true);

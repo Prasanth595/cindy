@@ -865,6 +865,12 @@ export function UnifiedModelList({
       mediaReady: rowState(row).canSelect,
     }),
   );
+  const engineEnableItems = (['claude-code', 'codex', 'pi'] as const)
+    .map((engine) => ({
+      engine,
+      targets: explicitEngineEnableTargets(provider, writableRows, [engine]),
+    }))
+    .filter((item) => item.targets.length > 0);
   const visibilityWriteAvailable = writableRows.length > 0;
   // Saved preferences survive disconnection; the count and switches show effective selection.
   const selectedCount = writableRows.filter((row) => rowState(row).selected).length;
@@ -1181,25 +1187,26 @@ export function UnifiedModelList({
                   >
                     {t('settings.providers.models.manage.reset')}
                   </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel>
-                    {t('settings.providers.models.manage.enableEngines')}
-                  </DropdownMenuLabel>
-                  {(['claude-code', 'codex', 'pi'] as const).map((engine) => (
-                    <DropdownMenuItem
-                      key={engine}
-                      disabled={!visibilityWriteAvailable}
-                      onSelect={() => {
-                        if (!visibilityWriteAvailable) return;
-                        const targets = explicitEngineEnableTargets(provider, writableRows, [engine]);
-                        void setModelVisibilities(provider.id, targets, true).then((success) => {
-                          if (!success) showVisibilityWriteFailure();
-                        });
-                      }}
-                    >
-                      {t(`settings.providers.models.manage.enableEngine.${engine}`)}
-                    </DropdownMenuItem>
-                  ))}
+                  {engineEnableItems.length > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>
+                        {t('settings.providers.models.manage.enableEngines')}
+                      </DropdownMenuLabel>
+                      {engineEnableItems.map(({ engine, targets }) => (
+                        <DropdownMenuItem
+                          key={engine}
+                          onSelect={() => {
+                            void setModelVisibilities(provider.id, targets, true).then((success) => {
+                              if (!success) showVisibilityWriteFailure();
+                            });
+                          }}
+                        >
+                          {t(`settings.providers.models.manage.enableEngine.${engine}`)}
+                        </DropdownMenuItem>
+                      ))}
+                    </>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}

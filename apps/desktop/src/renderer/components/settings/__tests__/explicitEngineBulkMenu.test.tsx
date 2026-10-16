@@ -143,3 +143,86 @@ describe('manage menu enables one existing engine and keeps it after reload', ()
     expect(isModelEnabled('claude-code', provider.id, { id: 'already', defaultEnabled: false })).toBe(true);
   });
 });
+
+describe('manage menu only offers engines that can enable current models', () => {
+  it('keeps Codex and Pi out of a Claude Code only provider and writes that engine', async () => {
+    const anthropicLike = {
+      ...provider,
+      id: 'anthropic',
+      name: 'Anthropic',
+      source: 'builtin',
+      agents: ['claude-code'],
+      models: {
+        'claude-code': [model('claude-chat')],
+      },
+    } as ProviderView;
+    expect(await setModelVisibility('claude-code', anthropicLike.id, 'claude-chat', true)).toBe(true);
+    render(
+      <ConfirmDialogProvider>
+        <UnifiedModelList provider={anthropicLike} />
+      </ConfirmDialogProvider>,
+    );
+
+    const enableClaude = screen.getByRole('button', { name: 'settings.providers.models.manage.enableEngine.claude-code' });
+    fireEvent.click(enableClaude);
+    await waitFor(() => {
+      expect(isModelEnabled('claude-code', anthropicLike.id, { id: 'claude-chat', defaultEnabled: false })).toBe(true);
+    });
+    fireEvent.click(enableClaude);
+    await waitFor(() => {
+      expect(isModelEnabled('claude-code', anthropicLike.id, { id: 'claude-chat', defaultEnabled: false })).toBe(true);
+    });
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.codex' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.pi' })).toBeNull();
+    expect(isModelEnabled('codex', anthropicLike.id, { id: 'claude-chat', defaultEnabled: false })).toBe(false);
+    expect(isModelEnabled('pi', anthropicLike.id, { id: 'claude-chat', defaultEnabled: false })).toBe(false);
+  });
+
+  it('hides an engine that is present but has no operable model', () => {
+    const mixed = {
+      ...provider,
+      id: 'mixed-engines',
+      models: {
+        'claude-code': [model('claude-chat')],
+        codex: [model('codex-old', { status: 'retired' })],
+        pi: [model('pi-stopped', { disabled: true })],
+      },
+    } as ProviderView;
+    render(
+      <ConfirmDialogProvider>
+        <UnifiedModelList provider={mixed} />
+      </ConfirmDialogProvider>,
+    );
+
+    expect((screen.getByRole('button', { name: 'settings.providers.models.manage.enableEngine.claude-code' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.codex' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.pi' })).toBeNull();
+  });
+
+  it('does not show the engine group for a media-only provider that can still change visibility', () => {
+    const mediaOnly = {
+      ...provider,
+      id: 'media-only',
+      name: 'Media',
+      models: {
+        'claude-code': [],
+        codex: [],
+        pi: [],
+      },
+      imageModels: [{ id: 'gpt-image-2', name: 'GPT Image 2', defaultEnabled: false }],
+      availableMediaModelIds: ['gpt-image-2'],
+    } as ProviderView;
+    render(
+      <ConfirmDialogProvider>
+        <UnifiedModelList provider={mediaOnly} />
+      </ConfirmDialogProvider>,
+    );
+
+    expect((screen.getByRole('button', { name: 'settings.providers.models.manage.menu' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'settings.providers.models.manage.reset' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText('settings.providers.models.manage.enableEngines')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.claude-code' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.codex' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.enableEngine.pi' })).toBeNull();
+  });
+});
