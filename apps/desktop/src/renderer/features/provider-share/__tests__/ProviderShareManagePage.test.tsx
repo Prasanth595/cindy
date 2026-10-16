@@ -370,7 +370,10 @@ describe('ProviderShareManagePage', () => {
     await waitFor(() =>
       expect(command).toHaveBeenCalledWith({ action: 'set-member', memberId: 'mem-1', status: 'pause' }),
     );
-    fireEvent.click(screen.getByRole('button', { name: /providerShare\.manage\.members\.removeAria/ }));
+    // 删除收在「⋯」里，行内没有直接的删除按钮。
+    expect(screen.queryByRole('button', { name: /providerShare\.manage\.members\.removeAria/ })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: /providerGroup\.member\.moreAria/ }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: /providerShare\.manage\.members\.removeAria/ }));
     await waitFor(() =>
       expect(command).toHaveBeenCalledWith({ action: 'set-member', memberId: 'mem-1', status: 'remove' }),
     );
@@ -424,16 +427,47 @@ describe('ProviderShareManagePage', () => {
     fireEvent.click(within(pending).getByRole('button', { name: 'providerShare.manage.reshare.approve' }));
     await expectDecision('rs-pending', 'approve');
 
-    // 处理过的人列在这个成员下方：已同意的可撤回，拒绝的可改为同意。
-    const decided = screen.getAllByTestId('provider-share-reshare-item');
+    // 处理过的人挂在这个成员下方，默认收起成一行摘要：几个人在用、几个人没同意。
+    const toggle = screen.getByTestId('provider-share-reshare-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain(
+      'providerShare.manage.reshare.summaryUsing:{"count":1,"owner":"Lizi"} · providerShare.manage.reshare.summaryDeclined:{"count":1}',
+    );
+    expect(screen.queryAllByTestId('provider-share-reshare-item')).toHaveLength(0);
+
+    // 点开后逐人列出：已同意的可撤回，拒绝的可改为同意。
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const decided = await screen.findAllByTestId('provider-share-reshare-item');
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).not.toBeNull();
     expect(decided.map((item) => item.textContent)).toEqual([
       expect.stringContaining('Dave'),
       expect.stringContaining('Erin'),
     ]);
-    fireEvent.click(within(decided[0]!).getByRole('button', { name: /providerShare\.manage\.reshare\.revokeAria/ }));
+    fireEvent.click(await within(decided[0]!).findByRole('button', { name: /providerShare\.manage\.reshare\.revokeAria/ }));
     await expectDecision('rs-approved', 'reject');
     fireEvent.click(within(decided[1]!).getByRole('button', { name: /providerShare\.manage\.reshare\.approveAria/ }));
     await expectDecision('rs-rejected', 'approve');
+  });
+
+  it('summarizes reshares that were all declined without saying anyone uses it', async () => {
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') {
+        const state = owned();
+        state.shares[0]!.members[0]!.reshares = [
+          { id: 'rs-rejected', name: 'Erin', avatarUrl: null, state: 'rejected', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+        ];
+        return state;
+      }
+      if (cmd.action === 'own-usage') return ownUsage();
+      if (cmd.action === 'received') return [];
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    renderPage();
+    const toggle = await screen.findByTestId('provider-share-reshare-toggle');
+    expect(toggle.textContent).toContain(
+      'providerShare.manage.reshare.summaryOwner:{"owner":"Lizi"} · providerShare.manage.reshare.summaryDeclined:{"count":1}',
+    );
   });
 
   it('disables link creation and explains why when sharing is gated', async () => {
