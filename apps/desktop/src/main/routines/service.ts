@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import {
   RoutineEngine,
+  rewriteRoutinePluginSource,
   type Routine,
   type RoutineRun,
   type RoutineInput,
@@ -26,6 +27,7 @@ import { assertPreRunHookCommandSyntax } from '../scheduler-host/pre-run-hook.js
 import { untrustedJsonBlock } from '../../shared/untrustedPrompt.js';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { botProfiles } from '../localDb/schema.js';
+import { isCompanionShadowed } from '../companion-cloud/homes.js';
 
 /** Bootstrap supplies live getters without a service -> scheduler -> IPC dependency cycle. */
 export interface RoutineHostDeps {
@@ -50,6 +52,8 @@ function getRoutineHost(): RoutineHostDeps {
 }
 
 const log = createLogger('routines');
+/** Logged once per demoted teammate until it runs here again. */
+const shadowedRoutineBots = new Set<string>();
 let current:
   { scope: string; engine: RoutineEngine; timer: ReturnType<typeof setInterval> } | undefined;
 let starting: Promise<RoutineEngine> | undefined;
@@ -99,6 +103,15 @@ async function execute(scope: string, routine: Routine, run: RoutineRun, signal:
   if (signal.aborted) throw new Error('Routine cancelled');
   if (bot.status !== 'active' || !bot.canonicalSessionId)
     throw new Error('The teammate is unavailable');
+  // Its home moved to another computer (cloud-companions.md §3): routines run only there.
+  if (isCompanionShadowed(routine.botId)) {
+    if (!shadowedRoutineBots.has(routine.botId)) {
+      shadowedRoutineBots.add(routine.botId);
+      log.info('routine skipped: teammate runs on another computer', { botId: routine.botId });
+    }
+    return { skipped: true };
+  }
+  shadowedRoutineBots.delete(routine.botId);
   if (!canDispatch()) return { deferred: true };
   const root = ownerScopedUserDataPath();
   const imported = await getRoutineHost().prepareImportedAutomation?.(root, routine, run.id, signal, () => assertScope(scope));
@@ -461,4 +474,19 @@ export function disconnectRoutineSource(pluginId: string): void {
   if (current?.scope === activeOwnerScopeKey() && !isAppSessionBoundaryPending()) {
     current.engine.removeSource(`plugin:${pluginId}`);
   }
+}
+
+/** Follow an archived plugin so the replacement does not inherit its event routines. */
+export async function relocateRoutinePluginSource(fromPart: string, toPart: string): Promise<void> {
+  if (fromPart === toPart) return;
+  const scope = activeOwnerScopeKey();
+  if (current?.scope === scope && !isAppSessionBoundaryPending()) {
+    await current.engine.relocatePluginSource(fromPart, toPart);
+    return;
+  }
+  const store = new RoutineFileStore(ownerScopedUserDataPath());
+  const state = await store.load();
+  if (!state) return;
+  const next = rewriteRoutinePluginSource(state, fromPart, toPart);
+  if (next !== state) await store.save(next);
 }

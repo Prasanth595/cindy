@@ -24,6 +24,7 @@ import type {
 } from '@cindy/maker-core';
 import { resolveMemoryScopeKey } from '@cindy/maker-core';
 
+import { credentialGrantFor } from '../executor/credentialGrants';
 import type { ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import type { GuardedFetch } from '../executor/webFetch';
@@ -71,6 +72,8 @@ export interface DeviceAgentServiceDeps {
   };
   /** 任务的「Agent 所在电脑」是不是分享来的供应商(受邀者任务)。 */
   isSharedProviderDevice?(deviceId: string): boolean;
+  /** 受邀者在设置里把这个分享切成了「信任 {分享者}」(每次操作前问一遍)。 */
+  skipSharedProviderCredentialConsent?(deviceId: string): boolean;
   /** 受邀者任务在本机抓取网页的出站通道(WebFetch)。 */
   webFetch?: GuardedFetch;
   /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
@@ -80,8 +83,10 @@ export interface DeviceAgentServiceDeps {
 
 /** 没有提供界面语言的说明时用的英文说明。 */
 const SHARED_PROVIDER_CREDENTIAL_NOTICE =
-  "This task uses a provider shared with you, so what the agent reads passes through the sharer's computer. "
-  + 'This involves a credential file, so it needs your confirmation.';
+  "This task uses a shared provider, so what the agent reads passes through the sharer's computer or another computer they arrange. "
+  + 'This may involve credentials, so it needs your confirmation. '
+  + 'Always allow for this session skips further shared-provider credential confirmations in this task. '
+  + 'Changing its permission mode or Plan mode, or quitting Cindy, requires confirmation again.';
 
 function mcpTargets(extra: PiExtraSpawnConfig | null): Map<string, LocalMcpTarget> {
   const targets = new Map<string, LocalMcpTarget>();
@@ -190,7 +195,14 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         : {}),
       ...(webFetch ? { webFetch } : {}),
       ...(shared
-        ? { credentialConsent: { description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE } }
+        ? {
+            credentialConsent: {
+              description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
+              // 受邀者在设置里对这个分享选了「信任 {分享者}」：实时读，运行中切换下一步就生效。
+              skip: () => deps.skipSharedProviderCredentialConsent?.(input.deviceId) === true,
+              ...(sessionId ? { grant: credentialGrantFor(sessionId, input.deviceId) } : {}),
+            },
+          }
         : {}),
       prepareMcp: async ({ kind, opts: startOpts, vendorOptions }): Promise<PreparedRemoteMcp> => {
         const extra = await deps.prepareMcpBridge(deps.mcpProviders(), deps.logger, {

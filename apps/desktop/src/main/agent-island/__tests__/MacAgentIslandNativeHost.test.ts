@@ -13,6 +13,7 @@ import {
   createEmptyAgentIslandPillSnapshot,
   type AgentIslandDisplayState,
 } from '../../../shared/agentIsland.js';
+import { CLAUDE_CODE_MARK_PATH, CODEX_FLOWER_OUTLINE, CODEX_PROMPT_GLYPHS } from '../../../shared/brandMarkPaths.js';
 import type { AgentIslandNativeFrame } from '../MacAgentIslandNativeHost.js';
 
 const h = vi.hoisted(() => ({
@@ -126,9 +127,13 @@ describe('MacAgentIslandNativeHost', () => {
       new URL('../../../renderer/components/icons/CodexMark.tsx', import.meta.url),
       'utf8',
     );
-    const claudePath = claudeSource.match(/<path[\s\S]*?\bd="([^"]+)"/)?.[1];
-    const codexOutline = codexSource.match(/const FLOWER_OUTLINE =\s*'([^']+)'/)?.[1];
-    const codexPrompt = codexSource.match(/const PROMPT_GLYPHS =\s*'([^']+)'/)?.[1];
+    // The renderer icons draw these shared paths; the native helper must carry the same ones.
+    expect(claudeSource).toContain('d={CLAUDE_CODE_MARK_PATH}');
+    expect(codexSource).toContain('d={`${CODEX_FLOWER_OUTLINE}z`}');
+    expect(codexSource).toContain('d={CODEX_PROMPT_GLYPHS}');
+    const claudePath = CLAUDE_CODE_MARK_PATH;
+    const codexOutline = CODEX_FLOWER_OUTLINE;
+    const codexPrompt = CODEX_PROMPT_GLYPHS;
     const codexSmallStrokeWidth = codexSource.match(
       /const monoStrokeWidth = size <= 14 \? ([\d.]+) : [\d.]+;/,
     )?.[1];

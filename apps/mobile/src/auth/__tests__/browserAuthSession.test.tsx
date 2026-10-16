@@ -13,6 +13,9 @@ const native = vi.hoisted(() => ({
   writeSecure: vi.fn(),
   logoutCleanup: vi.fn(),
   unregisterPush: vi.fn(),
+  clearSpeaker: vi.fn(),
+  retrySpeaker: vi.fn(),
+  appStates: new Set<(state: string) => void>(),
   links: new Set<(event: { url: string }) => void>(),
   open: vi.fn(),
   exchange: vi.fn(),
@@ -33,7 +36,12 @@ vi.mock('../../../app/(auth)/login', () => ({
 }));
 vi.mock('react-native', () => ({
   Platform: { get OS() { return native.platform; } },
-  AppState: { addEventListener: () => ({ remove() {} }) },
+  AppState: {
+    addEventListener: (_: string, listener: (state: string) => void) => {
+      native.appStates.add(listener);
+      return { remove: () => native.appStates.delete(listener) };
+    },
+  },
   Linking: {
     getInitialURL: native.initialUrl,
     addEventListener: (_: string, listener: (event: { url: string }) => void) => {
@@ -102,11 +110,14 @@ vi.mock('@/session/agentCapabilitiesCache', () => ({ resetAgentCapabilitiesCache
 vi.mock('@/session/composerPaletteCache', () => ({ resetComposerPaletteCache: async () => {} }));
 vi.mock('@/device-link/remoteResourceCache', () => ({ clearRemoteResourceCache: async () => {} }));
 vi.mock('@/session/mobileHomeListCache', () => ({ clearCachedHomeListSnapshot: async () => {} }));
-vi.mock('@/device-link/clipboardInvitationHistory', () => ({ clearClipboardInvitationHistory: async () => {} }));
 vi.mock('@/remote-desktop/credentialIdentity', () => ({ updateCredentialAccessToken() {} }));
 vi.mock('@/session/mobileSessionMessageCache', () => ({ clearCachedSessionMessages: async () => {} }));
 vi.mock('@/session/remoteHistoryDiskCache', () => ({ clearHistoryDisk: async () => {} }));
 vi.mock('@/session/mobileVoiceCredentialStore', () => ({ clearAllMobileVoiceCredentials: async () => {} }));
+vi.mock('@/session/mobileSpeakerFilterStorage', () => ({
+  clearMobileSpeakerFilterForAccount: native.clearSpeaker,
+  retryPendingMobileSpeakerFilterCleanup: native.retrySpeaker,
+}));
 vi.mock('@/session/mobileVoiceDictionaryCache', () => ({ setMobileVoiceDictionaryAccountScope() {}, clearAllMobileVoiceDictionaryCaches: async () => {} }));
 vi.mock('@/session/mobileVoiceHistoryStore', () => ({ clearAllMobileVoiceInputHistories: async () => {} }));
 vi.mock('@/debug/visualMock', () => ({}));
@@ -190,6 +201,8 @@ describe('browser auth session lifecycle (real AuthProvider, mocked native/netwo
     native.writeSecure.mockReset().mockImplementation(async (key: string, value: string) => { native.storage.set(key, value); });
     native.logoutCleanup.mockReset();
     native.unregisterPush.mockReset();
+    native.clearSpeaker.mockReset().mockResolvedValue(undefined);
+    native.retrySpeaker.mockReset().mockResolvedValue(undefined);
     native.deleteSecure.mockReset().mockImplementation(async (key: string) => { native.storage.delete(key); });
     native.readSecure.mockReset().mockImplementation(async (key: string) => native.storage.get(key) ?? null);
     native.state = 0;
@@ -207,7 +220,47 @@ describe('browser auth session lifecycle (real AuthProvider, mocked native/netwo
   afterEach(async () => {
     await act(async () => root.unmount());
     expect(native.links.size).toBe(0);
+    expect(native.appStates.size).toBe(0);
     vi.restoreAllMocks();
+  });
+
+  it('retries voiceprint cleanup on startup and foreground while signed out', async () => {
+    expect(auth.isAuthenticated).toBe(false);
+    expect(native.retrySpeaker).toHaveBeenCalledTimes(1);
+    await act(async () => { for (const listener of native.appStates) listener('background'); });
+    expect(native.retrySpeaker).toHaveBeenCalledTimes(1);
+    await act(async () => { for (const listener of native.appStates) listener('active'); });
+    expect(native.retrySpeaker).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the foreground retry registered after cleanup fails at startup', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    native.retrySpeaker.mockRejectedValueOnce(new Error('keychain unavailable'));
+    await restartProvider();
+    expect(auth.initialized).toBe(true);
+    expect(warn).toHaveBeenCalledWith('[auth] speaker filter cleanup pending; will retry');
+    native.retrySpeaker.mockClear();
+    await act(async () => { for (const listener of native.appStates) listener('active'); });
+    expect(native.retrySpeaker).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['logout', 'terminateSession'] as const)('finishes %s credential cleanup when voiceprint deletion fails', async action => {
+    const { setMobileAuthOwner, getMobileAuthOwner } = await import('../authOwnerGeneration');
+    setMobileAuthOwner('speaker-fixture', 'cn');
+    const owner = getMobileAuthOwner();
+    native.storage.set('cindy.mobile.auth.session.v1', 'fixture session');
+    native.storage.set('cindy.mobile.auth.userProfile', 'fixture user');
+    native.logoutCleanup.mockImplementationOnce(async () => {
+      native.storage.delete('cindy.mobile.auth.session.v1');
+    });
+    native.clearSpeaker.mockRejectedValueOnce(new Error('keychain unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await act(async () => { await auth[action](); });
+    expect(native.clearSpeaker).toHaveBeenCalledWith(owner.accountKey);
+    expect(native.storage.has('cindy.mobile.auth.session.v1')).toBe(false);
+    expect(native.storage.has('cindy.mobile.auth.userProfile')).toBe(false);
+    expect(getMobileAuthOwner().accountKey).toBe('');
+    expect(warn).toHaveBeenCalledWith('[auth] speaker filter cleanup pending; will retry');
   });
 
   it.each(['sso', 'social'] as const)('retains %s login on Android dismiss and accepts a delayed deep link', async (kind) => {

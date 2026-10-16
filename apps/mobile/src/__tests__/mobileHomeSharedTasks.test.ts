@@ -54,7 +54,7 @@ describe('shared tasks in the mobile Home', () => {
 });
 
 describe('shared Home group', () => {
-  const own = { sharedTaskId: 'mine', sessionId: 'owner-task', hostDeviceId: 'desktop', ownerAccountId: 'owner', title: 'My share', revision: 1 };
+  const own = { sharedTaskId: 'mine', sessionId: 'owner-task', hostDeviceId: 'desktop', ownerAccountId: 'owner', title: 'My share', revision: 1, source: 'desktop' as string | null | undefined };
   const split = (sessions: MobileHomeSessionLike[], owned = [own], searchQuery = '', statusFilter: 'active' | 'archived' | 'all' = 'active', selectedDeviceId?: string) => {
     const home = buildMobileHomePresentation({ sessions, searchQuery, statusFilter, selectedDeviceId, devices: [
       { deviceId: 'desktop', name: 'Desktop', canOpen: true },
@@ -72,9 +72,14 @@ describe('shared Home group', () => {
     expect((result.rows.find(row => row.item?.session.id === 'joined')?.item?.session as MobileHomeSessionLike).deviceLinkDeviceId).toBe(peer);
   });
 
-  it('keeps account-discovered owner tasks visible before their device is controllable', () => {
+  it('keeps source-confirmed owner tasks visible without a complete session mirror', () => {
     expect(split([]).rows).toEqual([{ key: 'shared:mine', role: 'owned', task: own }]);
     expect(split([], []).rows).toEqual([]);
+  });
+
+  it.each([undefined, 'cindy-make', 'cindy-make-merge'])('does not synthesize a share row with source %s', source => {
+    expect(split([], [{ ...own, source }]).rows).toEqual([]);
+    expect(split([], [{ ...own, source: null }]).rows).toHaveLength(1);
   });
 
   it('moves pinned and project shared tasks into the same group', () => {

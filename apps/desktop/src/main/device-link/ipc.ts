@@ -7,12 +7,13 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ipcMain, shell, clipboard } from 'electron';
+import { MCP_APPS_INVOKE } from '../../shared/mcpApps.js';
 import { currentOauthIdentityScope, trustOauthPeer } from '../plugin-oauth/desktopIdentity.js';
 import { RemotePluginOauthUnsupportedError, resolveOauthPeerIdentity } from '../plugin-oauth/identityResolver.js';
 import { getDeviceId } from '../authManager.js';
 import { copyPrivateDeviceCode } from '../plugin-oauth/deviceCodeClipboard.js';
-import { PLUGIN_OAUTH_CHANNEL, PLUGIN_OAUTH_LOCAL_CHANNEL, PLUGIN_SECRET_LOCAL_CHANNEL, PLUGIN_CONNECTION_LOCAL_CHANNEL } from '@cindy/device-link';
-import { handleAssistPluginOauth, handleSubmitPluginSecret, handleSubmitPluginConnection } from '../plugin-oauth/localIpc.js';
+import { PLUGIN_OAUTH_CHANNEL, PLUGIN_OAUTH_LOCAL_CHANNEL, PLUGIN_SECRET_LOCAL_CHANNEL, PLUGIN_CONNECTION_LOCAL_CHANNEL, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL, INPUT_HANDOFF_REMOTE_PICTURE_CHANNEL, INPUT_HANDOFF_REMOTE_PICTURE_ANSWER_CHANNEL } from '@cindy/device-link';
+import { handleAssistPluginOauth, handleSubmitPluginSecret, handleSubmitPluginConnection, handleSubmitInputHandoff, handleOpenInputHandoffPicture, handleAnswerInputHandoffPicture, type LocalOauthDeps } from '../plugin-oauth/localIpc.js';
 import { LocalDeviceCodeSessions } from '../plugin-oauth/deviceCodeSessions.js';
 import { PLUGIN_OAUTH_DEVICE_CODE_CHANNEL } from '../../shared/pluginOauthDeviceCode.js';
 import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
@@ -375,8 +376,7 @@ export function handleListDevices(
   const directoryRequestSequence = deps.beginControllerDisplayNameDirectoryRefresh();
   const requestEpoch = deps.captureControllerDisplayNameRequestEpoch();
   const presenceRequestEpoch = deps.captureControllerPresenceRequestEpoch();
-  let request!: Promise<DeviceListResult>;
-  request = deps.apiFetch<{ devices: DeviceLinkServerDeviceView[] }>(
+  const request = deps.apiFetch<{ devices: DeviceLinkServerDeviceView[] }>(
     '/api/device-link/devices',
   ).then(
     async (result) => {
@@ -602,7 +602,13 @@ export async function handleInvoke(
   if (typeof channel !== 'string' || !channel.trim()) {
     throwIpcError('INVALID_PARAMS', 'channel is required');
   }
-  if (channel === PLUGIN_OAUTH_CHANNEL || channel === PLUGIN_SECRET_LOCAL_CHANNEL || channel === PLUGIN_CONNECTION_LOCAL_CHANNEL)
+  // App RPCs require the dedicated Main/frame binding, including for remote cards.
+  // Never forward Renderer-supplied View IDs through the general preload bridge.
+  if (channel === MCP_APPS_INVOKE) throwIpcError('PERMISSION_DENIED', 'MCP_APP_FRAME_REQUIRED');
+  if (channel === PLUGIN_OAUTH_CHANNEL || channel === PLUGIN_SECRET_LOCAL_CHANNEL || channel === PLUGIN_CONNECTION_LOCAL_CHANNEL
+    || channel === INPUT_HANDOFF_LOCAL_CHANNEL || channel === INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL
+    || channel === INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL || channel === INPUT_HANDOFF_REMOTE_PICTURE_CHANNEL
+    || channel === INPUT_HANDOFF_REMOTE_PICTURE_ANSWER_CHANNEL)
     throwIpcError('PERMISSION_DENIED', 'Authorization transport is Host-only');
   let callArgs = Array.isArray(args) ? args : [];
 
@@ -1428,41 +1434,60 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
     try { return await deviceCodes.handle(scope, raw); }
     catch { throwIpcError('PRECONDITION_FAILED', 'Authorization code unavailable; retry from the current card'); }
   });
-  const authorizationHandler = (mode: 'oauth' | 'secret' | 'connection') => async (event: import('electron').IpcMainInvokeEvent, raw: unknown) => {
+  const localOauthDeps = (event: import('electron').IpcMainInvokeEvent): LocalOauthDeps => ({
+    owner: () => !isAppSessionBoundaryPending() && getActiveAppSession().mode === 'cloud' ? activeOwnerScopeKey() : null,
+    assertTarget: deviceId => {
+      if (event.sender.isDestroyed()) throw new Error('OAUTH_BRIDGE_UNAVAILABLE');
+      assertTrustedAppRendererEvent(event);
+      assertControlTargetEnabled(deps, deviceId);
+    },
+    invoke: deps.invoke,
+    localDeviceId: getDeviceId,
+    identity: (deviceId, assertCurrent) => resolveOauthPeerIdentity({scope: currentOauthIdentityScope, invoke: deps.invoke}, deviceId, assertCurrent),
+    trustIdentity: trustOauthPeer,
+    openExternal: url => shell.openExternal(url),
+    copyDeviceCode: code => copyPrivateDeviceCode(clipboard, code),
+    presentBrowserAuthorization: (target, expiresAt, assertCurrent, reopen) =>
+      deviceCodes.presentBrowser(deviceCodeScope(event), target, expiresAt, assertCurrent, reopen),
+    presentDeviceCode: (target, prompt, assertCurrent, clearClipboard) => deviceCodes.present(deviceCodeScope(event), target, prompt, {
+      assertCurrent,
+      clearClipboard,
+      copy: code => { copyPrivateDeviceCode(clipboard, code); },
+      openExternal: url => shell.openExternal(url),
+    }),
+  });
+  const authorizationFailed = (error: unknown): never => {
+    if (error instanceof RemotePluginOauthUnsupportedError)
+      throwIpcError('UNSUPPORTED_CAPABILITY', 'Update Cindy on the remote device to use remote plugin authorization');
+    throwIpcError('PRECONDITION_FAILED', 'Remote authorization unavailable; retry from the current card');
+  };
+  const authorizationHandler = (mode: 'oauth' | 'secret' | 'connection' | 'input') => async (event: import('electron').IpcMainInvokeEvent, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
     requireDeviceLinkCapability();
     try {
-      return await (mode === 'connection' ? handleSubmitPluginConnection : mode === 'secret' ? handleSubmitPluginSecret : handleAssistPluginOauth)({
-        owner: () => !isAppSessionBoundaryPending() && getActiveAppSession().mode === 'cloud' ? activeOwnerScopeKey() : null,
-        assertTarget: deviceId => {
-          if (event.sender.isDestroyed()) throw new Error('OAUTH_BRIDGE_UNAVAILABLE');
-          assertTrustedAppRendererEvent(event);
-          assertControlTargetEnabled(deps, deviceId);
-        },
-        invoke: deps.invoke,
-        localDeviceId: getDeviceId,
-        identity: (deviceId, assertCurrent) => resolveOauthPeerIdentity({scope: currentOauthIdentityScope, invoke: deps.invoke}, deviceId, assertCurrent),
-        trustIdentity: trustOauthPeer,
-        openExternal: url => shell.openExternal(url),
-        copyDeviceCode: code => copyPrivateDeviceCode(clipboard, code),
-        presentBrowserAuthorization: (target, expiresAt, assertCurrent, reopen) =>
-          deviceCodes.presentBrowser(deviceCodeScope(event), target, expiresAt, assertCurrent, reopen),
-        presentDeviceCode: (target, prompt, assertCurrent, clearClipboard) => deviceCodes.present(deviceCodeScope(event), target, prompt, {
-          assertCurrent,
-          clearClipboard,
-          copy: code => { copyPrivateDeviceCode(clipboard, code); },
-          openExternal: url => shell.openExternal(url),
-        }),
-      }, raw);
+      return await (mode === 'input' ? handleSubmitInputHandoff : mode === 'connection' ? handleSubmitPluginConnection : mode === 'secret' ? handleSubmitPluginSecret : handleAssistPluginOauth)(localOauthDeps(event), raw);
     } catch (error) {
-      if (error instanceof RemotePluginOauthUnsupportedError)
-        throwIpcError('UNSUPPORTED_CAPABILITY', 'Update Cindy on the remote device to use remote plugin authorization');
-      throwIpcError('PRECONDITION_FAILED', 'Remote authorization unavailable; retry from the current card');
+      return authorizationFailed(error);
     }
   };
   ipcMain.handle(PLUGIN_OAUTH_LOCAL_CHANNEL, authorizationHandler('oauth'));
   ipcMain.handle(PLUGIN_SECRET_LOCAL_CHANNEL, authorizationHandler('secret'));
   ipcMain.handle(PLUGIN_CONNECTION_LOCAL_CHANNEL, authorizationHandler('connection'));
+  ipcMain.handle(INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, authorizationHandler('input'));
+  // 代输入 screenshot step on another computer: the sealed picture returns to this window only.
+  ipcMain.handle(INPUT_HANDOFF_REMOTE_PICTURE_CHANNEL, async (event, raw: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    requireDeviceLinkCapability();
+    try {
+      return await handleOpenInputHandoffPicture(localOauthDeps(event), raw, event.sender.id);
+    } catch (error) {
+      return authorizationFailed(error);
+    }
+  });
+  ipcMain.handle(INPUT_HANDOFF_REMOTE_PICTURE_ANSWER_CHANNEL, (event, raw: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    return handleAnswerInputHandoffPicture(raw, event.sender.id);
+  });
   const gated =
     <T extends unknown[]>(handler: (...args: T) => unknown) =>
     (...args: T) => {

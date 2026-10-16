@@ -26,7 +26,8 @@ import {
 type SourceUsage = ProviderUsageSnapshots & {
   source: NonNullable<ProviderUsageSnapshots['source']>;
 };
-const UsageContext = createContext<ReadonlyMap<string, SourceUsage>>(new Map());
+const NO_USAGE: ReadonlyMap<string, SourceUsage> = new Map();
+const UsageContext = createContext<ReadonlyMap<string, SourceUsage>>(NO_USAGE);
 const ClockContext = createContext(0);
 
 /** One reader per connection, shared by all model/favorite/sizing rows. Existing
@@ -58,6 +59,7 @@ export function ModelSourceUsageProvider({
   providers,
   scope,
   groupUsageOf,
+  isolated = false,
   children,
 }: {
   providers: readonly ProviderView[];
@@ -65,6 +67,11 @@ export function ModelSourceUsageProvider({
   scope: ProviderUsageScope | null;
   /** 目录里的供应商组读谁的账号(provider-groups.md §10);缺省 = 都按目录归属读。 */
   groupUsageOf?: (providerId: string) => ProviderGroupUsage | null;
+  /**
+   * 不继承外层目录的用量:嵌在另一份目录里的行(收藏区里另一台电脑的收藏)与外层可能有同 id 的
+   * 供应商,继承会把外层账号的余量显示在这一行上。
+   */
+  isolated?: boolean;
   children: ReactNode;
 }) {
   const [nowMs, setNowMs] = useState(Date.now);
@@ -100,7 +107,15 @@ export function ModelSourceUsageProvider({
         );
       }, children)
     : children;
-  return <ClockContext.Provider value={nowMs}>{content}</ClockContext.Provider>;
+  return (
+    <ClockContext.Provider value={nowMs}>
+      {isolated ? (
+        <UsageContext.Provider value={NO_USAGE}>{content}</UsageContext.Provider>
+      ) : (
+        content
+      )}
+    </ClockContext.Provider>
+  );
 }
 
 interface QuotaWindow {

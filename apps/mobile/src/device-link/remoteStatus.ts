@@ -18,6 +18,7 @@ const CONNECTION_ISSUE_COPY_KEYS: Record<
   { title: string; hint: string }
 > = {
   'auth-failed': { title: 'deviceLink.authFailedTitle', hint: 'deviceLink.authFailedHint' },
+  'device-removed': { title: 'deviceLink.deviceRemovedTitle', hint: 'deviceLink.deviceRemovedHint' },
   replaced: { title: 'deviceLink.replacedTitle', hint: 'deviceLink.replacedHint' },
   'too-many-connections': {
     title: 'deviceLink.tooManyConnectionsTitle',
@@ -117,6 +118,14 @@ export function isAutoRecoveringRemoteError(error: unknown): boolean {
     || message.includes('REMOTE_OPTIMISTIC_SESSION_STATE_UNAVAILABLE')
     || isTransientRemoteError(error)
     || isDeviceUnresponsiveRemoteError(error);
+}
+
+/**
+ * 被控端因任务仍在运行而拒绝操作（如删除消息）。handler 的 `[SESSION_RUNNING]`
+ * 前缀随隧道放在 message 里（外层 code 为 IPC_ERROR），code 与 message 两种形态都认。
+ */
+export function isSessionRunningRemoteError(error: unknown): boolean {
+  return formatRemoteErrorShared(error).includes('SESSION_RUNNING');
 }
 
 /**

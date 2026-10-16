@@ -149,6 +149,8 @@ export interface ImChannelAdapter {
   im: TextChannelIM;
   /** Stable inbound contextId when connected status.appId is only a display label. */
   getBotContextId?(): string;
+  /** 已连接 bot 的展示名，用于失败时定位当前入口。 */
+  getBotDisplayName?(): string;
   /** Terminal output strategy; existing channels use rich-card. */
   output: ImOutputDriver;
   config: ImOrchestratorConfig;

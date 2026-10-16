@@ -33,6 +33,8 @@ import {
 	discoverTestFiles,
 	expandWorkspacePatterns,
 	filterRunsByWorkspace,
+	findDependencyInstallIssues,
+	selectionNeedsElectron,
 	isIgnoredFile,
 	mapWithConcurrency,
 	normalizeRelPath,
@@ -2225,10 +2227,11 @@ test("CLI runs independently while another worktree budget is held, and waits on
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "test-lock-opt-in-")));
 	let heldLock;
 	try {
-		for (const dir of [".git", "scripts/shared", "packages/sample"]) {
+		for (const dir of [".git", "scripts/shared", "packages/sample", "node_modules"]) {
 			fs.mkdirSync(path.join(root, dir), { recursive: true });
 		}
-		for (const file of ["test-workspaces.mjs", "test-related.mjs", "shared/pnpm-invocation.mjs"]) {
+		fs.writeFileSync(path.join(root, "node_modules/.modules.yaml"), "{}");
+		for (const file of ["test-workspaces.mjs", "test-related.mjs", "ensure-deps.mjs", "shared/pnpm-invocation.mjs"]) {
 			fs.copyFileSync(path.join(ROOT, "scripts", file), path.join(root, "scripts", file));
 		}
 		// Both the holder and the real CLI child must use the same dispersed test
@@ -2298,4 +2301,39 @@ export const acquireTestGateLock = (options) => acquire({ ...options, ...${JSON.
 		await heldLock?.release();
 		fs.rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("dependency preflight explains missing installs and incomplete Electron", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-dep-preflight-"));
+	try {
+		assert.match(findDependencyInstallIssues(root, {})[0], /pnpm install/);
+
+		fs.mkdirSync(path.join(root, "node_modules/electron"), { recursive: true });
+		fs.writeFileSync(path.join(root, "node_modules/.modules.yaml"), "{}");
+		assert.match(findDependencyInstallIssues(root, {})[0], /node_modules\/electron/);
+		fs.writeFileSync(
+			path.join(root, "node_modules/electron/package.json"),
+			JSON.stringify({ name: "electron", version: "1.0.0" }),
+		);
+		const [electronIssue] = findDependencyInstallIssues(root, {});
+		assert.match(electronIssue, /Electron/);
+		assert.match(electronIssue, /--electron-binary/);
+		assert.deepEqual(
+			findDependencyInstallIssues(root, { ELECTRON_OVERRIDE_DIST_PATH: "/stub" }),
+			[],
+		);
+		assert.deepEqual(findDependencyInstallIssues(root, {}, { needsElectron: false }), []);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("only selections that include Desktop need the Electron binary", () => {
+	const workspaces = manifest.workspaces;
+	assert.equal(selectionNeedsElectron(workspaces), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["apps/desktop"] }), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["desktop", "packages/auth-client"] }), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["packages/auth-client"] }), false);
+	assert.equal(selectionNeedsElectron(workspaces, { excludeWorkspaces: ["desktop"] }), false);
+	assert.equal(selectionNeedsElectron([{ name: "sample", cwd: "packages/sample" }]), false);
 });

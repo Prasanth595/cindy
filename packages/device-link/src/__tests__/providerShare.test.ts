@@ -114,6 +114,30 @@ describe('provider share api', () => {
     await api({ requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString() }, calls).sendRequest(TOKEN, 'card');
     expect(calls[0]).toEqual({ path: '/api/device-link/provider-shares/requests', body: { invitation: TOKEN, identityCard: 'card' } });
   });
+
+  it.each([undefined, 'a'.repeat(64)])('accepts old and new link responses and preserves linkId %s', async (linkId) => {
+    const expiresAt = new Date().toISOString();
+    const result = await api({ shareId: 's1', invitation: TOKEN, expiresAt, linkId }).createLink({
+      providerId: 'anthropic', providerLabel: 'Anthropic', deviceName: 'Computer', identityCard: 'card',
+    });
+    expect(result.linkId).toBe(linkId);
+    const request = { requestId: 'r1', linkId, displayName: 'Guest', avatarUrl: null, region: 'global',
+      pairingCode: '0042', createdAt: expiresAt, expiresAt };
+    const shares = await api({ shares: [{ shareId: 's1', providerId: 'anthropic', providerLabel: 'Anthropic',
+      hostDeviceId: 'desktop', createdAt: expiresAt, members: [], requests: [request] }] }).listOwned();
+    expect(shares[0].requests[0].linkId).toBe(linkId);
+  });
+
+  it.each(['invalid', 'A'.repeat(64), 'a'.repeat(63), null])('rejects malformed linkId %s on links and owner requests', async (linkId) => {
+    const expiresAt = new Date().toISOString();
+    await expect(api({ shareId: 's1', invitation: TOKEN, expiresAt, linkId }).createLink({
+      providerId: 'anthropic', providerLabel: 'Anthropic', deviceName: 'Computer', identityCard: 'card',
+    })).rejects.toThrow('Invalid provider share link id');
+    await expect(api({ shares: [{ shareId: 's1', providerId: 'anthropic', providerLabel: 'Anthropic',
+      hostDeviceId: 'desktop', createdAt: expiresAt, members: [], requests: [{ requestId: 'r1', linkId,
+        displayName: 'Guest', avatarUrl: null, region: 'global', pairingCode: '0042', createdAt: expiresAt, expiresAt }] }] })
+      .listOwned()).rejects.toThrow('Invalid provider share link id');
+  });
 });
 
 describe('provider share received catalogs', () => {
@@ -159,6 +183,21 @@ describe('provider share identity scrubbing', () => {
     expect(readProviderShareGroupSize({ groupSize: 4 })).toBe(4);
     expect(readProviderShareGroupSize({ groupSize: '4' })).toBeNull();
     expect(readProviderShareGroupSize(null)).toBeNull();
+  });
+
+  it('keeps only anonymous status enums and preserves positions for unknown or malicious entries', async () => {
+    const { readProviderShareGroupStatus, scrubSharedProvider } = await import('../providerShareCatalog.js');
+    const provider = {
+      id: 'anthropic', groupSize: 3, group: { members: [{ label: 'private-name' }] },
+      groupStatus: ['available', { state: 'busy', label: 'private-name', running: 7 }, 'private-device-id'],
+    };
+    expect(scrubSharedProvider(provider)).toEqual({ id: 'anthropic', groupSize: 3, groupStatus: ['available', 'unknown', 'unknown'] });
+    for (const groupStatus of [null, {}, ['available'], Array(513).fill('available')]) {
+      expect(readProviderShareGroupStatus({ groupSize: 3, groupStatus })).toBeNull();
+      expect(scrubSharedProvider({ groupSize: 3, groupStatus })).toEqual({ groupSize: 3 });
+    }
+    expect(readProviderShareGroupStatus({ groupStatus: ['available'] })).toBeNull();
+    expect(readProviderShareGroupStatus({ groupSize: 2, groupStatus: ['needs-update', 'busy'] })).toEqual(['needs-update', 'busy']);
   });
 
   it('keeps only a sane guest running count', async () => {

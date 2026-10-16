@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "開啟任務",
+    "loading": "正在讀取任務…",
+    "failed": "未能讀取任務資訊",
+    "missing": "這台電腦沒有傳回該任務的資訊",
+    "timedOut": "讀取任務資訊逾時",
+    "retry": "重新讀取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "先前有自動執行失敗。",
     "precheck": "自動檢查暫時受阻。",
@@ -31,7 +40,12 @@
     "openMicPermission": "開啟麥克風權限設定",
     "maxAttachments": "最多新增 {{max}} 個附件。",
     "voiceStopRecording": "停止錄音",
-    "capabilitiesUnsupported": "無法讀取電腦端的指令和資源清單，請更新電腦上的 Cindy 後重試"
+    "capabilitiesUnsupported": "無法讀取電腦端的指令和資源清單，請更新電腦上的 Cindy 後重試",
+    "plugins": "插件",
+    "pluginsChooseDevice": "請先選擇裝置",
+    "pluginsLoading": "正在載入插件…",
+    "pluginsEmpty": "尚無已安裝插件",
+    "pluginsReload": "重新載入插件"
   },
   "presentation": {
     "collaboration": {
@@ -185,7 +199,7 @@
     "outputTotal": "累計輸出",
     "observedPeak": "峰值",
     "tokenRateUnit": "tok/s",
-    "tokenRateDescription": "即時速度和峰值為估算。回應結束後以實際用量校準；不計工具執行和請求等待。",
+    "tokenRateDescription": "最近一段生成速度，不含工具執行與等待。",
     "networkReconnecting": "正在重新連線…",
     "modelBusyRetrying": "模型服務繁忙，正在重試…",
     "rateLimitRetrying": "請求受到限流，正在重試…",
@@ -222,6 +236,7 @@
     "sessionNotSyncedRetry": "任務尚未同步完成，請稍後再試。",
     "savingPreviousQueueEdit": "正在儲存上一條排隊訊息的修改，完成後再編輯。",
     "attachmentsUploadingBeforeEdit": "還有附件正在上傳，等上傳完成後再編輯排隊訊息。",
+    "goalCommandAttachments": "請單獨傳送 /goal。草稿和附件已保留。",
     "goalAlreadyActive": "該任務已有進行中的目標，請先在此處理它。",
     "resetReconfirmTitle": "請重新確認",
     "resetOfferExpired": "重置憑證已過期，請確認重新整理後的配額資訊。",
@@ -237,6 +252,7 @@
     "deleteMessageTitle": "刪除本條訊息？",
     "deleteMessageBody": "使用者訊息只刪除本條；AI 訊息會刪除上一次使用者輸入之後產生的整輪輸出。之後的訊息繼續保留。下次傳送時，AI 上下文會從剩餘記錄重建。",
     "deleteMessageAction": "刪除本條訊息",
+    "deleteMessageBusy": "請等當前回覆結束後再刪除訊息",
     "readingCapabilities": "正在讀取 {{agent}} 執行能力…",
     "editingQueueMessageNumbered": "正在編輯第 {{index}} 條排隊訊息",
     "editingQueueMessage": "正在編輯排隊訊息",
@@ -266,24 +282,7 @@
     "forkConfirmTitle": "從這裡開啟一個新任務？",
     "forkConfirmDescription": "系統會根據這裡的對話上下文建立一個獨立的新任務。原任務不會改變，之後兩邊的訊息互不影響。",
     "forkConfirm": "開啟新任務",
-    "forkCancel": "取消",
-    "estimatedValue": "約{{value}}",
-    "estimatedTokenRate": "約{{rate}} tok/s",
-    "responseWaiting": "等待 {{seconds}}秒",
-    "waitSeconds": "{{seconds}}秒",
-    "firstResponse": "首回應",
-    "streamWait": "流內等待",
-    "turnWaitDescription": "從本機收到引擎開始到首個文字、思考或工具內容，不等同於網路延遲。",
-    "streamWaitDescription": "從 SDK 串流開始到首個內容區塊，之前的請求等待無法測量。",
-    "lastGeneration": "上次生成",
-    "finalAverage": "最終平均",
-    "generationPaused": "生成暫停",
-    "responsePending": "等待回應",
-    "responseFailed": "請求失敗",
-    "responseCancelled": "已停止",
-    "responseRetrying": "正在重試",
-    "responseGenerating": "正在生成",
-    "toolRunning": "執行工具中"
+    "forkCancel": "取消"
   },
   "shareImage": {
     "title": "分享對話",
@@ -298,6 +297,7 @@
     "shareMessage": "分享這條訊息"
   },
   "new": {
+    "goalCommandNeedsSession": "請進入既有任務清除目標。",
     "selectDevice": "選擇裝置",
     "workspaceDialogue": "對話",
     "workspaceProject": "專案",
@@ -370,7 +370,6 @@
     "worktreeBranchesLoading": "正在讀取分支…",
     "worktreeBranchSaving": "正在同步所選分支…",
     "worktreeBranchSyncFailed": "無法確認已儲存的源分支，請重新選擇分支",
-    "worktreeSettingsSaving": "正在同步 worktree 設定…",
     "worktreeSettingsSyncFailed": "無法儲存 worktree 預設設定，仍可依目前選擇繼續",
     "worktreeBranchesRetry": "無法讀取分支，點按重試",
     "worktreeDetecting": "檢測環境中…",
@@ -503,6 +502,8 @@
     "deleteOne": "刪除本條訊息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可讀歷史建立新任務",
+    "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
     "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
     "replyFailed": "本次回覆未能完成。請查看錯誤詳情以瞭解原因。",
     "showErrorDetails": "查看錯誤詳情",
@@ -525,10 +526,6 @@
     "moreOptions": "更多選項",
     "archiveConversation": "歸檔任務",
     "closeActionMenu": "關閉任務操作選單",
-    "referenceAroundAnchor": "連結附近",
-    "referenceRecent": "最近訊息",
-    "referenceCount": "{{num}} 條",
-    "referenceTruncated": "已截斷",
     "pinnedSection": "置頂",
     "extraDirsSummary": "當前 {{num}} 個附加目錄",
     "noExtraDirsSummary": "當前沒有附加目錄",

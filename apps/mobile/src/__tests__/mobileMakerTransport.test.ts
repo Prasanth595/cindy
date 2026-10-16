@@ -203,7 +203,7 @@ describe("mobile maker transport", () => {
         mimeType: "text/plain",
         inlineBase64: "",
       })
-      .mockResolvedValueOnce({ ...direct, transferRequired: true });
+      .mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
     try {
       const maker = createMobileMakerTransport({ deviceId: "d", invoke });
       expect(
@@ -214,6 +214,11 @@ describe("mobile maker transport", () => {
         direct,
       );
       expect(peer).toHaveBeenCalledOnce();
+      expect(peer.mock.calls[0]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number), { ...direct, transferRequired: true, version: 'a'.repeat(64) }]);
+      invoke.mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
+      await maker.fetchRemoteMedia('xdt-file://open?path=/b', { stream: false, skipCache: true });
+      expect(peer.mock.calls[1]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number),
+        { ...direct, transferRequired: true, version: 'a'.repeat(64), skipCache: true }]);
     } finally {
       uninstall();
     }
@@ -294,6 +299,7 @@ describe("mobile maker transport", () => {
   });
   it("documents the remote channels used by the mobile transport", () => {
     expect(MOBILE_MAKER_CHANNELS).toEqual([
+      "ghosts:composer-list",
       "maker:create-session",
       "maker:get-capabilities",
       "maker:provider:list",
@@ -351,6 +357,7 @@ describe("mobile maker transport", () => {
       "maker:goal:resume",
       "maker:goal:update",
       "maker:fork",
+      "maker:fork-strip-encrypted",
       "maker:get-session-tree",
       "maker:navigate-session-tree",
       "maker:rewind:preview",
@@ -981,6 +988,7 @@ describe("mobile maker transport", () => {
     const { calls, maker } = harness();
 
     await maker.fork("s1", "m2");
+    await maker.forkStripEncrypted("s1");
     await maker.getSessionTree("s1");
     await maker.navigateSessionTree("s1", "entry-2", {
       summarize: true,
@@ -993,6 +1001,7 @@ describe("mobile maker transport", () => {
 
     expect(calls.map((call) => [call.channel, call.args])).toEqual([
       ["maker:fork", ["s1", "m2"]],
+      ["maker:fork-strip-encrypted", ["s1"]],
       ["maker:get-session-tree", ["s1"]],
       [
         "maker:navigate-session-tree",

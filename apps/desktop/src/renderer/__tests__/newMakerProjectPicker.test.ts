@@ -1408,9 +1408,10 @@ describe('Shared create project picker', () => {
     //    这里只锁「本仓存在那个正确范例」,它是这条规则的出处。
     expect(deviceLinkRemoteProjectsSource).toContain('void refreshRemoteCatalogSnapshot(push.deviceId);');
     const refreshSource = readSource('lib', 'remoteCatalogSnapshot.ts');
-    expect(refreshSource).toContain('evictDeviceProviders(deviceId)');
+    const evictAt = refreshSource.search(/evictDeviceProviders\(deviceId(?:,|\))/);
+    expect(evictAt).toBeGreaterThan(-1);
     expect(refreshSource).toContain('prefetchDeviceProviders(deviceId)');
-    expect(refreshSource.indexOf('evictDeviceProviders(deviceId)')).toBeLessThan(
+    expect(evictAt).toBeLessThan(
       refreshSource.indexOf('prefetchDeviceProviders(deviceId)'),
     );
   });
@@ -1435,8 +1436,8 @@ describe('Shared create project picker', () => {
     expect(agentCapabilitiesHookSource).toContain(
       "notifyRemoteCapabilities(deviceId, agentKind, { status: 'loading' });",
     );
-    expect(deviceProvidersHookSource).toContain(
-      "notifyDeviceProviders(deviceId, { status: 'loading' });",
+    expect(deviceProvidersHookSource).toMatch(
+      /notifyDeviceProviders\(deviceId,\s*\{\s*status: 'loading'/,
     );
     // 上游事实:fetch effect 只按 (agentKind, deviceId) 重跑,换项目不会触发它。
     expect(agentCapabilitiesHookSource).toContain('}, [agentKind, deviceId]);');
@@ -1630,6 +1631,35 @@ describe('Shared create project picker', () => {
     expect((body.match(/resolveDeviceLinkDraftDefaults\(/g) ?? []).length).toBeGreaterThanOrEqual(
       3,
     );
+    expect((body.match(/freshProviders,/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(body).not.toContain('agentCatalogProviders');
+  });
+
+  it('uses the selected provider catalog for remote effort recalculation', () => {
+    const pushStart = newMakerDraftRouteSource.indexOf(
+      'const re = resolveDeviceLinkDraftDefaults(',
+    );
+    const pushBlock = newMakerDraftRouteSource.slice(
+      pushStart,
+      newMakerDraftRouteSource.indexOf('return { ...prev', pushStart),
+    );
+    const modelSwitchStart = newMakerDraftRouteSource.indexOf(
+      'const resolved = resolveDeviceLinkDraftDefaults(',
+    );
+    const modelSwitchBlock = newMakerDraftRouteSource.slice(
+      modelSwitchStart,
+      newMakerDraftRouteSource.indexOf('setDlSel((prev) =>', modelSwitchStart),
+    );
+    const unifiedStart = newMakerDraftRouteSource.indexOf('const baseline = capabilities');
+    const unifiedBlock = newMakerDraftRouteSource.slice(
+      unifiedStart,
+      newMakerDraftRouteSource.indexOf('// 能力与镜像都还没到', unifiedStart),
+    );
+
+    for (const block of [pushBlock, modelSwitchBlock, unifiedBlock]) {
+      expect(block).toContain('agentCatalogProviders,');
+    }
+    expect(unifiedBlock).toContain('providerId: selection.providerId,');
   });
 
   it('reapplies refreshed regional defaults only while the remote runtime is untouched', () => {
@@ -1639,7 +1669,10 @@ describe('Shared create project picker', () => {
     );
     expect(seed).toContain('shouldReseedDeviceLinkDraftDefaults({');
     expect(seed).toContain('capabilitiesChanged,');
-    expect(seed).toContain('if (!capabilities || capabilitiesLoading');
+    expect(seed).toContain('!capabilities');
+    expect(seed).toContain('capabilitiesLoading');
+    expect(seed).toContain('!deviceDraftDefaultsReady');
+    expect(seed).toContain('!deviceProviderCatalogReady');
     expect(seed).toContain('controllerTouched: dlRuntimeTouchedRef.current,');
     expect(seed).toContain('remoteModelChosenByUser: deviceDraftDefaults?.modelChosenByUser,');
     expect(seed).toContain('modelChosenByUser: true,');

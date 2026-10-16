@@ -207,6 +207,7 @@ vi.mock("@/session/MobileComposerInputRow", () => ({
   MOBILE_COMPOSER_CONTROL_SIZE: 44,
 }));
 vi.mock("@/session/ImageLightbox", () => ({ ImageLightbox: () => null }));
+vi.mock("@/session/McpAppCard", () => ({ McpAppCard: () => null }));
 vi.mock("@/session/mermaidWebView", () => ({ MermaidDiagram: () => null }));
 vi.mock("@/session/mathWebView", () => ({ MathFormulaWebView: () => null }));
 vi.mock("@/session/mediaPlayerWebView", () => ({
@@ -215,8 +216,12 @@ vi.mock("@/session/mediaPlayerWebView", () => ({
 vi.mock("@/session/MarkdownBlockContent", () => ({
   MarkdownBlockContent: () => null,
 }));
+// 只把菜单项 id 投到 DOM,供删除入口可见性断言;不渲染真实底部面板。
 vi.mock("@/session/MessageActionSheet", () => ({
-  MessageActionSheet: () => null,
+  MessageActionSheet: ({ items }: any) =>
+    createElement("div", {
+      "data-menu-items": items.map((item: any) => item.id).join(","),
+    }),
 }));
 vi.mock("@/session/AuthorizationMessageCard", () => ({
   AuthorizationMessageCard: () => null,
@@ -337,6 +342,31 @@ describe("device source label", () => {
   });
 });
 
+describe("message delete entry", () => {
+  const menus = (html: string) =>
+    [...html.matchAll(/data-menu-items="([^"]*)"/g)].map((m) => m[1]);
+
+  it("stays in the More menu while the session still looks running locally", () => {
+    // 点停止后手机本地运行态可能晚于被控端收敛:删除不能因此被藏起来,
+    // 运行中能否删由被控端 SESSION_RUNNING 判定。
+    const messages = [msg("u1", "first", null), msg("u2", "second", null)];
+    for (const isSessionStreaming of [true, false]) {
+      const items = menus(
+        render(messages, { onDeleteMessage: vi.fn(), isSessionStreaming }),
+      );
+      expect(items.length).toBe(2);
+      for (const ids of items) expect(ids.split(",")).toContain("delete");
+    }
+  });
+
+  it("is absent when the screen offers no delete action (shared task guest)", () => {
+    const items = menus(
+      render([msg("u1", "first", null)], { isSessionStreaming: false }),
+    );
+    for (const ids of items) expect(ids.split(",")).not.toContain("delete");
+  });
+});
+
 describe("sender source labels", () => {
   it("renders plugin, shared-task author (above the bubble) and redacted automation labels", () => {
     const html = render([
@@ -450,6 +480,13 @@ describe("source labels reveal their ids on long press", () => {
   }
 
   it("shows plugin, session and automation ids, like the device label", () => {
+    const appSource = longPress(
+      [msg("app", "run", { sourcePlugin: { pluginId: "mcp-app:reports", name: "Reports" } })],
+      "message.sourcePlugin",
+    );
+    expect(appSource).toContain("由 MCP App「Reports」发送");
+    expect(appSource).toContain("MCP 服务器 ID：reports");
+    expect(appSource).not.toContain("mcp-app:reports");
     expect(
       longPress([msg("p1", "run", { sourcePlugin: { pluginId: "ghost-github", name: "GitHub" } })], "message.sourcePlugin"),
     ).toContain("插件 ID：ghost-github");

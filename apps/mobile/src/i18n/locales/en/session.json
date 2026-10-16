@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "Open Task",
+    "loading": "Loading task…",
+    "failed": "Could not load task details.",
+    "missing": "This computer did not return details for this task.",
+    "timedOut": "Loading task details timed out.",
+    "retry": "Reload Task",
+    "back": "Go Back"
+  },
   "failedScheduleNotice": {
     "text": "An automatic run failed.",
     "precheck": "Automatic checks are temporarily blocked.",
@@ -31,7 +40,12 @@
     "openMicPermission": "Open microphone settings",
     "maxAttachments": "You can add up to {{max}} attachments.",
     "voiceStopRecording": "Stop Recording",
-    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again."
+    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again.",
+    "plugins": "Plugins",
+    "pluginsChooseDevice": "Choose a Device",
+    "pluginsLoading": "Loading plugins…",
+    "pluginsEmpty": "No Installed Plugins",
+    "pluginsReload": "Reload Plugins"
   },
   "presentation": {
     "collaboration": {
@@ -185,7 +199,7 @@
     "outputTotal": "Output",
     "observedPeak": "Peak",
     "tokenRateUnit": "tok/s",
-    "tokenRateDescription": "Streaming rates and peaks are estimates. Response totals are calibrated with reported usage. Tool execution and request waits are excluded.",
+    "tokenRateDescription": "Latest generation interval. Excludes tools and waits.",
     "networkReconnecting": "Reconnecting…",
     "modelBusyRetrying": "Model service busy — retrying…",
     "rateLimitRetrying": "Request rate limited — retrying…",
@@ -222,6 +236,7 @@
     "sessionNotSyncedRetry": "The session hasn't finished syncing; try again shortly.",
     "savingPreviousQueueEdit": "Saving the previous queued message edit; edit again once it finishes.",
     "attachmentsUploadingBeforeEdit": "Attachments are still uploading; edit the queued message after they finish.",
+    "goalCommandAttachments": "Send /goal without attachments. Your draft and attachments are kept.",
     "goalAlreadyActive": "This session already has an active goal; handle it here first.",
     "resetReconfirmTitle": "Confirm Again",
     "resetOfferExpired": "The reset credential has expired; review the refreshed quota info.",
@@ -237,6 +252,7 @@
     "deleteMessageTitle": "Delete this message?",
     "deleteMessageBody": "Deleting a user message removes only that message; deleting an AI message removes the entire turn generated after the previous user input. Later messages are kept. On your next send, the AI context is rebuilt from the remaining records.",
     "deleteMessageAction": "Delete this message",
+    "deleteMessageBusy": "Wait for the current response to finish before deleting a message.",
     "readingCapabilities": "Reading {{agent}} capabilities…",
     "editingQueueMessageNumbered": "Editing queued message #{{index}}",
     "editingQueueMessage": "Editing queued message",
@@ -266,24 +282,7 @@
     "forkConfirmTitle": "Start a new session from here?",
     "forkConfirmDescription": "A separate session will be created using the context at this point. The original session stays unchanged, and future messages in either session won't affect the other.",
     "forkConfirm": "Start new session",
-    "forkCancel": "Cancel",
-    "estimatedValue": "≈{{value}}",
-    "estimatedTokenRate": "≈{{rate}} tok/s",
-    "responseWaiting": "Waiting {{seconds}}s",
-    "waitSeconds": "{{seconds}}s",
-    "firstResponse": "First response",
-    "streamWait": "Stream wait",
-    "turnWaitDescription": "From the local provider turn start to the first observed text, thinking or tool content. This is not network latency.",
-    "streamWaitDescription": "From SDK stream start to the first content block. The earlier request wait is not observable.",
-    "lastGeneration": "Last generation",
-    "finalAverage": "Final average",
-    "generationPaused": "Generation paused",
-    "responsePending": "Waiting for response",
-    "responseFailed": "Request failed",
-    "responseCancelled": "Stopped",
-    "responseRetrying": "Retrying",
-    "responseGenerating": "Generating",
-    "toolRunning": "Running tool"
+    "forkCancel": "Cancel"
   },
   "shareImage": {
     "title": "Share Conversation",
@@ -298,6 +297,7 @@
     "shareMessage": "Share this message"
   },
   "new": {
+    "goalCommandNeedsSession": "Open an existing session to clear its goal.",
     "selectDevice": "Select a device",
     "workspaceDialogue": "Chat",
     "workspaceProject": "Project",
@@ -370,7 +370,6 @@
     "worktreeBranchesLoading": "Loading branches…",
     "worktreeBranchSaving": "Syncing the selected branch…",
     "worktreeBranchSyncFailed": "Could not confirm the saved source branch — retry the branch selection",
-    "worktreeSettingsSaving": "Syncing the worktree setting…",
     "worktreeSettingsSyncFailed": "Could not save the worktree default. You can still use this selection.",
     "worktreeBranchesRetry": "Could not load branches. Tap to retry",
     "worktreeDetecting": "Detecting environment…",
@@ -503,6 +502,8 @@
     "deleteOne": "Delete this message"
   },
   "tail": {
+    "readableHistoryRecovery": "New task from readable history",
+    "readableHistoryRecoveryDescription": "If retry keeps failing, create a new task using readable history. Internal encrypted information is omitted. The original task is kept, and the failed message is not resent automatically.",
     "requestFormatError": "The app sent an invalid request, so this reply could not be completed.",
     "replyFailed": "This reply could not be completed. Check the error details for more information.",
     "showErrorDetails": "Show Error Details",
@@ -525,10 +526,6 @@
     "moreOptions": "More options",
     "archiveConversation": "Archive session",
     "closeActionMenu": "Close session actions menu",
-    "referenceAroundAnchor": "Around the link",
-    "referenceRecent": "Recent messages",
-    "referenceCount": "{{num}} messages",
-    "referenceTruncated": "Truncated",
     "pinnedSection": "Pinned",
     "extraDirsSummary": "{{num}} additional directories",
     "noExtraDirsSummary": "No additional directories",

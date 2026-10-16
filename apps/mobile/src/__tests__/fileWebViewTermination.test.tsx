@@ -25,6 +25,7 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (value: unknown) => value },
   AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
 }));
+vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { surfaceElevated: '#FFFFFC' } }) }));
 vi.mock('@/session/useHtmlBrowserViewport', () => ({ useHtmlBrowserViewport: (insets: unknown) => ({ viewRef: { current: null }, measure() {}, script: '/* geometry only */ true;', obscuredContentInsets: insets }) }));
 vi.mock('react-native-webview', async () => {
   const { forwardRef, useEffect, useImperativeHandle } = await import('react');
@@ -38,7 +39,7 @@ vi.mock('react-native-webview', async () => {
 vi.mock('expo-file-system', () => ({ Directory: class { exists = false; }, File: class {}, Paths: { cache: '/cache' } }));
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'id' }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ isAuthenticated: true, user: { id: 'a' }, accountGeneration: 1 }) }));
-vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ connectionEpoch: 1, invoke: vi.fn() }) }));
+vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ connectionEpoch: 1, status: 'online', invoke: vi.fn() }) }));
 vi.mock('@/config/env', () => ({ DEVICE_LINK_API_BASE_URL: 'https://example.test', getActiveMobileSessionRealm: () => 'global' }));
 vi.mock('@/device-link/peerFileRegistry', () => ({
   installPeerFileDownload: (...args: unknown[]) => { state.install(...args); return state.unregister; },
@@ -164,4 +165,19 @@ it('starts a new native history for a refreshed snapshot and ignores navigation 
   expect(state.props.contentInset).toEqual({ top: 80, bottom: 64, left: 0, right: 0 });
   expect(state.props.contentInset).toEqual(state.props.obscuredContentInsets);
   expect(state.props.automaticallyAdjustContentInsets).toBe(false);
+});
+
+const hidden = () => [(state.props as Record<string, unknown>).style].flat(Infinity).some((style: any) => style?.opacity === 0);
+it('hides each snapshot until its first document loads, then reveals it', () => {
+  root = createRoot(document.createElement('div'));
+  const first: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/a/', documents: ['/index.html'], close: async () => {} };
+  act(() => root!.render(createElement(HtmlSnapshotReader, { preview: first, onError() {} })));
+  expect(hidden()).toBe(true);
+  act(() => state.props.onLoadEnd());
+  expect(hidden()).toBe(false);
+  const next: MobileHtmlPreview = { url: 'http://127.0.0.1:1234/b/', documents: ['/index.html'], close: async () => {} };
+  act(() => root!.render(createElement(HtmlSnapshotReader, { preview: next, onError() {} })));
+  expect(hidden()).toBe(true);
+  act(() => state.props.onLoadEnd());
+  expect(hidden()).toBe(false);
 });

@@ -9,6 +9,10 @@ import {
   decodeSessionTagCatalog,
   scrubSharedProvider,
   PROVIDER_SHARE_GROUP_SIZE_FIELD,
+  PROVIDER_SHARE_GROUP_STATUS_FIELD,
+  PROVIDER_SHARE_GROUP_STATUS_REQUEST,
+  readProviderShareGroupStatus,
+  type ProviderShareGroupState,
   PROVIDER_SHARE_GUEST_RUNNING_FIELD,
   CONTROLLER_CAPABILITY_SESSION_LIST_MESSAGES_V1,
   isListMessagePush,
@@ -99,7 +103,8 @@ import { remoteDesktop, requestRemoteDesktop } from '../remote-desktop';
 import { remoteCredentialHost } from '../remote-desktop/credentialHost';
 import { ORCA_REMOTE_WORKER_OPEN_CHANNEL, REMOTE_DESKTOP_CHANNEL } from '@cindy/device-link';
 import type { DeviceLinkClient } from '@cindy/device-link';
-import { isDeferredHistoryPush, deferredToolBoundary } from './historyViewPush';
+import { isDeferredHistoryPush, deferredToolBoundary, buildHistoryWorkPatch, thinkingDeltaUpdatesWorkLine } from './historyViewPush';
+import { HISTORY_WORK_PATCH_CHANNEL } from '@cindy/maker-shared/message-window';
 import { mapHistoryViewMessages, type HistoryMessageSource, type HistoryViewItem } from '@cindy/maker-shared/message-window';
 import { createLogger } from '../logger';
 import { projectMobileMessagePage, projectMobileToolPush } from './mobileToolProjection';
@@ -387,12 +392,19 @@ export interface RemoteAgentHandler {
   abortAll(): void;
   /** 结束匹配控制端的任务(供应商分享被关闭)。 */
   abortControllers?(match: (controller: string) => boolean): Promise<void>;
+  /** 结束匹配控制端替某个人(转分享键)转来的任务(转分享的同意被撤回)。 */
+  abortReshare?(match: (controller: string) => boolean, reshareKey: string): Promise<void>;
   /** 结束并清理匹配控制端留在本机的数据(供应商分享被删除)。 */
   purgeControllers?(match: (controller: string) => boolean): Promise<void>;
   /** 有进行中任务的控制端。 */
   activeControllers?(): string[];
   /** 正在运行一轮的任务的控制端(每个任务一项)。 */
   turnRunningControllers?(): string[];
+  /**
+   * 分享详情的匿名组状态；不开放同账号组管理通道。guestController 是读状态的受邀者：分享来的组内电脑按它的
+   * 主人是否同意过这个人显示(转分享)。
+   */
+  sharedGroupStatus?(providerId: string, guestController?: string): Promise<ProviderShareGroupState[] | null>;
 }
 let remoteAgentHandler: RemoteAgentHandler | null = null;
 
@@ -992,6 +1004,12 @@ let readSessionTextSnapshot: ((sessionId: string) => unknown | null) | null = nu
 
 export function setSessionTextSnapshotReader(reader: typeof readSessionTextSnapshot): void {
   readSessionTextSnapshot = reader;
+}
+
+// Ordinary same-account inbound links only; shared/provider guests never notify.
+let onOrdinaryPeerLinkAccepted: ((deviceId: string) => void) | null = null;
+export function setOrdinaryPeerLinkAcceptedListener(cb: typeof onOrdinaryPeerLinkAccepted): void {
+  onOrdinaryPeerLinkAccepted = cb;
 }
 
 export function setControllersChangedListener(cb: ControllersChangedListener | null): void {
@@ -1940,12 +1958,53 @@ function stageHistoryNotice(dst: string, sessionId: string, ownerStamp?: PushOwn
   const timer = setTimeout(() => {
     pending.delete(sessionId);
     if (pending.size === 0) historyNoticeStages.delete(dst);
-    if (subscriptions.getControllersForTopic(`session:${sessionId}`).includes(dst)) {
-      sendPushBestEffort(dst, 'maker:history-view-changed', { sessionId }, ownerStamp);
-    }
+    if (!subscriptions.getControllersForTopic(`session:${sessionId}`).includes(dst)) return;
+    if (!isSharedTaskPeer(dst) && subscriptions.historyWorkPatchTarget(dst, sessionId)) {
+      sendHistoryWorkUpdate(dst, sessionId, ownerStamp);
+    } else sendPushBestEffort(dst, 'maker:history-view-changed', { sessionId }, ownerStamp);
   }, 500);
   pending.set(sessionId, { timer, ownerStamp });
   historyNoticeStages.set(dst, pending);
+}
+
+/**
+ * Work-line controllers get the changed running item instead of a re-read notice when
+ * nothing else on their delivered page moved. One computation per controller and task
+ * runs at a time; notices arriving meanwhile coalesce into one more pass.
+ */
+const historyWorkRuns = new Map<string, { again: boolean; ownerStamp?: PushOwnerStamp }>();
+function sendHistoryWorkUpdate(dst: string, sessionId: string, ownerStamp?: PushOwnerStamp): void {
+  const runKey = `${dst}\u0000${sessionId}`;
+  const running = historyWorkRuns.get(runKey);
+  if (running) {
+    running.again = true;
+    running.ownerStamp = ownerStamp;
+    return;
+  }
+  const state = { again: true, ownerStamp };
+  historyWorkRuns.set(runKey, state);
+  const subscribed = () => subscriptions.getControllersForTopic(`session:${sessionId}`).includes(dst);
+  void (async () => {
+    try {
+      while (state.again && subscribed()) {
+        state.again = false;
+        const target = subscriptions.historyWorkPatchTarget(dst, sessionId);
+        if (!target) {
+          sendPushBestEffort(dst, 'maker:history-view-changed', { sessionId }, state.ownerStamp);
+          continue;
+        }
+        const startedAt = Date.now();
+        const result = await buildHistoryWorkPatch(sessionId, target.shape);
+        log.debug(`history work update ${result.kind} in ${Date.now() - startedAt}ms`);
+        if (!subscribed() || result.kind === 'unchanged') continue;
+        if (result.kind === 'patch' && subscriptions.recordHistoryWorkPatch(dst, sessionId, target.seq, result.shape)) {
+          sendPushBestEffort(dst, HISTORY_WORK_PATCH_CHANNEL, result.patch, state.ownerStamp);
+        } else sendPushBestEffort(dst, 'maker:history-view-changed', { sessionId }, state.ownerStamp);
+      }
+    } finally {
+      historyWorkRuns.delete(runKey);
+    }
+  })();
 }
 function clearHistoryNotices(dst: string): void {
   for (const item of historyNoticeStages.get(dst)?.values() ?? []) clearTimeout(item.timer);
@@ -2060,6 +2119,7 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
   const historySessionId = readPushSessionId(remotePayload);
   const deferred = historySessionId !== null && isDeferredHistoryPush(channel, remotePayload,
     (id) => readHistoryToolName(historySessionId, id));
+  const thinkingLine = deferred && historySessionId !== null && thinkingDeltaUpdatesWorkLine(historySessionId, remotePayload);
   const offlineTargets = targetsFor(true)
     .filter((dst) => !liveTargets.includes(dst));
   for (const dst of offlineTargets) {
@@ -2083,7 +2143,8 @@ function forwardPush(channel: string, payload: unknown, ownerStamp?: PushOwnerSt
       const folded = subscriptions.projectsHistoryDetails(dst, historySessionId);
       const event = (remotePayload as { event?: { type?: string; data?: { stage?: string } } })?.event;
       // A folded duration ticks locally. Token deltas do not change its summary.
-      if (!folded || event?.type !== 'thinking' || event.data?.stage !== 'delta') stageHistoryNotice(dst, historySessionId, ownerStamp);
+      if (!folded || event?.type !== 'thinking' || event.data?.stage !== 'delta'
+        || (thinkingLine && subscriptions.historyWorkPatchTarget(dst, historySessionId))) stageHistoryNotice(dst, historySessionId, ownerStamp);
       if (folded) {
         const boundary = channel === MAKER_PUSH.EVENT ? deferredToolBoundary(remotePayload) : null;
         if (boundary === null) continue;
@@ -2761,6 +2822,7 @@ function handleLinkOpen(
     flushMakerEventBatchesFor(src);
     drainOfflinePushQueueTo(src, [LEGACY_TOPIC]);
   }
+  onOrdinaryPeerLinkAccepted?.(src);
   log.info(`control link opened by ${shortId(src)} (${name})`);
 }
 
@@ -4133,7 +4195,15 @@ async function projectProviderShareRead(
   src: string, channel: string, args: unknown[], result: unknown, providerId: string,
 ): Promise<{ ok: true; value: unknown } | Extract<InvokeResultPayload, { ok: false }>> {
   if (channel === 'maker:provider:list') {
-    return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src)) };
+    const request = args[0];
+    const wantsStatus = request && typeof request === 'object' && !Array.isArray(request)
+      && (request as Record<string, unknown>)[PROVIDER_SHARE_GROUP_STATUS_REQUEST] === true;
+    const providers = result && typeof result === 'object' ? (result as { providers?: unknown }).providers : null;
+    const offered = Array.isArray(providers) && providers.some((p) => p?.id === providerId && p.remoteInvocationEnabled === true);
+    const states = wantsStatus && offered
+      ? await remoteAgentHandler?.sharedGroupStatus?.(providerId, src).catch(() => null) ?? null
+      : null;
+    return { ok: true, value: projectProviderListForShare(result, providerId, providerShareGuestRunning(src), states) };
   }
   const view = await sharedProviderView(src, providerId);
   if (view && 'ok' in view) return view;
@@ -4182,7 +4252,9 @@ function providerShareGuestRunning(src: string): number | null {
  * Keep only the shared provider (and only while it stays open for remote use). `guestRunning` is the
  * calling guest's own running count on this share (null = not known, the field is left out).
  */
-function projectProviderListForShare(result: unknown, providerId: string, guestRunning: number | null = null): unknown {
+function projectProviderListForShare(
+  result: unknown, providerId: string, guestRunning: number | null = null, groupStatus: ProviderShareGroupState[] | null = null,
+): unknown {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const value = result as { providers?: unknown; modelVisibilityOverrides?: unknown; providerOrder?: unknown };
   const providers = Array.isArray(value.providers)
@@ -4201,7 +4273,11 @@ function projectProviderListForShare(result: unknown, providerId: string, guestR
     providers: providers.map((provider) => {
       const scrubbed: Record<string, unknown> = { ...scrubSharedProvider(provider) };
       delete scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD];
+      delete scrubbed[PROVIDER_SHARE_GROUP_STATUS_FIELD];
       if (groupSize !== null) scrubbed[PROVIDER_SHARE_GROUP_SIZE_FIELD] = groupSize;
+      // 只来自本机受邀者分配器；按状态白名单重新构造，绝不透出组员资料。
+      const safeStatus = readProviderShareGroupStatus({ groupSize, groupStatus });
+      if (safeStatus !== null) scrubbed[PROVIDER_SHARE_GROUP_STATUS_FIELD] = safeStatus;
       // 只来自本机远程 Agent 服务按调用方统计的数，目录里原有的值不算。
       delete scrubbed[PROVIDER_SHARE_GUEST_RUNNING_FIELD];
       if (guestRunning !== null) scrubbed[PROVIDER_SHARE_GUEST_RUNNING_FIELD] = guestRunning;
@@ -4282,6 +4358,17 @@ export async function revokeProviderShareControllers(
   }
   const handler = remoteAgentHandler;
   await (purge ? handler?.purgeControllers?.(guarded) : handler?.abortControllers?.(guarded));
+}
+
+/**
+ * 转分享的同意被撤回(provider-sharing.md §4.3)：结束受邀者的组替那个人转来的任务。连接不断(受邀者自己与它
+ * 分享的其他人照常用)；只有分享的受邀者对端能匹配。
+ */
+export async function abortProviderShareReshareRuns(
+  match: (controller: string) => boolean,
+  reshareKey: string,
+): Promise<void> {
+  await remoteAgentHandler?.abortReshare?.((controller) => isProviderSharePeer(controller) && match(controller), reshareKey);
 }
 
 async function runAuthorizedInvoke(
@@ -4718,6 +4805,7 @@ export const __testing = {
     controllerDisplayNameByDevice.clear();
     reportedControllerNameByDevice.clear();
     onSessionsSubscribed = null;
+    onOrdinaryPeerLinkAccepted = null;
     readSessionTextSnapshot = null;
     activeClient = null;
     offlinePushQueue.clear();

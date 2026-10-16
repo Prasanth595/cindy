@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { ConnectProviderCard } from '@/components/onboarding/ConnectProviderCard';
@@ -54,6 +55,9 @@ import {
   shouldDeferCanonicalBotSessionNavigation,
   withBotCanonicalSessionReadTimeout,
 } from './botNavigation';
+import { useCompanionCloud } from './companionCloudStore';
+import { withoutShadowedBots } from './companionCloudPresentation';
+import { BotHomeComputerSetting } from './BotHomeComputerSetting';
 import { BotLifecycleSettings } from './BotLifecycleSettings';
 import { BotInvitationWelcome } from './BotInvitationWelcome';
 import { BotModelChainEditor } from './BotModelChainEditor';
@@ -100,7 +104,7 @@ export function BotSettings({
   beforeCloseRef,
   initialPage = 'home',
 }: {
-  initialPage?: 'home' | 'memory' | 'capabilities';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model';
   bot: BotProfile;
   beforeCloseRef?: { current: (() => Promise<boolean>) | null };
   onBack: () => void;
@@ -400,12 +404,8 @@ export function BotSettings({
     />
   );
 
-  if (
-    bot.invitation &&
-    bot.invitation.stage !== 'ready' &&
-    !(bot.invitation.stage === 'avatar' && bot.canonicalSessionId)
-  )
-    return <BotInvitationWelcome bot={bot} />;
+  const invitationPending = bot.invitation && bot.invitation.stage !== 'ready'
+    && !(bot.invitation.stage === 'avatar' && bot.canonicalSessionId);
 
   const settingsRows = [
     ['profile', Info, t('bots.profile.title')],
@@ -420,6 +420,15 @@ export function BotSettings({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8">
       <div className="mx-auto w-full max-w-xl">
+        {invitationPending && (page === 'home' || page === 'model') ? (
+          <BotInvitationWelcome bot={bot}
+            onConfigureModel={page === 'model' ? undefined : () => go('model')}
+            onRetry={async () => {
+              // A retry must use the confirmed selection, never race an autosave.
+              if (!await canLeave()) throw new Error('Bot settings have not been saved');
+              await retryBotInvitation(bot.id);
+            }} />
+        ) : null}
         <div className="flex min-h-12 flex-wrap items-center justify-between gap-3">
           {page !== 'home' ? (
             <div className="flex min-w-0 items-center gap-2">
@@ -506,6 +515,7 @@ export function BotSettings({
                 </button>
               ))}
             </div>
+            <BotHomeComputerSetting bot={bot} />
             <div className="mt-6">
               <BotLifecycleSettings
                 bot={bot}
@@ -520,6 +530,7 @@ export function BotSettings({
         <div hidden={page !== 'profile'} className="pt-3">
           <BotBasicProfileFields
             centeredAvatar
+            readOnly={!!invitationPending}
             value={{ name, description, avatar, avatarColor }}
             avatarControl={avatarPicker}
             composition={autosave.composition}
@@ -561,6 +572,7 @@ export function BotSettings({
         <div hidden={page !== 'personality'} className="pt-3">
           <Textarea
             aria-label={t('bots.profile.personality')}
+            readOnly={!!invitationPending}
             value={identitySource}
             onChange={(next) => {
               setIdentitySource(next);
@@ -655,6 +667,18 @@ export function BotSettings({
                 autosave.onEdit('instant');
               }}
             />
+            <div className="mt-5 flex items-start gap-3 border-t border-[var(--border-default)] pt-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-13 font-medium text-[var(--text-primary)]">{t('bots.capabilities.inputHandoff.title')}</p>
+                <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t('bots.capabilities.inputHandoff.description')}</p>
+              </div>
+              <Switch
+                aria-label={t('bots.capabilities.inputHandoff.title')}
+                className="mt-0.5 shrink-0"
+                checked={capabilities.inputHandoff !== false}
+                onCheckedChange={(value) => updateCapability('inputHandoff', value === true)}
+              />
+            </div>
           </div>
         )}
         {page === 'history' ? (
@@ -749,7 +773,9 @@ export function BotsHomeView() {
   const history = useContext(MainViewHistoryContext);
   const selectedBot = useMemo(() => bots.find((bot) => bot.id === botId && bot.status !== 'deleting') ?? null, [botId, bots]);
   const profilesLoaded = hasLoadedBotProfiles();
-  const entryTarget = botEntryTarget(bots, history?.current.lastBotId);
+  const cloud = useCompanionCloud();
+  // Demoted copies (home moved to another computer) are never the entry choice.
+  const entryTarget = botEntryTarget(withoutShadowedBots(bots, cloud), history?.current.lastBotId);
   // An empty profile projection can predate the newly connected source/runtime.
   // Only followers may resume from live defaults; Main resolves the actual route
   // when opening the canonical task without writing a per-Bot override.
@@ -1022,19 +1048,8 @@ export function BotsHomeView() {
   )
     return (
       <main className="flex h-full items-center justify-center px-6" role="main">
-        {selectedBot.invitation.stage === 'failed' ? (
-          <Button
-            variant="secondary"
-            size="lg"
-            tone="quiet"
-            type="button"
-            onClick={() => void retryBotInvitation(selectedBot.id)}
-          >
-            {t('commonUi.retry')}
-          </Button>
-        ) : (
-          <Spinner size={20} />
-        )}
+        <BotInvitationWelcome bot={selectedBot}
+          onConfigureModel={() => navigate(`/bots/${selectedBot.id}?settings=1&settingsPage=model`)} />
       </main>
     );
 

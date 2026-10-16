@@ -270,11 +270,17 @@ describe('mobile home desktop-first surface', () => {
     expect(chromeDrawer).toContain('GestureHandlerRootView');
     expect(chromeDrawer).not.toContain('remoteSettings');
     expect(source).toContain("guardedPush('/settings')");
-    expect(source).toContain('setChromeMenuCloseInstant(true)');
-    expect(source).not.toContain("pendingMenuActionRef.current = () => guardedPush('/settings')");
+    expect(source).not.toContain('setChromeMenuCloseInstant');
+    expect(source).toContain('onClosed={handleChromeMenuClosed}');
+    for (const route of ['/settings', '/devices/manage', '/plugins']) {
+      expect(source).not.toContain(`pendingMenuActionRef.current = () => guardedPush('${route}')`);
+      expect(source).toContain(`setChromeMenuOpen(false);\n          guardedPush('${route}');`);
+    }
+    const teammateHome = readSource('src/session/TeammateHomeScreen.tsx');
+    expect(teammateHome).toContain("onOpenSettings={() => openDrawerPage('/settings')}");
+    expect(teammateHome).toContain("onOpenAccounts={() => afterDrawer(() => setAccounts(true))}");
     const rootLayout = readSource('app/_layout.tsx');
-    expect(rootLayout).toContain('name="settings"');
-    expect(rootLayout).toContain("animation: 'slide_from_left'");
+    expect(rootLayout).not.toContain("animation: 'slide_from_left'");
     expect(source).toContain("label={t('devices.list.allConversations')}");
     // 显示菜单只有一份菜单模型(homeChromeMenus),原生下拉 / 自绘兜底都消费它,不再有平行的自绘面板。
     expect(source).toContain('homeDisplayActionPatch(id, displayMenuState)');
@@ -572,11 +578,16 @@ describe('mobile home desktop-first surface', () => {
     expect(sessionRowSource).toContain('`home.sessionRowTitle.${item.session.id}`');
     // 标签色球紧跟标题(与桌面侧栏一致):标题与色球同在一组,标题只取文字宽度,
     // 不能再用 flex: 1 把色球挤到行尾贴着时间。
-    const titleCluster = sessionRowSource.slice(
-      sessionRowSource.indexOf('<View style={styles.sessionTitleCluster}>'),
-      sessionRowSource.indexOf('{sourceLabel ? ('),
-    );
-    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\}/);
+    const titleClusterStart = sessionRowSource.indexOf('<View style={[styles.sessionTitleCluster, groupChevronVisible && styles.sessionTitleClusterGroupHit]}>');
+    expect(titleClusterStart).toBeGreaterThan(-1);
+    const titleCluster = sessionRowSource.slice(titleClusterStart, sessionRowSource.indexOf('{sourceLabel ? (', titleClusterStart));
+    expect(titleCluster).toMatch(/\{item\.title\}\s*<\/Text>\s*<TaskTagDots tags=\{item\.session\.tags\} surfaceColor=\{colors\.surface\} \/>\s*<\/View>/);
+    // 自动化组展开箭头在标题组之外、作为标题行的不收缩子项:标签色球不收缩,放在组内会被挤出
+    // 父容器边界导致 44×44 热区被截(#5909 review);热区靠自身尺寸,不靠 hitSlop。
+    const groupChevron = titleCluster.slice(titleCluster.indexOf('</View>'));
+    expect(groupChevron).toContain('testID={`${testID}.automationGroupChevron`}');
+    expect(groupChevron).toContain('style={styles.sessionGroupChevronCell}');
+    expect(groupChevron).not.toContain('hitSlop={');
     const listStyles = readSource('src/session/HomeListVisuals.tsx');
     const titleStyle = listStyles.slice(listStyles.indexOf('  sessionTitle: {'), listStyles.indexOf('},', listStyles.indexOf('  sessionTitle: {')));
     expect(titleStyle).toContain('flexShrink: 1');
@@ -714,7 +725,7 @@ describe('mobile home desktop-first surface', () => {
     // Home remains mounted across saved-account activation, so clearing the shared DeviceLink
     // stores is insufficient: page-local refs/state must disappear before the next paint too.
     expect(source).toContain('const { accountGeneration, deviceId: selfDeviceId, user } = auth;');
-    expect(source).toContain('return readDeviceList();');
+    expect(source).toContain('return readDeviceList({ fresh: true });');
     expect(source).toContain('const homeAccountGenerationRef = useRef(accountGeneration);');
     expect(source).toContain('useLayoutEffect(() => {');
     expect(source).toContain('syncInFlightRef.current = null;');
@@ -798,14 +809,16 @@ describe('mobile home desktop-first surface', () => {
 describe('home menu native header ownership', () => {
   it('hosts the Duo top-left menu inside the native bar instead of under its touch surface', () => {
     const home = readSource('src/session/HomeSurface.tsx');
-    const header = readSource('src/platform/chrome/HomeNativeStackHeader.tsx');
+    const header = readSource('src/platform/chrome/HomeStackHeader.tsx');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('<HomeStackHeader');
     expect(home).toContain("nativeHomeHeader && homeGeometry.barEdge !== 'none'");
     expect(home).toContain('keepMenuTopLeft={keepMenuTopLeft}');
     expect(home).not.toContain('{keepMenuTopLeft ? (');
     const leftToolbar = header.split('<Stack.Toolbar placement="left">')[1].split('</Stack.Toolbar>')[0];
     expect(leftToolbar).toContain('<Stack.Toolbar.View hidesSharedBackground>');
     expect(leftToolbar).toContain('onPress={onOpenMenu}');
-    expect(leftToolbar).toContain('testID="home.chromeMenu"');
+    expect(leftToolbar).toContain('testID={menuTestID}');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('menuTestID="home.chromeMenu"');
     // Ordinary system toolbar actions keep their native adaptation.
     expect(leftToolbar).toContain('<Stack.Toolbar.Button');
   });

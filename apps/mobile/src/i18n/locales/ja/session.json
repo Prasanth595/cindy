@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "タスクを開く",
+    "loading": "タスクを読み込み中…",
+    "failed": "タスク情報を読み込めませんでした。",
+    "missing": "このコンピューターからタスク情報が返されませんでした。",
+    "timedOut": "タスク情報の読み込みがタイムアウトしました。",
+    "retry": "タスクを再読み込み",
+    "back": "戻る"
+  },
   "failedScheduleNotice": {
     "text": "自動実行に失敗した記録があります。",
     "precheck": "自動チェックが一時的に停止しています。",
@@ -31,7 +40,12 @@
     "openMicPermission": "マイクの権限設定を開く",
     "maxAttachments": "添付は最大 {{max}} 件までです。",
     "voiceStopRecording": "録音を停止",
-    "capabilitiesUnsupported": "パソコンからコマンドとリソースの一覧を読み込めませんでした。パソコンの Cindy を更新してから再試行してください"
+    "capabilitiesUnsupported": "パソコンからコマンドとリソースの一覧を読み込めませんでした。パソコンの Cindy を更新してから再試行してください",
+    "plugins": "プラグイン",
+    "pluginsChooseDevice": "デバイスを選択",
+    "pluginsLoading": "プラグインを読み込み中…",
+    "pluginsEmpty": "インストール済みプラグインなし",
+    "pluginsReload": "プラグインを再読み込み"
   },
   "presentation": {
     "collaboration": {
@@ -185,7 +199,7 @@
     "outputTotal": "累計出力",
     "observedPeak": "ピーク",
     "tokenRateUnit": "tok/s",
-    "tokenRateDescription": "リアルタイム速度とピークは推定値です。応答後に実使用量で補正し、ツール実行とリクエスト待機は除外します。",
+    "tokenRateDescription": "直近の生成区間の速度。ツール実行と待機は除きます。",
     "networkReconnecting": "再接続中…",
     "modelBusyRetrying": "モデルサービスが混雑、再試行中…",
     "rateLimitRetrying": "リクエストがレート制限されました。再試行中…",
@@ -222,6 +236,7 @@
     "sessionNotSyncedRetry": "セッションの同期がまだ完了していません。しばらくしてから再試行してください。",
     "savingPreviousQueueEdit": "直前のキュー内メッセージの変更を保存中です。完了してから編集してください。",
     "attachmentsUploadingBeforeEdit": "添付ファイルをアップロード中です。完了してからキュー内メッセージを編集してください。",
+    "goalCommandAttachments": "添付ファイルなしで /goal を送信してください。下書きと添付ファイルは保持されています。",
     "goalAlreadyActive": "このセッションには進行中のゴールがあります。先にこちらで対応してください。",
     "resetReconfirmTitle": "再確認してください",
     "resetOfferExpired": "リセット用の認証が期限切れです。更新後のクォータ情報を確認してください。",
@@ -237,6 +252,7 @@
     "deleteMessageTitle": "このメッセージを削除しますか？",
     "deleteMessageBody": "ユーザーメッセージはこの1件のみ削除されます。AI メッセージの場合は、直前のユーザー入力以降に生成されたターン全体が削除されます。以降の会話は保持されます。次回の送信時に、残った記録から AI のコンテキストが再構築されます。",
     "deleteMessageAction": "このメッセージを削除",
+    "deleteMessageBusy": "現在の応答が終わってからメッセージを削除してください。",
     "readingCapabilities": "{{agent}} の実行機能を読み込み中…",
     "editingQueueMessageNumbered": "キュー内メッセージ {{index}} 件目を編集中",
     "editingQueueMessage": "キュー内メッセージを編集中",
@@ -266,24 +282,7 @@
     "forkConfirmTitle": "ここから新しいセッションを始めますか？",
     "forkConfirmDescription": "この時点の会話コンテキストを使って、独立した新しいセッションを作成します。元のセッションは変更されず、以後のメッセージは互いに影響しません。",
     "forkConfirm": "新しいセッションを始める",
-    "forkCancel": "キャンセル",
-    "estimatedValue": "約{{value}}",
-    "estimatedTokenRate": "約{{rate}} tok/s",
-    "responseWaiting": "待機 {{seconds}}秒",
-    "waitSeconds": "{{seconds}}秒",
-    "firstResponse": "初回応答",
-    "streamWait": "ストリーム内待機",
-    "turnWaitDescription": "ローカルでの実行開始から最初のテキスト、思考、ツール内容まで。ネットワーク遅延とは異なります。",
-    "streamWaitDescription": "SDK ストリーム開始から最初のコンテンツまで。それ以前のリクエスト待機は測定できません。",
-    "lastGeneration": "前回の生成",
-    "finalAverage": "最終平均",
-    "generationPaused": "生成を一時停止",
-    "responsePending": "応答待ち",
-    "responseFailed": "リクエスト失敗",
-    "responseCancelled": "停止済み",
-    "responseRetrying": "再試行中",
-    "responseGenerating": "生成中",
-    "toolRunning": "ツール実行中"
+    "forkCancel": "キャンセル"
   },
   "shareImage": {
     "title": "会話を共有",
@@ -298,6 +297,7 @@
     "shareMessage": "このメッセージを共有"
   },
   "new": {
+    "goalCommandNeedsSession": "目標を解除するには既存のセッションを開いてください。",
     "selectDevice": "デバイスを選択",
     "workspaceDialogue": "会話",
     "workspaceProject": "プロジェクト",
@@ -370,7 +370,6 @@
     "worktreeBranchesLoading": "ブランチを読み込み中…",
     "worktreeBranchSaving": "選択したブランチを同期中…",
     "worktreeBranchSyncFailed": "保存済みのソースブランチを確認できません。ブランチを再選択してください",
-    "worktreeSettingsSaving": "worktree 設定を同期中…",
     "worktreeSettingsSyncFailed": "worktree の既定設定を保存できませんでした。現在の選択で続行できます。",
     "worktreeBranchesRetry": "ブランチを読み込めません。タップして再試行",
     "worktreeDetecting": "環境を検出中…",
@@ -503,6 +502,8 @@
     "deleteOne": "このメッセージを削除"
   },
   "tail": {
+    "readableHistoryRecovery": "読み取れる履歴から新しいタスクを作成",
+    "readableHistoryRecoveryDescription": "再試行しても失敗する場合は、読み取れる履歴から新しいタスクを作成できます。内部の暗号化情報は省略されます。元のタスクは保持され、失敗したメッセージは自動で再送信されません。",
     "requestFormatError": "アプリが送信したリクエストの形式に問題があり、返信を完了できませんでした。",
     "replyFailed": "返信を完了できませんでした。原因を確認するには、エラーの詳細をご覧ください。",
     "showErrorDetails": "エラーの詳細を表示",
@@ -525,10 +526,6 @@
     "moreOptions": "その他のオプション",
     "archiveConversation": "セッションをアーカイブ",
     "closeActionMenu": "セッション操作メニューを閉じる",
-    "referenceAroundAnchor": "リンク付近",
-    "referenceRecent": "最近のメッセージ",
-    "referenceCount": "{{num}} 件",
-    "referenceTruncated": "切り詰め済み",
     "pinnedSection": "ピン留め",
     "extraDirsSummary": "追加ディレクトリ {{num}} 件",
     "noExtraDirsSummary": "追加ディレクトリはありません",

@@ -25,8 +25,10 @@ import {
   BOT_GROUP_CHAT_PRIMITIVE,
   BOT_GROUP_REMOTE_COLLECTION_ID,
   BOT_GROUP_REMOTE_RESOURCE_KIND,
+  type BotGroupAttachment,
   type BotGroupDetail,
   type BotGroupSummary,
+  type BotGroupThreadShareView,
 } from '../../../shared/botGroupChat.js';
 
 const context = { controllerDeviceId: 'phone-1' };
@@ -120,6 +122,57 @@ describe('bot group remote resources', () => {
 
   afterEach(() => h.sqlite?.close());
 
+  it('advertises revision-checked settings only for server groups', () => {
+    expect(botGroupRemoteChatData(detail()).supportsSettingsManagement).toBe(false);
+    expect(botGroupRemoteChatData(detail({ serverBacked: true, revision: 3 })).supportsSettingsManagement).toBe(true);
+  });
+
+  it('rejects a stale settings snapshot before calling the group service', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'update', resourceRef: ref('g1'), input: { name: 'Old draft', expectedRevision: 4 } })).rejects.toMatchObject({ message: 'PRECONDITION_FAILED' });
+    expect(service.updateGroup).not.toHaveBeenCalled();
+  });
+
+  it('passes the edited revision to the server and adds just one visible companion', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'update', resourceRef: ref('g1'), input: { name: 'New', expectedRevision: 5 } });
+    expect(service.updateGroup).toHaveBeenCalledWith({ groupId: 'g1', name: 'New', expectedRevision: 5 });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'add-member', resourceRef: ref('g1'), input: { botId: 'abu', expectedRevision: 5 } });
+    expect(service.setMembers).toHaveBeenCalledWith({ groupId: 'g1', botIds: ['abu'], addOnly: true });
+  });
+
+  it('does not invite a hidden companion through the new additive action', async () => {
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, revision: 5 }) });
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'add-member', resourceRef: ref('g1'), input: { botId: 'ghost', expectedRevision: 5 } })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    expect(service.setMembers).not.toHaveBeenCalled();
+  });
+
+  it('archives with the edited revision and never turns a settings delete into leaving', async () => {
+    const group = detail({ serverBacked: true, revision: 5 }); group.members[0] = { ...group.members[0], isOwned: true, role: 'owner' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: { expectedRevision: 5 } });
+    expect(service.chatServer.manage).toHaveBeenCalledWith({ groupId: 'g1', action: { type: 'archive', archived: true, expectedRevision: 5 } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+    group.members[0].role = 'admin';
+    await expect(remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: { expectedRevision: 5 } })).rejects.toMatchObject({ message: 'PERMISSION_DENIED' });
+  });
+
+  it('retains legacy delete delegation for a non-owner leaving a server group', async () => {
+    const group = detail({ serverBacked: true, revision: 5 });
+    group.members[0] = { ...group.members[0], isOwned: true, role: 'member' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'delete', resourceRef: ref('g1'), input: {} });
+    expect(service.deleteGroup).toHaveBeenCalledWith('g1');
+    expect(service.chatServer.manage).not.toHaveBeenCalled();
+  });
+
   it('includes server groups with people and companions on another computer', async () => {
     const group = summary({ serverBacked: true, members: [
       { botId: 'person', actorId: 'person', actorKind: 'human', isOwned: false, name: 'Guest', avatar: '', avatarColor: 'red', status: 'active' },
@@ -178,6 +231,14 @@ describe('bot group remote resources', () => {
       'zh-CN': 'Taylor加入了群聊', 'zh-TW': 'Taylor加入了群聊',
       ja: 'Taylorさんがグループに参加しました', ko: 'Taylor 님이 그룹에 참여했습니다',
     } });
+  });
+
+  it('names who shared a thread reply, never the card text, the way the desktop sidebar does', () => {
+    const share = (extra: Record<string, unknown>) => botGroupRemotePreview(summary({ openPlan: null,
+      lastMessage: { authorName: '小满', preview: '', createdAt: 50, threadShare: true, ...extra } as never }));
+    expect(share({ authorKind: 'bot' })).toMatchObject({ fallback: '小满 shared a thread reply', translations: { 'zh-CN': '小满 贴回了一条话题回复' } });
+    expect(share({ authorKind: 'user', isSelf: false })).toMatchObject({ translations: { 'zh-CN': '小满 贴回了一条话题回复' } });
+    expect(share({ authorKind: 'user', isSelf: true })).toMatchObject({ fallback: 'You shared a thread reply', translations: { 'zh-CN': '你贴回了一条话题回复' } });
   });
 
   it('sends the chat only to controllers that understand it, without host paths', async () => {
@@ -331,6 +392,23 @@ describe('bot group remote resources', () => {
     expect(plain.blocks?.[0]?.fallbackMarkdown).toContain('📎 photo.png 📎 需求.pdf');
   });
 
+  it('keeps host paths off the attachments of shared thread replies', async () => {
+    const file: BotGroupAttachment = { id: 'a2', name: '需求.pdf', category: 'pdf', mimeType: 'application/pdf', size: 4, url: null, path: '/Users/me/cache/需求.pdf' };
+    const share: BotGroupThreadShareView = {
+      messageId: 'r1', threadRootId: 'm1', status: 'available', authorKind: 'bot', authorBotId: 'abu', authorName: '阿布',
+      sharedByAuthor: false, content: '附件在这', attachments: [file], createdAt: 20, edited: false,
+    };
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({
+      messages: [{ ...detail().messages[0]!, id: 's1', threadShare: share }],
+      threadShareUpdates: { s0: { ...share, messageId: 'r0' } },
+    }) });
+    const rich = await remoteResourceRegistry.get(context, { client: client([BOT_GROUP_CHAT_PRIMITIVE]), ref: ref('g1') });
+    const data = rich.blocks![0]!.data as ReturnType<typeof botGroupRemoteChatData>;
+    expect(data.messages[0]!.threadShare!.attachments).toEqual([{ ...file, path: null }]);
+    expect(data.threadShareUpdates!.s0!.attachments).toEqual([{ ...file, path: null }]);
+    expect(JSON.stringify(rich)).not.toContain('/Users/me/cache');
+  });
+
   it('writes nothing once the computer has switched accounts during the checks', async () => {
     // The first owner check runs after the visibility reads; by then the account has changed.
     h.ownerCurrent = () => false;
@@ -364,4 +442,28 @@ describe('bot group remote resources', () => {
       { kind: 'navigate', target: { kind: 'resource', ref: ref('g9') } },
     ]);
   });
+  it('forwards explicit dissolution and leave separately from compatibility archive/delete', async () => {
+    const group = detail({ serverBacked: true, revision: 5, supportsDissolve: true });
+    group.members[0] = { ...group.members[0], actorId: 'self', isSelf: true, isOwned: true, role: 'owner' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'dissolve', resourceRef: ref('g1'), input: { expectedRevision: 5 } });
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'dissolve', expectedRevision: 5 } });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'leave', resourceRef: ref('g1') });
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'member', actorId: 'self', action: 'leave' } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+  });
+  it('allows personal removal after leave through the account-authorized server service', async () => {
+    service.getGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND' });
+    const listState = { conversationId: 'g1', hidden: true, revision: 4 };
+    service.chatServer.manage.mockResolvedValue({ ok: true, listState });
+    const result = await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'hide', resourceRef: ref('g1') });
+    expect(result.result).toEqual({ listState });
+    expect(service.getGroup).not.toHaveBeenCalled();
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'hide' } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+  });
+
 });

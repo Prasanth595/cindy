@@ -164,6 +164,7 @@ it('releases dismiss and button busy state on disconnect without replaying an in
         }),
     );
   await render();
+  expect(h.sheet.contentScrolls).toBe(true);
   await act(async () => row().click());
   expect(h.action).toHaveBeenCalledOnce();
   expect(row().disabled).toBe(true);

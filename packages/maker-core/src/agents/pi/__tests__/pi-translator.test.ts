@@ -1427,8 +1427,7 @@ describe('pi translator', () => {
         cacheCreateTokens: 3,
       }),
     ]);
-    // Completed-only frames cannot prove when streaming began.
-    expect(usage.durationMs).toBeUndefined();
+    expect(usage.durationMs).toBeGreaterThanOrEqual(1_200);
     expect(usage.turnDurationMs).toBeGreaterThanOrEqual(0);
     // 快照累计 input+output。
     expect(usageSnapshotOf(ctx).tokenUsage).toBe(120);
@@ -1578,7 +1577,7 @@ describe('pi translator', () => {
     disposePiTranslateContext(ctx);
   });
 
-  it('keeps native timestamp timing but omits TPS without a first-content observation', () => {
+  it('reads Pi v0.83 generation duration from timestamp with a live heartbeat', () => {
     const ctx = createPiTranslateContext(noopLogger);
     const { queue, events } = makeQueue();
     const timestamp = Date.now() - 1_200;
@@ -1599,9 +1598,26 @@ describe('pi translator', () => {
     );
     translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
     const usage = (events.find((e) => e.type === 'done')!.data as { usage: Record<string, unknown> }).usage;
-    expect(usage.durationMs).toBeUndefined();
-    expect(usageSnapshotOf(ctx).generationDurationMs).toBeGreaterThanOrEqual(1_200);
+    expect(usage.durationMs).toEqual(expect.any(Number));
+    expect(usage.durationMs).toBeGreaterThanOrEqual(1_200);
     expect(usage.turnDurationMs).toEqual(expect.any(Number));
+  });
+
+  it('queues a price tier only for assistant message starts', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue } = makeQueue();
+    try {
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      // Pi starts the prompt and each tool result as messages too.
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'user', content: 'hi' } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'toolResult', content: [] } }), queue, ctx);
+      expect(ctx.pendingPriceVariants).toHaveLength(0);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant', content: [] } }), queue, ctx);
+      expect(ctx.pendingPriceVariants).toHaveLength(1);
+    } finally {
+      // The assistant start arms the generation heartbeat.
+      disposePiTranslateContext(ctx);
+    }
   });
 
   it('omits timestamp-derived timing after a suspend-sized heartbeat gap', () => {
@@ -1611,6 +1627,10 @@ describe('pi translator', () => {
       const { queue, events } = makeQueue();
       translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
       translatePiEvent(ev({ type: 'message_start' }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: {
+        type: 'text_delta', contentIndex: 0, delta: 'one two three four five',
+      } }), queue, ctx);
       nowSpy.mockReturnValue(40_000);
       translatePiEvent(
         ev({
@@ -1623,6 +1643,10 @@ describe('pi translator', () => {
       translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
       const usage = (events.find((e) => e.type === 'done')!.data as { usage: Record<string, unknown> }).usage;
       expect(usage).not.toHaveProperty('durationMs');
+      // The suspended wall clock would dilute the live speed too: the host withdraws it.
+      const lastStatus = events.filter((e) => e.type === 'status').at(-1)?.data as Record<string, unknown>;
+      expect(lastStatus).toMatchObject({ generationReliable: false });
+      expect(lastStatus).not.toHaveProperty('tokenSpeed');
     } finally {
       nowSpy.mockRestore();
     }
@@ -2241,89 +2265,92 @@ describe('pi translator', () => {
   });
 });
 
-describe('Pi tool-end response speed publication', () => {
-  function withTurn(run: (harness: {
-    send: (now: number, event: Record<string, unknown>) => void;
-    latestStatus: () => unknown;
-    events: AgentEvent[];
-    ctx: ReturnType<typeof createPiTranslateContext>;
-  }) => void) {
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
-    const ctx = createPiTranslateContext(noopLogger);
-    const { queue, events } = makeQueue();
-    const send = (now: number, event: Record<string, unknown>) => {
-      clock.mockReturnValue(now);
-      translatePiEvent(ev(event), queue, ctx);
-    };
+describe('pi translator live token speed', () => {
+  const speedOf = (event: AgentEvent | undefined) =>
+    (event?.data as { tokenSpeed?: Record<string, unknown> } | undefined)?.tokenSpeed;
+
+  it('counts streamed text, pauses on non-writing tools and snaps to real output at the end', () => {
+    vi.useFakeTimers();
     try {
-      send(1_000, { type: 'agent_start' });
-      send(2_000, { type: 'message_start', message: { role: 'assistant' } });
-      send(3_000, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'a'.repeat(40) } });
-      run({ send, events, ctx, latestStatus: () => events.filter(event => event.type === 'status').at(-1)?.data });
+      const ctx = createPiTranslateContext(noopLogger);
+      const { queue, events } = makeQueue();
+      const update = (assistantMessageEvent: Record<string, unknown>, at: number) => {
+        vi.setSystemTime(at);
+        translatePiEvent(ev({ type: 'message_update', assistantMessageEvent }), queue, ctx);
+      };
+      vi.setSystemTime(1_000);
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant' } }), queue, ctx);
+      update({ type: 'text_start', contentIndex: 0 }, 1_000);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'one two three four five six' }, 1_500);
+      const live = speedOf(events.filter((e) => e.type === 'status').at(-1));
+      expect(live).toMatchObject({ streaming: true, tokens: 6, elapsedMs: 500 });
+      expect(live?.rate).toBeGreaterThan(0);
+
+      // A bash call: its arguments are not counted and its execution is paused out.
+      update({ type: 'toolcall_start', contentIndex: 1, toolCall: { name: 'bash' } }, 1_600);
+      update({ type: 'toolcall_delta', contentIndex: 1, delta: '{"command":"ls -la"}', toolCall: { name: 'bash' } }, 1_700);
+      update({ type: 'toolcall_end', contentIndex: 1, toolCall: { name: 'bash' } }, 2_000);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'seven eight' }, 12_000);
+
+      vi.setSystemTime(12_500);
+      translatePiEvent(ev({ type: 'message_end', message: {
+        role: 'assistant', content: [{ type: 'text', text: 'one two three four five six' }], stopReason: 'stop',
+        usage: { input: 10, output: 30 },
+      } }), queue, ctx);
+      translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+      const final = speedOf(events.filter((e) => e.type === 'status').at(-1));
+      // 11.5s wall clock minus the 10s tool pause; estimate replaced by the real 30 tokens.
+      expect(final).toMatchObject({ streaming: false, tokens: 30, elapsedMs: 1_500, average: 20, rate: 20 });
     } finally {
-      disposePiTranslateContext(ctx);
-      clock.mockRestore();
+      vi.useRealTimers();
     }
-  }
-
-  it('publishes remaining parallel tools and starts waiting immediately after the last result', () => {
-    withTurn(({ send, latestStatus, ctx }) => {
-      send(5_000, { type: 'message_end', message: { role: 'assistant', content: [], usage: { output: 80 } } });
-      send(6_000, { type: 'tool_execution_start', toolCallId: 'a', toolName: 'read', args: {} });
-      send(7_000, { type: 'tool_execution_start', toolCallId: 'b', toolName: 'bash', args: {} });
-      send(8_000, { type: 'tool_execution_end', toolCallId: 'a', result: 'done' });
-      expect(latestStatus()).toMatchObject({ isRunning: true,
-        responseSpeed: { phase: 'paused', toolActive: true, recentRate: null } });
-      send(9_000, { type: 'tool_execution_end', toolCallId: 'b', result: 'done' });
-      expect(latestStatus()).toMatchObject({ isRunning: true,
-        responseSpeed: { phase: 'waiting', toolActive: false, waitingMs: 0, recentRate: null,
-          durationMs: 2_000, firstResponseMs: 2_000, outputTokens: 80 } });
-      send(10_000, { type: 'message_start', message: { role: 'toolResult' } });
-      expect(usageSnapshotOf(ctx).responseSpeed).toMatchObject({ phase: 'waiting', waitingMs: 1_000, durationMs: 2_000 });
-    });
   });
 
-  it('preserves a request already waiting while a parallel tool finishes', () => {
-    withTurn(({ send, latestStatus }) => {
-      send(4_000, { type: 'message_end', message: { role: 'assistant', content: [] } });
-      send(5_000, { type: 'tool_execution_start', toolCallId: 'a', toolName: 'read', args: {} });
-      send(6_000, { type: 'message_start', message: { role: 'assistant' } });
-      send(9_000, { type: 'tool_execution_end', toolCallId: 'a', result: 'done' });
-      expect(latestStatus()).toMatchObject({ responseSpeed: {
-        phase: 'waiting', toolActive: false, waitingMs: 3_000, durationMs: 1_000 } });
-    });
+  it('leaves the retry backoff out of generation time', () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = createPiTranslateContext(noopLogger);
+      const { queue, events } = makeQueue();
+      const update = (assistantMessageEvent: Record<string, unknown>, at: number) => {
+        vi.setSystemTime(at);
+        translatePiEvent(ev({ type: 'message_update', assistantMessageEvent }), queue, ctx);
+      };
+      vi.setSystemTime(1_000);
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      update({ type: 'text_start', contentIndex: 0 }, 1_000);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'one two three four five' }, 1_500);
+      vi.setSystemTime(1_500);
+      translatePiEvent(ev({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, errorMessage: 'HTTP status 529: overloaded' }), queue, ctx);
+      // 10s backoff, then the retried request streams again.
+      update({ type: 'text_start', contentIndex: 0 }, 11_500);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'six seven eight nine ten' }, 12_000);
+      vi.setSystemTime(12_000);
+      translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+      expect(speedOf(events.filter((e) => e.type === 'status').at(-1))).toMatchObject({ tokens: 10, elapsedMs: 1_000 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('preserves parallel model output instead of reopening its generation clock', () => {
-    withTurn(({ send, latestStatus }) => {
-      send(3_100, { type: 'tool_execution_start', toolCallId: 'a', toolName: 'read', args: {} });
-      send(4_000, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'b'.repeat(40) } });
-      send(4_500, { type: 'tool_execution_end', toolCallId: 'a', result: 'done' });
-      expect(latestStatus()).toMatchObject({ responseSpeed: {
-        phase: 'generating', toolActive: false, durationMs: 1_500, recentRate: 10, outputTokens: 20 } });
-    });
-  });
-
-  it('does not publish running status for orphan, duplicate or settled-turn results', () => {
-    withTurn(({ send, events, latestStatus }) => {
-      const countStatus = () => events.filter(event => event.type === 'status').length;
-      let count = countStatus();
-      send(4_000, { type: 'tool_execution_end', toolCallId: 'unknown', result: 'done' });
-      expect(countStatus()).toBe(count);
-      send(5_000, { type: 'message_end', message: { role: 'assistant', content: [] } });
-      send(6_000, { type: 'tool_execution_start', toolCallId: 'a', toolName: 'read', args: {} });
-      send(7_000, { type: 'tool_execution_end', toolCallId: 'a', result: 'done' });
-      count = countStatus();
-      send(8_000, { type: 'tool_execution_end', toolCallId: 'a', result: 'done' });
-      expect(countStatus()).toBe(count);
-      send(9_000, { type: 'tool_execution_start', toolCallId: 'b', toolName: 'read', args: {} });
-      send(10_000, { type: 'agent_settled' });
-      count = countStatus();
-      const terminal = latestStatus();
-      send(11_000, { type: 'tool_execution_end', toolCallId: 'b', result: 'done' });
-      expect(countStatus()).toBe(count);
-      expect(latestStatus()).toEqual(terminal);
-      expect(latestStatus()).toMatchObject({ isRunning: false, responseSpeed: { phase: 'complete' } });
-    });
+  it('counts file-writing tool arguments and starts each turn fresh', () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = createPiTranslateContext(noopLogger);
+      const { queue, events } = makeQueue();
+      vi.setSystemTime(1_000);
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: {
+        type: 'toolcall_delta', contentIndex: 0, delta: 'a b c',
+        partial: { content: [{ type: 'toolCall', name: 'write' }] },
+      } }), queue, ctx);
+      expect(speedOf(events.filter((e) => e.type === 'status').at(-1))).toMatchObject({ tokens: 3 });
+      translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+      events.length = 0;
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      expect(usageSnapshotOf(ctx).tokenSpeed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

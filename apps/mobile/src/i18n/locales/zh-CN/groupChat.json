@@ -77,6 +77,11 @@
     "planDoneGeneric": "分工做完了",
     "olderOnComputer": "更早的消息请在电脑上查看"
   },
+  "quote": {
+    "label": "引用 {{name}}：{{summary}}",
+    "deleted": "原消息已删除",
+    "attachments": "{{name}} 等 {{total}} 个附件"
+  },
   "notice": {
     "memberJoined": "{{name}}加入了群聊",
     "memberFailed": "{{name}}这次没能回复",
@@ -135,8 +140,21 @@
     "planning": "正在安排…",
     "step": "正在做…"
   },
+  "task": {
+    "state": {
+      "started": "进行中",
+      "waiting": "等你确认",
+      "completed": "已完成",
+      "failed": "失败了",
+      "cancelled": "已取消",
+      "timed-out": "已超时"
+    }
+  },
   "files": {
-    "onComputer": "文件在电脑上，回电脑打开"
+    "onComputer": "文件在电脑上，回电脑打开",
+    "loading": "加载中…",
+    "unavailable": "暂时无法加载",
+    "untitled": "附件"
   },
   "settings": {
     "open": "群设置",
@@ -147,7 +165,7 @@
     "minMembers": "群里至少要有 {{min}} 位伙伴",
     "maxMembers": "最多 {{max}} 位",
     "noMoreBots": "没有其他可以加入的伙伴了",
-    "nameSaveFailed": "群名称没能保存，已恢复原来的名字",
+    "nameSaveFailed": "群名称没能保存，输入已保留，请重试。",
     "membersSaveFailed": "成员没能更新，请再试一次",
     "replyMode": "没有 @ 人的时候",
     "replyModeAll": "大家都可以接话",
@@ -161,7 +179,7 @@
     "speakingMode": "发言方式",
     "speakingModeAuto": "自动",
     "speakingModeSequential": "始终轮流",
-    "speakingModeAutoNote": "没有 @ 人或 @所有人时，第一圈大家同时想，之后轮流接话；@ 了伙伴就按 @ 的先后轮流。",
+    "speakingModeAutoNote": "未 @ 人或 @所有人时，首轮同时思考，之后轮流；@ 伙伴按提及顺序轮流。",
     "speakingModeSequentialNote": "每次只有一位伙伴发言，后说的能看到前面的回答。",
     "speakingModeSaveFailed": "发言方式没能保存，请再试一次",
     "setOrganizer": "设为负责人",
@@ -173,7 +191,22 @@
     "projectDirNote": "分工做事时，伙伴们在这里干活。不选也行，会用这个群自己的文件夹；选了 git 项目，每次分工会新开一个 worktree 和分支，不动你手上的代码。",
     "add": "添加伙伴",
     "projectDirOnComputer": "在电脑上选择或更换",
-    "memberActions": "{{name}} 的操作"
+    "memberActions": "{{name}} 的操作",
+    "managementComputer": "管理电脑",
+    "retry": "重试",
+    "reconnect": "重连",
+    "conflict": "群设置已更新，请核对后再保存。输入已保留。",
+    "archive": "归档群聊",
+    "archiveConfirmTitle": "归档「{{name}}」？",
+    "archiveNote": "仅群主可归档。归档后不能继续发消息，历史消息保留。",
+    "managementStatus": {
+      "ready": "已连接",
+      "loading": "连接中…",
+      "noHost": "已断开",
+      "permission": "无管理权限",
+      "upgrade": "需更新电脑端",
+      "unavailable": "设置读取失败"
+    }
   },
   "errors": {
     "memberLimit": "一个群需要 2–6 位伙伴",
@@ -193,7 +226,11 @@
     "requestTimeout": "还未确认操作结果，请刷新查看后再重试。",
     "permissionDenied": "你没有执行此操作的群管理权限。",
     "serviceError": "群聊服务处理失败，请稍后重试。",
-    "groupArchived": "本群已归档，不能执行此操作。"
+    "groupArchived": "本群已归档，不能执行此操作。",
+    "quoteUnavailable": "引用的消息已删除或不可见，已取消引用，请再发送一次",
+    "lifecycleUnavailable": "当前服务器或电脑暂不支持此操作。",
+    "groupDissolved": "群聊已解散，仍可查看有权访问的历史消息。",
+    "lastOwner": "请先转让群主或解散群聊，再退出。"
   },
   "followUp": {
     "next": "分工 · 下一步",
@@ -206,5 +243,17 @@
     "attachmentFailed": "附件打开失败，请重试。",
     "previewUnavailable": "暂时无法读取消息预览",
     "endpointUnavailable": "群聊服务配置暂不可用，请重试。"
+  },
+  "lifecycle": {
+    "dissolve": "解散群聊",
+    "dissolveNote": "解散后无法恢复。所有成员将无法发送消息，进行中的工作会停止，邀请会失效。成员仍可查看原本有权访问的历史消息。",
+    "hide": "从我的列表移除",
+    "hideNote": "从你所有设备的列表中移除此群聊。不改变成员关系，不删除历史消息、不停止进行中的工作，也不影响其他成员。",
+    "leave": "退出群聊",
+    "leaveNote": "你和你的伙伴将退出此群聊，不再接收新消息，也无法查看群历史。",
+    "unavailable": "当前服务器或电脑暂不支持此操作。",
+    "dissolved": "群聊已解散，仍可查看有权访问的历史消息。",
+    "failed": "操作未完成，请重试。",
+    "lastOwner": "请先转让群主或解散群聊，再退出。"
   }
 }

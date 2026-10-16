@@ -17,7 +17,9 @@ import {
 import { setRemoteAgentHandler } from '../../device-link/dispatch.js';
 import { remoteBackgroundInvoke } from '../../device-link/index.js';
 import { providerShareGuestAccess } from '../../device-link/providerShareHost.js';
+import { handleProviderShareReshare, providerShareReshareAllows } from '../../device-link/providerShareReshare.js';
 import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay.js';
+import { providerGroupReshare } from '../../provider-group/reshareRuntime.js';
 import { getProviderGroupOwnerScope } from '../../provider-group/runtime.js';
 import { readProviderGroup } from '../../provider-group/store.js';
 import { remoteAgentPollerFor } from '../controller/service';
@@ -27,10 +29,10 @@ import { readDeviceLinkSettings } from '../../device-link/settings-store.js';
 import { readTurnUsageResetAt } from '../../goal-host/usageLimit.js';
 import { getDesktopProviderService } from '../../maker-host/createDesktopProviderService.js';
 import { registerGuestProviderRoute } from '../../maker-host/guest-provider-route-store.js';
+import { bindHostedSessionProvider } from '../../maker-host/session-provider-store.js';
 import { isRemoteProviderInvocationAllowed } from '../../maker-host/remote-provider-access-store.js';
 import { guestProviderModelIds, resolveGuestProviderId, resolveSharedProviderId } from './providerAccess';
-import type { GuestUsageSample } from './guestUsage';
-import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost } from './runHost';
+import { createRemoteAgentHost, type HostedStartInput, type RemoteAgentHost, type RunUsageRecord } from './runHost';
 import { purgeClaudeHostedSessionArtifacts, purgeClaudeHostedTranscripts, purgePiHostedSubagentRuns } from './transcripts';
 
 const log = createLogger('remote-agent:host');
@@ -98,6 +100,23 @@ function guestAllows(controller: string, providerId: string): boolean {
 export function installRemoteAgentHost(options: { getMaker: () => Maker; userDataDir: string }): void {
   if (host) return;
   const usage = installProviderShareUsageStore(options.userDataDir);
+  // 同一份受邀者分配器同时提供匿名状态，沿用实际分配时记录的版本兼容情况。
+  const groupRelay = createProviderGroupGuestRelay({
+    scope: getProviderGroupOwnerScope,
+    readGroup: readProviderGroup,
+    connect: (agentDeviceId) => {
+      const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
+      return { invoke: poller.invoke, poller };
+    },
+    // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
+    readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
+    // 转分享(provider-sharing.md §4.3)：分享来的电脑只给它的主人同意过的人。
+    reshareAllows: providerGroupReshare.allows,
+    noteReshareDenied: providerGroupReshare.noteDenied,
+    reshareNeedsUpdate: providerGroupReshare.needsUpdate,
+    now: () => Date.now(),
+    log,
+  });
   host = createRemoteAgentHost({
     isAgentAvailable: (kind) => {
       try {
@@ -107,6 +126,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       }
     },
     startHosted: (input) => options.getMaker().startHostedAgentSession(input.kind, hostedStartOptions(input)),
+    bindOwnerProviderRoute: bindHostedSessionProvider,
     isControllerAuthorized: (controller) => {
       if (isProviderSharePeer(controller)) return providerShareGuestAccess(controller) !== null;
       const settings = readDeviceLinkSettings();
@@ -154,22 +174,13 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       const peer = parseProviderSharePeer(controller);
       if (peer?.role === 'guest' && peer.memberId) usage.record(peer.shareId, peer.memberId, sample);
       // 同账号的组所在电脑替它的受邀者转过来的任务：记在那台电脑名下(经那台使用)。
-      else if (!peer) recordDeviceUsage(controller, sample);
+      else if (!peer) recordDeviceUsage(controller, sample, 'relay');
     },
-    recordOwnerUsage: (controller, sample) => recordDeviceUsage(controller, sample),
+    recordOwnerUsage: (controller, sample) => recordDeviceUsage(controller, sample, 'device'),
     // 供应商组(本机是组所在电脑)：受邀者的任务按组分给组内电脑，本机中转(provider-groups.md §4)。
-    groupRelay: createProviderGroupGuestRelay({
-      scope: getProviderGroupOwnerScope,
-      readGroup: readProviderGroup,
-      connect: (agentDeviceId) => {
-        const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
-        return { invoke: poller.invoke, poller };
-      },
-      // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
-      readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
-      now: () => Date.now(),
-      log,
-    }),
+    groupRelay,
+    // 转分享(本机是分享者)：受邀者的组替它分享的人转来的任务，只在本机主人同意过那个人时运行。
+    reshare: { sync: handleProviderShareReshare, allows: providerShareReshareAllows },
     captureOwner: captureDataOwnerBroadcastScope,
     isOwnerCurrent: (owner) => isDataOwnerBroadcastScopeCurrent(owner as DataOwnerBroadcastScope),
     runsRoot: path.join(options.userDataDir, 'remote-agent'),
@@ -182,15 +193,21 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       void current.abortAll();
     },
     abortControllers: (match) => current.abortControllers(match),
+    abortReshare: (match, reshareKey) => current.abortReshare(match, reshareKey),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
     turnRunningControllers: () => current.turnRunningControllers(),
+    sharedGroupStatus: (providerId, guestController) => groupRelay.sharedStatus(providerId, guestController),
   });
 }
 
 /** 本机替其他电脑运行、正在运行一轮的远程 Agent 任务用的本机供应商(每个任务一项)；服务没起来时为空。 */
 export function remoteAgentHostRunningProviders(): string[] {
   return host?.turnRunningProviders() ?? [];
+}
+
+export function resolveRemoteAgentHostClaudeSessionId(sdkSessionId: string): string | null {
+  return host?.resolveClaudeSessionId(sdkSessionId) ?? null;
 }
 
 /** 退出时结束全部远程 Agent 任务。 */
@@ -205,14 +222,14 @@ function flushProviderShareUsage(): Promise<void> {
   return Promise.all([getProviderShareUsageStore()?.flush(), flushProviderPartyUsage()]).then(() => undefined);
 }
 
-/** 同账号另一台电脑在本机运行的这一轮，记在「我的其他电脑」下(远程与分享页按使用方的用量)。 */
-function recordDeviceUsage(
-  controller: string,
-  sample: { kind: string; providerId: string | null; samples: GuestUsageSample[] },
-): void {
+/**
+ * 同账号另一台电脑在本机运行的这一轮(远程与分享页按使用方的用量)：那台自己的任务记在「我的其他电脑」下，
+ * 那台作为组所在电脑替受邀者转来的记在「经其他电脑转来」下。
+ */
+function recordDeviceUsage(controller: string, sample: RunUsageRecord, via: 'device' | 'relay'): void {
   if (!sample.providerId) return;
   currentProviderPartyUsageStore().record(
-    { kind: 'device', deviceId: controller },
-    { kind: sample.kind, providerId: sample.providerId, samples: sample.samples },
+    { kind: via, deviceId: controller },
+    { kind: sample.kind, providerId: sample.providerId, memberKey: sample.memberKey, samples: sample.samples },
   );
 }

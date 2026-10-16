@@ -20,6 +20,46 @@ import {
 
 import type { SessionSource } from '../../shared/sessionSource.js';
 
+/** Historical source identity survives uninstall; revision is only a continuity witness. */
+export const pluginUsageSubjects = sqliteTable('plugin_usage_subjects', {
+  id: text('id').primaryKey(),
+  stableKey: text('stable_key'),
+  sourceKind: text('source_kind').notNull(),
+  pluginId: text('plugin_id'),
+  organizationId: text('organization_id'),
+  sourceKey: text('source_key'),
+  serverRoot: text('server_root'),
+  ghostId: text('ghost_id').notNull(),
+  displayName: text('display_name').notNull(),
+  bindingRevision: text('binding_revision'),
+  recordingStartedAt: integer('recording_started_at').notNull(),
+  historyGeneration: integer('history_generation').notNull().default(0),
+}, (t) => ({
+  bySource: uniqueIndex('plugin_usage_subjects_source_idx').on(t.stableKey),
+  byBinding: index('plugin_usage_subjects_binding_idx').on(t.ghostId, t.bindingRevision),
+}));
+
+/** Dispatch facts only: no arguments, response bodies, credentials or title snapshots. */
+export const pluginUsageEvents = sqliteTable('plugin_usage_events', {
+  callId: text('call_id').primaryKey(),
+  subjectId: text('subject_id').notNull().references(() => pluginUsageSubjects.id),
+  historyGeneration: integer('history_generation').notNull(),
+  occurredAt: integer('occurred_at').notNull(),
+  toolName: text('tool_name').notNull(),
+  sessionId: text('session_id'),
+  version: text('version'),
+  releaseId: text('release_id'),
+  outcome: text('outcome').notNull().default('unknown'),
+  reportTarget: text('report_target'),
+  reportState: text('report_state').notNull().default('not-applicable'),
+  nextAttemptAt: integer('next_attempt_at'),
+  attemptCount: integer('attempt_count').notNull().default(0),
+}, (t) => ({
+  byTime: index('plugin_usage_events_time_idx').on(t.subjectId, t.occurredAt),
+  byTask: index('plugin_usage_events_task_idx').on(t.subjectId, t.sessionId, t.occurredAt),
+  pendingReports: index('plugin_usage_events_pending_idx').on(t.nextAttemptAt, t.occurredAt).where(sql`${t.reportState} = 'pending'`),
+}));
+
 /** Per-profile authority journal. Snapshots are recovery/audit data, not offline grants. */
 export const sharedTaskEvents = sqliteTable('shared_task_events', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -109,6 +149,13 @@ export const sessions = sqliteTable(
     planModeEnabled: integer('plan_mode_enabled', { mode: 'boolean' }).notNull().default(false),
     clearedAt: integer('cleared_at'), // unix ms
     pinnedAt: integer('pinned_at'), // unix ms
+    /**
+     * 后台隐藏时刻（unix ms）。非 NULL = 插件以 `agent.hiddenTasks` 声明创建或切换为
+     * 隐藏的后台任务：不进入任务列表、搜索、未结束提示与新任务通知；用户仍可在插件
+     * 详情页「后台任务」打开或显示到任务列表。NULL = 普通可见任务（存量行全部为 NULL）。
+     * 用量统计等全量口径不按此列过滤。
+     */
+    hiddenAt: integer('hidden_at'), // unix ms
     /**
      * 任务现状一句话摘要（仅置顶段卡片模式展示/生成）。
      * 由 main/sessionTaskSummary.ts 在置顶会话 turn 结束或置顶时经 oneShot 生成,
@@ -464,6 +511,8 @@ export const botDelegations = sqliteTable(
     contextRefsJson: text('context_refs_json').notNull().default('[]'),
     artifactRefsJson: text('artifact_refs_json').notNull().default('[]'),
     permissionSnapshotJson: text('permission_snapshot_json').notNull().default('{}'),
+    // Immutable wire payloads per group delivery; independent of mutable execution state.
+    groupTaskPostsJson: text('group_task_posts_json').notNull().default('{}'),
     lineageJson: text('lineage_json').notNull().default('[]'),
     targetProfileVersion: integer('target_profile_version'),
     depth: integer('depth').notNull().default(1),

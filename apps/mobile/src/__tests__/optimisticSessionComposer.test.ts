@@ -12,7 +12,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(process.cwd(), relativePath), 'utf8').replace(/\r\n/g, '\n');
@@ -316,8 +317,16 @@ describe('mobile optimistic composer while session is not ready', () => {
     const branch = source.slice(backToEditStart, backToEditEnd);
     // 跨页导航:upload controller 随会话页销毁,在途上传保不住,只能取消 + 告知。
     expect(branch).toContain("takeOutboxForSession(sessionId, 'cancel')");
-    expect(branch.indexOf('takeOutboxForSession'))
-      .toBeLessThan(branch.indexOf('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })'));
+    expect(branch).toContain('returnNewSessionToEdit({');
+    expect(branch).toContain('stashDraft: prepared => {');
+    const recovery = readSource('src/session/returnNewSessionToEdit.ts');
+    const stash = recovery.indexOf('stashDraft(prepared);');
+    expect(stash).toBeGreaterThanOrEqual(0);
+    expect(recovery).toContain('editSessionId: sessionId');
+    expect(recovery).not.toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
+    const creation = readSource('src/session/newSessionCreation.ts');
+    const claim = creation.slice(creation.indexOf('export function drainStashedNewSessionDraft'));
+    expect(claim).toContain('dismissNewSessionCreation(sessionId, { removeSyntheticRow: true })');
     expect(branch).toContain('outboxItemDraftText');
     // 装不下的中转对象回收 + 把「没能带回多少」随 stash 带到新建页。
     expect(branch).toContain('discardRecoveredAttachments(dropped);');
@@ -453,9 +462,44 @@ describe('mobile optimistic composer while session is not ready', () => {
     expect(gate).toBeLessThan(clear);
     const branch = source.slice(gate, clear);
     expect(branch).toContain('isRemoteSessionMissing(readSessionRowNow())');
-    expect(branch).toContain("setError(t('session.screen.commandWaitsForSession'));");
     // 早退必须自己解掉发送锁(这一段在 try/finally 之前)。
     expect(branch).toContain('sendInFlightRef.current = false;');
     expect(branch).toContain('setSending(false);');
+
+    // 执行实际门禁，避免把错误提示的固定语法当作行为契约。
+    const screen = ts.createSourceFile(SCREEN, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let guard: ts.IfStatement | undefined;
+    const visit = (node: ts.Node) => {
+      if (ts.isIfStatement(node) && node.expression.getText(screen).includes('commandNeedsRemoteSession(')) guard = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(screen);
+    expect(guard).toBeDefined();
+    const run = new Function('args', `
+      const { missing, companionEntry, connectionDispatchBlockedAtSend, setError, setSending, sendInFlightRef, consume } = args;
+      const earlyLocalCommand = {}, earlyDesktopCommand = null;
+      const commandNeedsRemoteSession = () => true;
+      const readSessionRowNow = () => missing ? null : { id: 'existing' };
+      const isRemoteSessionMissing = row => row === null;
+      const t = key => key;
+      ${guard!.getText(screen)}
+      consume();
+    `);
+    for (const [missing, ready, blocked] of [[true, true, false], [false, false, false], [false, true, true], [false, true, false]]) {
+      const setError = vi.fn(), setSending = vi.fn(), consume = vi.fn();
+      const sendInFlightRef = { current: true };
+      run({ missing, companionEntry: { ready }, connectionDispatchBlockedAtSend: blocked,
+        setError, setSending, sendInFlightRef, consume });
+      if (missing || !ready || blocked) {
+        expect(setError).toHaveBeenCalledExactlyOnceWith(missing
+          ? 'session.screen.commandWaitsForSession' : 'session.screen.sessionNotSyncedRetry');
+        expect(consume).not.toHaveBeenCalled();
+        expect(sendInFlightRef.current).toBe(false);
+        expect(setSending).toHaveBeenCalledExactlyOnceWith(false);
+      } else {
+        expect(setError).not.toHaveBeenCalled();
+        expect(consume).toHaveBeenCalledOnce();
+      }
+    }
   });
 });

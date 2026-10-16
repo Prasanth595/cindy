@@ -286,7 +286,8 @@ describe('openSystemBrowserAuthorization 分流', () => {
       loopbackStart,
       source.indexOf('\n}\n\n// ── Refresh scheduling', loopbackStart),
     );
-    const actionStart = source.indexOf('async function runLoginAction(action: DesktopLoginAction)');
+    const actionStart = source.indexOf('async function runLoginAction(');
+    expect(actionStart).toBeGreaterThan(-1);
     const actionBody = source.slice(
       actionStart,
       source.indexOf('\n}\n\nexport async function dispatchLoginAction', actionStart),

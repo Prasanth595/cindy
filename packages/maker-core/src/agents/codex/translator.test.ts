@@ -516,9 +516,12 @@ describe('Codex generation timing', () => {
     try {
       const rt = newCodexRuntimeState();
       beginCodexGenerationTurn(rt, 'turn-1', 1_000);
+      rt.tokenSpeed.recordDelta('a b c d e f g h i j', 1_000);
       wallClockSpy.mockReturnValue(40_000);
       finalizeCodexGenerationTurn(rt, 'turn-1', 2_000);
       expect(codexGenerationDurationMs(rt)).toBeUndefined();
+      // The suspended wall clock would dilute the live speed too.
+      expect(rt.tokenSpeed.snapshot(40_000)).toBeUndefined();
     } finally {
       wallClockSpy.mockRestore();
     }
@@ -2479,4 +2482,25 @@ it('carries the provider final phase from item start onto the first delta', asyn
   translateItemNotification('started', { threadId: 'thread', turnId: 'turn', item: { type: 'agentMessage', id: 'final', text: '', phase: 'final_answer' } }, q, ctx);
   translateAgentMessageDelta({ threadId: 'thread', turnId: 'turn', itemId: 'final', delta: 'Visible now' }, q, ctx);
   expect(await collect(q)).toContainEqual({ type: 'text', source: 'codex', data: { text: 'Visible now', isFinal: false, agentMessageId: 'final', phase: 'final_answer' } });
+});
+
+it('measures live tok/s from visible deltas and pauses while a command runs', () => {
+  vi.useFakeTimers();
+  try {
+    const rt = newCodexRuntimeState(), q = createAsyncQueue<AgentEvent>(), ctx = makeCtx(rt);
+    vi.setSystemTime(1_000);
+    beginCodexGenerationTurn(rt, 'turn', 1_000);
+    translateItemNotification('started', { threadId: 'thread', turnId: 'turn', item: { type: 'agentMessage', id: 'm1', text: '' } }, q, ctx);
+    vi.setSystemTime(1_500);
+    translateAgentMessageDelta({ threadId: 'thread', turnId: 'turn', itemId: 'm1', delta: 'one two three four' }, q, ctx);
+    expect(rt.tokenSpeed.snapshot()).toMatchObject({ streaming: true, tokens: 4, elapsedMs: 500 });
+    translateItemNotification('started', { threadId: 'thread', turnId: 'turn', item: { type: 'commandExecution', id: 'c1', command: 'ls' } }, q, ctx);
+    vi.setSystemTime(9_500);
+    // The command is still running: its time is not generation time.
+    expect(rt.tokenSpeed.snapshot()?.elapsedMs).toBe(500);
+    rt.tokenSpeed.stop(20);
+    expect(rt.tokenSpeed.snapshot()).toMatchObject({ streaming: false, tokens: 20, elapsedMs: 500, average: 40 });
+  } finally {
+    vi.useRealTimers();
+  }
 });

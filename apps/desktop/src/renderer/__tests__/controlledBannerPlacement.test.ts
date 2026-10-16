@@ -30,15 +30,17 @@ describe('controlled banner placement', () => {
       'const controlledBannerCollapsed = useComposerCollapsed(sessionId ?? null);',
     );
     expect(sessionViewSource).toContain(
-      'hasControlledBanner && (!controlledBannerCollapsed || Boolean(botChatIdentity));',
+      'const showCenteredControlledBanner = hasControlledBanner && !controlledBannerCollapsed;',
     );
     expect(sessionViewSource).toContain('placement="composer"');
     expect(sessionViewSource).toContain('sessionId={sessionId ?? null}');
     expect(sessionViewSource).toContain('rightLeadingSlot={');
     expect(sessionViewSource).toContain('hasControlledBanner && controlledBannerCollapsed ? (');
-    expect(sessionViewSource).toMatch(
-      /botChatIdentity \? \([\s\S]*?\) : !pendingPlanReview \|\|\s+\(hasControlledBanner && controlledBannerCollapsed\) \? \(/,
+    // 伙伴与普通任务共用 RunningStatusBar；折叠呼吸灯随 token 元数据一起显示。
+    expect(sessionViewSource).toContain(
+      '{!pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (',
     );
+    expect(sessionViewSource).not.toContain('<BotWorkingStatus');
     expect(sessionViewSource).toContain('suppressContent={Boolean(pendingPlanReview)}');
     expect(sessionViewSource).toContain(
       'const isHidden = suppressContent || (!showContent && !visible);',
@@ -56,7 +58,7 @@ describe('controlled banner placement', () => {
       'const controlledBannerMaxWidth = `min(${inputHalfWidth}, ${CONTROLLED_BANNER_MAX_WIDTH}px)`;',
     );
     expect(sessionViewSource).toContain(
-      'if (!rightLeadingSlot && (suppressContent || (isHidden && !ratePanelPinned && !completedSpeed))) return null;',
+      'if (!rightLeadingSlot && (suppressContent || (isHidden && !ratePanelPinned))) return null;',
     );
     expect(controlledBannerSource).toContain("placement?: 'floating' | 'inline' | 'composer';");
     expect(controlledBannerSource).toContain(

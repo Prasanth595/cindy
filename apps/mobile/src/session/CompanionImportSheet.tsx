@@ -107,7 +107,7 @@ export function CompanionImportSheet({ visible, onClose, onClosed, deviceId, dev
   }, [enterChat, result, onCreated, onClose]);
   const entries = preview?.entries.filter(entry => entry.category === expanded) ?? [];
   const filtered = entries.filter(entry => `${entry.name} ${entry.description ?? ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  return <CompanionSheet visible={visible && !enterChat} title={tr('title')} onClose={() => { if (!busy || result) onClose(); }} onClosed={onClosed} preventDismiss={busy && !result}>
+  return <CompanionSheet visible={visible && !enterChat} title={tr('title')} contentScrolls onClose={() => { if (!busy || result) onClose(); }} onClosed={onClosed} preventDismiss={busy && !result}>
     {!enterChat ? <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
       {!online || error ? <Text accessibilityRole="alert" style={styles.note}>{!online ? t('devices.companionProfile.offline', { deviceName }) : tr(companionImportReasonKey(error))}</Text> : null}
       {finished && saved ? <>

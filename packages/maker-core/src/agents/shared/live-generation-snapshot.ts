@@ -1,8 +1,10 @@
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import type { UsageSnapshot } from '../../types/events.js';
 
 export interface LiveGenerationTiming {
+  /** Pi-extension speed measurement; independent of the usage-paired timing below. */
+  tokenSpeed?: TokenSpeedSnapshot;
   /** Turn-cumulative output tokens, including reasoning. */
-  responseSpeed?: import("@cindy/maker-shared/usage-format").ResponseSpeedSnapshot;
   outputTokens: number;
   /** Duration captured with outputTokens; sparse usage must not include later in-flight time. */
   durationMs: number;
@@ -27,7 +29,11 @@ export function attachLiveGeneration(
     typeof timing.outputTokens === 'number' && Number.isFinite(timing.outputTokens)
       ? Math.max(0, timing.outputTokens)
       : 0;
-  const next: UsageSnapshot = { ...snapshot, outputTokens, ...(timing.responseSpeed ? { responseSpeed: timing.responseSpeed } : {}) };
+  const next: UsageSnapshot = {
+    ...snapshot,
+    outputTokens,
+    ...(timing.tokenSpeed ? { tokenSpeed: timing.tokenSpeed } : {}),
+  };
   if (!timing.reliable) {
     return {
       ...next,

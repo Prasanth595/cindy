@@ -3,7 +3,7 @@ import type { ContinuationInFlightProjectionCapability } from '@/session/types';
 /** 对齐桌面 USAGE_LIMIT_RESET_AUTO_RESUME_REASON(apps/desktop/src/shared/agentInputQueue.ts)。 */
 const USAGE_LIMIT_RESET_REASON = 'usage-limit-reset';
 
-export type MobileAutoResumeAgentSwitchCause = 'usage-limit' | 'auth' | 'unavailable' | 'overload';
+export type MobileAutoResumeAgentSwitchCause = 'usage-limit' | 'auth' | 'unavailable' | 'overload' | 'failed';
 
 /** 对齐桌面 AutoResumeAgentSwitch:供应商组自动换电脑后继续。 */
 export interface MobileAutoResumeAgentSwitch {
@@ -12,7 +12,7 @@ export interface MobileAutoResumeAgentSwitch {
   cause: MobileAutoResumeAgentSwitchCause;
 }
 
-const AGENT_SWITCH_CAUSES: readonly MobileAutoResumeAgentSwitchCause[] = ['usage-limit', 'auth', 'unavailable', 'overload'];
+const AGENT_SWITCH_CAUSES: readonly MobileAutoResumeAgentSwitchCause[] = ['usage-limit', 'auth', 'unavailable', 'overload', 'failed'];
 
 function readAgentSwitch(value: unknown): MobileAutoResumeAgentSwitch | undefined {
   if (!value || typeof value !== 'object') return undefined;

@@ -358,14 +358,10 @@ const stableOwnerPostCommitCoordinator = new StableOwnerPostCommitCoordinator({
   warn: (message, meta) => log.warn(message, meta),
 });
 
-function requestStableOwnerPostCommit(reason: string): void {
+/** Queue optional owner-scoped provisioning without holding authentication or the app shell. */
+export function requestStableOwnerPostCommit(reason: string): void {
   if (isPassiveSharedUserDataInstance()) return;
   void stableOwnerPostCommitCoordinator.ensure(reason);
-}
-
-async function ensureStableOwnerPostCommit(reason: string): Promise<void> {
-  if (isPassiveSharedUserDataInstance()) return;
-  await stableOwnerPostCommitCoordinator.ensure(reason);
 }
 
 // ── Module-level state ──────────────────────────────────────────────────────
@@ -408,7 +404,8 @@ function isOwnerChangeShellPending(): boolean {
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
-let loginFlowState: DesktopLoginState | null = null;
+// The offline entry is a renderer landing page, not an auth-server flow step.
+let loginFlowState: Exclude<DesktopLoginState, { step: 'entry' }> | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
 // These live only within the current fresh-login flow; no credentials reach Renderer.
@@ -2622,7 +2619,7 @@ async function recoverAccountFreeOwnerAtStartup(
         commitActiveAppSession(mode);
       }
     }
-    await ensureStableOwnerPostCommit('owner-already-stable');
+    requestStableOwnerPostCommit('owner-already-stable');
     return;
   }
   await withAccountFreeOwnerCommit({
@@ -2862,11 +2859,6 @@ export function setProjectionRepairTeardown(teardown: ProjectionRepairTeardown |
 /** Register the owner-scoped work that must settle after the durable boundary is stable. */
 export function setStableOwnerPostCommitTask(task: StableOwnerPostCommitTask | null): void {
   stableOwnerPostCommitCoordinator.setTask(task);
-}
-
-/** Pull-based startup fallback for an owner that was already stable before registration. */
-export async function ensureStableOwnerPostCommitTasks(reason: string): Promise<void> {
-  await ensureStableOwnerPostCommit(reason);
 }
 
 // ── User-level API key sync ─────────────────────────────────────────────────
@@ -4538,7 +4530,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       commitCloudAppSession(currentUser.id);
     }
     await migrateLocalProviderBindingsAfterCloudCommit(currentUser.id);
-    await ensureStableOwnerPostCommit('auth-initialize-stable-cloud');
+    requestStableOwnerPostCommit('auth-initialize-stable-cloud');
     return snapshotAuthState();
   }
 
@@ -5279,7 +5271,9 @@ async function finishFreshLogin(
   return completeLogin(outcome, expectedLoginFlowEpoch);
 }
 
-async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
+async function runLoginAction(
+  action: Exclude<DesktopLoginAction, { type: 'back' }>,
+): Promise<DesktopLoginActionResult> {
   const actionLoginFlowEpoch = loginFlowEpoch;
   const startsBuildRealmFlow =
     action.type === 'discover' ||
@@ -5684,6 +5678,24 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   const parsedAction = parseDesktopLoginAction(action);
   if (!parsedAction) {
     return { success: false, code: 'INVALID_AUTH_ACTION', state: loginFlowState };
+  }
+  if (parsedAction.type === 'back') {
+    // Navigation must not wait for the provider request it is abandoning.
+    // Keep an accepted credential commit atomic, just like cancelAddAccountLogin.
+    if (isLoginFlowCommitSealed(loginFlowEpoch)) {
+      return { success: false, code: 'LOGIN_BUSY', state: loginFlowState };
+    }
+    if (!accessToken && credentialStoreHealth.unavailable) return getLoginState();
+    const providers = providerConfig;
+    loginFlowEpoch += 1;
+    browserAuthorizationSlot.cancelActive();
+    resetLoginFlowState();
+    if (providers) {
+      providerConfig = providers;
+      loginFlowState = reduceAuthFlow(null, { type: 'providers-loaded', providers });
+      return { success: true, state: loginFlowState };
+    }
+    return { success: true, state: { step: 'entry' } };
   }
   if (parsedAction.type === 'cancel-browser') {
     const pendingAction = loginActionPromiseEpoch === loginFlowEpoch ? loginActionPromise : null;

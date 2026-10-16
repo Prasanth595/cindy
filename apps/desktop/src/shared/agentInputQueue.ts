@@ -232,7 +232,11 @@ export interface AutoResumeGroupSwitch {
   cause: AutoResumeAgentSwitchCause;
 }
 
-export type AutoResumeAgentSwitchCause = 'usage-limit' | 'auth' | 'unavailable' | 'overload';
+/**
+ * 换电脑的原因(docs/product-rules/provider-groups.md §6.1)。`failed` = 那台出了别的问题(Agent 意外退出、服务报错
+ * 用尽重试等)。旧端不认识的原因整条忽略，活动行退回「用量已恢复，已自动继续」。
+ */
+export type AutoResumeAgentSwitchCause = 'usage-limit' | 'auth' | 'unavailable' | 'overload' | 'failed';
 
 export interface AutoResumeAgentSwitch {
   /** 原电脑的显示名。 */

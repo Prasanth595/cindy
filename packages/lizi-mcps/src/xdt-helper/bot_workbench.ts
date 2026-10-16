@@ -117,12 +117,16 @@ export interface WorkbenchAutomationWire {
 export interface BotWorkbenchSnapshotWire {
   projects: WorkbenchProjectWire[];
   tasks: WorkbenchTaskWire[];
+  /** Project discovery metadata; discovery does not confer responsibility. */
+  candidates?: Array<{ taskId: string; source: string; title: string; project: string }>;
   items: WorkbenchItemWire[];
   automations: WorkbenchAutomationWire[];
   counts: Record<WorkbenchVerdictWire | 'unjudged', number>;
-  /** 候选多于返回条数时为 true;totalTasks 是实际总数。 */
+  /** Responsible tasks only; discovery counts are reported separately. */
   truncated: boolean;
   totalTasks: number;
+  totalCandidates?: number;
+  candidatesTruncated?: boolean;
   /** 超过 30 天没动、没有列出的会话数。 */
   olderCount: number;
 }
@@ -142,6 +146,7 @@ export interface WorkbenchTranscriptWire {
 }
 
 export interface BotWorkbenchCallbacks {
+  setResponsibility?: (params: { callerSessionId: string; taskId: string; responsible: boolean }) => Promise<ControlResult<{ taskId: string; responsible: boolean }, string>>;
   todos?: (
     callerSessionId: string,
     operation: 'list' | 'update' | 'preflight' | 'ingest',
@@ -252,13 +257,29 @@ export function registerBotWorkbenchTools(
   const callerSessionId = () => deps.getSessionContext().sessionId ?? null;
   if (deps.callbacks.todos) registerTodoTools(registry, callerSessionId, deps.callbacks.todos);
 
+  if (deps.callbacks.setResponsibility) {
+    const change = deps.callbacks.setResponsibility;
+    registry.register({
+      name: 'set_workbench_task_responsibility',
+      category: 'bots',
+      description: 'Explicitly take or release responsibility for one Cindy task. Only take work you have agreed to handle within an authorized project. Creation is verified by the host. Release only changes your responsibility; it does not stop, move, archive or delete the task, and does not affect Todo. Taking responsibility alone does not start execution, subscribe to messages or promise automatic management. Use existing task tools to act. Project discovery and judgments are not responsibility.',
+      inputShape: { task_id: z.string().min(1).max(256), responsible: z.boolean() },
+      handler: async ({ task_id, responsible }) => {
+        const id = callerSessionId();
+        if (!id) return missingSession();
+        const result = await change({ callerSessionId: id, taskId: task_id, responsible });
+        return result.ok ? okPayload({ task_id: result.taskId, responsible: result.responsible }) : errorPayload(result.errorCode, result.message);
+      },
+    });
+  }
+
   registry.register({
     name: 'get_workbench',
     category: 'bots',
     description:
-      '读取已接手项目内的普通任务、项目素材和旧工作台判断。普通任务保留自己的生命周期。' +
+      '读取逐件负责的任务、项目素材和旧工作台判断。tasks 只含你自己创建或明确接手的任务；candidates 是项目发现元数据，不表示由你负责，也不自动读取其正文。普通任务保留自己的生命周期。' +
       '伙伴事务清单请用 list_teammate_todos / update_teammate_todo，可没有项目；不要逐个复制任务。' +
-      '会话限近期30天/30条，连外部会话最多40条；会话判断不返回ref，不能据此覆盖未知旧引用。' +
+      '负责的任务最多30条、不按目录或活动时间排除；项目发现候选最多40条，只给元数据；会话判断不返回ref，不能据此覆盖未知旧引用。' +
       '旧判断有200条上限、done优先淘汰，不是新Todo历史。项目过滤仅影响此项目视图。',
     inputShape: {},
     handler: async () => {
@@ -372,10 +393,10 @@ export function registerBotWorkbenchTools(
     name: 'add_workbench_project',
     category: 'bots',
     description:
-      '把主人这台电脑上的一个项目目录交给你跟进,工作台立刻多出这个项目;之后它就在你的负责范围里,主人事先安排的那几轮也能处理它里面的任务。'
+      '把主人这台电脑上的一个项目目录加入你的发现范围，工作台立刻多出这个项目；这不代表接管项目里所有任务。逐任务责任另用 set_workbench_task_responsibility 明确登记。'
       + '只在主人本人这一轮明确说要交给你(例如「这个项目以后你盯着」「把 ~/code/foo 交给你」)时用;不要因为聊到某个项目就自己加。'
       + 'path 填绝对路径;主人只说了项目名时先用 list_projects 找到它的路径。不能交整个磁盘根目录或主目录。'
-      + '加完先 get_workbench 接手,再用几句话告诉主人你看到了什么。',
+      + '加完先 get_workbench 看素材与候选，再用几句话告诉主人你看到了什么；逐任务接手另行明确。',
     inputShape: {
       path: z.string().min(1).max(4096).describe('项目目录的绝对路径'),
     },
@@ -393,7 +414,7 @@ export function registerBotWorkbenchTools(
     name: 'remove_workbench_project',
     category: 'bots',
     description:
-      '主人本人这一轮说不用你再管某个项目时,把它从你的工作台移除。项目里的任务、文件和你写过的判断都不会被删,只是不再归你跟进。'
+      '主人本人这一轮说不用你再管某个项目时,把它从你的工作台移除。项目里的任务、文件和你写过的判断都不会被删,只收回项目发现授权，逐任务责任和 Todo 保持独立。'
       + 'path 用 get_workbench 里该项目的 path（也可以写 ~/ 开头）。工作台里没有这个项目时返回 PROJECT_NOT_IN_WORKBENCH，什么都没移除，照实告诉主人。',
     inputShape: {
       path: z.string().min(1).max(4096).describe('要移除的项目路径'),

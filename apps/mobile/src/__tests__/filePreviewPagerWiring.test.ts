@@ -22,6 +22,24 @@ function readSource(rel: string): string {
 const source = readSource('app/files/preview/[sessionId].tsx');
 
 describe('remote file preview pager wiring', () => {
+  it.each(['app/files/[sessionId].tsx', 'app/files/preview/[sessionId].tsx'])('cancels the in-flight export on blur and on Cancel, including the phone download and share sheet, in %s', (path) => {
+    const routeSource = readSource(path);
+    // 失焦即取消:点进下一层 / 跳会话页时本屏留在栈中不卸载。必须走与「取消」按钮同一个
+    // 会复位忙碌提示的出口,否则回到本屏时残留一个无事可取消的忙碌底栏。
+    expect(routeSource).toContain('useFocusEffect(useCallback(() => cancelExport, [cancelExport]));');
+    expect(routeSource).toMatch(/onCancel(Notice)?[=:] ?\{? ?cancelExport/);
+    // 动态加载分享模块期间可能已取消:shareAsync 前必须再查一次。
+    expect(routeSource).toMatch(/await import\('expo-sharing'\);\n\s*if \(run\.cancelled\) return;\n\s*await sharing\.shareAsync/);
+    expect(routeSource).toMatch(/run\.abort\.abort\(\);/);
+    expect(routeSource).toMatch(/downloadRemoteMediaShareTemp\(url, mime, item\.name, run\.abort\.signal\)/);
+  });
+
+  it.each(['app/files/[sessionId].tsx', 'app/files/preview/[sessionId].tsx'])('passes the route device ID into the source gate for %s', (path) => {
+    const routeSource = readSource(path).split('export default function ')[1]?.split('\n}\n')[0] ?? '';
+    expect(routeSource).toContain('const { sessionId, deviceId } = useLocalSearchParams<');
+    expect(routeSource).toContain('deviceId={readRouteString(deviceId) ?? undefined}');
+  });
+
   it('exposes source readiness only on the visible loaded text page', () => {
     const textPage = source.slice(source.indexOf('function TextPreviewPage('), source.indexOf('function ImagePreviewPage('));
     const sourceList = textPage.match(/<FlatList\s[\s\S]*?data=\{state.lines\}[\s\S]*?testID=\{visible \? 'filePreview.sourceReady' : undefined\}/);
@@ -312,5 +330,19 @@ describe('导航门:只放行同文档锚点与首份文档加载(review P1)', (
     expect(source_reader).toContain('documentSettledRef.current = false');
     // 不得退回用长度当 key 的弱判据。
     expect(source_reader).not.toContain('key={guardedHtml.length}');
+  });
+
+  it('opens HTML straight into the pending browser chrome instead of the classic header', () => {
+    const pending = source.slice(source.indexOf('if (!current || !siblings) {'), source.indexOf("const htmlBrowser = richTextKindOf(current.relPath) === 'html';"));
+    const shell = pending.slice(pending.indexOf("if (richTextKindOf(pendingPath) === 'html')"), pending.indexOf('<PreviewNav'));
+    expect(shell).toContain('<HtmlBrowserChrome');
+    expect(shell).toMatch(/\bpending\b\s*\n\s*loading=\{!error\}/);
+    for (const chrome of ['src/session/HtmlBrowserChrome.ios.tsx', 'src/session/HtmlBrowserChrome.tsx']) {
+      const text = readSource(chrome);
+      const edit = text.slice(text.lastIndexOf('<', text.indexOf('testID="filePreview.browser.editAddress"')), text.indexOf('testID="filePreview.browser.editAddress"') + 200);
+      expect(edit, chrome).toMatch(/disabled(\(p\.pending === true\)|=\{p\.pending\})/);
+      const more = text.slice(text.indexOf('"filePreview.browser.more"') - 200, text.indexOf('"filePreview.browser.more"') + 200);
+      expect(more, chrome).toMatch(/p\.pending/);
+    }
   });
 });

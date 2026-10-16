@@ -1,11 +1,12 @@
 /**
  * 设置 → 模型供应商里「分享给我的」(受邀者)。别人分享给我的供应商与自己的供应商同在左栏，
- * 单独成组(没有分享时整组不显示)、用分享者头像标明来自谁；点开后右栏显示状态、可用的模型
- * 与「退出」。输入分享链接的入口在页面右上角(ProviderSharePasteButton)。
+ * 单独成组(没有分享时整组不显示)、用分享者头像标明来自谁；点开后右栏显示状态、「凭证操作不再
+ * 确认」开关(只对这台电脑生效，provider-sharing.md §9 第 7 条)、可用的模型与「退出」。输入分享
+ * 链接的入口在页面右上角(ProviderSharePasteButton)。
  *
  * 模型清单读分享者电脑上分享给我的那份目录(`share:<id>`)，只读：开关与排序由分享者决定。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { readProviderShareGroupSize, type ProviderShareReceived } from '@cindy/device-link';
@@ -17,6 +18,7 @@ import {
 } from '@/components/settings/ReadOnlyProviderModels';
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { providerMonogram } from '@/lib/providerModels';
@@ -29,6 +31,7 @@ import { providerShareAgentDeviceId } from './providerShareFormat';
 import { providerShareDisplayNames } from './providerShareNames';
 import { useProviderShareReceived } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
+import { SharedProviderGroupStatus } from './SharedProviderGroupStatus';
 
 type ReceivedStatus = 'active' | 'paused' | 'offline' | 'needs-update';
 
@@ -135,11 +138,56 @@ export function ProviderShareReceivedRailGroup({
   );
 }
 
+/**
+ * 这个分享在本机的「信任 {分享者}」偏好：null = 还没读到(开关先不可点)。保存期间保持已生效的
+ * 状态，成功后再切换；避免关闭尚未落盘时把仍在生效的信任显示为关闭。失败时保留原值并提示。
+ */
+function useCredentialConsent(shareId: string) {
+  const { t } = useTranslation();
+  const [skip, setSkip] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const revision = useRef(0);
+  useEffect(() => {
+    const currentRevision = ++revision.current;
+    setSkip(null);
+    setSaving(false);
+    void window.electronAPI.providerShare
+      .command({ action: 'get-credential-consent', shareId })
+      .then((view) => {
+        if (revision.current === currentRevision) setSkip(view.skip === true);
+      })
+      .catch(() => {
+        if (revision.current === currentRevision) setSkip(false);
+      });
+    return () => {
+      revision.current += 1;
+    };
+  }, [shareId]);
+  const update = (next: boolean) => {
+    const currentRevision = revision.current;
+    setSaving(true);
+    void window.electronAPI.providerShare
+      .command({ action: 'set-credential-consent', shareId, skip: next })
+      .then((view) => {
+        if (revision.current === currentRevision) setSkip(view.skip === true);
+      })
+      .catch(() => {
+        if (revision.current !== currentRevision) return;
+        toast.error(t('providerShare.received.credentialConsent.writeFailed'));
+      })
+      .finally(() => {
+        if (revision.current === currentRevision) setSaving(false);
+      });
+  };
+  return { skip, saving, update };
+}
+
 /** 右栏：一条分享给我的供应商。 */
 export function ProviderShareReceivedDetail({ share }: { share: ProviderShareReceived }) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
   const [leaving, setLeaving] = useState(false);
+  const credentialConsent = useCredentialConsent(share.shareId);
   const status = receivedStatus(share);
   const catalogDeviceId = providerShareAgentDeviceId(share.shareId);
   const catalog = useDeviceProviders(status === 'active' ? catalogDeviceId : undefined);
@@ -199,7 +247,7 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
   else if (models.length === 0) body = t('providerShare.received.modelsEmpty');
 
   return (
-    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="provider-share-received-detail" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="shrink-0 px-5 py-4">
         <div className="flex flex-wrap items-center gap-3 gap-y-2">
           <div className="flex min-w-0 flex-auto basis-[220px] items-center gap-3">
@@ -235,7 +283,7 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
           <div className="flex shrink-0 items-center gap-2.5">
             <span role="status" className="inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
               <StatusDot status={status} />
-              {t(STATUS_LABEL_KEY[status])}
+              {t(status === 'active' && groupSize !== null ? 'providerShare.received.groupStatus.shareActive' : STATUS_LABEL_KEY[status])}
             </span>
             <Button
               variant="secondary"
@@ -263,23 +311,56 @@ export function ProviderShareReceivedDetail({ share }: { share: ProviderShareRec
         </p>
       </div>
 
-      <ReadOnlyProviderModelSection
-        title={t('providerShare.received.modelsTitle')}
-        models={models}
-        note={body}
-        action={
-          status === 'active' && catalog.error ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
-            >
-              {t('providerShare.received.retryModels')}
-            </Button>
-          ) : null
-        }
-        testId="provider-share-received-models"
-      />
+      {/* 与自己供应商详情里「允许被远程调用」同一行式：左边标题与说明，右边开关。 */}
+      <div
+        data-testid="provider-share-credential-consent"
+        className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t px-5 py-3"
+        style={{ borderColor: 'var(--settings-theme-card-border)' }}
+      >
+        <div className="flex min-w-[min(100%,240px)] flex-1 flex-col gap-1">
+          <span className="text-13 font-medium text-[var(--text-primary)]">
+            {t('providerShare.received.credentialConsent.label', { name: share.owner.displayName })}
+          </span>
+          <span className="text-12 leading-[1.4] text-[var(--text-tertiary)]">
+            {t('providerShare.received.credentialConsent.description')}
+          </span>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center">
+          <Switch
+            checked={credentialConsent.skip === true}
+            disabled={credentialConsent.skip === null || credentialConsent.saving}
+            aria-label={t('providerShare.received.credentialConsent.ariaLabel', {
+              name: share.owner.displayName,
+              provider: share.providerLabel,
+            })}
+            onCheckedChange={(next) => credentialConsent.update(next)}
+          />
+        </div>
+      </div>
+
+      {status === 'active' && groupSize !== null && (
+        <SharedProviderGroupStatus key={catalogDeviceId} deviceId={catalogDeviceId} providerId={share.providerId} initialSize={groupSize} />
+      )}
+
+      <div className="flex min-h-40 flex-1 flex-col">
+        <ReadOnlyProviderModelSection
+          title={t('providerShare.received.modelsTitle')}
+          models={models}
+          note={body}
+          action={
+            status === 'active' && catalog.error ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void refreshRemoteCatalogSnapshot(catalogDeviceId).catch(() => undefined)}
+              >
+                {t('providerShare.received.retryModels')}
+              </Button>
+            ) : null
+          }
+          testId="provider-share-received-models"
+        />
+      </div>
     </div>
   );
 }

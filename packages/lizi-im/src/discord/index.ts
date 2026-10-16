@@ -89,7 +89,6 @@ export class DiscordIM extends BaseIM implements ChannelIM {
   private dmResolverClient: unknown = null;
   private dmResolver: ((userId: string) => Promise<DMChannelLike>) | null = null;
   private readonly dmMessageQueues = new Map<string, Promise<void>>();
-  private readonly mediaDir: string;
   private suppressNextOnlineNotice = false;
   private pendingOfflineNotice = false;
   private runtimeOnlineAnnounced = false;
@@ -100,10 +99,6 @@ export class DiscordIM extends BaseIM implements ChannelIM {
 
   constructor(host: IMHost, private readonly opts: DiscordIMOptions = {}) {
     super('discord', host);
-    if (!host.paths.discordMediaDir) {
-      throw new Error('IMHost.paths.discordMediaDir is required to wire the discord channel');
-    }
-    this.mediaDir = host.paths.discordMediaDir;
     this.gateway = (opts.gatewayFactory ?? createDiscordGateway)({
       onStatus: (s) => this.setStatus(s),
       onDmMessage: (m) => {
@@ -851,12 +846,14 @@ export class DiscordIM extends BaseIM implements ChannelIM {
     m: MessageLike,
     acceptedContext: { appId: string; configVersion: number; ownerUserId: string },
   ): Promise<void> {
+    const stagedDiscards: Array<() => Promise<void>> = [];
     try {
       const event = await normalizeDmMessage(m, {
         contextId: acceptedContext.appId,
-        mediaDir: this.mediaDir,
         download: downloadUrl,
-        media: this.host.media,
+        stagedDiscards,
+        ...(this.host.media ? { media: this.host.media } : {}),
+        ...(this.host.files ? { files: this.host.files } : {}),
       });
       if (!event) return;
       if (
@@ -865,6 +862,8 @@ export class DiscordIM extends BaseIM implements ChannelIM {
         this.ownerUserId !== acceptedContext.ownerUserId ||
         this.gateway.appId !== acceptedContext.appId
       ) {
+        // 下载期间换代(登出/换号/换 bot): 回滚本次暂存, 不把旧账号的附件留给新账号。
+        for (const discard of stagedDiscards) await discard().catch(() => undefined);
         return;
       }
       for (const h of this.messageHandlers) {
@@ -1029,8 +1028,7 @@ export function createDiscordIM(host: IMHost, opts?: DiscordIMOptions): DiscordI
   return new DiscordIM(host, opts);
 }
 
-async function downloadUrl(url: string, dest: string): Promise<void> {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+async function downloadUrl(url: string): Promise<Uint8Array> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
@@ -1041,8 +1039,7 @@ async function downloadUrl(url: string, dest: string): Promise<void> {
     if (!response.ok) {
       throw new Error(`download failed: ${response.status}`);
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(dest, bytes);
+    return Buffer.from(await response.arrayBuffer());
   } catch (err) {
     if (controller.signal.aborted) {
       throw new Error(`download timed out after ${DISCORD_ATTACHMENT_DOWNLOAD_TIMEOUT_MS}ms`);

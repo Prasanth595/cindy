@@ -34,6 +34,8 @@ function fixture() {
   };
   const Image = Object.assign(ExpoImage, { getSize: vi.fn() });
   const bindings = { React, View, Text: View, ExpoImage, Image,
+    MessageLoadingImage: ExpoImage,
+    MessageImagePlaceholder: ({ style }: any) => <View style={style} testID="message.mediaThumbLoading" />,
     useTranslation: () => ({ t: (key: string) => key }),
     useThemedStyles: () => ({}), makeStyles: () => ({}),
     useRecyclingState: React.useState, useState: React.useState, useLayoutEffect: React.useLayoutEffect,

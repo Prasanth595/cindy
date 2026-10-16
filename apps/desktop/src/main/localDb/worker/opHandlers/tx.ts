@@ -1,3 +1,4 @@
+import { runPluginUsageTransaction } from './pluginUsageTx.js';
 import { runTaskTagsTransaction } from './taskTagsTx.js';
 import { batchAutoReviewProjection, readAutoReviewProjectionTransaction } from '../../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
@@ -106,6 +107,7 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return recentWorkdirsMergeWindowsIdentity(db, txArgs);
     case 'recentWorkdirs.removeWindowsIdentity':
       return recentWorkdirsRemoveWindowsIdentity(db, txArgs);
+    case 'pluginUsage.execute': return runPluginUsageTransaction(db, txArgs);
     case 'taskTags.execute':
       return runTaskTagsTransaction(db, txArgs);
     case 'projectAliases.replaceIdentity':
@@ -855,8 +857,11 @@ function botsFinishDelegation(
       db.prepare(`UPDATE sessions SET status = 'archived', updated_at = ?
         WHERE id = ? AND status = 'active'`)
         .run(completedAt, row.childSessionId);
+      // 保留 route_key('delegation:<id>')作为来源标记:bot_delegations 行会随发起伙伴
+      // 的删除级联消失,之后只有它能证明这段 history 是"别人派给我的",不是自己的私聊
+      // (botHistoryScope.listBotRecallSessionIds)。route_key 的其它读者都只认 group 键。
       db.prepare(`UPDATE bot_session_links SET role = 'history',
-        route_key = NULL, archived_at = ? WHERE session_id = ?`)
+        archived_at = ? WHERE session_id = ?`)
         .run(completedAt, row.childSessionId);
     }
     return row;
@@ -2206,8 +2211,8 @@ function imRotateSession(
     `INSERT INTO sessions (
       id, title, working_dir, workspace_kind, model, effort, permission_mode,
       fast_mode, status, agent_kind, provider_id, source, im_bot_context_id,
-      im_user_id, im_default_route, created_at, updated_at, user_send_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      im_user_id, im_default_route, agent_device_id, created_at, updated_at, user_send_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const retirePrevious = db.prepare(
     `UPDATE sessions
@@ -2241,6 +2246,7 @@ function imRotateSession(
       expectString(session.imBotContextId, 'session.imBotContextId'),
       expectString(session.imUserId, 'session.imUserId'),
       nullableString(session.imDefaultRoute),
+      nullableString(session.agentDeviceId),
       now,
       now,
       now,

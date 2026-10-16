@@ -1,18 +1,53 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const peer = vi.hoisted(() => vi.fn());
 const remove = vi.hoisted(() => vi.fn());
+const owner = vi.hoisted(() => ({ current: true }));
 vi.mock('../filePeer', () => ({ tryPeerFile: peer }));
 vi.mock('../mediaTransfer', () => ({ removeRemote: remove }));
 vi.mock('../broadcast-tap', () => ({
   captureDataOwnerBroadcastScope: () => ({}),
-  isDataOwnerBroadcastScopeCurrent: () => true,
+  isDataOwnerBroadcastScopeCurrent: () => owner.current,
 }));
 import { readRemoteDeviceFile } from '../fileAccess';
+import { invalidateFilePeerScopes } from '../filePeerScope';
 beforeEach(() => {
   vi.clearAllMocks();
+  owner.current = true;
   peer.mockResolvedValue(null);
 });
 describe('desktop shared file access', () => {
+  it.each(['abort', 'stop', 'owner'] as const)('keeps business requests cancelled while permitting owner-safe close (%s)', async reason => {
+    const abort = new AbortController();
+    const invoke = vi.fn(async () => ({ ok: true, result: { ossKey: '', size: 5, mimeType: 'text/plain', transferRequired: true } }));
+    peer.mockImplementationOnce(async (device, _url, guarded) => {
+      if (reason === 'abort') abort.abort();
+      if (reason === 'stop') invalidateFilePeerScopes(device);
+      if (reason === 'owner') owner.current = false;
+      for (const action of ['caps', 'offer', 'open'])
+        await expect(guarded(device, 'device-link:file-peer', [{ action }])).rejects.toThrow('FILE_PEER_CANCELLED');
+      await expect(guarded(device, 'device-link:media:fetch', [{ action: 'close' }])).rejects.toThrow('FILE_PEER_CANCELLED');
+      const close = guarded(device, 'device-link:file-peer', [{ action: 'close', connection: 'old-connection' }]);
+      if (reason === 'owner') await expect(close).rejects.toThrow('FILE_PEER_CANCELLED');
+      else await expect(close).resolves.toMatchObject({ ok: true });
+      return null;
+    });
+    await expect(readRemoteDeviceFile('guarded-peer', 'url', invoke, { signal: abort.signal })).rejects.toThrow('FILE_PEER_CANCELLED');
+    expect(invoke).toHaveBeenCalledTimes(reason === 'owner' ? 1 : 2);
+  });
+
+  it('cancels a late file preparation after unlink without starting peer or OSS', async () => {
+    let answer!: (value: unknown) => void;
+    const invoke = vi.fn(() => new Promise<any>(resolve => { answer = resolve; }));
+    const fallback = vi.fn();
+    const read = readRemoteDeviceFile('d', 'xdt-file://test', invoke, { fallback });
+    const cancelled = expect(read).rejects.toThrow('FILE_PEER_CANCELLED');
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    invalidateFilePeerScopes('d');
+    answer({ ok: true, result: { ossKey: '', size: 100, mimeType: 'text/plain', transferRequired: true } });
+    await cancelled;
+    expect(peer).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     'forwards direct progress for workdir and media reads (workdir=%s)',
     async (workdir) => {

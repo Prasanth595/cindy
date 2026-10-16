@@ -36,7 +36,8 @@ import { Alert, StyleSheet, View } from "react-native";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Text } from "@/components/AppText";
-import { iconSize, lineHeight, radius, spacing, typeScale, useTheme } from "@/theme";
+import { MainWindowActionButton } from "@/components/MobilePrimitives";
+import { iconSize, lineHeight, navigationChrome, radius, spacing, typeScale, useTheme } from "@/theme";
 import { useLiquidGlassAvailable } from "./useLiquidGlassAvailable";
 import {
   HTML_BROWSER_CONTROL_SIZE as size,
@@ -56,12 +57,15 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
   const showFileInfo = () => Alert.alert(p.title, p.path);
   // Size the visible glass itself, not an outer frame around a system-sized label.
   // Menu and Button have different intrinsic sizes (especially ellipsis vs share).
+  // Untinted glass adapts to the page behind it: a light page in Dark mode turned it light
+  // under light icons. A theme tint keeps the controls in the app's polarity.
+  const tint = navigationChrome.pageTint[mode];
   const circle = [
     buttonStyle("plain"),
     frame({ width: size, height: size }),
     glass
       ? glassEffect({
-          glass: { variant: "regular", interactive: true },
+          glass: { variant: "regular", interactive: true, tint },
           shape: "circle",
         })
       : background(colors.surfaceElevated, shapes.circle()),
@@ -73,7 +77,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
     frame({ width: size, height: size }),
   ];
   const capsule = glass
-    ? glassEffect({ glass: { variant: "regular" }, shape: "capsule" })
+    ? glassEffect({ glass: { variant: "regular", tint }, shape: "capsule" })
     : background(colors.surfaceElevated, shapes.capsule());
   const host = {
     colorScheme: mode,
@@ -131,6 +135,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
               testID="filePreview.browser.editAddress"
               modifiers={[
                 buttonStyle("plain"),
+                disabled(p.pending === true),
                 frame({ maxWidth: Infinity, height: size }),
                 accessibilityLabel(
                   `${t("files.preview.browserAddress")}: ${p.address}`,
@@ -193,7 +198,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
       </View>
       {p.notice ? (
         <View
-          pointerEvents="none"
+          pointerEvents={p.onCancelNotice ? "box-none" : "none"}
           style={{
             position: "absolute",
             bottom: p.bottom + size + spacing.sm,
@@ -202,20 +207,39 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
             alignItems: "center",
           }}
         >
-          <Text
-            accessibilityLiveRegion="polite"
-            testID="filePreview.notice"
+          <View
             style={{
-              color: colors.textPrimary,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.sm,
               backgroundColor: colors.surfaceElevated,
               padding: spacing.sm,
-              borderRadius: radius.pill,
-              fontSize: typeScale.caption,
-              lineHeight: lineHeight.caption,
+              borderRadius: radius.container,
             }}
           >
-            {p.notice}
-          </Text>
+            <Text
+              accessibilityLiveRegion="polite"
+              testID="filePreview.notice"
+              style={{
+                flexShrink: 1,
+                color: colors.textPrimary,
+                fontSize: typeScale.caption,
+                lineHeight: lineHeight.caption,
+              }}
+            >
+              {p.notice}
+            </Text>
+            {p.onCancelNotice ? (
+              <MainWindowActionButton
+                action={{
+                  label: t("files.browser.cancel"),
+                  onPress: p.onCancelNotice,
+                  testID: "filePreview.notice.cancel",
+                }}
+                density="compact"
+              />
+            ) : null}
+          </View>
         </View>
       ) : null}
       <View
@@ -278,6 +302,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
             modifiers={[
               ...circle,
               menuOrder("fixed"),
+              disabled(p.pending === true),
               accessibilityLabel(t("files.preview.browserMore")),
             ]}
           >

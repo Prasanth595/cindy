@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "작업 열기",
+    "loading": "작업 불러오는 중…",
+    "failed": "작업 정보를 불러오지 못했어요.",
+    "missing": "이 컴퓨터에서 작업 정보를 반환하지 않았어요.",
+    "timedOut": "작업 정보를 불러오는 시간이 초과됐어요.",
+    "retry": "작업 다시 불러오기",
+    "back": "돌아가기"
+  },
   "failedScheduleNotice": {
     "text": "실패한 자동 실행이 있습니다.",
     "precheck": "자동 확인이 일시적으로 차단되었습니다.",
@@ -31,7 +40,12 @@
     "openMicPermission": "마이크 권한 설정 열기",
     "maxAttachments": "첨부는 최대 {{max}}개까지 가능합니다.",
     "voiceStopRecording": "녹음 중지",
-    "capabilitiesUnsupported": "컴퓨터에서 명령과 리소스 목록을 불러오지 못했습니다. 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요"
+    "capabilitiesUnsupported": "컴퓨터에서 명령과 리소스 목록을 불러오지 못했습니다. 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
+    "plugins": "플러그인",
+    "pluginsChooseDevice": "기기 선택",
+    "pluginsLoading": "플러그인 불러오는 중…",
+    "pluginsEmpty": "설치된 플러그인 없음",
+    "pluginsReload": "플러그인 다시 불러오기"
   },
   "presentation": {
     "collaboration": {
@@ -181,7 +195,7 @@
     "outputTotal": "누적 출력",
     "observedPeak": "최고",
     "tokenRateUnit": "tok/s",
-    "tokenRateDescription": "실시간 속도와 최고 속도는 추정값입니다. 응답 후 실제 사용량으로 보정하며 도구 실행과 요청 대기는 제외합니다.",
+    "tokenRateDescription": "최근 생성 구간의 속도. 도구 실행과 대기는 제외합니다.",
     "networkReconnecting": "다시 연결하는 중…",
     "modelBusyRetrying": "모델 서비스 혼잡, 다시 시도 중…",
     "rateLimitRetrying": "요청이 속도 제한에 걸렸습니다. 다시 시도 중…",
@@ -218,6 +232,7 @@
     "sessionNotSyncedRetry": "세션 동기화가 아직 완료되지 않았습니다. 잠시 후 다시 시도하세요.",
     "savingPreviousQueueEdit": "이전 대기열 메시지의 변경을 저장 중입니다. 완료된 후 편집하세요.",
     "attachmentsUploadingBeforeEdit": "첨부 파일을 업로드 중입니다. 완료된 후 대기열 메시지를 편집하세요.",
+    "goalCommandAttachments": "첨부 파일 없이 /goal을 보내세요. 초안과 첨부 파일은 유지됩니다.",
     "goalAlreadyActive": "이 세션에는 진행 중인 목표가 있습니다. 먼저 여기에서 처리하세요.",
     "resetReconfirmTitle": "다시 확인해 주세요",
     "resetOfferExpired": "재설정 자격 증명이 만료되었습니다. 새로 고친 사용량 정보를 확인하세요.",
@@ -233,6 +248,7 @@
     "deleteMessageTitle": "이 메시지를 삭제할까요?",
     "deleteMessageBody": "사용자 메시지는 이 항목만 삭제됩니다. AI 메시지의 경우 이전 사용자 입력 이후 생성된 전체 턴이 삭제됩니다. 이후 대화는 유지됩니다. 다음 전송 시 남은 기록에서 AI 컨텍스트가 다시 구성됩니다.",
     "deleteMessageAction": "이 메시지 삭제",
+    "deleteMessageBusy": "현재 응답이 끝난 후 메시지를 삭제해 주세요.",
     "readingCapabilities": "{{agent}} 실행 기능을 불러오는 중…",
     "editingQueueMessageNumbered": "대기열 메시지 {{index}}번째 편집 중",
     "editingQueueMessage": "대기열 메시지 편집 중",
@@ -262,24 +278,7 @@
     "forkConfirmTitle": "여기서 새 세션을 시작할까요?",
     "forkConfirmDescription": "이 지점의 대화 맥락을 사용해 독립된 새 세션을 만듭니다. 원래 세션은 변경되지 않으며, 이후 두 세션의 메시지는 서로에게 영향을 주지 않습니다.",
     "forkConfirm": "새 세션 시작",
-    "forkCancel": "취소",
-    "estimatedValue": "약 {{value}}",
-    "estimatedTokenRate": "약 {{rate}} tok/s",
-    "responseWaiting": "대기 {{seconds}}초",
-    "waitSeconds": "{{seconds}}초",
-    "firstResponse": "첫 응답",
-    "streamWait": "스트림 내 대기",
-    "turnWaitDescription": "로컬 제공자 턴 시작부터 첫 텍스트, 사고 또는 도구 내용까지의 시간입니다. 네트워크 지연과는 다릅니다.",
-    "streamWaitDescription": "SDK 스트림 시작부터 첫 콘텐츠까지의 시간입니다. 그 이전의 요청 대기는 측정할 수 없습니다.",
-    "lastGeneration": "지난 생성",
-    "finalAverage": "최종 평균",
-    "generationPaused": "생성 일시 중지",
-    "responsePending": "응답 대기 중",
-    "responseFailed": "요청 실패",
-    "responseCancelled": "중지됨",
-    "responseRetrying": "다시 시도 중",
-    "responseGenerating": "생성 중",
-    "toolRunning": "도구 실행 중"
+    "forkCancel": "취소"
   },
   "shareImage": {
     "title": "대화 공유",
@@ -294,6 +293,7 @@
     "shareMessage": "이 메시지 공유"
   },
   "new": {
+    "goalCommandNeedsSession": "목표를 해제하려면 기존 세션을 여세요.",
     "selectDevice": "기기 선택",
     "workspaceDialogue": "대화",
     "workspaceProject": "프로젝트",
@@ -366,7 +366,6 @@
     "worktreeBranchesLoading": "브랜치 불러오는 중…",
     "worktreeBranchSaving": "선택한 브랜치 동기화 중…",
     "worktreeBranchSyncFailed": "저장된 소스 브랜치를 확인할 수 없습니다. 브랜치를 다시 선택해 주세요",
-    "worktreeSettingsSaving": "worktree 설정 동기화 중…",
     "worktreeSettingsSyncFailed": "worktree 기본 설정을 저장하지 못했습니다. 현재 선택으로 계속할 수 있습니다.",
     "worktreeBranchesRetry": "브랜치를 불러오지 못했습니다. 탭하여 다시 시도",
     "worktreeDetecting": "환경 감지 중…",
@@ -499,6 +498,8 @@
     "deleteOne": "이 메시지 삭제"
   },
   "tail": {
+    "readableHistoryRecovery": "읽을 수 있는 기록으로 새 작업 만들기",
+    "readableHistoryRecoveryDescription": "재시도해도 실패하면 읽을 수 있는 기록으로 새 작업을 만들 수 있습니다. 내부 암호화 정보는 제외됩니다. 기존 작업은 유지되며 실패한 메시지는 자동으로 다시 전송되지 않습니다.",
     "requestFormatError": "앱이 보낸 요청 형식에 문제가 있어 답변을 완료하지 못했습니다.",
     "replyFailed": "답변을 완료하지 못했습니다. 오류 세부 정보에서 원인을 확인하세요.",
     "showErrorDetails": "오류 세부 정보 보기",
@@ -521,10 +522,6 @@
     "moreOptions": "기타 옵션",
     "archiveConversation": "세션 보관",
     "closeActionMenu": "세션 작업 메뉴 닫기",
-    "referenceAroundAnchor": "링크 부근",
-    "referenceRecent": "최근 메시지",
-    "referenceCount": "{{num}}건",
-    "referenceTruncated": "잘림",
     "pinnedSection": "고정됨",
     "extraDirsSummary": "추가 디렉터리 {{num}}개",
     "noExtraDirsSummary": "추가 디렉터리 없음",

@@ -33,7 +33,7 @@
  * 会被 RNW 交给 RN `Linking` 试着让系统处理 —— 于是 `tel:` / `mailto:` / 自定义 scheme
  * 会拉起外部应用,把下面这段策略整个绕过去。放到 `['*']` 之后,回调是唯一决策点。
  */
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView, type WebViewProps } from 'react-native-webview';
 import type { ShouldStartLoadRequest, WebViewNavigation } from 'react-native-webview/lib/WebViewTypes';
@@ -45,6 +45,7 @@ import { withHtmlPreviewCsp } from '@/session/htmlPreviewCsp';
 import type { MobileHtmlPreview } from '@/session/mobileHtmlPreview';
 import { useHtmlBrowserViewport } from '@/session/useHtmlBrowserViewport';
 import { browserViewportScrollScript } from '@/session/htmlBrowserViewport';
+import { useTheme } from '@/theme';
 
 /** The server serves only the downloaded manifest; every HTML has the same CSP and device guard. */
 export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInsets, onNavigationStateChange }: {
@@ -54,6 +55,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
   viewportInsets?: WebViewProps['contentInset'];
   onNavigationStateChange?(preview: MobileHtmlPreview, state: WebViewNavigation): void;
 }) {
+  const { colors } = useTheme();
   const source = useMemo(() => ({ uri: preview.url }), [preview.url]);
   const localRef = useRef<WebView>(null);
   const readerRef = webViewRef ?? localRef;
@@ -62,6 +64,8 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
     left: viewportInsets?.left ?? 0, right: viewportInsets?.right ?? 0,
   });
   useEffect(() => { if (script) readerRef.current?.injectJavaScript(script); }, [script, readerRef, preview]);
+  // WKWebView paints white until the first document load ends; keep the themed page behind it until then.
+  const [paintedPreview, setPaintedPreview] = useState<MobileHtmlPreview | null>(null);
   const currentPreview = useRef<MobileHtmlPreview | null>(preview);
   useEffect(() => {
     currentPreview.current = preview;
@@ -87,6 +91,7 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
     injectedJavaScript={script}
     onLoadEnd={(event) => {
       if (currentPreview.current !== preview) return;
+      setPaintedPreview(preview);
       mobileDebugLog('debug', 'files', 'html page load end', { ms: Date.now() - mountedAt, loading: event?.nativeEvent?.loading });
       if (script) readerRef.current?.injectJavaScript(script);
     }}
@@ -114,7 +119,9 @@ export function HtmlSnapshotReader({ preview, onError, webViewRef, viewportInset
       else mobileDebugLog('debug', 'files', 'html subresource http error', { status: event.nativeEvent.statusCode });
     }}
     incognito
-    style={styles.fill}
+    // Themed backing for the strips under the floating controls; the viewport script paints
+    // the page canvas itself, so this never becomes the background of an unstyled page.
+    style={[styles.fill, { backgroundColor: colors.surfaceElevated }, paintedPreview !== preview && styles.unpainted]}
   /></View></View>;
 }
 
@@ -178,4 +185,5 @@ export function HtmlFileReader({ html, testID }: { html: string; testID?: string
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   viewport: { flex: 1, minHeight: 0, overflow: 'hidden' },
+  unpainted: { opacity: 0 },
 });

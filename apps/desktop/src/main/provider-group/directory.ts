@@ -15,12 +15,15 @@ import {
 } from '../../shared/providerShare.js';
 import {
   providerGroupMemberKey,
+  readProviderGroupAppVersion,
   type ProviderGroupCandidate,
   type ProviderGroupConfig,
   type ProviderGroupMember,
   type ProviderGroupUnavailableReason,
 } from '../../shared/providerGroup.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
+import type { ClaudeSubscriptionUsageSnapshot } from '../../shared/claudeSubscriptionUsage.js';
+import { providerWeeklyQuotaSource } from '../../shared/providerQuotaSource.js';
 import { isSameProvider } from './matching.js';
 
 export interface ProviderGroupDirectoryDeps {
@@ -28,6 +31,7 @@ export interface ProviderGroupDirectoryDeps {
   listLocalProviders(): Promise<ProviderView[]>;
   /** 本机设备名。 */
   localDeviceName(): string;
+  localAppVersion?(): string;
   listDevices(): Promise<readonly DeviceLinkDeviceView[]>;
   /** 那台电脑允许被远程调用的供应商；读不到时抛错(带 `[REMOTE_AGENT_SHARE_*]` 前缀时保留原因)。 */
   readDeviceProviders(agentDeviceId: string): Promise<ProviderView[]>;
@@ -35,6 +39,9 @@ export interface ProviderGroupDirectoryDeps {
   isMobilePlatform(platform: string | null): boolean;
   /** 本机这个供应商正在运行一轮的任务数(localLoad.ts)；不提供或读不到时为 null。 */
   localRunning?(providerId: string): Promise<number | null>;
+  /** Same-account subscription snapshots only; absence/failure keeps the member usable. */
+  readClaudeUsage?(member: ProviderGroupMember): Promise<ClaudeSubscriptionUsageSnapshot | null>;
+  invalidateUsage?(): void;
   now(): number;
 }
 
@@ -44,6 +51,7 @@ export interface ResolvedProviderGroupMember {
   member: ProviderGroupMember;
   label: string;
   ownerName?: string;
+  appVersion?: string;
   state: ResolvedMemberState;
   reason?: ProviderGroupUnavailableReason;
   /** 那台电脑上的这个供应商(state 为 ok 时一定有)。 */
@@ -53,16 +61,38 @@ export interface ResolvedProviderGroupMember {
    * 分享来的电脑报来本账号(每台电脑)在那里的数。那台较旧给不出时没有。
    */
   reportedRunning?: number;
+  /** Internal only: never included in the group wire projection or shared with guests. */
+  claudeUsage?: ClaudeSubscriptionUsageSnapshot | null;
+  /**
+   * 选电脑时到点还没读完(那台慢或不响应)：这次按不能用算，不代表读到了离线；读取照常在后台完成、留在缓存里。
+   */
+  pending?: boolean;
+}
+
+export interface ResolveMembersOptions {
+  /**
+   * 最多等多久：到点已经有一台 `enough` 的电脑就不再等其余的(没读完的标 `pending`)；一台都还没有时照旧等全部读完。
+   * 不给 = 等全部读完。
+   */
+  quickMs?: number;
+  enough?(resolved: ResolvedProviderGroupMember): boolean;
+  /** 不用短时缓存，现读设备列表与每台的目录(试过不行之后拉最新状态)。 */
+  fresh?: boolean;
 }
 
 const CATALOG_TTL_MS = 15_000;
 const CATALOG_FAILURE_TTL_MS = 5_000;
 const DEVICES_TTL_MS = 10_000;
+const LOCAL_LOAD_TIMEOUT_MS = 1_000;
 
 const SHARE_REASON = /^\[REMOTE_AGENT_SHARE_(PAUSED|REMOVED|UNAVAILABLE)\]/;
 
 export interface ProviderGroupDirectory {
-  resolveMembers(providerId: string, config: ProviderGroupConfig): Promise<ResolvedProviderGroupMember[]>;
+  resolveMembers(
+    providerId: string,
+    config: ProviderGroupConfig,
+    options?: ResolveMembersOptions,
+  ): Promise<ResolvedProviderGroupMember[]>;
   listCandidates(providerId: string, config: ProviderGroupConfig | null): Promise<ProviderGroupCandidate[]>;
   /** 那台电脑允许被远程调用的供应商(与组内电脑状态共用同一份短时缓存)；读不到时抛错。 */
   readDeviceCatalog(agentDeviceId: string): Promise<ProviderView[]>;
@@ -76,6 +106,11 @@ export interface ProviderGroupDirectory {
    * (provider-sharing.md §6)，读不到这条分享时为空；其余沿用加入时的快照。
    */
   memberLabel(member: ProviderGroupMember): string;
+  /**
+   * 同账号那台电脑已经离线多久(按设备列表里的最后在线时间)：在线、读不到或不是同账号电脑时为 null。
+   * 用来判断「已经确认用不了」还是「刚断开」(§6.1)；不提供 = 不知道。
+   */
+  offlineForMs?(agentDeviceId: string): Promise<number | null>;
   /** 忘掉缓存(换账号、组内电脑失败后需要现读)。 */
   invalidate(agentDeviceId?: string): void;
 }
@@ -83,6 +118,16 @@ export interface ProviderGroupDirectory {
 export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): ProviderGroupDirectory {
   const catalogs = new Map<string, { at: number; ok: boolean; promise: Promise<ProviderView[]> }>();
   let devices: { at: number; promise: Promise<readonly DeviceLinkDeviceView[]> } | null = null;
+  /**
+   * 分享来的电脑从什么时候起被看到离线(分享列表的 hostOnline 快照)：分享没有最后在线时刻，按本机第一次看到离线
+   * 算，只会少算不会多算。用于「离线已久就不再等它恢复」(与同账号电脑同一条规则)。
+   */
+  const shareOfflineSince = new Map<string, number>();
+
+  function noteShareOnline(shareId: string, online: boolean): void {
+    if (online) shareOfflineSince.delete(shareId);
+    else if (!shareOfflineSince.has(shareId)) shareOfflineSince.set(shareId, deps.now());
+  }
 
   function readCatalog(agentDeviceId: string): Promise<ProviderView[]> {
     const now = deps.now();
@@ -119,10 +164,23 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
 
   async function resolveLocal(member: ProviderGroupMember): Promise<ResolvedProviderGroupMember> {
     const label = deps.localDeviceName();
-    const view = await localGroupProvider(member.providerId);
-    if (!view || !view.connected || view.suspended) return { member, label, state: 'unavailable', reason: 'disconnected' };
-    const reportedRunning = await deps.localRunning?.(member.providerId).catch(() => null);
-    return { member, label, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
+    const appVersion = readProviderGroupAppVersion(deps.localAppVersion?.());
+    const base = { member, label, ...(appVersion ? { appVersion } : {}) };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const running = Promise.race([
+        deps.localRunning?.(member.providerId).catch(() => null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), LOCAL_LOAD_TIMEOUT_MS);
+        }),
+      ]);
+      const view = await localGroupProvider(member.providerId);
+      if (!view || !view.connected || view.suspended) return { ...base, state: 'unavailable', reason: 'disconnected' };
+      const reportedRunning = await running;
+      return { ...base, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function resolveDevice(
@@ -132,16 +190,18 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     const deviceId = member.agentDeviceId!;
     const device = deviceList?.find((d) => d.deviceId === deviceId);
     const label = device?.name || member.label || deviceId;
-    if (!device || !isControllable(device)) return { member, label, state: 'offline' };
+    const appVersion = readProviderGroupAppVersion(device?.appVersion);
+    const version = appVersion ? { appVersion } : {};
+    if (!device || !isControllable(device)) return { member, label, ...version, state: 'offline' };
     let views: ProviderView[];
     try {
       views = await readCatalog(deviceId);
     } catch {
-      return { member, label, state: 'offline' };
+      return { member, label, ...version, state: 'offline' };
     }
     const resolved = withView(member, label, undefined, views);
     const reportedRunning = resolved.view ? readProviderRunningTurns(resolved.view) : null;
-    return reportedRunning === null ? resolved : { ...resolved, reportedRunning };
+    return { ...resolved, ...version, ...(reportedRunning === null ? {} : { reportedRunning }) };
   }
 
   async function resolveShare(
@@ -158,6 +218,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     const ownerName = share.owner.displayName;
     const label = ownerName;
     if (share.status === 'paused') return { member, label, ownerName, state: 'unavailable', reason: 'share-paused' };
+    noteShareOnline(shareId, share.hostOnline);
     if (!share.hostOnline && !options?.readThroughOffline) return { member, label, ownerName, state: 'offline' };
     let views: ProviderView[];
     try {
@@ -166,6 +227,9 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       const reason = SHARE_REASON.exec(error instanceof Error ? error.message : '')?.[1];
       if (reason === 'PAUSED') return { member, label, ownerName, state: 'unavailable', reason: 'share-paused' };
       if (reason === 'REMOVED') return { member, label, ownerName, state: 'unavailable', reason: 'share-removed' };
+      // 分享者电脑拒绝了(对方关了远程控制或这个供应商的「允许被远程调用」)：那台在线，只是现在不接，
+      // 不是连不上，不用等它恢复(与同账号电脑关了远程调用同一口径)。
+      if (reason === 'UNAVAILABLE') return { member, label, ownerName, state: 'unavailable', reason: 'provider-off' };
       return { member, label, ownerName, state: 'offline' };
     }
     const resolved = withView(member, label, ownerName, views);
@@ -186,15 +250,96 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     return { ...base, state: 'ok', view };
   }
 
+  /** 到点还没读完的那台：这次按不能用算(不是读到了离线)。 */
+  function pendingMember(member: ProviderGroupMember): ResolvedProviderGroupMember {
+    // 分享来的电脑只用分享者的昵称称呼(provider-sharing.md §6)，这里读不到，留空。
+    const label = member.kind === 'share' ? '' : member.label || member.key;
+    return { member, label, state: 'offline', pending: true };
+  }
+
+  /**
+   * 到点已经有一台够用的电脑就不再等其余的；一台都还没有时等全部读完，不会因为慢就误报都不能用。
+   */
+  async function settleQuickly(
+    members: readonly ProviderGroupMember[],
+    reads: readonly Promise<ResolvedProviderGroupMember>[],
+    partialReads: readonly Promise<ResolvedProviderGroupMember>[],
+    options: ResolveMembersOptions,
+  ): Promise<ResolvedProviderGroupMember[]> {
+    const settled: Array<ResolvedProviderGroupMember | undefined> = new Array(reads.length);
+    const partial: Array<ResolvedProviderGroupMember | undefined> = new Array(partialReads.length);
+    reads.forEach((read, index) => {
+      void read.then((value) => {
+        settled[index] = value;
+      }, () => undefined);
+    });
+    partialReads.forEach((read, index) => {
+      void read.then((value) => {
+        partial[index] = value;
+      }, () => undefined);
+    });
+    const all = Promise.all(reads);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), options.quickMs);
+    });
+    try {
+      const done = await Promise.race([all, deadline]);
+      if (done) return done;
+    } finally {
+      clearTimeout(timer);
+    }
+    const enough = options.enough;
+    const resolved = members.map((member, index) => settled[index] ?? partial[index] ?? pendingMember(member));
+    if (!enough || !resolved.some(enough)) return all;
+    return resolved;
+  }
+
   return {
-    async resolveMembers(_providerId, config) {
+    async resolveMembers(_providerId, config, options) {
+      if (options?.fresh) {
+        devices = null;
+        deps.invalidateUsage?.();
+        for (const member of config.members) if (member.agentDeviceId) catalogs.delete(member.agentDeviceId);
+      }
       const needsDevices = config.members.some((m) => m.kind === 'device');
-      const deviceList = needsDevices ? await readDevices().catch(() => null) : null;
-      return Promise.all(config.members.map((member) => {
+      // 设备列表读取不在这里 await：要跟各成员读取一样被下面的 settleQuickly 三秒快速选择
+      // 窗口管到(settleQuickly 的计时器在 reads 数组建好、传进去之后才启动)，否则设备列表慢或
+      // 无响应时选电脑会等它的完整网络超时，而不是三秒后继续(chatgpt-codex-connector P2,
+      // PR #5792 review)。
+      const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
+      // 额度补充读取可能慢于快速选路窗口：保留基础目录结果，避免已知可用的成员被误判成待定或离线。
+      const partialReads = config.members.map((member) => {
         if (member.kind === 'local') return resolveLocal(member);
         if (member.kind === 'share') return resolveShare(member);
-        return resolveDevice(member, deviceList);
-      }));
+        return deviceListPromise.then((deviceList) => resolveDevice(member, deviceList));
+      });
+      const reads = partialReads.map(async (read, index) => {
+        const member = config.members[index]!;
+        const resolved = await read;
+        if (member.kind === 'share' || resolved.state !== 'ok' || !resolved.view?.auth
+          || providerWeeklyQuotaSource(resolved.view) !== 'claude' || !deps.readClaudeUsage) return resolved;
+        const claudeUsage = await deps.readClaudeUsage(member).catch(() => null);
+        return { ...resolved, claudeUsage };
+      });
+      if (options?.quickMs === undefined) return Promise.all(reads);
+      return settleQuickly(config.members, reads, partialReads, options);
+    },
+
+    async offlineForMs(agentDeviceId) {
+      if (isProviderShareAgentDeviceId(agentDeviceId)) {
+        const shareId = agentDeviceId.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length);
+        const share = deps.listReceivedShares().find((s) => s.shareId === shareId);
+        if (!share) return null;
+        noteShareOnline(shareId, share.hostOnline);
+        const since = shareOfflineSince.get(shareId);
+        return since === undefined ? null : Math.max(0, deps.now() - since);
+      }
+      const deviceList = await readDevices().catch(() => null);
+      const device = deviceList?.find((d) => d.deviceId === agentDeviceId);
+      if (!device || device.online || !device.lastSeenAt) return null;
+      const lastSeen = Date.parse(device.lastSeenAt);
+      return Number.isFinite(lastSeen) ? Math.max(0, deps.now() - lastSeen) : null;
     },
 
     async listCandidates(providerId, config) {
@@ -231,6 +376,8 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
           label: share.owner.displayName,
           providerName: share.providerLabel,
           ownerName: share.owner.displayName,
+          // 同一个人从同一台电脑分享的几个账号按一台电脑展示(不显示，也不用于连接)。
+          hostDeviceId: share.hostDeviceId,
         };
         if (memberKeys.has(key)) {
           candidates.push({ ...base, blocked: 'member' });
@@ -279,6 +426,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     },
 
     invalidate(agentDeviceId) {
+      deps.invalidateUsage?.();
       if (agentDeviceId === undefined) {
         catalogs.clear();
         devices = null;

@@ -9,6 +9,21 @@ import type {
   ProviderShareRequestItem,
   ProviderShareRequestState,
 } from '@cindy/device-link';
+import type { DataOwnerPushStamp } from './dataOwnerPush';
+
+/** 本机收藏清理依据。未加载、断线和账号切换的空列表不能用于撤权清理。 */
+export interface ProviderShareReceivedSnapshot {
+  ownerStamp: DataOwnerPushStamp;
+  /** 仅这些区域的名单完整，可据此清理已撤权收藏；其它区域不受影响。 */
+  confirmedRegions: readonly ProviderShareReceived['owner']['region'][];
+  received: readonly ProviderShareReceived[];
+}
+
+/** 本机收藏作为重启后的查询线索，不作为授权或撤权依据。 */
+export interface ProviderShareFavoriteRecovery {
+  ownerStamp: DataOwnerPushStamp;
+  regions: readonly ProviderShareReceived['owner']['region'][];
+}
 
 export const PROVIDER_SHARE_IPC = {
   /** Renderer → Main：全部操作走同一个命令通道。 */
@@ -25,6 +40,8 @@ export const PROVIDER_SHARE_IPC = {
   OPEN_JOIN: 'provider-share:open-join',
   /** 打开某个供应商的分享管理页(系统通知点击)。payload: { providerId: string } */
   OPEN_MANAGE: 'provider-share:open-manage',
+  /** 分享者：有人把这里分享的供应商放进了自己的供应商组，请求转给别人用(待处理一栏重读)。payload: null */
+  RESHARE_REQUESTED: 'provider-share:reshare-requested',
 } as const;
 
 export type ProviderShareUsageRange = '7d' | 'month' | 'all';
@@ -37,6 +54,11 @@ export interface ProviderShareMoney {
 export interface ProviderShareModelUsageView {
   kind: string;
   providerId: string | null;
+  /**
+   * 这一部分在哪台组内电脑运行(供应商组的组内电脑稳定键，本机为 `local`)；「用量」块据此按组内电脑展开。
+   * 这一字段加上之前记的用量没有区分，为 null。
+   */
+  memberKey: string | null;
   model: string;
   turns: number;
   inputTokens: number;
@@ -47,10 +69,25 @@ export interface ProviderShareModelUsageView {
   amount: ProviderShareMoney | null;
 }
 
+/**
+ * 转分享(provider-sharing.md §4.3)：这个成员把分享来的供应商放进了自己的供应商组，又把组分享给了别人。
+ * 每一项是他分享的一个人；昵称与头像由他的电脑转述。
+ */
+export interface ProviderShareReshareView {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  state: 'pending' | 'approved' | 'rejected';
+  requestedAt: number;
+  decidedAt: number | null;
+}
+
 export interface ProviderShareMemberView extends ProviderShareMember {
   lastUsedAt: number | null;
   runningTasks: number;
   models: ProviderShareModelUsageView[];
+  /** 经这个成员的供应商组转给别人用的请求；没有时为空(旧快照可能缺省)。 */
+  reshares?: ProviderShareReshareView[];
 }
 
 export interface ProviderShareOwnedView {
@@ -62,7 +99,7 @@ export interface ProviderShareOwnedView {
   requests: ProviderShareRequestItem[];
 }
 
-/** 「远程与分享」页按使用方的用量里一个使用方(本机，或同账号的另一台电脑)。 */
+/** 「远程与分享」页按使用方的用量里一个使用方(本机、同账号的另一台电脑，或经那台转来的受邀者任务)。 */
 export interface ProviderPartyUsageView {
   /** null = 本机。 */
   deviceId: string | null;
@@ -74,30 +111,43 @@ export interface ProviderPartyUsageView {
 
 /**
  * 某个供应商按使用方的用量里，这台电脑自己能记到的部分(provider-groups.md §7)：本机自己的任务(含归本机
- * 供应商组、在组里其他电脑上运行的)，与同账号其他电脑在本机运行的任务。分享的人在 owned 的成员里。
+ * 供应商组、在组里其他电脑上运行的)，与同账号其他电脑经这台电脑的任务。分享的人在 owned 的成员里。
+ * 界面把本机与我的其他电脑合成「自己」一行(当前登录的账号)。
  */
 export interface ProviderOwnUsageView {
   providerId: string;
   /** 本机自己的任务；没用过时为 null。 */
   local: ProviderPartyUsageView | null;
-  /** 同账号的其他电脑，每台一项，最近用过的在前。 */
+  /** 同账号的其他电脑自己的任务，每台一项，最近用过的在前。 */
   devices: ProviderPartyUsageView[];
+  /** 同账号的组所在电脑替它的受邀者转到本机运行的任务，每台组所在电脑一项(本机看不到最终使用者)。 */
+  relays: ProviderPartyUsageView[];
 }
 
 export interface ProviderShareOwnerState {
   /** 分享服务可用(已登录、设备互联已连上本区域服务)。 */
   ready: boolean;
   shares: ProviderShareOwnedView[];
+  /** 本机分享里、链接由同账号另一台电脑生成的申请：由那台弹审批窗，本机只在管理页与提示点显示。 */
+  quietRequestIds?: string[];
+  /** 本机为同账号另一台电脑上的分享生成链接后收到的申请：由本机弹审批窗，处理转交那台电脑。 */
+  watchedRequests?: ProviderShareRequestedEvent[];
 }
 
 export interface ProviderShareLinkCreated {
   link: string;
   expiresAt: string;
+  /** Non-secret per-link identifier; absent when the host or server predates exact approval routing. */
+  linkId?: string;
 }
 
 export interface ProviderShareRequestedEvent {
   request: ProviderShareRequestItem;
   share: { shareId: string; providerId: string; providerLabel: string };
+  /** 分享在同账号另一台电脑上(本机生成了链接，由本机弹窗)；本机的分享不带。 */
+  hostDeviceId?: string;
+  /** true = 链接由同账号另一台电脑生成，由那台弹窗，本机不弹。 */
+  quiet?: boolean;
 }
 
 export interface ProviderShareSettledEvent {
@@ -112,12 +162,23 @@ export type ProviderShareCommand =
   | { action: 'create-link'; providerId: string }
   | { action: 'approve' | 'reject'; requestId: string }
   | { action: 'set-member'; memberId: string; status: 'pause' | 'resume' | 'remove' }
+  /** 转分享：同意或拒绝(拒绝已同意的 = 撤回)。 */
+  | { action: 'reshare-decide'; id: string; decision: 'approve' | 'reject' }
   | { action: 'received' }
+  | { action: 'received-snapshot'; favoriteRecovery?: ProviderShareFavoriteRecovery }
   | { action: 'preview'; link: string }
   | { action: 'send-request'; link: string }
   | { action: 'get-request'; requestId: string }
   | { action: 'withdraw'; requestId: string }
-  | { action: 'leave'; memberId: string };
+  | { action: 'leave'; memberId: string }
+  /** 受邀者：这个分享的任务里凭证类操作是否不再在本机确认(provider-sharing.md §9 第 7 条)。 */
+  | { action: 'get-credential-consent'; shareId: string }
+  | { action: 'set-credential-consent'; shareId: string; skip: boolean };
+
+/** 受邀者对一个分享的本机偏好：true = 凭证类操作不再确认。只对这台电脑生效。 */
+export interface ProviderShareCredentialConsentView {
+  skip: boolean;
+}
 
 export interface ProviderShareCommandResult {
   owned: ProviderShareOwnerState;
@@ -126,12 +187,16 @@ export interface ProviderShareCommandResult {
   approve: { ok: true };
   reject: { ok: true };
   'set-member': { ok: true };
+  'reshare-decide': { ok: true };
   received: ProviderShareReceived[];
+  'received-snapshot': ProviderShareReceivedSnapshot;
   preview: ProviderShareLinkPreview;
   'send-request': ProviderShareRequestState;
   'get-request': ProviderShareRequestState;
   withdraw: { ok: true };
   leave: { ok: true };
+  'get-credential-consent': ProviderShareCredentialConsentView;
+  'set-credential-consent': ProviderShareCredentialConsentView;
 }
 
 /** 任务记录里「Agent 在某个分享者的电脑上」的前缀(见 main/device-link/providerShareGuest)。 */
@@ -139,4 +204,10 @@ export const PROVIDER_SHARE_AGENT_DEVICE_PREFIX = 'share:';
 
 export function isProviderShareAgentDeviceId(value: string | null | undefined): boolean {
   return typeof value === 'string' && value.startsWith(PROVIDER_SHARE_AGENT_DEVICE_PREFIX);
+}
+
+/** 这个设备 id 指向的分享 id；不是分享时为 null。只拆前缀，不校验格式。 */
+export function providerShareIdOfAgentDeviceId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string' || !value.startsWith(PROVIDER_SHARE_AGENT_DEVICE_PREFIX)) return null;
+  return value.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length) || null;
 }

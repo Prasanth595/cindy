@@ -1977,7 +1977,12 @@ describe('MakerScheduleRunner queued dispatch (busy bound session)', () => {
     const queue = createQueueHarness({ busy: false });
     const { runner, notifier } = createRunnerHarness(harness.session, queue.deps);
     const fire = runner.fire(
-      heartbeatSchedule({ targetSessionId: fresh ? undefined : SESSION_ID, workingDir: '/work' }),
+      heartbeatSchedule({
+        targetSessionId: fresh ? undefined : SESSION_ID,
+        workingDir: '/work',
+        // 新建会话的任务没接默认模型解析;显式给模型,本用例只关心 Stop 收口。
+        ...(fresh ? { model: 'claude-opus-5-5' } : {}),
+      }),
       createFireContext(),
     );
     await vi.waitFor(() => expect(queue.enqueueCalls).toHaveLength(1));

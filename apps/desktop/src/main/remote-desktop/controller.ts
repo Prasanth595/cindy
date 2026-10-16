@@ -23,6 +23,32 @@ import {
 
 const log = createLogger('remote-desktop:controller');
 
+/** The one window a 代输入 live view shows; resolved by the host, never by a viewer. */
+export interface DesktopHandoffWindow {
+  requestId: string;
+  windowId: number;
+  pid: number;
+  displayId: string;
+  app: string;
+  title?: string;
+  /** Window size in points, so the viewer lays the picture out at its own shape. */
+  width: number;
+  height: number;
+}
+
+/** What a window lease may do; everything else reaches past the window. */
+const HANDOFF_WINDOW_OPS = new Set([
+  'stop',
+  'heartbeat',
+  'control',
+  'presentation',
+  'input',
+  'offer',
+  'ice',
+  'viewerHidden',
+  'frame',
+]);
+
 export interface DesktopControllerDeps {
   /** Optional host setup before allocating the first lease or temporary output. */
   prepare?(current: () => boolean): Promise<void>;
@@ -49,7 +75,18 @@ export interface DesktopControllerDeps {
     cursorOverlay?: boolean,
     lease?: string,
   ): Promise<string | RemoteDesktopCursorFrame | null>;
-  startInput(displayId: string): Promise<void>;
+  /** With `window`, input reaches only that window (a 代输入 live view). */
+  startInput(displayId: string, window?: DesktopHandoffWindow): Promise<void>;
+  /**
+   * 代输入 live view: the window a pending request is about, raised so it can be
+   * shown, or null when the request is not waiting for the owner. Only the host
+   * picks the window; a viewer names nothing but the request.
+   */
+  handoffWindow?(requestId: string, peer: string): Promise<DesktopHandoffWindow | null>;
+  /** Whether the request a window lease shows is still waiting; its lease ends when not. */
+  handoffCurrent?(requestId: string): boolean;
+  /** A window lease ended; the request's card catches up with the window. */
+  handoffEnded?(requestId: string): void;
   input(events: DesktopInput[]): void;
   stopInput(): void;
   releaseInput?(): Promise<void>;
@@ -132,6 +169,7 @@ export class RemoteDesktopController {
         hostMute?: boolean;
         lockOnExit?: boolean;
         privacyLockOnExit?: boolean;
+        handoff?: DesktopHandoffWindow;
       })
     | null = null;
   private starting = false;
@@ -211,6 +249,15 @@ export class RemoteDesktopController {
     this.tick();
     return this.active?.lease === lease;
   }
+  /** The single window this lease shows, when it is a 代输入 live view. */
+  handoffWindow(lease: string): DesktopHandoffWindow | null {
+    return this.active?.lease === lease ? (this.active.handoff ?? null) : null;
+  }
+  /** The 代输入 request finished: its live view has nothing left to show. */
+  endHandoff(requestId: string): void {
+    const active = this.active;
+    if (active?.handoff?.requestId === requestId) void this.stop(active.peer, false);
+  }
   isBackgroundViewing(lease: string): boolean {
     return this.active?.lease === lease && this.active.backgroundViewing === true;
   }
@@ -251,6 +298,9 @@ export class RemoteDesktopController {
       !this.authenticationCurrent(active.peer, active.authenticationSession)
     ) {
       this.lockAbort?.abort();
+      void this.stop(undefined, false);
+    } else if (active.handoff && this.deps.handoffCurrent?.(active.handoff.requestId) === false) {
+      // The 代输入 request finished: nothing is left to show.
       void this.stop(undefined, false);
     } else if (!this.locking && active.expires <= this.now()) {
       void this.stop();
@@ -320,6 +370,7 @@ export class RemoteDesktopController {
     this.active = null;
     this.deps.stopInput();
     this.deps.stopVideo();
+    if (active?.handoff) this.deps.handoffEnded?.(active.handoff.requestId);
     this.viewerDisplay?.dispose();
     // Retain the handle until restoration completes (or can be retried after failure).
     // EOF releases it asynchronously; a new lease must not bind stale geometry.
@@ -495,7 +546,9 @@ export class RemoteDesktopController {
     if (!active.controlling) {
       this.inputStarting = true;
       try {
-        await this.deps.startInput(active.display.id);
+        await (active.handoff
+          ? this.deps.startInput(active.display.id, active.handoff)
+          : this.deps.startInput(active.display.id));
         if (
           generation !== this.controlGeneration ||
           this.active !== active ||
@@ -616,6 +669,7 @@ export class RemoteDesktopController {
         resolutionRestore: Boolean(
           caps.displayModes && this.deps.resolution && this.deps.displayModes,
         ),
+        ...(this.deps.handoffWindow ? { handoffWindow: true } : {}),
       };
     }
     if (!this.deps.authorized(peer)) throw new Error('DESKTOP_DISABLED');
@@ -641,10 +695,15 @@ export class RemoteDesktopController {
   ): Promise<RemoteDesktopLease> {
     const authenticationSession = this.authenticationSession(peer);
     if (request.resume && this.userStopped.has(peer)) throw new Error('DESKTOP_STOPPED');
+    if (request.handoff !== undefined && !this.deps.handoffWindow)
+      throw new Error('DESKTOP_HANDOFF_UNAVAILABLE');
+    // A window view resumes only as the same request's view; a display view only as itself.
     const resumesActive =
       request.resume &&
       this.active?.peer === peer &&
-      this.active.sourceDisplayId === request.displayId;
+      (request.handoff !== undefined
+        ? this.active.handoff?.requestId === request.handoff
+        : !this.active.handoff && this.active.sourceDisplayId === request.displayId);
     if (
       this.locking ||
       this.starting ||
@@ -671,7 +730,16 @@ export class RemoteDesktopController {
       const caps = await this.deps.capabilities();
       if (!this.authenticationCurrent(peer, authenticationSession))
         throw new Error('DESKTOP_AUTHENTICATION_REQUIRED');
-      let display = caps.displays.find((d) => d.id === request.displayId);
+      let handoff: DesktopHandoffWindow | undefined;
+      if (request.handoff !== undefined) {
+        handoff = (await this.deps.handoffWindow!(request.handoff, peer)) ?? undefined;
+        if (!handoff || handoff.requestId !== request.handoff)
+          throw new Error('DESKTOP_HANDOFF_ENDED');
+        if (!this.authenticationCurrent(peer, authenticationSession))
+          throw new Error('DESKTOP_AUTHENTICATION_REQUIRED');
+      }
+      const displayId = handoff?.displayId ?? request.displayId;
+      let display = caps.displays.find((d) => d.id === displayId);
       if (!display) throw new Error('DESKTOP_DISPLAY_MISSING');
       if (
         this.startingPeer !== peer ||
@@ -700,11 +768,19 @@ export class RemoteDesktopController {
           !this.authenticationCurrent(peer, authenticationSession)
         )
           throw new Error('DESKTOP_LEASE_EXPIRED');
-        display = restored.displays.find((d) => d.id === request.displayId);
+        display = restored.displays.find((d) => d.id === displayId);
         if (!display) throw new Error('DESKTOP_DISPLAY_MISSING');
       }
       if (!request.resume) this.userStopped.delete(peer);
-      const lease: RemoteDesktopLease = { lease: randomUUID(), display, controlling: false };
+      const lease: RemoteDesktopLease = handoff
+        ? {
+            lease: randomUUID(),
+            // The picture is the window, so the viewer lays it out at the window's shape.
+            display: { ...display, width: handoff.width, height: handoff.height },
+            controlling: false,
+            window: { app: handoff.app, ...(handoff.title ? { title: handoff.title } : {}) },
+          }
+        : { lease: randomUUID(), display, controlling: false };
       this.active = {
         ...lease,
         peer,
@@ -712,7 +788,9 @@ export class RemoteDesktopController {
         expires: this.now() + REMOTE_DESKTOP_LEASE_MS,
         sequence: -1,
         authenticationSession,
-        lockOnExit: request.lockOnExit,
+        // Ending a look at one window never locks the whole computer.
+        lockOnExit: handoff ? undefined : request.lockOnExit,
+        ...(handoff ? { handoff } : {}),
       };
       this.deps.changed();
       return lease;
@@ -729,6 +807,8 @@ export class RemoteDesktopController {
     >,
   ): Promise<unknown> {
     const active = this.require(peer, request.lease);
+    if (active.handoff && !HANDOFF_WINDOW_OPS.has(request.op))
+      throw new Error('DESKTOP_HANDOFF_WINDOW_ONLY');
     if (
       this.displayChanging &&
       !['stop', 'heartbeat', 'frame', 'input', 'viewerHidden'].includes(request.op)
@@ -913,11 +993,11 @@ export class RemoteDesktopController {
           throw new Error('DESKTOP_LOCK_UNAVAILABLE');
         // Plain stop is also used for viewer recovery and display handoff.
         // Explicit exit sends lockScreen; involuntary host stops use the policy.
-        await this.stop(peer, request.lockScreen === true);
+        await this.stop(peer, request.lockScreen === true && !active.handoff);
         return { ok: true };
       }
       case 'heartbeat':
-        if (request.lockOnExit !== undefined) active.lockOnExit = request.lockOnExit;
+        if (request.lockOnExit !== undefined && !active.handoff) active.lockOnExit = request.lockOnExit;
         active.expires = this.now() + REMOTE_DESKTOP_LEASE_MS;
         return { controlling: active.controlling };
       case 'presentation': {

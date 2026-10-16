@@ -1,12 +1,15 @@
 import {
   readDeviceFile,
   DL_MEDIA_FETCH_CHANNEL,
+  FILE_PEER_CHANNEL,
   FILE_PEER_MAX_BYTES,
   type DeviceFileResult,
 } from '@cindy/device-link';
 import { tryPeerFile } from './filePeer';
+import { captureFilePeerScope } from './filePeerScope';
 import { removeRemote } from './mediaTransfer';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './broadcast-tap';
+import { captureRemoteMediaCacheValidity } from './remoteMediaPersistentCache';
 
 type Invoke = Parameters<typeof tryPeerFile>[2];
 type LocalFileResult = DeviceFileResult & { path: string; dispose(): Promise<void> };
@@ -26,13 +29,22 @@ export function readRemoteDeviceFile(
     workdir?: string;
     relPath?: string;
     fallback?: () => Promise<DeviceFileResult>;
+    assertCacheCurrent?: () => void;
   } = {},
 ) {
   const owner = captureDataOwnerBroadcastScope();
-  const invoke: Invoke = async (...args) => {
-    if (options.signal?.aborted || !isDataOwnerBroadcastScopeCurrent(owner))
+  const assertCacheCurrent = options.assertCacheCurrent ?? captureRemoteMediaCacheValidity();
+  const isCurrent = captureFilePeerScope(device);
+  const invoke: Invoke = async (target, channel, args) => {
+    // A connection can outlive this read, including an offer answered after cancellation.
+    // Teardown may cross the read's cancellation boundary, never the account boundary.
+    const closing = channel === FILE_PEER_CHANNEL &&
+      (args[0] as { action?: unknown } | undefined)?.action === 'close';
+    if (closing
+      ? !isDataOwnerBroadcastScopeCurrent(owner)
+      : options.signal?.aborted || !isCurrent())
       throw new Error('FILE_PEER_CANCELLED');
-    return rawInvoke(...args);
+    return rawInvoke(target, channel, args);
   };
   const fetch = async (prepareOnly: boolean): Promise<DeviceFileResult> => {
     const response = await invoke(device, DL_MEDIA_FETCH_CHANNEL, [
@@ -47,7 +59,7 @@ export function readRemoteDeviceFile(
   return readDeviceFile<LocalFileResult>({
     stream: options.stream,
     signal: options.signal,
-    isCurrent: () => isDataOwnerBroadcastScopeCurrent(owner),
+    isCurrent,
     discard: async (result) => {
       if ('dispose' in result && typeof result.dispose === 'function') await result.dispose();
       else if (result.ossKey && isDataOwnerBroadcastScopeCurrent(owner))
@@ -58,7 +70,7 @@ export function readRemoteDeviceFile(
         const caps = await invoke(device, 'file-browser:remote-op', [
           { op: 'caps', workdir: options.workdir },
         ]);
-        if (options.signal?.aborted || !isDataOwnerBroadcastScopeCurrent(owner))
+        if (options.signal?.aborted || !isCurrent())
           throw new Error('FILE_PEER_CANCELLED');
         if (!caps.ok) throw new Error('FILE_CAPABILITY_FAILED');
         if (!(caps.result as { fileRead?: boolean })?.fileRead) return options.fallback();
@@ -84,10 +96,11 @@ export function readRemoteDeviceFile(
         metadata.size > Math.min(options.maxPeerBytes ?? FILE_PEER_MAX_BYTES, FILE_PEER_MAX_BYTES)
       )
         return null;
-      const result = await tryPeerFile(device, url, invoke, options.signal, options.onProgress);
+      const result = await tryPeerFile(device, url, invoke, options.signal, options.onProgress,
+        { ...metadata, ...(options.skipCache ? { skipCache: true } : {}), assertCacheCurrent });
       // A failed direct attempt is discarded before OSS starts; do not leave its partial
       // percentage/speed on screen during the fallback preparation.
-      if (!result && !options.signal?.aborted && isDataOwnerBroadcastScopeCurrent(owner)) {
+      if (!result && !options.signal?.aborted && isCurrent()) {
         try {
           options.onProgress?.(0, metadata.size);
         } catch {

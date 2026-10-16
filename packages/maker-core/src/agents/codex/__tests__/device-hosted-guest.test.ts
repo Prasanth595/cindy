@@ -185,7 +185,10 @@ async function startHosted(fixture: Fixture) {
       async logout() {},
       async getAuthEnv() { return {}; },
     },
-    runtimeConfig: { systemPrompt: 'GLOBAL CINDY HOST PROMPT' },
+    runtimeConfig: {
+      systemPrompt: 'GLOBAL CINDY HOST PROMPT',
+      taskShellEnv: () => ({ CINDY_INPUT_HANDOFF_ROUTE: 'host-route' }),
+    },
     binaryPath: process.execPath,
     logger: noopLogger(),
     getGhostRosterPrompt,
@@ -437,6 +440,8 @@ describe('Codex device-hosted guest sessions', () => {
     expect(fixture.request.mock.calls.some(([method]) => method === Method.McpServerStatusList)).toBe(false);
     expect(fixture.request.mock.calls.some(([method]) => method === Method.ExperimentalFeatureList)).toBe(false);
     expect(config['features.image_generation']).toBeUndefined();
+    // Terminal password prompts would reach this computer's owner, not the account running the task.
+    expect(config['shell_environment_policy.set.CINDY_INPUT_HANDOFF_ROUTE']).toBeUndefined();
     await handle.close();
   });
 

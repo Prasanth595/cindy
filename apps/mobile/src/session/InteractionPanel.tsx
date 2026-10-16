@@ -1,4 +1,6 @@
 import { PluginSetupNativeActions } from '@/plugins/PluginSetupNativeActions';
+import { InputHandoffCard } from '@/inputHandoff/InputHandoffCard';
+import { parseInputHandoffSnapshotLike } from '@/inputHandoff/inputHandoffNative';
 import { mobilePluginSetupActions } from '@/plugins/pluginSetupActions';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -70,9 +72,10 @@ import {
   type RemotePluginSetupStep,
 } from '@/session/interactionModel';
 import {
+  askQuestionsIdentity,
   clearAskUserDraft,
   clearPlanReviewDraft,
-  readAskUserDraft,
+  readAskUserDraftFor,
   readPlanReviewDraft,
   saveAskUserDraft,
   savePlanReviewDraft,
@@ -107,6 +110,7 @@ const LOCALIZED_INTERACTION_KINDS = new Set([
   'rename_sessions_confirm',
   'ghost_grant_confirm',
   'plugin_setup',
+  'input_handoff',
 ]);
 
 function localizedInteractionKindKey(kind: string): string {
@@ -348,12 +352,15 @@ function InteractionPanelContent({
   }
   return (
     <View style={[styles.root, fillAvailableHeight && styles.rootFill, rootLayoutStyle]} testID="interaction.panel">
-      <PendingTaskHeader
-        onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
-        onSelectRequest={setActiveRequestId}
-        presentation={activeQueuePresentation}
-        touchLayout={touchLayout}
-      />
+      {/* 代输入条自带用途与位置,单独一条时不再叠一层队列头。 */}
+      {kind === 'input_handoff' && activeQueuePresentation.totalCount <= 1 ? null : (
+        <PendingTaskHeader
+          onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
+          onSelectRequest={setActiveRequestId}
+          presentation={activeQueuePresentation}
+          touchLayout={touchLayout}
+        />
+      )}
       <InteractionItem
         key={readRequestId(activeInteraction) ?? `${interactionKind(activeInteraction)}-${JSON.stringify(activeInteraction.request)}`}
         deviceId={deviceId}
@@ -634,6 +641,34 @@ function InteractionItem({
       />
     );
   }
+  // 代输入: values go through the sealed per-step channel inside the card;
+  // value-less decisions use resolve and wait for the Host's next snapshot.
+  if (kind === 'input_handoff') {
+    const snapshot = parseInputHandoffSnapshotLike(item.request);
+    if (!snapshot || !deviceId || isSharedTaskPeer(deviceId)) {
+      return (
+        <UnsupportedCard
+          message={t('interaction.panel.unsupportedType')}
+          request={item.request}
+          touchLayout={touchLayout}
+        />
+      );
+    }
+    return (
+      <InputHandoffCard
+        key={snapshot.requestId}
+        deviceId={deviceId}
+        snapshot={snapshot}
+        decisionBusy={busy}
+        onDecision={(decision) => void submitDecision(decision, { optimisticDismiss: false })}
+        // Claiming on first keystroke must not mark the card busy (that would
+        // disable the field being typed in); a failed claim is harmless.
+        onQuietDecision={(decision) => {
+          if (requestId) void resolveInteractionResilient(maker, sessionId, requestId, decision).catch(() => undefined);
+        }}
+      />
+    );
+  }
   // 配置通过独立加密 v3 原生入口；通用交互 resolve 仍只允许取消。
   // 旧 Host、共享访客及电脑本地回调保留电脑入口。
   if (kind === 'plugin_setup') {
@@ -882,30 +917,47 @@ function PermissionEvidence({
   );
 }
 
-function AskUserQuestionCard({
-  busy,
-  item,
-  onDecision,
-  touchLayout,
-}: {
+type AskUserQuestionCardProps = {
   busy: boolean;
   item: PendingInteraction;
   onDecision(decision: Record<string, unknown>): void;
   touchLayout: InteractionTouchLayout;
-}) {
+};
+
+function AskUserQuestionCard(props: AskUserQuestionCardProps) {
+  const questions = useMemo(() => normalizeAskQuestions(props.item.request.questions), [props.item.request.questions]);
+  // 与桌面 AskUserQuestionPrompt 同口径:内容相同的重新拉取保持挂载与输入;
+  // 同一 requestId 的问题内容真变了,则重挂并丢弃旧内容的草稿。
+  const questionsIdentity = askQuestionsIdentity(questions);
+  return <AskUserQuestionForm key={questionsIdentity} {...props} questions={questions} questionsIdentity={questionsIdentity} />;
+}
+
+function AskUserQuestionForm({
+  busy,
+  item,
+  onDecision,
+  questions,
+  questionsIdentity,
+  touchLayout,
+}: AskUserQuestionCardProps & { questions: AskQuestion[]; questionsIdentity: string }) {
   const styles = useInteractionStyles();
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
   const companion = useContext(CompanionInteractionContext);
   const requestId = readRequestId(item) ?? '';
-  const questions = useMemo(() => normalizeAskQuestions(item.request.questions), [item.request.questions]);
   const draftCompletedRef = useRef(false);
-  const skipNextQuestionSyncRef = useRef(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
-  const [customInput, setCustomInput] = useState('');
-  const [showCustomInput, setShowCustomInput] = useState(false);
+  // 表单按 requestId + 问题内容挂载,草稿在首帧同步恢复,
+  // 避免先渲染空状态再被同步 effect 覆盖。
+  const [initialDraft] = useState(() => readAskUserDraftFor(requestId, questionsIdentity));
+  const [currentIndex, setCurrentIndex] = useState(() =>
+    Math.min(initialDraft?.currentIndex ?? 0, Math.max(0, questions.length - 1)));
+  const [answers, setAnswers] = useState<Record<string, string>>(() => initialDraft?.answers ?? {});
+  const [selectedLabels, setSelectedLabels] = useState<Set<string>>(() => new Set(initialDraft?.selectedLabels ?? []));
+  const [customInput, setCustomInput] = useState(() => initialDraft?.customInput ?? '');
+  const [showCustomInput, setShowCustomInput] = useState(() => initialDraft?.showCustomInput ?? false);
+  // 选中态/自定义输入已对应的题号。只在切题时从 answers 回填:请求被重新拉取
+  // (截图后回到前台等)会换掉 current/answers 的引用,不能因此清掉正在输入的内容。
+  const syncedIndexRef = useRef(currentIndex);
   const presentation = useMemo(() => buildAskQuestionReviewPresentation({
     currentIndex,
     questions,
@@ -913,22 +965,8 @@ function AskUserQuestionCard({
   const current = presentation.current;
 
   useEffect(() => {
-    draftCompletedRef.current = false;
-    const draft = readAskUserDraft(requestId);
-    skipNextQuestionSyncRef.current = !!draft;
-    setCurrentIndex(Math.min(draft?.currentIndex ?? 0, Math.max(0, questions.length - 1)));
-    setAnswers(draft?.answers ?? {});
-    setSelectedLabels(new Set(draft?.selectedLabels ?? []));
-    setCustomInput(draft?.customInput ?? '');
-    setShowCustomInput(draft?.showCustomInput ?? false);
-  }, [questions.length, requestId]);
-
-  useEffect(() => {
-    if (!current) return;
-    if (skipNextQuestionSyncRef.current) {
-      skipNextQuestionSyncRef.current = false;
-      return;
-    }
+    if (!current || syncedIndexRef.current === currentIndex) return;
+    syncedIndexRef.current = currentIndex;
     const next = selectionFromAnswer(
       { ...current, options: visibleAskOptions(current.options) },
       answers[answerKey(current)],
@@ -936,7 +974,7 @@ function AskUserQuestionCard({
     setSelectedLabels(next.selectedLabels);
     setCustomInput(next.customInput);
     setShowCustomInput(next.showCustomInput);
-  }, [answers, current]);
+  }, [answers, current, currentIndex]);
 
   useEffect(() => {
     if (!requestId || draftCompletedRef.current) return;
@@ -944,6 +982,7 @@ function AskUserQuestionCard({
       answers,
       currentIndex,
       customInput,
+      questionsIdentity,
       selectedLabels: [...selectedLabels],
       showCustomInput,
     });
@@ -1004,6 +1043,7 @@ function AskUserQuestionCard({
       saveAskUserDraft(requestId, {
         answers: nextAnswers, currentIndex,
         customInput: finalSelection.customInput,
+        questionsIdentity,
         selectedLabels: [...finalSelection.selectedLabels],
         showCustomInput: finalSelection.showCustomInput,
       });
@@ -1135,7 +1175,6 @@ function AskUserQuestionCard({
               disabled={busy}
               onPress={() => {
                 if (!isMulti) {
-                  skipNextQuestionSyncRef.current = true;
                   clearCurrentAnswer();
                   setSelectedLabels(new Set());
                 }

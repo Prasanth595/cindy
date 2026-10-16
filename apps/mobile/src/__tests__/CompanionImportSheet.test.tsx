@@ -2,7 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ invoke: vi.fn(), submit: vi.fn(), openLink: vi.fn(), created: vi.fn(), uuid: vi.fn(() => 'fixture-request-12345') }));
+const h = vi.hoisted(() => ({ sheet: {} as any, invoke: vi.fn(), submit: vi.fn(), openLink: vi.fn(), created: vi.fn(), uuid: vi.fn(() => 'fixture-request-12345') }));
 vi.mock('react-native', () => ({
   StyleSheet: { create: (v: unknown) => v }, View: ({ children }: any) => createElement('div', {}, children), ScrollView: ({ children }: any) => createElement('div', {}, children),
   Pressable: ({ onPress, children }: any) => createElement('button', { onClick: onPress }, children),
@@ -14,7 +14,7 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invo
 vi.mock('@/device-link/remoteResources', () => ({ invokeRemoteResourceAction: (...args: unknown[]) => h.submit(...args) }));
 vi.mock('@/components/AppText', () => ({ Text: ({ children }: any) => createElement('span', {}, children), TextInput: ({ value, editable, onChangeText }: any) => createElement('input', { value, disabled: !editable, onInput: (e: any) => onChangeText(e.target.value), onChange() {} }) }));
 vi.mock('@/components/MobilePrimitives', () => ({ MainWindowActionButton: ({ action }: any) => createElement('button', { onClick: action.onPress, disabled: action.disabled }, action.label) }));
-vi.mock('@/session/CompanionSheet', () => ({ CompanionSheet: ({ children }: any) => children }));
+vi.mock('@/session/CompanionSheet', () => ({ CompanionSheet: (props: any) => { h.sheet = props; return props.children; } }));
 vi.mock('@/session/CompanionPortraitPicker', () => ({ randomCompanionPortrait: async () => 'original-portrait', CompanionPortraitPicker: ({ onChange }: any) => createElement('button', { onClick: () => onChange('chosen-existing-portrait') }, 'existing portrait picker') }));
 vi.mock('@/theme', async () => ({ ...await import('@/theme/tokens'), useThemedStyles: () => ({}) }));
 import { CompanionImportSheet } from '@/session/CompanionImportSheet';
@@ -35,6 +35,7 @@ it('uses the existing portrait picker and sends only the remaining selections th
   h.submit.mockImplementation(async () => { imported = true; return { effects: [] }; });
   const container = document.createElement('div'); root = createRoot(container);
   await act(async () => root!.render(createElement(CompanionImportSheet, { visible: true, deviceId: 'host', deviceName: 'Mac', online: true, onClose() {}, onCreated: h.created })));
+  expect(h.sheet.contentScrolls).toBe(true);
   const click = async (text: string) => { await act(async () => { const button = [...container.querySelectorAll('button')].find(button => button.textContent === text); expect(button).toBeDefined(); button!.click(); }); };
   await click('Ada · Hermes');
   await click('existing portrait picker');

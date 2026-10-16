@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
+import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
 import type { SessionMetaPatch } from '@/device-link/mobileMakerTransport';
 import {
   remoteSessionStore,
@@ -82,6 +83,11 @@ export function useSessionListActions(options?: { animateListChange?: (apply: ()
     } catch (err) {
       if (write.isLatest()) {
         if (fields.includes('status')) {
+          if (isExplicitRemoteNotFoundError(err)) {
+            remoteSessionStore.applySessionPatch(shardId, session.id, { status: 'deleted' });
+            remoteSessionStore.requestReseed(shardId);
+            return;
+          }
           const shardName = remoteSessionStore.getSessions()
             .find((s) => s.deviceLinkDeviceId === shardId)?.deviceLinkDeviceName
             ?? session.deviceLinkDeviceName

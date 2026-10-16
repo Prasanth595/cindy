@@ -19,7 +19,10 @@ describe('mobile message actions desktop-first surface', () => {
     expect(source).toContain('<MessageActionSheet');
     expect(source).toContain('buildMobileMessageMenu({');
     expect(source).toContain("&& (item.message.kind === 'user' || item.message.kind === 'assistant')");
-    expect(source).toContain('&& actions.isSessionStreaming !== true');
+    // 运行中删除入口的可见性与 SESSION_RUNNING 识别由
+    // messageSourceLabelsRender / remoteStatus 的行为测试覆盖。
+    const screenSource = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
+    expect(screenSource).toContain('if (isSessionRunningRemoteError(err)) {');
     expect(source).toContain('hitSlop={MESSAGE_CONTROL_HIT_SLOP}');
     expect(source).toContain('buttonSize={actionBar.buttonSize}');
     expect(source).toContain('iconSize={actionBar.iconSize}');
@@ -121,7 +124,7 @@ describe('mobile message actions desktop-first surface', () => {
     const end = source.indexOf('function FoldablePanel', start);
     const workGroupSource = source.slice(start, end);
     const expandedBodyStart = workGroupSource.indexOf('{expanded ? (');
-    const childrenMapStart = workGroupSource.indexOf('{item.children.map((child) => {');
+    const childrenMapStart = workGroupSource.indexOf('{!holdLines && item.children.map((child) => {');
 
     // 运行中用状态图标,结束后回到桌面同款 Layers 工作摘要图标。
     expect(source).toContain('Layers,');
@@ -130,10 +133,18 @@ describe('mobile message actions desktop-first surface', () => {
     expect(workGroupSource).toContain('chevronSize={header.chevronSize}');
     expect(workGroupSource).toContain('title={title}');
     expect(workGroupSource).toContain('subtitle={header.subtitle ?? undefined}');
-    // Work group 受控展开；折叠态只保留卡头，不提前构造任何隐藏活动行。
+    // Work group 受控展开；折叠态不提前构造任何隐藏活动行。运行中只渲染电脑端已投影好的
+    // 单行活动（deferred.lines），既不读工作明细，也不在本机重新解析工具输入。
     expect(workGroupSource).not.toContain('defaultExpanded');
     expect(workGroupSource).toContain('controlledExpanded={expanded}');
-    expect(workGroupSource).not.toContain('collapsedBody=');
+    // 展开后在明细读到之前继续显示这几行，不先清空再重新出现。
+    expect(workGroupSource).toContain('const lines = isStreaming ? item.deferred?.lines : undefined;');
+    expect(workGroupSource).toContain("const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;");
+    expect(workGroupSource).toContain('collapsedBody={lineRows ? <Rail layout={layout}>{lineRows}</Rail> : undefined}');
+    expect(workGroupSource).toContain('{holdLines && lineRows}');
+    expect(workGroupSource).toContain('<WorkLineRow key={line.key} line={line} onPress={onToggle} />');
+    expect(workGroupSource).toContain('formatToolRowText(line.descriptor, mobileToolRowWording)');
+    expect(workGroupSource).not.toContain('summarizeToolUseText');
     expect(workGroupSource).toContain('onControlledToggle={onToggle}');
     expect(workGroupSource).not.toContain('live-preview-dismissed');
     expect(workGroupSource).toContain('? <CompactActivityIndicator color={colors.textTertiary}');

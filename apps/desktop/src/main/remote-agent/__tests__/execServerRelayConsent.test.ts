@@ -33,7 +33,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 import { ExecServerRelay } from '../controller/execServerRelay';
-import type { ExecutorAction, ExecutorGateDecision } from '../executor/gate';
+import { RemoteExecutor } from '../executor/executor';
+import { ExecutorGate, type ExecutorAction, type ExecutorGateDecision } from '../executor/gate';
 import { ExecutorWorkspace } from '../executor/workspace';
 
 let root: string;
@@ -47,7 +48,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(authorize?: (action: ExecutorAction) => ExecutorGateDecision) {
   const workspace = new ExecutorWorkspace({ workingDir: root });
   const approved = new Set<string>();
   const pending: Array<{ action: ExecutorAction; answer(allowed: boolean): void }> = [];
@@ -57,11 +58,11 @@ function setup() {
     codexPath: 'codex',
     cwd: root,
     workspace,
-    authorize: (action): ExecutorGateDecision => {
+    authorize: authorize ?? ((action): ExecutorGateDecision => {
       if (!isSecret(action)) return { ok: true };
       const key = action.kind === 'exec' || action.kind === 'fetch' ? '' : action.path;
       return approved.delete(key) ? { ok: true, elevated: true } : { ok: false, reason: 'needs confirmation' };
-    },
+    }),
     confirm: (action) => new Promise<boolean>((resolve) => {
       pending.push({
         action,
@@ -83,12 +84,76 @@ function setup() {
 }
 
 describe('exec-server relay with confirmation on this computer', () => {
+  it('uses an explicit session consent for subsequent Codex credential requests', async () => {
+    const workspace = new ExecutorWorkspace({ workingDir: root });
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+    const confirm = vi.fn(async () => 'session' as const);
+    const executor = new RemoteExecutor({ workspace, gate, rgPath: 'unused', confirm });
+    const relay = new ExecServerRelay({
+      codexPath: 'codex', cwd: root, workspace,
+      authorize: (action) => executor.check(action),
+      confirm: (action) => executor.confirm(action),
+      push: async () => undefined,
+    });
+    try {
+      relay.handle({ t: 'ws', connId: 'credentials', kind: 'open', path: '/ws/exec-server' });
+      for (const [id, file] of [[1, '.env'], [2, '.env.production']] as const) {
+        relay.handle({
+          t: 'ws', connId: 'credentials', kind: 'message',
+          data: JSON.stringify({ id, method: 'fs/readFile', params: { path: path.join(root, file) } }),
+        });
+      }
+      await vi.waitFor(() => expect(spawned.lines.map((line) => JSON.parse(line).id)).toEqual([1, 2]));
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      relay.close();
+      await executor.close();
+    }
+  });
   it('passes ordinary messages straight through', () => {
     const { send, sentIds, pending } = setup();
     send({ id: 1, method: 'fs/readFile', params: { path: path.join(root, 'a.txt') } });
     send({ method: 'initialized', params: {} });
     expect(sentIds()).toEqual([1, undefined]);
     expect(pending).toEqual([]);
+  });
+
+  it('does not read old file content while a write is awaiting consent or after it is denied', async () => {
+    const target = path.join(root, 'denied.txt');
+    fs.writeFileSync(target, 'old content');
+    const { relay, send, pending, replies, sentIds } = setup(() => ({ ok: false, reason: 'write denied' }));
+    const read = vi.spyOn(fs, 'readFileSync');
+    try {
+      send({ id: 1, method: 'fs/writeFile', params: { path: target, dataBase64: Buffer.from('new content').toString('base64') } });
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      expect(read).not.toHaveBeenCalledWith(target);
+      pending[0].answer(false);
+      await vi.waitFor(() => expect(replies).toEqual([{ id: 1, error: { code: -32001, message: 'write denied' } }]));
+      expect(read).not.toHaveBeenCalledWith(target);
+      expect(sentIds()).toEqual([]);
+    } finally {
+      read.mockRestore();
+      relay.close();
+    }
+  });
+
+  it('reads old content only after the earlier confirmation has released the queued write', async () => {
+    const target = path.join(root, 'queued.txt');
+    fs.writeFileSync(target, 'old content');
+    const { relay, send, pending, sentIds } = setup();
+    const read = vi.spyOn(fs, 'readFileSync');
+    try {
+      send({ id: 1, method: 'fs/readFile', params: { path: path.join(root, '.env') } });
+      send({ id: 2, method: 'fs/writeFile', params: { path: target, dataBase64: Buffer.from('new content').toString('base64') } });
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      expect(read).not.toHaveBeenCalledWith(target);
+      pending[0].answer(true);
+      await vi.waitFor(() => expect(sentIds()).toEqual([1, 2]));
+      expect(read).toHaveBeenCalledWith(target);
+    } finally {
+      read.mockRestore();
+      relay.close();
+    }
   });
 
   it('checks fs/open replace as a write before allowing the handle stream', async () => {

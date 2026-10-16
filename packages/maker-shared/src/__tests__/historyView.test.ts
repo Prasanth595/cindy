@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { projectHistoryView } from '../historyViewProjection.js';
 import { CONTINUE_AFTER_ERROR_PROMPT } from '../syntheticTrigger.js';
-import { historyWorkSummaries, isHistoryViewUnavailable, readHistoryWorkDetails, type HistoryMessageSource } from '../historyView.js';
+import { historyViewLeaves, historyWorkSummaries, isHistoryViewUnavailable, readHistoryWorkDetails, type HistoryMessageSource } from '../historyView.js';
 
 function row(id: number, role: string, content: unknown): HistoryMessageSource {
   return { id: String(id), clientId: `c${id}`, role, content,
@@ -86,6 +86,35 @@ describe('history reading projection', () => {
       row(2, 'thinking', 'new')];
     expect(projectHistoryView(rows, true).filter((item) => item.type === 'work')
       .map((item) => item.summary.isStreaming)).toEqual([false, true]);
+  });
+
+  // Pages count projected items; clients fold progress before a cost-stamped
+  // interrupted answer, so each progress line must not cost a page item.
+  it.each([
+    { turnCompleted: false, turnCost: { amount: 539.3, currency: 'USD' } },
+    { userTurnCostUsd: 0.4 },
+    { turnUsageDetails: { totalTokens: 12 } },
+  ])('folds progress before an answer that carries end-of-turn cost or usage (%j)', (meta) => {
+    const rows = [row(0, 'user', 'Work'), row(1, 'assistant', 'Still building'), row(2, 'thinking', 'wait'),
+      row(3, 'assistant', 'Still building'), row(4, 'thinking', 'wait'),
+      { ...row(5, 'user', 'Is it fine?'), agentMeta: { delivery: 'steer' } },
+      { ...row(6, 'assistant', 'Checking CI'), agentMeta: { assistantPhase: 'commentary', ...meta } },
+      row(7, 'thinking', 'check'), row(8, 'user', 'Next')];
+    const projected = projectHistoryView(rows, false, true);
+    expect(projected.map((item) => item.type === 'work' ? `work:${item.summary.firstMessageId}` : item.messages[0].id))
+      .toEqual(['0', 'work:1', '5', '6', 'work:7', '8']);
+    expect(projected[1]).toMatchObject({ summary: { lastMessageId: '4' } });
+  });
+
+  // Mobile does not seal on usage without tokens; it regroups the delivered rows itself.
+  it('still delivers every progress line when only a token-less usage record seals the turn', () => {
+    const rows = [row(0, 'user', 'Work'), row(1, 'assistant', 'Still building'), row(2, 'thinking', 'wait'),
+      { ...row(3, 'assistant', 'Checking'), agentMeta: { turnUsageDetails: { totalTokens: 0, turnDurationMs: 900 } } },
+      row(4, 'user', 'Next')];
+    const projected = projectHistoryView(rows, false, true);
+    expect(projected[1]).toMatchObject({ type: 'work', children: [{ type: 'messages', messages: [{ id: '1' }] }, { type: 'work' }] });
+    expect(historyViewLeaves(projected).flatMap((item) => item.type === 'messages' ? item.messages.map((message) => message.id) : []))
+      .toEqual(['0', '1', '3', '4']);
   });
 });
 

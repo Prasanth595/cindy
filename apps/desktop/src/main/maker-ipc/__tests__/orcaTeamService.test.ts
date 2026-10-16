@@ -391,6 +391,47 @@ function createDeps(overrides: Partial<OrcaTeamServiceDeps> = {}) {
 }
 
 describe('OrcaTeamService', () => {
+  const receiptAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const receiptCases = receiptAgentKinds.flatMap((from) =>
+    receiptAgentKinds.filter((to) => to !== from).flatMap((to) =>
+      (['dispatched', 'queued'] as const).map((mode) => ({ from, to, mode })),
+    ),
+  );
+  it.each(receiptCases)('maps the $mode Agent receipt for $from → $to without reporting an uncommitted switch', async ({ from, to, mode }) => {
+    const { deps, service, setWorker } = createDeps();
+    const worker = createWorker();
+    setWorker({ ...worker, session: { ...worker.session, agentKind: from } });
+    vi.mocked(deps.dispatchWorkerMessage).mockImplementation(async (params) => {
+      if (mode === 'dispatched') await params.onAccepted?.();
+      return {
+        ok: true, mode, agentKind: to, clientId: 'receipt-input',
+        dispatchOutcome: {
+          kind: 'session-dispatch', source: params.dispatchMeta.source, dispatched: true,
+          ...(mode === 'queued' ? { wakeKind: 'queued' as const } : {}),
+        },
+        targetTitle: 'Worker', targetLastUserSendAt: null,
+      };
+    });
+    const result = await service.sendToWorker({
+      callerLeadSessionId: 'lead-1', targetSessionId: 'worker-session-1', message: 'Continue on the selected Agent',
+    });
+    expect(result).toMatchObject({ ok: true, agentKind: mode === 'dispatched' ? to : from });
+    if (mode === 'queued') {
+      expect(result).toMatchObject({ wakeKind: 'queued', queuedMessageId: 'receipt-input' });
+      expect(deps.updateWorkerStatus).not.toHaveBeenCalled();
+    }
+  });
+
+  it('retains the snapshot Agent for dispatch adapters without an Agent receipt', async () => {
+    const { service, setWorker } = createDeps();
+    const worker = createWorker();
+    setWorker({ ...worker, session: { ...worker.session, agentKind: 'pi' } });
+    await expect(service.dispatchWorkerTask({
+      targetSessionId: 'worker-session-1', message: 'Continue',
+      dispatchMeta: { source: 'orca', context: 'legacy-agent-receipt' },
+    })).resolves.toMatchObject({ dispatched: true, agentKind: 'pi' });
+  });
+
   it.each(['send', 'interrupt'].flatMap(action => ['initial', 'lookup', 'restore', 'accept', 'queued', 'healthy'].map(phase => ({action,phase}))))(
     'preserves plugin authority for public $action across $phase', async ({action,phase}) => {
       let revoked = phase === 'initial', nativeCalls = 0;

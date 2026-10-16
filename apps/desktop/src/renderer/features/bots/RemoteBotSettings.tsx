@@ -28,6 +28,8 @@ import { BotAvatar } from './BotAvatar';
 import { isManagedBotAvatarUrl, isSupportedBotAvatarValue } from '../../../shared/botAvatarValue';
 import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
 import type { RemoteBot } from './remoteBotRoster';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudCompanionAt } from './companionCloudPresentation';
 import {
   readRemoteBotSettings,
   readRemoteBotModelChain,
@@ -56,6 +58,8 @@ export function RemoteBotSettings(props: Props) {
 }
 function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage = 'home' }: Props) {
   const { t, i18n } = useTranslation();
+  // Read-only here: the main computer is changed from that computer's own settings.
+  const homeActor = cloudCompanionAt(useCompanionCloud(), bot.deviceId, bot.id);
   const { confirm } = useConfirmDialog();
   const [data, setData] = useState<RemoteBotSettingsData | null>(null);
   const [resourceId, setResourceId] = useState(initialPage === 'memory' ? `settings:${bot.id}/memory` : initialPage === 'capabilities' ? `settings:${bot.id}/connections` : bot.id);
@@ -574,7 +578,9 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
   const panels = data?.panels ?? [];
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 text-[var(--text-primary)]">
-      <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">{bot.deviceName}</p>
+      <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">
+        {homeActor ? t('bots.cloud.homeReadOnly', { device: homeActor.homeDevice?.name?.trim() || bot.deviceName }) : bot.deviceName}
+      </p>
       {page || resourceId !== bot.id ? (
         <Button
           variant="secondary"

@@ -489,15 +489,18 @@ function selectWorkerModel(params: {
   defaults: OrcaWorkerDefaultsSnapshot;
   /** Worker 那一处的目录里有 Lead 的模型(或与 Lead 同一处)时才沿用它；缺省沿用。 */
   inheritLeadModel?: boolean;
+  availableModels: readonly OrcaWorkerModelCapabilities[];
+  providers: readonly OrcaWorkerProviderSnapshot[];
 }): string {
   const { input, lead, defaults, inheritLeadModel = true } = params;
   return input.model
     ?? defaults.model
-    // pi 显式列出(与 model-defaults.ts 对齐,避免将来改 cc 默认时 pi 静默跟随)。
-    ?? (input.agent === lead.agentKind && inheritLeadModel ? lead.model
-        : input.agent === 'codex' ? 'gpt-5.5'
-        : input.agent === 'pi' ? 'claude-sonnet-4-6'
-        : 'claude-sonnet-4-6');
+    ?? (input.agent === lead.agentKind && inheritLeadModel ? lead.model : undefined)
+    // 新建任务草稿还没推过来时不写死型号：取目录里排第一、且有已连接来源提供的模型；
+    // 一个都没有则留空，由后续模型解析明确报错。
+    ?? params.availableModels.find((model) =>
+      params.providers.some((provider) => provider.models.includes(model.id)))?.id
+    ?? '';
 }
 
 /**
@@ -1203,6 +1206,8 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
       lead,
       defaults,
       inheritLeadModel: sameLocationAsLead || availableModels.some((model) => model.id === lead.model),
+      availableModels,
+      providers: agentProviders,
     });
     const leadProviderId =
       params.agent === routeLead.agentKind && typeof routeLead.providerId === 'string' && routeLead.providerId.trim()

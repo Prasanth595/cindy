@@ -26,6 +26,8 @@
   "sectionAccessRevoked": "需要重新允许",
   "retryAccess": "重试访问",
   "recheck": "重新检查",
+  "deviceRemovedTitle": "设备已移除",
+  "deviceRemovedHint": "请退出后重新登录，以重新加入设备列表。",
   "authFailedTitle": "登录已失效",
   "authFailedHint": "登录状态已过期，请退出后重新登录。",
   "replacedTitle": "连接被顶替",
@@ -35,7 +37,7 @@
   "versionMismatchTitle": "版本不匹配",
   "versionMismatchHint": "当前 App 版本与服务端协议不一致，请升级到最新版本。",
   "unstableTitle": "连接反复断开",
-  "unstableHint": "本机连接反复断开又重连，远程操作可能一直超时。请检查网络；若持续如此，重启 App 后重试。",
+  "unstableHint": "连接不稳定，请检查网络并等待连接恢复",
   "relay": {
     "label": {
       "online": "Relay 已连接",

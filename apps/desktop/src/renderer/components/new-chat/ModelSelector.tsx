@@ -1,3 +1,4 @@
+import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, matchesModelName } from '@/lib/modelDisplayNames';
@@ -100,7 +101,7 @@ import {
   remoteProviderEntryKey,
   type RemoteProviderGroupEntry,
 } from '@/lib/remoteProviderGroups';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import { providerGroupDeviceCount, type ProviderGroupConfig } from '../../../shared/providerGroup';
 import { useLocalProviderGroups } from '@/features/provider-group/useLocalProviderGroups';
 import { readProviderShareGroupSize } from '@cindy/device-link';
 import { modelPriceDiscountLabelValues, modelPriceDetailRows } from '@/lib/modelPriceFormat';
@@ -115,7 +116,7 @@ import {
 } from '@/lib/providerModels';
 import type { Effort } from '@/lib/userPreferences.types';
 import type { SessionRuntimeProfileProjection } from '@/lib/ccAgent.types';
-import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
+import { isProviderShareAgentDeviceId, providerShareIdOfAgentDeviceId } from '../../../shared/providerShare';
 import {
   CHATGPT_MODEL_PREFIX,
   XAI_MODEL_PREFIX,
@@ -656,6 +657,12 @@ export function resolveModelSelectorAgentIdentity(
 /** 远程 Agent 草稿里一次行选中的落点电脑;null = Agent 在本机。 */
 export type UnifiedSelectionAgentDevice = { deviceId: string; name: string } | null;
 
+/** 「配置模型」打开设置 → 模型供应商时直接选中的一项;不传 = 只打开供应商页。 */
+export interface ProvidersNavigationTarget {
+  /** 分享来的供应商:选中「分享给我的供应商」里的这一条(provider-sharing.md §5.2)。 */
+  shareId: string;
+}
+
 /** 已建任务里选中了另一台电脑(或本机)目录里的一行:连 Agent 的运行位置一起换。 */
 export interface RemoteAgentRelocation {
   providerId: string;
@@ -734,7 +741,8 @@ interface ModelSelectorProps {
    *   - currentProviderId:本会话当前显式选定的供应商 id(null = 跟随默认路由)。
    *   - onProviderChange:选某行(供应商, 模型)时调用,第 2 参为该行模型 id,第 3 参为该来源该模型的
    *     当前 effort(无 effort 档时为空串),由各调用方一次性落下 provider/model/effort。
-   *   - onNavigateToProviders:0 个可连来源时空态 CTA / 列表底部「连接来源」跳设置→供应商页。
+   *   - onNavigateToProviders:0 个可连来源时空态 CTA / 列表底部「配置模型」跳设置→供应商页;
+   *     正在看分享来的供应商时带上它(ProvidersNavigationTarget),设置页直接选中那一条。
    * 三者都不传 → 单栏纯列表(无供应商分段),选行只 onModelChange(老入口 / CreateWorkerPopover)。
    */
   currentProviderId?: string | null;
@@ -750,7 +758,7 @@ interface ModelSelectorProps {
     reconciledEffort?: Effort,
     reconciledFast?: boolean,
   ) => void | boolean | Promise<void | boolean>;
-  onNavigateToProviders?: () => void;
+  onNavigateToProviders?: (target?: ProvidersNavigationTarget) => void;
   /**
    * 会话显式选中的来源已断开(由 ChatInput 按 sessionId / deviceLink scoping 计算,见
    * isSelectedSourceDisconnected)。true → trigger 显示**真实选中来源** + 「已断开」错误态,
@@ -973,7 +981,7 @@ interface ModelSelectorContentProps {
     reconciledEffort?: Effort,
     reconciledFast?: boolean,
   ) => void | boolean | Promise<void | boolean>;
-  onNavigateToProviders?: () => void;
+  onNavigateToProviders?: (target?: ProvidersNavigationTarget) => void;
   /**
    * 可选「跟随会话」行(opt-in)。仅 scheduler 的 heartbeat(绑定会话)任务传入:
    * 在模型列表顶部加一行,选中 = model 留空(跟随绑定会话的模型 / 来源)。
@@ -1269,6 +1277,13 @@ function ModelSelectorContentView({
       : remoteBrowse
         ? remoteAgent.deviceModelMemory?.(remoteBrowse.deviceId)
         : remoteAgent.localModelMemory;
+  // 列表底部「配置模型」:本机目录照旧;分享来的供应商在本机设置里有详情页(provider-sharing.md §5.2),
+  // 带上分享直达那一条。被控电脑与自己其他电脑上的目录要到那台电脑上改,不显示。
+  const browsingShareId =
+    remoteAgent && !homeDeviceId ? providerShareIdOfAgentDeviceId(deviceId) : null;
+  const showProvidersEntry = !!onNavigateToProviders && (!deviceId || browsingShareId !== null);
+  const navigateToProviders = () =>
+    onNavigateToProviders?.(browsingShareId ? { shareId: browsingShareId } : undefined);
   // 列表样式试用开关(本机偏好):footer 的切换按钮 + 面板行样式共用。
   const constrainedListMaxHeight = modelListMaxHeightForRows(maxVisibleModelRows);
   const [paneElement, setPaneElement] = useState<HTMLDivElement | null>(null);
@@ -1607,10 +1622,13 @@ function ModelSelectorContentView({
     };
   }, [readProviderGroup, remoteAgentDeviceId, currentProviderId]);
   // 归的组那一项此刻在列表里(组所在电脑在线、组还在)才按组显示；不然照常列出任务实际所在的那台。
+  // 任务所在电脑自己建的组：本机任务看本机设置，被控电脑上的任务看那台目录里的组摘要。
   const boundEntry = useMemo(() => {
     if (!boundGroup) return null;
     const visible = boundGroup.deviceId === null
-      ? !homeDeviceId && localProviderGroups[boundGroup.providerId] !== undefined
+      ? homeDeviceId
+        ? remoteProviderGroups.groups.has(remoteProviderEntryKey(homeDeviceId, boundGroup.providerId))
+        : localProviderGroups[boundGroup.providerId] !== undefined
       : remoteProviderGroups.groups.has(remoteProviderEntryKey(boundGroup.deviceId, boundGroup.providerId));
     return visible ? boundGroup : null;
   }, [boundGroup, homeDeviceId, localProviderGroups, remoteProviderGroups]);
@@ -1666,10 +1684,20 @@ function ModelSelectorContentView({
       });
       const providerIds = [...new Set(entries.map((entry) => entry.providerId))];
       return providerIds.length > 0
-        ? [{ deviceId: device.deviceId, providers: shared, providerIds }]
+        ? [{ deviceId: device.deviceId, providers: shared, providerIds, entries }]
         : [];
     });
   }, [remoteAgentDevices, remoteDeviceCatalogs, remoteProviderGroups]);
+  // 目录还在读或读取失败的其他电脑(分享不算):收藏区里它们的收藏置灰列出,不当作模型已下架。
+  const remoteAgentUnavailableDeviceIds = useMemo(
+    () =>
+      (remoteAgentDevices ?? []).flatMap((device) => {
+        if (isProviderShareAgentDeviceId(device.deviceId)) return [];
+        const catalog = remoteDeviceCatalogs.get(device.deviceId);
+        return !catalog || catalog.loading || catalog.error ? [device.deviceId] : [];
+      }),
+    [remoteAgentDevices, remoteDeviceCatalogs],
+  );
   const hasRemoteAgent = remoteAgent !== undefined;
   const homeProviders = homeDeviceId ? homeDeviceProviders.providers : localProviders.providers;
   const homeModelVisibilityOverrides = homeDeviceProviders.modelVisibilityOverrides;
@@ -1704,7 +1732,7 @@ function ModelSelectorContentView({
       return config
         ? t('newChat.modelSelector.unified.providerGroupLabel', {
           provider: label,
-          group: t('settings.providers.remote.groupBadge', { count: config.members.length }),
+          group: t('settings.providers.remote.groupBadge', { count: providerGroupDeviceCount(config.members) }),
         })
         : label;
     },
@@ -1724,9 +1752,9 @@ function ModelSelectorContentView({
         .find((group) => group.deviceId === targetDeviceId)
         ?.providers.find((entry) => entry.id === providerId);
       // 组只写有几台，不写是哪几台(2026-10-10 用户要求)；分享来的组目录里本来就只有台数。
-      const groupSize =
-        remoteProviderGroups.groups.get(remoteProviderEntryKey(targetDeviceId, providerId))?.members.length
-        ?? readProviderShareGroupSize(provider);
+      // 台数按电脑算：一台电脑上的几个账号算一台。
+      const groupMembers = remoteProviderGroups.groups.get(remoteProviderEntryKey(targetDeviceId, providerId))?.members;
+      const groupSize = groupMembers ? providerGroupDeviceCount(groupMembers) : readProviderShareGroupSize(provider);
       const values = {
         provider: provider ? providerDisplayName(provider, t) : providerId,
         device: device?.name || targetDeviceId,
@@ -2611,6 +2639,8 @@ function ModelSelectorContentView({
     currentProviderId,
     resolveCurrentSourceId,
   ]);
+  const editingDisplayPricingModel = editingProvider && editingModel && currentAgentKind
+    ? findCatalogModel(editingProvider, editingModel.id, currentAgentKind, { exact: true }) : undefined;
   const editingPricePresentation = editingModel
     ? pricePresentationOf(editingProvider?.id ?? editingProviderId, editingModel.id)
     : null;
@@ -2755,7 +2785,12 @@ function ModelSelectorContentView({
       {(editShowFast || editHasEfforts) && (
         <div className="mx-1 my-1 h-px bg-[var(--model-dropdown-border)]" />
       )}
-      {editingPricePresentation && (
+      {editingDisplayPricingModel?.displayPricing && editingDisplayPricingModel.currency && (
+        <div {...menuSkipAttrs} className="max-h-72 overflow-y-auto border-t border-[var(--model-dropdown-border)] pt-2.5">
+          <DisplayPricingDetails model={editingDisplayPricingModel} />
+        </div>
+      )}
+      {!editingDisplayPricingModel?.displayPricing && editingPricePresentation && (
         <>
           <div {...menuSkipAttrs} className="px-2 pb-1 pt-1">
             <div
@@ -3166,7 +3201,7 @@ function ModelSelectorContentView({
           <button
             type="button"
             disabled={interactionDisabled}
-            onClick={onNavigateToProviders}
+            onClick={() => onNavigateToProviders()}
             className={cn(
               'flex h-[34px] w-full items-center justify-center rounded-[8px]',
               'bg-[var(--accent-cta-bg)] transition-opacity hover:opacity-90',
@@ -3352,6 +3387,63 @@ function ModelSelectorContentView({
         }
         return applied;
       });
+    /**
+     * 收藏区里另一台电脑上的收藏(浏览任务所在电脑的目录时列出):效果与左侧栏切到那台电脑再选中它相同。
+     *   - 草稿:整行带着那台电脑交给 onUnifiedSelect(同浏览那台时的 withAgentDevice);
+     *   - 已建任务、Agent 不在那台:连运行位置一起换(onRelocate,同浏览那台时的 relocate);
+     *   - 已建任务、Agent 已在那台 / 那一项是任务归的供应商组:这一选择要走那台目录里的会话链路
+     *     (同引擎直切 / 跨引擎事务 / 组内留在原处),这里不另起一套 —— 切到那台的目录,同一条收藏在
+     *     那里照样列出,由用户在那里选。
+     */
+    const selectDeviceFavorite: NonNullable<
+      NonNullable<UnifiedModelPanelProps['remoteSources']>['onSelectDeviceFavorite']
+    > = ({ deviceId: targetDeviceId, providerId, modelId: id, effort: rowEffort, config: rowConfig }) => {
+      const rowEffortValue = rowEffort === '' ? undefined : rowEffort;
+      const agentDevice = {
+        deviceId: targetDeviceId,
+        name: remoteAgentDevices?.find((device) => device.deviceId === targetDeviceId)?.name || targetDeviceId,
+      };
+      const dismissIfApplied = (applied: boolean) => {
+        if (applied) {
+          closeOptionsPanel();
+          onDismiss?.();
+        }
+        return applied;
+      };
+      if (onUnifiedSelect) {
+        return runLiveWrite(() =>
+          onUnifiedSelect({
+            providerId,
+            modelId: id,
+            ...(rowEffortValue ? { effort: rowEffortValue } : {}),
+            engine: rowConfig.engine,
+            fast: rowConfig.fast,
+            favoriteUid: rowConfig.favoriteUid,
+            agentDevice,
+          }),
+        ).then(dismissIfApplied);
+      }
+      const agent = vendorKeyToAgentKind(rowConfig.engine);
+      const inBoundGroup =
+        stayInGroup && boundEntry?.deviceId === targetDeviceId && boundEntry.providerId === providerId;
+      const onRelocate = remoteAgent?.onRelocate;
+      if (onRelocate && agent && targetDeviceId !== remoteAgentDeviceId && !inBoundGroup) {
+        return runLiveWrite(() =>
+          onRelocate({
+            providerId,
+            modelId: id,
+            agent,
+            ...(rowEffortValue ? { effort: rowEffortValue } : {}),
+            fast: rowConfig.fast,
+            agentDevice,
+          }),
+        ).then(dismissIfApplied);
+      }
+      closeOptionsPanel();
+      setRemoteBrowseTouched(true);
+      setRemoteBrowse({ deviceId: targetDeviceId, providerId });
+      return false;
+    };
     const panelSessionEngineFilter =
       sessionEngineFilter && relocate
         ? {
@@ -3433,6 +3525,17 @@ function ModelSelectorContentView({
           </div>
           {localCatalogNotice && <div className="shrink-0 p-2">{localCatalogNotice}</div>}
           <UnifiedModelPanel
+            {...(!remoteAgent && deviceId && (remoteModelListStatus === 'loading' || remoteModelListStatus === 'error')
+              ? {
+                  catalogNotice: (
+                    <RemoteModelLoadNotice
+                      status={remoteModelListStatus}
+                      onRetry={retryRemoteModels}
+                      message={remoteFailureMessage}
+                    />
+                  ),
+                }
+              : {})}
             deviceId={deviceId}
             providerUsage={providerUsageScope}
             providerGroupUsage={providerGroupUsage}
@@ -3468,9 +3571,15 @@ function ModelSelectorContentView({
                   remoteSources: {
                     localRailItems: remoteAgentLocalRailItems,
                     localProviders: homeProviders,
+                    localUsageDeviceId: homeDeviceId ?? null,
                     localProviderLabel: remoteAgentLocalLabel,
                     groups: remoteAgentGroups,
                     labelOf: remoteAgentLabelOf,
+                    // 远程收藏按任务所在电脑共享(§1.5):被控电脑上的任务读写那台的收藏,本机任务读写本机。
+                    ...(homeDeviceId ? { favoritesDeviceId: homeDeviceId } : {}),
+                    homeDeviceId: homeDeviceId ?? selfDeviceId,
+                    unavailableDeviceIds: remoteAgentUnavailableDeviceIds,
+                    onSelectDeviceFavorite: selectDeviceFavorite,
                     active: remoteBrowse
                       ? { deviceId: remoteBrowse.deviceId, providerId: remoteActiveProviderId ?? '' }
                       : null,
@@ -3651,13 +3760,13 @@ function ModelSelectorContentView({
               ? { overlayClassName: overlayContentClassName }
               : {})}
           />
-          {/* 连接来源入口只对本机展示。 */}
-          {onNavigateToProviders && !deviceId && (
+          {/* 「配置模型」只对本机目录与分享来的供应商展示(见 showProvidersEntry)。 */}
+          {showProvidersEntry && (
             <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--model-dropdown-border)] px-3.5 py-[9px]">
               <button
                 type="button"
                 disabled={interactionDisabled}
-                onClick={onNavigateToProviders}
+                onClick={navigateToProviders}
                 className={cn(
                   'flex min-w-0 items-center gap-1.5 text-13 text-[var(--text-secondary)]',
                   'transition-colors hover:text-[var(--text-primary)]',
@@ -3831,15 +3940,15 @@ function ModelSelectorContentView({
         </div>
       )}
 
-      {/* 连接来源入口只对本机展示。 */}
-      {onNavigateToProviders && !deviceId && (
+      {/* 「配置模型」只对本机目录与分享来的供应商展示(见 showProvidersEntry)。 */}
+      {showProvidersEntry && (
         <>
           <div className="mx-1 h-px bg-[var(--model-dropdown-border)]" />
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
               disabled={interactionDisabled}
-              onClick={onNavigateToProviders}
+              onClick={navigateToProviders}
               className={cn(
                 COMPOSER_MENU_ROW,
                 'flex min-w-0 items-center gap-1.5 px-3 py-2',
@@ -4157,12 +4266,8 @@ export function ModelSelector({
           ? t('newChat.modelSelector.trigger.agent.pi')
           : t('newChat.modelSelector.trigger.agent.codex')
       : null;
-  const agentIdentityLabel =
-    agentName && agentIdentity?.state === 'pending'
-      ? t('newChat.modelSelector.trigger.agent.pending', { agent: agentName })
-      : agentName;
-  const baseDisplayIdentityLabel = agentIdentityLabel
-    ? `${agentIdentityLabel} · ${displayLabel}`
+  const baseDisplayIdentityLabel = agentName
+    ? `${agentName} · ${displayLabel}`
     : displayLabel;
   const remoteStatusLabel = currentModel
     ? remoteModelLoading
@@ -4374,7 +4479,7 @@ export function ModelSelector({
     </span>
   ) : null;
   const agentIdentityPrefix =
-    agentIdentityLabel &&
+    agentName &&
     !isCompactToolbar &&
     (!engineMarkOption || agentIdentity?.state === 'pending') ? (
       <>
@@ -4384,7 +4489,7 @@ export function ModelSelector({
             isCreateAgentVariant ? 'text-12' : dense ? 'text-12' : 'text-13',
           )}
         >
-          {agentIdentityLabel}
+          {agentName}
         </span>
         <span
           className={cn(
