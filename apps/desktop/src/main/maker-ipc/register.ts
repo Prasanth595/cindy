@@ -1458,6 +1458,14 @@ import {
 import { createSessionExecutionResolver } from './sessionExecutionSelection.js';
 import { createGhostErrandRunner } from './ghostErrandRunner.js';
 import {
+  collectPartnerAttachments,
+  createPartnerSession,
+  readPartnerSessionId,
+  writePartnerSessionId,
+} from '../partner-bridge/index.js';
+import { setPartnerBridgeDeps, startPartnerBridgeRuntime } from '../partner-bridge/runtime.js';
+import { guardedOutboundFetch } from '../maker-host/outbound-fetch.js';
+import {
   createPluginTaskSession,
   createPluginDraftSession,
   findActiveSessionByWorkdir,
@@ -14027,6 +14035,140 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       },
     }),
   );
+
+  // 外部系统的本机回环入口(partner-bridge):与本仓其它 headless 跑 turn 的
+  // 路径(errand / scheduler / hook)共用同一套投递与收口语义,只是没有渠道身份。
+  // 启停走 bootstrap 的 app 生命周期(见 partner-bridge/runtime.ts),这里只接线。
+  setPartnerBridgeDeps({
+    readSessionId: readPartnerSessionId,
+    writeSessionId: writePartnerSessionId,
+    getSessionRow: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle.select({
+          status: sessions.status,
+          agentKind: sessions.agentKind,
+          permissionMode: sessions.permissionMode,
+          workingDir: sessions.workingDir,
+          workspaceKind: sessions.workspaceKind,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      return row ?? null;
+    },
+    createSession: (params) => createPartnerSession(params),
+    getDraftDefaults: () => getWorkerDefaultsFromNewMaker('claude-code'),
+    normalizeWorkingDir: (dir) => normalizeWorkingDirForStorage(dir),
+    isSessionBusy: isSessionInTurn,
+    dispatch: async ({ targetSessionId, message }) => {
+      const r = await sendToSessionInternal({ targetSessionId, message });
+      if (!r.ok) return { ok: false, errorCode: r.errorCode, message: r.message };
+      return { ok: true, wakeKind: r.wakeKind };
+    },
+    abortSession: abortPartnerBridgeSession,
+    getObservableSession: (sessionId) => maker.getSession(sessionId) ?? null,
+    onSilentStopSettled,
+    readLatestAssistantText: async (sessionId, sinceMs) => {
+      const [row] = await getDbClient()
+        .drizzle.select({ content: messages.content })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.sessionId, sessionId),
+            eq(messages.role, 'assistant'),
+            isNull(messages.rewindAt),
+            gte(messages.createdAt, sinceMs),
+          ),
+        )
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(1);
+      if (!row) return null;
+      const text = visibleMessageTextForConversationSearch('assistant', row.content ?? '');
+      return text.length > 0 ? text : null;
+    },
+    resolveAttachments: async ({ text, workingDir, sessionId }) => {
+      // 允许根 = 该会话干活的那个目录:project 会话是用户工作目录,dialogue 会话
+      // 是 app 托管目录。没有根就不收 xdt-file(fail-closed,与 hook 出站同口径)。
+      let root = workingDir;
+      if (!root) {
+        const [row] = await getDbClient()
+          .drizzle.select({ workingDir: sessions.workingDir })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+        root = row?.workingDir ?? null;
+      }
+      return collectPartnerAttachments(text, root ? [root] : [], {
+        resolveImageUrl: (url) => {
+          try {
+            return url.startsWith('cindy-media://')
+              ? resolveCindyMediaUrl(url).absPath
+              : imageCacheStore.resolveSafe(url).absPath;
+          } catch {
+            return null;
+          }
+        },
+        realpath: (p) => fsp.realpath(p),
+        statSize: async (p) => {
+          const stat = await fsp.stat(p);
+          return stat.isFile() ? stat.size : null;
+        },
+        log: { warn: (message, meta) => log.warn(message, meta) },
+      });
+    },
+    deliverCallback: async (url, payload) => {
+      // 目标地址由持 token 的调用方给出(通常就是本机或内网的自家服务),所以
+      // 显式放行 http 与私网 —— 但只对这一个 URL 生效,且拒绝跟随重定向。
+      const { response, release } = await guardedOutboundFetch(
+        url,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: JSON.stringify(payload),
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+        },
+        () => {},
+        { targetUrl: url, allowHttp: true, allowPrivateNetwork: true },
+      );
+      try {
+        if (!response.ok) throw new Error(`callback returned ${response.status}`);
+        await response.arrayBuffer();
+      } finally {
+        await release();
+      }
+    },
+    log: {
+      info: (message, meta) => log.info(message, meta),
+      warn: (message, meta) => log.warn(message, meta),
+    },
+  });
+  // 接线完就走 app 生命周期启动:失败只告警,不影响正常启动。
+  void startPartnerBridgeRuntime(path.join(app.getPath('userData'), 'partner-bridge')).catch(
+    (error: unknown) => {
+      log.warn('partner bridge start failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  );
+
+  /**
+   * partner-bridge 的取消入口:只中止当前这一轮,与桌面端 Stop 同语义。
+   * 单列成具名函数 —— register.ts 有基于源码顺序的契约测试,内联箭头函数会
+   * 撞上它们找的 needle。
+   */
+  async function abortPartnerBridgeSession(sessionId: string): Promise<void> {
+    const target = maker.getSession(sessionId);
+    if (!target) return;
+    try {
+      await target.abort();
+    } catch (error) {
+      log.warn('partner bridge abort failed', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   // Ghost 的 workspace 槽:判重/创建走 localDb 服务,创建后广播与 scheduler
   // 同一条 `local-db:sessions:created` 通道让侧边栏刷新;focus 复用 deep link
