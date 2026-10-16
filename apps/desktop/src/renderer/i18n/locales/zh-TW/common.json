@@ -9756,6 +9756,18 @@
       "empty": "{{name}} 還沒有訊息平台。把你在 Telegram 或飛書申請的機器人加進來，{{name}} 就會在那裡回覆。",
       "externalNote": "傳訊息給這個機器人的人都是在和 {{name}} 對話。你自己的訊息依 {{name}} 的權限執行；其他人各有一條隱藏任務，權限受限。",
       "sharedMemoryNote": "{{name}} 會把這裡和其它對話裡的資訊一起使用。想隔開記憶，請換一位夥伴。",
+      "groups": {
+        "title": "群組",
+        "hint": "{{name}} 進過的群組會出現在這裡。「全回應」= 每則訊息都看，{{name}} 自行判斷要不要插話（每則都會消耗 token）。",
+        "empty": "還沒有群組。把機器人拉進群組、有人說話後就會出現在這裡。",
+        "loadFailed": "無法讀取群組清單",
+        "saveFailed": "沒有儲存成功，已恢復原本的模式",
+        "retry": "重新讀取",
+        "mode": {
+          "mention": "僅 @",
+          "always": "全回應"
+        }
+      },
       "add": {
         "button": "新增平台",
         "title": "為 {{name}} 新增平台",
@@ -11591,6 +11603,10 @@
     },
     "threadContext": {
       "cindyFrom": "Cindy · 來自 {{platform}}",
+      "memberFromGroup": "{{name}} · 來自 {{platform}} 群組「{{group}}」",
+      "memberFromPlatform": "{{name}} · 來自 {{platform}} 群組",
+      "guestFromDm": "{{name}} · 來自 {{platform}} 私訊（非主人）",
+      "unknownSender": "群組成員",
       "attachedContext": "這則訊息附帶的上下文",
       "attachedContextCount": "這則訊息附帶的上下文（{{count}}）",
       "groupBackgroundCount": "群組背景（{{count}}）",

@@ -9800,6 +9800,18 @@
       "empty": "{{name}} has no messaging platform yet. Add a bot you created on Telegram or Feishu, and {{name}} will reply there.",
       "externalNote": "Anyone who messages this bot is talking to {{name}}. Your own messages run with {{name}}’s permissions; everyone else gets a separate hidden task with restricted permissions.",
       "sharedMemoryNote": "{{name}} uses information from here and from other conversations together. To keep memories separate, use another teammate.",
+      "groups": {
+        "title": "Groups",
+        "hint": "Groups {{name}} has joined show up here. “Always” = read every message and let {{name}} decide whether to chime in (each one costs tokens).",
+        "empty": "No groups yet. Add the bot to a group; it appears here once someone speaks.",
+        "loadFailed": "Couldn't load groups",
+        "saveFailed": "Not saved; reverted to the previous mode",
+        "retry": "Reload",
+        "mode": {
+          "mention": "@ only",
+          "always": "Always"
+        }
+      },
       "add": {
         "button": "Add platform",
         "title": "Add a platform for {{name}}",
@@ -11640,6 +11652,10 @@
     },
     "threadContext": {
       "cindyFrom": "Cindy · from {{platform}}",
+      "memberFromGroup": "{{name}} · from {{platform}} group “{{group}}”",
+      "memberFromPlatform": "{{name}} · from a {{platform}} group",
+      "guestFromDm": "{{name}} · from {{platform}} DM (not the owner)",
+      "unknownSender": "Group member",
       "attachedContext": "Context attached to this message",
       "attachedContextCount": "Context attached to this message ({{count}})",
       "groupBackgroundCount": "Group chat background ({{count}})",

@@ -62,6 +62,13 @@ bot），凭证直接填在伙伴设置「消息平台」页，这个机器人�
 伙伴设为「完全访问」时三种 Agent 都无法兑现逐轮策略，成员触发的轮次同样按完全访问直接执行而不是被拒
 跑——要成员动手前必须确认，把伙伴设成 Auto 或 Ask。连接不扩大任何权限。同一伙伴所有渠道共享记忆，不设每群记忆隔离。伙伴被删除时连接一并
 停掉、清凭证、归档专线。连接记录是账号级设置（`bot-im-connections.json`），不含凭证。
+渠道行为：表情、回复引用档位用默认值，不读 设置 → IM 机器人 的人格与行为配置（伙伴的身份与分寸来自 SOUL）；
+群参与模式（仅 @ / 全响应）按连接各一份，存在连接记录里，由「消息平台」页每条 Telegram 连接下的「群聊」小节
+设置（2026-10-17 补齐，全响应是能力不是分寸）。命令菜单去掉交给伙伴后在渠道里会被拒的 `/project` `/model`
+`/permission` 三条，单源见 `im/shared/botCommands.ts` 的 `isCompanionManagedCommand`。
+别人说的不冒充主人：专线里主人与群成员 / 外部用户的消息落在同一条任务，每条消息的 `imSource.origin` 存谁、在哪说的
+（与发给模型的 `[渠道说明]` / `[发言人]` 同源），任务面板的卡头对非主人消息写出发言人与群名，主人消息沿用
+「Cindy · 来自 X」；外部用户私聊的渠道说明写明发言人并点出「不是主人」，不再按 speaker 有无把私聊误判成群。
 实现见 `im/shared/botImConnectionStore.ts`（记录）、`im/shared/botImConnectionRuntime.ts`（实例生命周期）、
 `im/shared/imBotBindingRuntime.ts` 与 `im/shared/turnRunner.ts`（落点解析）、`localDb/ipc/bots.ts`（专线创建）；
 官方 Cindy bot、其它个人渠道与「代主人收发」沿后续分期接入同一骨架。

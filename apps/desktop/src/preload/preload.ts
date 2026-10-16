@@ -2385,6 +2385,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       id: string;
     }): Promise<import('../shared/botImConnection').BotImConnectionRemoveResult> =>
       ipcRenderer.invoke('botImConnection:remove', payload),
+    listGroups: (payload: {
+      id: string;
+    }): Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload> =>
+      ipcRenderer.invoke('botImConnection:list-groups', payload),
+    setGroupActivation: (payload: {
+      id: string;
+      chatId: string;
+      mode: import('../shared/botImConnection').BotImGroupActivationMode;
+    }): Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload> =>
+      ipcRenderer.invoke('botImConnection:set-group-activation', payload),
     onChanged: (
       listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
     ): (() => void) => {

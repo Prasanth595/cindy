@@ -31,7 +31,7 @@ import { autoRegisterTelegramSpeaker } from './contactsAutoRegister';
 import { createTelegramGuestTurnPermissionPolicy } from './permissionPolicy';
 import { telegramUiText, ui, PROCESSING_EMOJI } from './uiText';
 import type { GroupHistoryAccessScope } from '../shared/groupHistoryAccess';
-import { imChannelNoteSourceFromEvent } from '../shared/channelNote';
+import { imChannelNoteDirectSourceFromEvent, imChannelNoteSourceFromEvent } from '../shared/channelNote';
 
 function ensureWorkingDir(botId: string): string {
   const dir = ownerScopedImUserDataPath('im-working-dir', `telegram-${botId}`);
@@ -164,7 +164,12 @@ export function buildTelegramAdapter(
       };
     },
     // 群里发言人已由 prepareAgentTurnText 的 `[发言人]` 行写明(含主人标记), 渠道说明不再重复。
-    channelNoteSourceFor: (event) => imChannelNoteSourceFromEvent(event, { omitSender: true }),
+    // 私聊按 lane 判定(不按 speaker 有无猜): 伙伴自有 bot 对外开放后外部用户的私聊也带
+    // speaker, 说明里写明是谁、不是主人。
+    channelNoteSourceFor: (event) =>
+      decodeTelegramLaneUserId(event.senderId)
+        ? imChannelNoteSourceFromEvent(event, { omitSender: true })
+        : imChannelNoteDirectSourceFromEvent(event),
     prepareAgentTurnText: async (event) => {
       const lane = decodeTelegramLaneUserId(event.senderId);
       const replyBlock = event.replyContext

@@ -1,5 +1,9 @@
 import { readImRemoteProviderRoute } from '../remoteProviderRoute';
-import { createLocalImSource, type ImContextSnapshot } from '../../../shared/imMessageSource';
+import {
+  createLocalImSource,
+  type ImContextSnapshot,
+  type ImMessageOrigin,
+} from '../../../shared/imMessageSource';
 /**
  * main/im/shared/turnRunner.ts
  * ---------------------------------------------------------------------------
@@ -318,6 +322,8 @@ interface TurnState {
  */
 interface QueuedSend {
   contextSnapshot?: ImContextSnapshot;
+  /** 谁、在哪说的(存给界面, 见 ImMessageSource.origin)。 */
+  messageOrigin?: ImMessageOrigin;
   /** Auto 审阅的引用证据, 入队时按本条消息算好, 排队重派与直发同一份。 */
   autoReviewReferences?: AutoReviewUserReferences;
   turn: TurnState;
@@ -466,6 +472,8 @@ export interface ImRunAgentTurnArgs {
    */
   channelNoteSource?: ImChannelNoteSource;
   contextSnapshot?: ImContextSnapshot;
+  /** 谁、在哪说的 —— 与 channelNoteSource 同源, 存进落库消息的 imSource 供界面区分发言人。 */
+  messageOrigin?: ImMessageOrigin;
   /** Main-owned, resolved from an authenticated provider notification receipt. */
   notificationSessionId?: string;
   revalidateNotificationReply?: () => Promise<void>;
@@ -598,6 +606,7 @@ export interface ImTurnRunner {
     text: string;
     attachments?: readonly IMAttachment[];
     protectedContent?: boolean;
+    messageOrigin?: ImMessageOrigin;
   }) => Promise<{ sessionId: string; clientId: string } | null>;
   /**
    * Durable callers own their queue and receive an observable accepted/terminal
@@ -1282,6 +1291,7 @@ export function createTurnRunner(
     });
     const item: QueuedSend = {
       contextSnapshot: args.contextSnapshot,
+      ...(args.messageOrigin ? { messageOrigin: args.messageOrigin } : {}),
       ...(autoReviewReferences ? { autoReviewReferences } : {}),
       turn,
       // contextAttachments 只进模型消息(跟在用户自己附件后面), 不进
@@ -1725,6 +1735,7 @@ export function createTurnRunner(
                   adapter.messageSourceIm?.() ?? channel,
                   item.text,
                   item.contextSnapshot,
+                  item.messageOrigin,
                 ),
                 existingClientId: prePersisted?.clientId,
               });
@@ -4266,6 +4277,7 @@ export function createTurnRunner(
     text: string;
     attachments?: readonly IMAttachment[];
     protectedContent?: boolean;
+    messageOrigin?: ImMessageOrigin;
   }): Promise<{ sessionId: string; clientId: string } | null> {
     // 受保护群的触发消息永不进存档(与 onAccepted 同一条边界)。
     if (args.protectedContent === true) return null;
@@ -4294,7 +4306,12 @@ export function createTurnRunner(
     const persisted = await persistUserMessage({
       sessionId,
       text: args.text,
-      source: createLocalImSource(adapter.messageSourceIm?.() ?? channel, args.text),
+      source: createLocalImSource(
+        adapter.messageSourceIm?.() ?? channel,
+        args.text,
+        {},
+        args.messageOrigin,
+      ),
       ...(args.attachments ? { attachments: args.attachments } : {}),
     });
     if (!persisted) return null;

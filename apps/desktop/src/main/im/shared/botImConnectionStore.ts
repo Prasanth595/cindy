@@ -59,13 +59,25 @@ function normalizeRecord(id: string, raw: unknown): Omit<BotImConnectionRecord, 
     typeof r.botContextId === 'string' && r.botContextId.trim() && r.botContextId.length <= 256
       ? r.botContextId
       : null;
+  const groupActivation = normalizeGroupActivation(r.groupActivation);
   return {
     botId: r.botId,
     channel: r.channel,
     createdAt,
     ...(service ? { service } : {}),
     botContextId,
+    ...(groupActivation ? { groupActivation } : {}),
   };
+}
+
+/** 只认 chatId → 'always'; 'mention' 是缺省, 不落盘。未知值整条丢弃。 */
+function normalizeGroupActivation(raw: unknown): Record<string, 'always'> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, 'always'> = {};
+  for (const [chatId, mode] of Object.entries(raw as Record<string, unknown>)) {
+    if (/^-?\d{1,32}$/.test(chatId) && mode === 'always') out[chatId] = 'always';
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function normalizeDocument(raw: unknown): BotImConnectionDocument {
@@ -136,7 +148,7 @@ export async function addBotImConnectionRecord(
 
 export async function updateBotImConnectionRecord(
   id: string,
-  patch: Partial<Pick<BotImConnectionRecord, 'botContextId'>>,
+  patch: Partial<Pick<BotImConnectionRecord, 'botContextId' | 'groupActivation'>>,
 ): Promise<BotImConnectionRecord | null> {
   if (!isBotImConnectionId(id)) return null;
   let next: BotImConnectionRecord | null = null;
@@ -151,6 +163,22 @@ export async function updateBotImConnectionRecord(
     { preserveDefaults: true },
   );
   return next;
+}
+
+/** 单个群的参与模式(always 写入, mention 回缺省并从表中清除)。 */
+export async function setBotImConnectionGroupActivation(
+  id: string,
+  chatId: string,
+  mode: 'mention' | 'always',
+): Promise<BotImConnectionRecord | null> {
+  const current = readBotImConnection(id);
+  if (!current) return null;
+  const next: Record<string, 'always'> = { ...(current.groupActivation ?? {}) };
+  if (mode === 'always') next[chatId] = 'always';
+  else delete next[chatId];
+  return updateBotImConnectionRecord(id, {
+    groupActivation: Object.keys(next).length > 0 ? next : undefined,
+  });
 }
 
 export async function removeBotImConnectionRecord(id: string): Promise<BotImConnectionRecord | null> {

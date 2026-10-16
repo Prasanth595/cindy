@@ -9756,6 +9756,18 @@
       "empty": "{{name}} 还没有消息平台。把你在 Telegram 或飞书申请的机器人加进来，{{name}} 就会在那里回复。",
       "externalNote": "给这个机器人发消息的人都是在和 {{name}} 对话。你自己的消息按 {{name}} 的权限执行；其他人各有一条隐藏任务，权限受限。",
       "sharedMemoryNote": "{{name}} 会把这里和其它对话里的信息放在一起用。想隔开记忆，请换一位伙伴。",
+      "groups": {
+        "title": "群聊",
+        "hint": "{{name}} 进过的群会出现在这里。「全响应」= 每条消息都看，{{name}} 自己判断要不要插话（每条都会消耗 token）。",
+        "empty": "还没有群。把机器人拉进群、有人说话后就会出现在这里。",
+        "loadFailed": "未能读取群列表",
+        "saveFailed": "没保存上，已恢复原来的模式",
+        "retry": "重新读取",
+        "mode": {
+          "mention": "仅 @",
+          "always": "全响应"
+        }
+      },
       "add": {
         "button": "添加平台",
         "title": "给 {{name}} 添加平台",
@@ -11592,6 +11604,10 @@
     },
     "threadContext": {
       "cindyFrom": "Cindy · 来自 {{platform}}",
+      "memberFromGroup": "{{name}} · 来自 {{platform}} 群「{{group}}」",
+      "memberFromPlatform": "{{name}} · 来自 {{platform}} 群聊",
+      "guestFromDm": "{{name}} · 来自 {{platform}} 私聊（非主人）",
+      "unknownSender": "群成员",
       "attachedContext": "本条附带的上下文",
       "attachedContextCount": "本条附带的上下文（{{count}}）",
       "groupBackgroundCount": "群聊背景（{{count}}）",

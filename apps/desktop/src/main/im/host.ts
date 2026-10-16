@@ -20,9 +20,9 @@ import {
   createFeishuIM,
   createTelegramIM,
   createWecomIM,
-  TELEGRAM_DEFAULT_BEHAVIOR,
   type FeishuIM,
   type IMHost,
+  type TelegramBehaviorConfig,
   type TelegramIM,
 } from '@cindy/im';
 import { TencentIlinkTransport } from '@cindy/wechat-ilink';
@@ -211,16 +211,21 @@ export const telegramIm = createTelegramIM(host, {
 });
 /**
  * 伙伴自有 Telegram 连接的传输层实例: 与设置页那份同一套宿主能力, 但凭证按连接
- * 前缀隔离、不注册设置卡 IPC、对外开放私聊(陌生人消息带非主人标记进业务层),
- * 行为配置用默认值(伙伴的身份与分寸来自它的 SOUL)。
+ * 前缀隔离、不注册设置卡 IPC、对外开放私聊(陌生人消息带非主人标记进业务层)。
+ * 行为配置由连接记录给(群参与模式按连接各一份, 表情 / 引用档位用默认值 —— 伙伴的
+ * 身份与分寸来自它的 SOUL, 不读设置页的人格); 命令菜单去掉交给伙伴后不在渠道里改的
+ * 模型 / 权限 / 工作目录三条。
  */
-export function createBotTelegramIM(secretKeyPrefix: string): TelegramIM {
+export function createBotTelegramIM(
+  secretKeyPrefix: string,
+  options: { behavior: () => TelegramBehaviorConfig },
+): TelegramIM {
   return createTelegramIM(host, {
     resolveImageUrl: resolveManagedImageAbsPath,
     expiredCardNotice: telegramUiText.expiredCardNotice,
     ownerNoticeText: (phase) => t(`settings.telegramBot.ownerNotice.${phase}`),
-    behavior: () => TELEGRAM_DEFAULT_BEHAVIOR,
-    commandMenu: buildPersonalBotCommandMenu((key) => t(key)),
+    behavior: options.behavior,
+    commandMenu: buildPersonalBotCommandMenu((key) => t(key), { surface: 'companion' }),
     secretKeyPrefix,
     ipc: false,
     guestDm: true,

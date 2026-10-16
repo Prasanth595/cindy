@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { app } from 'electron';
 import { decodeFeishuLaneUserId, type FeishuIM, type FeishuLane } from '@cindy/im';
 
+import { imChannelNoteDirectSourceFromEvent } from '../shared/channelNote';
 import type { ImChannelAdapter, ImOrchestratorConfig } from '../shared/types';
 import { readImDefaultSettings } from '../defaultSettingsStore';
 import { claimLegacyImPath, ownerScopedImUserDataPath } from '../ownerScopedStorage';
@@ -390,7 +391,8 @@ export function buildFeishuAdapter(
     // open_id(飞书事件不带显示名)。私聊写 p2p chat_id。
     channelNoteSourceFor: async (event) => {
       const lane = decodeFeishuLaneUserId(event.senderId);
-      if (!lane) return { chatKind: 'direct', ...(event.chatId ? { chatId: event.chatId } : {}) };
+      // 私聊: 主人只写 chat_id; 对外开放后外部用户的私聊写明发言人、不是主人。
+      if (!lane) return imChannelNoteDirectSourceFromEvent(event);
       const chatName = cachedChatNameForNote(feishuIm, lane.chatId);
       return {
         chatKind: 'group',

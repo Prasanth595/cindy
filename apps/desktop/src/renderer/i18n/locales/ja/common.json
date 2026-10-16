@@ -9756,6 +9756,18 @@
       "empty": "{{name}} にはまだメッセージプラットフォームがありません。Telegram や飛書で作成したボットを追加すると、{{name}} がそこで返信します。",
       "externalNote": "このボットにメッセージを送る人は全員 {{name}} と話すことになります。あなた自身のメッセージは {{name}} の権限で実行され、それ以外の人には権限を制限した非表示のタスクが個別に用意されます。",
       "sharedMemoryNote": "{{name}} はここでの情報と他の会話の情報をまとめて使います。記憶を分けたい場合は別の仲間を使ってください。",
+      "groups": {
+        "title": "グループ",
+        "hint": "{{name}} が参加したグループがここに表示されます。「常時」= すべてのメッセージを読み、{{name}} が発言するかを自分で判断します（毎回トークンを消費）。",
+        "empty": "まだグループがありません。ボットをグループに追加し、誰かが発言すると表示されます。",
+        "loadFailed": "グループ一覧を読み込めませんでした",
+        "saveFailed": "保存できず、以前のモードに戻しました",
+        "retry": "再読み込み",
+        "mode": {
+          "mention": "@ のみ",
+          "always": "常時"
+        }
+      },
       "add": {
         "button": "プラットフォームを追加",
         "title": "{{name}} にプラットフォームを追加",
@@ -11592,6 +11604,10 @@
     },
     "threadContext": {
       "cindyFrom": "Cindy · {{platform}} から",
+      "memberFromGroup": "{{name}} · {{platform}} グループ「{{group}}」から",
+      "memberFromPlatform": "{{name}} · {{platform}} グループから",
+      "guestFromDm": "{{name}} · {{platform}} の DM から（オーナー以外）",
+      "unknownSender": "グループメンバー",
       "attachedContext": "このメッセージに添付されたコンテキスト",
       "attachedContextCount": "このメッセージに添付されたコンテキスト（{{count}}）",
       "groupBackgroundCount": "グループチャットの背景（{{count}}）",

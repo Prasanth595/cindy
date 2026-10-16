@@ -2329,6 +2329,15 @@ interface ElectronAPI {
     remove: (payload: {
       id: string;
     }) => Promise<import('../shared/botImConnection').BotImConnectionRemoveResult>;
+    /** 这条(Telegram)连接进过的群 + 每群参与模式; 渠道没有群参与模式时 groups 为空。 */
+    listGroups: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload>;
+    setGroupActivation: (payload: {
+      id: string;
+      chatId: string;
+      mode: import('../shared/botImConnection').BotImGroupActivationMode;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload>;
     onChanged: (
       listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
     ) => () => void;

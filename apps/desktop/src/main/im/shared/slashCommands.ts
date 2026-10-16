@@ -43,7 +43,7 @@ import {
   renderTextPermissionModeResult,
   resolvePermissionMode,
 } from './permissionModeControl';
-import { isBotCommandAvailableOnChannel, tokenizeBotCommand } from './botCommands';
+import { isBotCommandAvailableOnChannel, isCompanionManagedCommand, tokenizeBotCommand } from './botCommands';
 
 /** Quick text-only check; treat anything starting with '/' (no spaces before) as a command. */
 export function looksLikeSlashCommand(text: string): boolean {
@@ -217,7 +217,7 @@ export function createSlashHandlers(
     // 连接已交给伙伴: 模型 / 权限 / 工作目录归伙伴设置管, 不在渠道里改伙伴任务的配置
     // (伙伴的 Home 工作区与模型链是伙伴的正本)。
     if (
-      (cmd === '/model' || cmd === '/permission' || cmd === '/project') &&
+      isCompanionManagedCommand(cmd) &&
       ui.slash.companionManagedCommand &&
       turnRunner.companionBotIdFor?.(ctx.botContextId)
     ) {

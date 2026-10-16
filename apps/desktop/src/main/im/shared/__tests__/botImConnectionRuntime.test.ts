@@ -76,7 +76,9 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 import {
   addBotImConnection,
   configureBotImConnectionRuntime,
+  listBotImConnectionGroups,
   removeBotImConnection,
+  setBotImConnectionGroupMode,
   removeBotImConnectionsForBot,
   startBotImConnections,
   stopBotImConnections,
@@ -156,7 +158,29 @@ describe('bot im connection runtime', () => {
         return { kind: 'telegram', im: im as never, orchestrator: orchestrator as never };
       },
       settingsIdentity: () => ({ telegramToken: h.secrets.get('telegram-bot-token') ?? null, feishuAppId: null }),
+      listKnownGroups: async () => [{ chatId: '-1001', chatName: 'Dev Group' }],
     });
+  });
+
+  it('lists known groups with their per-connection activation and toggles it live', async () => {
+    const added = await addBotImConnection({
+      botId: 'bot-mia',
+      channel: 'telegram',
+      token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+      ownerUserId: '42',
+    });
+    const id = added.connection.id;
+    expect((await listBotImConnectionGroups(id)).groups).toEqual([
+      { chatId: '-1001', chatName: 'Dev Group', activation: 'mention' },
+    ]);
+    const on = await setBotImConnectionGroupMode(id, '-1001', 'always');
+    expect(on.groups[0]?.activation).toBe('always');
+    // 传输层的行为 getter 读的是记录正本: 这里立刻能看到, 不需要重启实例。
+    expect(listBotImConnections()[0]?.groupActivation).toEqual({ '-1001': 'always' });
+    expect(__testing.instances.get(id)?.record.groupActivation).toEqual({ '-1001': 'always' });
+    const off = await setBotImConnectionGroupMode(id, '-1001', 'mention');
+    expect(off.groups[0]?.activation).toBe('mention');
+    expect(listBotImConnections()[0]?.groupActivation).toBeUndefined();
   });
 
   afterEach(async () => {

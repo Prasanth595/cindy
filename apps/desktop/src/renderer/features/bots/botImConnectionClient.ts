@@ -9,8 +9,10 @@ import { useEffect, useState } from 'react';
 import type {
   BotImConnectionAddInput,
   BotImConnectionAddResult,
+  BotImConnectionGroupsPayload,
   BotImConnectionListPayload,
   BotImConnectionRemoveResult,
+  BotImGroupActivationMode,
 } from '../../../shared/botImConnection';
 
 type BotImConnectionApi = Window['electronAPI']['botImConnection'];
@@ -69,6 +71,28 @@ export function removeBotImConnection(id: string): Promise<BotImConnectionRemove
   const api = botImConnectionApi();
   if (!api) return Promise.reject(new Error('botImConnection IPC unavailable'));
   return api.remove({ id });
+}
+
+/** 旧 preload 没有群聊接口时整个「群聊」小节不显示。 */
+export function botImConnectionGroupsSupported(): boolean {
+  const api = botImConnectionApi();
+  return !!api && typeof api.listGroups === 'function' && typeof api.setGroupActivation === 'function';
+}
+
+export function listBotImConnectionGroups(id: string): Promise<BotImConnectionGroupsPayload> {
+  const api = botImConnectionApi();
+  if (!api?.listGroups) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.listGroups({ id });
+}
+
+export function setBotImConnectionGroupActivation(
+  id: string,
+  chatId: string,
+  mode: BotImGroupActivationMode,
+): Promise<BotImConnectionGroupsPayload> {
+  const api = botImConnectionApi();
+  if (!api?.setGroupActivation) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.setGroupActivation({ id, chatId, mode });
 }
 
 /** 飞书 app id 打码(头 4 尾 4), 列表里不展示完整身份。 */

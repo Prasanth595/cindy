@@ -31,6 +31,26 @@ export interface BotImConnectionRecord {
   service?: BotImFeishuService;
   /** 平台身份(Telegram bot id / 飞书 app id), 首次连上后记下, 用于专线 route key。 */
   botContextId: string | null;
+  /**
+   * 群参与模式覆写(Telegram 连接): chatId → 'always' = 全响应·自主判断(每条群消息都进
+   * 专线, 伙伴用 NO_REPLY 决定插不插话)。缺省 = 仅 @ / 回复触发。与 设置 → IM 机器人 那份
+   * 个人 bot 的同名配置互不相干 —— 每条连接自己一份。
+   */
+  groupActivation?: Record<string, 'always'>;
+}
+
+export type BotImGroupActivationMode = 'mention' | 'always';
+
+/** 伙伴机器人进过的群(群窗口表里出现过的 chat)及其参与模式。 */
+export interface BotImConnectionGroup {
+  chatId: string;
+  chatName: string | null;
+  activation: BotImGroupActivationMode;
+}
+
+export interface BotImConnectionGroupsPayload {
+  connectionId: string;
+  groups: BotImConnectionGroup[];
 }
 
 export interface BotImConnectionView extends BotImConnectionRecord {

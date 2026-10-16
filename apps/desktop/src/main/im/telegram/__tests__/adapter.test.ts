@@ -199,6 +199,24 @@ describe('Telegram group history access scope', () => {
       } as never),
     ).toEqual({ chatKind: 'group', chatId: '-1001', chatName: 'Dev Group' });
   });
+
+  it('describes a guest DM as a direct chat from a non-owner instead of guessing a group from the speaker', async () => {
+    expect(
+      await adapter.channelNoteSourceFor?.({
+        contextId: 'bot-1',
+        senderId: '77',
+        messageId: 'm-4',
+        chatId: '77',
+        text: 'hi',
+        speaker: { id: '77', name: 'Bob', isOwner: false },
+        attachments: [],
+        unsupported: [],
+      } as never),
+    ).toEqual({ chatKind: 'direct', chatId: '77', senderIsOwner: false, senderId: '77', senderName: 'Bob' });
+    expect(
+      await adapter.channelNoteSourceFor?.({ contextId: 'bot-1', senderId: '123', chatId: '123', text: 'hi' } as never),
+    ).toEqual({ chatKind: 'direct', chatId: '123' });
+  });
 });
 
 /** codec 的 `${chatId}|${messageId}` 形态(decodeTelegramMessageId 的逆)。 */

@@ -53,6 +53,7 @@
  * the logged-in user's DbClient; a later login reconnects saved credentials.
  */
 
+import { TELEGRAM_DEFAULT_BEHAVIOR } from '@cindy/im';
 import path from 'node:path';
 
 import { ipcMain, BrowserWindow, dialog, type IpcMainEvent } from 'electron';
@@ -79,6 +80,7 @@ import {
 import { wireFeishuOrchestrator, type FeishuOrchestratorConfig } from './feishu';
 import { wireDiscordOrchestrator } from './discord';
 import { wireTelegramOrchestrator } from './telegram';
+import { listTelegramKnownGroups } from './telegram/groupWindow';
 import { wireDingTalkOrchestrator } from './dingtalk';
 import { wireWechatOrchestrator } from './wechat';
 import { wireWecomOrchestrator } from './wecom';
@@ -89,7 +91,7 @@ import {
   startBotImConnections,
   stopBotImConnections,
 } from './shared/botImConnectionRuntime';
-import { secretKeyPrefixFor } from './shared/botImConnectionStore';
+import { readBotImConnection, secretKeyPrefixFor } from './shared/botImConnectionStore';
 import { ownerScopedImSecrets } from './ownerScopedStorage';
 import { backfillLegacyImDefaultRoutes, backfillLegacyImDefaultRoutesAtStartup } from './shared/channelDefaultRouteSync';
 import type { ImDefaultSettingsChannel } from '../../shared/imDefaultSettings';
@@ -251,7 +253,13 @@ export function startImOrchestrators(): void {
     create: (record) => {
       const prefix = secretKeyPrefixFor(record.id);
       if (record.channel === 'telegram') {
-        const im = createBotTelegramIM(prefix);
+        // 群参与模式按连接各一份, 每次使用时现读 → 伙伴页改动即生效, 不重启传输层。
+        const im = createBotTelegramIM(prefix, {
+          behavior: () => {
+            const groupActivation = readBotImConnection(record.id)?.groupActivation;
+            return { ...TELEGRAM_DEFAULT_BEHAVIOR, ...(groupActivation ? { groupActivation } : {}) };
+          },
+        });
         const orchestrator = wireTelegramOrchestrator(im, TELEGRAM_CONFIG, {
           instanceKey: `telegram#${record.id}`,
           companionBotId: record.botId,
@@ -270,6 +278,11 @@ export function startImOrchestrators(): void {
       telegramToken: ownerScopedImSecrets.read('telegram-bot-token')?.trim() || null,
       feishuAppId: ownerScopedImSecrets.read('feishu_bot_app_id')?.trim() || null,
     }),
+    // 群参与模式只有 Telegram 有(个人 bot 同款); 飞书群按平台自己的 @ 规则触发。
+    listKnownGroups: (record) =>
+      record.channel === 'telegram' && record.botContextId
+        ? listTelegramKnownGroups(record.botContextId)
+        : Promise.resolve([]),
   });
 
   ipcMain.handle('wechatBot:get-state', (event) => {

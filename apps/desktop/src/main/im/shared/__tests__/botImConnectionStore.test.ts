@@ -22,6 +22,7 @@ import {
   readBotImConnection,
   removeBotImConnectionRecord,
   secretKeyPrefixFor,
+  setBotImConnectionGroupActivation,
   updateBotImConnectionRecord,
 } from '../botImConnectionStore';
 
@@ -93,6 +94,37 @@ describe('bot im connection store', () => {
       }),
     );
     expect(listBotImConnections().map((r) => r.id)).toEqual(['dddddddddddd']);
+  });
+
+  it('keeps per-group activation on the record and drops anything but chatId → always', async () => {
+    await addBotImConnectionRecord({ botId: 'bot-a', channel: 'telegram' }, { id: () => '111111111111' });
+    expect((await setBotImConnectionGroupActivation('111111111111', '-1001', 'always'))?.groupActivation).toEqual({
+      '-1001': 'always',
+    });
+    await setBotImConnectionGroupActivation('111111111111', '-1002', 'always');
+    expect(readBotImConnection('111111111111')?.groupActivation).toEqual({ '-1001': 'always', '-1002': 'always' });
+    // mention 是缺省: 清掉这一项, 全空时整个字段不落盘。
+    await setBotImConnectionGroupActivation('111111111111', '-1001', 'mention');
+    expect(readBotImConnection('111111111111')?.groupActivation).toEqual({ '-1002': 'always' });
+    await setBotImConnectionGroupActivation('111111111111', '-1002', 'mention');
+    expect(readBotImConnection('111111111111')?.groupActivation).toBeUndefined();
+    expect(await setBotImConnectionGroupActivation('nope', '-1', 'always')).toBeNull();
+
+    fs.writeFileSync(
+      file(),
+      JSON.stringify({
+        connections: {
+          '222222222222': {
+            botId: 'bot-a',
+            channel: 'telegram',
+            createdAt: 5,
+            botContextId: '9',
+            groupActivation: { '-1': 'always', '-2': 'mention', abc: 'always', '-3': 'nope' },
+          },
+        },
+      }),
+    );
+    expect(readBotImConnection('222222222222')?.groupActivation).toEqual({ '-1': 'always' });
   });
 
   it('is scoped per data owner', async () => {

@@ -36,7 +36,7 @@ import type { ImChannelAdapter } from './types';
 import { describeInteractionSource } from './interactionSource';
 import { buildImReplyContextBlock } from './replyContext';
 import { captureImContext } from '../../../shared/imMessageSource';
-import { imChannelNoteSourceFromEvent, type ImChannelNoteSource } from './channelNote';
+import { imChannelNoteSourceFromEvent, imMessageOriginFor, type ImChannelNoteSource } from './channelNote';
 
 /**
  * `!stop` 控制指令 — 半角/全角感叹号、大小写不敏感(issue #867)。
@@ -372,6 +372,11 @@ export function createMessageHandler(
               text: event.text,
               attachments: event.attachments,
               ...(event.protectedContent === true ? { protectedContent: true } : {}),
+              // 群 / 私聊此刻还没算出来(渠道说明在拼), 先把发言人存上; 派发时补齐。
+              ...(() => {
+                const messageOrigin = imMessageOriginFor(event, null);
+                return messageOrigin ? { messageOrigin } : {};
+              })(),
             })) ?? null;
         }
       } catch (err) {
@@ -386,6 +391,7 @@ export function createMessageHandler(
       }
     }
     const channelNoteSource = await channelNoteSourcePromise;
+    const messageOrigin = imMessageOriginFor(event, channelNoteSource);
     // 按事件挂 per-turn 权限策略(telegram 群成员触发 → 破坏性调用强确认)。
     const turnPermissionPolicy = adapter.turnPermissionPolicyFor?.(event);
     const groupHistoryAccess = adapter.groupHistoryAccessFor?.(event);
@@ -414,6 +420,7 @@ export function createMessageHandler(
           ? turnPermissionPolicy.autoReviewContext.requesterAuthority === 'owner'
           : isCommandAuthorized(event),
         ...(channelNoteSource ? { channelNoteSource } : {}),
+        ...(messageOrigin ? { messageOrigin } : {}),
         text: event.text,
         // 受保护群的触发消息照常起 turn, 但不进会话存档(渠道侧已挡住群历史池,
         // 这里挡住第二条路径)。

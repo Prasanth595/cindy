@@ -65,18 +65,71 @@ function installApi(payload: BotImConnectionListPayload) {
     })),
     remove: vi.fn(async () => ({ connections: [], archivedSessionIds: ['lane-1'] })),
     onChanged: vi.fn(() => () => undefined),
+    ...groupsApi,
   };
   Object.assign(window, { electronAPI: { botImConnection: api } });
   return api;
 }
 
+/** 群聊小节的 IPC(可选: 旧 preload 没有时整节不显示)。 */
+let groupsApi: {
+  listGroups?: ReturnType<typeof vi.fn>;
+  setGroupActivation?: ReturnType<typeof vi.fn>;
+} = {};
+
 beforeEach(() => {
   mocks.confirm.mockReset();
   mocks.confirm.mockResolvedValue(true);
+  groupsApi = {};
 });
 afterEach(cleanup);
 
 describe('BotChannelsPage', () => {
+  it('lets the owner switch a known group to always-on per connection, and hides the section without groups', async () => {
+    let activation: 'mention' | 'always' = 'mention';
+    const groups = () => ({
+      connectionId: 'a1b2c3d4e5f6',
+      groups: [{ chatId: '-1001', chatName: 'Hulu Report', activation }],
+    });
+    groupsApi = {
+      listGroups: vi.fn(async () => groups()),
+      setGroupActivation: vi.fn(async (payload: { mode: 'mention' | 'always' }) => {
+        activation = payload.mode;
+        return groups();
+      }),
+    };
+    installApi({ connections: [connection()] });
+    render(<BotChannelsPage bot={mia} />);
+
+    expect(await screen.findByText('Hulu Report')).toBeTruthy();
+    expect(screen.getByText('bots.channels.groups.hint:{"name":"Mia"}')).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: 'bots.channels.groups.mode.always' }));
+    await waitFor(() =>
+      expect(groupsApi.setGroupActivation).toHaveBeenCalledWith({
+        id: 'a1b2c3d4e5f6',
+        chatId: '-1001',
+        mode: 'always',
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole('radio', { name: 'bots.channels.groups.mode.always' }).getAttribute('aria-checked'),
+      ).toBe('true'),
+    );
+  });
+
+  it('does not render the groups section when the bot has not seen any group yet', async () => {
+    groupsApi = {
+      listGroups: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', groups: [] })),
+      setGroupActivation: vi.fn(),
+    };
+    installApi({ connections: [connection()] });
+    render(<BotChannelsPage bot={mia} />);
+    await screen.findByText('@mia_bot');
+    await waitFor(() => expect(groupsApi.listGroups).toHaveBeenCalled());
+    expect(screen.queryByText('bots.channels.groups.title')).toBeNull();
+  });
+
   it('shows the empty state and the external / shared-memory notes', async () => {
     installApi({ connections: [] });
     render(<BotChannelsPage bot={mia} />);

@@ -28,6 +28,7 @@ import {
   BOT_IM_CONNECTION_CHANGED_EVENT,
   type BotImConnectionAddInput,
   type BotImConnectionAddResult,
+  type BotImConnectionGroupsPayload,
   type BotImConnectionListPayload,
   type BotImConnectionRecord,
   type BotImConnectionRemoveResult,
@@ -43,6 +44,7 @@ import {
   readBotImConnection,
   removeBotImConnectionRecord,
   secretKeyPrefixFor,
+  setBotImConnectionGroupActivation,
   updateBotImConnectionRecord,
 } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
@@ -59,6 +61,8 @@ export interface BotImConnectionRuntimeDeps {
   create(record: BotImConnectionRecord): BotImTransportInstance;
   /** 设置页那份个人 bot 当前用的平台身份(用于拒绝同一个 bot 两处同时用)。 */
   settingsIdentity(): { telegramToken: string | null; feishuAppId: string | null };
+  /** 这个机器人进过的群(群窗口表里出现过的 chat); 没有群参与模式的渠道返回空。 */
+  listKnownGroups(record: BotImConnectionRecord): Promise<Array<{ chatId: string; chatName: string | null }>>;
 }
 
 interface LiveInstance {
@@ -298,6 +302,35 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
   return { ...list, connection: view };
 }
 
+/** 伙伴页「群聊」小节: 已知群 + 每群参与模式(仅 @ / 全响应)。 */
+export async function listBotImConnectionGroups(id: string): Promise<BotImConnectionGroupsPayload> {
+  const record = readBotImConnection(id);
+  if (!record) throwIpcError('NOT_FOUND', 'CONNECTION_NOT_FOUND');
+  const groups = record.botContextId ? await requireDeps().listKnownGroups(record) : [];
+  const activation = record.groupActivation ?? {};
+  return {
+    connectionId: id,
+    groups: groups.map((group) => ({
+      chatId: group.chatId,
+      chatName: group.chatName,
+      activation: activation[group.chatId] === 'always' ? 'always' : 'mention',
+    })),
+  };
+}
+
+export async function setBotImConnectionGroupMode(
+  id: string,
+  chatId: string,
+  mode: 'mention' | 'always',
+): Promise<BotImConnectionGroupsPayload> {
+  const updated = await setBotImConnectionGroupActivation(id, chatId, mode);
+  if (!updated) throwIpcError('NOT_FOUND', 'CONNECTION_NOT_FOUND');
+  const live = instances.get(id);
+  if (live) live.record = updated;
+  log.info(`bot im connection ${id}: group ${chatId.slice(-6)} activation=${mode}`);
+  return listBotImConnectionGroups(id);
+}
+
 export async function removeBotImConnection(id: string): Promise<BotImConnectionRemoveResult> {
   const record = readBotImConnection(id);
   if (!record) throwIpcError('NOT_FOUND', 'CONNECTION_NOT_FOUND');
@@ -389,6 +422,22 @@ export function registerBotImConnectionIpc(): void {
     const id = (payload as { id?: unknown } | null)?.id;
     if (!isBotImConnectionId(id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
     return removeBotImConnection(id);
+  });
+  ipcMain.handle('botImConnection:list-groups', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const id = (payload as { id?: unknown } | null)?.id;
+    if (!isBotImConnectionId(id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    return listBotImConnectionGroups(id);
+  });
+  ipcMain.handle('botImConnection:set-group-activation', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const p = (payload ?? {}) as { id?: unknown; chatId?: unknown; mode?: unknown };
+    if (!isBotImConnectionId(p.id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    if (typeof p.chatId !== 'string' || !/^-?\d{1,32}$/.test(p.chatId)) {
+      throwIpcError('INVALID_PARAMS', 'chatId is invalid');
+    }
+    const mode = p.mode === 'always' ? 'always' : 'mention';
+    return setBotImConnectionGroupMode(p.id, p.chatId, mode);
   });
 }
 

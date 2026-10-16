@@ -6,7 +6,7 @@
  * 同一伙伴的所有渠道共享记忆(规则见 docs/product-rules/cindy-bots-runtime.md)。
  * 与 设置 → IM 机器人 里那份独立的个人 bot 互不相干。远端伙伴没有这一页。
  */
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { MessageSquare, Plus, Send } from 'lucide-react';
 
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
@@ -21,16 +22,21 @@ import { extractIpcError } from '@/utils/ipcError';
 import type {
   BotImChannel,
   BotImConnectionAddInput,
+  BotImConnectionGroup,
   BotImConnectionListPayload,
   BotImConnectionView,
   BotImFeishuService,
+  BotImGroupActivationMode,
 } from '../../../shared/botImConnection';
 import { useBotTranslation } from './botPronounContext';
 import type { BotProfile } from './botStore';
 import {
   addBotImConnection,
+  botImConnectionGroupsSupported,
+  listBotImConnectionGroups,
   maskBotImContextId,
   removeBotImConnection,
+  setBotImConnectionGroupActivation,
   useBotImConnections,
 } from './botImConnectionClient';
 
@@ -132,8 +138,9 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
             return (
               <li
                 key={view.id}
-                className="flex min-h-14 items-center gap-3 border-b border-[var(--border-default)] px-4 py-3 last:border-b-0"
+                className="border-b border-[var(--border-default)] px-4 py-3 last:border-b-0"
               >
+                <div className="flex min-h-8 items-center gap-3">
                 <ChannelIcon channel={view.channel} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-14 text-[var(--text-primary)]">{platformName(view)}</p>
@@ -176,6 +183,10 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
                 >
                   {t('bots.channels.remove')}
                 </Button>
+                </div>
+                {view.channel === 'telegram' && view.botContextId && botImConnectionGroupsSupported() ? (
+                  <ConnectionGroups connectionId={view.id} botName={bot.name} />
+                ) : null}
               </li>
             );
           })}
@@ -201,6 +212,100 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
         <BotChannelAddDialog bot={bot} onApplied={apply} onOpenChange={setAdding} />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * 一条 Telegram 连接的「群聊」小节: 机器人进过的群 + 每群参与模式(仅 @ / 全响应)。
+ * 与 设置 → IM 机器人 的同名设置各管各的 bot; 乐观更新, 保存失败回读正本并提示。
+ */
+function ConnectionGroups({ connectionId, botName }: { connectionId: string; botName: string }) {
+  const { t } = useBotTranslation();
+  const [groups, setGroups] = useState<BotImConnectionGroup[] | null>(null);
+  const [error, setError] = useState<'load' | 'save' | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const latest = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    void listBotImConnectionGroups(connectionId)
+      .then((payload) => {
+        if (!cancelled) setGroups(payload.groups);
+      })
+      .catch(() => {
+        if (!cancelled) setError('load');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionId, reloadToken]);
+
+  const setMode = useCallback(
+    (chatId: string, mode: BotImGroupActivationMode) => {
+      const revision = ++latest.current;
+      setGroups((current) =>
+        current ? current.map((g) => (g.chatId === chatId ? { ...g, activation: mode } : g)) : current,
+      );
+      setError(null);
+      void setBotImConnectionGroupActivation(connectionId, chatId, mode)
+        .then((payload) => {
+          if (revision === latest.current) setGroups(payload.groups);
+        })
+        .catch(() => {
+          if (revision !== latest.current) return;
+          setError('save');
+          void listBotImConnectionGroups(connectionId)
+            .then((payload) => {
+              if (revision === latest.current) setGroups(payload.groups);
+            })
+            .catch(() => undefined);
+        });
+    },
+    [connectionId],
+  );
+
+  if (groups === null && error !== 'load') return null;
+  if (groups !== null && groups.length === 0 && error === null) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-2 border-t border-[var(--border-default)] pt-3">
+      <div className="text-12 font-medium text-[var(--text-primary)]">{t('bots.channels.groups.title')}</div>
+      <p className="text-11 leading-[1.5] text-[var(--text-tertiary)]">
+        {t('bots.channels.groups.hint', { name: botName })}
+      </p>
+      {error !== null ? (
+        <p className="flex items-center gap-2 text-12 text-[var(--text-danger)]">
+          <span>{t(error === 'load' ? 'bots.channels.groups.loadFailed' : 'bots.channels.groups.saveFailed')}</span>
+          <button
+            type="button"
+            className="underline-offset-2 hover:underline"
+            onClick={() => setReloadToken((value) => value + 1)}
+          >
+            {t('bots.channels.groups.retry')}
+          </button>
+        </p>
+      ) : null}
+      {(groups ?? []).map((group) => (
+        <div key={group.chatId} className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-12 text-[var(--text-primary)]">{group.chatName || group.chatId}</div>
+            <div className="text-11 text-[var(--text-tertiary)]">{group.chatId}</div>
+          </div>
+          <SegmentedControl
+            aria-label={`${group.chatName || group.chatId} · ${t('bots.channels.groups.title')}`}
+            value={group.activation}
+            onValueChange={(mode) => setMode(group.chatId, mode)}
+            height={30}
+            optionHeight={24}
+            optionClassName="text-11"
+            options={(['mention', 'always'] as const).map((mode) => ({
+              value: mode,
+              label: t(`bots.channels.groups.mode.${mode}`),
+            }))}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
 
