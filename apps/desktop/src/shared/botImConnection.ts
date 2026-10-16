@@ -12,6 +12,34 @@ export type BotImChannel = (typeof BOT_IM_CHANNELS)[number];
 
 export type BotImFeishuService = 'feishu' | 'lark';
 
+/**
+ * 伙伴主任务(主人私聊落点)的 vendorOptions 标记: 这个伙伴绑定了哪些平台的机器人。
+ *
+ * 群 / 话题 / 外部用户专线带 `telegramChatId` / `feishuChatId`, 渠道原生 API 工具
+ * (`cindy_telegram_bot` / `cindy_feishu_bot`)据此挂载; 主任务与桌面共用, 不能带专线那套
+ * 字段(会让桌面上的交互变成无头), 所以只带「绑了哪些渠道」。目标 chat 与触发者身份仍只来自
+ * 逐轮作用域租约(main/im/shared/channelToolScope.ts), 这个标记只决定工具挂不挂。
+ */
+export const BOT_IM_CHANNELS_VENDOR_KEY = 'cindyBotImChannels';
+
+export function readBotImChannelsFromVendorOptions(
+  vendorOptions: Readonly<Record<string, unknown>> | undefined,
+): BotImChannel[] {
+  const raw = vendorOptions?.[BOT_IM_CHANNELS_VENDOR_KEY];
+  if (!Array.isArray(raw)) return [];
+  return (BOT_IM_CHANNELS as readonly string[]).filter((channel) => raw.includes(channel)) as BotImChannel[];
+}
+
+/** 这个会话的轮次能用某个渠道的原生 API 工具: 专线带该渠道 chat, 或主任务标记绑了该渠道。 */
+export function hasImChannelVendorOptions(
+  vendorOptions: Readonly<Record<string, unknown>> | undefined,
+  channel: BotImChannel,
+): boolean {
+  const chatKey = channel === 'telegram' ? 'telegramChatId' : 'feishuChatId';
+  if (typeof vendorOptions?.[chatKey] === 'string') return true;
+  return readBotImChannelsFromVendorOptions(vendorOptions).includes(channel);
+}
+
 /** 与 @cindy/im 的 IMStatus 同形, 这里单独声明避免 renderer 依赖传输包类型。 */
 export type BotImConnectionStatus =
   | { kind: 'idle' }

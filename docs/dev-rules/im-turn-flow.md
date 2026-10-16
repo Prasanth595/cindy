@@ -79,8 +79,12 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。渠道工具的目标 chat 与
    触发者身份只来自租约，不来自模型参数。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
    末尾给 `toolsHint` 点名本轮可用的渠道工具（Telegram：`TELEGRAM_TOOLS_HINT`；飞书：`feishuToolsHint`），
-   Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时三件事一起补——渠道说明提示、
-   `channelToolScopeFor` 作用域、轮次内直通工具。
+   Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时四件事一起补——渠道说明提示、
+   `channelToolScopeFor` 作用域、轮次内直通工具、以及该渠道工具在**三个 Harness** 的挂载门禁
+   （`shared/botImConnection.ts` 的 `hasImChannelVendorOptions`：专线带 `<channel>ChatId`，伙伴主任务带
+   `cindyBotImChannels` 标记；Codex / Pi 的共享 bridge 用空 ctx 建清单，provider `isEnabled` 必须在空
+   workdir 快照放行，再由 `codexEnvironment.buildSessionMcpConfig` / `piEnvironment` 逐会话收可见性）。
+   渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」。
 7. **计划对账**只在真实用户轮次注入（官方仅 `source.im` 存在时）。
 8. **终稿必达**（官方）：`turn.end` 先进持久出箱；客户端发布终稿时以 `clientFinal` 交回。
    带附件的轮次不由客户端发布（出箱只存文本）；兜底帧写不进出箱时也不由客户端发布；本进程

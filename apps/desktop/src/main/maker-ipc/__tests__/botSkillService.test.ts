@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  authorizeChannelLaneSkillAccess,
   collectBotOwnSkillMounts,
   deleteBotSkillForBot,
   listBotSkillsForBot,
@@ -195,5 +196,20 @@ describe('设置页与会话挂载读的是同一份磁盘事实', () => {
   it('returns nothing to mount for a Bot that never learned anything', async () => {
     const mounts = await collectBotOwnSkillMounts('bot-fresh', { userDataDir });
     expect(mounts.skills).toEqual([]);
+  });
+});
+
+describe('authorizeChannelLaneSkillAccess', () => {
+  // IM lanes share the Bot's Profile, so skills learned there belong to the same Bot;
+  // writes follow the channel-tool management rule (owner-triggered turns only).
+  it('lets an owner-triggered lane turn save and list, a member turn only list, and nothing without a lease', () => {
+    expect(authorizeChannelLaneSkillAccess({ requesterIsOwner: true }, false)).toEqual({ ok: true });
+    expect(authorizeChannelLaneSkillAccess({ requesterIsOwner: true }, true)).toEqual({ ok: true });
+    expect(authorizeChannelLaneSkillAccess({ requesterIsOwner: false }, true)).toEqual({ ok: true });
+    expect(authorizeChannelLaneSkillAccess({ requesterIsOwner: false }, false)).toMatchObject({
+      ok: false, errorCode: 'BOT_SKILL_OWNER_ONLY',
+    });
+    expect(authorizeChannelLaneSkillAccess(null, false)).toMatchObject({ ok: false, errorCode: 'BOT_SESSION_READ_ONLY' });
+    expect(authorizeChannelLaneSkillAccess(null, true)).toMatchObject({ ok: false, errorCode: 'BOT_SESSION_READ_ONLY' });
   });
 });

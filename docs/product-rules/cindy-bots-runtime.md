@@ -289,7 +289,18 @@ Mobile 使用电脑端已连接的模型目录；目录为空时保持创建禁�
   任意 Bot API / Open API）。出站永远走触发本轮的那条连接自己的 bot，不串到设置页那份；目标 chat
   与触发者身份来自逐轮作用域租约（`im/shared/channelToolScope.ts`），不来自模型参数——群轮次只能操作
   本群，成员触发的轮次只能读取 / 发送，管理动作（置顶、撤回 / 删消息、改群）需主人触发，任意 API
-  直通与删消息按次走会话权限档。伙伴主任务（主人私聊落点）不带渠道 vendorOptions，所以没有这组工具。
+  直通与删消息按次走会话权限档。伙伴主任务（主人私聊落点）与桌面共用、不带专线的 chat 字段，改由
+  `botProfileRuntime` 按该伙伴**绑了哪些渠道**写 `cindyBotImChannels` 标记并强制挂载对应工具
+  （`shared/botImConnection.ts` 的 `hasImChannelVendorOptions` 是三个 Harness 共用的判定：Claude Code 走
+  provider `isEnabled`，Codex 走 `buildSessionMcpConfig` 逐线程 `enabled`，Pi 走 `capabilityGated`；Codex /
+  Pi 的共享 bridge 在空 ctx 阶段必须先注册该 server，否则永远挂不上）。桌面轮次没有作用域租约，工具
+  一律 fail closed；绑定或解绑渠道后主任务的工具面在下一次会话启动时更新。
+- **IM 专线与主任务是同一个伙伴，专线不丢伙伴能力**（2026-10-17）。专线轮次可以用
+  `save_teammate_skill` / `list_teammate_skills` 把学到的做法沉淀成这个伙伴自己的技能，提示词里的
+  技能指引同样注入专线；写入只认主人触发的轮次（`botSkillService` 读逐轮渠道作用域租约判定，其他成员
+  触发返回 `BOT_SKILL_OWNER_ONLY`，没有租约返回 `BOT_SESSION_READ_ONLY`），读技能表专线任何一轮都行。
+  记忆写入本来就按伙伴记忆范围落盘，不受专线影响。伙伴消息、例行任务、创建伙伴与伙伴模式仍只在主任务
+  开放（它们需要主人在主任务里确认的交互面），专线上这些请求由伙伴说明去主任务 / 桌面处理。
 - 伙伴保留自己的身份、记忆与 Skill 上下文，不加载项目或全局 `AGENTS.md` / `CLAUDE.md` 替代人格。
   这不限制工具能力：Pi / Claude Code / Codex 的原生子 Agent 与普通任务相同；Orca 也不因伙伴身份禁用，
   仍遵循用户的全局开关、当前引擎支持与权限档。持久后台工作仍可使用 Cindy Session 任务（见 6.1）。

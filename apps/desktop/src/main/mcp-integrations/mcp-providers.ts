@@ -43,6 +43,7 @@ import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
 import { feishuIm, wechatIm } from '../im';
 import { readChannelToolScope, type FeishuToolTransport } from '../im/shared/channelToolScope';
+import { hasImChannelVendorOptions } from '../../shared/botImConnection.js';
 import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
@@ -1196,12 +1197,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
   });
 
   // cindy_telegram_bot: 个人 / 伙伴 Telegram bot 轮次里的 Bot API 直通。只挂在带 Telegram 渠道
-  // vendorOptions 的会话上(adapter.buildVendorOptions 写 telegramChatId; 官方 hook 会话不写,
-  // 桌面任务也没有), 别处看不到这组工具。真正能不能动哪个 chat 由逐轮作用域租约
-  // (im/shared/channelToolScope.ts)在调用期判定, 没有租约一律 fail closed。
+  // vendorOptions 的会话上: 专线 / 个人 bot 会话由 adapter.buildVendorOptions 写 telegramChatId,
+  // 伙伴主任务由 botProfileRuntime 写「绑了哪些渠道」标记(官方 hook 会话不写, 桌面任务也没有),
+  // 别处看不到这组工具。真正能不能动哪个 chat 由逐轮作用域租约(im/shared/channelToolScope.ts)
+  // 在调用期判定, 没有租约一律 fail closed。
+  // Codex / Pi 的共享 app-server / bridge 在还没有 thread / workdir 的阶段(空 ctx)建一次工具
+  // 清单, 这里不注册它就永远挂不上; 所以空 workdir 快照先放行, 逐会话可见性由
+  // codexEnvironment.buildSessionMcpConfig / piEnvironment capabilityGated 按同一份标记决定。
   gated.push({
     name: 'cindy_telegram_bot',
-    isEnabled: (ctx) => typeof ctx.vendorOptions?.telegramChatId === 'string',
+    isEnabled: (ctx) =>
+      hasImChannelVendorOptions(ctx.vendorOptions, 'telegram')
+      || ((ctx.agentKind === 'codex' || ctx.agentKind === 'pi') && !ctx.workingDir),
     toClaudeSdkConfig: (ctx) => ({
       type: 'sdk',
       name: 'cindy_telegram_bot',
