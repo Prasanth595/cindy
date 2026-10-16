@@ -115,6 +115,16 @@ describe('remote provider file paths', () => {
         expect(workspace.mapCommand('dir "' + SHADOW + suffix + '"', 'cmd')).toBe('dir "' + local + suffix + '"');
       }
       expect(workspace.mapCommand('PATH=' + SHADOW + ':$PATH command')).toBe('PATH=' + local + ':$PATH command');
+      expect(workspace.mapCommand('cat ' + SHADOW + ':literal'))
+        .toBe('cat ' + agentStyle(workspace.resolve(SHADOW + ':literal')));
+      for (const quote of ['"', "'"]) {
+        expect(workspace.mapCommand('PATH=' + quote + SHADOW + ':$PATH' + quote + ' command'))
+          .toBe('PATH=' + quote + local + ':$PATH' + quote + ' command');
+        expect(workspace.mapCommand('cat ' + quote + SHADOW + ':literal' + quote))
+          .toBe('cat ' + quote + agentStyle(workspace.resolve(SHADOW + ':literal')) + quote);
+        expect(workspace.mapCommand('echo ' + quote + 'PATH=' + SHADOW + ':literal' + quote))
+          .toBe('echo ' + quote + 'PATH=' + agentStyle(workspace.resolve(SHADOW + ':literal')) + quote);
+      }
       // 单引号里的变量和 glob、双引号里的 glob 是目录名的字面部分，必须按父目录别名解析。
       for (const suffix of ['$suffix', '*', '?', '[ab]']) {
         const virtual = SHADOW + suffix;
@@ -150,11 +160,13 @@ describe('remote provider file paths', () => {
     }
   });
 
-  it('keeps case-distinct canonical aliases on case-sensitive hosts', () => {
-    if (process.platform === 'win32') return;
+  // symlink-platform-skip: Windows filesystems are case-insensitive, so they cannot represent this POSIX alias distinction.
+  it.skipIf(process.platform === 'win32')('keeps case-distinct canonical aliases on case-sensitive hosts', ({ skip }) => {
     const actual = path.join(root, 'actual', 'project');
     const link = path.join(root, 'actual', 'PROJECT');
     fs.mkdirSync(actual, { recursive: true });
+    // macOS 等主机也可能使用大小写不敏感的卷，按当前临时目录的实际能力判断。
+    if (fs.existsSync(link)) return skip();
     fs.symlinkSync(actual, link, 'dir');
     const workspace = new ExecutorWorkspace({ workingDir: link, aliases: [{ from: SHADOW, to: link }] });
     workspace.setVirtualRoot(VIRTUAL_ROOT);

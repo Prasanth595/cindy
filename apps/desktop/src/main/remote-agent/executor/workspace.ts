@@ -121,7 +121,7 @@ function aliasPrefixes<T extends ExecutorPathAlias>(aliases: readonly T[]): Alia
 function nextAliasPrefix<T extends ExecutorPathAlias>(
   text: string, start: number, { finder, prefixes }: AliasPrefixes<T>,
   continuesName?: (alias: T, rest: string) => boolean,
-  boundary: (text: string, index: number) => 'separator' | 'punctuation' | null = segmentEnd,
+  boundary: (text: string, index: number, start: number) => 'separator' | 'punctuation' | null = segmentEnd,
 ): { index: number; end: number; alias: T } | null {
   for (let from = start; from < text.length;) {
     finder.lastIndex = from;
@@ -134,7 +134,7 @@ function nextAliasPrefix<T extends ExecutorPathAlias>(
         const hit = pattern.exec(text);
         if (!hit) continue;
         const end = index + hit[0].length;
-        const kind = boundary(text, end);
+        const kind = boundary(text, end, index);
         if (!kind || (kind === 'punctuation' && continuesName?.(alias, text.slice(end, end + 1024)))) continue;
         return { index, end, alias };
       }
@@ -808,8 +808,9 @@ export class ExecutorWorkspace {
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
     const prefixes = aliasPrefixes(aliases);
-    const quoteContext = (input: string, end: number): 'none' | 'single' | 'double' => {
+    const commandContext = (input: string, end: number): { quote: 'none' | 'single' | 'double'; wordStart: number } => {
       let quote: 'none' | 'single' | 'double' = 'none';
+      let wordStart = 0;
       let escaped = false;
       for (let i = 0; i < end; i += 1) {
         const char = input[i];
@@ -817,12 +818,13 @@ export class ExecutorWorkspace {
         if (dialect === 'bash' && char === '\\' && (quote === 'none'
           || (quote === 'double' && /[$\x60"\\\n]/.test(input[i + 1] ?? '')))) { escaped = true; continue; }
         if (dialect === 'cmd' && char === '^' && quote === 'none') { escaped = true; continue; }
+        if (quote === 'none' && /[\s;|&()<>]/.test(char)) wordStart = i + 1;
         if (dialect === 'bash' && quote === 'none' && char === "'") quote = 'single';
         else if (quote === 'none' && char === '"') quote = 'double';
         else if (quote === 'single' && char === "'") quote = 'none';
         else if (quote === 'double' && char === '"') quote = 'none';
       }
-      return quote;
+      return { quote, wordStart };
     };
     const quote = (value: string, context: 'none' | 'single' | 'double'): string => {
       if (dialect === 'cmd') {
@@ -837,22 +839,24 @@ export class ExecutorWorkspace {
         : value;
     };
     // Shell 里的边界由引号与展开语法决定。引号内的空格/标点属于目录名；动态后缀保留给 shell。
-    const commandBoundary = (text: string, index: number): 'separator' | 'punctuation' | null => {
+    const commandBoundary = (text: string, index: number, start: number): 'separator' | 'punctuation' | null => {
       const char = text[index];
       if (char === undefined || char === '/' || char === '\\') return 'separator';
-      const context = quoteContext(text, index);
+      const { quote: context } = commandContext(text, index);
       if ((context === 'single' && char === "'") || (context === 'double' && char === '"')) return 'separator';
       if (dialect === 'cmd' && /[%!^]/.test(char)) return 'separator';
       if (dialect === 'bash' && context !== 'single' && /[$\x60]/.test(char)) return 'separator';
+      // PATH 的冒号在引号内仍分隔目录；普通带引号的文件名可以包含冒号。
+      if (dialect === 'bash' && char === ':' && text.startsWith('PATH=', commandContext(text, start).wordStart)) return 'separator';
       if (context !== 'none') return null;
-      return /[\s:'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
+      return /[\s'"*?\[{};|&()<>]/.test(char) ? 'separator' : null;
     };
     let result = '';
     let end = 0;
     for (let hit = nextAliasPrefix(command, 0, prefixes, undefined, commandBoundary); hit; hit = nextAliasPrefix(command, end, prefixes, undefined, commandBoundary)) {
       const { alias, index: start } = hit;
       const separator = alias.to.includes('\\') ? '\\' : '/';
-      const context = quoteContext(command, start);
+      const { quote: context, wordStart } = commandContext(command, start);
       const windowsPath = WINDOWS_PATH.test(command.slice(start, hit.end));
       let suffixEnd = hit.end;
       const suffixStart = suffixEnd;
@@ -864,6 +868,7 @@ export class ExecutorWorkspace {
           if (char === '\r' || char === '\n') break;
           if (context === 'single' && char === "'") break;
           if (context === 'double' && char === '"') break;
+          if (dialect === 'bash' && char === ':' && command.startsWith('PATH=', wordStart)) break;
           if (context === 'none' && /[\s'"\x60;:|&()<>}\]]/.test(char)) break;
           if (dialect === 'bash' && context !== 'single'
             && (/[$\x60]/.test(char) || (char === '\\'
