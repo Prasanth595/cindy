@@ -841,7 +841,12 @@ export class ExecutorWorkspace {
     const inPathList = (input: string, index: number): boolean => {
       const { wordStart } = commandContext(input, index);
       const word = input.slice(wordStart, index);
-      return dialect === 'cmd' ? /^"?PATH=/i.test(word) : word.startsWith('PATH=');
+      const assignment = (dialect === 'cmd' ? /^"?([A-Za-z_][A-Za-z0-9_]*)=/ : /^([A-Za-z_][A-Za-z0-9_]*)=/).exec(word);
+      if (!assignment) return false;
+      const name = dialect === 'cmd' ? assignment[1].toUpperCase() : assignment[1];
+      // 常见环境路径列表也包括 NODE_PATH、CLASSPATH、XDG_DATA_DIRS 等。
+      // 文件名变量（如 FILE）里的冒号/分号仍按字面路径处理。
+      return /(?:PATH|_DIRS)$/.test(name) || ['PERL5LIB', 'PERLLIB', 'RUBYLIB', 'TEXINPUTS', 'INCLUDE', 'LIB'].includes(name);
     };
     const listSeparator = dialect === 'cmd' ? ';' : ':';
     // Shell 里的边界由引号与展开语法决定。引号内的空格/标点属于目录名；动态后缀保留给 shell。

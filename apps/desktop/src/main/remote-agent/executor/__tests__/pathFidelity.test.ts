@@ -115,7 +115,7 @@ describe('remote provider file paths', () => {
         expect(workspace.mapCommand('dir "' + SHADOW + suffix + '"', 'cmd')).toBe('dir "' + local + suffix + '"');
       }
       for (const quote of ['', '"']) {
-        for (const variable of ['PATH', 'Path']) {
+        for (const variable of ['PATH', 'Path', 'CLASSPATH', 'INCLUDE', 'LIB']) {
           expect(workspace.mapCommand('set ' + quote + variable + '=' + SHADOW + ';%PATH%' + quote, 'cmd'))
             .toBe('set ' + quote + variable + '=' + local + ';%PATH%' + quote);
         }
@@ -123,6 +123,21 @@ describe('remote provider file paths', () => {
       expect(workspace.mapCommand('type "' + SHADOW + ';literal"', 'cmd'))
         .toBe('type "' + agentStyle(workspace.resolve(SHADOW + ';literal')) + '"');
       expect(workspace.mapCommand('PATH=' + SHADOW + ':$PATH command')).toBe('PATH=' + local + ':$PATH command');
+      for (const variable of ['NODE_PATH', 'PYTHONPATH', 'LD_LIBRARY_PATH', 'XDG_DATA_DIRS', 'PERL5LIB']) {
+        for (const quote of ['', '"', "'"]) {
+          expect(workspace.mapCommand(variable + '=' + quote + SHADOW + ':$' + variable + quote + ' command'))
+            .toBe(variable + '=' + quote + local + ':$' + variable + quote + ' command');
+        }
+      }
+      expect(workspace.mapCommand('FILE="' + SHADOW + ':literal" command'))
+        .toBe('FILE="' + agentStyle(workspace.resolve(SHADOW + ':literal')) + '" command');
+      expect(workspace.mapCommand('set "FILE=' + SHADOW + ';literal"', 'cmd'))
+        .toBe('set "FILE=' + agentStyle(workspace.resolve(SHADOW + ';literal')) + '"');
+      const windowsWorkspace = new ExecutorWorkspace({ workingDir, aliases: [{ from: 'C:/agent/workspace', to: workingDir }] });
+      for (const virtual of ['C:/agent/workspace', 'C:\\agent\\workspace']) {
+        expect(windowsWorkspace.mapCommand('set "CLASSPATH=' + virtual + ';%CLASSPATH%"', 'cmd'))
+          .toBe('set "CLASSPATH=' + local + ';%CLASSPATH%"');
+      }
       expect(workspace.mapCommand('cat ' + SHADOW + ':literal'))
         .toBe('cat ' + agentStyle(workspace.resolve(SHADOW + ':literal')));
       for (const quote of ['"', "'"]) {
