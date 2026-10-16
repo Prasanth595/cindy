@@ -57,5 +57,6 @@ export function buildWecomAdapter(
       wecomConversationId: userId,
     }),
     handleTextInteraction: (userId, request, options) => interactions.handle(userId, request, options),
+    cancelTextInteraction: (userId, requestId, decision) => interactions.cancel(userId, requestId, decision),
   };
 }

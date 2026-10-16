@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DingTalkIM } from '@cindy/im';
 
+import { setMainLocale } from '../../../i18n';
 import { __testing, handleDingTalkTextInteraction } from '../interaction';
+import { presentChannelQuestionnaire } from '../../../maker-ipc/channelQuestionnaire';
 import { createSharedPermission } from '../../../maker-ipc/sharedPermission';
+
+beforeEach(() => setMainLocale('zh-CN'));
+afterEach(() => setMainLocale('zh-CN'));
 
 describe('dingtalk text interactions', () => {
   it('settles the shared permission when the text reply times out', async () => {
@@ -95,5 +100,50 @@ describe('dingtalk text interactions', () => {
       answers: { 方向: 'B', 备注: 'custom' },
     });
     expect(requestTextReply).toHaveBeenCalledTimes(2);
+    expect(requestTextReply.mock.calls[0][1]).toContain('（1/2）');
+    expect(requestTextReply.mock.calls[1][1]).toContain('（2/2）');
   });
+});
+
+it('preserves earlier answers and stops after a question times out', async () => {
+  const requestTextReply = vi.fn().mockResolvedValueOnce('first answer')
+    .mockRejectedValueOnce(new Error('DINGTALK_INTERACTION_TIMEOUT'));
+  const im = { requestTextReply } as unknown as DingTalkIM;
+  await expect(handleDingTalkTextInteraction(im, 'owner', {
+    kind: 'ask_user_question', requestId: 'questions',
+    questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })),
+  }, { timeoutMs: 123 })).resolves.toEqual({
+    kind: 'ask_user_question', answers: { 'First?': 'first answer' }, dismissed: true,
+  });
+  expect(requestTextReply).toHaveBeenCalledTimes(2);
+  expect(requestTextReply.mock.calls[1].slice(3)).toEqual([123, undefined, 'questions']);
+});
+
+it('does not label every paginated question as the entire questionnaire', async () => {
+  const requestTextReply = vi.fn(async (_userId: string, _prompt: string) => 'answer');
+  const im = { requestTextReply } as unknown as DingTalkIM;
+  await expect(presentChannelQuestionnaire({
+    kind: 'ask_user_question', requestId: 'paged',
+    questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })),
+  }, page => handleDingTalkTextInteraction(im, 'owner', page), undefined, undefined, true))
+    .resolves.toEqual({ kind: 'ask_user_question', answers: {
+      'First?': 'answer', 'Second?': 'answer', 'Third?': 'answer',
+    } });
+  expect(requestTextReply).toHaveBeenCalledTimes(3);
+  for (const [, prompt] of requestTextReply.mock.calls) {
+    expect(prompt).not.toContain('（1/1）');
+    expect(prompt).toContain('需要你补充信息：');
+  }
+});
+
+it.each([
+  ['zh-CN', '需要你补充信息：', '请回复选项序号或你的答案。'],
+  ['zh-TW', '需要你補充資訊：', '請回覆選項編號或你的答案。'],
+  ['en', 'Answer needed: ', 'Reply with an option number or your answer.'],
+  ['ja', '回答が必要です：', '選択肢の番号または回答を入力してください。'],
+  ['ko', '답변이 필요합니다: ', '선택지 번호나 답변을 입력해 주세요.'],
+] as const)('localizes paginated DingTalk prompts in %s', (locale, prefix, hint) => {
+  setMainLocale(locale);
+  expect(__testing.formatQuestionPrompt({ question: 'Question?' }, 0, 1))
+    .toBe(`${prefix}Question?\n${hint}`);
 });

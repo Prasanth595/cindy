@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
+import { presentChannelQuestionnaire } from '../maker-ipc/channelQuestionnaire';
 import { createSharedPermission, type SharedPermission } from '../maker-ipc/sharedPermission';
 import { beginInteractionRoute, installDesktopInteractionHandler, type InteractionHandler, type InteractionSession } from '../maker-ipc/interactionRouter';
 import { assertSharedTaskInteractionResolveCurrent, assertSharedTaskInvoke, setSharedTaskInteractionReader, type SharedTaskPeerCapture } from '../device-link/sharedTaskDispatch.js';
@@ -83,7 +84,7 @@ function harness() {
     hold: (id: string, held: boolean) => string[];
     answer: (id: string, decision: InteractionDecision) => boolean;
     cleanup: (id: string, reason: string) => void;
-    take: (id: string) => Array<{ resolve: (decision: InteractionDecision) => void; sharedPermission?: SharedPermission }>;
+    take: (id: string) => Array<{ resolve: (decision: InteractionDecision) => void; sharedPermission?: SharedPermission; signal?: AbortSignal; onAnswers?: (answers: Record<string, string>) => void }>;
     resolveFromIpc: (event: unknown, id: string, decision: InteractionDecision) => Promise<{ accepted: boolean }>;
   };
   const request = (id = 'permission', sessionId = 'task', kind: InteractionRequest['kind'] = 'permission', channel?: InteractionHandler) => {
@@ -96,11 +97,11 @@ function harness() {
       onCancel: () => true,
     }) : undefined;
     const settled = vi.fn();
-    const promise = listeners.get(sessionId)!({ kind, requestId: id, toolName: 'Shell', input: {} } as InteractionRequest);
+    const promise = listeners.get(sessionId)!({ kind, requestId: id, toolName: 'Shell', input: {}, questions: [{ question: 'choice', options: [{ label: 'yes', description: '' }] }] } as InteractionRequest);
     void promise.then(settled);
     return { promise, settled, lease };
   };
-  return { ...runtime, request, entries, dismiss, setSharedTask: (peer?: SharedTaskPeerCapture) => { sharedTask = peer; } };
+  return { ...runtime, request, entries, dismiss, persist: deps.persistInteractionDecision, setSharedTask: (peer?: SharedTaskPeerCapture) => { sharedTask = peer; } };
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
@@ -318,6 +319,58 @@ describe('permission timeout follows the task pause lifecycle', () => {
     await vi.advanceTimersByTimeAsync(20 * MINUTE);
     expect(p.settled).toHaveBeenCalledExactlyOnceWith({ kind: 'permission', behavior: 'allow' });
     expect(h.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['session_aborted', 'session_closed'])('aborts the migrated presentation signal on %s', async reason => {
+    const h = harness();
+    const pending = h.request('questionnaire', 'task', 'ask_user_question');
+    const [taken] = h.take('task');
+    expect(taken.signal?.aborted).toBe(false);
+    h.cleanup('task', reason);
+    expect(taken.signal?.aborted).toBe(true);
+    await pending.promise;
+  });
+
+  it.each(['session_aborted', 'session_closed'])('preserves completed migrated pages during %s cleanup', async reason => {
+    const h = harness();
+    const pending = h.request('questionnaire', 'task', 'ask_user_question');
+    const [taken] = h.take('task');
+    const present = vi.fn()
+      .mockResolvedValueOnce({ kind: 'ask_user_question', answers: { first: 'yes' } })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const result = presentChannelQuestionnaire({
+      kind: 'ask_user_question', requestId: 'questionnaire',
+      questions: ['first', 'second'].map(question => ({ question, options: [{ label: 'yes', description: '' }] })),
+    }, present, taken.signal, undefined, false, taken.onAnswers).then(taken.resolve);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(present).toHaveBeenCalledTimes(2);
+    h.hold('task', true);
+    h.cleanup('task', reason);
+    h.cleanup('task', reason);
+    await result;
+    taken.onAnswers?.({ first: 'late' });
+    taken.resolve({ kind: 'ask_user_question', answers: { first: 'late' } });
+    await expect(pending.promise).resolves.toEqual({ kind: 'ask_user_question', answers: { first: 'yes' }, dismissed: true });
+    expect(pending.settled).toHaveBeenCalledTimes(1);
+    expect(h.entries.size).toBe(0);
+    expect(h.dismiss).toHaveBeenCalledTimes(1);
+    expect(h.persist).toHaveBeenCalledExactlyOnceWith('task', undefined, 'ask_user_question', expect.anything(), { kind: 'ask_user_question', answers: { first: 'yes' }, dismissed: true });
+  });
+
+  it('preserves a complete migrated questionnaire deferred by pause when cancelled', async () => {
+    const h = harness();
+    const pending = h.request('questionnaire', 'task', 'ask_user_question');
+    const [taken] = h.take('task');
+    h.hold('task', true);
+    taken.resolve({ kind: 'ask_user_question', answers: { first: 'yes', second: 'no' } });
+    expect(pending.settled).not.toHaveBeenCalled();
+    h.cleanup('task', 'session_aborted');
+    await expect(pending.promise).resolves.toEqual({
+      kind: 'ask_user_question', answers: { first: 'yes', second: 'no' }, dismissed: true,
+    });
+    h.hold('task', false);
+    expect(h.entries.size).toBe(0);
+    expect(h.persist).toHaveBeenCalledTimes(1);
   });
 
   it.each(['permission', 'ask_user_question', 'plan_review'] as const)('defers a migrated %s answer until resume and ignores duplicates', async kind => {

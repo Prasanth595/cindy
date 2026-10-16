@@ -1,6 +1,7 @@
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
 import type { DingTalkIM } from '@cindy/im';
 
+import { t } from '../../i18n';
 import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
 import type { SharedPermission } from '../../maker-ipc/sharedPermission';
 import { permissionOutcomeText } from '../shared/permissionPresentation';
@@ -14,12 +15,13 @@ export function handleDingTalkTextInteraction(
   const shared = options?.sharedPermission;
   if (shared?.decision) return shared.result;
   if (request.kind === 'ask_user_question') {
-    return answerQuestions(im, userId, request);
+    return answerQuestions(im, userId, request, options?.timeoutMs);
   }
   const result = im.requestTextReply(userId, formatInteractionPrompt(request), (text) =>
     parseInteractionReply(request, text),
     options?.timeoutMs,
     shared,
+    request.requestId,
   ).catch((error) => {
     if (!shared) throw error;
     shared.decide({ kind: 'permission', behavior: 'deny', reason: 'dingtalk_interaction_timeout_or_cancelled' });
@@ -35,14 +37,22 @@ async function answerQuestions(
   im: DingTalkIM,
   userId: string,
   request: Extract<InteractionRequest, { kind: 'ask_user_question' }>,
+  timeoutMs?: number,
 ): Promise<InteractionDecision> {
   const answers: Record<string, string> = {};
   for (const [index, question] of request.questions.entries()) {
-    answers[question.question] = await im.requestTextReply(
-      userId,
-      formatQuestionPrompt(question, index, request.questions.length),
-      (text) => parseQuestionAnswer(question, text),
-    );
+    try {
+      answers[question.question] = await im.requestTextReply(
+        userId,
+        formatQuestionPrompt(question, index, request.questions.length),
+        (text) => parseQuestionAnswer(question, text),
+        timeoutMs,
+        undefined,
+        request.requestId,
+      );
+    } catch {
+      return { kind: 'ask_user_question', answers, dismissed: true };
+    }
   }
   return { kind: 'ask_user_question', answers };
 }
@@ -76,11 +86,17 @@ function formatQuestionPrompt(
   index: number,
   total: number,
 ): string {
-  const lines = [`需要你补充信息（${index + 1}/${total}）：${question.question}`];
+  // A shared questionnaire page contains one question; its local count is not
+  // the progress of the original questionnaire.
+  const prompt = t(total > 1 ? 'settings.imBot.textQuestionWithProgress' : 'settings.imBot.textQuestion')
+    .replace('{{index}}', String(index + 1))
+    .replace('{{total}}', String(total))
+    .replace('{{question}}', () => question.question);
+  const lines = [prompt];
   question.options?.forEach((option, optionIndex) => {
     lines.push(`${optionIndex + 1}) ${option.label}`);
   });
-  lines.push('请回复选项序号或你的答案。');
+  lines.push(t('settings.imBot.textQuestionReplyHint'));
   return lines.join('\n');
 }
 

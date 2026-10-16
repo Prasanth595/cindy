@@ -23,8 +23,9 @@ import type {
   SessionSendResult,
   TurnPermissionPolicy,
 } from '@cindy/maker-core';
-import type { ChannelIM } from '@cindy/im';
-import { setMainLocale } from '../../../i18n';
+import type { ChannelIM, IMMessageEvent, WecomIM } from '@cindy/im';
+import { WecomTextInteractions } from '../../wecom/textInteractions';
+import { setMainLocale, t } from '../../../i18n';
 import { enqueueAskCardPatch } from '../askCardPatchQueue';
 import { createSerializedConnectionLifecycle } from '../../connectionLifecycle';
 
@@ -981,6 +982,180 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     h.emit({ type: 'done', data: {} });
     await flushMicrotasks();
     expect(isHeadlessGhostSetupTurn('feishu-session')).toBe(false);
+  });
+
+  it.each(['wechat', 'wecom', 'dingtalk'] as const)(
+    'collects all free-text answers from the single-question %s adapter',
+    async (channel) => {
+      const h = setupSession(async () => ({ accepted: true }));
+      const handleTextInteraction = vi.fn(async (_userId: string, request: InteractionRequest): Promise<InteractionDecision> => {
+        if (request.kind !== 'ask_user_question') throw new Error('Expected question');
+        return { kind: 'ask_user_question', answers: { [request.questions[0].question]: 'answer' } };
+      });
+      const localRunner = createTurnRunner({
+        ...fakeAdapter, channel,
+        output: { kind: 'chunked-text', im: mocks.feishuIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+        handleTextInteraction,
+      }, fakeRepo, fakeCards);
+      try {
+        await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'text-pages', text: 'ask', attachments: [] });
+        const request: InteractionRequest = { kind: 'ask_user_question', requestId: 'text-pages', questions: [{ question: 'Name?' }, { question: 'City?' }] };
+        await expect(h.dispatchInteraction(request)).resolves.toEqual({ kind: 'ask_user_question', answers: { 'Name?': 'answer', 'City?': 'answer' } });
+        expect(handleTextInteraction).toHaveBeenCalledTimes(2);
+        expect(handleTextInteraction.mock.calls.map(([, req]) => req.requestId)).toEqual(['text-pages:question:0', 'text-pages:question:1']);
+      } finally {
+        h.emit({ type: 'done', data: {} });
+        await localRunner.disposeAllSessions();
+      }
+    },
+  );
+
+  it.each(['wechat', 'wecom', 'dingtalk'] as const)(
+    'collects every question when %s takes over a Desktop questionnaire',
+    async (channel) => {
+      setupAttachedSession(async () => ({ accepted: true }));
+      const resolve = vi.fn();
+      const handleTextInteraction = vi.fn(async (_userId: string, request: InteractionRequest): Promise<InteractionDecision> => {
+        if (request.kind !== 'ask_user_question') throw new Error('Expected question');
+        return { kind: 'ask_user_question', answers: { [request.questions[0].question]: 'answer' } };
+      });
+      mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+        requestId: 'text-takeover', request: { kind: 'ask_user_question', requestId: 'text-takeover', questions: [{ question: 'Name?' }, { question: 'City?' }] },
+        resolve, signal: new AbortController().signal,
+      }]);
+      const localRunner = createTurnRunner({
+        ...fakeAdapter, channel,
+        output: { kind: 'chunked-text', im: mocks.feishuIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+        handleTextInteraction,
+      }, fakeRepo, fakeCards);
+      try {
+        await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'text-takeover', text: 'ask', attachments: [] });
+        await waitForAssertion(() => expect(resolve).toHaveBeenCalledOnce());
+        expect(resolve).toHaveBeenCalledWith({ kind: 'ask_user_question', answers: { 'Name?': 'answer', 'City?': 'answer' } });
+        expect(handleTextInteraction).toHaveBeenCalledTimes(2);
+      } finally { await localRunner.disposeAllSessions(); }
+    },
+  );
+
+  it('cancels the current text page when its Desktop owner cancels a migrated questionnaire', async () => {
+    setupAttachedSession(async () => ({ accepted: true }));
+    const controller = new AbortController();
+    const resolve = vi.fn();
+    const onAnswers = vi.fn();
+    const handleTextInteraction = vi.fn(async (_userId: string, request: InteractionRequest): Promise<InteractionDecision> => {
+      if (request.kind !== 'ask_user_question') throw new Error('Expected question');
+      if (request.questions[0].question === 'First?') return { kind: 'ask_user_question', answers: { 'First?': 'answer' } };
+      return new Promise(() => {});
+    });
+    const cancelTextInteraction = vi.fn(() => true);
+    mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+      requestId: 'text-cancel', request: { kind: 'ask_user_question', requestId: 'text-cancel', questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })) },
+      resolve, onAnswers, signal: controller.signal,
+    }]);
+    const localRunner = createTurnRunner({
+      ...fakeAdapter, channel: 'wechat',
+      output: { kind: 'chunked-text', im: mocks.feishuIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+      handleTextInteraction, cancelTextInteraction,
+    }, fakeRepo, fakeCards);
+    try {
+      await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'text-cancel', text: 'ask', attachments: [] });
+      await waitForAssertion(() => expect(handleTextInteraction).toHaveBeenCalledTimes(2));
+      expect(onAnswers).toHaveBeenCalledExactlyOnceWith({ 'First?': 'answer' });
+      controller.abort();
+      await waitForAssertion(() => expect(resolve).toHaveBeenCalledWith({ kind: 'ask_user_question', answers: { 'First?': 'answer' }, dismissed: true }));
+      expect(cancelTextInteraction).toHaveBeenCalledExactlyOnceWith('ou_user', 'text-cancel:question:1', expect.objectContaining({ dismissed: true }));
+      expect(handleTextInteraction).toHaveBeenCalledTimes(2);
+    } finally { await localRunner.disposeAllSessions(); }
+  });
+
+  it.each(['stop', 'dispose', 'desktop'] as const)(
+    'closes a late text page after %s without losing earlier answers', async (cancellation) => {
+      const h = cancellation === 'desktop'
+        ? setupAttachedSession(async () => ({ accepted: true }))
+        : setupSession(async () => ({ accepted: true }));
+      const controller = new AbortController();
+      const resolve = vi.fn();
+      const delivered: string[] = [];
+      const delivery = deferred<void>();
+      let intercept!: (event: IMMessageEvent) => boolean;
+      const sendMarkdownText = vi.fn(async (_userId: string, text: string) => {
+        if (text.includes('Second?')) await delivery.promise;
+        delivered.push(text);
+        return { messageId: 'prompt' };
+      });
+      const im = {
+        ...mocks.feishuIm,
+        onTextMessageIntercept: (handler: typeof intercept) => { intercept = handler; },
+        onStatusChange: vi.fn(),
+        sendMarkdownText,
+        sendText: vi.fn(async (_userId: string, text: string) => {
+          delivered.push(text);
+          return { messageId: 'text' };
+        }),
+      };
+      const interactions = new WecomTextInteractions(im as unknown as WecomIM);
+      const request: InteractionRequest = {
+        kind: 'ask_user_question', requestId: 'late-text',
+        questions: ['First?', 'Second?', 'Third?'].map(question => ({ question })),
+      };
+      if (cancellation === 'desktop') mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+        requestId: request.requestId, request, resolve, signal: controller.signal,
+      }]);
+      const localRunner = createTurnRunner({
+        ...fakeAdapter, channel: 'wecom', interactionExpiredNotice: 'expired',
+        output: { kind: 'chunked-text', im: im as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+        handleTextInteraction: interactions.handle.bind(interactions),
+        cancelTextInteraction: interactions.cancel.bind(interactions),
+      }, fakeRepo, fakeCards);
+      try {
+        await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'late-text', text: 'ask', attachments: [] });
+        const answer = cancellation === 'desktop' ? undefined : h.dispatchInteraction(request);
+        await waitForAssertion(() => expect(sendMarkdownText).toHaveBeenCalledOnce());
+        expect(intercept({ senderId: 'ou_user', text: 'first answer' } as IMMessageEvent)).toBe(true);
+        await waitForAssertion(() => expect(sendMarkdownText).toHaveBeenCalledTimes(2));
+        if (cancellation === 'desktop') controller.abort();
+        else if (cancellation === 'dispose') await localRunner.disposeAllSessions();
+        else {
+          await localRunner.stopActiveTurn({ botContextId: 'cli_test_bot', userId: 'ou_user' });
+          h.emit({ type: 'done', data: {} });
+        }
+        const expected = { kind: 'ask_user_question', answers: { 'First?': 'first answer' }, dismissed: true };
+        if (answer) await expect(answer).resolves.toEqual(expected);
+        else await waitForAssertion(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(expected));
+        expect(delivered).not.toContain('expired');
+        delivery.resolve(undefined);
+        await waitForAssertion(() => expect(delivered.at(-1)).toBe('expired'));
+        expect(delivered.at(-2)).toContain('Second?');
+        expect(sendMarkdownText).toHaveBeenCalledTimes(2);
+        expect(intercept({ senderId: 'ou_user', text: 'late answer' } as IMMessageEvent)).toBe(false);
+        expect(delivered.filter(text => text === 'expired')).toHaveLength(1);
+      } finally {
+        delivery.resolve(undefined);
+        h.emit({ type: 'done', data: {} });
+        await localRunner.disposeAllSessions();
+      }
+    },
+  );
+
+  it('preserves complete free-text questionnaires on chunked-text adapters', async () => {
+    const h = setupSession(async () => ({ accepted: true }));
+    const answer: InteractionDecision = { kind: 'ask_user_question', answers: { 'Name?': 'Alice', 'City?': 'Paris' } };
+    const handleTextInteraction = vi.fn(async () => answer);
+    const localRunner = createTurnRunner({
+      ...fakeAdapter,
+      channel: 'dingtalk',
+      supportsMultiQuestionInput: true,
+      output: { kind: 'chunked-text', im: mocks.feishuIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined) },
+      handleTextInteraction,
+    }, fakeRepo, fakeCards);
+    try {
+      await localRunner.runAgentTurn({ botContextId: 'cli_test_bot', userId: 'ou_user', userMessageId: 'msg-text-questionnaire', text: 'ask', attachments: [] });
+      const request: InteractionRequest = { kind: 'ask_user_question', requestId: 'text-questionnaire', questions: [{ question: 'Name?' }, { question: 'City?' }] };
+      await expect(h.dispatchInteraction(request)).resolves.toEqual(answer);
+      expect(handleTextInteraction).toHaveBeenCalledOnce();
+      expect(handleTextInteraction.mock.calls[0]).toEqual(expect.arrayContaining(['ou_user', request]));
+      h.emit({ type: 'done', data: {} });
+    } finally { await localRunner.disposeAllSessions(); }
   });
 
   it('holds a host turn lease and applies channel policy timeout/state metadata', async () => {
@@ -3943,6 +4118,81 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     expect(mocks.persistUserMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('paginates every question when taking over a Desktop questionnaire', async () => {
+    setupAttachedSession(async () => ({ accepted: true }));
+    const questions = Array.from({ length: 50 }, (_, i) => ({ question: `Question ${i}`, options: [{ label: 'yes', description: '' }] }));
+    const resolve = vi.fn();
+    mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+      requestId: 'migrated-checklist', request: { kind: 'ask_user_question', requestId: 'migrated-checklist', questions },
+      resolve, signal: new AbortController().signal,
+    }]);
+    mocks.buildAskUserCard.mockReturnValue({ body: 'question', buttons: [] });
+    mocks.feishuIm.sendInteractiveCard.mockResolvedValue({ messageId: 'page' });
+    mocks.registerPending.mockImplementation(async (id: string) => ({
+      kind: 'ask_user_question', answers: { [`Question ${id.split(':').at(-1)}`]: 'yes' },
+    }));
+    await runDefaultTurn();
+    await waitForAssertion(() => expect(resolve).toHaveBeenCalledOnce());
+    expect(resolve).toHaveBeenCalledWith({ kind: 'ask_user_question', answers: Object.fromEntries(questions.map(q => [q.question, 'yes'])) });
+    expect(mocks.buildAskUserCard).toHaveBeenCalledTimes(50);
+    expect(mocks.buildAskUserCard.mock.calls.every(([req]) => req.questions.length === 1)).toBe(true);
+    expect(mocks.registerPendingExternal).not.toHaveBeenCalled();
+    mocks.feishuIm.sendInteractiveCard.mockReset();
+    mocks.registerPending.mockReset();
+  });
+
+  it('expires a late migrated page after its Desktop owner cancels', async () => {
+    setupAttachedSession(async () => ({ accepted: true }));
+    const controller = new AbortController();
+    const delivery = deferred<{ messageId: string }>();
+    vi.mocked(fakeCards.buildResolvedCard).mockReturnValue({ body: 'expired', buttons: [] });
+    const resolve = vi.fn();
+    mocks.takePendingInteractionsForSession.mockReturnValueOnce([{
+      requestId: 'migrated-late', request: { kind: 'ask_user_question', requestId: 'migrated-late',
+        questions: ['First?', 'Second?'].map(question => ({ question, options: [{ label: 'yes', description: '' }] })) },
+      resolve, signal: controller.signal,
+    }]);
+    mocks.buildAskUserCard.mockReturnValue({ body: 'question', buttons: [] });
+    mocks.feishuIm.sendInteractiveCard.mockImplementationOnce(() => delivery.promise);
+    await runDefaultTurn();
+    await waitForAssertion(() => expect(mocks.feishuIm.sendInteractiveCard).toHaveBeenCalledOnce());
+    controller.abort();
+    await waitForAssertion(() => expect(resolve).toHaveBeenCalledWith({ kind: 'ask_user_question', answers: {}, dismissed: true }));
+    delivery.resolve({ messageId: 'late-migrated' });
+    await waitForAssertion(() => expect(mocks.feishuIm.updateInteractiveCard).toHaveBeenCalledWith('late-migrated', expect.anything()));
+    expect(mocks.registerPending).not.toHaveBeenCalled();
+    expect(mocks.feishuIm.sendInteractiveCard).toHaveBeenCalledOnce();
+    mocks.feishuIm.sendInteractiveCard.mockReset();
+  });
+
+  it.each([1, 2])('expires a questionnaire card delivered after Stop on page %i', async (page) => {
+    const delivery = deferred<{ messageId: string }>();
+    const expired = { body: 'expired', buttons: [] };
+    mocks.buildAskUserCard.mockReturnValue({ body: 'question', buttons: [] });
+    mocks.feishuIm.sendInteractiveCard.mockReset();
+    if (page === 2) mocks.feishuIm.sendInteractiveCard.mockResolvedValueOnce({ messageId: 'first-page' });
+    mocks.feishuIm.sendInteractiveCard.mockImplementationOnce(() => delivery.promise);
+    mocks.registerPending.mockResolvedValue({ kind: 'ask_user_question', answers: { 'First?': 'yes' } });
+    runner = createTurnRunner(fakeAdapter, fakeRepo,
+      { ...fakeCards, buildResolvedCard: vi.fn(() => expired) } as unknown as ImCardBuilders);
+    const h = setupSession(async () => ({ accepted: true }));
+    await runDefaultTurn();
+    const answer = h.dispatchInteraction({
+      kind: 'ask_user_question', requestId: 'late-checklist',
+      questions: [{ question: 'First?', options: [{ label: 'yes', description: '' }] }, { question: 'Second?', options: [{ label: 'yes', description: '' }] }],
+    });
+    await waitForAssertion(() => expect(mocks.feishuIm.sendInteractiveCard).toHaveBeenCalledTimes(page));
+    await getRunner().stopActiveTurn({ botContextId: 'cli_test_bot', userId: 'ou_user' });
+    h.emit({ type: 'done', data: {} });
+    await expect(answer).resolves.toMatchObject({ kind: 'ask_user_question' });
+    delivery.resolve({ messageId: 'late-page' });
+    await waitForAssertion(() => expect(mocks.feishuIm.updateInteractiveCard).toHaveBeenCalledWith('late-page', expired));
+    expect(mocks.registerPending).toHaveBeenCalledTimes(page - 1);
+    expect(mocks.feishuIm.sendInteractiveCard).toHaveBeenCalledTimes(page);
+    mocks.feishuIm.sendInteractiveCard.mockReset();
+    mocks.registerPending.mockReset();
+  });
+
   it('bounds disposal when an expiry fails and another channel update stalls', async () => {
     const stalled = deferred<void>();
     const update = vi.fn()
@@ -4031,7 +4281,8 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     }
   });
 
-  it('retains optional expiry capability and distinct runner identities', async () => {
+  it('expires cards without an adapter override and retains distinct runner identities', async () => {
+    vi.mocked(fakeCards.buildResolvedCard).mockReturnValueOnce({ body: 'expired', buttons: [] });
     const first = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
     const second = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
     mocks.rejectAllPending.mockReturnValueOnce([{ requestId: 'no-expiry', messageId: 'legacy' }]);
@@ -4040,7 +4291,8 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     await flushMicrotasks();
     const calls = mocks.rejectAllPending.mock.calls;
     expect(calls.at(-2)?.[1]).not.toBe(calls.at(-1)?.[1]);
-    expect(mocks.feishuIm.updateInteractiveCard).not.toHaveBeenCalled();
+    expect(fakeCards.buildResolvedCard).toHaveBeenCalledWith(t('settings.imBot.interactionExpired'));
+    expect(mocks.feishuIm.updateInteractiveCard).toHaveBeenCalledWith('legacy', expect.anything());
   });
 
   it('disposeAllSessions aborts and awaits an IM-owned in-flight turn', async () => {

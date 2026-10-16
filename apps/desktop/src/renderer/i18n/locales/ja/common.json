@@ -5341,6 +5341,10 @@
       "standbyHint": "このパソコンの別の Cindy インスタンスがリモート接続を使用しています。それを閉じると、このインスタンスが自動的に引き継ぎます。"
     },
     "imBot": {
+      "interactionExpired": "この操作は期限切れです。",
+      "textQuestion": "回答が必要です：{{question}}",
+      "textQuestionWithProgress": "回答が必要です（{{index}}/{{total}}）：{{question}}",
+      "textQuestionReplyHint": "選択肢の番号または回答を入力してください。",
       "beta": "Beta",
       "groups": {
         "cindy": "公式",

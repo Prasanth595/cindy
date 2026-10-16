@@ -5341,6 +5341,10 @@
       "standbyHint": "本機另一 Cindy 例項正在使用遠端連線。關閉它後，本例項會自動接管。"
     },
     "imBot": {
+      "interactionExpired": "此互動已失效。",
+      "textQuestion": "需要你補充資訊：{{question}}",
+      "textQuestionWithProgress": "需要你補充資訊（{{index}}/{{total}}）：{{question}}",
+      "textQuestionReplyHint": "請回覆選項編號或你的答案。",
       "beta": "Beta",
       "groups": {
         "cindy": "官方",

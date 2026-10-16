@@ -5370,6 +5370,10 @@
       "standbyHint": "Another Cindy instance on this computer is using the remote connection. Close it and this instance takes over automatically."
     },
     "imBot": {
+      "interactionExpired": "This interaction has expired.",
+      "textQuestion": "Answer needed: {{question}}",
+      "textQuestionWithProgress": "Answer needed ({{index}}/{{total}}): {{question}}",
+      "textQuestionReplyHint": "Reply with an option number or your answer.",
       "beta": "Beta",
       "groups": {
         "cindy": "Official",
