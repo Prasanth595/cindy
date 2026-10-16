@@ -129,6 +129,14 @@ describe('remote provider file paths', () => {
             .toBe(variable + '=' + quote + local + ':$' + variable + quote + ' command');
         }
       }
+      for (const variable of ['PATH', 'NODE_PATH']) {
+        for (const quote of ['', '"', "'"]) {
+          expect(workspace.mapCommand(variable + '+=' + quote + ':' + SHADOW + ':$' + variable + quote + ' command'))
+            .toBe(variable + '+=' + quote + ':' + local + ':$' + variable + quote + ' command');
+        }
+      }
+      expect(workspace.mapCommand('FILE+="' + SHADOW + ':literal" command'))
+        .toBe('FILE+="' + agentStyle(workspace.resolve(SHADOW + ':literal')) + '" command');
       expect(workspace.mapCommand('FILE="' + SHADOW + ':literal" command'))
         .toBe('FILE="' + agentStyle(workspace.resolve(SHADOW + ':literal')) + '" command');
       expect(workspace.mapCommand('set "FILE=' + SHADOW + ';literal"', 'cmd'))
@@ -156,6 +164,30 @@ describe('remote provider file paths', () => {
       for (const suffix of ['*', '?', '[ab]']) {
         const virtual = SHADOW + suffix;
         expect(workspace.mapCommand('ls "' + virtual + '"')).toBe('ls "' + agentStyle(workspace.resolve(virtual)) + '"');
+      }
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('keeps dynamic suffixes in file contents and recognizes existing literal sibling names', async () => {
+    const { parent, workingDir, workspace, executor } = setup();
+    try {
+      const script = ['*', '?', '$suffix', '${suffix}', '%SUFFIX%'].map((suffix) => 'echo ' + SHADOW + suffix).join('\n');
+      const expected = ['*', '?', '$suffix', '${suffix}', '%SUFFIX%'].map((suffix) => 'echo ' + agentStyle(workingDir) + suffix).join('\n');
+      await executor.callTool('Write', { file_path: SHADOW + '/script.sh', content: script });
+      expect(fs.readFileSync(path.join(workingDir, 'script.sh'), 'utf8')).toBe(expected);
+      expect(workspace.mapTextForAgent(expected)).toBe(script);
+      expect(workspace.mapContentFromAgent(script, expected)).toBe(expected);
+      for (const suffix of ['$suffix', '%SUFFIX%']) {
+        const literal = path.join(parent, 'p' + suffix);
+        fs.mkdirSync(literal);
+        expect(workspace.mapContentFromAgent('literal: ' + SHADOW + suffix))
+          .toBe('literal: ' + agentStyle(literal));
+        const realSibling = workingDir + suffix;
+        fs.mkdirSync(realSibling);
+        expect(workspace.mapTextForAgent('literal: ' + realSibling))
+          .toBe('literal: ' + PARENT + '/flash-party-retro' + suffix);
       }
     } finally {
       await executor.close();

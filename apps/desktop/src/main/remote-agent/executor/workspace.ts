@@ -83,8 +83,8 @@ function stripAliasPrefix(input: string, from: string): string | null {
 
 const WINDOWS_PATH = /^[A-Za-z]:|^[\\/]{2}/;
 
-/** 正文里目录名后面出现这些字符时，这一段通常到此结束。 */
-const NAME_END = /[\s"'\x60<>()[\]{}|&;:,，。、；：！？（）【】《》「」『』“”‘’]/;
+/** 正文与脚本里的路径边界（含通配符/变量后缀）；若磁盘上存在同名延续，仍由 continuesName 保留字面目录名。 */
+const NAME_END = /[\s"'\x60<>()[\]{}|&;:,*?$%，。、；：！？（）【】《》「」『』“”‘’]/;
 
 /**
  * 目录前缀后面那个字符是否让这一段结束。串尾和分隔符一定结束；空白、引号、括号和句末标点
@@ -841,7 +841,7 @@ export class ExecutorWorkspace {
     const inPathList = (input: string, index: number): boolean => {
       const { wordStart } = commandContext(input, index);
       const word = input.slice(wordStart, index);
-      const assignment = (dialect === 'cmd' ? /^"?([A-Za-z_][A-Za-z0-9_]*)=/ : /^([A-Za-z_][A-Za-z0-9_]*)=/).exec(word);
+      const assignment = (dialect === 'cmd' ? /^"?([A-Za-z_][A-Za-z0-9_]*)=/ : /^([A-Za-z_][A-Za-z0-9_]*)\+?=/).exec(word);
       if (!assignment) return false;
       const name = dialect === 'cmd' ? assignment[1].toUpperCase() : assignment[1];
       // 常见环境路径列表也包括 NODE_PATH、CLASSPATH、XDG_DATA_DIRS 等。
