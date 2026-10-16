@@ -43,4 +43,4 @@ PINNED_SORT_CHROMIUM_PATH='/path/to/existing/Chromium' \
 
 ## PR 附件入口
 
-[PR #5712](https://github.com/makecindy/cindy/pull/5712)。本页的组件 HTML 和截图保留在本地，未单独上传为 PR 附件。2026-10-16 已补充独立完整 Electron 验收及公开录屏，见[运行时证据索引](../2026-10-16/pinned-order-runtime.md)：包含 Light/Dark 的文字、列表、双列卡片及真实应用进程重启检查。公开评论使用内嵌录屏的 HTML 代码块，不称为 GitHub 附件；两批证据范围分别记录。
+[PR #5712](https://github.com/makecindy/cindy/pull/5712)。本页的组件 HTML 和截图保留在本地，未单独上传为 PR 附件。2026-10-16 已补充独立完整 Electron 验收，见[运行时证据索引](../2026-10-16/pinned-order-runtime.md)及[正式附件评论](https://github.com/makecindy/cindy/pull/5712#issuecomment-6217226511)：ZIP 包含 Light/Dark 的文字、列表、双列卡片六段录屏和六张真实应用进程重启后的截图。此前 HTML 代码块仅作补充预览；两批证据范围分别记录。
