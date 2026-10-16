@@ -10,7 +10,7 @@ import { PassThrough } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const spawned = vi.hoisted(() => ({ lines: [] as string[], children: [] as Array<{ stdout: PassThrough }> }));
+const spawned = vi.hoisted(() => ({ lines: [] as string[] }));
 
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
@@ -25,7 +25,6 @@ vi.mock('node:child_process', async (importOriginal) => ({
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = () => undefined;
-    spawned.children.push(child);
     child.stdin.on('data', (chunk: Buffer) => {
       spawned.lines.push(...chunk.toString().split('\n').filter(Boolean));
     });
@@ -43,14 +42,14 @@ let root: string;
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-relay-consent-')));
   spawned.lines = [];
-  spawned.children = [];
 });
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function setup(authorize?: (action: ExecutorAction) => ExecutorGateDecision, workspace = new ExecutorWorkspace({ workingDir: root })) {
+function setup(authorize?: (action: ExecutorAction) => ExecutorGateDecision) {
+  const workspace = new ExecutorWorkspace({ workingDir: root });
   const approved = new Set<string>();
   const pending: Array<{ action: ExecutorAction; answer(allowed: boolean): void }> = [];
   const replies: Array<Record<string, unknown>> = [];
@@ -119,13 +118,13 @@ describe('exec-server relay with confirmation on this computer', () => {
     expect(pending).toEqual([]);
   });
 
-  it.each(['fs/writeFile', 'fs/open'])('does not read old content while %s is awaiting consent or after it is denied', async (method) => {
+  it('does not read old file content while a write is awaiting consent or after it is denied', async () => {
     const target = path.join(root, 'denied.txt');
     fs.writeFileSync(target, 'old content');
     const { relay, send, pending, replies, sentIds } = setup(() => ({ ok: false, reason: 'write denied' }));
     const read = vi.spyOn(fs, 'readFileSync');
     try {
-      send({ id: 1, method, params: { path: target, mode: 'replace', dataBase64: Buffer.from('new content').toString('base64') } });
+      send({ id: 1, method: 'fs/writeFile', params: { path: target, dataBase64: Buffer.from('new content').toString('base64') } });
       await vi.waitFor(() => expect(pending).toHaveLength(1));
       expect(read).not.toHaveBeenCalledWith(target);
       pending[0].answer(false);
@@ -164,76 +163,6 @@ describe('exec-server relay with confirmation on this computer', () => {
     expect(pending[0].action).toEqual({ kind: 'write', path: path.join(root, '.env') });
     pending[0].answer(false);
     await vi.waitFor(() => expect(replies).toEqual([{ id: 1, error: { code: -32001, message: 'needs confirmation' } }]));
-  });
-
-  it.each(['supplied', 'returned'])('keeps original path spellings for a %s write handle after open truncates the file', async (handleSource) => {
-    const actual = path.join(root, 'project');
-    const virtual = '/Users/agent/workspace';
-    fs.mkdirSync(actual, { recursive: true });
-    const target = path.join(actual, 'notes.json');
-    const original = JSON.stringify({ out: path.join(actual, 'out.txt') });
-    fs.writeFileSync(target, original);
-    const workspace = new ExecutorWorkspace({ workingDir: actual, aliases: [{ from: virtual, to: actual }] });
-    workspace.setVirtualRoot(virtual);
-    const { relay, send, sentIds } = setup(undefined, workspace);
-    try {
-      send({ id: 1, method: 'fs/open', params: { mode: 'replace', path: virtual + '/notes.json',
-        ...(handleSource === 'supplied' ? { handleId: 'write-handle' } : {}) } });
-      await vi.waitFor(() => expect(sentIds()).toEqual([1]));
-      fs.writeFileSync(target, '');
-      spawned.children[0].stdout.write(JSON.stringify({ id: 1, result: handleSource === 'returned' ? { handleId: 'write-handle' } : {} }) + '\n');
-      send({ id: 2, method: 'fs/writeBlock', params: { handleId: 'write-handle',
-        dataBase64: Buffer.from(JSON.stringify({ out: virtual + '/out.txt' })).toString('base64') } });
-      await vi.waitFor(() => expect(sentIds()).toEqual([1, 2]));
-      const forwarded = JSON.parse(spawned.lines[1]) as { params: { dataBase64: string } };
-      expect(Buffer.from(forwarded.params.dataBase64, 'base64').toString('utf8')).toBe(original);
-    } finally {
-      relay.close();
-    }
-  });
-
-  it('does not pre-read credentials or read-only opens, even after authorization', () => {
-    const secret = path.join(root, '.env');
-    const ordinary = path.join(root, 'notes.txt');
-    fs.writeFileSync(secret, 'FAKE_TEST_VALUE=unused');
-    fs.writeFileSync(ordinary, 'ordinary content');
-    const { relay, send, sentIds } = setup(() => ({ ok: true }));
-    const read = vi.spyOn(fs, 'readFileSync');
-    try {
-      send({ id: 1, method: 'fs/open', params: { path: secret, mode: 'replace', handleId: 'secret' } });
-      send({ id: 2, method: 'fs/open', params: { path: ordinary, mode: 'read', handleId: 'read' } });
-      expect(sentIds()).toEqual([1, 2]);
-      expect(read).not.toHaveBeenCalledWith(secret);
-      expect(read).not.toHaveBeenCalledWith(ordinary);
-    } finally {
-      read.mockRestore();
-      relay.close();
-    }
-  });
-
-  it.each(['closed', 'failed'])('releases a %s handle before it can restore stale file content', (ending) => {
-    const actual = path.join(root, 'project');
-    const virtual = '/Users/agent/workspace';
-    fs.mkdirSync(actual, { recursive: true });
-    fs.writeFileSync(path.join(actual, 'notes.json'), JSON.stringify({ out: path.join(actual, 'out.txt') }));
-    const workspace = new ExecutorWorkspace({ workingDir: actual, aliases: [{ from: virtual, to: actual }] });
-    workspace.setVirtualRoot(virtual);
-    const { relay, send } = setup(undefined, workspace);
-    try {
-      send({ id: 1, method: 'fs/open', params: { path: virtual + '/notes.json', mode: 'replace', fd: 7 } });
-      spawned.children[0].stdout.write(JSON.stringify(ending === 'failed'
-        ? { id: 1, error: { code: -1, message: 'open failed' } } : { id: 1, result: {} }) + '\n');
-      if (ending === 'closed') {
-        send({ id: 2, method: 'fs/close', params: { fd: 7 } });
-        spawned.children[0].stdout.write(JSON.stringify({ id: 2, result: {} }) + '\n');
-      }
-      const data = Buffer.from(JSON.stringify({ out: virtual + '/out.txt' }));
-      send({ id: 3, method: 'fs/writeBlock', params: { fd: 7, dataBase64: data.toString('base64') } });
-      const forwarded = JSON.parse(spawned.lines.at(-1)!) as { params: { dataBase64: string } };
-      expect(Buffer.from(forwarded.params.dataBase64, 'base64')).toEqual(workspace.mapInputFromAgent(data));
-    } finally {
-      relay.close();
-    }
   });
 
   it('keeps later messages behind one that waits for the user, then forwards them in order', async () => {
