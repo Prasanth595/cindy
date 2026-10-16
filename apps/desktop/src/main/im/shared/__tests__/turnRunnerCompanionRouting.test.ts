@@ -11,7 +11,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentEvent, Session, SessionSendResult } from '@cindy/maker-core';
+import type { AgentEvent, MakerEvent, Session, SessionSendResult } from '@cindy/maker-core';
 import type { ChannelIM } from '@cindy/im';
 
 const mocks = vi.hoisted(() => ({
@@ -70,6 +70,7 @@ vi.mock('../../../maker-ipc/register', () => ({
   noteSilentStopUserSend: mocks.noteSilentStopUserSend,
   stopSessionTurnExplicitly: mocks.stopSessionTurnExplicitly,
   onSilentStopSettled: mocks.onSilentStopSettled,
+  beginTurnChangeSetAtDispatch: vi.fn(async () => undefined),
 }));
 vi.mock('../pendingInteractions', () => ({
   registerPending: vi.fn(),
@@ -385,6 +386,52 @@ describe('turnRunner: connection handed to a companion bot', () => {
     // The bot guard runs before the send lock is taken.
     expect(companion.prepareSend.mock.invocationCallOrder[0]!)
       .toBeLessThan(acquirePendingAgentSwitch.mock.invocationCallOrder[0]!);
+  });
+
+  it('keeps the turn alive when the bot guard applies the pending agent switch and closes the live session', async () => {
+    // reconcileBotModelRoute applies the staged switch immediately on an idle task:
+    // the live session closes with reason 'agent-switch' *inside* prepareSend, before
+    // the send lock's own suppression window. The runner must not forget the task.
+    const listeners: Array<(event: MakerEvent) => void> = [];
+    const switched = makeSessionHarness('mimi-main');
+    let live: Session | undefined;
+    const base = mocks.getMaker() as {
+      createSession: (args: { id?: string }) => Promise<Session>;
+    };
+    mocks.getMaker.mockReturnValue({
+      createSession: base.createSession,
+      getSession: vi.fn((id: string) => live ?? harnesses.get(id)?.session),
+      on: vi.fn((listener: (event: MakerEvent) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      }),
+    });
+    companion.prepareSend.mockImplementation(async () => {
+      const old = harnesses.get('mimi-main')!.session;
+      live = switched.session;
+      for (const listener of [...listeners]) {
+        listener({ type: 'session:closed', sessionId: 'mimi-main', session: old, reason: 'agent-switch' });
+      }
+      return null;
+    });
+    mocks.dbSelect.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => [{ ...botRows.get('mimi-main'), status: 'active' }],
+        }),
+      }),
+    }));
+    runner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+      companion: companion as unknown as ImCompanionRouteDeps,
+      acquirePendingAgentSwitch,
+    });
+
+    await runTurn(OWNER);
+
+    expect(harnesses.get('mimi-main')!.send).not.toHaveBeenCalled();
+    expect(switched.send).toHaveBeenCalledTimes(1);
+    for (const [, text] of mocks.im.sendText.mock.calls) expect(String(text)).not.toContain('❌');
+    expect(runner.getMakerSessionById('mimi-main')).toBe(switched.session);
   });
 
   it('falls back to the channel’s own routing when the bot cannot be resolved, warning once', async () => {

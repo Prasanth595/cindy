@@ -1428,7 +1428,25 @@ export function createTurnRunner(
       // 再对齐伙伴模型链、刷新能力纪元。要在拿 send 锁之前做 —— 对齐登记的切换
       // 意图由下面的锁内应用落实。
       if (state.botLane && deps.companion?.prepareSend) {
-        const blocked = await deps.companion.prepareSend(rowId);
+        // 对齐模型链时任务空闲 → 伙伴守卫会就地应用切换意图(关旧 session 再建新的,
+        // close reason 'agent-switch')。这一关发生在下面 acquirePendingAgentSwitch
+        // 的抑制窗之前, 不抑制的话 close 监听会把本任务从缓存里忘掉, 这条消息随即
+        // 以「任务已关闭」失败。同一抑制口径提前覆盖守卫; 切换后的 live session 由
+        // 后面的 refreshSessionAfterPendingAgentSwitch 原地换绑。
+        let blocked: string | null;
+        if (deps.acquirePendingAgentSwitch) {
+          agentSwitchCloseSuppressed.set(rowId, { expectedSession: state.makerSession });
+          try {
+            blocked = await deps.companion.prepareSend(rowId);
+          } finally {
+            agentSwitchCloseSuppressed.delete(rowId);
+          }
+          if (sessionStates.get(rowId) !== state) {
+            throw new Error(`session ${rowId} closed while preparing the bot send`);
+          }
+        } else {
+          blocked = await deps.companion.prepareSend(rowId);
+        }
         if (blocked) {
           const text = ui.agent.companionUnavailable?.(blocked) ?? ui.agent.runtimeError(blocked);
           if (item.turn.queueMode === 'internal') {
