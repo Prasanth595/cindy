@@ -1,5 +1,6 @@
 import {
   isRemoteDesktopCursor,
+  REMOTE_DESKTOP_OFFER_BUDGET,
   type RemoteDesktopCursorFrame,
   type RemoteDesktopVideoSettings,
 } from '@cindy/device-link';
@@ -10,6 +11,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { desktopVideoFramerate, desktopVideoProfile } from '../../shared/remoteDesktopQuality';
+import { createLogger } from '../logger';
 import { openWindowsDesktopConnection, type WindowsDesktopConnection } from './windowsHost';
 import { decodeWindowsCursorFrame } from './windowsCursorFrame';
 
@@ -17,8 +19,11 @@ import { resolveLinuxCaptureBinary } from './linuxCapture';
 import { WAYLAND_DISPLAY_ID } from './waylandCapture';
 import { linuxMonitor } from './linuxDesktop';
 
+const log = createLogger('remote-desktop:native-capture');
 const exec = promisify(execFile);
 const name = 'cindy-macos-desktop-capture';
+// A running helper answers within this; a fresh one may still be starting capture.
+const FRAME_MS = 3000;
 let building: Promise<string> | null = null;
 async function binary(): Promise<string> {
   if (process.platform === 'linux') return resolveLinuxCaptureBinary();
@@ -90,7 +95,10 @@ async function binary(): Promise<string> {
  * stream as the live view. Its own pixels only, whatever covers it; never the
  * display. Null when it cannot be taken. Nothing is written to disk.
  */
-export async function photographMacWindow(displayId: string, windowId: number): Promise<Buffer | null> {
+export async function photographMacWindow(
+  displayId: string,
+  windowId: number,
+): Promise<Buffer | null> {
   if (process.platform !== 'darwin' || !/^[0-9]{1,10}$/.test(displayId)) return null;
   if (!Number.isSafeInteger(windowId) || windowId <= 0 || windowId > 0xffff_ffff) return null;
   const executable = await binary();
@@ -122,7 +130,10 @@ export async function photographMacWindow(displayId: string, windowId: number): 
       if (end < 0) return;
       try {
         const frame = JSON.parse(text.slice(0, end)) as { jpeg?: unknown };
-        const jpeg = typeof frame.jpeg === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(frame.jpeg) ? frame.jpeg : '';
+        const jpeg =
+          typeof frame.jpeg === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(frame.jpeg)
+            ? frame.jpeg
+            : '';
         finish(jpeg ? Buffer.from(jpeg, 'base64') : null);
       } catch {
         finish(null);
@@ -148,7 +159,8 @@ export class NativeDesktopCapture {
   private onlyWindow = '';
   /** 代输入 live view (macOS): capture just this window; null returns to the whole display. */
   setWindow(id: number | null): void {
-    const next = id && Number.isSafeInteger(id) && id > 0 && id <= 0xffff_ffff ? `window:${id}` : '';
+    const next =
+      id && Number.isSafeInteger(id) && id > 0 && id <= 0xffff_ffff ? `window:${id}` : '';
     if (next === this.onlyWindow) return;
     this.stop();
     this.onlyWindow = next;
@@ -239,6 +251,7 @@ export class NativeDesktopCapture {
     this.busy = true;
     const generation = this.generation;
     try {
+      const cold = !this.child;
       if (!this.child) {
         const output = linux && display !== WAYLAND_DISPLAY_ID ? await linuxMonitor(display) : null;
         const executable = await binary();
@@ -276,6 +289,7 @@ export class NativeDesktopCapture {
         });
         child.on('exit', (code) => {
           if (this.child !== child) return;
+          log.warn(`Native capture helper exited code=${code}`);
           this.cancel?.(
             new Error(
               code === 3 ? 'DESKTOP_SCREEN_PERMISSION_REQUIRED' : 'DESKTOP_VIDEO_UNAVAILABLE',
@@ -331,7 +345,14 @@ export class NativeDesktopCapture {
           }
           finish(generation === this.generation ? jpeg : null);
         };
-        const timer = setTimeout(() => this.stop(), 3000);
+        // Starting capture and the first cursor read can take seconds on a busy
+        // or high-resolution Mac; only later frames use the steady-state bound.
+        const waitMs = cold ? REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs : FRAME_MS;
+        const timer = setTimeout(() => {
+          if (generation === this.generation)
+            log.warn(`Native capture produced no frame within ${waitMs}ms cold=${cold}`);
+          this.stop();
+        }, waitMs);
         this.cancel = (error) => finish(null, error);
         child.stdout.on('data', receive);
         child.stdin.write('f');

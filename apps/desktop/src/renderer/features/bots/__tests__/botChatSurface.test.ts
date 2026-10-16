@@ -49,11 +49,12 @@ describe('消息流的头像挂载', () => {
 
   it('只有 assistant 分支挂头像', () => {
     expect(messageStream).toContain('return withAssistantAvatar(\n        assistantAvatar,');
-    // Assistant text shows the avatar; both task references reserve the same
-    // space invisibly. User messages and internal tool/work cards still bypass it.
-    expect(messageStream.match(/withAssistantAvatar\(/g)?.length).toBe(3);
-    expect(messageStream).toMatch(/simplifiedBotConversation\s*&&\s*\(message\.systemCardType === 'bot-session-task'\s*\|\|\s*message\.systemCardType === 'bot-session-task-result'\)\s*\? withAssistantAvatar\(/);
+    // Assistant text shows the avatar; task and teammate-message cards plus the
+    // work fold reserve the same space invisibly. User messages bypass it.
+    expect(messageStream.match(/withAssistantAvatar\(/g)?.length).toBe(4);
+    expect(messageStream).toMatch(/simplifiedBotConversation\s*&&\s*\(message\.systemCardType === 'bot-session-task'\s*\|\|\s*message\.systemCardType === 'bot-session-task-result'\s*\|\|\s*message\.systemCardType === 'bot-session-task-message'\s*\|\|\s*message\.systemCardType === 'bot-direct-message'\)\s*\? withAssistantAvatar\(/);
     expect(messageStream).toMatch(/<span aria-hidden="true" className="invisible">\s*\{assistantAvatar\}\s*<\/span>/);
+    expect(messageStream).toContain('{replyColumnSpacer ? withAssistantAvatar(replyColumnSpacer, block) : block}');
   });
 });
 
@@ -87,16 +88,19 @@ describe('伙伴设置包含独立能力选择入口', () => {
   });
 });
 
-describe('伙伴消息流收起内部工作过程', () => {
-  it('只对伙伴收拢过程，运行期间保留单一状态出口', () => {
+describe('伙伴消息流与普通任务同一套工作过程', () => {
+  it('工作组按普通任务渲染，输入框上方只保留普通状态栏', () => {
     expect(sessionView).toContain('simplifiedBotConversation={Boolean(botChatIdentity)}');
     expect(messageStream).toContain('simplifyBotRenderItems(grouped, isSessionStreaming, visibleGeneratedFileKeys)');
     // Text/tool grouping is covered by botConversationPresentation behavioral tests.
     expect(messageStream).toContain("from '@/features/bots/botConversationPresentation'");
-    expect(messageStream).toContain('compact={simplifiedBotConversation}');
+    expect(messageStream).toContain('compact={false}');
+    expect(messageStream).not.toContain('compact={simplifiedBotConversation}');
+    expect(messageStream).toContain('replyColumnSpacer={botReplyColumnSpacer}');
     expect(messageStream).not.toContain('data-testid="bot-thinking-indicator"');
-    expect(sessionView).toContain('<BotWorkingStatus');
-    expect(sessionView).toContain('visible={composerRuntimeVisible}');
+    expect(sessionView).not.toContain('<BotWorkingStatus');
+    expect(sessionView).toContain('<RunningStatusBar');
+    expect(sessionView).toContain('visible={composerRuntimeVisible');
     expect(sessionView).not.toContain('botAssistantOutputStarted');
   });
 

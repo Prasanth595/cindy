@@ -61,7 +61,6 @@ import {
 
 import { cn, basename } from '@/lib/utils';
 import { Spinner } from '@/components/ui/spinner';
-import { BotWorkingStatus } from '@/features/bots/BotWorkingStatus';
 import { setRemoteReceiptDisplayReady } from '@/lib/sessionAttentionStore';
 import { shortSessionId } from '@/lib/sessionId';
 import { ChatInput } from '@/components/new-chat/ChatInput';
@@ -1003,9 +1002,7 @@ function CCAgentSessionContent({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
-  // 伙伴没有 RunningStatusBar，折叠呼吸灯继续留在输入框上方，不能随状态行一起消失。
-  const showCenteredControlledBanner =
-    hasControlledBanner && (!controlledBannerCollapsed || Boolean(botChatIdentity));
+  const showCenteredControlledBanner = hasControlledBanner && !controlledBannerCollapsed;
   // assistant 气泡左侧的伙伴头像。节点在整场对话里是同一个,memo 住让 MessageItem
   // 的 memo 比较仍然成立(否则每帧新节点 = 全流重渲染)。
   const botAssistantAvatar = useMemo(
@@ -2101,7 +2098,7 @@ function CCAgentSessionContent({
     devices: providerShareDevices,
     nameFor: providerShareDeviceName,
     isReceived: isReceivedProviderShare,
-  } = useProviderShareAgentDevices([agentDeviceId, pendingAgentDeviceId]);
+  } = useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId);
   // 被控电脑上的任务 Agent 现在 / 挂着的位置是分享时:分享按账号授予,本机也收到了同一条就经本机
   // 的分享通道读它的目录,模型按钮按分享显示(否则只能读到被控电脑自己的目录,显示「模型信息暂
   // 不可用」)。本机没收到的分享读不到,维持原样。
@@ -2142,10 +2139,8 @@ function CCAgentSessionContent({
             devices: selectableDevices,
             controlledDeviceId: remoteDeviceId,
             keepDeviceIds: [controlledAgentDeviceId, pendingAgentDeviceId],
-            shareDevices: [...(controlledShareIds ?? [])].map((deviceId) => ({
-              deviceId,
-              name: providerShareDeviceName(deviceId) ?? deviceId,
-            })),
+            // 新分享落点须由被控端名单确认；不要求任务先使用它。
+            shareDevices: providerShareDevices,
           })
         : undefined;
     }
@@ -5175,27 +5170,7 @@ function CCAgentSessionContent({
               className="mx-auto grid grid-cols-1 grid-rows-1 items-center"
               style={{ width: inputWidth }}
             >
-              {botChatIdentity ? (
-                <BotWorkingStatus
-                  key={sessionId}
-                  sessionId={sessionId ?? undefined}
-                  remote={remoteDeviceId ? { deviceId: remoteDeviceId, botId: botChatIdentity.id } : undefined}
-                  visible={composerRuntimeVisible}
-                  status={
-                    pendingPermission ? 'Waiting on approval'
-                      : pendingAskUser ? 'Waiting on input'
-                        : composerStatus
-                  }
-                  messages={messages}
-                  startedAt={agentStatus.startedAt}
-                  foregroundRunning={agentStatus.isRunning || isStreaming}
-                  backgroundWorkActive={
-                    backgroundTasksActive || runningWorkflow !== null || Boolean(agentStatus.sideTaskRunning)
-                  }
-                  avatar={botAssistantAvatar}
-                  inputWidth={inputWidth}
-                />
-              ) : !pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (
+              {!pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (
                 <RunningStatusBar
                   key={sessionId}
                   sessionKey={sessionId ?? null}
@@ -5329,6 +5304,7 @@ function CCAgentSessionContent({
               ) : (
                 <ErrorTailErrorBanner
                   errorText={errorTailText}
+                  dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                   errorReason={errorTailMsg?.errorReason}
                   toolLoop={errorTailMsg?.toolLoop}
                   onContinue={handleErrorTailContinue}
@@ -5401,6 +5377,7 @@ function CCAgentSessionContent({
             }) && (
               <ErrorBanner
                 error={error}
+                dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                 errorReason={errorReason}
                 toolLoop={toolLoop}
                 isRecoverable={errorIsRecoverable}
@@ -5651,9 +5628,9 @@ function CCAgentSessionContent({
                   runtimeAgentKind={session ? dbToMakerAgentKind(session.agentKind) : null}
                   runtimeEffective={session?.runtimeEffective}
                   runtimePending={session?.runtimePending}
-                  // 协同会话不参与跨引擎切换；session 未加载时保留 undefined 未知态，
-                  // 仅在完整元数据确认非 Orca 后传 null 开放入口。
+                  // session 未加载时保留 undefined 未知态；Orca 原地切换与换电脑分别门控。
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
+                  sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}
                   initialWorkingDir={session?.workingDir}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}

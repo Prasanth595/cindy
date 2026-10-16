@@ -1323,7 +1323,10 @@ describe('session runtime control wiring', () => {
     expect(setModel).toContain('finalPressureContextTokens = contextTokens');
     expect(setModel).toContain('runtimeRouteChanged || piConfigurationRefresh || confirmedContextWindow !== undefined');
     expect(setModel).toContain('targetContextWindow = finalPiWindow');
-    expect(setModel).toContain("if (!isDeviceLinkInvoke() && runtimeAgentKind === 'pi') {");
+    expect(setModel).toContain('orcaRemoteLead: sessions.orcaRemoteLead');
+    expect(setModel).toMatch(
+      /if \(!isDeviceLinkInvoke\(\) && runtimeAgentKind === 'pi' &&\s*!runtimeStatus\.orcaRole && !parseOrcaRemoteLead\(runtimeStatus\.orcaRemoteLead\)\) \{\s*targetContextWindow = confirmedContextWindow \?\? targetContextWindow;/,
+    );
     expect(setModel).toContain('planUserRuntimeModelSwitch({');
     expect(setModel).not.toContain(
       "runtimeAgentKind !== 'pi' || isDeviceLinkInvoke() || !!runtimeStatus.remoteHostId",

@@ -312,8 +312,11 @@ function appendManagedImageReferences(
 }
 
 export interface SessionSendOptions extends SendOptions {
-  /** Host-owned authorization refresh after all async preparation, before vendor dispatch. */
-  resolveAutoReviewUserIntent?: () => Promise<AutoReviewUserIntent>;
+  /**
+   * Host-owned authorization refresh after all preparation, before vendor dispatch.
+   * Returning undefined preserves the existing intent; an empty intent still clears it.
+   */
+  resolveAutoReviewUserIntent?: () => Promise<AutoReviewUserIntent | undefined>;
   /**
    * Turn reservation 建立后的原子准备钩子。
    *
@@ -946,7 +949,8 @@ export class Session {
         }
       }
       if (resolveAutoReviewUserIntent) {
-        handleOpts[AUTO_REVIEW_USER_INTENT] = await resolveAutoReviewUserIntent();
+        const intent = await resolveAutoReviewUserIntent();
+        if (intent !== undefined) handleOpts[AUTO_REVIEW_USER_INTENT] = intent;
         const cancelledAfterAuthorization = finishCancelledBeforeDispatch();
         if (cancelledAfterAuthorization !== null) return cancelledAfterAuthorization;
       }
@@ -1156,7 +1160,10 @@ export class Session {
     return msg;
   }
 
-  async steer(message: UserMessage | string, opts?: SendOptions): Promise<void> {
+  async steer(
+    message: UserMessage | string,
+    opts?: SendOptions & Pick<SessionSendOptions, 'beforeProviderStart'>,
+  ): Promise<void> {
     let msg: UserMessage = typeof message === 'string'
       ? { type: 'user', content: message }
       : message;
@@ -1177,6 +1184,13 @@ export class Session {
     // 层 B：steer 追加图片同样走视觉桥（与 send 一致），否则纯文本模型收到的
     // 原始 image block 会被后端忽略或拒绝（Greptile P1）。
     msg = await this.bridgedVisionMessage(msg, opts?.signal);
+    const { beforeProviderStart, ...handleOpts } = opts ?? {};
+    // Host grants must survive all asynchronous preparation, including steer.
+    // Keep the private authorization hook out of provider options.
+    if (beforeProviderStart) {
+      await beforeProviderStart();
+      this.ensureActive();
+    }
     // 异步视觉转换期间 turn 可能已完成/被中止（视觉后端慢、用户已切任务等）：
     // 转换结果此时已无人接收，必须先复查原 turn 生命周期再调用 handle.steer，
     // 否则底层以「No active turn to steer」拒绝或 Pi 把迟到消息交给已结束的 turn。
@@ -1188,7 +1202,7 @@ export class Session {
     const previousSteerGeneration = this.steerAcceptedGeneration;
     this.steerAcceptedGeneration = steerTurnGeneration;
     try {
-      await this.handle.steer(msg, { ...opts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
+      await this.handle.steer(msg, { ...handleOpts, [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent });
     } catch (error) {
       if (this.steerAcceptedGeneration === steerTurnGeneration) {
         this.steerAcceptedGeneration = previousSteerGeneration;

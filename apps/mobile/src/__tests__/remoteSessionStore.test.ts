@@ -3,6 +3,8 @@ import { MAKER_EVENT_BATCH_CHANNEL, SESSION_SYNC_CHANNEL } from '@cindy/device-l
 import { clampLiveRowCreatedAt } from '@/session/messagePaging';
 import { MOBILE_TOOL_INPUT_PROJECTION_THRESHOLD_BYTES } from '@/session/messageToolPayloadProjection';
 import { remoteSessionStore, resolveSessionWriteDevices, sessionPendingWrites } from '@/session/remoteSessionStore';
+import { buildMobileSessionMessageDeepLink, parseSessionDeepLinkUrl, resolveSessionLinkDeviceId } from '@/session/sessionLinks';
+import { sessionMenuCopyLink } from '@/session/sessionMenu';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
 import { setJankMetricsEnabled, takeJankMetrics } from '@/debug/jankMetrics';
 
@@ -5164,6 +5166,35 @@ describe('remoteSessionStore', () => {
     // 路由维度:deviceLinkDeviceId 保持物理 shard id,sessionDeviceIndex 指向物理 shard(patch 不丢)。
     expect(byId.get('s-stale')?.deviceLinkDeviceId).toBe('stale-mac');
     expect(remoteSessionStore.getSessionDeviceId('s-stale')).toBe('stale-mac');
+  });
+
+  it('keeps links generated after re-link routed to the new device after archival removes the lookup', () => {
+    const routeDeviceId = 'old-mac';
+    remoteSessionStore.setDeviceIdentity([{ deviceId: routeDeviceId, name: 'Mac' }]);
+    remoteSessionStore.setDeviceSessions(routeDeviceId, 'Mac', [session('source')]);
+    const before = remoteSessionStore.getSessions()[0]!;
+    expect(parseSessionDeepLinkUrl(buildMobileSessionMessageDeepLink(
+      'source', 'anchor', { session: before, deviceId: routeDeviceId },
+    ))?.deviceId).toBe(routeDeviceId);
+
+    remoteSessionStore.setDeviceIdentity([{ deviceId: 'new-mac', name: 'Mac' }]);
+    const current = remoteSessionStore.getSessions()[0]!;
+    expect(current.canonicalDeviceId).toBe('new-mac');
+    expect(current.deviceLinkDeviceId).toBe(routeDeviceId);
+    const links = [
+      buildMobileSessionMessageDeepLink('source', 'anchor', { session: current, deviceId: routeDeviceId }),
+      sessionMenuCopyLink(current),
+    ];
+    remoteSessionStore.applySessionPatch(routeDeviceId, 'source', { status: 'archived' });
+    expect(remoteSessionStore.getSessionDeviceId('source')).toBeUndefined();
+    for (const link of links) {
+      const target = parseSessionDeepLinkUrl(link)!;
+      expect(resolveSessionLinkDeviceId({
+        listedDeviceId: remoteSessionStore.getSessionDeviceId(target.sessionId),
+        linkedDeviceId: target.deviceId,
+        currentDeviceId: 'other-mac',
+      })).toBe('new-mac');
+    }
   });
 
   it('dedupes the same session id across stale/current shards, keeping the current shard copy', () => {

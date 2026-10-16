@@ -4,7 +4,7 @@ import { modelNeedsReselection } from '@/session/modelReselection';
 import { completePrecreatedWorktreeRecovery } from '@/session/completePrecreatedWorktreeRecovery';
 import { outboxCreationRetryIdentity } from '@/session/cancelledCreationDraft';
 import { isRemoteTaskSuggestionId } from '@/session/remoteTaskSuggestionsModel';
-import { mobileDurableOutbox, holdDurableOutboxCreation, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
+import { mobileDurableOutbox, getCurrentMobileOutboxRecords } from '@/session/mobileDurableOutbox';
 import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
@@ -244,8 +244,10 @@ import {
 import { useTranslation } from 'react-i18next';
 import {
   createNewSessionId,
+  completeNewSessionDurableEdit,
   drainStashedNewSessionDraft,
-  getNewSessionCreationTask,
+  hasLiveNewSessionCreation,
+  holdNewSessionCreationDraft,
   startNewSessionCreation,
 } from '@/session/newSessionCreation';
 import {
@@ -354,6 +356,7 @@ import {
   createMobileVoiceControllerSession,
   type MobileVoiceControllerSession,
 } from '@/session/mobileVoiceController';
+import { createMobileSpeakerGate, warmMobileSpeakerFilter } from '@/session/mobileSpeakerFilter';
 import {
   createMobileVoiceDictionaryLearningTracker,
   type MobileVoiceDictionaryLearningTracker,
@@ -503,6 +506,7 @@ export default function NewRemoteSessionScreen() {
     suggestion?: string;
     draft?: string;
     recoverySessionId?: string;
+    editSessionId?: string;
   }>();
   const routeDeviceId = String(params.deviceId ?? '');
   const routeDeviceName = String(params.deviceName ?? routeDeviceId);
@@ -807,7 +811,7 @@ export default function NewRemoteSessionScreen() {
   // composer 托盘里正被全屏查看的图片附件 id(null = 关闭)。
   const [composerPreviewAttachmentId, setComposerPreviewAttachmentId] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  // 乐观创建失败后「返回编辑」的草稿回填:会话页 stash → 跳回本页 → 挂载时 drain。
+  // 创建失败后返回编辑：只领取路由指定任务与设备的草稿，普通新建页不领取。
   // 附件是已上传完成的引用,原样回列即可继续使用;notice 是「有内容没能带回」的告知
   // (创建期间发出的消息可能超出单条上限,装不下的只能丢,但不能静默丢,review P1)。
   // 声明在 attachmentError 之后:notice 就落在附件错误行上。
@@ -854,9 +858,11 @@ export default function NewRemoteSessionScreen() {
     if (!sid) return;
     let active = true;
     let restored = false;
+    let releaseEditClaim: (() => void) | undefined;
     const restore = () => {
       if (!active || restored || !isMobileAuthOwnerCurrent(owner)) return;
-      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation);
+      const record = getCurrentMobileOutboxRecords().find((r) => r.item.sessionId === sid && r.creation
+        && r.accountId === owner.accountKey && r.deviceId === routeDeviceId);
       if (!record?.creation || record.prepared) return;
       restored = true;
       outboxRecoveryRef.current = record;
@@ -867,13 +873,14 @@ export default function NewRemoteSessionScreen() {
         record.deviceId);
       setSelectedDeviceId(record.deviceId);
       setSelectedDeviceName(record.creation.deviceName);
+      releaseEditClaim = completeNewSessionDurableEdit(sid, record.deviceId);
     };
     const unsubscribe = mobileDurableOutbox.subscribe(restore);
     void mobileDurableOutbox.ready().then(restore);
-    return () => { active = false; unsubscribe(); };
-  }, [params.recoverySessionId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
+    return () => { active = false; unsubscribe(); releaseEditClaim?.(); };
+  }, [params.recoverySessionId, routeDeviceId, outboxOwner, leaveForeignOutboxRecovery, restoreCreationDraft]);
   useEffect(() => {
-    const stashed = drainStashedNewSessionDraft();
+    const stashed = drainStashedNewSessionDraft(readRouteString(params.editSessionId) ?? undefined, routeDeviceId);
     if (!stashed) return;
     restoreCreationDraft(stashed.draft, [...stashed.attachments], undefined, stashed.deviceId || undefined);
     if (stashed.notice) setAttachmentError(stashed.notice);
@@ -890,8 +897,7 @@ export default function NewRemoteSessionScreen() {
       setSelectedDeviceId(stashed.deviceId);
       setSelectedDeviceName(stashed.deviceName || stashed.deviceId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时领取一次信箱
-  }, []);
+  }, [params.editSessionId, routeDeviceId, restoreCreationDraft]);
   // 圈点标注接线 api 的 ref 中转(同会话页):hook 实例声明在 removeAttachment
   // 之后,onUploaded 等回调延迟执行经 ref 读最新实例。
   const composerAnnotationsRef = useRef<UseComposerImageAnnotationsResult | null>(null);
@@ -3855,6 +3861,7 @@ export default function NewRemoteSessionScreen() {
           credential.settings?.language,
           CINDY_MANAGED_REFINER_PROVIDER,
         );
+      const audioGate = await createMobileSpeakerGate();
       if (voiceStartupSeqRef.current !== startupSeq) {
         // This run never opened the microphone; release only its claimed ASR.
         void prewarmedVoice?.asr.stop().catch(() => undefined);
@@ -3867,6 +3874,8 @@ export default function NewRemoteSessionScreen() {
       voicePendingSelectionEchoesRef.current = [];
       const controller = createMobileVoiceControllerSession({
         credential,
+        // "Recognize my voice": undefined unless enabled, enrolled and the models are on disk.
+        audioGate,
         ...(prewarmedVoice ? { asr: prewarmedVoice.asr } : {}),
         connectionProvider: (providerId: string) => voiceContext.createAsrConnection(providerId),
         refinerTargetProvider: (providerId: string, options?: { refreshAccessToken?: boolean }) =>
@@ -4038,6 +4047,7 @@ export default function NewRemoteSessionScreen() {
     // Keep the native audio-session warmup on the synchronous press-down path
     // (prewarmMobileVoiceStart re-runs it idempotently below).
     prewarmMobileRealtimeAudio();
+    warmMobileSpeakerFilter();
     // 托管预热:凭登录态提前拿 voice-server 票据并开 ASR WebSocket。
     prewarmMobileVoiceStart(selectedDeviceId, {
       getAccessToken: () => auth.getAccessToken(),
@@ -4819,7 +4829,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const obligationOwnedByLiveTask = (sessionId: string) => (
-          getNewSessionCreationTask(sessionId) !== null
+          hasLiveNewSessionCreation(sessionId)
           || isPrecreatedWorktreeRegistrationInFlight(sessionId)
         );
         // 本设备上一次未完成的 obligation 先恢复。其它设备记录、仍被正常创建
@@ -4914,7 +4924,7 @@ export default function NewRemoteSessionScreen() {
         })()
         : null;
       if (!isCurrentOwner()) return;
-      releaseDurableCreation = holdDurableOutboxCreation(sessionId);
+      releaseDurableCreation = holdNewSessionCreationDraft(sessionId);
       const firstMessageClientId = recovering?.item.clientId ?? createOutboxClientId();
       // Legacy Plan requires a live session-wide permission change. Keep its existing
       // online creation pipeline instead of introducing deferred permission mutations.
@@ -4924,8 +4934,12 @@ export default function NewRemoteSessionScreen() {
         let firstRecord: DurableOutboxRecord = {
           version: 1, accountId: authOwnerAtCreate.accountKey, deviceId: deviceIdSnapshot,
           ...(recoveryIdentity ? { storageSessionId: recoveryIdentity.storageSessionId } : {}),
-          createdAt: recovering?.createdAt ?? Date.now(), state: 'queued', suspended: creatingWorktree, uploads: [], clearBoundaryMs: null,
+          createdAt: recovering?.createdAt ?? Date.now(), state: recovering ? 'failed' : 'queued',
+          suspended: !!recovering || creatingWorktree, uploads: [], clearBoundaryMs: null,
           creation: { draft: effectiveDraft, deviceName: selectedDeviceName,
+            // Replacing a restored draft does not hand it to the background pipeline.
+            // Keep its recovery intent durable until the creation pipeline takes over.
+            ...(recovering ? { editReady: true } : {}),
             ...(creatingWorktree ? { originalWorkingDir: effectiveDraft.workingDir } : {}),
             planModeArm: planModeCapability && planModeDraftOn, restorePermissionMode: legacyPlanRestore },
           item: buildOutboxItem({
@@ -5124,7 +5138,7 @@ export default function NewRemoteSessionScreen() {
         const current = outboxRecoveryRef.current;
         if (!current?.creation || current.item.sessionId !== sessionId) throw new Error('OUTBOX_STALE_WRITE');
         const updated = await mobileDurableOutbox.update(current, {
-          creation: { ...current.creation, draft: effectiveDraft }, suspended: false,
+          creation: { ...current.creation, draft: effectiveDraft }, suspended: !!current.creation.editReady,
         });
         outboxRecoveryRef.current = updated;
         if (!isCurrentOwner() || !ensureDeviceAlive()) return;
@@ -5531,7 +5545,7 @@ export default function NewRemoteSessionScreen() {
           return;
         }
         const sessionIsClaimed = (pendingSessionId: string) => (
-          getNewSessionCreationTask(pendingSessionId) !== null
+          hasLiveNewSessionCreation(pendingSessionId)
           || isPrecreatedWorktreeRegistrationInFlight(pendingSessionId)
         );
         const recovery = await recoverPendingPrecreatedWorktrees(worktreeAccountId, {

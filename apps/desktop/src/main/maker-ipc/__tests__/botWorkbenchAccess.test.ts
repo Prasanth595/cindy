@@ -430,6 +430,71 @@ describe('workbench detail reads for the owner', () => {
     await expect(hidden.access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
       .resolves.toMatchObject({ ok: false, errorCode: 'TASK_NOT_ACCESSIBLE' });
   });
+
+  it('reads an archived task the teammate is responsible for', async () => {
+    const { deps, access } = setup({
+      readResponsibleSessionIds: vi.fn(async () => ['task-1']),
+      readTarget: vi.fn(async () => target({ status: 'archived' })),
+    });
+    await expect(access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toEqual({ ok: true, taskId: 'task-1', transcript });
+    expect(deps.readResponsibleSessionIds).toHaveBeenCalledWith('bot-1');
+    expect(deps.readSessionTranscript).toHaveBeenCalledWith('task-1');
+  });
+
+  it('reads a responsible background task outside the handed-over projects', async () => {
+    const { access } = setup({
+      readState: vi.fn(async () => ({ directories: [], tasks: {} })),
+      readResponsibleSessionIds: vi.fn(async () => ['task-1']),
+      readTarget: vi.fn(async () => target({ delegationChild: true, workingDir: '/elsewhere' })),
+    });
+    await expect(access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: true, taskId: 'task-1' });
+  });
+
+  it('keeps unrelated tasks behind the project boundary', async () => {
+    const { deps, access } = setup({
+      readResponsibleSessionIds: vi.fn(async () => ['other-task']),
+      readTarget: vi.fn(async () => target({ workingDir: '/elsewhere' })),
+    });
+    await expect(access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'TASK_OUTSIDE_WORKBENCH' });
+    expect(deps.readSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it('still refuses archived tasks the teammate is not responsible for', async () => {
+    const { deps, access } = setup({ readTarget: vi.fn(async () => target({ status: 'archived' })) });
+    await expect(access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'TASK_ARCHIVED' });
+    expect(deps.readSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it('does not relax tool reads or continuation for responsible archived tasks', async () => {
+    const { deps, access } = setup({
+      readResponsibleSessionIds: vi.fn(async () => ['task-1']),
+      readTarget: vi.fn(async () => target({ status: 'archived' })),
+    });
+    await expect(access.read({ callerSessionId: 'bot-main', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'TASK_ARCHIVED' });
+    await expect(access.continueTask({ callerSessionId: 'bot-main', taskId: 'task-1', message: '继续' }))
+      .resolves.toMatchObject({ ok: false });
+    expect(deps.sendToSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps hidden and remote tasks unreadable even when listed as responsible', async () => {
+    const hidden = setup({
+      readResponsibleSessionIds: vi.fn(async () => ['task-1']),
+      readTarget: vi.fn(async () => target({ botLinked: true })),
+    });
+    await expect(hidden.access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'TASK_NOT_ACCESSIBLE' });
+    const remote = setup({
+      readResponsibleSessionIds: vi.fn(async () => ['task-1']),
+      readTarget: vi.fn(async () => target({ remoteHostId: 'ssh-1', status: 'archived' })),
+    });
+    await expect(remote.access.readForOwner({ botId: 'bot-1', taskId: 'task-1' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'TASK_REMOTE' });
+  });
 });
 
 describe('workbench snapshot', () => {

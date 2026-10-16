@@ -39,7 +39,7 @@ vi.mock('react-native-webview', async () => {
 vi.mock('expo-file-system', () => ({ Directory: class { exists = false; }, File: class {}, Paths: { cache: '/cache' } }));
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'id' }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ isAuthenticated: true, user: { id: 'a' }, accountGeneration: 1 }) }));
-vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ connectionEpoch: 1, invoke: vi.fn() }) }));
+vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ connectionEpoch: 1, status: 'online', invoke: vi.fn() }) }));
 vi.mock('@/config/env', () => ({ DEVICE_LINK_API_BASE_URL: 'https://example.test', getActiveMobileSessionRealm: () => 'global' }));
 vi.mock('@/device-link/peerFileRegistry', () => ({
   installPeerFileDownload: (...args: unknown[]) => { state.install(...args); return state.unregister; },

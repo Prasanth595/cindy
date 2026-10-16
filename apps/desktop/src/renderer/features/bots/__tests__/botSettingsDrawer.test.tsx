@@ -71,6 +71,12 @@ vi.mock('../BotsHomeView', async () => {
   };
 });
 
+const cloud = vi.hoisted(() => ({ demotedBotIds: [] as string[] }));
+vi.mock('../companionCloudStore', () => ({
+  useCompanionCloud: () => ({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', actors: [], demotedBotIds: cloud.demotedBotIds }),
+}));
+beforeEach(() => { cloud.demotedBotIds = []; });
+
 import { BotSettingsDrawer } from '../BotSettingsDrawer';
 
 function LocationProbe() {
@@ -87,6 +93,16 @@ afterEach(() => {
 });
 
 describe('BotSettingsDrawer', () => {
+  it('does not open editable settings for a copy demoted to another computer', async () => {
+    cloud.demotedBotIds = ['bot-1'];
+    const router = createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }],
+      { initialEntries: ['/bots/bot-1?settings=1'] });
+    render(<RouterProvider router={router} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it.each(['query', 'sidebar', 'back'])(
     'protects drafts when %s navigation removes settings',
     async (kind) => {

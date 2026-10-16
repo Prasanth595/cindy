@@ -109,7 +109,7 @@ function handle(route: string, method: string, body: Record<string, unknown> | u
     if (next) next.status = 'running';
     return { body: { execution: next ? { ...next } : null } };
   }
-  if (path.endsWith('/snapshot')) return { body: { room: { id: roomId, name: 'Product room', response_mode: 'all', speaking_mode: 'auto',
+  if (path.endsWith('/snapshot')) return { body: { room: { id: roomId, kind: 'group', name: 'Product room', response_mode: 'all', speaking_mode: 'auto',
     created_at: '2026-10-13T00:00:00Z', updated_at: '2026-10-13T00:00:00Z', revision: 1, archived: false },
   members: [{ id: ownerId, kind: 'human', name: 'Alex' }, ...bots.map(bot => ({ id: bot.id, kind: 'bot', name: bot.name }))], messages: [], cursor: '1' } };
   if (path === `/conversations/${roomId}/messages` && method === 'POST') { directPosts++; return { body: { id: uuid(++ids) } }; }

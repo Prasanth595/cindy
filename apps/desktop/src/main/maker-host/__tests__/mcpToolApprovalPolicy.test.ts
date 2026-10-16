@@ -479,6 +479,24 @@ describe('teammate pre-run command approval', () => {
 });
 
 describe('cross-device actions use the task permission mode', () => {
+  it.each(['archive_sessions', 'unarchive_sessions'])('reviews remote %s in direct and progressive calls', (name) => {
+    for (const session_ids of [['studio::s1'], ['s1', 'studio::s2']]) {
+      const args = { session_ids };
+      for (const context of [
+        { toolName: name, toolParams: args },
+        { toolName: 'call_tool', toolParams: { name, args } },
+        { toolParams: { name, args } },
+        { toolName: 'call_tool', toolParams: JSON.stringify({ name, args: JSON.stringify(args) }) },
+      ]) {
+        expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_helper', ...context })).toBe('prompt-each-time');
+      }
+    }
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_helper', toolName: 'call_tool',
+      toolParams: { name, args: { session_ids: ['s1'] } } })).toBe('auto-approve');
+    expect(getDesktopMcpToolApprovalPolicy({ serverName: 'cindy_helper', toolName: 'call_tool',
+      toolParams: { name, args: { session_ids: ['local::s1'] } } })).toBe('auto-approve');
+  });
+
   const scheduler = (name: string, args: Record<string, unknown>, toolName: string | undefined = 'call_tool') =>
     getDesktopMcpToolApprovalPolicy({
       serverName: 'cindy_scheduler',

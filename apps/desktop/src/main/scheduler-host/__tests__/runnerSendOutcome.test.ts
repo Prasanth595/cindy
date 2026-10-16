@@ -616,6 +616,25 @@ describe('MakerScheduleRunner send outcome policy', () => {
     expect(ctx.removeAbortListener).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps quota failures in scheduler notifications free of IM recovery instructions', async () => {
+    const h = createSessionHarness(async (_message, opts) => {
+      await opts?.onAccepted?.();
+      return { accepted: true };
+    });
+    const { runner, notifier } = createRunnerHarness(h.session);
+    const message = 'You hit your spend cap set by the owner of your workspace.';
+    const firePromise = runner.fire(baseSchedule(), createFireContext());
+    const rejected = expect(firePromise).rejects.toThrow(message);
+
+    await vi.waitFor(() => expect(h.listenerCount()).toBe(1));
+    h.emit({ type: 'error', data: { message, isTerminal: true } });
+
+    await rejected;
+    const run = latestNotifiedRun(notifier);
+    expect(run.status).toBe('failed');
+    expect(run.errorMsg).toBe(message);
+  });
+
   it('projects tool-loop terminal errors to a safe scheduler notification', async () => {
     const h = createSessionHarness(async (_message, opts) => {
       await opts?.onAccepted?.();

@@ -44,7 +44,7 @@ import {
   sortPendingInteractions,
   togglePendingInteractionCollapsed,
 } from '@/session/interactionModel';
-import { clearAskUserDraft, saveAskUserDraft } from '@/session/interactionDraftStore';
+import { askQuestionsIdentity, clearAskUserDraft, saveAskUserDraft } from '@/session/interactionDraftStore';
 import type { PendingInteraction } from '@/session/types';
 
 /** prune 的权威性开关:全量快照到手 = 权威;离线清空投影 = 非权威。 */
@@ -581,10 +581,12 @@ describe('interactionModel', () => {
     expect(first.accessibilityLabel).toContain('第一问是什么');
 
     // 进入第二问后,读屏念的必须是第二问 —— 这条钉的就是 label 本身,不是渲染代码文本。
+    const identity = askQuestionsIdentity(normalizeAskQuestions(item.request.questions));
     saveAskUserDraft('ask-label-1', {
       answers: {},
       currentIndex: 1,
       customInput: '',
+      questionsIdentity: identity,
       selectedLabels: [],
       showCustomInput: false,
     });
@@ -596,6 +598,18 @@ describe('interactionModel', () => {
     expect(second.summaryText).toBe('第二问是什么');
     expect(second.accessibilityLabel).toContain('第二问是什么');
     expect(second.accessibilityLabel).not.toContain('第一问是什么');
+
+    // 收起期间同一 requestId 换了问题:旧草稿的进度不能带进新内容,摘要回到第一问。
+    const replaced = buildCollapsedPendingInteractionPresentation({
+      item: { request: {
+        kind: 'ask_user_question',
+        requestId: 'ask-label-1',
+        questions: [{ question: '新的第一问' }, { question: '新的第二问' }],
+      } } as unknown as PendingInteraction,
+      queueTitle: '等待回答',
+      requestId: 'ask-label-1',
+    });
+    expect(replaced.summaryText).toBe('新的第一问');
     clearAskUserDraft('ask-label-1');
 
     // 没有专属摘要的卡(手机端答不了的那类)退回队列标题,标签不留空。

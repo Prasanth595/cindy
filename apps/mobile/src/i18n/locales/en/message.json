@@ -10,6 +10,7 @@
   },
   "renderer": {
     "moreActions": "More message actions",
+    "reply": "Reply",
     "newMessagesToBottom": "New messages, jump to bottom",
     "jumpToBottom": "Jump to bottom",
     "openForkOrigin": "Open fork source message",

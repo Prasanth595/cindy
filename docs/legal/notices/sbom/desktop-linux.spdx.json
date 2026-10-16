@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-linux",
-  "documentNamespace": "https://cindy.app/spdx/desktop-linux/6f54543143d91053cb68c4d5f8d0596250a5bd6843636e93b2300673f6fdb1c5",
+  "documentNamespace": "https://cindy.app/spdx/desktop-linux/a7d3fcc966c8dca8927321041b17e7b4b5a2ad0df4f9942d240c9041d8669701",
   "creationInfo": {
-    "created": "2026-10-12T09:13:02Z",
+    "created": "2026-10-12T13:33:06Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -29,6 +29,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "LicenseRef-Sharp-Third-Party-Licenses",
       "licenseDeclared": "LicenseRef-Sharp-Third-Party-Licenses",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "3D-Speaker CAM++ zh-en advanced (runtime-downloaded model)",
+      "SPDXID": "SPDXRef-Package-2eb4a603ce39b403",
+      "versionInfo": "sha256:aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+      "downloadLocation": "https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -76,6 +86,16 @@
       "SPDXID": "SPDXRef-Package-42f340d5003334bd",
       "versionInfo": "326d24bd40d9858e24e1036ae739c27c72eeb543",
       "downloadLocation": "https://github.com/can1357/oh-my-pi/tree/326d24bd40d9858e24e1036ae739c27c72eeb543",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "ONNX Runtime (native inference library)",
+      "SPDXID": "SPDXRef-Package-4e0ad65af2083a00",
+      "versionInfo": "bundled with sherpa-onnx-node 1.13.8",
+      "downloadLocation": "https://github.com/microsoft/onnxruntime",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
@@ -149,6 +169,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Unlicense",
       "licenseDeclared": "MIT OR Unlicense",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Silero VAD (runtime-downloaded model)",
+      "SPDXID": "SPDXRef-Package-1d15b57c9978e089",
+      "versionInfo": "sha256:9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+      "downloadLocation": "https://github.com/snakers4/silero-vad",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -13928,6 +13958,57 @@
       ]
     },
     {
+      "name": "sherpa-onnx-linux-arm64",
+      "SPDXID": "SPDXRef-Package-7db8d101520c80ad",
+      "versionInfo": "1.13.8",
+      "downloadLocation": "https://github.com/csukuangfj/sherpa-onnx",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/sherpa-onnx-linux-arm64@1.13.8"
+        }
+      ]
+    },
+    {
+      "name": "sherpa-onnx-linux-x64",
+      "SPDXID": "SPDXRef-Package-f23a19d108a72dd8",
+      "versionInfo": "1.13.8",
+      "downloadLocation": "https://github.com/csukuangfj/sherpa-onnx",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/sherpa-onnx-linux-x64@1.13.8"
+        }
+      ]
+    },
+    {
+      "name": "sherpa-onnx-node",
+      "SPDXID": "SPDXRef-Package-5a79f55f36b8ec3a",
+      "versionInfo": "1.13.8",
+      "downloadLocation": "https://github.com/csukuangfj/sherpa-onnx",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/sherpa-onnx-node@1.13.8"
+        }
+      ]
+    },
+    {
       "name": "side-channel",
       "SPDXID": "SPDXRef-Package-b92f70c0533794b9",
       "versionInfo": "1.1.1",
@@ -15659,6 +15740,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-2eb4a603ce39b403"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-ef29a7e5a6f64477"
     },
     {
@@ -15680,6 +15766,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-42f340d5003334bd"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-4e0ad65af2083a00"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -15715,6 +15806,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-616963e2fc3a9428"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-1d15b57c9978e089"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -19775,6 +19871,21 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-9905b9d4e1f2b3aa"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-7db8d101520c80ad"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-f23a19d108a72dd8"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-5a79f55f36b8ec3a"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

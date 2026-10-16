@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
@@ -904,13 +905,47 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const body = hostSource.slice(start, end);
     expect(body).toContain('effort: sessions.effort,');
     expect(body).toContain('fastMode: sessions.fastMode,');
+    expect(body).toContain('permissionMode: sessions.permissionMode,');
     expect(body).toContain("co.effort = (row.effort ?? undefined) as CreateOpts['effort'];");
     expect(body).toContain('co.fastMode = !!row.fastMode;');
+    expect(body).toContain('co.permissionMode = permissionModeOrAsk(row.permissionMode);');
   });
 
-  it('Orca 与角色未加载会话都 fail-closed:只有完整元数据确认非协同后开放入口', () => {
-    expect(source).toContain('sessionOrcaRole === null &&');
-    // 会话视图必须保留 undefined 未知态,不能在完整 session 回流前冒充「非协同」。
+  it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
+    expect(source).not.toContain('sessionOrcaRole === null &&');
+    const expression = source.match(/const sessionAgentSwitchSupported =\s*([\s\S]*?);/)?.[1];
+    expect(expression).toBeDefined();
+    const supported = new Function('sessionOrcaRole', 'runtimeAgentKind', 'deviceLinkDeviceId',
+      'ccSupportsSessionAgentSwitch', 'codexSupportsSessionAgentSwitch', `return ${expression};`);
+    for (const role of [null, 'lead', 'worker']) {
+      expect(supported(role, 'codex', null, false, false)).toBe(true);
+      expect(supported(role, undefined, null, true, true)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, false)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, true)).toBe(true);
+    }
+    expect(supported(undefined, 'codex', null, true, true)).toBe(false);
+    const remoteOptions = source.slice(source.indexOf('const sessionRemoteAgentOptions ='),
+      source.indexOf('// composer pill 尾部引擎小标'));
+    expect(remoteOptions).toContain('    sessionOrcaRole,');
+    expect(remoteOptions).toContain('    sessionOrcaRemoteWorker,');
+    const relocationGuard = remoteOptions.match(/if \(([\s\S]*?)\) return undefined;/)?.[1];
+    expect(relocationGuard).toBeDefined();
+    const hidden = new Function('sessionOrcaRole', 'sessionOrcaRemoteWorker', 'deviceLinkDeviceId',
+      `const sessionId = 's1', agentLocationAware = true, remoteHostId = null, sessionEngineFilter = {};
+       return !!(${relocationGuard});`);
+    // 本机的 Lead / Worker 与普通任务一样可换 Agent 所在电脑。
+    for (const role of [null, 'lead', 'worker']) {
+      expect(hidden(role, false, null)).toBe(false);
+    }
+    // 被控电脑上的协同任务先不开放(旧版被控端会拒绝);普通被控任务不受影响。
+    expect(hidden('lead', false, 'host')).toBe(true);
+    expect(hidden('worker', false, 'host')).toBe(true);
+    expect(hidden(null, false, 'host')).toBe(false);
+    for (const role of [null, 'lead', 'worker', undefined]) {
+      expect(hidden(role, true, null)).toBe(true);
+    }
+    expect(hidden(undefined, false, null)).toBe(true);
+    // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),
       'utf8',
@@ -918,6 +953,7 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(viewSource).toContain(
       'sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}',
     );
+    expect(viewSource).toContain('sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}');
   });
 
   it('本地与远程会话打开时都读回 main 权威意图,并经新鲜度守卫过滤过期响应', () => {
@@ -979,10 +1015,11 @@ describe('ChatInput 的入口门控与调用路由', () => {
       'const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);',
     );
     const invoke = source.indexOf(
-      // 换电脑时多带一个位置参数,两种调用形态共用同一个 result。
-      'const result = relocateTo !== undefined',
+      // 带可选参数与不带参数的调用都必须在同一串行位置内完成。
+      'await switchApi.switchSessionAgent(',
       reservation,
     );
+    const invokeWithoutOptions = source.indexOf('await switchApi.switchSessionAgent(', invoke + 1);
     const scopeGuard = source.indexOf(
       'if (!isSessionScopeCurrent(sourceSessionId, currentSessionIdRef.current)) return false;',
       invoke,
@@ -992,7 +1029,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const release = source.indexOf('exclusiveTurn.release();', reselect);
     expect(reservation).toBeGreaterThanOrEqual(0);
     expect(invoke).toBeGreaterThan(reservation);
-    expect(scopeGuard).toBeGreaterThan(invoke);
+    expect(invokeWithoutOptions).toBeGreaterThan(invoke);
+    expect(scopeGuard).toBeGreaterThan(invokeWithoutOptions);
     expect(reselect).toBeGreaterThan(scopeGuard);
     expect(staleGuard).toBeGreaterThan(reselect);
     expect(release).toBeGreaterThan(reselect);
@@ -1114,6 +1152,36 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(body).toMatch(
       /remoteMaker\.setModel\(\s*sessionId,\s*newModelId,\s*selectedProviderId,\s*expectedAgentSwitchRevision,/,
     );
+  });
+
+  it.each(['lead', 'worker'])('Desktop Orca %s routes same-Agent model and provider picks through the switch intent', async sessionOrcaRole => {
+    const parsed = ts.createSourceFile('ChatInput.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const callbacks = new Map<string, string>();
+    function visit(node: ts.Node) {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
+        && ['performModelChange', 'performProviderChange'].includes(node.name.getText(parsed))) {
+        callbacks.set(node.name.getText(parsed), node.initializer.arguments[0].getText(parsed));
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(parsed);
+    const switchAgent = vi.fn(async () => true);
+    const bindings = { sessionOrcaRole, settingsLocked: false, sessionId: 's1',
+      sessionAgentSwitchSupported: true, remoteHostId: null, runtimeAgentKind: 'codex',
+      makerChatStore: { getAgentSwitchIntent: () => null }, performAgentSwitch: switchAgent,
+      effectiveSourceId: 'provider-old', activeModel: 'model-old' };
+    function callback(name: string) {
+      expect(callbacks.has(name)).toBe(true);
+      const compiled = ts.transpileModule(`return ${callbacks.get(name)};`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      return new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+    }
+    expect(await callback('performModelChange')('model-new')).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-old');
+    expect(await callback('performProviderChange')('provider-new', 'model-new', 'high', undefined, true)).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-new', { effort: 'high', fastMode: true });
+    switchAgent.mockResolvedValue(false);
+    expect(await callback('performModelChange')('rejected-model')).toBe(false);
   });
 
   it('await 返回后做会话作用域校验:旧会话响应不得借最新 ref 写进当前会话', () => {

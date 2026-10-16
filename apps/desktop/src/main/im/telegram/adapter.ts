@@ -76,6 +76,7 @@ export function buildTelegramAdapter(
   const ownerGroupTurnPolicies = new WeakSet<object>();
   return {
     channel: 'telegram',
+    getBotDisplayName: () => telegramIm.botName,
     im: telegramIm,
     output: { kind: 'rich-card', im: telegramIm },
     config,

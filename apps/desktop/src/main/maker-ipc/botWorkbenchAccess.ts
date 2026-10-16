@@ -75,10 +75,20 @@ export interface WorkbenchTargetFacts {
 
 export type WorkbenchTargetDecision = { ok: true; projectDir: string } | Failure;
 
+export interface WorkbenchTargetOptions {
+  /**
+   * 只读、且该伙伴自己的逐任务责任(接手记录或它发起的后台任务)覆盖这件任务:
+   * 主人在工作台详情里看自己负责列表里的任务。归档、后台任务、项目外的任务都可读;
+   * 删除、伙伴隐藏任务、远端与不支持的来源仍拒绝。写入 / 继续 / 停止不使用此项。
+   */
+  responsibleRead?: boolean;
+}
+
 export function authorizeWorkbenchTarget(
   target: WorkbenchTargetFacts | null,
   projectDirs: readonly string[],
   caseInsensitive: boolean,
+  options: WorkbenchTargetOptions = {},
 ): WorkbenchTargetDecision {
   if (!target || target.status === 'deleted') {
     return { ok: false, errorCode: 'TASK_NOT_FOUND', message: '找不到这件任务,它可能已被删除' };
@@ -88,6 +98,12 @@ export function authorizeWorkbenchTarget(
   }
   if (target.remoteHostId) {
     return { ok: false, errorCode: 'TASK_REMOTE', message: '远端任务不在工作台的范围内' };
+  }
+  if (options.responsibleRead) {
+    if (!isWorkbenchTaskSource(target.source) || target.orcaRole === 'worker') {
+      return { ok: false, errorCode: 'TASK_NOT_SUPPORTED', message: '这类任务不在工作台的范围内' };
+    }
+    return { ok: true, projectDir: findWorkbenchProject(target.workingDir, projectDirs, caseInsensitive) ?? target.workingDir ?? '' };
   }
   if (target.status !== 'active') {
     return { ok: false, errorCode: 'TASK_ARCHIVED', message: '这件任务已归档,请让主人先恢复它' };
@@ -769,7 +785,23 @@ export function createBotWorkbenchAccess(deps: BotWorkbenchAccessDeps) {
      */
     async readForOwner(params: { botId: string; taskId: string }) {
       const workbench = await deps.readState(params.botId);
-      const target = await resolveTarget(params.taskId, workbench);
+      // 负责列表里的任务(含已归档、伙伴开的后台任务、项目外的任务)详情只读可看;
+      // 只认该伙伴自己的责任记录,其余仍按已接手项目判定。
+      const ref = parseWorkbenchTaskId(params.taskId);
+      let target: ResolvedTarget | Failure;
+      if (ref?.kind === 'session' && (await deps.readResponsibleSessionIds(params.botId)).includes(ref.sessionId)) {
+        const decision = authorizeWorkbenchTarget(
+          await deps.readTarget(ref.sessionId),
+          workbench.directories,
+          deps.caseInsensitive,
+          { responsibleRead: true },
+        );
+        target = decision.ok
+          ? { ok: true, kind: 'session', taskId: ref.sessionId, sessionId: ref.sessionId, projectDir: decision.projectDir }
+          : decision;
+      } else {
+        target = await resolveTarget(params.taskId, workbench);
+      }
       if (!target.ok) return target;
       const transcript = await readTranscript(target);
       if (!transcript) return { ok: false as const, errorCode: 'TRANSCRIPT_UNAVAILABLE', message: '读不到这条会话的记录' };

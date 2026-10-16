@@ -115,7 +115,7 @@ function onCurrentGhostUnreadSnapshot(
   return () => ipcRenderer.removeListener('ghosts:unread-snapshot', listener);
 }
 
-const appearanceSnapshot = createAppearanceSnapshotBridge();
+const appearanceSnapshot = createAppearanceSnapshotBridge({ wallpaperAssets: true });
 
 const fanOutFullscreenChange = (cb: (isFullscreen: boolean) => void): Unsub =>
   onPayload('fullscreen-change', cb);

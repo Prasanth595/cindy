@@ -118,6 +118,25 @@ export interface HistoryViewPage<TMessage extends HistoryMessageSource> {
   hasMore: boolean;
 }
 
+/** Keep already read pages only when the latest page proves a continuous source boundary. */
+export function retainHistoryViewPrefix<T extends HistoryMessageSource>(
+  page: HistoryViewPage<T>,
+  previous: { items: readonly HistoryViewItem<T>[]; hasMore: boolean; nextCursor: string | null } | null | undefined,
+): HistoryViewPage<T> {
+  if (!page.hasMore || !previous?.items.length) return page;
+  const firstSourceId = (item: HistoryViewItem<T> | undefined) => item?.type === 'work'
+    ? item.summary.firstMessageId : item?.messages[0]?.id;
+  const first = page.items[0];
+  const sourceId = firstSourceId(first);
+  const boundary = previous.items.findIndex(item => item.key === first?.key
+    || (sourceId !== undefined && firstSourceId(item) === sourceId));
+  // Completed groups can replace a running key while keeping its exact source start.
+  // A later overlap cannot prove continuity; a full page/rewind replaces the old view.
+  if (boundary <= 0) return page;
+  return { ...page, items: [...previous.items.slice(0, boundary), ...page.items],
+    hasMore: previous.hasMore, nextCursor: previous.nextCursor };
+}
+
 /**
  * Host → controller replacement of one running top-level work item. The Host sends it
  * only when everything else on the latest page is unchanged since its last delivery to

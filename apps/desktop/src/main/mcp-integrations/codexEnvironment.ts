@@ -13,6 +13,7 @@ import { pluginIdForKnownProviderName } from '../maker-host/plugins/builtin-plug
 import {
   CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY,
   CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY,
+  isFrozenMcpServerAllowed,
 } from './codexBuiltinToolPolicy.js';
 import {
   CINDY_MAKE_MCP_SERVER_NAME,
@@ -25,6 +26,7 @@ import {
   withMcpRouteIdentity,
 } from './codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from './remoteMcpBridgeToken.js';
+import { appServerIds } from '../mcp-apps/runtime.js';
 
 const TOKEN_ENV = 'LIZI_MCP_TOKEN';
 const MCP_TIMEOUT_SEC = 10 * 60;
@@ -322,7 +324,8 @@ async function doStart(
     if (!toClaudeSdkConfig) continue;
 
     const createServer = (): McpServer => {
-      const cfg = toClaudeSdkConfig(ctx) as
+      // Class providers read instance state, including when creating later client facades.
+      const cfg = toClaudeSdkConfig.call(provider, ctx) as
         | { type?: string; name?: string; instance?: unknown }
         | null;
       if (cfg?.type !== 'sdk' || !cfg.instance) {
@@ -365,6 +368,7 @@ async function doStart(
   const bridge = Object.keys(serverFactories).length > 0
     ? await startCodexHttpBridge({
         serverFactories,
+        appServerNames: Object.keys(serverFactories).filter(name => appServerIds().includes(name)),
         pluginIdByServerName,
         // 远端常驻 daemon 经 SSH remote-forward 直连本 bridge:接受 persistent
         // token (safeStorage, 跨 app 重启稳定)。函数形式读取,token 首用时惰性
@@ -404,6 +408,7 @@ async function doStart(
     // bearer_token_env_var 让 codex 从 env 读 token，不暴露在 process args。
     extraArgs.push('-c', `mcp_servers.${name}.url="${url}"`);
     extraArgs.push('-c', `mcp_servers.${name}.bearer_token_env_var="${TOKEN_ENV}"`);
+    if (appServerIds().includes(name)) extraArgs.push('-c', `mcp_servers.${name}.enabled=false`);
     extraArgs.push('-c', `mcp_servers.${name}.startup_timeout_sec=${MCP_TIMEOUT_SEC}`);
     extraArgs.push('-c', `mcp_servers.${name}.tool_timeout_sec=${MCP_TIMEOUT_SEC}`);
   }
@@ -435,6 +440,8 @@ async function doStart(
                 withMcpRouteIdentity(bridge.url(name), { sessionInstanceId }),
               ]),
             ),
+            ...Object.fromEntries(bridgeServerNames.filter((name) => appServerIds().includes(name))
+              .map((name) => [`mcp_servers.${name}.enabled`, isFrozenMcpServerAllowed(session?.vendorOptions, name)])),
             // Cindy Make 个人版工具:app-server 共享一份 spawn 级 transport,只能按
             // 线程关。transport 与本 config 同源(上面刚写了 url),所以 enabled=false
             // 不会落成"只有 enabled 没有 transport"的非法条目(codex 先解析 transport)。

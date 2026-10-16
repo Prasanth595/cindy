@@ -6,6 +6,7 @@
  * 选一台组内电脑运行 Agent。产品规则见 docs/product-rules/provider-groups.md。
  */
 import { isProviderShareAgentDeviceId, PROVIDER_SHARE_AGENT_DEVICE_PREFIX } from './providerShare.js';
+import type { ProviderManagementRequest, ProviderManagementResult } from './providerManagement';
 
 export const PROVIDER_GROUP_IPC = {
   /** Renderer → Main：全部操作走同一个命令通道。 */
@@ -42,6 +43,13 @@ export interface ProviderGroupMember {
   providerId: string;
   /** 加入时的显示名快照，那台电脑离线时展示。 */
   label?: string;
+  /** 加入时的供应商显示名快照；用于同一台电脑上的多个供应商账号区分。 */
+  providerName?: string;
+  /**
+   * 分享来的电脑：分享者那台电脑的设备 id(本账号收到的分享里本来就有)。只用来把同一台电脑上的几个分享
+   * 按一台电脑展示与计数，不显示、不用于连接；不会发给受邀者。旧组没有时由组所在电脑对账补上(removedShares.ts)。
+   */
+  hostDeviceId?: string;
   /** 并发上限：只统计经本组分到这台的任务。 */
   limit: number;
   weight: number;
@@ -83,6 +91,8 @@ export interface ProviderGroupMemberStatus {
   kind: ProviderGroupMemberKind;
   /** 设备名(本机为本机设备名)。 */
   label: string;
+  /** 那台电脑上这个供应商的显示名；旧组或旧端未提供时省略。 */
+  providerName?: string;
   /** 分享来的电脑：分享者昵称。 */
   ownerName?: string;
   /** Cindy 应用版本；缺失表示旧端或分享来源未提供，不是 remote-agent 协议版本。 */
@@ -103,6 +113,26 @@ export interface ProviderGroupMemberStatus {
    * 按自己的连接情况补上，不来自组所在电脑的回包。
    */
   unreachableHere?: boolean;
+  /**
+   * 分享来的电脑：这台的主人对本机分享出去的人逐人同意的结果(provider-sharing.md §4.3)。只在本机自己的组里、
+   * 组所在的供应商分享给了别人时有；不经设备互联发给其他电脑。
+   */
+  reshare?: ProviderGroupReshareSummary;
+}
+
+/** 本机分享出去的一个人：分享来的那台电脑的主人是否同意他经组使用那台。 */
+export interface ProviderGroupReshareGuest {
+  memberId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  /** unknown = 还没问到(那台离线或刚加入)。 */
+  state: 'approved' | 'pending' | 'rejected' | 'unknown';
+}
+
+export interface ProviderGroupReshareSummary {
+  /** needs-update = 那台的 Cindy 太旧，给不出同意；unknown = 还没问到。 */
+  support: 'supported' | 'needs-update' | 'unknown';
+  guests: ProviderGroupReshareGuest[];
 }
 
 export interface ProviderGroupView {
@@ -139,20 +169,28 @@ export interface ProviderGroupCandidate {
   /** 那台电脑上这个供应商的显示名。 */
   providerName: string;
   ownerName?: string;
+  /** 分享来的：分享者那台电脑的设备 id(同一台电脑的几个分享收在一起)。 */
+  hostDeviceId?: string;
   blocked?: ProviderGroupCandidateBlock;
 }
 
-export type ProviderGroupCommand =
+export type ProviderGroupLocalCommand =
   | { action: 'get'; providerId: string }
   | { action: 'candidates'; providerId: string }
   | { action: 'save'; providerId: string; config: ProviderGroupConfig }
   | { action: 'delete'; providerId: string }
+  /** 设置页按编辑时的完整配置保存；null 表示当时尚未建组。独立动作让旧端明确拒绝。 */
+  | { action: 'save-if-current'; providerId: string; config: ProviderGroupConfig; expectedConfig: ProviderGroupConfig | null }
+  | { action: 'delete-if-current'; providerId: string; expectedConfig: ProviderGroupConfig | null }
   /** 同账号另一台电脑上这个供应商的组与组内电脑状态(只读)。 */
   | { action: 'remote-view'; providerId: string; deviceId: string }
   /** 本机全部组的设置(不读远端)。 */
   | { action: 'list' }
   /** 这个任务此刻归哪个组(模型列表把它显示在组那一项下)。 */
   | { action: 'session-group'; sessionId: string };
+
+export type ProviderGroupCommand = ProviderGroupLocalCommand
+  | { action: 'remote-manage'; deviceId: string; request: ProviderManagementRequest };
 
 /**
  * 任务此刻归的组：`groupDeviceId` 为组所在电脑，null = 这台电脑自己建的组；`providerId` 是组那一项在组所在电脑上的
@@ -161,11 +199,12 @@ export type ProviderGroupCommand =
 export type ProviderGroupSessionGroup = { groupDeviceId: string | null; providerId: string } | null;
 
 export type ProviderGroupCommandResult<C extends ProviderGroupCommand> =
-  C extends { action: 'list' } ? Record<string, ProviderGroupConfig>
+  C extends { action: 'remote-manage'; request: infer R extends ProviderManagementRequest } ? ProviderManagementResult<R>
+  : C extends { action: 'list' } ? Record<string, ProviderGroupConfig>
   : C extends { action: 'get' } ? ProviderGroupView
     : C extends { action: 'candidates' } ? ProviderGroupCandidate[]
-      : C extends { action: 'save' } ? ProviderGroupView
-        : C extends { action: 'delete' } ? ProviderGroupView
+      : C extends { action: 'save' | 'save-if-current' } ? ProviderGroupView
+        : C extends { action: 'delete' | 'delete-if-current' } ? ProviderGroupView
           : C extends { action: 'remote-view' } ? ProviderGroupView
             : C extends { action: 'session-group' } ? ProviderGroupSessionGroup
               : never;
@@ -221,16 +260,46 @@ function normalizeMember(raw: unknown, groupProviderId: string): ProviderGroupMe
   const providerId = kind === 'local' ? groupProviderId : value.providerId;
   if (!isProviderGroupProviderId(providerId)) return null;
   const label = normalizeLabel(value.label);
+  const providerName = normalizeLabel(value.providerName);
+  const hostDeviceId = kind === 'share' ? normalizeShareHostDeviceId(value.hostDeviceId) : undefined;
   return {
     key: providerGroupMemberKey(agentDeviceId as string | null, providerId),
     kind,
     agentDeviceId: agentDeviceId as string | null,
     providerId,
     ...(label ? { label } : {}),
+    ...(providerName ? { providerName } : {}),
+    ...(hostDeviceId ? { hostDeviceId } : {}),
     limit: clampInt(value.limit, 1, PROVIDER_GROUP_MAX_LIMIT, PROVIDER_GROUP_DEFAULT_LIMIT),
     weight: clampInt(value.weight, 1, PROVIDER_GROUP_MAX_WEIGHT, PROVIDER_GROUP_DEFAULT_WEIGHT),
     paused: value.paused === true,
   };
+}
+
+function normalizeShareHostDeviceId(value: unknown): string | undefined {
+  // Provider-share host IDs use the shared-task device domain: any non-empty
+  // string up to 128 UTF-16 code units. They are opaque and never used as a
+  // connection address here, so do not apply the narrower local-device regex.
+  return typeof value === 'string' && value.length > 0 && value.length <= 128
+    ? value
+    : undefined;
+}
+
+export type ProviderGroupPhysicalMember = Pick<ProviderGroupMember, 'kind' | 'agentDeviceId' | 'hostDeviceId'>;
+
+/**
+ * 供应商组展示与计数用的物理电脑键；账号仍由 member.key 独立区分。分享来的按分享者那台电脑：同一个人从同一台电脑
+ * 分享的几个账号算一台；还不知道那台电脑时(旧组尚未对账)按分享各算一台。分享者的电脑一定属于别的账号，不会与自己的电脑重合。
+ */
+export function providerGroupPhysicalDeviceKey(member: ProviderGroupPhysicalMember): string {
+  if (member.kind === 'local') return PROVIDER_GROUP_LOCAL_MEMBER_KEY;
+  if (member.kind === 'share' && member.hostDeviceId) return `share-host:${member.hostDeviceId}`;
+  return `${member.kind}:${member.agentDeviceId ?? ''}`;
+}
+
+/** 组里实际的物理电脑数。同一台电脑上的多个供应商账号(含同一台分享来的几个)只算一台。 */
+export function providerGroupDeviceCount(members: readonly ProviderGroupPhysicalMember[]): number {
+  return new Set(members.map(providerGroupPhysicalDeviceKey)).size;
 }
 
 /**
@@ -266,7 +335,8 @@ export function normalizeProviderGroupConfig(raw: unknown, groupProviderId: stri
 export interface ProviderGroupWireSummary {
   strategy: ProviderGroupStrategy;
   autoSwitch: boolean;
-  members: Array<Pick<ProviderGroupMember, 'key' | 'kind' | 'agentDeviceId' | 'providerId' | 'label' | 'paused'>>;
+  members: Array<Pick<ProviderGroupMember,
+    'key' | 'kind' | 'agentDeviceId' | 'providerId' | 'label' | 'providerName' | 'hostDeviceId' | 'paused'>>;
 }
 
 export function providerGroupSummaryForWire(config: ProviderGroupConfig): ProviderGroupWireSummary {
@@ -280,6 +350,9 @@ export function providerGroupSummaryForWire(config: ProviderGroupConfig): Provid
       providerId: m.providerId,
       // 分享来的电脑不带名字：旧版本存的快照是分享者的电脑名(provider-sharing.md §6)，界面按分享者昵称显示。
       ...(m.label && m.kind !== 'share' ? { label: m.label } : {}),
+      ...(m.providerName ? { providerName: m.providerName } : {}),
+      // 同账号电脑据此把同一台分享来的几个账号算一台；组摘要不发给受邀者。
+      ...(m.hostDeviceId ? { hostDeviceId: m.hostDeviceId } : {}),
       paused: m.paused,
     })),
   };
@@ -559,6 +632,8 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       ? item.reason as ProviderGroupUnavailableReason
       : undefined;
     const ownerName = normalizeLabel(item.ownerName);
+    // 旧组所在电脑不回账号名：用组设置里的快照，都没有时界面按第几个账号称呼。
+    const providerName = normalizeLabel(item.providerName) ?? member.providerName;
     const appVersion = readProviderGroupAppVersion(item.appVersion);
     const guestSupport = ['supported', 'needs-update', 'unknown'].includes(item.guestSupport as string)
       ? item.guestSupport as ProviderGroupGuestSupport : undefined;
@@ -567,6 +642,7 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       key: member.key,
       kind: member.kind,
       label: normalizeLabel(item.label) ?? member.label ?? member.key,
+      ...(providerName ? { providerName } : {}),
       ...(ownerName ? { ownerName } : {}),
       ...(appVersion ? { appVersion } : {}),
       ...(guestSupport ? { guestSupport } : {}),

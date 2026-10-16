@@ -73,7 +73,8 @@ describe('sim-rebuild script invariants', () => {
     expect(source).toContain('await rebuildAndroidSimulator();');
     expect(source).toContain("'--platform', 'android', '--no-install'");
     expect(source).toContain("const gradle = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';");
-    expect(source).toContain("run('cmd.exe', ['/d', '/s', '/c', 'gradlew.bat assembleDebug']");
+    // Explicit cwd path also works with NoDefaultCurrentDirectoryInExePath enabled.
+    expect(source).toContain("run('cmd.exe', ['/d', '/s', '/c', '.\\\\gradlew.bat assembleDebug']");
     expect(source).not.toContain('process.env.ComSpec');
     expect(source).toContain('resolvePnpmInvocation');
     expect(source).toContain('function runPnpm(args, opts = {})');

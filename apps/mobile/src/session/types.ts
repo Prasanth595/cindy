@@ -148,7 +148,8 @@ export interface RemoteMessage {
   systemCardType?:
     | 'help' | 'context' | 'cost' | 'pwd' | 'status' | 'compact' | 'cmd' | 'goal-complete' | 'goal-resumed' | 'context-rebuild' | 'auto-resume' | 'learn' | 'agent-switch'
     /** 代输入结束留痕(由隐藏续接行派生,无输入值)。 */
-    | 'input-handoff';
+    | 'input-handoff'
+    | 'mcp-app';
 }
 
 export type RemoteAttachmentCategory = 'image' | 'pdf' | 'text' | 'office' | 'file';

@@ -18,6 +18,7 @@ const CONNECTION_ISSUE_COPY_KEYS: Record<
   { title: string; hint: string }
 > = {
   'auth-failed': { title: 'deviceLink.authFailedTitle', hint: 'deviceLink.authFailedHint' },
+  'device-removed': { title: 'deviceLink.deviceRemovedTitle', hint: 'deviceLink.deviceRemovedHint' },
   replaced: { title: 'deviceLink.replacedTitle', hint: 'deviceLink.replacedHint' },
   'too-many-connections': {
     title: 'deviceLink.tooManyConnectionsTitle',

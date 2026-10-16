@@ -85,6 +85,19 @@ notes 仅按纯文本呈现，未知单位不猜换算。列表不新增价格�
 `defaultEffort` 的已配置默认优先于供应商实报的推荐档，再适配实际支持能力，force / 用户覆盖仍优先。
 详细字段及成员空值规则以 [模型资料优先级](../product-rules/model-metadata-precedence.md) 为唯一正本。
 
+### 远程推理档位快照兼容
+
+Desktop 主机向能力清单和 `maker:provider:list` 的模型条目显式投影既有的
+`effortsUnknown` 布尔值：`false` 表示能力已知，`true` 表示未声明。控制端收到旧主机
+缺少该字段的空档位表时保留已有选择，只有显式 `false` 的空表才清空；非空表照常校准。
+草稿播种与最终提交使用同一兼容口径，不在控制端给缺失字段补 `false`。
+无档位选择落库使用既有空串哨兵，任务后续发送也保留“未指定”，不提交输入框显示兜底档位。
+Codex 在实际 `turn/start` 请求中省略该档位字段，计划模式的 `reasoning_effort` 使用协议允许的
+`null`；运行时切换与恢复重试同样不发送空串，服务端默认档位快照不覆盖明确的无档位选择。
+回归见 `packages/maker-core/src/agents/codex/index.test.ts` 的 no-effort 用例。
+实现与回归见 `catalog-to-descriptors.ts`、`providerHandlers.ts`、
+`deviceLinkDraftDefaults.test.ts`、`deviceLinkCreateArgs.test.ts` 与 `chatInputModelLoading.test.tsx`。
+
 <a id="ordering"></a>
 ## 模型排序与成员：以账号为准
 

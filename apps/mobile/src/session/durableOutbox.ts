@@ -50,6 +50,8 @@ export interface DurableOutboxRecord {
     draft: NewSessionDraft;
     originalWorkingDir?: string;
     cancelled?: true;
+    /** Creation was handed back to the editor; restore its entry after restart. */
+    editReady?: true;
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;

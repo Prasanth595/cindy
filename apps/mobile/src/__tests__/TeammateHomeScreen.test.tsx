@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   groups: { loading: false, refreshing: false, error: null as string | null, items: [] as HostedRemoteCollectionItem[], supported: false, isOnline: () => true, refresh: vi.fn() },
   groupTargetsSeen: [] as unknown[],
   create: {} as any, chrome: {} as any, titleArgs: [] as number[], nativeHeader: true, headerHeight: 106, barEdge: 'none',
+  cloud: { supported: false, actors: [] as Array<{ id: string; kind: string; externalId: string; name: string; avatar: null; homeDeviceId: string | null }>,
+    refresh: vi.fn(), setHome: vi.fn() },
 }));
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
@@ -57,6 +59,7 @@ vi.mock('@/session/AccountSwitcherSheet', () => ({ AccountSwitcherSheet: (props:
 vi.mock('@/session/HomeHeaderGlassButton', () => ({ HomeHeaderGlassButton: () => null }));
 vi.mock('@/session/TeammateList', () => ({ TeammateList: (props: unknown) => { h.list = props; return null; } }));
 vi.mock('@/session/useTeammateRoster', () => ({ useTeammateRoster: () => ({ ...h.roster }) }));
+vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => h.cloud }));
 vi.mock('@/session/useBotGroupRoster', () => ({ useBotGroupRoster: (targets: unknown) => { h.groupTargetsSeen.push(targets); return h.groups; } }));
 vi.mock('@/session/useTeammateNavigation', async original => {
   const actual = await original<typeof import('@/session/useTeammateNavigation')>();
@@ -90,6 +93,7 @@ beforeEach(() => {
   h.modeMenu = {}; h.nativeMenus = true; h.nativeHeader = true; h.headerHeight = 106; h.barEdge = 'none'; h.chrome = {};
   h.groups.loading = false; h.groups.refreshing = false; h.groups.error = null;
   h.roster.loading = false; h.roster.error = null; h.roster.isOnline.mockReturnValue(true);
+  h.cloud.supported = false; h.cloud.actors = [];
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 describe('teammate home entry', () => {
@@ -209,6 +213,56 @@ describe('server groups in the actual teammate home', () => {
     h.groups.loading = false; h.groups.error = 'CHAT_LIST_FAILED';
     await render(); expect(h.list.error).toBe('CHAT_LIST_FAILED');
     await act(async () => h.list.onRefresh()); expect(h.groups.refresh).toHaveBeenCalledOnce();
+  });
+});
+
+describe('cloud companions (main computer offline)', () => {
+  const actorId = '00000000-0000-4000-8000-000000000001';
+  const copy = (deviceId: string): HostedRemoteCollectionItem => ({ ...teammate, key: `${deviceId}:writer`, host: { deviceId, deviceName: deviceId.toUpperCase() } });
+  it('opens the cloud view for an offline main computer and hides demoted copies', async () => {
+    h.cloud.supported = true;
+    h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    h.roster.items = [teammate, copy('pc')];
+    h.roster.isOnline.mockReturnValue(false);
+    await render();
+    expect(h.list.items.map((row: HostedRemoteCollectionItem) => row.key)).toEqual(['mac:bot']);
+    expect(h.list.cloudOpenable(teammate)).toBe(true);
+    expect(h.list.cloudOpenable(copy('pc'))).toBe(false);
+    await act(async () => h.list.onSelect(teammate));
+    expect(h.push).toHaveBeenLastCalledWith({ pathname: '/companions/cloud/[actorId]',
+      params: { actorId, botId: 'writer', deviceId: 'mac', deviceName: 'Mac', title: 'Writer' } });
+    expect(h.nav.openTeammate).not.toHaveBeenCalled();
+  });
+  it('re-reads main computers when the listed rows change and on pull-to-refresh', async () => {
+    h.cloud.supported = true;
+    h.cloud.refresh = vi.fn();
+    h.roster.items = [teammate];
+    await render();
+    const afterMount = h.cloud.refresh.mock.calls.length;
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount);
+    // Another device moved the companion: the new main computer now lists it.
+    h.roster.items = [teammate, copy('pc')];
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 1);
+    // Both computers were already cached: the new main computer re-lists the same row.
+    h.roster.items = [teammate, { ...copy('pc'), item: { ...copy('pc').item, revision: 'taken-over' } }];
+    await render();
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 2);
+    await act(async () => h.list.onRefresh());
+    expect(h.cloud.refresh).toHaveBeenCalledTimes(afterMount + 3);
+  });
+  it('keeps the per-computer behavior on an older server or an online computer', async () => {
+    h.cloud.actors = [{ id: actorId, kind: 'bot', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'mac' }];
+    h.roster.items = [teammate, copy('pc')];
+    h.roster.isOnline.mockReturnValue(false);
+    await render();
+    expect(h.list.items).toHaveLength(2);
+    expect(h.list.cloudOpenable(teammate)).toBe(false);
+    h.cloud.supported = true; h.roster.isOnline.mockReturnValue(true);
+    await render();
+    await act(async () => h.list.onSelect(teammate));
+    expect(h.nav.openTeammate).toHaveBeenCalledExactlyOnceWith(teammate);
   });
 });
 

@@ -3429,18 +3429,26 @@ export const remoteSessionStore = {
     recomputeSessions();
   },
 
-  // 冷启动乐观 hydrate:仅当该设备 shard 尚不存在时,用本地首页快照缓存种入(先画缓存)。
-  // 「if absent」是关键不变量——fresh loadHome 数据若已先到则绝不覆盖;fresh 之后到会走
-  // setDeviceSessions 正常对账替换。与 hydrateMessagesIfEmpty 同一套语义,只作用于会话 shard。
+  // 单条详情/发件箱恢复不代表整份首页列表已经加载。首轮列表尚未到达时，缓存可以
+  // 补齐缺失行，但已有行始终优先。收到列表或列表变更后不再种入旧快照（含权威空列表、
+  // 归档/删除与设备移除），复用现有列表刷新记录和 mutation fence。
   hydrateDeviceSessionsIfEmpty(deviceId: string, deviceName: string, rawSessions: readonly RemoteSession[]): void {
-    if (!deviceId || rawSessions.length === 0 || shards.has(deviceId)) return;
+    if (!deviceId || rawSessions.length === 0 || sessionListRefreshSeen.has(deviceId)
+      || deviceSessionListMutationEpochs.has(deviceId)) return;
+    const existing = shards.get(deviceId);
+    const existingIds = new Set(existing?.sessions.map((session) => session.id));
+    const missing = rawSessions.filter((session) => !existingIds.has(session.id)
+      && sessionPendingWrites.pendingFields(session.id).length === 0);
+    if (missing.length === 0) return;
+    const currentDeviceName = existing?.deviceName ?? deviceName;
     shards.set(deviceId, {
       deviceId,
-      deviceName,
+      deviceName: currentDeviceName,
       // cacheSeeded 打标:缓存行字段经瘦身/截断(240 字符),只能撑首屏渲染与跳转,
       // 不能作为发送参数;会话页据此在 fresh 元数据到达前禁发(codex review R15)。
       // fresh 路径(setDeviceSessions / upsertDeviceSession)用服务器新对象,天然无标自净。
-      sessions: rawSessions.map((s) => stamp({ ...s, cacheSeeded: true }, deviceId, deviceName)),
+      sessions: [...(existing?.sessions ?? []), ...missing.map((s) =>
+        stamp({ ...s, cacheSeeded: true }, deviceId, currentDeviceName))],
     });
     recomputeSessions();
   },
@@ -3502,6 +3510,9 @@ export const remoteSessionStore = {
   },
 
   applySessionPatch(deviceId: string, sessionId: string, patch: Partial<RemoteSession>): void {
+    // Local optimistic removals must fence a late startup cache just like remote pushes,
+    // even when the removed row has not reached this shard yet.
+    if (patch.status === 'deleted' || patch.status === 'archived') bumpDeviceSessionListMutationEpoch(deviceId);
     const shard = shards.get(deviceId);
     if (!shard) {
       if (patch.status === 'active') reseedHandlers.get(deviceId)?.forEach((handler) => handler());

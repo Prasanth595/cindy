@@ -1,7 +1,9 @@
+import type { PluginUsageTransaction, PluginUsageHandle } from '../../../../shared/pluginUsage.js';
 import type { TaskTagRequest, TaskTagResult } from '@cindy/maker-shared';
 
 export type DbTxName =
   | 'authorization.readProjection'
+  | 'pluginUsage.execute'
   | 'taskTags.execute'
   | 'codex.importMessages'
   | 'claude.importMessages'
@@ -991,6 +993,7 @@ export interface ImRotateSessionArgs {
     agentKind: string;
     source: string;
     providerId: string | null;
+    agentDeviceId?: string | null;
     /** 跟随渠道默认的记录(JSON, 见 im/shared/channelDefaultRoute.ts)。 */
     imDefaultRoute?: string | null;
     imBotContextId: string;
@@ -1345,6 +1348,7 @@ export type DbTxArgsByName = {
   'sessions.setTerminalStatus': SessionsSetTerminalStatusArgs;
   'recentWorkdirs.mergeWindowsIdentity': RecentWorkdirsMergeWindowsIdentityArgs;
   'recentWorkdirs.removeWindowsIdentity': RecentWorkdirsRemoveWindowsIdentityArgs;
+  'pluginUsage.execute': PluginUsageTransaction;
   'taskTags.execute': TaskTagRequest & { newId?: string; callerSessionId?: string };
   'projectAliases.replaceIdentity': ProjectAliasesReplaceIdentityArgs;
   'toolResults.compactSession': CompactSessionToolResultsArgs;
@@ -1430,6 +1434,7 @@ export type DbTxResultByName = {
   'sessions.setTerminalStatus': SessionsSetStatusResultItem;
   'recentWorkdirs.mergeWindowsIdentity': undefined;
   'recentWorkdirs.removeWindowsIdentity': { changes: number };
+  'pluginUsage.execute': PluginUsageHandle | null;
   'taskTags.execute': TaskTagResult;
   'projectAliases.replaceIdentity': {
     projectKey: string;

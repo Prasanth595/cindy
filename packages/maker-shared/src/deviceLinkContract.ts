@@ -500,10 +500,11 @@ export function relayStatusHint(status: DeviceLinkRelayStatus, lastSyncedAt: num
 /**
  * 镜像 @cindy/device-link 的 DeviceLinkConnectionIssueKind。
  * maker-shared 保持零运行时依赖(与 DeviceLinkRelayStatus 同款处理),两边字面量
- * 必须一致;drift 会被 desktop/mobile 消费处的 TS 赋值检查拦下。
+ * 必须一致;deviceLinkContract.test.ts 校验两处字面量，避免消费端迁移后静默漂移。
  */
 export type DeviceLinkConnectionIssueKind =
   | 'auth-failed'
+  | 'device-removed'
   | 'replaced'
   | 'too-many-connections'
   | 'version-mismatch'
@@ -514,6 +515,8 @@ export function connectionIssueTitle(kind: DeviceLinkConnectionIssueKind): strin
   switch (kind) {
     case 'auth-failed':
       return '登录已失效';
+    case 'device-removed':
+      return '设备已移除';
     case 'replaced':
       return '连接被顶替';
     case 'too-many-connections':
@@ -530,6 +533,8 @@ export function connectionIssueHint(kind: DeviceLinkConnectionIssueKind): string
   switch (kind) {
     case 'auth-failed':
       return '登录状态已过期，请退出后重新登录。';
+    case 'device-removed':
+      return '请退出后重新登录，以重新加入设备列表。';
     case 'replaced':
       return '本设备的连接被另一处相同设备顶替，正在重新连接。';
     case 'too-many-connections':

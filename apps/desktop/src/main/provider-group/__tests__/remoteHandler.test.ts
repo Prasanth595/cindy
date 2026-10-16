@@ -522,7 +522,7 @@ describe('完整用量报告分批传输', () => {
 });
 
 describe('decorateProviderListWithGroups', () => {
-  it('adds the group summary only to providers that have a group and stay open for remote use', () => {
+  it('adds group summaries even when remote use is closed, while keeping running counts restricted', () => {
     const result = decorateProviderListWithGroups({
       providers: [
         { id: 'anthropic', remoteInvocationEnabled: true },
@@ -540,9 +540,9 @@ describe('decorateProviderListWithGroups', () => {
         { key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mini', paused: false },
       ],
     });
-    // 只有本机设置能产生组摘要；没开放的不带。
+    // 只有本机设置能产生组摘要；关闭远程调用的组仍需保留管理入口。
     expect(result.providers[1]).not.toHaveProperty('group');
-    expect(result.providers[2]).not.toHaveProperty('group');
+    expect(result.providers[2].group).toEqual(result.providers[0].group);
   });
 
   it('leaves the sharer’s computer name out of shared members', () => {
@@ -585,5 +585,23 @@ describe('sharedProviderGroupSize', () => {
     expect(sharedProviderGroupSize({ readGroup, isRemoteAllowed: () => true }, 'anthropic')).toBe(2);
     expect(sharedProviderGroupSize({ readGroup, isRemoteAllowed: () => true }, 'openai')).toBeNull();
     expect(sharedProviderGroupSize({ readGroup, isRemoteAllowed: () => false }, 'anthropic')).toBeNull();
+  });
+
+  it('counts computers, not accounts: several accounts on one computer are one computer for guests', () => {
+    const share = (id: string, providerId: string): ProviderGroupMember => ({
+      key: `share:${id}:${providerId}`, kind: 'share', agentDeviceId: `share:${id}`, providerId,
+      hostDeviceId: 'kai-pc', limit: 4, weight: 1, paused: false,
+    });
+    const config: ProviderGroupConfig = {
+      ...CONFIG,
+      members: [
+        ...CONFIG.members,
+        { ...MINI, key: 'device:mini:anthropic-b', providerId: 'anthropic-b' },
+        share('s1', 'anthropic'),
+        share('s2', 'anthropic-x'),
+      ],
+    };
+    // 本机 + Mini(两个账号) + Kai 的那台(两个分享) = 3 台。
+    expect(sharedProviderGroupSize({ readGroup: () => config, isRemoteAllowed: () => true }, 'anthropic')).toBe(3);
   });
 });

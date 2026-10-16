@@ -26,6 +26,11 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => bus.auth }));
 vi.mock('@/lib/remoteCatalogSnapshot', () => ({ refreshRemoteCatalogSnapshot: vi.fn(async () => undefined) }));
+vi.mock('@/hooks/useDeviceProviders', () => ({
+  getCachedDeviceProviders: () => null,
+  useDeviceProviders: () => remoteCatalog,
+}));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => localCatalog }));
 vi.mock('@/features/cc-agent/lib/genericNewMakerRouteState', () => ({
   makeGenericNewMakerRouteState: () => ({ workspacePrompt: 'generic' }),
 }));
@@ -58,6 +63,17 @@ const bus = vi.hoisted(() => ({
   manage: new Set<(event: { providerId: string }) => void>(),
 }));
 
+const localCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+}));
+
+const remoteCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+  loading: false,
+  error: null as string | null,
+  unsupported: false,
+}));
+
 function listen<T>(set: Set<T>) {
   return (cb: T) => {
     set.add(cb);
@@ -88,6 +104,11 @@ beforeEach(() => {
   bus.requested.clear();
   bus.settled.clear();
   bus.manage.clear();
+  localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+  remoteCatalog.providers = [];
+  remoteCatalog.loading = false;
+  remoteCatalog.error = null;
+  remoteCatalog.unsupported = false;
   currentOwner = ownerState();
   bus.command.mockImplementation(async (command: { action: string }) => {
     if (command.action === 'owned') return currentOwner;
@@ -249,6 +270,132 @@ describe('ProviderShareGlobalHost', () => {
       expect.stringContaining('providerShare.apply.toastApproved'),
       expect.anything(),
     );
+  });
+
+  // provider-sharing.md §4.1 第 4 步：审批弹窗跟着生成链接的电脑。
+  it('does not pop requests on this computer\'s share when another computer generated the link', async () => {
+    currentOwner = { ...ownerState(), quietRequestIds: ['req-1'] };
+    renderHost();
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'owned', range: 'month' }));
+    act(() => {
+      for (const listener of bus.requested) {
+        listener({
+          request: { ...request, requestId: 'req-2' },
+          share: { shareId: 'share-1', providerId: 'xd', providerLabel: 'Cindy AI' },
+          quiet: true,
+        });
+      }
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull();
+  });
+
+  it('pops a request for another computer\'s share after generating its link here, and hands the decision to that computer', async () => {
+    currentOwner = ownerState([]);
+    remoteCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
+    const groupCommand = vi.fn(async () => ({ ok: true }));
+    Object.assign(window.electronAPI, { providerGroup: { command: groupCommand } });
+    renderHost();
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'owned', range: 'month' }));
+    act(() => {
+      for (const listener of bus.requested) {
+        listener({
+          request: { ...request, requestId: 'req-7', displayName: 'Kai' },
+          share: { shareId: 'share-group', providerId: 'anthropic', providerLabel: 'Anthropic' },
+          hostDeviceId: 'group-host',
+        });
+      }
+    });
+    const dialog = await screen.findByTestId('provider-share-approve-dialog');
+    expect(dialog.textContent).toContain('Kai');
+    fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.approve' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    expect(groupCommand).toHaveBeenCalledWith({
+      action: 'remote-manage',
+      deviceId: 'group-host',
+      request: { action: 'manage-share', command: { action: 'approve', requestId: 'req-7' } },
+    });
+    expect(bus.command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+  });
+
+  it.each(['empty', 'unrelated'])('blocks a local approval when its provider directory is %s', async (catalog) => {
+    localCatalog.providers = catalog === 'empty' ? [] : [{ id: 'openai', source: 'builtin', auth: { method: 'oauth' } }];
+    renderHost();
+    await screen.findByTestId('provider-share-approve-dialog');
+    const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(bus.command).not.toHaveBeenCalledWith({ action: 'approve', requestId: 'req-1' });
+    const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(false);
+    fireEvent.click(reject);
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'reject', requestId: 'req-1' }));
+  });
+
+  it.each(['empty', 'unrelated', 'loading', 'failed'])(
+    'blocks a remote approval when its provider directory is %s, even if the local provider is known',
+    async (catalog) => {
+      localCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
+      remoteCatalog.providers = catalog === 'empty' ? [] : [{
+        id: catalog === 'unrelated' ? 'openai' : 'anthropic', source: 'builtin', auth: { method: 'oauth' },
+      }];
+      remoteCatalog.loading = catalog === 'loading';
+      remoteCatalog.error = catalog === 'failed' ? 'directory unavailable' : null;
+      currentOwner = {
+        ready: true,
+        shares: [],
+        watchedRequests: [{
+          request,
+          share: { shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic' },
+          hostDeviceId: 'host',
+        }],
+      };
+      const groupCommand = vi.fn(async () => ({ ok: true }));
+      Object.assign(window.electronAPI, { providerGroup: { command: groupCommand } });
+      renderHost();
+      await screen.findByTestId('provider-share-approve-dialog');
+      const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+      expect(approve.disabled).toBe(true);
+      fireEvent.click(approve);
+      expect(groupCommand).not.toHaveBeenCalled();
+      const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+      expect(reject.disabled).toBe(false);
+      fireEvent.click(reject);
+      await waitFor(() => expect(groupCommand).toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'host',
+        request: { action: 'manage-share', command: { action: 'reject', requestId: 'req-1' } },
+      }));
+    },
+  );
+
+  it('blocks approval until the remote provider directory classifies the provider', async () => {
+    remoteCatalog.loading = true;
+    currentOwner = {
+      ready: true,
+      shares: [],
+      watchedRequests: [{
+        request,
+        share: { shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic' },
+        hostDeviceId: 'host',
+      }],
+    };
+    const view = renderHost();
+    await screen.findByTestId('provider-share-approve-dialog');
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(true);
+
+    remoteCatalog.loading = false;
+    remoteCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
+    view.rerender(
+      <MemoryRouter initialEntries={['/cc-agent']}>
+        <ProviderShareGlobalHost />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.getByTestId('provider-share-approve-dialog').textContent).toContain('providerShare.approve.calloutClaudeEmail');
   });
 
   it('opens the management page from a notification click', async () => {

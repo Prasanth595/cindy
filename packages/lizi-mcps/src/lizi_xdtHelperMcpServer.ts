@@ -151,7 +151,7 @@ const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'hando
 export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number], string> = {
   cindy: `${BRAND_NAME} 能力说明与当前任务信息；get_capabilities({key:"self-management"}) 是管理自己的任务、定时任务、项目、伙伴的工具索引。本机。`,
   auth: '供应商授权登录（Grok 设备码）。本机。',
-  control: '管理任务与项目：改名、归档、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改。本机。',
+  control: '管理任务与项目：归档/取消归档支持本机与跨电脑（deviceId::sessionId）；改名、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改仅本机。',
   history: '查询任务、工作目录、聊天记录与输入队列。任务列表、搜索、读取聊天记录可跨电脑（device 参数 / deviceId::sessionId）；其余本机。',
   feedback: `向 ${BRAND_NAME} 官方提交反馈。`,
   handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
@@ -434,9 +434,11 @@ function registerStartSessionTaskEntry(
             expects_result: true,
             ...(result.completionDestination ? { completion_destination: result.completionDestination } : {}),
             guidance:
-              (result.completionDestination === 'teammate-private-chat'
-                ? 'Tell the owner that the task card, permission/questions, and final result will appear in their private chat with this teammate. '
-                : '') + "The task card tracks progress and the result will return automatically. Do not start it again. Treat model_route and task/session ids as internal bookkeeping; do not echo them or the delegated instruction in ordinary replies unless the user asks for these details.",
+              (result.completionDestination === 'group'
+                ? 'This task lives in this group: its card is being posted here, and anything it needs confirmed plus its final result are sent here as your own messages (only if the group can no longer take them do they go to your owner privately). Tell the group briefly what you started; do not claim the card or result is already here. '
+                : result.completionDestination === 'private'
+                  ? 'This older group cannot carry task messages: anything the task needs confirmed and its final result go to your owner\'s private chat with you, not here. Tell the group briefly what you started and that the result will reach your owner privately. '
+                  : '') + "The task card tracks progress and the result will return automatically. Do not start it again. Treat model_route and task/session ids as internal bookkeeping; do not echo them or the delegated instruction in ordinary replies unless the user asks for these details.",
           })
         : errorPayload(result.errorCode, result.message);
     },
@@ -864,6 +866,7 @@ export interface XdtHelperMcpDeps {
   getSessionBranches?: GetSessionBranchesDeps['getSessionBranches'];
   /** 在某条消息处分叉出新会话回调。host 注入后, control 类工具 fork_session 会被注册。 */
   forkSession?: ForkSessionDeps['forkSession'];
+  setRemoteSessionsStatus?: ArchiveSessionsDeps['setRemoteSessionsStatus'];
 }
 
 /**
@@ -970,6 +973,7 @@ export function createXdtHelperMcpServer(
     const archiveDeps = {
       getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
       setSessionsStatus: deps.setSessionsStatus,
+      setRemoteSessionsStatus: deps.setRemoteSessionsStatus,
     };
     registerArchiveSessionsTool(registry, archiveDeps);
     registerUnarchiveSessionsTool(registry, archiveDeps);

@@ -164,6 +164,8 @@ vi.mock('@/hooks/useSessionPausedQueue', () => ({
 
 vi.mock('@/lib/sessionAttentionStore', () => ({
   useSessionAttentionKind: (sessionId: string) => mocks.attentionKindBySession.get(sessionId),
+  getSessionAttentionKinds: () => mocks.attentionKindBySession,
+  subscribeSessionAttention: () => () => undefined,
 }));
 
 vi.mock('../../lib/scrollIntoNearestView', () => ({

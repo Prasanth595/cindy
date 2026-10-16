@@ -8,6 +8,15 @@ import {
 } from '../index.js';
 
 describe('remote invoke policy boundaries', () => {
+  it.each(['desktop', 'mobile'] as const)('budgets MCP App loading on %s without replaying any operation', (platform) => {
+    const channel = 'maker:mcp-apps:v1';
+    expect(resolveRemoteInvokeTimeoutMs(channel, ['task', { op: 'open' }], platform)).toBe(120_000);
+    for (const op of ['poll', 'message', 'cancel-open', 'teardown'])
+      expect(resolveRemoteInvokeTimeoutMs(channel, ['task', { op }], platform)).toBeUndefined();
+    expect(isPeerResetRetryableReadChannel(channel)).toBe(false);
+    expect(isCompletedInvokeRetryableReadChannel(channel)).toBe(false);
+    expect(canCoalesceRemoteListing({ channel, args: ['task', { op: 'open' }] })).toBe(false);
+  });
   it('keeps mobile history recovery within the fork budget without retrying writes', () => {
     const channel = 'maker:fork-strip-encrypted';
     expect(resolveRemoteInvokeTimeoutMs(channel, ['source'], 'mobile')).toBe(30_000);

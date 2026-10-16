@@ -58,6 +58,23 @@ describe('chat private media', () => {
     await expect(media.download('room', 'media')).rejects.toThrow('CONVERSATION_NOT_FOUND');
     expect(api).toHaveBeenCalledTimes(2);
   });
+  it('uploads a send\'s files three at a time and keeps their order', async () => {
+    f.read.mockResolvedValue({ buffer: Buffer.from('png') });
+    f.fetch.mockResolvedValue(new Response('', { status: 200 }));
+    const files = ['a', 'b', 'c', 'd'].map(id => ({ ...attachment, id, name: `${id}.png` }));
+    let inFlight = 0, most = 0;
+    const api = vi.fn(async (route: string, _method: string, body: { name?: string }) => {
+      if (!route.endsWith('/media')) return {};
+      inFlight += 1; most = Math.max(most, inFlight);
+      // The first file is prepared last.
+      await new Promise(resolve => setTimeout(resolve, body.name === 'a.png' ? 20 : 1));
+      inFlight -= 1;
+      return { id: `media-${body.name}`, uploadUrl: 'https://upload.example.test/signed' };
+    }) as unknown as ChatApi;
+    const blocks = await createChatMedia(api, () => true).upload('room', 'operation', files, 'actor');
+    expect(blocks.map(block => block.caption)).toEqual(['a.png', 'b.png', 'c.png', 'd.png']);
+    expect(most).toBe(3);
+  });
   it('permits exact loopback media only for the explicitly isolated adapter', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png') });f.fetch.mockResolvedValue(new Response('', { status: 200 }));
     let uploadUrl = 'http://127.0.0.1:3018/dev-media/fixture';

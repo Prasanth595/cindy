@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "開啟任務",
+    "loading": "正在讀取任務…",
+    "failed": "未能讀取任務資訊",
+    "missing": "這台電腦沒有傳回該任務的資訊",
+    "timedOut": "讀取任務資訊逾時",
+    "retry": "重新讀取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "先前有自動執行失敗。",
     "precheck": "自動檢查暫時受阻。",

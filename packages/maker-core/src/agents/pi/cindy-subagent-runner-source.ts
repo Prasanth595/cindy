@@ -37,6 +37,12 @@ const runnerScriptPath = typeof process.argv[1] === 'string' ? process.argv[1] :
 const CONTROL_VERSION = 1;
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
 const MAX_RESULT_BYTES = 256 * 1024;
+// Spawn command line budget, same values the Host enforces for its own Pi
+// launch (PI_WINDOWS_SPAWN_ARGV_BUDGET / PI_POSIX_SPAWN_ARGV_BUDGET). The
+// child's profile prompt is a hardcoded short string today; this only exists so
+// a future custom profile fails as a readable status instead of an opaque
+// spawn error.
+const SPAWN_ARGV_BUDGET = process.platform === 'win32' ? 30000 : 128000;
 const CONTROL_POLL_MS = 200;
 const STATUS_FLUSH_MS = 50;
 const HEARTBEAT_MS = 2000;
@@ -824,6 +830,24 @@ function main() {
       const childArgs = Array.isArray(config.binaryPrefixArgs)
         ? config.binaryPrefixArgs.concat(args)
         : args;
+      // 两种口径不一样，不能统一：Windows CreateProcess 的命令行上限是 32767 个
+      // UTF-16 字符（按 UTF-8 字节算会把中文路径放大三倍、误拒）；POSIX 的
+      // ARG_MAX 按字节算（用字符数会漏检中文长提示词）。
+      const argvUnits = childArgs.reduce((total, arg) => {
+        const value = String(arg);
+        return total
+          + (process.platform === 'win32' ? value.length : Buffer.byteLength(value, 'utf8'))
+          + 3;
+      }, 0);
+      if (argvUnits > SPAWN_ARGV_BUDGET) {
+        task.status = 'failed';
+        task.error = 'Subagent command line exceeds the platform spawn budget ('
+          + argvUnits + ' > ' + SPAWN_ARGV_BUDGET + ').';
+        task.endedAt = Date.now();
+        scheduleStatus();
+        resolve();
+        return;
+      }
       const child = spawn(config.binary, childArgs, {
         cwd: task.cwd,
         env: childEnv,

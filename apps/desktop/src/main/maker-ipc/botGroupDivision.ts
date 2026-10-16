@@ -27,8 +27,11 @@ export interface PlanDecisionInput {
   groupName: string;
   organizerName: string;
   members: PlanDecisionMember[];
-  /** Recent group messages, oldest first, excluding `request`. */
-  recent: Array<{ from: string; text: string }>;
+  /**
+   * Recent group messages, oldest first, excluding `request`. `sharedReplyId` marks a thread
+   * reply re-posted to the main chat: a reference, never a new request.
+   */
+  recent: Array<{ from: string; text: string; sharedReplyId?: string }>;
   request: string;
   /** Names of what the user attached to `request`. */
   requestAttachments?: string[];
@@ -76,8 +79,12 @@ export function buildPlanDecisionPrompt(input: PlanDecisionInput): string {
   if (recent.length > 0) {
     lines.push(
       'Recent group messages, oldest first:',
-      untrustedJsonBlock(recent.map((message) => ({ from: message.from, text: clamp(message.text, MAX_RECENT_MESSAGE_CHARS) }))),
+      untrustedJsonBlock(recent.map((message) => ({ from: message.from, text: clamp(message.text, MAX_RECENT_MESSAGE_CHARS),
+        ...(message.sharedReplyId ? { sharedReplyId: message.sharedReplyId } : {}) }))),
     );
+    if (recent.some((message) => message.sharedReplyId)) {
+      lines.push('A message with sharedReplyId re-posts an existing thread reply to the main chat. It is a reference, not a new request, and names mentioned inside it are not addressing anyone.');
+    }
   }
   lines.push("The user's latest message:", untrustedJsonBlock({
     text: clamp(input.request, MAX_REQUEST_CHARS),

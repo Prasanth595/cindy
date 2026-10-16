@@ -7,6 +7,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ipcMain, shell, clipboard } from 'electron';
+import { MCP_APPS_INVOKE } from '../../shared/mcpApps.js';
 import { currentOauthIdentityScope, trustOauthPeer } from '../plugin-oauth/desktopIdentity.js';
 import { RemotePluginOauthUnsupportedError, resolveOauthPeerIdentity } from '../plugin-oauth/identityResolver.js';
 import { getDeviceId } from '../authManager.js';
@@ -375,8 +376,7 @@ export function handleListDevices(
   const directoryRequestSequence = deps.beginControllerDisplayNameDirectoryRefresh();
   const requestEpoch = deps.captureControllerDisplayNameRequestEpoch();
   const presenceRequestEpoch = deps.captureControllerPresenceRequestEpoch();
-  let request!: Promise<DeviceListResult>;
-  request = deps.apiFetch<{ devices: DeviceLinkServerDeviceView[] }>(
+  const request = deps.apiFetch<{ devices: DeviceLinkServerDeviceView[] }>(
     '/api/device-link/devices',
   ).then(
     async (result) => {
@@ -602,6 +602,9 @@ export async function handleInvoke(
   if (typeof channel !== 'string' || !channel.trim()) {
     throwIpcError('INVALID_PARAMS', 'channel is required');
   }
+  // App RPCs require the dedicated Main/frame binding, including for remote cards.
+  // Never forward Renderer-supplied View IDs through the general preload bridge.
+  if (channel === MCP_APPS_INVOKE) throwIpcError('PERMISSION_DENIED', 'MCP_APP_FRAME_REQUIRED');
   if (channel === PLUGIN_OAUTH_CHANNEL || channel === PLUGIN_SECRET_LOCAL_CHANNEL || channel === PLUGIN_CONNECTION_LOCAL_CHANNEL
     || channel === INPUT_HANDOFF_LOCAL_CHANNEL || channel === INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL
     || channel === INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL || channel === INPUT_HANDOFF_REMOTE_PICTURE_CHANNEL

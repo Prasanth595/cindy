@@ -58,7 +58,7 @@ import {
 } from '../maker-ipc/usage.js';
 import { getDesktopNotificationsEnabled } from '../notificationService.js';
 import { serverApiFetch } from '../serverApiClient.js';
-import { readClaudeAccountUsageSnapshot, triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
+import { observeClaudeAccountUsage, readClaudeAccountUsageRevision, readClaudeAccountUsageSnapshot, triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { readUsageHistory, type UsageHistoryPayload } from '../usage/usageHistory.js';
 import { observeUsageChanges, readCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
@@ -137,7 +137,7 @@ interface TimedCache<T> {
   readAtMs: number;
 }
 
-class MenubarService {
+export class MenubarService {
   private readonly host: MacMenubarNativeHost;
   private readonly creditSamples = new CreditSampleStore();
   private settings: MenubarSettings;
@@ -209,6 +209,11 @@ class MenubarService {
     this.host.prepare();
     this.disposers.push(
       observeUsageChanges(() => this.scheduleRebuild()),
+      observeClaudeAccountUsage(() => {
+        if (!this.balanceAccountKey()?.startsWith('quota:')) return;
+        this.balance = null;
+        this.scheduleRebuild(0);
+      }),
       authManager.onAuthStateChange((state) => {
         if (!state.isAuthenticated) this.balance = null;
         // Usage history belongs to the data owner; token refreshes keep the cache.
@@ -315,6 +320,7 @@ class MenubarService {
 
   private async collectAndPublish(nowMs: number, force: boolean, markStale: () => void): Promise<void> {
     const generation = getActiveAppSession().generation;
+    const quotaRevision = readClaudeAccountUsageRevision();
     const collected = await collectMenubarInputs({
       nowMs,
       listProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
@@ -340,6 +346,10 @@ class MenubarService {
     // An owner switch that started during the reads makes them the old owner's data.
     const after = getActiveAppSession();
     if (!this.started || isAppSessionBoundaryPending() || after.generation !== generation) return;
+    if (readClaudeAccountUsageRevision() !== quotaRevision) {
+      this.scheduleRebuild(0);
+      return;
+    }
     this.publish(collected, nowMs);
   }
 
@@ -485,11 +495,11 @@ class MenubarService {
    */
   private balanceAccountKey(): string | null {
     const auth = authManager.getAuthState();
-    if (auth.mode === 'local') return auth.dataOwnerId ? `quota:local:${auth.dataOwnerId}` : null;
+    if (auth.mode === 'local') return auth.dataOwnerId ? `quota:local:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeAccountUsageRevision()}` : null;
     if (!getAppCapabilities().canUseCindyAccountServices) return null;
     const user = auth.user;
     if (!user) return null;
-    if (user.membershipKind === 'org') return auth.dataOwnerId ? `quota:cloud:${auth.dataOwnerId}` : null;
+    if (user.membershipKind === 'org') return auth.dataOwnerId ? `quota:cloud:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeAccountUsageRevision()}` : null;
     if (user.membershipKind !== 'personal') return null;
     return `${user.id}:${CURRENT_CINDY_REGION}`;
   }
@@ -514,6 +524,7 @@ class MenubarService {
       this.balance = { accountKey, reading, fetchedAtMs: Date.now() };
       return reading;
     } catch (error) {
+      if (this.balanceAccountKey() !== accountKey) return null;
       log.warn('menu bar balance read failed', { error: errorMessage(error) });
       // Keep showing the last known amount; its "updated" time tells the age.
       return cached?.reading ?? null;

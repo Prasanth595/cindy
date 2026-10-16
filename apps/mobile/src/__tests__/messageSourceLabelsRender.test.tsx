@@ -207,6 +207,7 @@ vi.mock("@/session/MobileComposerInputRow", () => ({
   MOBILE_COMPOSER_CONTROL_SIZE: 44,
 }));
 vi.mock("@/session/ImageLightbox", () => ({ ImageLightbox: () => null }));
+vi.mock("@/session/McpAppCard", () => ({ McpAppCard: () => null }));
 vi.mock("@/session/mermaidWebView", () => ({ MermaidDiagram: () => null }));
 vi.mock("@/session/mathWebView", () => ({ MathFormulaWebView: () => null }));
 vi.mock("@/session/mediaPlayerWebView", () => ({
@@ -479,6 +480,13 @@ describe("source labels reveal their ids on long press", () => {
   }
 
   it("shows plugin, session and automation ids, like the device label", () => {
+    const appSource = longPress(
+      [msg("app", "run", { sourcePlugin: { pluginId: "mcp-app:reports", name: "Reports" } })],
+      "message.sourcePlugin",
+    );
+    expect(appSource).toContain("由 MCP App「Reports」发送");
+    expect(appSource).toContain("MCP 服务器 ID：reports");
+    expect(appSource).not.toContain("mcp-app:reports");
     expect(
       longPress([msg("p1", "run", { sourcePlugin: { pluginId: "ghost-github", name: "GitHub" } })], "message.sourcePlugin"),
     ).toContain("插件 ID：ghost-github");

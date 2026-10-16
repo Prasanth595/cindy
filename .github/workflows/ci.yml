@@ -2,6 +2,9 @@ name: client-ci
 
 on:
   pull_request:
+  # merge queue 把 PR 与最新 main(及排在前面的 PR)合成临时分支,在上面重跑必需检查
+  # (verify / Windows unit tests),全绿才合入。没有这个触发,队列会一直等到超时再把 PR 移出。
+  merge_group:
   push:
     branches:
       - main
@@ -68,7 +71,7 @@ jobs:
       # consumers block. Geometry/adoption observations remain report-only.
       - name: Check added design colours
         env:
-          DESIGN_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+          DESIGN_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
           DESIGN_HEAD_REF: ${{ github.sha }}
         run: pnpm check:design-colors --base-ref "$DESIGN_BASE_REF" --head-ref "$DESIGN_HEAD_REF"
 
@@ -105,7 +108,7 @@ jobs:
 
       - name: Validate SQLite migrations
         env:
-          XDT_MIGRATION_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+          XDT_MIGRATION_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
         run: pnpm --filter desktop db:validate
 
       - name: Run scheduler architecture guard

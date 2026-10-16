@@ -1,4 +1,5 @@
 import { PluginCardActions } from '@/plugins/PluginCardActions';
+import { McpAppCard } from './McpAppCard';
 import { RichContentContext } from './richContentContext';
 import { RichContentRuntime } from './richContentRuntime';
 import { MessageListVisibility, MessageListVisibilityContext, useMessageListItemVisible } from './messageListVisibility';
@@ -180,6 +181,7 @@ import {
 } from '@/session/userMessageCollapse';
 import {
   collectMobileMessageGalleryImages,
+  galleryImageIndexForPayload,
   isLightboxMediaKind,
   lightboxImagesForPayload,
   type MobileMessageGalleryImage,
@@ -760,6 +762,7 @@ export function MessageRenderer({
   shareSelectionBusy,
   onQuoteSelection,
   pendingSend,
+  pendingSendGroupKeys,
   getSentImagePreview,
   onReadTextFilePreview,
   onReleaseRemoteMedia,
@@ -808,6 +811,8 @@ export function MessageRenderer({
   focusedRequestKey?: number | string | null;
   followLatestRequestKey?: number | string | null;
   items: readonly MobileMessageRenderItem[];
+  /** Live outbox, queued and settling rows; an absent source cannot retain its viewer forever. */
+  pendingSendGroupKeys?: ReadonlySet<string>;
   /** Stable while streaming only changes row content; structural list derivations key off this. */
   itemsStructureKey?: unknown;
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
@@ -1708,22 +1713,31 @@ export function MessageRenderer({
   // 避免取件 effect / FlatList / LightboxPage memo 每帧全部失效。
   const lightboxImagesRef = useRef<readonly MobileMessageGalleryImage[] | null>(null);
   const lightboxImages = useMemo(() => {
-    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) return null;
-    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey);
+    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) {
+      lightboxImagesRef.current = null;
+      return null;
+    }
     const prev = lightboxImagesRef.current;
+    const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);
+    const retainPendingSnapshot = !!payloadSourceGroupKey && pendingSendGroupKeys?.has(payloadSourceGroupKey) === true;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent, retainPendingSnapshot);
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
         && p.payload.media.previewable === n.payload.media.previewable
+        && p.payload.galleryImageSlot === n.payload.galleryImageSlot
         && p.previewUri === n.previewUri;
     })) {
       return prev;
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, payload, payloadSourceGroupKey]);
+  }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey, pendingSendGroupKeys]);
+  const initialLightboxImage = lightboxImages
+    ? lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]
+    : undefined;
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
@@ -2904,7 +2918,8 @@ export function MessageRenderer({
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
-          initialUrl={payload.media.url}
+          initialImageKey={initialLightboxImage?.key ?? payload.galleryImageKey}
+          initialUrl={initialLightboxImage?.url ?? payload.media.url}
           onClose={closePayload}
           onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}
@@ -3035,6 +3050,7 @@ const RenderItemView = memo(function RenderItemView({
           <PendingSendBubble
             actions={actions.pendingSend}
             item={item}
+            onOpenImage={actions.onOpenPayload}
             screenWidth={actions.screenWidth}
             viewerDeviceId={actions.viewerDeviceId}
             renderImage={(uri, sourceUri, onError) => uri ? (
@@ -3257,13 +3273,13 @@ function SourceDeviceLabel({
 /** 插件任务派发的消息:气泡外的来源标签;与气泡内的本轮插件调用头(PluginInvocationHeader)是两回事。 */
 function SourcePluginLabel({ align, plugin }: { align: 'user' | 'agent'; plugin: MessageSourcePlugin }) {
   const { colors } = useTheme();
-  const { t, i18n: i18nInstance } = useTranslation();
+  const { i18n: i18nInstance } = useTranslation();
   const label = useMemo(() => sourcePluginLabel(plugin), [plugin, i18nInstance.language]);
   return (
     <SourceLabelWithId
       align={align}
       icon={<Ghost color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
-      idText={t('message.renderer.sourcePluginId', { id: plugin.pluginId })}
+      idText={sourceIdText({ sourcePlugin: plugin })}
       label={label}
       testID="message.sourcePlugin"
     />
@@ -3802,7 +3818,11 @@ function MessageBubble({
           ) : null}
         </View>
       ) : null}
-      {item.message.systemCardType ? (
+      {item.message.systemCardType === 'mcp-app' ? (
+        <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
+          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')}
+          fallbackText={String(item.message.systemCardData?.fallbackText ?? '')} />
+      ) : item.message.systemCardType ? (
         <MobileSystemCard
           autoResumeInFlight={isMobileAutoResumeRowInFlight({
             isContinuationTurnOwner: clientId === actions.continuationTurnClientId,
@@ -5599,6 +5619,13 @@ function OrcaCollabCard({ card, screenWidth, blockKey }: {
   );
 }
 
+const ViewabilityGatedMcpAppCard = memo(function ViewabilityGatedMcpAppCard(
+  props: Omit<ComponentProps<typeof McpAppCard>, 'active'>,
+) {
+  const heavyContentVisible = useContext(MessageHeavyContentVisibilityContext);
+  return <McpAppCard {...props} active={heavyContentVisible} />;
+});
+
 const ViewabilityGatedMermaidDiagram = memo(function ViewabilityGatedMermaidDiagram({
   source,
   testID,
@@ -6597,6 +6624,7 @@ export function AttachmentStrip({
   align,
   layout,
   onOpen,
+  onOpenFile,
   onResolveRemoteMedia,
   usePreviewState = useRecyclingState,
 }: {
@@ -6607,6 +6635,8 @@ export function AttachmentStrip({
   align: 'left' | 'right';
   layout: MessageContentLayout;
   onOpen?: (payload: MessagePayload) => void;
+  /** Index within this strip's file chips, for callers that resolve files by ID on tap. */
+  onOpenFile?: (index: number) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   usePreviewState?: MediaPreviewStateHook;
 }) {
@@ -6652,7 +6682,7 @@ export function AttachmentStrip({
               key={`${item.kind}:${item.path ?? item.name}:${index}`}
               layout={layout}
               name={item.name}
-              onOpen={onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
+              onOpen={onOpenFile ? () => onOpenFile(index) : onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
               path={item.path}
             />
           ))}
@@ -9307,7 +9337,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fileText: { flex: 1, minWidth: 0 },
+  // Basis auto, not `flex: 1`: a content-sized chip (left-aligned strip, group wrapper) would give the name zero width.
+  fileText: { flexGrow: 1, flexShrink: 1, minWidth: 0 },
   fileName: { color: colors.textPrimary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, fontWeight: fontWeight.medium },
   diffCard: {
     backgroundColor: colors.chatCodeSurface,

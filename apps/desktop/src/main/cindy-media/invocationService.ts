@@ -22,6 +22,7 @@ import { ServerApiError } from '../serverApiClient.js';
 import { getCurrentDbClientUserId, getDbClient } from '../localDb/client/current.js';
 import type { DbClient } from '../localDb/client/DbClient.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
+import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
 import {
   fetchMediaInvocationGuide,
@@ -77,6 +78,8 @@ interface MediaConnection {
   headers?: Record<string, string>;
   assertCurrent?(): void;
   beforeSubmit?(): void;
+  /** 上游以 401 拒绝时调用;只有携带 Cindy AI Key 的网关连接提供。 */
+  onUnauthorized?(): void;
 }
 
 class MediaInvocationError extends Error {
@@ -316,7 +319,7 @@ function resolveConnection(providerId: string): MediaConnection {
   ) {
     throw new MediaInvocationError('CONNECTION_INVALID', 'Cindy AI endpoint 不合法');
   }
-  return { baseUrl, apiKey };
+  return { baseUrl, apiKey, onUnauthorized: () => reportCindyGatewayKeyRejected(apiKey) };
 }
 
 function requestUrl(baseUrl: string, relativePath: string): string {
@@ -519,6 +522,7 @@ async function dispatchRequest(input: {
       signal: controller.signal,
     });
     responseStatus = response.status;
+    if (response.status === 401) input.connection.onUnauthorized?.();
     log.info('media request response', {
       ...requestLog,
       status: response.status,

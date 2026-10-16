@@ -57,6 +57,7 @@ import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 
 interface SystemCardProps {
   cardType:
+    | 'mcp-app'
     | 'input-handoff'
     | 'cindy-make-doctor'
     | 'cindy-make'

@@ -474,6 +474,8 @@ export interface SessionSearchOptions {
 
 export interface SessionSearchHit {
   sessionId: string;
+  /** 宿主生成的任务深链，包含所属设备，供按需引用原对话。 */
+  sessionUrl: string;
   messageId: string;
   role: string;
   /** FTS5 snippet() 高亮片段 */

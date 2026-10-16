@@ -25,7 +25,7 @@ describe('local root installation consent identity', () => {
     };
     const root: InstalledGhost = { ...organization, namespace: null, dir: '/plugins/_ns/_root/helper' };
     const packageSha256 = 'a'.repeat(64);
-    const prompt = vi.fn(async (_request: Omit<GhostInstallConsentRequest, 'requestId'>) => allow);
+    const prompt = vi.fn<(request: Omit<GhostInstallConsentRequest, 'requestId'>) => Promise<boolean>>(async () => allow);
     const release = vi.fn();
     const manager = {
       list: () => [organization],
@@ -43,7 +43,8 @@ describe('local root installation consent identity', () => {
       findInstalledGhostForDeliveryTarget, installedGhostStoragePart,
       withGhostInstallLock: async (_id: string, operation: () => unknown) => operation(),
       getLayoutStore: () => ({ getLayout: () => ({}) }), layoutWithGhostPanel: () => null,
-      spawnIfResident: vi.fn(), markGhostRecommendationInstalled: vi.fn(), log: { warn: vi.fn() },
+      spawnIfResident: vi.fn(), bindPluginUsage: vi.fn(async () => {}),
+      markGhostRecommendationInstalled: vi.fn(), log: { warn: vi.fn() },
     });
     const installing = callbacks.install({ sender: {} }, '/tmp/helper.cindy', { enable: true, expectedPackageSha256: packageSha256 });
     if (allow) {

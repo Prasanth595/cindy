@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderView } from '@cindy/model-providers';
 
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
-import { getProviderSharePendingRequests, resetProviderShareStoreForTests } from '../providerShareStore';
+import {
+  getProviderSharePendingRequests,
+  getProviderSharePendingReshares,
+  resetProviderShareStoreForTests,
+} from '../providerShareStore';
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
@@ -23,6 +28,16 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
     { deviceId: 'studio', name: 'Studio', isSelf: false },
   ],
 }));
+const localCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+}));
+const remoteCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+  loading: false,
+  error: null as string | null,
+}));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => localCatalog }));
+vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => remoteCatalog }));
 vi.mock('@/contexts/AuthContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/contexts/AuthContext')>()),
   useOptionalAuthUser: () => ({ name: 'Magi', avatar: null }),
@@ -126,6 +141,10 @@ beforeEach(() => {
   resetProviderShareStoreForTests();
   localGroupsTesting.reset();
   localGroups = {};
+  localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+  remoteCatalog.providers = [];
+  remoteCatalog.loading = false;
+  remoteCatalog.error = null;
   confirmSpy.mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
@@ -140,8 +159,20 @@ beforeEach(() => {
       providerShare: { command, onOwnedChanged: () => () => undefined, onReceivedChanged: () => () => undefined },
       // 页面上方的供应商组一块(由 ProviderGroupSection 自己的测试覆盖)：这里只给一个空组。
       providerGroup: {
-        command: async (cmd: { action: string; providerId: string }) =>
-          cmd.action === 'list' ? localGroups : { providerId: cmd.providerId, config: null, members: [] },
+        command: async (cmd: {
+          action: string;
+          providerId?: string;
+          request?: { action: string; command?: { action: string } };
+        }) => {
+          if (cmd.action === 'list') return localGroups;
+          if (cmd.action === 'remote-manage') {
+            const action = cmd.request?.command?.action;
+            if (action === 'owned') return owned();
+            if (action === 'own-usage') return ownUsage();
+            if (action === 'approve' || action === 'reject') return { ok: true };
+          }
+          return { providerId: cmd.providerId, config: null, members: [] };
+        },
         onChanged: () => () => undefined,
       },
     },
@@ -150,10 +181,23 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-function renderPage(gate: 'on' | 'remote-off' | 'invocation-off' = 'on') {
+function renderPage(
+  gate: 'on' | 'remote-off' | 'invocation-off' = 'on',
+  options: { deviceId?: string; remoteProvider?: ProviderView } = {},
+) {
   const onBack = vi.fn();
-  render(<ProviderShareManagePage providerId="xd" providerName="Cindy AI" providerIcon={null} gate={gate} onBack={onBack} />);
-  return { onBack };
+  const view = render(
+    <ProviderShareManagePage
+      providerId="xd"
+      providerName="Cindy AI"
+      providerIcon={null}
+      gate={gate}
+      deviceId={options.deviceId}
+      remoteProvider={options.remoteProvider}
+      onBack={onBack}
+    />,
+  );
+  return { onBack, ...view };
 }
 
 describe('ProviderShareManagePage', () => {
@@ -212,8 +256,8 @@ describe('ProviderShareManagePage', () => {
     const members = within(self).getAllByTestId('provider-usage-member');
     expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
       'local',
-      'device:studio:xd-2',
-      'share:share-9:xd',
+      'device:studio',
+      'share:share:share-9',
     ]);
     expect(members[0]!.textContent).toContain('providerGroup.member.local');
     expect(members[0]!.textContent).toContain("Magi's Mac Mini");
@@ -228,8 +272,50 @@ describe('ProviderShareManagePage', () => {
     fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Lizi/ }));
     const lizi = screen.getAllByTestId('provider-usage-row')[1]!;
     const keys = within(lizi).getAllByTestId('provider-usage-member').map((member) => member.getAttribute('data-member-key'));
-    expect(keys).toEqual(['local', 'device:studio:xd-2', 'share:share-9:xd', '']);
+    expect(keys).toEqual(['local', 'device:studio', 'share:share:share-9', '']);
     expect(lizi.textContent).toContain('providerGroup.usage.unattributed');
+  });
+
+  it('counts usage from multiple accounts on one physical computer once', async () => {
+    localGroups = {
+      xd: {
+        ...xdGroup,
+        members: [
+          { ...xdGroup.members[0]! },
+          { ...xdGroup.members[1]! },
+          { ...xdGroup.members[2]!, hostDeviceId: 'kai-pc' },
+          {
+            ...xdGroup.members[2]!,
+            key: 'share:share-10:xd',
+            agentDeviceId: 'share:share-10',
+            hostDeviceId: 'kai-pc',
+          },
+        ],
+      },
+    };
+    const usage = ownUsage();
+    usage.local!.models.push(
+      usageModel('claude-sonnet-5', 2_000, 0.2, 'share:share-9:xd'),
+      usageModel('claude-sonnet-5', 3_000, 0.3, 'share:share-10:xd'),
+    );
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') return owned();
+      if (cmd.action === 'own-usage') return usage;
+      if (cmd.action === 'received') return [];
+      throw new Error('unexpected action');
+    });
+
+    renderPage();
+    const rows = await screen.findAllByTestId('provider-usage-row');
+    expect(rows[0]!.textContent).toContain('providerGroup.usage.computerCount:{\\"count\\":3}');
+    fireEvent.click(screen.getByRole('button', { name: /providerGroup\.usage\.expandAria.*Magi/ }));
+
+    const members = within(screen.getAllByTestId('provider-usage-row')[0]!).getAllByTestId('provider-usage-member');
+    expect(members.map((member) => member.getAttribute('data-member-key'))).toEqual([
+      'local',
+      'device:studio',
+      'share-host:kai-pc',
+    ]);
   });
 
   it('re-reads usage when the period changes', async () => {
@@ -291,11 +377,163 @@ describe('ProviderShareManagePage', () => {
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
   });
 
+  // 转分享(provider-sharing.md §4.3)：成员想经自己的供应商组把这里的供应商转给别人用，主人逐人处理。
+  it.each([undefined, 'studio'])('handles reshare decisions on the provider’s computer (%s)', async (deviceId) => {
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') {
+        const state = owned();
+        state.shares[0]!.members[0]!.reshares = [
+          { id: 'rs-pending', name: 'Carol', avatarUrl: null, state: 'pending', requestedAt: Date.now() - 1_000, decidedAt: null },
+          { id: 'rs-approved', name: 'Dave', avatarUrl: null, state: 'approved', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+          { id: 'rs-rejected', name: 'Erin', avatarUrl: null, state: 'rejected', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+        ];
+        return state;
+      }
+      if (cmd.action === 'own-usage') return ownUsage();
+      if (cmd.action === 'received') return [];
+      if (cmd.action === 'reshare-decide') return { ok: true };
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+    const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+    if (deviceId) {
+      remoteCommand.mockImplementation(async (cmd) => {
+        if (cmd.action === 'remote-manage' && cmd.request.action === 'manage-share') {
+          if (cmd.request.command.action === 'reshare-decide') return { ok: true };
+          return command(cmd.request.command);
+        }
+        return { providerId: 'xd', config: null, members: [] };
+      });
+    }
+    const expectDecision = async (id: string, decision: 'approve' | 'reject') => {
+      const decidedCommand = { action: 'reshare-decide', id, decision };
+      if (deviceId) {
+        await waitFor(() => expect(remoteCommand).toHaveBeenCalledWith({
+          action: 'remote-manage', deviceId, request: { action: 'manage-share', command: decidedCommand },
+        }));
+        expect(command).not.toHaveBeenCalledWith(decidedCommand);
+      } else {
+        await waitFor(() => expect(command).toHaveBeenCalledWith(decidedCommand));
+      }
+    };
+    renderPage('on', { deviceId });
+    const pending = await screen.findByTestId('provider-share-reshare-row');
+    expect(pending.textContent).toContain('Carol');
+    expect(pending.textContent).toContain('providerShare.manage.reshare.applying:{"owner":"Lizi"}');
+    expect(getProviderSharePendingReshares().map((item) => item.reshare.id)).toEqual(deviceId ? [] : ['rs-pending']);
+    fireEvent.click(within(pending).getByRole('button', { name: 'providerShare.manage.reshare.approve' }));
+    await expectDecision('rs-pending', 'approve');
+
+    // 处理过的人列在这个成员下方：已同意的可撤回，拒绝的可改为同意。
+    const decided = screen.getAllByTestId('provider-share-reshare-item');
+    expect(decided.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Dave'),
+      expect.stringContaining('Erin'),
+    ]);
+    fireEvent.click(within(decided[0]!).getByRole('button', { name: /providerShare\.manage\.reshare\.revokeAria/ }));
+    await expectDecision('rs-approved', 'reject');
+    fireEvent.click(within(decided[1]!).getByRole('button', { name: /providerShare\.manage\.reshare\.approveAria/ }));
+    await expectDecision('rs-rejected', 'approve');
+  });
+
   it('disables link creation and explains why when sharing is gated', async () => {
     renderPage('invocation-off');
     await screen.findAllByTestId('provider-share-member-row');
     const create = screen.getByRole('button', { name: 'providerShare.manage.createLink' }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
     expect(screen.getByRole('status').textContent).toBe('providerShare.manage.gateInvocation');
+  });
+
+  it('shows the Claude subscription email notice on the management page', async () => {
+    localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect(screen.getByTestId('provider-share-claude-email-callout').textContent).toContain(
+      'providerShare.approve.calloutClaudeEmail',
+    );
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not show the Claude subscription email notice for a non-Claude provider', async () => {
+    localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect(screen.queryByTestId('provider-share-claude-email-callout')).toBeNull();
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(['empty', 'unrelated'])('blocks a local management approval when its provider directory is %s', async (catalog) => {
+    localCatalog.providers = catalog === 'empty' ? [] : [{ id: 'openai', source: 'builtin', auth: { method: 'oauth' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(command).not.toHaveBeenCalledWith({ action: 'approve', requestId: 'req-1' });
+    const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(false);
+    fireEvent.click(reject);
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'reject', requestId: 'req-1' }));
+  });
+
+  it.each(['empty', 'unrelated', 'loading', 'failed'])(
+    'blocks a remote management approval when its provider directory is %s, even with an earlier provider snapshot',
+    async (catalog) => {
+      remoteCatalog.providers = catalog === 'empty' ? [] : [{
+        id: catalog === 'unrelated' ? 'openai' : 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' },
+      }];
+      remoteCatalog.loading = catalog === 'loading';
+      remoteCatalog.error = catalog === 'failed' ? 'directory unavailable' : null;
+      const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+      renderPage('on', {
+        deviceId: 'studio',
+        remoteProvider: {
+          id: 'xd', name: 'Cindy AI', source: 'builtin', agents: ['claude-code'],
+          auth: { method: 'oauth', native: 'claude' }, routing: {}, models: {}, connected: true,
+        },
+      });
+      await screen.findAllByTestId('provider-share-pending-row');
+      const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+      expect(approve.disabled).toBe(true);
+      fireEvent.click(approve);
+      expect(remoteCommand).not.toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'studio',
+        request: { action: 'manage-share', command: { action: 'approve', requestId: 'req-1' } },
+      });
+      const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+      expect(reject.disabled).toBe(false);
+      fireEvent.click(reject);
+      await waitFor(() => expect(remoteCommand).toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'studio',
+        request: { action: 'manage-share', command: { action: 'reject', requestId: 'req-1' } },
+      }));
+    },
+  );
+
+  it('blocks approval on a remote management page until the provider directory is ready', async () => {
+    remoteCatalog.loading = true;
+    const view = renderPage('on', { deviceId: 'studio' });
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement).disabled).toBe(false);
+
+    remoteCatalog.loading = false;
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' } }];
+    view.rerender(
+      <ProviderShareManagePage
+        providerId="xd"
+        providerName="Cindy AI"
+        providerIcon={null}
+        gate="on"
+        deviceId="studio"
+        onBack={view.onBack}
+      />,
+    );
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.getByTestId('provider-share-claude-email-callout')).toBeTruthy();
   });
 });

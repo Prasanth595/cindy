@@ -33,6 +33,10 @@ vi.mock('react-i18next', async (importOriginal) => ({
         'newChat.modelSelector.unified.railAll': '全部',
         'newChat.modelSelector.unified.railRemoteProvider': `${options?.provider ?? ''} · ${options?.device ?? ''}`,
         'newChat.modelSelector.unified.remoteFavoriteUnavailable': `${options?.source ?? ''} · 读不到`,
+        'newChat.modelSelector.unified.railRemoteProviderGroup': `${options?.provider ?? ''} · ${options?.device ?? ''} · ${options?.group ?? ''}`,
+        'settings.providers.remote.groupBadge': `供应商组 · ${options?.count ?? ''} 台电脑`,
+        'settings.providers.xd.title': 'Cindy AI',
+        'modelDescriptions.writingAndCoding': '用于内容写作、编程与问题分析。',
         'effortLevels.low': '低',
         'effortLevels.high': '高',
       };
@@ -573,5 +577,151 @@ describe('收藏 / 全部聚合来源，供应商只筛自己的收藏', () => {
     expect(within(favoritesGroup()).getByText('Shared three')).toBeTruthy();
     expect(remoteLists['device-b']).toHaveLength(1);
     resetProviderShareStoreForTests();
+  });
+});
+
+describe('Cindy AI(xd)来源行：只有本机自己的 Cindy AI 保留简介(#6110)', () => {
+  const DESCRIPTION = '用于内容写作、编程与问题分析。';
+  /** 分享者真实电脑名：界面任何位置都不能出现(provider-sharing.md §6)。 */
+  const HOST_DEVICE_NAME = 'Magi-Secret-MacBook-Pro';
+  const xdShare = {
+    shareId: 'magi', memberId: 'member-magi', providerId: 'xd', providerLabel: 'Cindy AI',
+    hostDeviceId: 'host-magi', deviceName: HOST_DEVICE_NAME, status: 'active' as const, hostOnline: true,
+    hostCapable: true, owner: { displayName: 'Magi', avatarUrl: null, region: 'global' as const },
+  };
+  const xdDevices = [...devices, { deviceId: 'share:magi', name: '来自 Magi 的分享' }];
+  const xdProvider = (models: readonly (readonly [string, string])[], extra: Record<string, unknown> = {}) => ({
+    ...(catalogs.local[0] as Record<string, unknown>), id: 'xd', name: 'Cindy AI', ...extra,
+    models: { 'claude-code': models.map(([id, name]) => ({ id, name, efforts: ['low', 'high'], defaultEffort: 'high' })) },
+  });
+  const LOCAL = 'GLM 5.3 Flash';
+  const SHARED = 'Qwen 3.8 Flash';
+  const REMOTE = 'GLM 5.2';
+  let saved: { local: unknown[]; byDevice: Record<string, unknown[]> };
+
+  const clickRail = async (key: string) => {
+    await act(async () => fireEvent.click(document.querySelector(`[data-rail-item="${key}"]`)!));
+  };
+  const sourceOf = (row: HTMLElement) => row.querySelector('[data-model-source-details]')?.textContent ?? null;
+  const rowsOf = (scope: HTMLElement, name: string) =>
+    within(scope).getAllByText(name).map((node) => node.closest('[data-unified-anchor]') as HTMLElement);
+  const expectDescription = (row: HTMLElement) => {
+    expect(sourceOf(row)).toBeNull();
+    expect(within(row).getByText(DESCRIPTION)).toBeTruthy();
+  };
+  const expectSource = (row: HTMLElement, label: string) => {
+    expect(sourceOf(row)).toBe(label);
+    expect(within(row).queryByText(DESCRIPTION)).toBeNull();
+  };
+  const SHARED_LABEL = 'Cindy AI · 来自 Magi 的分享 · 供应商组 · 2 台电脑';
+  const REMOTE_LABEL = 'Cindy AI · Studio';
+
+  beforeEach(() => {
+    saved = { local: [...catalogs.local], byDevice: { ...catalogs.byDevice } };
+    catalogs.local.push(xdProvider([['glm-5.3-flash', LOCAL]]));
+    catalogs.byDevice['share:magi'] = [
+      xdProvider([['qwen3.8-flash', SHARED]], { remoteInvocationEnabled: true, groupSize: 2 }),
+    ];
+    catalogs.byDevice['device-c'] = [
+      ...catalogs.byDevice['device-c']!,
+      xdProvider([['glm-5.2', REMOTE]], { remoteInvocationEnabled: true }),
+    ];
+    setDataOwnerGeneration('recipient', 1);
+    setModelFavoritesOwner('recipient');
+    reconcileProviderShareFavorites({
+      received: [xdShare], confirmedRegions: ['global'],
+      ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 },
+    });
+    addModelFavorite({ providerId: 'xd', modelId: 'glm-5.3-flash', agent: 'cc' });
+    addModelFavorite({ providerId: providerShareFavoriteSource(xdShare), modelId: 'qwen3.8-flash', agent: 'cc' });
+    addModelFavorite({
+      providerId: agentDeviceFavoriteSource({ deviceId: 'device-c', providerId: 'xd' }),
+      modelId: 'glm-5.2',
+      agent: 'cc',
+    });
+  });
+  afterEach(() => {
+    catalogs.local.splice(0, catalogs.local.length, ...saved.local);
+    for (const key of Object.keys(catalogs.byDevice)) delete catalogs.byDevice[key];
+    Object.assign(catalogs.byDevice, saved.byDevice);
+  });
+
+  it.each(['favorites', 'all'])('「%s」：分享来的与其他电脑上的 Cindy AI 显示来源，本机 Cindy AI 保留简介', async (rail) => {
+    renderPanel({ devices: xdDevices });
+    await clickRail(rail);
+    expectSource(rowOf(favoritesGroup(), SHARED), SHARED_LABEL);
+    expectSource(rowOf(favoritesGroup(), REMOTE), REMOTE_LABEL);
+    // 本机 Cindy AI：收藏区与「全部」里的供应商分组都只显示简介。
+    for (const row of rowsOf(list(), LOCAL)) expectDescription(row);
+    expect(document.body.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
+  it('单供应商分栏保持现有简介写法', async () => {
+    renderPanel({ devices: xdDevices });
+    await clickRail('remote:share:magi:xd');
+    for (const row of rowsOf(list(), SHARED)) expectDescription(row);
+    await clickRail('remote:device-c:xd');
+    for (const row of rowsOf(list(), REMOTE)) expectDescription(row);
+    await clickRail('provider:xd');
+    for (const row of rowsOf(list(), LOCAL)) expectDescription(row);
+  });
+
+  it('定宽测量行与可见行同一判断', async () => {
+    renderPanel({ devices: xdDevices });
+    await clickRail('favorites');
+    const sizer = document.querySelector('[data-width-sizer]') as HTMLElement;
+    expect(sizer).toBeTruthy();
+    for (const row of rowsOf(sizer, SHARED)) expectSource(row, SHARED_LABEL);
+    for (const row of rowsOf(sizer, REMOTE)) expectSource(row, REMOTE_LABEL);
+    for (const row of rowsOf(sizer, LOCAL)) expectDescription(row);
+    expect(sizer.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
+  it('浏览分享或其他电脑的目录时，定宽测量行按外来目录带来源', async () => {
+    renderPanel({ devices: xdDevices });
+    const sizer = () => document.querySelector('[data-width-sizer]') as HTMLElement;
+    await clickRail('remote:share:magi:xd');
+    for (const row of rowsOf(list(), SHARED)) expectDescription(row);
+    for (const row of rowsOf(sizer(), SHARED)) expectSource(row, SHARED_LABEL);
+    await clickRail('remote:device-c:xd');
+    for (const row of rowsOf(sizer(), REMOTE)) expectSource(row, REMOTE_LABEL);
+    expect(document.body.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
+  it('直接打开分享的目录(不经远程 Agent)时，分享的 Cindy AI 同样带来源', async () => {
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'qwen3.8-flash',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        currentProviderId: 'xd',
+        onProviderChange: vi.fn(),
+        vendorKey: 'cc',
+        deviceId: 'share:magi',
+      }),
+    );
+    await act(async () => {});
+    await clickRail('all');
+    for (const row of rowsOf(list(), SHARED)) expectSource(row, 'Cindy AI');
+    expect(document.body.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
+  it('远程控制被控电脑时，那台自己的 Cindy AI 仍按任务所在电脑的目录显示简介', async () => {
+    catalogs.byDevice['device-b'] = [xdProvider([['glm-5.3-flash', LOCAL]])];
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'glm-5.3-flash',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        currentProviderId: 'xd',
+        onProviderChange: vi.fn(),
+        vendorKey: 'cc',
+        deviceId: 'device-b',
+      }),
+    );
+    await act(async () => {});
+    for (const row of rowsOf(list(), LOCAL)) expectDescription(row);
   });
 });

@@ -1,13 +1,13 @@
 import {
   historyPrefetchVersion,
   historySnapshotCovers,
-  historySnapshotFromPage,
+  historySnapshotForCache,
   isHistoryViewUnavailable,
   selectHistoryPrefetchSessions,
 } from '@cindy/maker-shared/message-window';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
-import { historyDiskAuthority, readHistoryDisk, writeHistoryDisk } from './remoteHistoryDiskCache';
+import { fitsHistoryDisk, historyDiskAuthority, readHistoryDisk, writeHistoryDisk } from './remoteHistoryDiskCache';
 import {
   detachedRemoteHistorySnapshot,
   dropDetachedRemoteHistoryView,
@@ -67,7 +67,8 @@ export async function prefetchRemoteHistories(
             throw error;
           }
           if (!isCurrent() || isRemoteHistoryViewMounted(deviceId, session.id)) continue;
-          if (!await writeHistoryDisk(authority, historySnapshotFromPage(page, previous))) continue;
+          const snapshot = historySnapshotForCache(page, previous, fitsHistoryDisk);
+          if (!snapshot || !await writeHistoryDisk(authority, snapshot)) continue;
           dropDetachedRemoteHistoryView(deviceId, session.id);
         }
         const version = historyPrefetchVersion(session);

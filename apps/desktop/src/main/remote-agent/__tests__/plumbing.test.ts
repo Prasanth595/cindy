@@ -125,6 +125,29 @@ describe('tunnel', () => {
   });
 });
 
+describe('remote AgentSessionHandle close', () => {
+  it('propagates a DEVICE_LINK close failure after disposing local resources', async () => {
+    let disposed = 0;
+    const client = {
+      async close() {
+        throw Object.assign(new Error('[REMOTE_AGENT_UNAVAILABLE] [DEVICE_LINK_DEVICE_OFFLINE] target offline'), {
+          code: 'DEVICE_OFFLINE',
+        });
+      },
+    } as unknown as RemoteAgentRunClient;
+    const controller = createRemoteAgentHandle({
+      client,
+      started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: '', methods: [], state: {} },
+      workspace: new ExecutorWorkspace({ workingDir: root }),
+      recordApproval: () => undefined,
+      newId: () => 'req',
+      dispose: async () => { disposed += 1; },
+    });
+    await expect(controller.handle.close({ reason: 'navigation' })).rejects.toThrow(/DEVICE_LINK_DEVICE_OFFLINE/);
+    expect(disposed).toBe(1);
+  });
+});
+
 describe('confirmations raised on this computer', () => {
   it('uses the Agent confirmation channel and offers an explicit credential grant for this task', async () => {
     let next = 0;

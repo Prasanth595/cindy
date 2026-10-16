@@ -18,6 +18,7 @@ import {
 import { buildContinuationDirective, buildFirstTurnDirective } from '../directive';
 import { MAX_CONSECUTIVE_OVERLOAD_TURNS } from '../usageLimit';
 import { publishUiSessionIntervention, resetUiContinuationListenersForTest } from '../../maker-ipc/uiContinuationSignal';
+import { MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import type {
   AccountLimitInfo,
   GoalCompletionSummary,
@@ -70,6 +71,7 @@ function productionSteer(session: FakeSession, deliver: () => Promise<void>, rej
     },
     MAIN_OWNED_SEND_CONTEXT: Symbol(), AUTO_REVIEW_SOURCE_CONTENT: Symbol(),
     AUTO_REVIEW_DELEGATED_CONTINUATION: Symbol(), AUTO_REVIEW_USER_INTENT: Symbol(),
+    MCP_APP_MESSAGE_GUARD,
     publishUiSessionIntervention,
     noteInteractionRouteSteer: () => {},
     summarizeIpcUserMessage: () => ({}),

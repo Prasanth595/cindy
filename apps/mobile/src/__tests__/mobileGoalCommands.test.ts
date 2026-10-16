@@ -221,8 +221,9 @@ describe('existing task /goal send boundary', () => {
     h.bindings.goalBusy = false;
     h.bindings.attachmentsRef.current = [];
     h.bindings.composerDocumentRef.current = textComposerDocument('ordinary follow-up');
+    h.bindings.setError.mockClear();
     await h.run();
-    expect(h.bindings.setError).toHaveBeenLastCalledWith(null);
+    expect(h.bindings.setError).toHaveBeenCalledExactlyOnceWith(null);
     expect(h.bindings.mobileDurableOutbox.add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       item: expect.objectContaining({ sessionId: 'existing-task', text: 'ordinary follow-up' }),
     }));

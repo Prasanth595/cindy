@@ -203,7 +203,7 @@ describe("mobile maker transport", () => {
         mimeType: "text/plain",
         inlineBase64: "",
       })
-      .mockResolvedValueOnce({ ...direct, transferRequired: true });
+      .mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
     try {
       const maker = createMobileMakerTransport({ deviceId: "d", invoke });
       expect(
@@ -214,6 +214,11 @@ describe("mobile maker transport", () => {
         direct,
       );
       expect(peer).toHaveBeenCalledOnce();
+      expect(peer.mock.calls[0]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number), { ...direct, transferRequired: true, version: 'a'.repeat(64) }]);
+      invoke.mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
+      await maker.fetchRemoteMedia('xdt-file://open?path=/b', { stream: false, skipCache: true });
+      expect(peer.mock.calls[1]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number),
+        { ...direct, transferRequired: true, version: 'a'.repeat(64), skipCache: true }]);
     } finally {
       uninstall();
     }

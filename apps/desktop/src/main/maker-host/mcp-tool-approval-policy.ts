@@ -244,6 +244,11 @@ export function getDesktopMcpToolApprovalPolicy(
     if (action === 'send_to_session' && targetsAnotherComputer(sessionIdDevice(args?.target_session_id))) {
       return 'prompt-each-time';
     }
+    if ((action === 'archive_sessions' || action === 'unarchive_sessions') &&
+      (!Array.isArray(args?.session_ids) || args.session_ids.some((id) =>
+        typeof id !== 'string' || targetsAnotherComputer(sessionIdDevice(id))))) {
+      return 'prompt-each-time';
+    }
   }
   // 改动另一台电脑上的定时任务（可改写并触发那台电脑上的命令）同样交给权限档：Full Access
   // 免审批，Auto 走统一审阅，Ask 由用户确认。本机操作与跨电脑读取保持原样。

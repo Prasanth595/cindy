@@ -1,3 +1,4 @@
+import { readImRemoteProviderRoute } from '../remoteProviderRoute';
 import { createLocalImSource, type ImContextSnapshot } from '../../../shared/imMessageSource';
 /**
  * main/im/shared/turnRunner.ts
@@ -166,7 +167,8 @@ import {
   tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
-import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { isQuotaExhaustionFailure, terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { resolveSessionErrorContext } from './sessionProviderLabel';
 import { createTurnPresenter, DEFAULT_PRESENTER_POLICY, type TurnPresenter } from './turnPresenter';
 import {
   toCoreAgentKind,
@@ -595,9 +597,9 @@ export interface ImTurnRunner {
     userId: string,
     scopeKey?: string,
   ): Promise<RouteTarget | null>;
-  hasAuthForRoute(row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId'>): Promise<boolean>;
+  hasAuthForRoute(row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId'>): Promise<boolean>;
   getAuthStatusForRoute?: (
-    row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId'>,
+    row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId'>,
   ) => Promise<ImAuthRouteStatus>;
   prewireAttachedSession(botContextId: string, userId: string, scopeKey?: string): Promise<void>;
   /** 接管 detach 清理(原 detachFeishuFromSession)— binding cleanup hook 调用。 */
@@ -637,9 +639,10 @@ export interface ImTurnRunner {
 
 /** row 的路由快照 —— 跟随切换的实际落点比对用。 */
 function routeOfRow(
-  row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'effort'>,
+  row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId' | 'effort'>,
 ): ImDefaultRoute {
   return {
+    agentDeviceId: row.agentDeviceId ?? null,
     agentKind: row.agentKind,
     model: row.model,
     providerId: row.providerId,
@@ -748,7 +751,8 @@ export function createTurnRunner(
     return {
       row: { id: row.id, agentKind: toCoreAgentKind(row.agentKind), workingDir: row.workingDir,
         model: row.model, effort: row.effort, permissionMode: row.permissionMode, fastMode: row.fastMode,
-        sdkSessionId: row.sdkSessionId, remoteHostId: row.remoteHostId ?? null, providerId: row.providerId ?? null },
+        sdkSessionId: row.sdkSessionId, remoteHostId: row.remoteHostId ?? null, providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null },
       attached: false, notificationReply: true, scopeKey,
     };
   }
@@ -816,6 +820,7 @@ export function createTurnRunner(
             sdkSessionId: row.sdkSessionId,
             remoteHostId: row.remoteHostId ?? null,
             providerId: row.providerId ?? null,
+            agentDeviceId: row.agentDeviceId ?? null,
           },
           attached: true,
           scopeKey,
@@ -899,6 +904,7 @@ export function createTurnRunner(
             agentKind: followTarget.agentKind,
             model: followTarget.model,
             providerId: followTarget.providerId,
+            agentDeviceId: followTarget.agentDeviceId ?? null,
           }
         : row;
       const auth = await checkImRouteAuthDetailed(authRow, undefined, authCheckDeps());
@@ -1046,6 +1052,7 @@ export function createTurnRunner(
             effort: refreshed.effort,
             fastMode: refreshed.fastMode,
             providerId: refreshed.providerId,
+            agentDeviceId: refreshed.agentDeviceId ?? null,
             sdkSessionId: refreshed.sdkSessionId,
           },
         };
@@ -1724,6 +1731,7 @@ export function createTurnRunner(
         fastMode: row.fastMode,
         // 保留 DB 的 null 语义：Pi 用 null 表示清除显式 provider，不能退化为 undefined。
         providerId: row.providerId,
+        agentDeviceId: row.agentDeviceId ?? undefined,
         remoteHostId: row.remoteHostId ?? undefined,
         resumeSessionId: row.sdkSessionId ?? undefined,
         vendorOptions: state.preserveSessionConfig
@@ -1915,6 +1923,7 @@ export function createTurnRunner(
 
   function authCheckDeps(): ImAuthCheckDeps {
     return {
+      checkRemoteRoute: readImRemoteProviderRoute,
       readXdGatewayApiKey,
       hasCustomProviderKey,
       getAgentAuthState: (agentKind) => getMaker().getAgentAuthState(agentKind),
@@ -1963,6 +1972,7 @@ export function createTurnRunner(
       fastMode: row.fastMode,
       // 保留 DB 的 null 语义：Pi 用 null 表示清除显式 provider，不能退化为 undefined。
       providerId: row.providerId,
+      agentDeviceId: row.agentDeviceId ?? undefined,
       remoteHostId: row.remoteHostId ?? undefined,
       // 行总是先由 repo 建好, maker 复用已有 row 时该 title 不会生效 —
       // 仅作防御兜底(原 feishu 实现传 '飞书会话' 字面量, 语义等价)。
@@ -3543,7 +3553,6 @@ export function createTurnRunner(
     // 或内部英文 SDK 串——从本地化文案回归英文实现细节(review #844 codex P1)。
     // hook runner 与调度转播共用同一个 helper，三条渠道链路口径一致；上游原文留在
     // 本地日志。
-    const msg = terminalErrorText(errData);
     if (turn) clearSilentStopSettleWait(turn);
     if (turn) clearActivityTicker(turn);
     if (turn) {
@@ -3569,6 +3578,18 @@ export function createTurnRunner(
         // 建卡失败 → 下面按"没有输出面"处理(另发一条消息)。
       }
     }
+    const msg = terminalErrorText(
+      errData,
+      isQuotaExhaustionFailure(errData) ? {
+        ...(await resolveSessionErrorContext(state.makerSession.id)),
+        botLabel: [
+          channel === 'telegram' ? 'Telegram 个人 bot' : `${channel} 个人 bot`,
+          adapter.getBotDisplayName?.(),
+        ].filter(Boolean).join(' · '),
+        surface: 'personal',
+        supportsModelCommand: richIm !== null,
+      } : undefined,
+    );
     if (turn?.streamingHandle) {
       const view = composeStreamingView(turn);
       const body = view ? `${view}\n\n❌ 错误：${msg}` : `❌ 错误：${msg}`;

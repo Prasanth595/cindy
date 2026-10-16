@@ -41,7 +41,7 @@ import {
 import { buildQueuedTextMessage } from "./inputProjection";
 import { outboxItemAttachments } from "./sessionOutbox";
 import { sessionFromCreateResult } from "./newSession";
-import { dismissRecoveredPrecreatedSession, getNewSessionCreationTask } from "./newSessionCreation";
+import { dismissRecoveredPrecreatedSession, getNewSessionCreationTask, restoreNewSessionDurableEdit } from "./newSessionCreation";
 import {
   MobileSessionReferenceError,
   prepareMobileQueuedSessionReferences,
@@ -143,6 +143,7 @@ export function MobileOutboxBridge() {
       const keys = new Set<string>();
       for (const record of mobileDurableOutbox.getSnapshot()) {
         if (isDurableOutboxSettled(record) || hidden(record)) continue;
+        if (restoreNewSessionDurableEdit(record)) continue;
         if (record.creation?.cancelled) {
           dismissRecoveredPrecreatedSession({ sessionId: record.item.sessionId, deviceId: record.deviceId });
           continue;

@@ -10,6 +10,7 @@ import { readBotAuthorizationCard } from '../../shared/botAuthorization';
 import { applyCindyMakeCardAttention } from './cindyMakeAttention';
 import { confirmRemoteUsers, reserveRemoteUser } from './remoteUserHandoff';
 import { readRemoteHistoryCache, remoteHistoryCacheWriter } from './remoteHistoryCache';
+import { encodeRemoteHistory, fitsRemoteHistoryCache } from '../../shared/remoteHistoryCache';
 import { createPluginSecretPresentation, createPluginConnectionPresentation } from '../../shared/pluginOauth';
 import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/device-link';
 /**
@@ -35,7 +36,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
  * - User-initiated stopSession (NOT called on session switch anymore)
  */
 
-import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotFromPage, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
+import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
@@ -128,6 +129,7 @@ import type {
   GhostSetupStepPhase,
 } from '../../shared/ghost';
 import * as messageService from '@/lib/messageService';
+import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import * as sessionService from '@/lib/sessionService';
 // device-link 透明传输:远程(被控设备)会话的操作/读取走隧道,本地会话零变化。
 import {
@@ -573,7 +575,9 @@ export interface ChatMessage {
     | 'bot-authorization'
     /** 代输入结束留痕:由隐藏续接行派生,只有步数、设备与域名,没有任何输入值。 */
     | 'input-handoff'
-    | 'context-rebuild';
+    | 'context-rebuild'
+    | 'mcp-app';
+  mcpAppClientId?: string;
   systemCardData?: Record<string, unknown>;
   /** FP-3: plan_review message fields */
   planReviewStatus?: 'pending' | 'approved' | 'revised' | 'expired' | 'cancelled';
@@ -11692,7 +11696,10 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
           const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
             ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
           })));
-          write(historySnapshotFromPage({ ...page, items }, previous));
+          const snapshot = historySnapshotForCache({ ...page, items }, previous,
+            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
+          if (!snapshot) continue;
+          write(snapshot);
         }
         const version = historyPrefetchVersion(session);
         if (version !== undefined) {
@@ -18510,6 +18517,13 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
   const ordered = filtered.sort(compareMessageTimeline);
   const legacyUserTurnCosts = projectLegacyUserTurnCosts(ordered);
   const mapped = ordered.map((m) => {
+    const mcpApp = m.role === 'assistant' && m.agentMeta?.mcpApp === true ? parseMcpAppHistory(m.content) : undefined;
+    if (mcpApp) return {
+      clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
+      systemCardType: 'mcp-app' as const,
+      systemCardData: { title: mcpApp.title, fallbackText: mcpApp.text },
+      mcpAppClientId: m.clientId,
+    };
     const persistedCindyCard =
       m.role === 'assistant' && m.content && typeof m.content === 'object'
         ? (m.content as Record<string, unknown>)[CINDY_MAKE_CARD_MARKER]

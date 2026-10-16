@@ -165,9 +165,11 @@ export class RemoteDesktopViewerWindows {
       },
       focused: () => entry.window?.isFocused() === true,
       clipboard: {
+        // The plain counter: a multi-item local clipboard (several files) is
+        // reported by the content read and skipped, without failing the pass.
         version: (current) => {
           if (!current()) return Promise.reject(new Error('DESKTOP_STOPPED'));
-          return counter.read(true);
+          return counter.read();
         },
         stop: () => counter.stop(),
         read: async (current) =>
@@ -226,6 +228,7 @@ export class RemoteDesktopViewerWindows {
           this.setInputCaptured(entry, false);
           void connection.focusChanged();
         });
+        win.on('focus', () => void connection.focusChanged());
         // The session survives hiding; the page pauses the host's video instead.
         const hidden = (value: boolean) => () => {
           if (!win.isDestroyed() && !win.webContents.isDestroyed())
@@ -325,6 +328,13 @@ export class RemoteDesktopViewerWindows {
         throwIpcError('INVALID_PARAMS', 'Invalid retry');
       try {
         return await this.entry(event).connection.safety(generation, retry);
+      } catch {
+        throwIpcError('PRECONDITION_FAILED', 'DESKTOP_STOPPED');
+      }
+    });
+    ipcMain.handle(REMOTE_VIEWER.CLIPBOARD_SYNC, async (event, generation) => {
+      try {
+        return await this.entry(event).connection.syncClipboard(generation);
       } catch {
         throwIpcError('PRECONDITION_FAILED', 'DESKTOP_STOPPED');
       }

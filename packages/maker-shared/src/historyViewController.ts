@@ -1,5 +1,5 @@
 import {
-  readHistoryWorkDetails, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
+  readHistoryWorkDetails, retainHistoryViewPrefix, isHistoryViewUnavailable, historyWorkSummaries, historyViewLeaves, type HistoryDetailPage, type HistoryMessageSource,
   type HistoryViewItem, type HistoryViewPage, type HistoryWorkPatch, type HistoryWorkSummary,
 } from './historyView.js';
 
@@ -163,23 +163,12 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const page = await this.transport.page(before);
       if (page == null) throw new Error('[CHANNEL_NOT_ALLOWED] History view is unavailable');
       if (!this.active || generation !== this.generation) return;
-      let items = page.items;
+      const retained = older ? page : retainHistoryViewPrefix(page, this.state);
+      let items = retained.items;
       if (older) {
         const keys = new Set(items.map((item) => item.key));
         items = [...items, ...this.state.items.filter((item) => !keys.has(item.key))];
-      } else if (page.hasMore && this.state.items.length) {
-        const firstSourceId = (item: HistoryViewItem<T> | undefined) => item?.type === 'work'
-          ? item.summary.firstMessageId : item?.messages[0]?.id;
-        const first = page.items[0];
-        const sourceId = firstSourceId(first);
-        const boundary = this.state.items.findIndex((item) => item.key === first?.key
-          || (sourceId !== undefined && firstSourceId(item) === sourceId));
-        // Completed outer groups can replace the running top-level key while
-        // retaining its exact source start. Never infer a prefix from a later overlap.
-        // Only retain a prefix with a proven overlap. Reset/rewind cannot leave an island.
-        if (boundary > 0) items = [...this.state.items.slice(0, boundary), ...items];
       }
-      const retainedPrefix = !older && items.length > page.items.length;
       // A background validation of the same page must not replace rendering
       // identities. Applies to both Mobile and Desktop history consumers.
       const previous = new Map(this.state.items.map((item) => [item.key, item]));
@@ -191,8 +180,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
         && items.every((item, index) => item === this.state.items[index]) ? this.state.items : items;
       this.publish({ items: stableItems, ready: true, loading: false,
         ...(older ? {} : { stale: false }),
-        hasMore: retainedPrefix ? this.state.hasMore : page.hasMore,
-        nextCursor: retainedPrefix ? this.state.nextCursor : page.nextCursor });
+        hasMore: retained.hasMore, nextCursor: retained.nextCursor });
       for (const summary of historyWorkSummaries(items)) {
         if (this.state.expanded.has(summary.key)) void this.loadDetails(summary);
       }

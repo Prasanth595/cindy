@@ -110,6 +110,7 @@ import {
   type DeviceLinkIpcDeps,
 } from '../device-link/ipc';
 import { DeviceLinkError, PLUGIN_OAUTH_CHANNEL, PLUGIN_SECRET_LOCAL_CHANNEL } from '@cindy/device-link';
+import { MCP_APPS_INVOKE } from '../../shared/mcpApps.js';
 import { invokeWithClosedLinkRecovery } from '../device-link/linkRecovery';
 import { ServerApiError } from '../serverApiClient';
 import { createIpcError } from '../../shared/ipc-errors';
@@ -1033,6 +1034,14 @@ describe('device-link controller handlers', () => {
       /\[INVALID_PARAMS\]/,
     );
   });
+  it.each(['open', 'message', 'poll', 'context', 'authorize-link', 'teardown'])(
+    'forbids the general Renderer bridge from bypassing remote App frame authentication: %s', async (op) => {
+      const deps = makeDeps();
+      await expect(handleInvoke(deps, 'dev-2', MCP_APPS_INVOKE, ['task', { op, viewId: 'forged' }]))
+        .rejects.toThrow('MCP_APP_FRAME_REQUIRED');
+      expect(deps.invoke).not.toHaveBeenCalled();
+    },
+  );
 
   it('subscribe:校验 + 成功 + 转发 topics', async () => {
     const deps = makeDeps();

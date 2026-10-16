@@ -1,7 +1,7 @@
 /**
  * 供应商组接到任务生命周期上的三个点(docs/product-rules/provider-groups.md §6)：
  *
- * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，本机组优先本机，其余按组策略选电脑，把选择写回
+ * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，按组策略选电脑(本机任务与其他使用方同一套)，把选择写回
  *    任务记录与绑定；Agent 还没开始运行就失败(连不上、登录失效、启动失败)时直接换下一台。
  * 2. **自动换电脑**：运行中因那台电脑的原因失败(终态错误)时，交接到组里下一台并继续这一轮；
  *    同一轮每台最多试一次，全部失败才交回原有的报错 / 等额度重置流程。那台是连不上(离线、断线)时先等它
@@ -656,7 +656,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         providerId,
         agentKind,
         model,
-        // 本机自用每次需要选电脑时都优先本机，含故障重选；正常运行的已有绑定不走 pick。
+        // 本机任务与其他使用方同一套组策略，只是不受本机「暂停对外分配」限制；正常运行的已有绑定不走 pick。
         localTask: true,
         exclude,
         reserveFor: sessionId,
@@ -1730,12 +1730,13 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           const route = source.routeOf(pick.member, localProviderId);
           await deps.writeBinding(sessionId, bindingFor(source, binding.providerId, pick.member.key));
           try {
+            // 写绑定、交接期间用户停止(停止这次发送或「全部停止」)：交接在改动之前停下，留在原电脑。
             await deps.switchAgentLocation(sessionId, {
               agentKind: row.agentKind,
               model: row.model,
               providerId: route.providerId,
               agentDeviceId: route.agentDeviceId,
-            }, { beforeSend: true });
+            }, { beforeSend: true, isCurrent });
             deps.log.info('provider group: moved a task before sending', {
               sessionId,
               from: current.key,

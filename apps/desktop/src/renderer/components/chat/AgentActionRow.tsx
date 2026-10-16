@@ -85,6 +85,7 @@ import {
   createPluginLogicalIdentity,
   findInstalledGhostByIdentity,
   findInstalledGhostByInstanceId,
+  resolveInstalledGhost,
 } from '../../../shared/pluginIdentity';
 import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 import { shouldOpenTextLightboxForOrigin } from '@/lib/filePreview';
@@ -102,6 +103,7 @@ import { ImageLightbox } from './ImageLightbox';
 import { TextLightbox } from './TextLightbox';
 import { ToolPayloadLightbox, type ToolPayloadMode } from './ToolPayloadLightbox';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
 import {
   formatToolResultCompactionBytes,
   parseToolResultCompactionMarker,
@@ -809,9 +811,17 @@ export function AgentActionRow({
       (namespace === null || (typeof namespace === 'string' && isValidPluginNamespace(namespace)))
       ? createPluginLogicalIdentity(namespace, gid)
       : null;
+    // 裸 ID 与 main 侧一样按唯一逻辑身份解析；实例键才按物理键精确查找。
+    const bareIdResult = namespace === undefined && isValidGhostId(gid)
+      ? resolveInstalledGhost(installedGhosts, gid)
+      : null;
     const hit = identity
       ? findInstalledGhostByIdentity(installedGhosts, identity)
-      : namespace === undefined ? findInstalledGhostByInstanceId(installedGhosts, gid) : undefined;
+      : bareIdResult?.status === 'unique'
+        ? bareIdResult.ghost
+        : namespace === undefined && !isValidGhostId(gid)
+          ? findInstalledGhostByInstanceId(installedGhosts, gid)
+          : undefined;
     return {
       name: hit?.manifest.name ?? (gid || 'ghost'),
       tool: typeof inp.tool === 'string' ? inp.tool : '',
@@ -1000,6 +1010,7 @@ export function AgentActionRow({
   // Claude 取 file_path，Codex 单文件 change 取目标路径 —— 模型可能给相对
   // 路径(见 onActivate 注释),菜单动作统一经 resolveToolFilePath 补成绝对路径。
   const fileChipMenu = useFileChipContextMenu({
+    fileName: chipFilePath,
     getAbsPath: () => resolveToolFilePath(chipFilePath, fileCtx.workingDir),
     canOpenInBrowser: isBrowserOpenablePath(chipFilePath),
   });
@@ -1069,20 +1080,33 @@ export function AgentActionRow({
 
   const onRowKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (!chipFilePath) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      activateInlineLinkFromKeyboard(e);
+      return;
+    }
     if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
     e.preventDefault();
     e.stopPropagation();
     const chipRect = fileChipRef.current?.getBoundingClientRect();
     const rowRect = e.currentTarget.getBoundingClientRect();
     const rect = chipRect ?? rowRect;
-    fileChipMenu.openAt(rect.left, rect.bottom + 2);
+    fileChipMenu.openAt(rect.left, rect.bottom + 2, e.currentTarget);
   };
 
   return (
     <div className="flex flex-col" data-message-client-id={message.clientId}>
       <button
         type="button"
-        onClick={(e) => void onActivate(e.currentTarget)}
+        onClick={(e) => {
+          const anchor = e.currentTarget;
+          if (chipFilePath) fileChipMenu.onActivate(e, () => onActivate(anchor));
+          else void onActivate(anchor);
+        }}
+        onAuxClick={(e) => {
+          if (e.button !== 1 || !chipFilePath) return;
+          const anchor = e.currentTarget;
+          fileChipMenu.onActivate(e, () => onActivate(anchor));
+        }}
         onContextMenu={onRowContextMenu}
         onKeyDown={onRowKeyDown}
         aria-expanded={isInlineExpand && !onActivateOverride ? expanded : undefined}

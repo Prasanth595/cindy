@@ -17,6 +17,7 @@ import { createLogger } from '../logger.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import {
   readClaudeAccountUsageSnapshot,
+  readClaudeAccountQuotaClear,
   triggerClaudeAccountUsageRefresh,
 } from '../usage/claudeAccountUsage.js';
 import {
@@ -328,6 +329,7 @@ export function registerMakerUsageIpc(maker: Maker): void {
       assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]);
     },
     readClaudeAccountUsageSnapshot,
+  readClaudeAccountQuotaClear,
     triggerClaudeAccountUsageRefresh,
     readModelPricing: getGatewayModelPricing,
     readReferenceModelPricing: getReferenceModelPricing,

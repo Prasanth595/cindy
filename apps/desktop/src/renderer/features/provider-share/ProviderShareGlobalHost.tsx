@@ -3,6 +3,9 @@
  *
  *  - 分享者：启动时读一次 `owned`，把本次运行还没弹过的待审批申请排队；之后靠 REQUESTED 推送。
  *    逐条弹审批弹窗，Esc / × = 稍后处理(申请留在管理页)。系统通知点击 → 打开对应管理页。
+ *    弹窗跟着生成链接的电脑(provider-sharing.md §4.1)：链接由同账号另一台电脑生成的申请不在这里弹；
+ *    这台电脑为另一台电脑上的分享生成的链接，申请在这里弹。
+ *    转分享请求(成员经自己的供应商组转给别人用)不弹窗：RESHARE_REQUESTED 时重读，入口亮提示点、管理页处理。
  *  - 受邀者：分享链接(深链、粘贴、系统通知)→ 申请弹窗。等待期间关掉弹窗的申请，有结果时用
  *    toast 告知。同时启动「已收到的分享」同步，模型列表随时可用。
  */
@@ -18,12 +21,13 @@ import { useProviderShareFavoriteCleanupFailed } from '@/state/providerShareFavo
 import type { ProviderShareSettledEvent } from '../../../shared/providerShare';
 import { ProviderShareApplyDialog, isProviderShareRequestTrackedByDialog } from './ProviderShareApplyDialog';
 import { ProviderShareApproveDialog } from './ProviderShareApproveDialog';
-import { pendingRequestsFromOwned } from './providerShareFormat';
+import { pendingRequestsFromOwnerState } from './providerShareFormat';
 import { providerShareManagePath } from './providerShareNavigation';
 import {
   addProviderShareRequested,
   refreshProviderShareFavoriteMembership,
   getProviderSharePendingRequests,
+  getProviderSharePendingReshares,
   refreshProviderShareOwnerPending,
   useProviderSharePendingRequests,
 } from './providerShareStore';
@@ -78,17 +82,21 @@ export function ProviderShareGlobalHost() {
 
     void refreshProviderShareOwnerPending().then((state) => {
       if (disposed || !state?.ready) return;
-      enqueue(pendingRequestsFromOwned(state.shares).map((item) => item.request.requestId));
+      enqueue(pendingRequestsFromOwnerState(state).filter((item) => !item.quiet).map((item) => item.request.requestId));
     });
 
     const offRequested = api.onRequested((event) => {
       addProviderShareRequested(event);
-      enqueue([event.request.requestId]);
+      if (!event.quiet) enqueue([event.request.requestId]);
     });
-    // 只在还有待审批申请时随推送重读(那时 main 本就在快速拉取)，让撤回、过期的申请消失。
+    // 只在还有待审批申请(含转分享请求)时随推送重读(那时 main 本就在快速拉取)，让撤回、过期、已处理的消失。
     const offOwned = api.onOwnedChanged(() => {
-      if (getProviderSharePendingRequests().length > 0) void refreshProviderShareOwnerPending();
+      if (getProviderSharePendingRequests().length > 0 || getProviderSharePendingReshares().length > 0) {
+        void refreshProviderShareOwnerPending();
+      }
     });
+    // 转分享请求不弹窗：重读一次，设置页入口亮提示点、管理页「待处理」一栏出现(provider-sharing.md §4.3)。
+    const offReshare = api.onReshareRequested?.(() => void refreshProviderShareOwnerPending()) ?? (() => undefined);
     const offManage = api.onOpenManage(({ providerId }) => {
       navigateRef.current(providerShareManagePath(providerId));
     });
@@ -128,6 +136,7 @@ export function ProviderShareGlobalHost() {
       disposed = true;
       offRequested();
       offOwned();
+      offReshare();
       offManage();
       offOpenJoin();
       offSettled();

@@ -5,8 +5,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
-import { BOT_GROUP_LANE_SESSION, findSessionNotificationSession } from '@/lib/sessionEventNotification';
+import { BOT_GROUP_LANE_SESSION, findSessionNotificationSession, isBackgroundTaskNotificationTarget } from '@/lib/sessionEventNotification';
 import { isReviewSessionSource } from '../../../../shared/sessionSource';
+import {
+  formatOrcaWorkerNotificationTitle,
+  shouldNotifyOrcaWorkerEvent,
+} from '../lib/orcaLeadWorkerAttention';
 
 const source = ts.createSourceFile('sidebar.tsx', readFileSync(resolve(
   process.cwd(), 'src/renderer/features/cc-agent/CCAgentSidebarUpper.tsx',
@@ -44,10 +48,13 @@ type NotificationSession = {
   source: string;
   status?: 'active' | 'archived';
   deviceLinkDeviceId?: string;
+  hiddenAt?: string | null;
+  orcaRole?: 'lead' | 'worker';
 };
 const send = vi.fn();
 const reviewTarget = vi.fn(async () => false);
 const botTitle = vi.fn(async (): Promise<string | null> => null);
+const leadOfWorker = vi.fn<(workerSessionId: string) => string | null>(() => null);
 beforeEach(() => { vi.clearAllMocks(); });
 
 function dispatcher(local: NotificationSession[], remote: NotificationSession[] = []) {
@@ -67,8 +74,12 @@ function dispatcher(local: NotificationSession[], remote: NotificationSession[] 
     projectDraftSessionTitle,
     sendSessionEventNotification: send,
     isReviewSessionNotificationTarget: reviewTarget,
+    isBackgroundTaskNotificationTarget,
     botOwnedSessionNotificationTitle: botTitle,
     BOT_GROUP_LANE_SESSION,
+    shouldNotifyOrcaWorkerEvent,
+    formatOrcaWorkerNotificationTitle,
+    findOrcaLeadSessionIdForWorker: leadOfWorker,
     t: () => 'Unnamed task',
   };
   return new Function(...Object.keys(bindings), emitted)(...Object.values(bindings)) as (
@@ -107,6 +118,14 @@ describe('disabled Make notification dispatch', () => {
     });
   });
 
+  it('suppresses plugin background tasks and notifies again once they are shown', () => {
+    dispatcher([{ id: 'bg', title: 'Background', source: 'plugin', hiddenAt: '2026-10-15T00:00:00.000Z' }])('bg', 'done');
+    expect(send).not.toHaveBeenCalled();
+    expect(reviewTarget).not.toHaveBeenCalled();
+    dispatcher([{ id: 'bg', title: 'Background', source: 'plugin', hiddenAt: null }])('bg', 'done');
+    expect(send).toHaveBeenCalledWith('bg', 'Background', 'done', { remoteDevice: false, remoteDeviceId: undefined });
+  });
+
   it('preserves the unknown-task fallback', async () => {
     dispatcher([])('unknown', 'error');
     await Promise.resolve();
@@ -135,5 +154,37 @@ describe('disabled Make notification dispatch', () => {
     expect(rawRemote).toContain('remoteProjectsStore.getMergedRemoteSessions');
     expect(props.get('allSessionsForNotification')).toBe('allSessionsForAttentionRaw');
     expect(props.get('remoteSessionsForNotification')).toBe('remoteProjectSessionsRaw');
+  });
+});
+
+describe('Orca Worker notification dispatch', () => {
+  const lead: NotificationSession = { id: 'lead', title: '重构登录', source: 'desktop', orcaRole: 'lead' };
+  const worker: NotificationSession = {
+    id: 'worker', title: 'Worker · developer', source: 'desktop', orcaRole: 'worker',
+  };
+
+  it('Worker 的完成仍不单独通知', () => {
+    leadOfWorker.mockReturnValue('lead');
+    dispatcher([lead, worker])('worker', 'done');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(['error', 'needs-reply'] as const)('Worker 的 %s 以「Lead 标题 · Worker 标题」单独通知', (kind) => {
+    leadOfWorker.mockReturnValue('lead');
+    dispatcher([lead, worker])('worker', kind);
+    expect(leadOfWorker).toHaveBeenCalledWith('worker');
+    expect(send).toHaveBeenCalledWith('worker', '重构登录 · Worker · developer', kind);
+  });
+
+  it('找不到 Lead 时退回 Worker 标题', () => {
+    leadOfWorker.mockReturnValue(null);
+    dispatcher([worker])('worker', 'error');
+    expect(send).toHaveBeenCalledWith('worker', 'Worker · developer', 'error');
+  });
+
+  it('远程控制另一台电脑的 Worker 不在范围内', () => {
+    leadOfWorker.mockReturnValue('lead');
+    dispatcher([], [{ ...worker, deviceLinkDeviceId: 'host' }])('worker', 'error');
+    expect(send).not.toHaveBeenCalled();
   });
 });

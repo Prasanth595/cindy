@@ -36,6 +36,7 @@ import { Alert, StyleSheet, View } from "react-native";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Text } from "@/components/AppText";
+import { MainWindowActionButton } from "@/components/MobilePrimitives";
 import { iconSize, lineHeight, navigationChrome, radius, spacing, typeScale, useTheme } from "@/theme";
 import { useLiquidGlassAvailable } from "./useLiquidGlassAvailable";
 import {
@@ -197,7 +198,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
       </View>
       {p.notice ? (
         <View
-          pointerEvents="none"
+          pointerEvents={p.onCancelNotice ? "box-none" : "none"}
           style={{
             position: "absolute",
             bottom: p.bottom + size + spacing.sm,
@@ -206,20 +207,39 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
             alignItems: "center",
           }}
         >
-          <Text
-            accessibilityLiveRegion="polite"
-            testID="filePreview.notice"
+          <View
             style={{
-              color: colors.textPrimary,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.sm,
               backgroundColor: colors.surfaceElevated,
               padding: spacing.sm,
-              borderRadius: radius.pill,
-              fontSize: typeScale.caption,
-              lineHeight: lineHeight.caption,
+              borderRadius: radius.container,
             }}
           >
-            {p.notice}
-          </Text>
+            <Text
+              accessibilityLiveRegion="polite"
+              testID="filePreview.notice"
+              style={{
+                flexShrink: 1,
+                color: colors.textPrimary,
+                fontSize: typeScale.caption,
+                lineHeight: lineHeight.caption,
+              }}
+            >
+              {p.notice}
+            </Text>
+            {p.onCancelNotice ? (
+              <MainWindowActionButton
+                action={{
+                  label: t("files.browser.cancel"),
+                  onPress: p.onCancelNotice,
+                  testID: "filePreview.notice.cancel",
+                }}
+                density="compact"
+              />
+            ) : null}
+          </View>
         </View>
       ) : null}
       <View

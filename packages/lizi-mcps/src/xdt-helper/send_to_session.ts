@@ -134,7 +134,7 @@ const DESCRIPTION = [
   "",
   "【失败码语义】",
   "- NOT_FOUND: 目标 session 不存在。skill 应清掉自己的绑定并回退到新建/普通流程。",
-  "- ARCHIVED: 目标 session 已归档。skill 应决定是清绑定、回退新流程,还是等未来的 unarchive 工具。",
+  "- ARCHIVED: 目标 session 已归档。已有恢复授权时，可先用 control/unarchive_sessions（支持 deviceId::sessionId）恢复，再发送新消息；不能自行推翻用户归档意图。",
   "- DELETED: 目标 session 已删除。skill 应清绑定并回退。",
   "- BUSY: 仅 create 模式的罕见兜底(新建 session 意外已有 turn 在跑)。jump 模式撞忙不再返 BUSY,而是入队并成功返回 wake_kind=queued。",
   "- WORKTREE_UNAVAILABLE: 仅 create + use_worktree=true:无法创建 worktree(非 git 仓库 / git 未装 / git worktree add 失败,message 带具体原因)。skill 决定是去掉 use_worktree 重试还是放弃。",

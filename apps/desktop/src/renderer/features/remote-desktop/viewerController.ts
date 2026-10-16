@@ -70,6 +70,10 @@ const sameAspect = (display: Size, width: number, height: number) =>
 /** macOS reports native fullscreen transitions as a brief hide/show; only a
  * viewer that stays hidden pauses the host's video. Showing resumes at once. */
 const HIDDEN_VIDEO_PAUSE_MS = 1500;
+/** A paste shortcut waits at most this long for the local clipboard to reach the computer. */
+const CLIPBOARD_PASTE_WAIT_MS = 1000;
+/** A copy shortcut pulls the computer's clipboard after it has had time to change. */
+const CLIPBOARD_COPY_DELAY_MS = 200;
 
 function connectionBudget(caps: RemoteDesktopCapabilities | null): number {
   // Match Mobile: system consent has its own two-minute host deadline.
@@ -135,6 +139,11 @@ export class DesktopViewerController {
   private clipboardQueue: Promise<void> = Promise.resolve();
   private clipboardQueued = 0;
   private clipboardRevision = 0;
+  /** The sync pass a paste shortcut is waiting on; later pastes share it. */
+  private pasteSync: Promise<void> | null = null;
+  /** Serial of the latest paste wait: only it may open the picture's gate. */
+  private pasteWait = 0;
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingSettings = false;
   private offers = new Set<import('@cindy/device-link').RemoteDesktopLease>();
   private mediaChanging = false;
@@ -362,6 +371,10 @@ export class DesktopViewerController {
     this.epoch++;
     if (this.settingsTimer) clearTimeout(this.settingsTimer);
     this.settingsTimer = null;
+    // A paste waiting on the old session must not open the next session's gate.
+    this.pasteSync = null;
+    if (this.copyTimer) clearTimeout(this.copyTimer);
+    this.copyTimer = null;
     this.pendingSettings = false;
     this.mediaChanging = false;
     this.offers.clear();
@@ -429,6 +442,8 @@ export class DesktopViewerController {
         trickleIce: caps.trickleIce === true,
         audio: caps.systemAudio && this.state.settings.audio,
         macKeyboard: typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin',
+        // Only the controlled computer's own copy/paste modifier is a clipboard shortcut.
+        clipboardModifier: caps.platform === 'darwin' ? 'meta' : 'control',
       });
       this.runtime.receive({ type: 'mode', mode: 'pointer' });
       if (!caps.canControl) throw new Error('DESKTOP_INPUT_UNSUPPORTED');
@@ -487,6 +502,14 @@ export class DesktopViewerController {
       this.state.ready && !this.state.controlPending && this.session.lease?.controlling === true;
     if (controlling === this.state.controlling) return;
     this.clipboardRevision++;
+    if (!controlling) {
+      // Main retires the sync of a lost control generation (a display switch
+      // with auto-control drops and regains control without a reconnect); a
+      // paste after control returns must start its own pass, not wait on it.
+      this.pasteSync = null;
+      if (this.copyTimer) clearTimeout(this.copyTimer);
+      this.copyTimer = null;
+    }
     this.publish({ controlling });
     this.runtime.receive({ type: 'control', enabled: controlling });
     if (controlling) void this.applyRememberedResolution();
@@ -1111,6 +1134,10 @@ export class DesktopViewerController {
       case 'inputOverflow':
         this.fail(new Error('DESKTOP_INPUT_UNAVAILABLE'));
         break;
+      case 'clipboardIntent':
+        if (message.action === 'paste' || message.action === 'copy')
+          this.clipboardIntent(message.action);
+        break;
       case 'input':
         if (
           !Number.isSafeInteger(message.sequence) ||
@@ -1139,6 +1166,60 @@ export class DesktopViewerController {
         break;
     }
   }
+  /**
+   * A clipboard shortcut typed into the picture. Paste holds the keys (the
+   * picture gates its queue) until the local clipboard has been pushed, at
+   * most CLIPBOARD_PASTE_WAIT_MS; copy pulls the computer's clipboard shortly
+   * after. Neither waits for the regular poll. One push serves every paste
+   * made while it is in flight, and only the latest paste's wait opens the
+   * gate (the picture re-arms it per paste): an earlier paste's deadline must
+   * not open it, and a second request would only get the pending pass's
+   * snapshot from Main at once.
+   */
+  private clipboardIntent(action: 'copy' | 'paste'): void {
+    const wanted =
+      this.state.preferences.clipboardSync && this.state.controlling && !!this.api.clipboardSync;
+    if (action === 'copy') {
+      if (!wanted) return;
+      if (this.copyTimer) clearTimeout(this.copyTimer);
+      this.copyTimer = setTimeout(() => {
+        this.copyTimer = null;
+        void this.syncClipboard();
+      }, CLIPBOARD_COPY_DELAY_MS);
+      return;
+    }
+    const epoch = this.epoch,
+      wait = ++this.pasteWait;
+    const release = () => {
+      // The picture resets its gate itself when a session ends or changes.
+      if (!this.disposed && epoch === this.epoch && wait === this.pasteWait)
+        this.runtime.receive({ type: 'inputGate' });
+    };
+    if (!wanted) {
+      release();
+      return;
+    }
+    if (!this.pasteSync) {
+      const pending: Promise<void> = this.syncClipboard().finally(() => {
+        if (this.pasteSync === pending) this.pasteSync = null;
+      });
+      this.pasteSync = pending;
+    }
+    void Promise.race([
+      this.pasteSync,
+      new Promise<void>((resolve) => setTimeout(resolve, CLIPBOARD_PASTE_WAIT_MS)),
+    ]).then(release, release);
+  }
+  private async syncClipboard(): Promise<void> {
+    if (!this.state.ready || this.state.closing || !this.api.clipboardSync) return;
+    const epoch = this.epoch;
+    try {
+      const safety = await this.api.clipboardSync(this.scope.generation);
+      if (epoch === this.epoch && !this.disposed) this.publish({ safety });
+    } catch {
+      /* Connection state owns disconnected/retired generations. */
+    }
+  }
   private present(status: string): void {
     if (status === 'live') this.mediaChanging = false;
     this.retryDelay = 1000;
@@ -1158,6 +1239,8 @@ export class DesktopViewerController {
     this.disposed = true;
     if (this.hiddenTimer) clearTimeout(this.hiddenTimer);
     this.hiddenTimer = null;
+    if (this.copyTimer) clearTimeout(this.copyTimer);
+    this.copyTimer = null;
     if (this.connectionTimer !== null) clearTimeout(this.connectionTimer);
     this.connectionTimer = null;
     for (const t of this.timers) clearInterval(t);

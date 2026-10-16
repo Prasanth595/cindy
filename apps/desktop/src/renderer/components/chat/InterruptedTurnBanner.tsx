@@ -115,6 +115,7 @@ export function ErrorTailErrorBanner({
   errorText,
   onContinue,
   onDismiss,
+  dismissOnEscape,
   agentKind,
   remoteHostId,
   agentDeviceId,
@@ -139,6 +140,7 @@ export function ErrorTailErrorBanner({
   errorText: string;
   onContinue: () => Promise<void> | void;
   onDismiss: () => void;
+  dismissOnEscape?: boolean;
   agentKind?: 'cc' | 'codex' | 'pi';
   agentDeviceId?: string | null;
   remoteHostId?: string;
@@ -173,6 +175,7 @@ export function ErrorTailErrorBanner({
       retryText={ERROR_TAIL_RETRY_TOKEN}
       onRetry={() => void onContinue()}
       onCancel={onDismiss}
+      dismissOnEscape={dismissOnEscape}
       onSilentStopContinue={onSilentStopContinue}
       usageLimitRecovery={usageLimitRecovery}
       agentKind={agentKind}
