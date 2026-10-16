@@ -632,9 +632,17 @@ export class ExecutorWorkspace {
    * 把 Agent 虚拟路径还原成本机路径，用于展示的正文、工具参数等。正文 token 沿用 Agent 的分隔符，
    * 结构化路径字段与已存在的完整路径用本机写法。
    */
+  private readonly localContinuesName = (alias: ExecutorPathAlias, rest: string): boolean => {
+    const virtual = alias.from.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    const cut = virtual.lastIndexOf('/');
+    if (cut <= 0) return false;
+    // basename 属于虚拟目录名，父目录则在本机侧检查，确保与 mapAlias 落在同一处。
+    return this.continuesName({ ...alias, from: path.join(this.mapAlias(virtual.slice(0, cut)), virtual.slice(cut + 1)) }, rest);
+  };
+
   mapTextFromAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
-    return projectPathText(text, this.agentPathsToLocal(), context, (mapped) => fs.existsSync(mapped), { separators: 'source' });
+    return projectPathText(text, this.agentPathsToLocal(), context, (mapped) => fs.existsSync(mapped), { separators: 'source', continuesName: this.localContinuesName });
   }
 
   /** 正文里的单个完整路径(代码段、尖括号链接)：还原成本机路径，分隔符沿用 Agent 的写法。 */
@@ -716,7 +724,7 @@ export class ExecutorWorkspace {
 
   private contentFromAgent(text: string, spellings?: PathSpellings, options: ProjectPathTextOptions = {}, pass?: 'A' | 'B' | 'unique'): string {
     return projectPathText(text, this.agentPathsToLocal(), 'text', (mapped) => fs.existsSync(mapped), {
-      ...options, separators: 'source', wholeSeparators: 'source', spellings: spellings?.restorer(pass),
+      ...options, separators: 'source', wholeSeparators: 'source', spellings: spellings?.restorer(pass), continuesName: this.localContinuesName,
     });
   }
 

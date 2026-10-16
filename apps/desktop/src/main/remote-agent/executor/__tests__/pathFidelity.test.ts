@@ -140,6 +140,10 @@ describe('remote provider file paths', () => {
       }
       await executor.callTool('Write', { file_path: virtual + '/a.txt', content: 'same folder' });
       expect(fs.readFileSync(path.join(expected, 'a.txt'), 'utf8')).toBe('same folder');
+      const seen = virtual + '/a.txt';
+      const local = agentStyle(path.join(expected, 'a.txt'));
+      expect(workspace.mapTextFromAgent('report: ' + seen)).toBe('report: ' + local);
+      expect(workspace.mapContentFromAgent('report: ' + seen)).toBe('report: ' + local);
     } finally {
       await executor.close();
     }
