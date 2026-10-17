@@ -63,6 +63,7 @@ import './plugins';
 import { initRsbBrowserBridge } from './lib/rsbBrowserBridge';
 import { initPopupRouter, setPopupFallbackSession } from './lib/popupRouter';
 import { TabBodyErrorBoundary } from './TabBodyErrorBoundary';
+import { useRetainedBrowserTabHosts } from './hooks/useRetainedBrowserTabHosts';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
 import {
   mergeAvailableTabOrder,
@@ -563,6 +564,14 @@ export function RightSidebarShell({
     return off;
   }, [handleCycleTab, sessionId]);
 
+  const bodyHosts = useRetainedBrowserTabHosts(
+    bucket.hydrated
+      ? tabs
+          .filter((tab) => tab.id === activeTabId || deferredMountedTabIds.has(tab.id))
+          .map((tab) => ({ tab, sessionId, workdir, remoteHostId, deviceLinkDeviceId }))
+      : [],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {unifiedTopbar ? (
@@ -703,26 +712,19 @@ export function RightSidebarShell({
             onAddBrowserTab={() => handleAdd('web-browser')}
             onAddTerminalTab={() => handleAdd('terminal')}
           />
-        ) : (
-          // 所有 tab 都挂载,只切换可见性(规则 7:杜绝切顶层 tab 时 plugin 内部 state /
-          // webview / 编辑器 / 文件树 expansion 全部丢失重建)。pointer-events 用
-          // `hidden` 自然 disable,visibility 状态由 onVisibilityChange 给 plugin。
-          tabs
-            .filter((tab) => tab.id === activeTabId || deferredMountedTabIds.has(tab.id))
-            .map((tab) => (
-            <PluginBodyHost
-              key={tab.id}
-              tab={tab}
-              active={tab.id === activeTabId}
-              sessionId={sessionId}
-              workdir={workdir}
-              remoteHostId={remoteHostId}
-              deviceLinkDeviceId={deviceLinkDeviceId}
-              shellVisible={shellVisible}
-              t={t}
-            />
-            ))
-        )}
+        ) : null}
+        {/* Keep one keyed list even when the foreground task is empty or still
+            hydrating. Pool-backed background browsers keep their original slot
+            and task context; the pool still decides when to release them. */}
+        {bodyHosts.map((host) => (
+          <PluginBodyHost
+            key={host.tab.id}
+            {...host}
+            active={host.sessionId === sessionId && host.tab.id === activeTabId}
+            shellVisible={shellVisible}
+            t={t}
+          />
+        ))}
       </div>
     </div>
   );
