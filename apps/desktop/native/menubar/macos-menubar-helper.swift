@@ -10,6 +10,7 @@
 import AppKit
 import Charts
 import Combine
+import CoreText
 import SwiftUI
 
 // MARK: - Protocol
@@ -37,6 +38,8 @@ struct MBCell: Decodable, Identifiable, Equatable {
   let fill: Double?
   let reserve: Bool
   let emphasized: Bool
+  /// A running task is drawing on this source; its liquid ripples. Optional for older main.
+  let active: Bool?
   let when: String
   let whenLevel: String
   let accessibilityLabel: String
@@ -137,6 +140,8 @@ struct MBView: Decodable, Equatable {
   let updatedAtMs: Double?
   let headlinePrimary: String
   let headlineSecondary: String?
+  /// The second line warns about sources running low; it gets the warning dot.
+  let headlineAlert: Bool?
   let sources: [MBCell]
   let details: [String: MBDetail]
   let taskSummary: String
@@ -190,17 +195,48 @@ enum Palette {
     })
   }
 
-  static let ink = dynamic(hex(0x0B0B0B), hex(0xF5F5F4))
-  static let ink2 = dynamic(NSColor(white: 0, alpha: 0.52), NSColor(white: 1, alpha: 0.58))
-  static let ink3 = dynamic(NSColor(white: 0, alpha: 0.32), NSColor(white: 1, alpha: 0.36))
-  static let ink4 = dynamic(NSColor(white: 0, alpha: 0.14), NSColor(white: 1, alpha: 0.16))
-  static let ink5 = dynamic(NSColor(white: 0, alpha: 0.06), NSColor(white: 1, alpha: 0.07))
-  static let line = dynamic(NSColor(white: 0, alpha: 0.08), NSColor(white: 1, alpha: 0.08))
-  static let tile = dynamic(NSColor(white: 1, alpha: 0.62), NSColor(white: 1, alpha: 0.06))
-  static let edge = dynamic(NSColor(white: 1, alpha: 0.75), NSColor(white: 1, alpha: 0.16))
-  static let fill = dynamic(hex(0x111111), hex(0xF5F5F4))
+  // Every neutral is Cindy's warm black (Light) or warm white (Dark) at an opacity, never a
+  // fixed gray: the panel is translucent, so a fixed gray's contrast drifts with whatever
+  // shows through, while an opacity darkens or lightens what is behind it and keeps the
+  // relationship steady. Only state, brand and harness colors stay solid.
+  private static let warmBlack: UInt32 = 0x26221C
+  private static let warmWhite: UInt32 = 0xF2EFE9
+  private static func neutral(_ light: CGFloat, _ dark: CGFloat) -> Color {
+    dynamic(hex(warmBlack, light), hex(warmWhite, dark))
+  }
+  /// Titles and values: nearly opaque so they stay crisp.
+  static let ink = neutral(0.92, 0.94)
+  static let ink2 = neutral(0.60, 0.62)
+  /// Times, units and captions.
+  static let ink3 = neutral(0.42, 0.42)
+  /// Outlines and tube borders.
+  static let ink4 = neutral(0.14, 0.13)
+  /// Faint fills: hover, ring tracks.
+  static let ink5 = neutral(0.05, 0.05)
+  static let line = neutral(0.08, 0.07)
+  static let tile = dynamic(NSColor(white: 1, alpha: 0.45), hex(warmWhite, 0.05))
+  static let edge = dynamic(NSColor(white: 1, alpha: 0.8), hex(warmWhite, 0.09))
+  /// Solid fill for the primary pill: it is the one control that must read at full contrast.
+  static let cta = dynamic(hex(0x1F1E1C), hex(warmWhite))
+  // The liquid is the ink color at partial opacity, not a flat gray: the glass well shows
+  // through, so it reads as water instead of paint, and it stays softer than text so seven
+  // full tubes do not read as hard black or white bars.
+  /// One flat tone, no gradient: warm black (Light) or warm white (Dark) at an opacity.
+  static let liquid = neutral(0.46, 0.72)
+  /// Neutral ring arcs (Grok, a balance) share the liquid's color.
+  static let fill = neutral(0.42, 0.80)
   /// Text on an `ink` pill.
-  static let onInk = dynamic(hex(0xFFFFFF), hex(0x111111))
+  static let onInk = dynamic(hex(0xFFFFFF), hex(0x0E0E0D))
+  /// Warm tint and glows laid over the popover material.
+  static let panelTint = dynamic(hex(0xF8F7F3, 0.5), hex(0x1A1918, 0.54))
+  static let panelGlow = dynamic(hex(0xEA6B17, 0.09), hex(0xEA6B17, 0.12))
+  static let panelGlow2 = dynamic(NSColor(white: 1, alpha: 0.55), hex(0xFFF4E4, 0.04))
+  /// Glass well behind the liquid.
+  static let wellTop = dynamic(NSColor(white: 1, alpha: 0.7), hex(warmWhite, 0.07))
+  static let wellBottom = dynamic(NSColor(white: 1, alpha: 0.5), hex(warmWhite, 0.025))
+  static let wellShade = dynamic(NSColor(white: 0, alpha: 0.08), NSColor(white: 0, alpha: 0.5))
+  /// Red of the Cindy logo's ">" mark (the logo red, not a state color).
+  static let brand = Color(nsColor: hex(0xF70121))
   static let warn = Color(nsColor: hex(0xEA6B17))
   static let error = Color(nsColor: hex(0xD91F37))
   static let focus = Color(nsColor: hex(0x417CDD))
@@ -246,6 +282,8 @@ enum Palette {
 /// The open/fill curve shared by tubes, rings, page slides and the panel width.
 enum Motion {
   static let fill = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.5)
+  /// Tube liquid rises slower than the rings, like a liquid settling.
+  static let liquid = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.9)
   static let page = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.5)
   static let quick = Animation.easeOut(duration: 0.2)
 }
@@ -967,6 +1005,7 @@ struct PanelRoot: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+    .background { PanelBackdrop() }
     .overlay(
       RoundedRectangle(cornerRadius: PanelBackgroundView.radius, style: .circular)
         .strokeBorder(Palette.edge, lineWidth: 0.5)
@@ -1014,6 +1053,18 @@ struct PanelRoot: View {
   }
 }
 
+/// Warm tint over the popover material with a faint Heart Orange glow in the top-left corner.
+struct PanelBackdrop: View {
+  var body: some View {
+    ZStack {
+      Palette.panelTint
+      RadialGradient(colors: [Palette.panelGlow, .clear], center: .topLeading, startRadius: 0, endRadius: 240)
+      RadialGradient(colors: [Palette.panelGlow2, .clear], center: UnitPoint(x: 1, y: 0.18), startRadius: 0, endRadius: 220)
+    }
+    .allowsHitTesting(false)
+  }
+}
+
 // MARK: - Shared pieces
 
 struct IconButton: View {
@@ -1047,26 +1098,101 @@ struct InkPillButton: View {
   var height: CGFloat = 30
   var fullWidth = false
   var disabled = false
+  /// Opening Cindy itself: the logo's red ">" leads the title, slides in when the panel opens,
+  /// leans forward on hover and pushes on press.
+  var brandMark = false
+  var replayToken = 0
   let action: () -> Void
+  @State private var hovering = false
 
   var body: some View {
-    Button(action: action) {
-      HStack(spacing: 8) {
-        Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-        if let shortcut {
-          Text(shortcut).font(.system(size: 12, weight: .medium)).opacity(0.55)
-        }
+    // The style draws the pill itself; the label only names the button for VoiceOver.
+    Button(action: action) { Text(title) }
+      .buttonStyle(InkPillStyle(title: title, shortcut: shortcut, height: height, fullWidth: fullWidth,
+                                brandMark: brandMark, hovering: hovering, replayToken: replayToken))
+      .disabled(disabled)
+      .opacity(disabled ? 0.4 : 1)
+      .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
+  }
+}
+
+private struct InkPillStyle: ButtonStyle {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  let title: String
+  let shortcut: String?
+  let height: CGFloat
+  let fullWidth: Bool
+  let brandMark: Bool
+  let hovering: Bool
+  let replayToken: Int
+
+  func makeBody(configuration: Configuration) -> some View {
+    HStack(spacing: 8) {
+      if brandMark {
+        BrandPromptMark(replayToken: replayToken)
+          .offset(x: reduceMotion ? 0 : configuration.isPressed ? 4 : hovering ? 2 : 0)
+          .scaleEffect(x: !reduceMotion && configuration.isPressed ? 0.8 : 1, anchor: .trailing)
+          .animation(configuration.isPressed ? .easeOut(duration: 0.12) : .spring(response: 0.35, dampingFraction: 0.6), value: configuration.isPressed)
+          .animation(.spring(response: 0.35, dampingFraction: 0.6), value: hovering)
+          .padding(.trailing, -2)
       }
-      .padding(.horizontal, 14)
-      .frame(height: height)
-      .frame(maxWidth: fullWidth ? .infinity : nil)
-      .foregroundStyle(Palette.onInk)
-      .background(Capsule().fill(Palette.ink))
-      .contentShape(Capsule())
+      Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+      if let shortcut {
+        Text(shortcut).font(.system(size: 12, weight: .medium)).opacity(0.55)
+      }
     }
-    .buttonStyle(PressScaleStyle())
-    .disabled(disabled)
-    .opacity(disabled ? 0.4 : 1)
+    .padding(.leading, brandMark ? 12 : 14)
+    .padding(.trailing, 14)
+    .frame(height: height)
+    .frame(maxWidth: fullWidth ? .infinity : nil)
+    .foregroundStyle(Palette.onInk)
+    .background(Capsule().fill(Palette.cta))
+    .contentShape(Capsule())
+    .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+/// The ">" from the Cindy logo, traced from `cindy-wordmark-*.svg` (normalized to its box).
+struct BrandPrompt: Shape {
+  func path(in rect: CGRect) -> Path {
+    let points: [(CGFloat, CGFloat)] = [
+      (0, 0), (1, 0.4354), (1, 0.5636), (0, 1), (0, 0.6551), (0.352, 0.4995), (0, 0.3442),
+    ]
+    var path = Path()
+    for (index, point) in points.enumerated() {
+      let p = CGPoint(x: rect.minX + point.0 * rect.width, y: rect.minY + point.1 * rect.height)
+      if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
+    }
+    path.closeSubpath()
+    return path
+  }
+}
+
+struct BrandPromptMark: View {
+  let replayToken: Int
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var shown = true
+
+  var body: some View {
+    BrandPrompt()
+      .fill(Palette.brand)
+      .frame(width: 7, height: 11)
+      .opacity(shown ? 1 : 0)
+      .offset(x: shown ? 0 : -5)
+      .accessibilityHidden(true)
+      .onAppear { replay() }
+      .onChange(of: replayToken) { replay() }
+  }
+
+  private func replay() {
+    guard !reduceMotion else { shown = true; return }
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) { shown = false }
+    DispatchQueue.main.async {
+      withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.7).delay(0.45)) { shown = true }
+    }
   }
 }
 
@@ -1086,6 +1212,14 @@ struct Tile<Content: View>: View {
     content
       .background(RoundedRectangle(cornerRadius: radius, style: .circular).fill(Palette.tile))
       .overlay(RoundedRectangle(cornerRadius: radius, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
+  }
+}
+
+/// The one hairline of the panel: 0.5pt in the soft `line` color. (A system `Divider` draws its
+/// own darker separator, so an overlay on it only made lines heavier.)
+struct Hairline: View {
+  var body: some View {
+    Rectangle().fill(Palette.line).frame(height: 0.5)
   }
 }
 
@@ -1140,25 +1274,66 @@ struct TubeView: View {
   let level: String
   let reserve: Bool
   let emphasized: Bool
+  /// A running task is drawing on this source: the liquid surface ripples gently.
+  var active = false
+  /// The pointer just came onto the tube: the liquid gives a small nudge, then settles.
+  var hovered = false
   let index: Int
   let fillToken: Int
-  var height: CGFloat = 96
+  var height: CGFloat = 104
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var shown = true
+  /// Set while the opening slosh plays; the wave clock runs for every tube meanwhile.
+  @State private var openedAt: Date?
+  // The standing ripple of a source in use eases between levels on the wave clock itself
+  // (not through SwiftUI's animator, which a per-frame clock would fight and make pop).
+  @State private var rippleFrom: CGFloat = 0
+  @State private var rippleGoal: CGFloat = 0
+  @State private var rippleChangedAt: Date = .distantPast
+  /// Keeps the clock alive while a ripple change eases in or out.
+  @State private var rippleEasing = false
+  /// Drawn anew every time the panel opens, so no two openings slosh the same way.
+  @State private var slosh = SloshProfile.random()
+  @State private var nudgedAt: Date?
+  @State private var nudgeDirection: CGFloat = 1
 
   private static let inset: CGFloat = 3
   private static let outerRadius: CGFloat = 13
+  /// Peak height of the ripple; small enough that the level still reads exactly.
+  private static let rippleAmplitude: CGFloat = 1.5
+
+  // Opening slosh. While the liquid rushes up it stays nearly flat; when it stops, inertia
+  // tips the surface from side to side like a damped pendulum (first mode, one side up while
+  // the other is down) with a faster, smaller second mode on top, and both decay to still.
+  /// Seconds after a tube's own start at which the rising liquid has all but arrived.
+  private static let arrival: Double = 0.5
+  /// Edge height of the first tilt, in points, for a full tube (less when the tube is lower).
+  private static let sloshTilt: CGFloat = 5.0
+  /// While rising the surface only shivers this much…
+  private static let riseShiver: CGFloat = 0.3
+  /// …and rocks a little, quicker and far smaller than the slosh after it stops.
+  private static let riseRock: CGFloat = 1.1
+  private static let riseRockPeriod: Double = 0.34
+  private static let sloshDuration: Double = 4.6
+  /// Hover nudge: a small, short sway, a third of the opening slosh.
+  private static let nudgeTilt: CGFloat = 1.7
+  private static let nudgePeriod: Double = 0.72
+  private static let nudgeDecay: Double = 0.5
+  private static let nudgeDuration: Double = 2.2
 
   var body: some View {
     let wellHeight = height - Self.inset * 2
     let fraction = max(0, min(1, fill ?? 0))
     let liquid = fraction > 0 ? max(3, fraction * wellHeight) : 0
+    let warn = Palette.level(level)
     ZStack {
       if fill == nil {
         RoundedRectangle(cornerRadius: Self.outerRadius, style: .circular)
           .strokeBorder(Palette.ink4, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
       } else {
-        RoundedRectangle(cornerRadius: Self.outerRadius, style: .circular).fill(Palette.ink5)
+        RoundedRectangle(cornerRadius: Self.outerRadius, style: .circular)
+          .fill(LinearGradient(colors: [Palette.wellTop, Palette.wellBottom], startPoint: .top, endPoint: .bottom)
+            .shadow(.inner(color: Palette.wellShade, radius: 1.5, y: 1)))
         if reserve {
           HatchPattern()
             .stroke(Palette.ink4, lineWidth: 2)
@@ -1166,35 +1341,242 @@ struct TubeView: View {
             .padding(Self.inset)
         }
         // Liquid lives in a well inset 3pt on every side; the well's rounded bottom shapes low
-        // levels, so the liquid never touches the tube wall and the top stays flat.
+        // levels, so the liquid never touches the tube wall.
         VStack(spacing: 0) {
           Spacer(minLength: 0)
-          Rectangle()
-            .fill(Palette.level(level) ?? Palette.fill)
+          surface(warn: warn)
             .frame(height: liquid)
             .scaleEffect(x: 1, y: shown ? 1 : 0.001, anchor: .bottom)
         }
         .clipShape(RoundedRectangle(cornerRadius: Self.outerRadius - Self.inset, style: .circular))
         .padding(Self.inset)
-        .animation(Motion.fill, value: liquid)
+        .animation(Motion.liquid, value: liquid)
         RoundedRectangle(cornerRadius: Self.outerRadius, style: .circular)
-          .strokeBorder(emphasized ? Palette.ink : Palette.ink4, lineWidth: emphasized ? 1.5 : 0.5)
+          // The recommended tube: a 1pt secondary-gray outline, quiet enough not to read as a
+          // selection; the headline names the source it marks.
+          .strokeBorder(emphasized ? Palette.ink2 : Palette.ink4, lineWidth: emphasized ? 1 : 0.5)
+      }
+    }
+    .background(alignment: .bottom) {
+      if warn != nil && fill != nil {
+        Ellipse()
+          .fill(RadialGradient(colors: [(warn ?? Palette.warn).opacity(0.5), .clear], center: .center, startRadius: 0, endRadius: 18))
+          .frame(width: 34, height: 14)
+          .blur(radius: 4)
+          .offset(y: 7)
+          .opacity(0.45)
+          .allowsHitTesting(false)
       }
     }
     .frame(maxWidth: 40)
     .frame(height: height)
     .onChange(of: fillToken) { replay() }
-    .onAppear { replay() }
+    .onChange(of: active) { updateRipple() }
+    .onChange(of: hovered) { _, isHovered in if isHovered { nudge() } }
+    .onAppear {
+      replay()
+      updateRipple()
+    }
+  }
+
+  /// The standing ripple at `now`, easing from where it was toward its goal.
+  private func rippleLevel(at now: Date) -> CGFloat {
+    let duration = rippleGoal > rippleFrom ? 0.8 : 1.4
+    let p = max(0, min(1, now.timeIntervalSince(rippleChangedAt) / duration))
+    let eased = CGFloat(p * p * (3 - 2 * p))
+    return rippleFrom + (rippleGoal - rippleFrom) * eased
+  }
+
+  /// Surface state at `now`, including a hover nudge on top of whatever else is moving.
+  private func surfaceState(at now: Date, fraction: Double) -> (ripple: CGFloat, tilt: CGFloat, second: CGFloat) {
+    var state = baseSurfaceState(at: now, fraction: fraction)
+    if let nudgedAt {
+      let u = now.timeIntervalSince(nudgedAt)
+      if u >= 0, u < Self.nudgeDuration {
+        // Fuller tubes sway a little more; even a low one visibly answers the pointer.
+        let m = CGFloat(0.35 + 0.65 * fraction)
+        state.tilt += nudgeDirection * Self.nudgeTilt * m
+          * CGFloat(exp(-u / Self.nudgeDecay) * sin(2 * .pi * u / Self.nudgePeriod))
+        state.second -= nudgeDirection * Self.nudgeTilt * 0.3 * m
+          * CGFloat(exp(-u / (Self.nudgeDecay * 0.7)) * sin(2 * .pi * u / (Self.nudgePeriod * 0.48)))
+      }
+    }
+    return state
+  }
+
+  /// Surface state at `now`: wave amplitude and the side-to-side tilt, both in points.
+  private func baseSurfaceState(at now: Date, fraction: Double) -> (ripple: CGFloat, tilt: CGFloat, second: CGFloat) {
+    let standing = rippleLevel(at: now)
+    guard let openedAt else { return (standing, 0, 0) }
+    let t = now.timeIntervalSince(openedAt) - Double(index) * 0.06
+    let arrival = Self.arrival + slosh.arrivalShift
+    // How far the liquid climbs sets how hard it moves: a nearly full tube swings widely, a
+    // low one barely does (momentum grows faster than the level).
+    let momentum = CGFloat(max(0.04, pow(fraction, 1.5)))
+    if t < arrival {
+      // Rising: a small, quick rock that swells mid-climb and is back to level on arrival
+      // (the envelope is zero at both ends), handing over smoothly to the slosh.
+      let p = max(0, t) / arrival
+      let rock = Self.riseRock * CGFloat(0.5 + 0.5 * fraction) * CGFloat(sin(.pi * p))
+        * CGFloat(sin(2 * .pi * max(0, t) / Self.riseRockPeriod)) * slosh.direction
+      return (max(standing, Self.riseShiver), rock, 0)
+    }
+    let s = t - arrival
+    // Both modes start from zero (sin), so the surface leans away from flat smoothly the
+    // moment the liquid stops rather than snapping to a lean.
+    let tilt = slosh.direction * slosh.strength * Self.sloshTilt * momentum
+      * CGFloat(exp(-s / slosh.decay) * sin(2 * .pi * s / slosh.period))
+    let second = -slosh.direction * slosh.secondRatio * Self.sloshTilt * momentum
+      * CGFloat(exp(-s / (slosh.decay * 0.7)) * sin(2 * .pi * s / (slosh.period * slosh.secondPeriodRatio)))
+    let shiver = Self.riseShiver * CGFloat(exp(-s / 0.6))
+    return (max(standing, shiver), tilt, second)
+  }
+
+  @ViewBuilder
+  private func surface(warn: Color?) -> some View {
+    let color = warn ?? Palette.liquid
+    // The clock only runs for a source in use; when it stops, the amplitude eases to zero and
+    // the frozen phase settles into a flat, still surface.
+    TimelineView(.animation(minimumInterval: 1 / 30, paused: !(active || openedAt != nil || rippleEasing || nudgedAt != nil) || reduceMotion)) { context in
+      let state = surfaceState(at: context.date, fraction: max(0, min(1, fill ?? 0)))
+      LiquidSurface(
+        phase: context.date.timeIntervalSinceReferenceDate * 2 * .pi / 3.6 + Double(index) * 1.3,
+        amplitude: state.ripple,
+        tilt: state.tilt,
+        second: state.second
+      )
+      .fill(color)
+    }
+  }
+
+  private var rippleTarget: CGFloat { active && !reduceMotion ? Self.rippleAmplitude : 0 }
+
+  private func updateRipple() {
+    // While the opening slosh plays the standing ripple waits; the slosh's end calls this.
+    guard openedAt == nil, rippleTarget != rippleGoal else { return }
+    let now = Date()
+    let target = rippleTarget
+    rippleFrom = rippleLevel(at: now)
+    rippleGoal = target
+    rippleChangedAt = now
+    rippleEasing = true
+    let duration = target > rippleFrom ? 0.8 : 1.4
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.1) {
+      if rippleChangedAt == now { rippleEasing = false }
+    }
+  }
+
+  private func nudge() {
+    guard !reduceMotion, fill != nil else { return }
+    let now = Date()
+    // Sweeping the pointer across the row should not restart a nudge that just began.
+    if let nudgedAt, now.timeIntervalSince(nudgedAt) < 0.35 { return }
+    nudgeDirection = Bool.random() ? 1 : -1
+    nudgedAt = now
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.nudgeDuration + 0.05) {
+      if nudgedAt == now { nudgedAt = nil }
+    }
   }
 
   private func replay() {
-    guard !reduceMotion else { shown = true; return }
+    guard !reduceMotion else {
+      shown = true
+      openedAt = nil
+      rippleFrom = 0
+      rippleGoal = 0
+      return
+    }
+    let delay = Double(index) * 0.06
+    let started = Date()
     var transaction = Transaction()
     transaction.disablesAnimations = true
-    withTransaction(transaction) { shown = false }
-    DispatchQueue.main.async {
-      withAnimation(Motion.fill.delay(Double(index) * 0.025)) { shown = true }
+    withTransaction(transaction) {
+      shown = false
+      openedAt = started
+      slosh = SloshProfile.random()
+      // The standing ripple restarts from still once the slosh is over.
+      rippleFrom = 0
+      rippleGoal = 0
     }
+    DispatchQueue.main.async {
+      withAnimation(Motion.liquid.delay(delay)) { shown = true }
+    }
+    // The slosh is over once the tilt has decayed; an active source then keeps its ripple.
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay + Self.arrival + 0.1 + Self.sloshDuration) {
+      guard openedAt == started else { return }
+      openedAt = nil
+      updateRipple()
+    }
+  }
+}
+
+/// One opening's slosh: which way the surface first leans, how strongly, how fast it swings and
+/// how quickly it dies down. Redrawn on every opening so the tubes never repeat themselves.
+struct SloshProfile {
+  /// +1 leans left-up first, -1 right-up first.
+  var direction: CGFloat
+  /// Scales the first tilt (0.8...1.15).
+  var strength: CGFloat
+  var period: Double
+  var decay: Double
+  var secondRatio: CGFloat
+  var secondPeriodRatio: Double
+  /// Moves the instant the liquid stops, so the tubes do not all lurch at once.
+  var arrivalShift: Double
+
+  static func random() -> SloshProfile {
+    SloshProfile(
+      direction: Bool.random() ? 1 : -1,
+      strength: CGFloat.random(in: 0.8...1.15),
+      period: Double.random(in: 0.82...1.12),
+      decay: Double.random(in: 1.0...1.5),
+      secondRatio: CGFloat.random(in: 0.18...0.4),
+      secondPeriodRatio: Double.random(in: 0.4...0.55),
+      arrivalShift: Double.random(in: -0.06...0.08)
+    )
+  }
+}
+
+/// Liquid with a gently waving top edge. The wave stays inside the frame (it dips at most
+/// twice the amplitude below the top), and zero amplitude is a flat surface.
+struct LiquidSurface: Shape {
+  var phase: Double
+  var amplitude: CGFloat
+  /// First slosh mode: the surface leans, left edge up while the right is down (and back).
+  var tilt: CGFloat = 0
+  /// Second slosh mode: both edges rise while the middle sinks.
+  var second: CGFloat = 0
+
+  var animatableData: CGFloat {
+    get { amplitude }
+    set { amplitude = newValue }
+  }
+
+  func path(in rect: CGRect) -> Path {
+    var path = Path()
+    guard rect.width > 0, rect.height > 0 else { return path }
+    let amp = min(amplitude, rect.height / 4)
+    let wavelength = Double(rect.width) * 1.35
+    func y(_ x: CGFloat) -> CGFloat {
+      let k = 2 * Double.pi / wavelength
+      let wave = 0.65 * sin(k * Double(x) + phase) + 0.35 * sin(1.7 * k * Double(x) - 1.3 * phase)
+      // Both slosh modes average to zero across the width, so the liquid volume is unchanged;
+      // the surface may rise above the nominal level (the well clips it).
+      let u = Double(x / rect.width)
+      let lean = Double(tilt) * (1 - 2 * u)
+      let mode2 = Double(second) * cos(2 * Double.pi * u)
+      return rect.minY + amp * CGFloat(1 + wave) - CGFloat(lean + mode2)
+    }
+    path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+    path.addLine(to: CGPoint(x: rect.minX, y: y(0)))
+    let steps = 16
+    for step in 1...steps {
+      let x = rect.width * CGFloat(step) / CGFloat(steps)
+      path.addLine(to: CGPoint(x: rect.minX + x, y: y(x)))
+    }
+    path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+    path.closeSubpath()
+    return path
   }
 }
 
@@ -1275,7 +1657,12 @@ struct MainPage: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Headline(primary: view.headlinePrimary, secondary: view.headlineSecondary, short: store.short)
+      Headline(
+        primary: view.headlinePrimary,
+        secondary: view.headlineSecondary,
+        alert: view.headlineAlert == true,
+        short: store.short
+      )
         .padding(EdgeInsets(top: store.short ? 6 : 10, leading: 20, bottom: 0, trailing: 20))
 
       // Only sources with a level get a tube; the rest (not read yet, pay-as-you-go) are
@@ -1294,7 +1681,7 @@ struct MainPage: View {
       }
 
       Caption(title: store.s("tasks"), detail: view.taskSummary) {
-        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"), showsTokens: store.narrowWidth >= 350)
+        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"), showsTokens: store.narrowWidth >= 350, replayToken: store.fillToken)
       }
       .padding(EdgeInsets(top: store.short ? 14 : 18, leading: 20, bottom: 6, trailing: 20))
 
@@ -1309,7 +1696,7 @@ struct MainPage: View {
 
   private var foot: some View {
     HStack(spacing: 6) {
-      InkPillButton(title: store.s("openApp"), shortcut: "⌘O") { controller.openApp() }
+      InkPillButton(title: store.s("openApp"), shortcut: "⌘O", brandMark: true, replayToken: store.fillToken) { controller.openApp() }
       Spacer(minLength: 0)
       IconButton(systemName: "gearshape", label: store.s("settings"), help: store.s("settings") + " ⌘,") {
         store.go(.manage)
@@ -1351,7 +1738,7 @@ struct GatePage: View {
         .padding(EdgeInsets(top: 6, leading: 20, bottom: 0, trailing: 20))
 
       HStack(spacing: 6) {
-        InkPillButton(title: store.s("openApp"), shortcut: "⌘O") { controller.openApp() }
+        InkPillButton(title: store.s("openApp"), shortcut: "⌘O", brandMark: true, replayToken: store.fillToken) { controller.openApp() }
         Spacer(minLength: 0)
         IconButton(systemName: "gearshape", label: store.s("settings"), help: store.s("settings") + " ⌘,") {
           store.go(.manage)
@@ -1391,10 +1778,64 @@ struct Wordmark: View {
   }
 }
 
+/// Images and fonts shipped next to the helper binary.
+enum HelperAssets {
+  static let dir: String = ProcessInfo.processInfo.environment["CINDY_MENUBAR_ASSET_DIR"]
+    ?? (CommandLine.arguments.first.map { ($0 as NSString).deletingLastPathComponent } ?? "")
+
+  static func path(_ name: String) -> String { (dir as NSString).appendingPathComponent(name) }
+}
+
+/// Barlow Condensed for numbers and the % sign (OFL, shipped next to the helper). Falls back
+/// to a smaller system font when the files are missing, so numbers still fit their columns.
+enum NumFont {
+  private static let faces = ["BarlowCondensed-Light", "BarlowCondensed-Medium", "BarlowCondensed-SemiBold"]
+  private(set) static var available = false
+
+  static func register() {
+    for face in faces {
+      let url = URL(fileURLWithPath: HelperAssets.path(face + ".ttf")) as CFURL
+      CTFontManagerRegisterFontsForURL(url, .process, nil)
+    }
+    available = faces.allSatisfy { NSFont(name: $0, size: 12) != nil }
+  }
+
+  static func font(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
+    guard available else { return .system(size: (size * 0.8).rounded(), weight: weight) }
+    let face: String
+    switch weight {
+    case .ultraLight, .thin, .light: face = faces[0]
+    case .regular, .medium: face = faces[1]
+    default: face = faces[2]
+    }
+    return .custom(face, fixedSize: size)
+  }
+
+  /// A pure number ("53", "$31.17", "12.5k", "98%") takes the number font. Anything that mixes
+  /// in words or Chinese ("15天12时后重置", "周四 14:13", "5d 11h") stays entirely in the system
+  /// font: a condensed face next to Chinese reads uneven.
+  static func adaptive(_ string: String, size: CGFloat, weight: Font.Weight = .semibold, textSize: CGFloat, textWeight: Font.Weight = .medium) -> Text {
+    if isPureNumber(string) { return Text(string).font(font(size, weight)) }
+    return Text(string).font(.system(size: textSize, weight: textWeight)).monospacedDigit()
+  }
+
+  static func isPureNumber(_ string: String) -> Bool {
+    var previousDigit = false
+    var digits = 0
+    for character in string {
+      let isDigit = character.isNumber && character.isASCII
+      let allowed = isDigit || "$¥€.,:%+-−".contains(character) || (previousDigit && "kKMB".contains(character))
+      if !allowed { return false }
+      if isDigit { digits += 1 }
+      previousDigit = isDigit
+    }
+    return digits > 0
+  }
+}
+
 /// The wordmark keeps its red ">" and dot, so it is a full-color pair, not a template image.
 enum WordmarkAsset {
-  private static let dir: String = ProcessInfo.processInfo.environment["CINDY_MENUBAR_ASSET_DIR"]
-    ?? (CommandLine.arguments.first.map { ($0 as NSString).deletingLastPathComponent } ?? "")
+  private static let dir = HelperAssets.dir
   private static let light = NSImage(contentsOfFile: (dir as NSString).appendingPathComponent("wordmark-light.png"))
   private static let dark = NSImage(contentsOfFile: (dir as NSString).appendingPathComponent("wordmark-dark.png"))
 
@@ -1421,6 +1862,7 @@ struct RefreshButton: View {
 struct Headline: View {
   let primary: String
   let secondary: String?
+  var alert = false
   var short = false
 
   var body: some View {
@@ -1430,10 +1872,19 @@ struct Headline: View {
         .tracking(-0.5)
         .lineSpacing(1)
       if let secondary {
-        Text(secondary)
-          .font(.system(size: short ? 14.5 : 16, weight: .semibold))
-          .tracking(-0.3)
-          .foregroundStyle(Palette.ink3)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          if alert {
+            // Centered on the x-height of the first line, so it sits right on wrapped text too.
+            Circle()
+              .fill(Palette.warn)
+              .frame(width: 7, height: 7)
+              .alignmentGuide(.firstTextBaseline) { $0[.bottom] + (short ? 1.5 : 2) }
+          }
+          Text(secondary)
+            .font(.system(size: short ? 14.5 : 16, weight: .semibold))
+            .tracking(-0.3)
+            .foregroundStyle(Palette.ink3)
+        }
       }
     }
     .fixedSize(horizontal: false, vertical: true)
@@ -1464,7 +1915,7 @@ struct Cells: View {
   var body: some View {
     HStack(alignment: .top, spacing: cells.count > 6 ? 4 : 8) {
       ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-        CellView(cell: cell, index: index, fillToken: store.fillToken, tubeHeight: store.short ? 76 : 96) {
+        CellView(cell: cell, index: index, fillToken: store.fillToken, tubeHeight: store.short ? 82 : 104) {
           store.go(.detail(cell.id))
         }
       }
@@ -1538,12 +1989,14 @@ struct CellView: View {
   var body: some View {
     Button(action: action) {
       VStack(spacing: 7) {
-        valueLabel.frame(height: 18)
+        valueLabel.frame(height: 22, alignment: .bottom)
         TubeView(
           fill: cell.kind == "payg" ? nil : cell.fill,
           level: cell.level,
           reserve: cell.reserve,
           emphasized: cell.emphasized,
+          active: cell.active == true,
+          hovered: hovering,
           index: index,
           fillToken: fillToken,
           height: tubeHeight
@@ -1556,12 +2009,11 @@ struct CellView: View {
             .lineLimit(1)
             .truncationMode(.tail)
         }
-        Text(cell.when)
-          .font(.system(size: 10, weight: .medium))
+        NumFont.adaptive(cell.when, size: 12, weight: .medium, textSize: 10)
           .foregroundStyle(Palette.level(cell.whenLevel) ?? Palette.ink2)
           .lineLimit(1)
-          .minimumScaleFactor(0.85)
-          .frame(height: 14)
+          .minimumScaleFactor(0.8)
+          .frame(height: 15)
           .padding(.top, -4)
       }
       .padding(.top, 4)
@@ -1570,7 +2022,7 @@ struct CellView: View {
       .contentShape(Rectangle())
       .offset(y: hovering ? -3 : 0)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(CellPressStyle())
     .onHover { hovering in
       withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.25)) { self.hovering = hovering }
     }
@@ -1580,18 +2032,18 @@ struct CellView: View {
   @ViewBuilder
   private var valueLabel: some View {
     if let value = cell.value {
+      // The % sign uses the number font at about 60% of the value, on the same baseline.
       HStack(alignment: .firstTextBaseline, spacing: 1) {
-        Text(value)
-          .font(.system(size: cell.kind == "balance" ? 12.5 : 14, weight: .semibold))
-          .tracking(cell.kind == "balance" ? -0.2 : -0.3)
+        CountUpText(text: value, font: NumFont.font(cell.kind == "balance" ? 16 : 18), replayToken: fillToken, delay: Double(index) * 0.06)
           .lineLimit(1)
-          .minimumScaleFactor(0.8)
+          .minimumScaleFactor(0.75)
         if let unit = cell.valueUnit {
-          Text(unit).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Palette.ink3)
+          Text(unit).font(NumFont.font(11)).foregroundStyle(Palette.ink3)
         }
       }
       .monospacedDigit()
       .foregroundStyle(Palette.level(cell.level) ?? Palette.ink)
+      .animation(Motion.quick, value: value)
     } else if let label = cell.valueLabel {
       Text(label)
         .font(.system(size: 10.5, weight: .semibold))
@@ -1603,6 +2055,113 @@ struct CellView: View {
   }
 }
 
+/// A plain number ("53", "$31.17", "$20.0k") counts up from zero each time the panel opens
+/// (`replayToken`), alongside the rising liquid. The final text reserves the width, so the
+/// count never shifts its neighbours; anything that is not a plain number shows as-is.
+struct CountUpText: View {
+  let text: String
+  let font: Font
+  let replayToken: Int
+  var delay: Double = 0
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var progress: Double = 1
+
+  var body: some View {
+    if let parts = CountUpParts(text) {
+      Text(text)
+        .opacity(0)
+        .modifier(CountUpModifier(progress: progress, parts: parts))
+        .font(font.monospacedDigit())
+        .onAppear { replay() }
+        .onChange(of: replayToken) { replay() }
+    } else {
+      Text(text).font(font.monospacedDigit())
+    }
+  }
+
+  private func replay() {
+    guard !reduceMotion else { progress = 1; return }
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) { progress = 0 }
+    DispatchQueue.main.async {
+      withAnimation(Motion.liquid.delay(delay)) { progress = 1 }
+    }
+  }
+}
+
+private struct CountUpModifier: ViewModifier, Animatable {
+  var progress: Double
+  let parts: CountUpParts
+
+  var animatableData: Double {
+    get { progress }
+    set { progress = newValue }
+  }
+
+  /// The visible count is laid out in the hidden final text's frame and inherits the same
+  /// line limit and scale factor, so a long value shrinks together with its placeholder.
+  func body(content: Content) -> some View {
+    content.overlay(alignment: .trailing) {
+      Text(parts.render(progress)).accessibilityHidden(true)
+    }
+  }
+}
+
+/// "$20.0k" → prefix "$", value 20.0 with one decimal, suffix "k".
+struct CountUpParts: Equatable {
+  let prefix: String
+  let value: Double
+  let decimals: Int
+  let grouped: Bool
+  let suffix: String
+
+  private static let pattern = try? NSRegularExpression(pattern: "^([^0-9]*)([0-9][0-9,]*(?:\\.[0-9]+)?)([^0-9]*)$")
+
+  init?(_ text: String) {
+    let range = NSRange(text.startIndex..., in: text)
+    guard let match = Self.pattern?.firstMatch(in: text, range: range),
+          let prefixRange = Range(match.range(at: 1), in: text),
+          let numberRange = Range(match.range(at: 2), in: text),
+          let suffixRange = Range(match.range(at: 3), in: text)
+    else { return nil }
+    let number = String(text[numberRange])
+    guard let value = Double(number.replacingOccurrences(of: ",", with: "")) else { return nil }
+    prefix = String(text[prefixRange])
+    suffix = String(text[suffixRange])
+    self.value = value
+    decimals = number.split(separator: ".").dropFirst().first?.count ?? 0
+    grouped = number.contains(",")
+  }
+
+  func render(_ progress: Double) -> String {
+    let current = value * max(0, min(1, progress))
+    let body: String
+    if grouped {
+      let formatter = NumberFormatter()
+      formatter.numberStyle = .decimal
+      formatter.locale = Locale(identifier: "en_US")
+      formatter.minimumFractionDigits = decimals
+      formatter.maximumFractionDigits = decimals
+      body = formatter.string(from: NSNumber(value: current)) ?? String(format: "%.\(decimals)f", current)
+    } else {
+      body = String(format: "%.\(decimals)f", current)
+    }
+    return prefix + body + suffix
+  }
+}
+
+/// Pressing a source squeezes it a little, then it springs back as the detail page opens.
+struct CellPressStyle: ButtonStyle {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .scaleEffect(!reduceMotion && configuration.isPressed ? 0.95 : 1)
+      .animation(configuration.isPressed ? .easeOut(duration: 0.1) : .spring(response: 0.35, dampingFraction: 0.55), value: configuration.isPressed)
+  }
+}
+
 // MARK: - Tasks
 
 struct TaskTotal: View {
@@ -1610,16 +2169,25 @@ struct TaskTotal: View {
   let tokenUnit: String
   /// A narrow panel keeps just the money; each task row still shows its tokens.
   var showsTokens = true
+  var replayToken = 0
 
+  /// Today's total reads larger than each task's own amount below it.
   var body: some View {
     let money = tasks.reduce(0) { $0 + $1.value }
     let tokens = tasks.reduce(0) { $0 + $1.tokens }
-    (Text(Fmt.money(money)).foregroundColor(Palette.ink).fontWeight(.semibold)
-      + Text(showsTokens ? " · \(Fmt.tokens(tokens)) \(tokenUnit)" : ""))
-      .font(.system(size: 11.5))
-      .foregroundStyle(Palette.ink3)
-      .monospacedDigit()
-      .lineLimit(1)
+    // Tokens first, then the amount: the amount ends flush with the task amounts below, so the
+    // two columns line up. Without tokens (a narrow panel) the amount alone sits at the right.
+    HStack(alignment: .firstTextBaseline, spacing: 0) {
+      if showsTokens {
+        Text("\(Fmt.tokens(tokens)) \(tokenUnit) · ")
+          .font(.system(size: 11.5))
+          .foregroundStyle(Palette.ink3)
+          .monospacedDigit()
+      }
+      CountUpText(text: Fmt.money(money), font: NumFont.font(19), replayToken: replayToken)
+        .foregroundStyle(Palette.ink)
+    }
+    .lineLimit(1)
   }
 }
 
@@ -1675,23 +2243,28 @@ struct TaskRow: View {
     Button(action: action) {
       HStack(alignment: .center, spacing: 10) {
         TaskIcon(svg: task.logoSvg, running: task.running)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(task.title)
-            .font(.system(size: 12.5, weight: .semibold))
-            .tracking(-0.1)
-            .lineLimit(1)
-          metaLine
+        // Two baseline-aligned lines: the amount sits on the title's baseline and the share on
+        // the meta line's, so the number font and the system text read as one row.
+        VStack(alignment: .leading, spacing: 0) {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(task.title)
+              .font(.system(size: 12.5, weight: .semibold))
+              .tracking(-0.1)
+              .lineLimit(1)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            CountUpText(text: Fmt.money(task.value), font: NumFont.font(14), replayToken: store.fillToken, delay: 0.12)
+              .fixedSize()
+          }
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            metaLine
+              .frame(maxWidth: .infinity, alignment: .leading)
+            Text("\(Int((share * 100).rounded()))%")
+              .font(NumFont.font(11, .medium))
+              .foregroundStyle(Palette.ink3)
+              .monospacedDigit()
+              .fixedSize()
+          }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        VStack(alignment: .trailing, spacing: 1) {
-          Text(Fmt.money(task.value))
-            .font(.system(size: 13.5, weight: .semibold))
-            .tracking(-0.3)
-          Text("\(Int((share * 100).rounded()))%")
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(Palette.ink3)
-        }
-        .monospacedDigit()
       }
       .padding(EdgeInsets(top: 6, leading: 10, bottom: 8, trailing: 10))
       .background(alignment: .bottomLeading) { shareBar }
@@ -1710,7 +2283,7 @@ struct TaskRow: View {
       let width = geometry.size.width - 48 - 10
       ZStack(alignment: .leading) {
         Capsule().fill(Palette.ink5)
-        Capsule().fill(Palette.ink3).frame(width: max(4, width * share))
+        ShareFill(running: task.running && !reduceMotion).frame(width: max(4, width * share))
       }
       .frame(width: max(0, width), height: 2)
       .offset(x: 48, y: geometry.size.height - 3 - 2)
@@ -1743,6 +2316,32 @@ struct TaskRow: View {
   }
 }
 
+/// A task's share of today's value. While it runs, a soft highlight travels along the bar:
+/// tokens are being spent right now.
+struct ShareFill: View {
+  let running: Bool
+
+  var body: some View {
+    if running {
+      TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+        let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+        Capsule()
+          .fill(LinearGradient(
+            stops: [
+              .init(color: Palette.ink3, location: 0),
+              .init(color: Palette.ink, location: 0.5),
+              .init(color: Palette.ink3, location: 1),
+            ],
+            startPoint: UnitPoint(x: -1 + 2 * t, y: 0.5),
+            endPoint: UnitPoint(x: 2 * t, y: 0.5)
+          ))
+      }
+    } else {
+      Capsule().fill(Palette.ink3)
+    }
+  }
+}
+
 struct TaskIcon: View {
   let svg: String
   let running: Bool
@@ -1751,7 +2350,8 @@ struct TaskIcon: View {
 
   var body: some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 9, style: .circular).fill(Palette.ink5)
+      RoundedRectangle(cornerRadius: 9, style: .circular).fill(Palette.tile)
+      RoundedRectangle(cornerRadius: 9, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5)
       LogoView(svg: svg, size: 13)
       if running && !reduceMotion {
         RoundedRectangle(cornerRadius: 11, style: .circular)
@@ -1832,10 +2432,7 @@ struct MonthCard: View {
             .font(.system(size: 10.5))
             .foregroundStyle(Palette.ink3)
             .lineLimit(1)
-          Text(Fmt.money(total))
-            .font(.system(size: 17, weight: .bold))
-            .tracking(-0.5)
-            .monospacedDigit()
+          CountUpText(text: Fmt.money(total), font: NumFont.font(22), replayToken: store.fillToken, delay: 0.2)
             .lineLimit(1)
         }
         .fixedSize()
@@ -2097,13 +2694,11 @@ struct DetailPage: View {
           RingsView(rings: detail.rings, fillToken: store.fillToken, size: ring)
           VStack(spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-              Text(detail.bigValue)
-                .font(.system(size: (detail.bigCompact ? 36 : 50) * ring / 188, weight: .light))
-                .tracking(detail.bigCompact ? -1.4 : -2.2)
+              CountUpText(text: detail.bigValue, font: NumFont.font((detail.bigCompact ? 48 : 68) * ring / 188, .medium), replayToken: store.fillToken)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
               if let unit = detail.bigUnit {
-                Text(unit).font(.system(size: 17 * ring / 188)).foregroundStyle(Palette.ink3)
+                Text(unit).font(NumFont.font(24 * ring / 188, .medium)).foregroundStyle(Palette.ink3)
               }
             }
             .monospacedDigit()
@@ -2332,8 +2927,7 @@ struct UsagePage: View {
 
   private func bigNumber(_ text: String) -> some View {
     Text(text)
-      .font(.system(size: 28, weight: .semibold))
-      .tracking(-1)
+      .font(NumFont.font(34))
       .monospacedDigit()
       .lineLimit(1)
       .minimumScaleFactor(0.7)
@@ -2388,7 +2982,7 @@ struct UsagePage: View {
             .font(.system(size: 10.5))
             .foregroundStyle(Palette.ink2)
             Text(Fmt.money(byHarness[harness.index]))
-              .font(.system(size: 13, weight: .semibold))
+              .font(NumFont.font(16))
               .padding(.leading, 11)
           }
           .monospacedDigit()
@@ -2549,7 +3143,7 @@ struct ManagePage: View {
             .lineLimit(1)
             .padding(.horizontal, 12)
             .frame(height: 26)
-            .background(Capsule().fill(Palette.ink))
+            .background(Capsule().fill(Palette.cta))
         }
         .buttonStyle(PressScaleStyle())
         .keyboardShortcut(.defaultAction)
@@ -2602,12 +3196,12 @@ struct ManagePage: View {
             Toggle("", isOn: Binding(get: { view.settings.lowAlert }, set: { Bridge.emitSettings(["lowAlert": $0]) }))
               .toggleStyle(.switch).controlSize(.small).labelsHidden()
           }
-          Divider().overlay(Palette.line)
+          Hairline()
           settingRow(store.s("privacy"), nil) {
             Toggle("", isOn: Binding(get: { view.settings.privacy }, set: { Bridge.emitSettings(["privacy": $0]) }))
               .toggleStyle(.switch).controlSize(.small).labelsHidden()
           }
-          Divider().overlay(Palette.line)
+          Hairline()
           // The picker moves under its title when the two labels don't fit beside it.
           ViewThatFits(in: .horizontal) {
             settingRow(store.s("usageScope"), nil) { scopePicker }
@@ -2915,6 +3509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let decoder = JSONDecoder()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    NumFont.register()
     controller = StatusController(store: store)
     let args = CommandLine.arguments
     if let index = args.firstIndex(of: "--preview"), index + 1 < args.count {

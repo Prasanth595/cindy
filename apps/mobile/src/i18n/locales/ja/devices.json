@@ -754,7 +754,8 @@
     "portraitNumber": "アバター {{number}}",
     "uploadAvatar": "アバターをアップロード",
     "avatarFailed": "この画像を開けません。別の画像を選んでください。",
-    "nameTaken": "この名前は使用されています。別の名前を選んでください。"
+    "nameTaken": "この名前は使用されています。別の名前を選んでください。",
+    "home": "メインのパソコン"
   },
   "companionImport": {
     "title": "仲間をインポート",
@@ -909,6 +910,22 @@
     "timeout": "「{{device}}」の準備がまだ終わっていません。そのパソコンで Cindy が開いていてオンラインか確認して、もう一度お試しください。",
     "conflict": "{{name}} はすでに「{{device}}」に移っています。",
     "switchFailed": "メインのパソコンを変更できません。しばらくしてからもう一度お試しください。",
-    "unknownDevice": "別のパソコン"
+    "unknownDevice": "別のパソコン",
+    "runsOn": "「{{device}}」で実行中",
+    "homeTitle": "メインのパソコン",
+    "moveTo": "「{{device}}」に移す",
+    "moveTitle": "{{name}} を「{{device}}」で実行しますか？",
+    "moveDescription": "今後 {{name}} は「{{device}}」で実行され、チャット履歴も一緒に移ります。作業ディレクトリ、接続、ローカルのファイルは元のパソコンに残ります。",
+    "moveAction": "「{{device}}」に移す",
+    "moving": "{{name}} を「{{device}}」に移しています…",
+    "busyTitle": "{{name}} はまだ返信中です",
+    "busyDescription": "この返信が終わってから「{{device}}」に移すか、返信を止めてすぐに移せます。",
+    "busyWait": "終わってから移す",
+    "busyStop": "止めて移す",
+    "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移してください",
+    "switchConflict": "{{name}} のメインのパソコンはすでに変更されているため、移しませんでした",
+    "homeOutdated": "メインのパソコン「{{device}}」の Cindy が古いバージョンです。更新するか、そのパソコンで変更してください",
+    "homeUnreachable": "「{{device}}」に接続できません。オンラインで「同じアカウントのデバイスからの操作を許可」をオンにする必要があります",
+    "sendUnreachable": "メッセージがメインのパソコン「{{device}}」に届いていません。オフラインの可能性があります。別のパソコンで続けられます。"
   }
 }

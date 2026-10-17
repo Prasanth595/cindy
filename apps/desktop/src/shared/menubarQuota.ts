@@ -77,6 +77,8 @@ export interface MenubarSourceCell {
   reserve: boolean;
   /** Outline the tube: the source with the most room left. */
   emphasized: boolean;
+  /** A running task on this computer is drawing on this source; its liquid ripples. */
+  active: boolean;
   when: string;
   whenLevel: MenubarLevel;
   accessibilityLabel: string;
@@ -190,6 +192,8 @@ export interface MenubarView {
   updatedAtMs: number | null;
   headlinePrimary: string;
   headlineSecondary: string | null;
+  /** The second line is about sources running low or resetting, so it carries the warning mark. */
+  headlineAlert: boolean;
   sources: MenubarSourceCell[];
   details: Record<string, MenubarDetail>;
   taskSummary: string;

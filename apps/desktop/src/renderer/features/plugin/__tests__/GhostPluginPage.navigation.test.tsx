@@ -158,6 +158,65 @@ async function openFromCatalog() {
 }
 
 describe('plugin page return navigation', () => {
+  // Regression #2871 (98929118d6): the real market-detail install flow must refresh
+  // the current page after an update/replacement. The card helper only checks the
+  // navigation decision; it cannot catch clearing marketDetail in the parent.
+  // Minimal unit input: one installed plugin and either market update state.
+  // Only IPC is faked; page/detail components and the install flow stay real.
+  // File alone: 20 tests, Vitest 5.29s / wall 6.12s on 2026-10-16.
+  it.each(['update-available', 'conflict'] as const)(
+    'keeps the market detail visible and refreshed after %s succeeds',
+    async (installState) => {
+      const installed: InstalledGhost = {
+        manifest: { ...detail.manifest, name: 'Installed Plugin', version: '0.9.0' },
+        dir: path.join('plugins', detail.ghostId),
+        enabled: true,
+        approval: { state: 'approved', revision: 'market-navigation-revision' },
+      };
+      const marketDetail = { ...detail, installState };
+      const refreshedDetail: PluginMarketDetail = {
+        ...detail,
+        installState: 'installed',
+        enabled: true,
+        description: 'Refreshed market details after installation',
+      };
+      window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
+      let installationComplete = false;
+      loadDetail.mockImplementation(async () =>
+        installationComplete ? refreshedDetail : marketDetail,
+      );
+      const install = vi.fn(async () => {
+        installationComplete = true;
+        return {
+          ghost: { ...installed, manifest: { ...installed.manifest, version: detail.version } },
+        };
+      });
+      Object.assign(window.electronAPI.pluginMarket, { install });
+      render(page(`/plugins?market=${detail.pluginId}`));
+      await screen.findByRole('heading', { level: 1, name: detail.name });
+      const marketPage = screen.getByRole('main');
+
+      fireEvent.click(screen.getByRole('button', {
+        name: installState === 'conflict'
+          ? 'settings.ghosts.market.replace'
+          : 'settings.ghosts.market.update',
+      }));
+
+      await screen.findByText(refreshedDetail.description!);
+      expect(install).toHaveBeenCalledWith(detail.pluginId, expect.objectContaining({
+        expectedReleaseId: detail.releaseId,
+        expectedManifest: detail.manifest,
+        expectedInstalledApproval: 'approved:market-navigation-revision',
+        allowSourceReplacement: installState === 'conflict',
+      }));
+      expect(screen.getByRole('main')).toBe(marketPage);
+      expect(screen.getByRole('heading', { level: 1, name: detail.name })).toBeTruthy();
+      expect((screen.getByRole('button', {
+        name: 'settings.ghosts.market.installed',
+      }) as HTMLButtonElement).disabled).toBe(true);
+    },
+  );
+
   it.each(['xd-ordinary', 'filo-ordinary'])(
     'updates an ordinary root %s from a local file and offers export in packaged builds',
     async (ghostId) => {

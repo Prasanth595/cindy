@@ -174,7 +174,7 @@ export async function mutationGuard(
 }
 
 /**
- * 写入前(路由锁内)复核:重读该行,任何一条 GUI 守卫不再成立即拒绝。与预检相比多了
+ * 写入前复核:重读该行,任何一条 GUI 守卫不再成立即拒绝。与预检相比多了
  * "已归档 / 已删除"的终态复核 —— 预检后另一窗口归档或删除该会话时,不能把它当作已移动。
  */
 export async function lateGuard(
@@ -207,7 +207,7 @@ export async function setSessionsPinned(
   const changed: SessionOpItem[] = [];
   for (const row of loaded) {
     try {
-      // 终态在路由锁内复核;幂等跳过由 SQL 条件写原子判定,覆盖未共用此锁的窗口写入。
+      // 终态与幂等跳过由同一条 SQL 条件写原子判定,无需重入当前 IM 回合持有的路由锁。
       // 锁外预读的 pinnedAt 可能已被另一窗口改变,不能据此决定跳过。
       const updated = await deps.updateSession(row.id, { pinnedAt: params.pinned ? new Date().toISOString() : null }, {
         beforeWrite: () => lateGuard(deps, row.id, { allowArchived: false, checkRuntime: false }),

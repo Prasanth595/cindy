@@ -423,7 +423,9 @@ describe('chat interaction controls', () => {
     fireEvent.click(chip);
     const earlierChip = () => within(screen.getByText('Earlier reply').closest('article')!).getByRole('button', { name: k('reactionCount') });
     await waitFor(() => expect(earlierChip().getAttribute('aria-pressed')).toBe('true'));
-    expect(earlierChip().textContent).toContain('2');
+    // The message refresh sets `me` before the separate reactors read settles
+    // from avatar placeholders back to the authoritative count.
+    await waitFor(() => expect(earlierChip().textContent).toContain('2'));
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'older', emoji: '👍', present: true });
     expect(mocks.thread.mock.calls.map(([input]) => input.before)).toEqual([undefined, 100, undefined, 5]);
     expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();

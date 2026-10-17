@@ -754,7 +754,8 @@
     "portraitNumber": "头像 {{number}}",
     "uploadAvatar": "上传头像",
     "avatarFailed": "无法打开此图片，请换一张。",
-    "nameTaken": "已有同名伙伴，请换一个名字。"
+    "nameTaken": "已有同名伙伴，请换一个名字。",
+    "home": "主力电脑"
   },
   "companionImport": {
     "title": "导入伙伴",
@@ -909,6 +910,22 @@
     "timeout": "「{{device}}」还没准备好。请确认那台电脑上的 Cindy 已打开并联网，再试一次。",
     "conflict": "{{name}} 已经换到「{{device}}」继续了。",
     "switchFailed": "暂时无法更换主力电脑，请稍后再试。",
-    "unknownDevice": "另一台电脑"
+    "unknownDevice": "另一台电脑",
+    "runsOn": "在「{{device}}」上运行",
+    "homeTitle": "主力电脑",
+    "moveTo": "换到「{{device}}」",
+    "moveTitle": "把 {{name}} 换到「{{device}}」运行？",
+    "moveDescription": "从现在起 {{name}} 在「{{device}}」上运行，对话记录一起带过去。工作目录、连接和本机文件留在原来的电脑上。",
+    "moveAction": "换到「{{device}}」",
+    "moving": "正在把 {{name}} 换到「{{device}}」…",
+    "busyTitle": "{{name}} 还在回复",
+    "busyDescription": "可以等这一轮结束后再换到「{{device}}」，也可以停止这一轮马上换。",
+    "busyWait": "等回复完再换",
+    "busyStop": "停止并换",
+    "transferBusy": "{{name}} 还在回复，等这一轮结束再换电脑",
+    "switchConflict": "{{name}} 的主力电脑已经变了，这次没有更换",
+    "homeOutdated": "主力电脑「{{device}}」上的 Cindy 版本较旧，请先更新它，或在那台电脑上更换",
+    "homeUnreachable": "现在连不上「{{device}}」，它需要在线并开启「允许同账号设备控制本机」",
+    "sendUnreachable": "消息还没送到主力电脑「{{device}}」，它可能已离线。可以换一台电脑继续。"
   }
 }

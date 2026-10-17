@@ -20,6 +20,8 @@ import { isBotGroupUnread, subscribeBotReadState, getBotLastReadAtMap } from '@/
 import { useBotUnreadSync } from '@/features/bots/useBotUnreadSync';
 import { useRemoteBotSync, useRemoteBots } from '@/features/bots/useRemoteBots';
 import { isRemoteBotUnread } from '@/features/bots/remoteBotRoster';
+import { useCompanionCloud } from '@/features/bots/companionCloudStore';
+import { cloudRemoteBots, withoutShadowedBots } from '@/features/bots/companionCloudPresentation';
 import { publishNavigationAttention } from '@/lib/navigationAttentionStore';
 const readRevision = () => JSON.stringify(getBotLastReadAtMap());
 const log = createLogger('AppBadgeAttentionSync');
@@ -29,10 +31,14 @@ export function AppBadgeAttentionSync() {
   useAuth();
   useBotUnreadSync();
   useRemoteBotSync();
-  const bots = useBotProfiles();
+  const cloud = useCompanionCloud();
+  // Count each companion once, where it runs (same rows as the teammate list).
+  const allBots = useBotProfiles();
+  const bots = useMemo(() => withoutShadowedBots(allBots, cloud), [allBots, cloud]);
   const unread = useBotUnreadCounts();
   const { groups } = useBotGroupList();
-  const remoteBots = useRemoteBots();
+  const rosterRemoteBots = useRemoteBots();
+  const remoteBots = useMemo(() => cloudRemoteBots(cloud, rosterRemoteBots), [cloud, rosterRemoteBots]);
   useSyncExternalStore(subscribeBotReadState, readRevision, readRevision);
   const localTeammates = bots.filter(bot => bot.status !== 'archived' && bot.status !== 'deleting' && !bot.hiddenAt && (unread[bot.id] ?? 0) > 0).length
     + groups.filter(group => !group.archived && isBotGroupUnread(group)).length;

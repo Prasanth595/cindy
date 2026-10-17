@@ -95,7 +95,7 @@ describe('Shared create project picker', () => {
       'getProjectPickerEmptyLabelKey(workspacePrompt)',
     );
     // 2026-07-19 恢复 worktree 入口(用户裁决,488cb33 误删回归;详见
-    // newMakerCreateAgentVisualContract):路由允许且仅允许一个 advancedOnly
+    // CREATE AGENT 视觉规则):路由允许且仅允许一个 advancedOnly
     // 变体的 WorktreeChipsRow(2026-07-28 起渲染 [分支 chip][worktree 勾选 chip],
     // 齿轮 popover 已移除;folderPickerMode="project" 仅为其 advancedHidden
     // 语义服务),不回退 folder chip 版;项目选择仍由 mode pill 独占。

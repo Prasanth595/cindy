@@ -2,7 +2,11 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWallpaperAsset } from '../useWallpaperAsset';
-import type { WallpaperId, WallpaperDownloadProgress } from '@/../shared/appearanceSettings';
+import {
+  SELECTABLE_WALLPAPER_IDS,
+  type WallpaperId,
+  type WallpaperDownloadProgress,
+} from '@/../shared/appearanceSettings';
 import manifest from '@/../shared/wallpaper-video-manifest.json';
 
 const image = vi.fn();
@@ -81,7 +85,7 @@ describe('on-demand wallpaper assets', () => {
     unmount();
     expect(progressListeners.size).toBe(0);
   });
-  it('does not fetch absent/custom scenes or disabled video, and requests only the selected image', async () => {
+  it('keeps the current still catalog offline and downloads only selected manifest-backed media', async () => {
     const { rerender } = renderHook(
       ({ id, enabled }: { id: WallpaperId; enabled: boolean }) => {
         useWallpaperAsset(id, 'image', true);
@@ -89,7 +93,9 @@ describe('on-demand wallpaper assets', () => {
       },
       { initialProps: { id: 'none' as WallpaperId, enabled: false } },
     );
-    rerender({ id: 'custom', enabled: false });
+    for (const id of SELECTABLE_WALLPAPER_IDS) {
+      if (!Object.hasOwn(manifest, id)) rerender({ id, enabled: true });
+    }
     expect(image).not.toHaveBeenCalled();
     expect(video).not.toHaveBeenCalled();
     rerender({ id: 'cindy-window', enabled: false });

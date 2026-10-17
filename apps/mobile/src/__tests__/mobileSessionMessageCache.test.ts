@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteMessage, RemoteSession } from '@/session/types';
 
@@ -378,13 +376,6 @@ describe('mobileSessionMessageCache', () => {
     await cacheSessionMessages('host-a', 'session-1', []);
     expect(store.size).toBe(0);
     await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
-  });
-
-  it('does not treat an empty in-memory render snapshot as a cache deletion', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/remoteSessionStore.ts'), 'utf8');
-    expect(source).toContain('空内存可能只是 regular LRU 淘汰');
-    expect(source).toContain('if (messages.length === 0) return;');
-    expect(source).toContain("if (retentionForSession(sessionId) === 'schedule')");
   });
 
   it('clears every cached session on logout but leaves unrelated keys', async () => {

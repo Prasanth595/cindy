@@ -1,4 +1,5 @@
 import { todoForCaller } from '../maker-ipc/botTodoAccess.js';
+import { activeCompanionCloud } from '../companion-cloud/runtime.js';
 import { TodoError, queryTodoItems, type TodoListQuery, type TodoPatch, type preflightTodoEvents } from '@cindy/maker-shared/teammate-todo';
 import { t } from '../i18n.js';
 import { executeTaskTags } from '../localDb/ipc/taskTags.js';
@@ -943,6 +944,25 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           }
           if (!owned) throw new Error('当前调用未绑定伙伴主任务');
           return owned.botId;
+        },
+      },
+      // 伙伴的主力电脑:与界面同一条路径(本机交出 / 请主力电脑交出 / 在这台电脑继续)。
+      teammateHome: {
+        get: async ({ teammateId }) => {
+          const runtime = activeCompanionCloud();
+          if (!runtime) return { ok: false, errorCode: 'NOT_ENABLED', message: 'Cloud companions are not available on this server' };
+          const choices = await runtime.homeChoices(teammateId);
+          if (choices.reason === 'NOT_FOUND') return { ok: false, errorCode: 'NOT_FOUND', message: 'No such teammate in this account' };
+          return { ok: true, teammateId, mode: choices.mode, ...(choices.reason ? { reason: choices.reason } : {}),
+            home: choices.homeDeviceId ? { deviceId: choices.homeDeviceId, name: choices.homeName ?? '', isSelf: choices.mode === 'local' } : null,
+            choices: choices.targets.map(target => ({ deviceId: target.deviceId, name: target.name, isSelf: target.isSelf === true })) };
+        },
+        move: async ({ teammateId, targetDeviceId, whenBusy }) => {
+          const runtime = activeCompanionCloud();
+          if (!runtime) return { ok: false, errorCode: 'NOT_ENABLED', message: 'Cloud companions are not available on this server' };
+          const result = await runtime.switchHome(teammateId, targetDeviceId, whenBusy ? { whenBusy } : undefined);
+          return result.ok ? { ok: true, teammateId, homeDeviceId: targetDeviceId }
+            : { ok: false, errorCode: result.code, message: `The teammate did not move (${result.code})` };
         },
       },
       botProfiles: {

@@ -68,6 +68,7 @@ describe('provider group store', () => {
       expect(store.readProviderGroup(providerId)).toEqual(next);
       // 模拟请求被账号边界拒绝，IPC 根本没有执行 pruneBindings；切回后先把成员加回来。
       await store.writeProviderGroup(providerId, initial);
+      // reset-modules: verify binding cleanup survives a fresh process after the account boundary.
       vi.resetModules();
       const restarted = await import('../bindings.js');
       expect(restarted.readProviderGroupBinding(sessionId)).toBeNull();
@@ -159,6 +160,7 @@ describe('provider group store', () => {
     const file = path.join(tmpDir, 'provider-group-prefs.json');
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ reshareCleanups: { 'share:a1': token } });
     // 重新创建存储实例，不复用缓存，证明清理来自磁盘。
+    // reset-modules: reload the store to prove the cleanup token is restored from disk.
     vi.resetModules();
     const restarted = await import('../store.js');
     expect(restarted.listProviderGroupReshareCleanups()['share:a1']).toBe(token);
@@ -267,6 +269,7 @@ describe('provider group store', () => {
       label: 'legacy-provider-group',
     });
     legacy.writePatch({ groups: { ...legacy.read().groups, [providerId]: config } });
+    // reset-modules: reload bindings after a legacy writer changes the on-disk schema.
     vi.resetModules();
     const restarted = await import('../bindings.js');
     expect(store.listProviderGroupBindingCleanups()[providerId]).toEqual(pending);
@@ -423,6 +426,7 @@ describe('provider group bindings', () => {
     expect(bindings.readProviderGroupBinding('scope-task')).toBeNull();
     expect(bindings.isProviderGroupReleased('scope-task', { providerId: 'anthropic' })).toBe(true);
     // 切回原账号并重建运行时，解除记录仍须保留，不能把任务重新自动纳入。
+    // reset-modules: account switch must be observed by a newly loaded bindings runtime.
     vi.resetModules();
     const restarted = await import('../bindings.js');
     expect(restarted.readProviderGroupBinding('scope-task')).toBeNull();
@@ -523,6 +527,7 @@ describe('provider group bindings', () => {
       log: { info: () => {}, warn: () => {} },
     });
     legacy.writePatch({ sessions: { ...legacy.read().sessions, 'legacy-release': { providerId: 'legacy-group', memberKey: 'local', at: 20 } } });
+    // reset-modules: reload bindings to exercise compatibility with the older writer's persisted shape.
     vi.resetModules();
     const restarted = await import('../bindings.js');
     expect(restarted.readProviderGroupBinding('legacy-release')).toBeNull();

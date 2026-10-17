@@ -3,9 +3,10 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WallpaperSection } from '../WallpaperSection';
-import { DEFAULT_APPEARANCE_SETTINGS } from '@/../shared/appearanceSettings';
+import { DEFAULT_APPEARANCE_SETTINGS, type WallpaperId } from '@/../shared/appearanceSettings';
 
 const state = vi.hoisted(() => ({
+  id: 'cindy-window' as WallpaperId,
   pending: false,
   failed: false,
   progress: 0,
@@ -16,7 +17,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/hooks/useWallpaperSettings', () => ({
   useWallpaperSettings: () => ({
     ...DEFAULT_APPEARANCE_SETTINGS,
-    wallpaperId: 'cindy-window',
+    wallpaperId: state.id,
     visibility: 1,
     downloadPending: state.pending,
     downloadFailed: state.failed,
@@ -31,6 +32,7 @@ vi.mock('@/hooks/useWallpaperSettings', () => ({
   }),
 }));
 beforeEach(() => {
+  state.id = 'cindy-window';
   state.pending = false;
   state.failed = false;
   state.progress = 0;
@@ -51,74 +53,86 @@ afterEach(() => {
 });
 
 describe('wallpaper download feedback', () => {
-  it('shows pending work only over the selected thumbnail, then removes it on completion', () => {
+  it('shows progress for the selected CDN wallpaper while keeping its tile visible', () => {
     state.pending = true;
     const { rerender } = render(<WallpaperSection />);
-    const selected = screen.getByRole('radio', {
-      name: 'settings.appearance.wallpaper.options.cindy-window',
+    const status = screen.getByRole('progressbar', {
+      name: 'settings.appearance.wallpaper.downloading',
     });
-    const status = within(selected).getByRole('progressbar');
+    expect(
+      screen
+        .getByRole('radio', {
+          name: 'settings.appearance.wallpaper.options.cindy-window',
+        })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
     expect(screen.getAllByRole('progressbar')).toEqual([status]);
     expect(status.getAttribute('aria-valuenow')).toBe('0');
-    expect(selected.getAttribute('aria-busy')).toBe('true');
-    // The status remains available to assistive technology without a visible text row.
-    const description = within(status).getByText('settings.appearance.wallpaper.downloading');
-    expect(description.classList.contains('sr-only')).toBe(true);
-    expect(selected.getAttribute('aria-describedby')).toBe(description.id);
-    expect(
-      within(
-        screen.getByRole('radio', {
-          name: 'settings.appearance.wallpaper.options.cindy-studio',
-        }),
-      ).queryByRole('progressbar'),
-    ).toBeNull();
     for (const progress of [0.25, 0.75, 1]) {
       state.progress = progress;
       rerender(<WallpaperSection />);
       expect(status.getAttribute('aria-valuenow')).toBe(String(progress * 100));
-      const fill = status.querySelector<HTMLElement>('[aria-hidden="true"]')!;
-      expect(fill.classList.contains('origin-bottom')).toBe(true);
-      expect(fill.style.transform).toBe(`scaleY(${progress})`);
+      expect(
+        within(screen.getByRole('status')).getByText(String(progress * 100) + '%'),
+      ).toBeTruthy();
     }
     state.pending = false;
     rerender(<WallpaperSection />);
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.queryByRole('progressbar')).toBeNull();
-    expect(selected.hasAttribute('aria-busy')).toBe(false);
-    expect(selected.hasAttribute('aria-describedby')).toBe(false);
   });
 
-  it('retries from the failed thumbnail while other thumbnails still change the selection', () => {
+  it('keeps manual retry reachable for the selected scene and lets new tiles change selection', () => {
     state.failed = true;
     const { rerender } = render(<WallpaperSection />);
-    const selected = screen.getByRole('radio', {
-      name: 'settings.appearance.wallpaper.options.cindy-window',
-    });
-    expect(within(selected).getByRole('status').textContent).toContain('wallpaper.downloadFailed');
-    expect(selected.title).toBe('settings.appearance.wallpaper.retryDownload');
-    expect(
-      screen.queryByRole('button', { name: 'settings.appearance.wallpaper.retryDownload' }),
-    ).toBeNull();
-    fireEvent.click(selected);
+    expect(screen.getByRole('status').textContent).toContain('wallpaper.downloadFailed');
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'settings.appearance.wallpaper.retryDownload',
+      }),
+    );
     expect(state.retry).toHaveBeenCalledOnce();
     expect(state.select).not.toHaveBeenCalled();
     fireEvent.click(
       screen.getByRole('radio', {
-        name: 'settings.appearance.wallpaper.options.cindy-studio',
+        name: 'settings.appearance.wallpaper.options.cindy-whisper',
       }),
     );
-    expect(state.select).toHaveBeenCalledWith('cindy-studio');
+    expect(state.select).toHaveBeenCalledWith('cindy-whisper');
     expect(state.retry).toHaveBeenCalledOnce();
 
     state.pending = true;
     rerender(<WallpaperSection />);
-    expect(selected.hasAttribute('title')).toBe(false);
-    expect(selected.getAttribute('aria-busy')).toBe('true');
-    fireEvent.click(selected);
-    expect(state.retry).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole('button', {
+        name: 'settings.appearance.wallpaper.retryDownload',
+      }),
+    ).toBeNull();
+    expect(screen.getByRole('progressbar')).toBeTruthy();
     state.pending = false;
     state.failed = false;
     rerender(<WallpaperSection />);
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('does not show stale CDN feedback over an offline still', () => {
+    state.id = 'cindy-whisper';
+    state.pending = true;
+    state.failed = true;
+    render(<WallpaperSection />);
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(
+      screen.queryByRole('button', {
+        name: 'settings.appearance.wallpaper.retryDownload',
+      }),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole('radio', {
+          name: 'settings.appearance.wallpaper.options.cindy-whisper',
+        })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
   });
 });

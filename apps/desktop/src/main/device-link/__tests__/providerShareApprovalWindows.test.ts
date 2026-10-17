@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ scope: 'owner-a', boundaryPending: false, owned: [] as unknown[] }));
 const clipboard = vi.hoisted(() => ({ remember: vi.fn() }));
@@ -22,6 +22,8 @@ vi.mock('../providerShareApi.js', () => ({
 
 type Host = typeof import('../providerShareHost');
 let dir: string;
+let ownerA: string;
+let ownerB: string;
 let host: Host;
 let windows: typeof import('../providerShareApprovalWindows');
 const events = () => ({ changed: vi.fn(), requested: vi.fn(), watchedRequested: vi.fn(), revoked: vi.fn(), reconcile: vi.fn() });
@@ -36,21 +38,31 @@ const filePath = () => path.join(dir, state.scope, 'provider-share-approval-wind
 const assertCurrent = () => { if (state.boundaryPending) throw new Error('account boundary'); };
 
 async function loadProcess() {
+  // reset-modules: explicitly simulate a complete process restart in persistence regressions, not per-test preparation.
   vi.resetModules();
   windows = await import('../providerShareApprovalWindows');
   windows.configureProviderShareApprovalWindows({ filePath, scopeKey: () => state.scope });
   host = await import('../providerShareHost');
 }
 
-beforeEach(async () => {
+beforeAll(async () => {
+  windows = await import('../providerShareApprovalWindows');
+  host = await import('../providerShareHost');
+});
+
+beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-approval-window-'));
-  state.scope = 'owner-a';
+  // Host teardown retains state by account for runtime reconnection. Distinct
+  // fake accounts keep cases isolated without reloading the module graph.
+  ownerA = path.basename(dir) + '-a';
+  ownerB = path.basename(dir) + '-b';
+  state.scope = ownerA;
   state.boundaryPending = false;
   state.owned = [];
   clipboard.remember.mockReset();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-10-15T08:00:00Z'));
-  await loadProcess();
+  windows.configureProviderShareApprovalWindows({ filePath, scopeKey: () => state.scope });
 });
 
 afterEach(() => {
@@ -113,7 +125,7 @@ describe('approval ownership across a complete application restart', () => {
     await loadProcess();
     const identified = { ...request, linkId: LINK_A };
     state.owned = [{ ...ownedShare, requests: [identified] }];
-    state.scope = 'owner-b';
+    state.scope = ownerB;
     const other = events();
     const readWatchedShares = vi.fn(async () => [{ ...ownedShare, requests: [identified] }]);
     host.startProviderShareHost(other, { readWatchedShares });
@@ -121,7 +133,7 @@ describe('approval ownership across a complete application restart', () => {
     expect(other.requested).toHaveBeenCalledWith(identified, expect.anything(), false);
     expect(readWatchedShares).not.toHaveBeenCalled();
     host.stopProviderShareHost();
-    state.scope = 'owner-a';
+    state.scope = ownerA;
     vi.setSystemTime(Date.now() + windows.PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1);
     const expired = events();
     host.startProviderShareHost(expired, { readWatchedShares });
@@ -202,14 +214,14 @@ describe('approval ownership across a complete application restart', () => {
     await host.quietProviderShareRequests('anthropic');
     host.stopProviderShareHost();
     await loadProcess();
-    state.scope = 'owner-b';
+    state.scope = ownerB;
     state.owned = [ownedShare];
     const other = events();
     host.startProviderShareHost(other);
     await host.refreshProviderShareHost('other-account');
     expect(other.requested).toHaveBeenCalledWith(request, expect.anything(), false);
     host.stopProviderShareHost();
-    state.scope = 'owner-a';
+    state.scope = ownerA;
     const original = events();
     host.startProviderShareHost(original);
     await host.refreshProviderShareHost('original-account');
@@ -275,7 +287,7 @@ describe('approval ownership storage', () => {
     const originalFile = filePath();
     const until = Date.now() + windows.PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
     const save = windows.updateProviderShareApprovalWindows((current) => ({ ...current, quietUntil: { anthropic: until } }), assertCurrent);
-    state.scope = 'owner-b';
+    state.scope = ownerB;
     await expect(save).rejects.toThrow('Could not save provider share approval ownership');
     expect(fs.existsSync(originalFile)).toBe(false);
     expect(fs.existsSync(filePath())).toBe(false);

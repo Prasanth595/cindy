@@ -71,6 +71,7 @@ import {
 import { useBotDelegations } from './botDelegationLive';
 import { isBotPrimaryGeneratedFile } from './botGeneratedArtifacts';
 import { useBotProfiles } from './botStore';
+import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import {
   buildWorkbenchProjectOptions,
   buildWorkbenchTiles,
@@ -972,8 +973,8 @@ function ProjectCapsules({
 }) {
   const { t } = useTranslation();
   const remove = useCallback(
-    (dirPath: string) => {
-      void window.electronAPI?.localDb?.bots?.workbench?.removeDirectory(botId, dirPath).catch(() => {});
+    (dirPath: string, deviceId?: string) => {
+      void window.electronAPI?.localDb?.bots?.workbench?.removeDirectory(botId, dirPath, deviceId).catch(() => {});
     },
     [botId],
   );
@@ -981,19 +982,20 @@ function ProjectCapsules({
     <div className="flex flex-wrap items-center gap-2 px-5 pt-3">
       {directories.map((dir) => (
         <span
-          key={dir.path}
-          title={dir.exists ? dir.path : t('bots.workbench.dirMissing')}
+          key={`${dir.deviceId ?? ''}:${dir.path}`}
+          title={dir.deviceId ? dir.path : dir.exists ? dir.path : t('bots.workbench.dirMissing')}
           className={cn(
             'inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-chip)] pl-3 pr-1 text-13',
-            dir.exists ? 'text-[var(--text-primary)]' : 'text-[var(--text-danger)]',
+            dir.deviceId ? 'text-[var(--text-secondary)]' : dir.exists ? 'text-[var(--text-primary)]' : 'text-[var(--text-danger)]',
           )}
         >
           <Folder size={14} strokeWidth={1.8} aria-hidden className="shrink-0" />
           <span className="min-w-0 truncate">{dir.name}</span>
+          {dir.deviceId ? <DirectoryElsewhere deviceId={dir.deviceId} /> : null}
           <Tip text={t('bots.workbench.removeProject', { name: botName, project: dir.name })}>
             <button
               type="button"
-              onClick={() => remove(dir.path)}
+              onClick={() => remove(dir.path, dir.deviceId)}
               aria-label={t('bots.workbench.removeProject', { name: botName, project: dir.name })}
               className={cn(ICON_BUTTON_CLASS, 'size-6 text-[var(--text-tertiary)]')}
             >
@@ -1836,3 +1838,12 @@ function TaskDetail({
     </div>
   );
 }
+
+/** A folder that stayed on the companion's previous computer: reachable there, not here. */
+function DirectoryElsewhere({ deviceId }: { deviceId: string }) {
+  const { t } = useTranslation();
+  const devices = useDeviceLinkDeviceList();
+  const device = devices?.find((candidate) => candidate.deviceId === deviceId)?.name?.trim() || t('bots.cloud.unknownDevice');
+  return <span className="shrink-0 text-12 text-[var(--text-tertiary)]">{t('bots.workbench.dirElsewhere', { device })}</span>;
+}
+

@@ -81,6 +81,21 @@ pnpm --filter mobile test:smoke
 
 ## 专项入口
 
+### 相册选图与 iCloud 原图
+
+iOS 的系统选图器在确认后立即把选中项交给现有附件队列。预览只读取本机小缩略图，
+不等待 iCloud 原图；受限照片权限下拿不到缩略图时保留附件占位，不扩大照片库权限。
+原图由选图器授予的 `NSItemProvider` 在队列的 `resolve` 阶段读取，随后沿用格式转换、
+压缩、上传和持久发件箱交接。发送自动等待原图就绪，不要求用户另行下载或再次发送。
+失败保留选中项供重试，移除／换任务／成功交付后释放原生句柄；取消后的迟到文件只清理不回填。
+临时副本使用 App 私有 `Caches/ImagePicker`，由现有附件生命周期回收。
+
+实现：`modules/cindy-photo-picker/`、`src/session/deferredPhotoLibrary.ts` 与
+`useMobileLocalAttachments.ts`；回归：`deferredPhotoLibrary.test.ts`、
+`useMobileLocalAttachmentsAbandon.test.tsx`。新增原生模块需要冷更，不能作为旧安装包的 OTA
+独立交付；旧原生包缺模块时继续使用 Expo 选图入口。首次发布应随下一次 iOS 原生包交付，
+指纹与存量装机影响仍须按下文冷更门确认。Android 保持系统选图器和既有附件队列。
+
 ### 任务入口与创建失败恢复
 
 - 来源未确认时不挂载远端任务内容，但必须显示读取状态和返回入口；读取失败、空记录或

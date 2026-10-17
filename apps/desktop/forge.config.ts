@@ -1621,7 +1621,13 @@ function buildMacMenubarHelper(platform: ForgePlatform, arch: ForgeArch): void {
   const src = path.join(srcDir, 'macos-menubar-helper.swift');
   const destDir = path.join(__dirname, 'resources', 'tools', 'menubar');
   const dest = path.join(destDir, 'xdt-macos-menubar-helper');
-  const assets = ['wordmark-light.png', 'wordmark-dark.png'];
+  const assets = [
+    'wordmark-light.png',
+    'wordmark-dark.png',
+    'BarlowCondensed-Light.ttf',
+    'BarlowCondensed-Medium.ttf',
+    'BarlowCondensed-SemiBold.ttf',
+  ];
   if (!fs.existsSync(src)) {
     throw new Error(`[forge] macOS menu bar helper source missing at ${src}`);
   }

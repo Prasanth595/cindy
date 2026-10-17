@@ -46,6 +46,7 @@ import { getResolvedMainLocale, mainStringKeysUnder, rawMainString } from '../i1
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
 import { createLogger } from '../logger.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
+import { getSessionProvider, hasSessionProvider } from '../maker-host/session-provider-store.js';
 import { inspectAppDefaultModel } from '../maker-ipc/appDefaultModelControl.js';
 import { applyNewMakerDraftRoute } from '../maker-ipc/register.js';
 import {
@@ -338,7 +339,16 @@ export class MenubarService {
       activities: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
       sessionRow: async (sessionId) => {
         const row = await getSessionRowSnapshot(sessionId);
-        return row ? { title: row.title, model: row.model ?? null, agentKind: row.agentKind ?? null, source: row.source ?? null } : null;
+        return row
+          ? {
+              title: row.title,
+              model: row.model ?? null,
+              agentKind: row.agentKind ?? null,
+              source: row.source ?? null,
+              // The in-memory route is newer than the row (a provider switched this turn).
+              providerId: hasSessionProvider(sessionId) ? getSessionProvider(sessionId) : (row.providerId ?? null),
+            }
+          : null;
       },
       selfDeviceName: deviceName(),
       onError: (scope, error) => log.warn('menu bar source failed', { scope, error: errorMessage(error) }),

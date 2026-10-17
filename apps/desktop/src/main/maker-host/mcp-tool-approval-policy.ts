@@ -240,6 +240,8 @@ export function getDesktopMcpToolApprovalPolicy(
     if (action === 'export_session') return 'prompt-each-time';
     // fork 复制源会话的 workingDir 与权限档派生新会话,与移动工作区同属委派访问,逐次确认。
     if (action === 'fork_session') return 'prompt-each-time';
+    // Moving a teammate hands its running to another computer: the task's permission mode decides.
+    if (action === 'move_teammate_home') return 'prompt-each-time';
     // 发给另一台电脑上的任务：作用范围越出本机，交给当前任务的权限档，不走可信 server 的静默放行。
     if (action === 'send_to_session' && targetsAnotherComputer(sessionIdDevice(args?.target_session_id))) {
       return 'prompt-each-time';

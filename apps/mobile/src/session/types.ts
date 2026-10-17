@@ -310,6 +310,8 @@ export interface InputProjection {
 }
 
 export interface PendingInteraction {
+  /** Controller-only draft retention; never sent to the Host. */
+  retainedDraft?: boolean;
   request: {
     kind?: string;
     requestId?: string;

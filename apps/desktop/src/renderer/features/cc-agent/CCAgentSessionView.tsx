@@ -5930,14 +5930,16 @@ function CCAgentSessionContent({
         </div>
 
         {/* TopRightChipStack:聊天视图右上 chip 浮层。
-          Windows 固定侧栏入口由 MainLayout 承载；当入口位于右侧时在本栈第一行
-          保留等尺寸占位，让消息跳转等 portal chip 自然落到下一行。
+          Windows 固定侧栏入口与远程桌面入口由 MainLayout 承载；任一入口位于右侧时
+          在本栈第一行保留等尺寸占位，面板展开后也不遮住消息跳转等 portal chip。
           MessageStream 内部的 PrevMessageJumpChip 通过 portal 挂入同一栈,自然落到下一行。
           "本次会话改动文件列表"已迁移到 RSB review tab,不再保留浮动按钮 + 滑入抽屉。 */}
         <TopRightChipStack>
           {!isMac &&
             (ownsRoute || showRsbToggle) &&
-            rightSidebarCollapsed &&
+            (rightSidebarCollapsed ||
+              (rightSidebarDeviceLinkDeviceId &&
+                !isSharedTaskPeer(rightSidebarDeviceLinkDeviceId))) &&
             rightSidebarSide === 'right' && <div aria-hidden className="h-7 w-7 shrink-0" />}
         </TopRightChipStack>
       </section>

@@ -28,6 +28,7 @@ import { getDbClient } from '../client/current';
 import * as currentDb from '../client/current';
 import type { DbClient } from '../client/DbClient';
 import { sessions, messages } from '../schema';
+import { clearSessionAttention } from '../../appBadgeService';
 import {
   selectSessionListRows,
   selectSessionWithCount,
@@ -315,7 +316,7 @@ async function writeSessionPatch(
         eq(sessions.id, sessionId),
         ...(deletedIsTerminal ? [ne(sessions.status, 'deleted')] : []),
         ...(skipIfPinnedUnchanged
-          ? [setObj.pinnedAt == null ? isNotNull(sessions.pinnedAt) : isNull(sessions.pinnedAt)]
+          ? [eq(sessions.status, 'active'), setObj.pinnedAt == null ? isNotNull(sessions.pinnedAt) : isNull(sessions.pinnedAt)]
           : []),
       ),
     )
@@ -323,10 +324,13 @@ async function writeSessionPatch(
   if (result.changes > 0) return true;
   if (skipIfPinnedUnchanged) {
     const [existing] = await db
-      .select({ id: sessions.id })
+      .select({ id: sessions.id, status: sessions.status })
       .from(sessions)
       .where(eq(sessions.id, sessionId));
     if (!existing) throwIpcError('NOT_FOUND', 'Session 不存在');
+    if (existing.status !== 'active') {
+      throwIpcError('PRECONDITION_FAILED', '已归档或删除的任务不能置顶');
+    }
     return false;
   }
   if (!deletedIsTerminal) return true;
@@ -1840,7 +1844,7 @@ export async function updateSessionInDb(
   moveGuard?: {
     /** Identity only: also used after commit and inside transcript relocation. */
     assertCurrent: () => void;
-    /** Runs inside the existing route/worktree locks, including dialogue moves. */
+    /** Runs before the patch; moves retain route/worktree locks, conditional pins need neither. */
     beforeUpdate: () => Promise<void>;
     /** Mutable running/IM preconditions must not reject an already committed move. */
     beforeWrite?: () => void | Promise<void>;
@@ -2070,6 +2074,9 @@ export async function updateSessionInDb(
       row.summary = null;
     }
     const updated = sessionToCamel(row);
+    if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+      clearSessionAttention(sid, 'explicit');
+    }
     const projectTargetChanged = p.workspaceKind !== undefined || p.workingDir !== undefined;
     const settingsChanged = Object.keys(p).some((key) => REMOTE_PERSIST_FIELDS.has(key));
     const titleChanged = p.title !== undefined;
@@ -2154,7 +2161,10 @@ export async function updateSessionInDb(
     compactTerminalSessionToolResults(dbClient, sid, p.status);
     return updated;
   };
-  if (p.workingDir === undefined && !moveGuard) return update();
+  // A running IM turn holds the send/route lock until its tools return. Pinning
+  // changes only metadata: the validated conditional pin path checks active
+  // status and pin state atomically in SQL, while retaining the account fence.
+  if (p.workingDir === undefined && (!moveGuard || moveGuard.skipIfPinnedUnchanged)) return update();
   return withSessionRouteLock(sid, async () => {
     const [binding] = await db
       .select({ remoteHostId: sessions.remoteHostId })
@@ -2168,6 +2178,26 @@ export async function updateSessionInDb(
     const resources = await readSessionWorktreeResources(db, sid);
     if (resource) resources.push(resource);
     return withWorktreeMutation(resources, update);
+  });
+}
+
+/** Sending continues an ordinary archived task. Serialize with archive/delete and
+ * use the normal status writer so native projection and all clients see active. */
+export async function restoreArchivedSessionForSend(sessionId: string): Promise<void> {
+  const ownerScope = captureOwnerScope();
+  const db = getDbClient().drizzle;
+  await withSessionRouteLock(sessionId, async () => {
+    const [row] = await db.select({
+      status: sessions.status, source: sessions.source, orcaRole: sessions.orcaRole,
+      orcaRemoteLead: sessions.orcaRemoteLead,
+    }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!isOwnerScopeCurrent(ownerScope)) throwIpcError('PRECONDITION_FAILED', 'Task owner changed');
+    if (row?.status === 'deleted') throwIpcError('NOT_FOUND', 'Session does not exist');
+    if (row?.status !== 'archived') return;
+    if (row.source === 'bot' || row.orcaRole === 'worker' || row.orcaRemoteLead) {
+      throwIpcError('PRECONDITION_FAILED', 'Restore the managed task before continuing');
+    }
+    await patchSessionMetaInDb(sessionId, { status: 'active' });
   });
 }
 
@@ -2236,6 +2266,9 @@ export async function patchSessionMetaInDb(
     }
     return sessionToCamel(row);
   });
+  if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+    clearSessionAttention(sessionId, 'explicit');
+  }
   notifyAgentIslandSessionPatch(updated.id, {
     status: updated.status,
     title: updated.title,
@@ -2542,6 +2575,9 @@ export async function deleteBotProfileAndDetachSessionsInDb(
   }
 
   for (const id of committedSessionIds) {
+    if (status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
+      clearSessionAttention(id, 'explicit');
+    }
     notifyAgentIslandSessionPatch(id, { status });
     broadcastSessionPatched(id, { status, source: 'desktop' }, ownerScope);
     notifyGhostSessionStatusChange(id, status, null);

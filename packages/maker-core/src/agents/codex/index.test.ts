@@ -495,6 +495,62 @@ describe('Codex managed Skill startup', () => {
 });
 
 describe('Codex archive synchronization', () => {
+  it.each(['success', 'without-path', 'unarchive-fails', 'resume-fails-again', 'other-thread'] as const)(
+    'recovers archived resume without replacing the thread (%s)', async outcome => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const archivedPath = '/history/archived_sessions/history.jsonl';
+      const restoredPath = '/history/sessions/history.jsonl';
+      const recordCodexThreadLocation = vi.fn(async () => {});
+      const agent = new CodexAgent(createDeps({}, {
+        ...(outcome !== 'without-path' ? { prepareCodexResumeSession: async () => archivedPath } : {}),
+        recordCodexThreadLocation,
+      }));
+      let archived = true;
+      let resumes = 0;
+      const resumePaths: unknown[] = [];
+      const host = installFakeHost(agent, (method, params) => {
+        if (method === Method.ThreadResume) {
+          resumes++;
+          resumePaths.push((params as { path?: string }).path);
+          if (archived || outcome === 'resume-fails-again') {
+            const errorId = outcome === 'other-thread' ? 'other' : id;
+            throw Object.assign(new Error(`codex app-server thread/resume error -32600: session ${errorId} is archived. Run \`codex unarchive ${errorId}\` to unarchive it first.`),
+              { code: -32600, data: undefined });
+          }
+          return { thread: { id, path: restoredPath }, model: 'gpt-5.4' };
+        }
+        if (method === 'thread/read') return { thread: {
+          id, path: archived ? archivedPath : restoredPath, status: { type: 'idle' },
+        } };
+        if (method === 'thread/unarchive') {
+          if (outcome === 'unarchive-fails') throw new Error('unarchive unavailable');
+          archived = false;
+          return {};
+        }
+        return undefined;
+      }, { codexHome: '/history' });
+      try {
+        const start = agent.startSession({ sessionId: 'restore', model: 'gpt-5.4',
+          workingDir: '/repo', resumeSessionId: id });
+        const successful = outcome === 'success' || outcome === 'without-path';
+        if (successful) {
+          const handle = await start;
+          expect(handle.id).toBe(id);
+          expect(resumePaths).toEqual([outcome === 'without-path' ? undefined : archivedPath, restoredPath]);
+          expect(recordCodexThreadLocation).toHaveBeenCalledWith(id, '/history', restoredPath);
+          await handle.close();
+        } else {
+          await expect(start).rejects.toThrow(outcome === 'unarchive-fails' ? 'unarchive unavailable' : 'is archived');
+        }
+        expect(resumes).toBe(successful || outcome === 'resume-fails-again' ? 2 : 1);
+        const methods = host.request.mock.calls.map(([method]) => method);
+        expect(methods.filter(method => method === 'thread/unarchive')).toHaveLength(outcome === 'other-thread' ? 0 : 1);
+        expect(methods).not.toContain(Method.ThreadStart);
+        expect(methods).not.toContain(Method.TurnStart);
+      } finally { await agent.dispose(); }
+    },
+  );
+
   it('uses the retained writer and records the native archive path without closing sibling tasks', async () => {
     const storage = { historyHome: '/history', sqliteHome: '/state' };
     const resolveCodexThreadStorage = vi.fn(async () => storage);
@@ -10228,6 +10284,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     const result = await Promise.race([
       iterator.next(),
       new Promise<never>((_, reject) => {
+        // real-wait: enforce the production idle-stream close timeout after an app-server crash.
         const timer = setTimeout(() => reject(new Error('idle session event stream did not close')), 200);
         timer.unref?.();
       }),

@@ -754,7 +754,8 @@
     "portraitNumber": "Portrait {{number}}",
     "uploadAvatar": "Upload Avatar",
     "avatarFailed": "Could not open this image. Try another.",
-    "nameTaken": "That name is already in use. Choose another."
+    "nameTaken": "That name is already in use. Choose another.",
+    "home": "Main Computer"
   },
   "companionImport": {
     "title": "Import a teammate",
@@ -909,6 +910,22 @@
     "timeout": "“{{device}}” isn’t ready yet. Make sure Cindy is open and online on that computer, then try again.",
     "conflict": "{{name}} has already moved to “{{device}}”.",
     "switchFailed": "Can’t change the main computer right now. Try again later.",
-    "unknownDevice": "another computer"
+    "unknownDevice": "another computer",
+    "runsOn": "Runs on “{{device}}”",
+    "homeTitle": "Main Computer",
+    "moveTo": "Move to “{{device}}”",
+    "moveTitle": "Run {{name}} on “{{device}}”?",
+    "moveDescription": "From now on {{name}} runs on “{{device}}”, and the chat history comes along. Working directories, connections and local files stay on the computer they are on.",
+    "moveAction": "Move to “{{device}}”",
+    "moving": "Moving {{name}} to “{{device}}”…",
+    "busyTitle": "{{name}} is still replying",
+    "busyDescription": "Move it to “{{device}}” once this reply finishes, or stop the reply and move it now.",
+    "busyWait": "Move When Done",
+    "busyStop": "Stop and Move",
+    "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
+    "switchConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
+    "homeOutdated": "The main computer “{{device}}” runs an older Cindy. Update it, or change the main computer there",
+    "homeUnreachable": "Can’t reach “{{device}}”. It must be online with “Allow same-account devices to control this machine” turned on",
+    "sendUnreachable": "Your message hasn’t reached the main computer “{{device}}”; it may be offline. You can continue on another computer."
   }
 }

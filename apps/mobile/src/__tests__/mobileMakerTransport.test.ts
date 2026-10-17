@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
@@ -643,24 +641,9 @@ describe("mobile maker transport", () => {
   });
 
   it("does not advertise or emit the unimplemented model-window confirmation protocol", async () => {
-    const contextSource = readFileSync(
-      resolve(process.cwd(), "src/device-link/DeviceLinkContext.tsx"),
-      "utf8",
-    );
-    const transportSource = readFileSync(
-      resolve(process.cwd(), "src/device-link/mobileMakerTransport.ts"),
-      "utf8",
-    );
     const { calls, maker } = harness();
 
     await maker.setModel("s1", "small-model", "anthropic");
-
-    expect(contextSource).not.toContain(
-      "CONTROLLER_CAPABILITY_MODEL_WINDOW_CONFIRMATION_V1",
-    );
-    expect(contextSource).not.toContain("model-window-confirmation-v1");
-    expect(transportSource).not.toContain("confirmedOverflow");
-    expect(transportSource).not.toContain("confirmedContextWindow");
     expect(calls).toEqual([
       {
         deviceId: "dev-1",

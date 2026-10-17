@@ -6,6 +6,7 @@ import { createRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
 import { runConnectionScopedSessionMetadataRead, waitForIndependentSnapshotReads } from '@/device-link/sessionSnapshotSingleFlight';
 import { syncSessionMessageWindow } from '@/session/sessionMessageWindowSync';
 import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRecovery';
+import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
 import {
   bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
@@ -295,16 +296,18 @@ describe('production session recovery callbacks', () => {
   });
 
   it('routes the visible history retry to pagination rather than full sync', () => {
-    const screen = source.getFullText().replace(/\r\n/g, '\n');
-    expect(screen).toContain('const bannerError = connectionRecoveryError ?? historyError;');
-    expect(screen).toContain('const bannerRetriesHistory = connectionRecoveryError === null && historyError !== null;');
-    expect(screen).toContain('requestErrorAutoRecovering={bannerRetriesHistory ? false : undefined}');
-    expect(screen).toContain('loading={loading || loadingEarlier}');
+    const values = new Map<string, ts.Expression>();
+    const props = new Map<string, ts.Expression>();
     let onSync: ts.Expression | undefined;
     const find = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && node.initializer) values.set(node.name.getText(source), node.initializer);
       if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'ConnectionBanner') {
-        const prop = node.attributes.properties.find(p => ts.isJsxAttribute(p) && p.name.getText(source) === 'onSync') as ts.JsxAttribute;
-        onSync = (prop.initializer as ts.JsxExpression).expression;
+        for (const prop of node.attributes.properties) {
+          if (ts.isJsxAttribute(prop) && prop.initializer && ts.isJsxExpression(prop.initializer) && prop.initializer.expression) {
+            props.set(prop.name.getText(source), prop.initializer.expression);
+          }
+        }
+        onSync = props.get('onSync');
       }
       ts.forEachChild(node, find);
     };
@@ -315,8 +318,25 @@ describe('production session recovery callbacks', () => {
     expect(loadEarlierMessages).toHaveBeenCalledOnce(); expect(requestSync).not.toHaveBeenCalled(); expect(retry).not.toHaveBeenCalled();
     run(false, { error: 'lookup failed', retry }, loadEarlierMessages, requestSync);
     expect(retry).toHaveBeenCalledOnce(); expect(requestSync).toHaveBeenCalledExactlyOnceWith({ reason: 'manual', replaceMessages: false });
-    const errorSources = screen.slice(screen.indexOf('const connectionError ='), screen.indexOf('const bannerError ='));
-    expect(errorSources).not.toContain('historyError');
+    function evaluate(expression: ts.Expression | undefined, bindings: Record<string, unknown>) {
+      if (!expression) throw new Error('Missing production banner expression');
+      return new Function(...Object.keys(bindings), `return (${expression.getText(source)});`)(...Object.values(bindings));
+    }
+    for (const historyError of [null, 'earlier page failed']) {
+      for (const connectionFailure of [null, 'connection failed']) {
+        const connectionError = evaluate(values.get('connectionError'), { historyError, isDeviceAccessRevoked: false, syncError: connectionFailure, error: null, isDeviceUnresponsive: false, resolveEffectiveConnectionError });
+        expect(connectionError).toBe(connectionFailure);
+        const connectionRecoveryError = evaluate(values.get('connectionRecoveryError'), { companionEntry: { error: null }, activeOutboxTransportError: null, connectionError });
+        const bannerError = evaluate(values.get('bannerError'), { connectionRecoveryError, historyError });
+        const bannerRetriesHistory = evaluate(values.get('bannerRetriesHistory'), { connectionRecoveryError, historyError });
+        expect(bannerError).toBe(connectionFailure ?? historyError);
+        expect(bannerRetriesHistory).toBe(connectionFailure === null && historyError !== null);
+        expect(evaluate(props.get('requestErrorAutoRecovering'), { bannerRetriesHistory })).toBe(bannerRetriesHistory ? false : undefined);
+      }
+    }
+    for (const loading of [false, true]) for (const loadingEarlier of [false, true]) {
+      expect(evaluate(props.get('loading'), { loading, loadingEarlier })).toBe(loading || loadingEarlier);
+    }
   });
 
   it.each([false, true])('keeps late history and pagination after projection rejects (reopen=%s)', async (reopen) => {

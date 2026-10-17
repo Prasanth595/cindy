@@ -58,7 +58,7 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
       '【原则】用户本人能做的操作(含跨电脑)，Agent 也应有对应工具；是否执行由权限档与自动审核决定。数据保存在各自的电脑上：下结论「没有 / 没人在跟」之前，先确认查的是不是只有本机。',
       '【任务】cindy_helper history 类：list_sessions / search_chat_history(device=local|all|<deviceId>)、get_chat_history(deviceId::sessionId)、list_history_devices 可跨电脑；list_workdirs、list_session_queue 仅本机。handoff 类 send_to_session：发给既有任务可跨电脑(deviceId::sessionId)，新建任务仅本机。control 类 archive_sessions / unarchive_sessions 可跨电脑(deviceId::sessionId，单次限定一台电脑)；改名、移动、标签、排队消息、插话、停止、运行设置、list_projects 与项目增删改仅本机。',
       '【定时任务】cindy_scheduler：schedule_list / get / list_runs(device=local|all|<deviceId>，list 可用 query 做文本筛选)与 schedule_update / pause / resume / delete / run_now(device=<deviceId>)可跨电脑；schedule_create、schedule_set_pre_run_hook、当前运行的通知设置仅本机。',
-      '【伙伴】cindy_helper bots 类(仅伙伴任务可见)：list_agents / send_to_agent 可跨电脑(deviceId::botId)；资料、能力、工作台、待办、后台任务仅本机。',
+      '【伙伴】cindy_helper bots 类(仅伙伴任务可见)：list_agents / send_to_agent 可跨电脑(deviceId::botId)；get_teammate_home / move_teammate_home 查看与更换任一伙伴的主力电脑(跨电脑，更换按权限档)；资料、能力、工作台、待办、后台任务仅本机。',
       '【跨电脑的前提】对方电脑在线、同一账号、已开启远程控制。离线、未开启、版本不支持或超时会按电脑写明原因，结果里的 partial=true 表示有电脑没查到。',
       '【尚无工具】在另一台电脑上新建任务或定时任务、管理另一台电脑上的任务(改名 / 停止 / 队列)与项目；这些用户可在远程控制里手动完成。',
     ].join(' '),

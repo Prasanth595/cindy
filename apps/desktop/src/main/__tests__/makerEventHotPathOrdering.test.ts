@@ -500,6 +500,21 @@ describe('maker:event hot path ordering', () => {
     );
   });
 
+  it('wakes queued input only for runtime self-closes, not direct product closes', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    // 'unexpected' only means no Maker reason was recorded; IM /new and archive
+    // sync close sessions directly and must not resurrect the old task's queue.
+    expect(closedBlock).toContain(
+      "wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),",
+    );
+    expectOrder(
+      closedBlock,
+      'wakeQueuedInput:',
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
+    );
+  });
+
   it('preserves coordinator input boundary inside the rehydrate suppression window (#1930)', () => {
     const closedBlock = extractSessionCloseAdaptersSource();
 

@@ -133,6 +133,7 @@ describe('sendToSessionLock', () => {
     const order: string[] = [];
     const a = withSendToSessionLock('s6', async () => {
       order.push('a:start');
+      // real-wait: keep the first lock holder active while the queued call observes serialization.
       await new Promise((r) => setTimeout(r, 100));
       order.push('a:end');
     });

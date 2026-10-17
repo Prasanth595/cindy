@@ -2209,12 +2209,14 @@ export function registerBotIpc(): void {
     owner.assertCurrent();
     return result;
   });
-  ipcMain.handle('local-db:bots:workbench:remove-directory', async (event, rawBotId: unknown, rawPath: unknown) => {
+  ipcMain.handle('local-db:bots:workbench:remove-directory', async (event, rawBotId: unknown, rawPath: unknown, rawDeviceId: unknown) => {
     assertTrustedAppRendererEvent(event);
     const botId = readText(rawBotId, 'botId', 128, true);
     const dirPath = readText(rawPath, 'path', 4096, true);
+    // A folder on another computer (cloud companions) is named by that computer too.
+    const deviceId = readText(rawDeviceId, 'deviceId', 200) || undefined;
     const owner = captureBotOperationOwner();
-    await removeBotWorkbenchDirectory(owner.userDataDir, botId, dirPath);
+    await removeBotWorkbenchDirectory(owner.userDataDir, botId, dirPath, deviceId);
     owner.assertCurrent();
     broadcastBotWorkbenchChanged(botId);
   });

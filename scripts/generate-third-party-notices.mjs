@@ -1005,6 +1005,16 @@ function buildMacEntries() {
       url: "https://github.com/wxtsky/CodeIsland",
       licenseText: MIT_TEXT("MIT License\n\nCopyright (c) 2026 wxtsky"),
     }),
+    // 菜单栏余量面板的数字字体，随 menubar helper 一起分发。
+    bundledComponent({
+      name: "Barlow Condensed fonts",
+      version: "bundled",
+      license: "OFL-1.1",
+      url: "https://github.com/jpt/barlow",
+      licenseText: readBundledLicense(
+        "apps/desktop/native/menubar/BarlowCondensed-OFL.txt",
+      ),
+    }),
   ];
 }
 
@@ -1508,6 +1518,7 @@ function assertTrackedBinariesRegistered() {
     "apps/android-platform-tools-bin/",
     "apps/desktop/native/sqlite-vec/",
     "apps/mobile/assets/fonts/JetBrainsMono-",
+    "apps/desktop/native/menubar/BarlowCondensed-",
   ];
   // Windows updater 内置 VC++ Runtime 按精确文件登记(披露条目见
   // restrictedManualEntries):目录内新增其它二进制时这里会重新拦下要求补披露。

@@ -5640,8 +5640,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
           ipcRenderer.invoke('local-db:bots:workbench:get', botId),
         addDirectory: (botId: string, path: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:add-directory', botId, path),
-        removeDirectory: (botId: string, path: string): Promise<void> =>
-          ipcRenderer.invoke('local-db:bots:workbench:remove-directory', botId, path),
+        removeDirectory: (botId: string, path: string, deviceId?: string): Promise<void> =>
+          ipcRenderer.invoke('local-db:bots:workbench:remove-directory', botId, path, deviceId),
         readTask: (botId: string, taskId: string): Promise<unknown> =>
           ipcRenderer.invoke('local-db:bots:workbench:read-task', botId, taskId),
         candidates: (botId: string): Promise<unknown> =>
@@ -6122,12 +6122,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onCompanionCloudChanged: fanOutCompanionCloudChanged,
     takeOverCompanion: (botId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
       ipcRenderer.invoke('maker:companion-cloud:take-over', botId),
-    transferCompanion: (botId: string, targetDeviceId: string): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
-      ipcRenderer.invoke('maker:companion-cloud:transfer', botId, targetDeviceId),
+    switchCompanionHome: (
+      botId: string,
+      targetDeviceId: string,
+      options?: import('../shared/companionCloud').CompanionSwitchOptions,
+    ): Promise<import('../shared/companionCloud').CompanionCloudActionResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:switch-home', botId, targetDeviceId, options),
     getCompanionTranscript: (botId: string, before?: string): Promise<import('../shared/companionCloud').CompanionTranscriptPage> =>
       ipcRenderer.invoke('maker:companion-cloud:transcript', botId, before),
-    listCompanionTransferTargets: (): Promise<import('../shared/companionCloud').CompanionTransferTarget[]> =>
-      ipcRenderer.invoke('maker:companion-cloud:devices'),
+    getCompanionHomeChoices: (botId: string): Promise<import('../shared/companionCloud').CompanionHomeChoices> =>
+      ipcRenderer.invoke('maker:companion-cloud:home-choices', botId),
+    listCindyCopies: (): Promise<import('../shared/companionCloud').CompanionCindyCopy[]> =>
+      ipcRenderer.invoke('maker:companion-cloud:cindy-copies'),
+    mergeCindy: (keepBotId: string, fromBotIds: string[]): Promise<import('../shared/companionCloud').CompanionMergeResult> =>
+      ipcRenderer.invoke('maker:companion-cloud:merge-cindy', keepBotId, fromBotIds),
+    getCompanionAttachment: (botId: string, mediaId: string): Promise<import('../shared/botGroupChat').BotGroupAttachment> =>
+      ipcRenderer.invoke('maker:companion-cloud:attachment', botId, mediaId),
+    resolveCompanionAvatar: (request: { avatar: string; deviceId?: string | null; fetch?: boolean }): Promise<string | null> =>
+      ipcRenderer.invoke('maker:companion-avatar:resolve', request),
     onBotProfileChanged: fanOutBotProfileChanged,
     onBotWorkbenchChanged: fanOutBotWorkbenchChanged,
     runBotLifecycleAction: (

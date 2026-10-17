@@ -20,6 +20,8 @@ export interface BotWorkbenchDirectory {
   name: string;
   addedAt: string;
   exists: boolean;
+  /** On another computer (the companion moved here and the folder stayed there); never local. */
+  deviceId?: string;
 }
 
 /**

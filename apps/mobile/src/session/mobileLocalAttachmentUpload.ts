@@ -46,7 +46,7 @@ export interface MobileLocalAttachmentUploadCandidate {
    * 返回的字段覆盖到 candidate 上再进后续管线;托盘预览始终用原始 uri,所以入队
    * 当帧就有缩略图,重活全在后台。
    */
-  resolve?: () => Promise<Partial<Pick<
+  resolve?: (signal?: AbortSignal) => Promise<Partial<Pick<
     MobileLocalAttachmentUploadCandidate,
     'uri' | 'name' | 'mimeType' | 'size' | 'width' | 'height' | 'skipPreprocess'
   >>>;
@@ -85,6 +85,8 @@ export interface MobileLocalAttachmentUploadCandidate {
    * 供自行生成了输入文件的调用方(标注烧录图等)按生命周期回收;管线不消费。
    */
   onAbandoned?: () => void;
+  /** 上传已交付后释放原生选图句柄；失败仍保留，供原地重试。 */
+  onConsumed?: () => void;
 }
 
 /** 托盘 pending 卡的渲染数据(image → 缩略卡;file → 文件名 chip)。 */
@@ -355,7 +357,7 @@ export function createMobileLocalAttachmentUploadController(
     // 先跑 candidate 自带的就位钩子(相册换址 / HEIC 转码),结果覆盖进管线输入。
     let source = task.candidate;
     if (source.resolve) {
-      source = { ...source, ...(await step(source.resolve())) };
+      source = { ...source, ...(await step(source.resolve(task.abort.signal))) };
     }
     task.resolvedSource = source;
     task.localUris.add(source.uri);
@@ -473,6 +475,7 @@ export function createMobileLocalAttachmentUploadController(
           outcome = 'discarded';
         } else {
           outcome = 'uploaded';
+          try { task.candidate.onConsumed?.(); } catch { /* 回收不改变交付结果 */ }
         }
       }
     } catch (err) {

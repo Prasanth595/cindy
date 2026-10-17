@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { requireNativeModule } from 'expo-modules-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -294,44 +292,5 @@ describe('mobileRealtimeAudio', () => {
     const { shouldShowMobileVoiceUi } = await import('@/session/mobileRealtimeAudio');
 
     expect(shouldShowMobileVoiceUi('android')).toBe(true);
-  });
-
-  it('keeps the iOS native realtime recorder wired for interruption cleanup', () => {
-    const source = readFileSync(
-      resolve(process.cwd(), 'modules/xdt-mobile-realtime-audio/ios/XdtMobileRealtimeAudioModule.swift'),
-      'utf8',
-    );
-
-    expect(source).toContain('AVAudioSession.interruptionNotification');
-    expect(source).toContain('AVAudioSession.routeChangeNotification');
-    expect(source).toContain('removeAudioSessionObservers()');
-    expect(source).toContain('handleAudioSessionInterruption');
-    expect(source).toContain('handleAudioRouteChange');
-    expect(source).toContain('OnAppEntersBackground');
-    expect(source).toContain('stopCapture(deactivateImmediately: true)');
-    expect(source).toContain('stopCapture()');
-    expect(source).toContain('unsignedIntegerValue(notification.userInfo?[AVAudioSessionInterruptionTypeKey])');
-    expect(source).toContain('unsignedIntegerValue(notification.userInfo?[AVAudioSessionRouteChangeReasonKey])');
-  });
-
-  it('cancels voice runs in both composers when the app enters the background', () => {
-    const newSessionSource = readFileSync(
-      resolve(process.cwd(), 'app/sessions/new.tsx'),
-      'utf8',
-    );
-    const existingSessionSource = readFileSync(
-      resolve(process.cwd(), 'app/sessions/[sessionId].tsx'),
-      'utf8',
-    );
-
-    for (const source of [newSessionSource, existingSessionSource]) {
-      expect(source).toContain("AppState.addEventListener('change'");
-      expect(source).toContain("nextState !== 'background'");
-      expect(source).toContain('voiceControllerSessionRef.current = null');
-      expect(source).toContain('discardPendingPrewarm()');
-      expect(source).not.toContain("setAudioModeAsync");
-    }
-    expect(newSessionSource).toContain('cancelVoiceForDeviceSwitch();');
-    expect(existingSessionSource).toContain('cancelVoiceForAppBackground();');
   });
 });

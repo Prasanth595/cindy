@@ -58,6 +58,7 @@ import {
 import { useCompanionCloud } from './companionCloudStore';
 import { withoutShadowedBots } from './companionCloudPresentation';
 import { BotHomeComputerSetting } from './BotHomeComputerSetting';
+import { CindyMergeSetting } from './CindyMergeSetting';
 import { BotLifecycleSettings } from './BotLifecycleSettings';
 import { BotInvitationWelcome } from './BotInvitationWelcome';
 import { BotModelChainEditor } from './BotModelChainEditor';
@@ -516,6 +517,7 @@ export function BotSettings({
               ))}
             </div>
             <BotHomeComputerSetting bot={bot} />
+            <CindyMergeSetting bot={bot} />
             <div className="mt-6">
               <BotLifecycleSettings
                 bot={bot}

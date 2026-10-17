@@ -1165,6 +1165,11 @@ function isExactUnloadedThreadReadError(error: unknown, threadId: string): boole
     `codex app-server thread/read error -32600: thread not loaded: ${threadId}`);
 }
 
+function isExactArchivedThreadResumeError(error: unknown, threadId: string): boolean {
+  return isExactThreadLookupError(error,
+    `codex app-server thread/resume error -32600: session ${threadId} is archived. Run \`codex unarchive ${threadId}\` to unarchive it first.`);
+}
+
 function isExactThreadLookupError(error: unknown, message: string): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const candidate = error as { code?: unknown; data?: unknown; message?: unknown };
@@ -7172,7 +7177,7 @@ assertRouteCurrent();
       try {
         acquireHostBindingLeaseIfNeeded();
         assertCurrentHost('thread/resume');
-        const resp = await withMcpDiscoveryContext(() => {
+        const resume = () => withMcpDiscoveryContext(() => {
           assertCurrentHost('thread/resume dispatch');
           return host.request<ThreadResumeResponse>(Method.ThreadResume, params, {
             ...criticalThreadRpcOptions(),
@@ -7182,6 +7187,28 @@ assertRouteCurrent();
             },
           });
         });
+        let resp: ThreadResumeResponse;
+        try {
+          resp = await resume();
+        } catch (error) {
+          // A task can be restored before background archive projection catches up.
+          // Recover only this exact native refusal, on the same host/history roots.
+          // Missing indexed history must keep its existing fail-closed behavior.
+          if (indexedRolloutMissing || !isExactArchivedThreadResumeError(error, opts.resumeSessionId)) throw error;
+          // The native refusal proves resume did not load a writer. Restore the
+          // pre-dispatch cancellation/route fence before another native request.
+          startup.threadDispatched = false;
+          assertCurrentHost('thread/unarchive');
+          const restoredPath = await syncCodexArchiveState(
+            (method, requestParams) => host.request(method, requestParams, criticalThreadRpcOptions()),
+            opts.resumeSessionId, false, () => assertCurrentHost('thread/unarchive'),
+          );
+          await recordNativeThreadLocation({ id: opts.resumeSessionId, path: restoredPath });
+          preparedResumePath = restoredPath;
+          params.path = restoredPath;
+          // One retry of session preparation; no user turn has been dispatched.
+          resp = await resume();
+        }
         assertCurrentHost('thread/resume');
         if (Object.hasOwn(resp, 'serviceTier')) {
           mutableServiceTier = normalizeServiceTier(resp.serviceTier) ?? null;
