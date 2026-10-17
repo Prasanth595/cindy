@@ -74,11 +74,16 @@ xcrun --show-sdk-path
 一个只含 SwiftUI `@State` 的最小程序也因缺少该宏插件而无法编译。同机指定已安装的
 macOS 26.5 SDK 后，最小程序和 Cindy 菜单栏 helper 均编译成功。
 
-遇到这一组合且本机已有兼容 SDK 时，可只为本次启动设置 `SDKROOT`。以下是中国大陆版
-隔离实例的已验证示例；Global 使用 `--region=global`：
+遇到这一组合且本机已有兼容 SDK 时，可在交互式 Terminal 中只为本次启动设置
+`SDKROOT`。标准输入和标准输出都必须连接 TTY；Agent 需要先为执行工具分配 PTY
+（例如设置 `tty: true`），再在该会话中运行下面的命令。无 TTY 时，启动器会另开
+Terminal，当前转发的环境变量白名单不含 `SDKROOT`，因此直接执行本例不会应用该设置。
+示例先检查 TTY；检查未通过时，应切换到交互式 Terminal 或分配 PTY 后执行。
+以下是中国大陆版隔离实例的已验证示例；Global 使用 `--region=global`：
 
 ```bash
-test -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk &&
+test -t 0 && test -t 1 &&
+  test -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk &&
   SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
   pnpm restart:desktop:remote --region=cn --isolated=swiftui-sdk --passive
 ```
