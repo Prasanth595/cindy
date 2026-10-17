@@ -9,6 +9,7 @@ import {
   extractPlainText,
   prependHandoffToUserMessage,
   type HandoffSourceMessage,
+  formatIdleGapForHandoff,
 } from '../agentHandoff';
 
 function msg(role: string, content: unknown, createdAt = 0): HandoffSourceMessage {
@@ -1046,4 +1047,31 @@ it('keeps the group source of a private assistant reply when rebuilding model co
       kind: 'session', senderSessionId: 'lane-1', senderBotId: 'bot-1', senderBotName: 'Helper',
     } } }], { fromLabel: 'Claude Code', toLabel: 'Codex' });
   expect(handoff).toContain('[Assistant · 由伙伴「Helper」(bot_id: bot-1) 从群聊「Design」(group_id: group-1)');
+});
+
+describe('idle-gap rebuild framing', () => {
+  it('formats the idle duration in hours and days', () => {
+    const HOUR = 60 * 60 * 1000;
+    expect(formatIdleGapForHandoff(0)).toBe('1 hour');
+    expect(formatIdleGapForHandoff(13 * HOUR)).toBe('13 hours');
+    expect(formatIdleGapForHandoff(24 * HOUR)).toBe('1 day');
+    expect(formatIdleGapForHandoff(27.5 * HOUR)).toBe('1 day 3 hours');
+    expect(formatIdleGapForHandoff(49 * HOUR)).toBe('2 days 1 hour');
+  });
+
+  it('tells the model the pause was benign and to treat the new message as the current topic', () => {
+    const text = buildHandoffText(
+      [
+        { role: 'user', content: 'Plan Friday dinner', createdAt: 1 },
+        { role: 'assistant', content: 'Booked 7pm.', createdAt: 2 },
+      ],
+      { fromLabel: 'Codex', toLabel: 'Codex', sessionId: 's1', reason: 'idle-gap', idleGapMs: 26 * 60 * 60 * 1000, companion: true },
+    );
+    expect(text).toContain('[Session context rebuild · internal context]');
+    expect(text).toContain('idle for about 1 day 2 hours');
+    expect(text).toContain('Nothing went wrong');
+    expect(text).toContain("do not continue, revisit, or follow up on earlier threads unless the user refers to them");
+    expect(text).toContain('Booked 7pm.');
+    expect(text.trimEnd().endsWith("== End of rebuild note; the user's new message follows ==")).toBe(true);
+  });
 });

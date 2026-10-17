@@ -241,6 +241,11 @@
     }
   },
   "list": {
+    "projectActions": {
+      "newTask": "新建任务",
+      "allTasks": "全部任务",
+      "search": "搜索"
+    },
     "taskSuggestions": {
       "connected": "电脑已连接",
       "title": "不在电脑旁，\n也能开始一件事。",
@@ -754,7 +759,8 @@
     "portraitNumber": "头像 {{number}}",
     "uploadAvatar": "上传头像",
     "avatarFailed": "无法打开此图片，请换一张。",
-    "nameTaken": "已有同名伙伴，请换一个名字。"
+    "nameTaken": "已有同名伙伴，请换一个名字。",
+    "home": "主力电脑"
   },
   "companionImport": {
     "title": "导入伙伴",
@@ -813,7 +819,17 @@
     "setupDeferred": "可在伙伴对话中继续登录与验证。",
     "automationInvalid": "自动化定义无法转换，尚未创建。",
     "itemFailed": "此项未完成，可重试并查看导入详情。",
-    "chatPartial": "伙伴已创建，但部分资料未完整保存。以下项目仍需处理；其他内容和对话可以正常使用。"
+    "chatPartial": "伙伴已创建，但部分资料未完整保存。以下项目仍需处理；其他内容和对话可以正常使用。",
+    "imBotOwnerMissing": "没找到主人的用户 ID，请到伙伴的「消息平台」页把这个机器人连上。",
+    "imBotGatewayRunning": "原来的网关还在用这个机器人。先停掉它，再到「消息平台」页连接。",
+    "imBotInUse": "这个机器人已经在这台电脑上用了：在 设置 → IM 机器人 里，或者在另一位伙伴那里。",
+    "imBotConnectFailed": "没能连上这个机器人，请到伙伴的「消息平台」页重试。",
+    "imBotSourceStopUnconfirmed": "原来的机器人还没停下，暂时没有接给伙伴。可以稍后在伙伴的「消息平台」页连接。",
+    "imBotSourceChanged": "原来的机器人在预览后换过了，没有停用它。请重新读取后再导入。",
+    "bots": "消息机器人",
+    "botsNote": "导入后，{{source}} 里的这些机器人会停用，由伙伴接管。",
+    "sourceDisabled": "原来已停用",
+    "botOwner": "主人 ID {{id}}"
   },
   "teammateTodo": {
     "title": "待办",
@@ -909,6 +925,22 @@
     "timeout": "「{{device}}」还没准备好。请确认那台电脑上的 Cindy 已打开并联网，再试一次。",
     "conflict": "{{name}} 已经换到「{{device}}」继续了。",
     "switchFailed": "暂时无法更换主力电脑，请稍后再试。",
-    "unknownDevice": "另一台电脑"
+    "unknownDevice": "另一台电脑",
+    "runsOn": "在「{{device}}」上运行",
+    "homeTitle": "主力电脑",
+    "moveTo": "换到「{{device}}」",
+    "moveTitle": "把 {{name}} 换到「{{device}}」运行？",
+    "moveDescription": "从现在起 {{name}} 在「{{device}}」上运行，对话记录一起带过去。工作目录、连接和本机文件留在原来的电脑上。",
+    "moveAction": "换到「{{device}}」",
+    "moving": "正在把 {{name}} 换到「{{device}}」…",
+    "busyTitle": "{{name}} 还在回复",
+    "busyDescription": "可以等这一轮结束后再换到「{{device}}」，也可以停止这一轮马上换。",
+    "busyWait": "等回复完再换",
+    "busyStop": "停止并换",
+    "transferBusy": "{{name}} 还在回复，等这一轮结束再换电脑",
+    "switchConflict": "{{name}} 的主力电脑已经变了，这次没有更换",
+    "homeOutdated": "主力电脑「{{device}}」上的 Cindy 版本较旧，请先更新它，或在那台电脑上更换",
+    "homeUnreachable": "现在连不上「{{device}}」，它需要在线并开启「允许同账号设备控制本机」",
+    "sendUnreachable": "消息还没送到主力电脑「{{device}}」，它可能已离线。可以换一台电脑继续。"
   }
 }

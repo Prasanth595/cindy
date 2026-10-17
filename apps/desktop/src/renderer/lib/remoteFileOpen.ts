@@ -76,7 +76,7 @@ export async function fetchChatFileWithToasts(
   workdir: string,
   absPath: string,
 ): Promise<string | null> {
-  const progress = createFileTransferToast();
+  const progress = createFileTransferToast(absPath);
   try {
     const res = await fetchChatFileToCache(origin, workdir, absPath, progress.requestId);
     if (progress.cancelled) return null;
@@ -133,7 +133,7 @@ export async function downloadRemoteChatEntry(
   workdir: string,
   absPath: string,
 ): Promise<void> {
-  const progress = createFileTransferToast();
+  const progress = createFileTransferToast(absPath);
   const wireOrigin =
     origin.kind === 'device'
       ? ({ kind: 'device', deviceId: origin.deviceId } as const)

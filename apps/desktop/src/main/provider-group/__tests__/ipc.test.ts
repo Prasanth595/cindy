@@ -565,6 +565,13 @@ describe('provider management receiver account boundary', () => {
       .toThrow(/PERMISSION_DENIED/);
   });
 
+  // 「用量」块的按天明细(provider-groups.md §7)：只读的分享者查询，和 own-usage 一样经管理通道转交。
+  it('accepts the daily usage query as an owner operation', () => {
+    const command = { action: 'usage-history', providerId: 'anthropic' } as const;
+    vi.mocked(parseProviderShareCommand).mockReturnValueOnce(command);
+    expect(parseProviderManagementRequest({ action: 'manage-share', command })).toEqual({ action: 'manage-share', command });
+  });
+
   it.each([
     { action: 'manage-group', command: { action: 'get', providerId: 'anthropic' } },
     { action: 'manage-share', command: { action: 'owned', range: '7d' } },

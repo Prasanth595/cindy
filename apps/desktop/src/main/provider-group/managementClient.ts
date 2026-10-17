@@ -23,7 +23,12 @@ export async function invokeProviderManagement(
   assertOwner();
   if (!response.ok) {
     const message = response.error?.message ?? '';
-    if (response.error?.code === 'CHANNEL_NOT_ALLOWED' || /unknown provider group action/.test(message)) {
+    // 旧版组所在电脑不认识新的分享命令(如 usage-history)时回 `[INVALID_PARAMS] Unknown command`：同样是需要更新。
+    if (
+      response.error?.code === 'CHANNEL_NOT_ALLOWED'
+      || /unknown provider group action/.test(message)
+      || (request.action === 'manage-share' && /\[INVALID_PARAMS\] Unknown command/.test(message))
+    ) {
       throwIpcError('UNSUPPORTED_CAPABILITY', 'Provider management requires an update on the computer with the group');
     }
     throw new Error(/^\[[A-Z_]+\]/.test(message) ? message : '[REMOTE_AGENT_UNAVAILABLE] Provider management failed');

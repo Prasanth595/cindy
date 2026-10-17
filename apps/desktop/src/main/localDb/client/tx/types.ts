@@ -57,6 +57,8 @@ export type DbTxName =
   | 'bots.prepareProfileDeletion'
   | 'bots.persistSessionPermission'
   | 'bots.createGroupLane'
+  | 'bots.createChannelLane'
+  | 'bots.archiveChannelLanes'
   | 'botGroups.create'
   | 'botGroups.setMembers'
   | 'botGroups.delete'
@@ -825,6 +827,24 @@ export interface BotGroupsCreateLaneResult {
   created: boolean;
 }
 
+/** 伙伴接管的个人 IM 群 / 话题专线(`role = 'channel'`)。 */
+export interface BotsCreateChannelLaneArgs {
+  botId: string;
+  routeKey: string;
+  session: BotsReplaceCanonicalSessionArgs['session'];
+}
+
+/**
+ * 归档 IM 连接的伙伴专线: 精确 routeKey 或 routeKey 前缀(整条连接)二选一;
+ * exceptBotId 非空时保留该伙伴的专线(改绑时只收旧伙伴的)。
+ */
+export interface BotsArchiveChannelLanesArgs {
+  routeKey: string | null;
+  routeKeyPrefix: string | null;
+  exceptBotId: string | null;
+  now: number;
+}
+
 export interface BotGroupsCreateArgs {
   groupId: string;
   name: string;
@@ -1379,6 +1399,8 @@ export type DbTxArgsByName = {
   'bots.prepareProfileDeletion': { botId: string };
   'bots.persistSessionPermission': { sessionId: string; mode: string };
   'bots.createGroupLane': BotGroupsCreateLaneArgs;
+  'bots.createChannelLane': BotsCreateChannelLaneArgs;
+  'bots.archiveChannelLanes': BotsArchiveChannelLanesArgs;
   'botGroups.create': BotGroupsCreateArgs;
   'botGroups.setMembers': BotGroupsSetMembersArgs;
   'botGroups.delete': BotGroupsDeleteArgs;
@@ -1469,6 +1491,8 @@ export type DbTxResultByName = {
   'bots.prepareProfileDeletion': undefined;
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
+  'bots.createChannelLane': BotGroupsCreateLaneResult;
+  'bots.archiveChannelLanes': { archivedSessionIds: string[] };
   'botGroups.create': undefined;
   'botGroups.setMembers': BotGroupsSetMembersResult;
   'botGroups.delete': { archivedSessionIds: string[] };

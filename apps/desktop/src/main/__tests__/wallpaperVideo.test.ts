@@ -27,6 +27,10 @@ vi.mock('../../shared/wallpaper-video-manifest.json', () => ({
       sha256: m.hash,
       image: { bytes: 3, sha256: m.hash },
     },
+    'cindy-whisper': {
+      delivery: 'cdn',
+      image: { bytes: 3, sha256: m.hash },
+    },
   },
 }));
 vi.mock('../downloader/index.js', () => ({ createDownloader: () => m.download }));
@@ -66,6 +70,9 @@ function url(ext: string) {
 }
 
 describe('official wallpaper downloads', () => {
+  // User request 2026-10-17: still-only entries must use the existing verified
+  // downloader/cache, without inventing MP4 downloads. Unit tier; previous
+  // fixtures only represented scenes that always had both media kinds.
   it('rejects arbitrary paths, URLs, prototype keys and unknown scenes before any IO', async () => {
     for (const id of ['https://example/a.mp4', '../secret', 'constructor', 'none', null]) {
       await expect(ensureWallpaperVideo(id)).rejects.toThrow('INVALID_PARAMS');
@@ -79,13 +86,11 @@ describe('official wallpaper downloads', () => {
     expect(m.download).not.toHaveBeenCalled();
   });
   it.each([
-    [ensureWallpaperVideo, '.mp4'],
-    [ensureWallpaperImage, '.webp'],
-  ] as const)('deduplicates windows and publishes verified %s media', async (ensure, ext) => {
-    expect(await Promise.all([ensure('cindy-window'), ensure('cindy-window')])).toEqual([
-      url(ext),
-      url(ext),
-    ]);
+    [ensureWallpaperVideo, '.mp4', 'cindy-window'],
+    [ensureWallpaperImage, '.webp', 'cindy-window'],
+    [ensureWallpaperImage, '.webp', 'cindy-whisper'],
+  ] as const)('deduplicates windows and publishes verified %s media', async (ensure, ext, id) => {
+    expect(await Promise.all([ensure(id), ensure(id)])).toEqual([url(ext), url(ext)]);
     expect(m.download).toHaveBeenCalledOnce();
     const options = m.download.mock.calls[0][0];
     expect(options).toMatchObject({
@@ -103,6 +108,18 @@ describe('official wallpaper downloads', () => {
     expect(fs.existsSync(path.dirname(options.targetPath))).toBe(false);
     expect(m.recycle).toHaveBeenCalledWith([url('.mp4'), url('.webp')], ext);
   });
+  it('reuses a still-only image offline and never requests a video for it', async () => {
+    expect(await ensureWallpaperVideo('cindy-whisper')).toBeNull();
+    expect(m.download).not.toHaveBeenCalled();
+    expect(m.endpoint).not.toHaveBeenCalled();
+    expect(await ensureWallpaperImage('cindy-whisper')).toBe(url('.webp'));
+    m.download.mockClear().mockRejectedValue(new Error('offline'));
+    m.endpoint.mockClear().mockReturnValue(null);
+    expect(await ensureWallpaperImage('cindy-whisper')).toBe(url('.webp'));
+    expect(m.download).not.toHaveBeenCalled();
+    expect(m.endpoint).not.toHaveBeenCalled();
+    expect((await readClientWallpaperFile(url('.webp'))).buffer.toString()).toBe('abc');
+  });
   it('reuses both files after an app upgrade, module restart and loss of network configuration', async () => {
     await ensureWallpaperVideo('cindy-window');
     await ensureWallpaperImage('cindy-window');
@@ -110,6 +127,7 @@ describe('official wallpaper downloads', () => {
     const oldPaths = ['.mp4', '.webp'].map(
       (ext) => resolveHashRef(m.hash, ext, 'client-wallpaper').absPath,
     );
+    // reset-modules: prove durable media reuse after a new app runtime loads.
     vi.resetModules();
     m.version = '2.0.0';
     m.download.mockClear().mockRejectedValue(new Error('offline'));

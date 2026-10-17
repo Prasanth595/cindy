@@ -258,7 +258,7 @@
 ## 5. 验收与测试
 
 - 单测:M1 推导规则(含多来源/bridge/前缀归一)、M2 store(含 owner 分区/迁移空态)、滑杆档位色映射、收藏锚点语义。
-- 更新既有锁:`agentSelect`/`chatInputModelSelectorRouting`/`modelSelectorTriggerVariant`/`modelSelectorProviderGroups`/`newMakerCreateAgentVisualContract`/`draftModelCalibration`/`modelDefinitionsDefaults`/`deviceLinkModelMirror` 等——有意变更逐条在 PR「风险」说明。
+- 更新既有锁:`agentSelect`/`chatInputModelSelectorRouting`/`modelSelectorTriggerVariant`/`modelSelectorProviderGroups`/`draftModelCalibration`/`modelDefinitionsDefaults`/`deviceLinkModelMirror` 等——有意变更逐条在 PR「风险」说明。
 - 门禁:根 `pnpm test:unit` + `pnpm --filter desktop run typecheck` + `pnpm --filter @cindy/model-providers run --if-present typecheck`。
 - 实机:worktree `pnpm restart:desktop:remote --region=global --isolated=model-picker` 双模式目检;未能真实验证的面(如老版本 device-link 对端)在 PR 如实列出+用户验证步骤。
 

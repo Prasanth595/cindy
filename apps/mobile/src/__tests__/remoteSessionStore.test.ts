@@ -138,6 +138,34 @@ function pending(kind: string, requestId?: string, persistId?: string): PendingI
 describe('remoteSessionStore', () => {
   beforeEach(() => remoteSessionStore.clear());
 
+  it('keeps an edited async question across disconnection but removes it on explicit history clearing', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    const item: PendingInteraction = { persistId: 'p1',
+      request: { kind: 'ask_user_question', requestId: 'q1', delivery: 'async', questions: [{ question: 'Q?' }] } };
+    remoteSessionStore.setPendingInteractions('s1', [item]);
+    remoteSessionStore.protectAsyncQuestion('s1', item);
+    remoteSessionStore.applyRemotePush('dev-1', 'maker:interaction-dismissed', {
+      sessionId: 's1', requestId: 'q1', reason: 'resolved', decision: { dismissed: true },
+    });
+    const visible = remoteSessionStore.getVisiblePendingInteractions('s1');
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toBe(visible);
+    remoteSessionStore.markDeviceOffline('dev-1');
+    expect(remoteSessionStore.getPendingInteractions('s1')).toHaveLength(0);
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')[0]).toMatchObject({ retainedDraft: true });
+    remoteSessionStore.invalidateSessionMessageWindow('s1', 'dev-1');
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toHaveLength(0);
+  });
+
+  it.each(['deleted', 'archived', 'logout'] as const)('drops protected cards on %s', (action) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    remoteSessionStore.protectAsyncQuestion('s1', { request: {
+      kind: 'ask_user_question', requestId: 'q1', delivery: 'async',
+    } });
+    if (action === 'logout') remoteSessionStore.clear();
+    else remoteSessionStore.applySessionPatch('dev-1', 's1', { status: action });
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toHaveLength(0);
+  });
+
   it('keeps Make mirrors for transport while excluding them from visible session snapshots', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [
       session('make', { source: 'cindy-make' }),

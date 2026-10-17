@@ -31,6 +31,7 @@
  */
 
 import path from 'node:path';
+import { historyCacheReceiptFollows } from '@cindy/maker-shared/message-window';
 import fsp from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -1054,6 +1055,7 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
           const dir = path.join(rootAtStart, MESSAGES_DIR);
           const file = path.join(dir, messageFileName(deviceId, sessionId));
           let normalized = normalizeMessages(messages);
+          let retainedListReceipts = false;
           const history = decodeRemoteHistory(historyView);
           // Sanitize the whole projection, including images outside message.content.
           let sanitizedHistory = history ? JSON.stringify(stripInlineMedia(JSON.parse(encodeRemoteHistory(history)), 0)) : undefined;
@@ -1159,6 +1161,15 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
             normalized = normalizeMessages([...rows.filter(row => row.id !== message.id
               && (!message.clientId || row.clientId !== message.clientId)), message]);
             if (isRecord(previous) && decodeRemoteHistory(previous.historyView)) sanitizedHistory = previous.historyView as string;
+          } else if (history) {
+            // A delayed page write must not erase list bodies received after
+            // that page started reading. Older receipts are covered by the page.
+            if (!(await canCommitNonEmpty())) return { invalidation: -1 };
+            const previous = await readJson(file);
+            const rows = isRecord(previous) && Array.isArray(previous.messages) ? normalizeMessages(previous.messages) : [];
+            const arrivals = rows.filter(row => historyCacheReceiptFollows(row.cacheReceipt, history.readReceipt));
+            retainedListReceipts = arrivals.length > 0;
+            normalized = normalizeMessages([...normalized, ...arrivals]);
           }
           const body = sanitizedHistory === undefined ? JSON.stringify(normalized) : JSON.stringify([normalized, sanitizedHistory]);
           const payload: StoredMessages = {
@@ -1170,7 +1181,7 @@ export function createMirrorCache(resolveRoot: () => string): MirrorCache {
           const serialized = JSON.stringify(payload);
           if (Buffer.byteLength(serialized, 'utf8') > MAX_MESSAGE_FILE_BYTES) {
             // Prefetch is additive: if it cannot fit, retain the usable history.
-            if (mergeListMessage) return { invalidation: numericCounter(await readClearCounter(rootAtStart, sessionKey)) };
+            if (mergeListMessage || retainedListReceipts) return { invalidation: numericCounter(await readClearCounter(rootAtStart, sessionKey)) };
             // 单会话超限:新页写不下 —— 但旧正本此刻可能是 rewind / 删消息**之前**的窗口,
             // 而同一个超限页每次对账都会走到这里,永远不会有第二次机会更新它。所以**作废**
             // 旧缓存,而不是留一份会骗人的旧页(review: codex P1)。

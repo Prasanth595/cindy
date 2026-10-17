@@ -440,7 +440,7 @@ export async function resolveAuthorizedMedia(arg: unknown, maximumBytes?: number
 export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResult> {
   const record =
     arg && typeof arg === 'object'
-      ? (arg as { url?: unknown; skipCache?: unknown; thumbnail?: unknown; prepareOnly?: unknown })
+      ? (arg as { url?: unknown; skipCache?: unknown; thumbnail?: unknown; prepareOnly?: unknown; metadataOnly?: unknown })
       : {};
   const { absPath, mimeType, uploadExtHint, maxBytes, sourceVersion } = await resolveAuthorizedMedia(arg);
   const url = record.url as string;
@@ -462,7 +462,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
           mimeType ??
           mimeOf((uploadExtHint ?? path.extname(absPath)).replace(/^\./, '').toLowerCase()),
       };
-      if (before.size > FILE_INLINE_MAX_BYTES) {
+      if (record.metadataOnly === true || before.size > FILE_INLINE_MAX_BYTES) {
         log.debug(`media:fetch prepare → transfer size=${before.size} mime=${result.mimeType}`);
         return { ...result, transferRequired: true };
       }

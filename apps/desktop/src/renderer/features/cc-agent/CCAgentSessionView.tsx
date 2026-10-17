@@ -344,6 +344,7 @@ import {
   shouldRevealOrcaWorkersBeforeFirstPaint,
 } from './lib/orcaPassiveReveal';
 import { didOpenOrcaWorkersTab, revealOrcaWorkersWithRetry } from './lib/orcaWorkersRevealRetry';
+import { nextCollabEnabledEdge, type CollabEnabledBaseline } from './lib/collabEnabledEdge';
 import {
   closeOrcaWorkersTabAfterTeamEnd,
   ensureOrcaWorkersTab,
@@ -3010,22 +3011,26 @@ function CCAgentSessionContent({
   // 同步打开 tab, effect 触发时 addOrFocusSingletonTab 会幂等聚焦已有 tab。
   // 用 ref 跟踪 prevCollabEnabled 只在边沿触发;已处于协同中的会话 mount 时由上方
   // 常驻 tab effect 打开协同 tab,这里不重复处理。
+  // 基线带 sessionId:切任务时视图实例复用，换任务只记基线不触发；任务数据未就绪
+  // (session 为空或还是上一个任务的)按未知处理，见 nextCollabEnabledEdge。
   // doc rail (isCompactRail) 完全跳过 — WorkdirBrowseRoute 已经按 orcaRole reactive
   // 自动切到 OrcaSplitView toggle 布局, 不需要 router-level navigate。
-  const prevCollabEnabledRef = useRef<boolean | null>(null);
+  const prevCollabEnabledRef = useRef<CollabEnabledBaseline | null>(null);
+  const knownCollabEnabled = session?.id === collabSessionId ? collabEnabled : null;
   useEffect(() => {
-    if (prevCollabEnabledRef.current === null) {
-      prevCollabEnabledRef.current = collabEnabled;
-      return;
-    }
-    const prev = prevCollabEnabledRef.current;
-    prevCollabEnabledRef.current = collabEnabled;
+    const { baseline, edge } = nextCollabEnabledEdge(
+      prevCollabEnabledRef.current,
+      collabSessionId,
+      knownCollabEnabled,
+    );
+    prevCollabEnabledRef.current = baseline;
+    if (!edge) return;
     if (isCompactRail) return;
     if (!collabSessionId) return;
 
     // false → true 边沿:外部 MCP/team 刚开启协同，属于新的显式意图；即使该会话
-    // 历史上收起过右栏，也应重新展开并聚焦协同 tab。mount 时 prev=null 已在上方返回。
-    if (!prev && collabEnabled) {
+    // 历史上收起过右栏，也应重新展开并聚焦协同 tab。mount 与切任务时只记基线，不会走到这里。
+    if (edge === 'enabled') {
       void revealOrcaWorkersTab(collabSessionId).catch((err) => {
         log.warn('revealOrcaWorkersTab after external enable failed', err);
       });
@@ -3033,7 +3038,7 @@ function CCAgentSessionContent({
     }
 
     // true → false 边沿:关闭协同 tab;兼容 /orca 路由仍在场时, navigate 回单 session 路由。
-    if (prev && !collabEnabled) {
+    if (edge === 'disabled') {
       void closeOrcaWorkersTabAfterTeamEnd(collabSessionId).catch((err) => {
         log.warn('closeOrcaWorkersTabAfterTeamEnd failed', err);
       });
@@ -3041,7 +3046,7 @@ function CCAgentSessionContent({
         navigate(`/cc-agent/${collabSessionId}`, { replace: true });
       }
     }
-  }, [collabEnabled, collabSessionId, isCompactRail, isOrcaMode, navigate, ownsWindowRoute]);
+  }, [collabSessionId, isCompactRail, isOrcaMode, knownCollabEnabled, navigate, ownsWindowRoute]);
 
   // F-COLLAB: 关闭协同复用 useStopOrcaCollab hook(与 OrcaWorkflowRoute Worker pane × 同一份逻辑)。
   // navigate 触发条件:仅兼容 orca route 仍在场时需要跳回单 session 路由。
@@ -5930,14 +5935,16 @@ function CCAgentSessionContent({
         </div>
 
         {/* TopRightChipStack:聊天视图右上 chip 浮层。
-          Windows 固定侧栏入口由 MainLayout 承载；当入口位于右侧时在本栈第一行
-          保留等尺寸占位，让消息跳转等 portal chip 自然落到下一行。
+          Windows 固定侧栏入口与远程桌面入口由 MainLayout 承载；任一入口位于右侧时
+          在本栈第一行保留等尺寸占位，面板展开后也不遮住消息跳转等 portal chip。
           MessageStream 内部的 PrevMessageJumpChip 通过 portal 挂入同一栈,自然落到下一行。
           "本次会话改动文件列表"已迁移到 RSB review tab,不再保留浮动按钮 + 滑入抽屉。 */}
         <TopRightChipStack>
           {!isMac &&
             (ownsRoute || showRsbToggle) &&
-            rightSidebarCollapsed &&
+            (rightSidebarCollapsed ||
+              (rightSidebarDeviceLinkDeviceId &&
+                !isSharedTaskPeer(rightSidebarDeviceLinkDeviceId))) &&
             rightSidebarSide === 'right' && <div aria-hidden className="h-7 w-7 shrink-0" />}
         </TopRightChipStack>
       </section>

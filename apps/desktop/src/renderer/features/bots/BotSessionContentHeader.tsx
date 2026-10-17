@@ -23,6 +23,8 @@ import { BotAddToGroupMenu } from './BotAddToGroupMenu';
 import { BotAvatar } from './BotAvatar';
 import { isCindyDeviceBot } from './cindyDeviceRoster';
 import { CindyHeaderDevicePicker } from './CindyDevicePicker';
+import { CompanionHomeChip } from './BotHomeComputerSetting';
+import { useCompanionCloud } from './companionCloudStore';
 
 export interface BotChatIdentity {
   id: string;
@@ -42,7 +44,13 @@ export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const isCindy = isCindyDeviceBot(bot);
+  const cloud = useCompanionCloud();
+  // A cloud companion is one teammate wherever it runs: the header names its main computer and
+  // switches it, instead of listing per-computer copies (the older Cindy device picker).
+  const homeKnown =
+    cloud.enabled &&
+    cloud.actors.some((actor) => actor.externalId === bot.id && !!actor.homeDeviceId);
+  const isCindy = !homeKnown && isCindyDeviceBot(bot);
   const openSettings = () => {
     const search = new URLSearchParams(location.search);
     search.set('settings', '1');
@@ -64,9 +72,10 @@ export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
         <BotAvatar bot={bot} size="xs" />
         <span className="min-w-0 truncate">{bot.name}</span>
       </button>
+      {homeKnown ? <CompanionHomeChip bot={{ id: bot.id, name: bot.name }} /> : null}
       {isCindy ? <CindyHeaderDevicePicker bot={bot} /> : null}
       <div className="ml-auto flex shrink-0 items-center gap-1">
-        {bot.deviceId && !isCindy ? (
+        {bot.deviceId && !isCindy && !homeKnown ? (
           <span className="max-w-32 truncate text-12 text-[var(--text-tertiary)]">
             {bot.deviceName}
           </span>

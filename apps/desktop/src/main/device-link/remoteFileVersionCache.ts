@@ -27,7 +27,8 @@ export type FileVersionMetadata = Pick<DeviceFileResult, 'version' | 'size' | 'm
 };
 
 /** An adapter to the existing media warehouse / ordinary-file LRU, not another byte store.
- * Authorization and stat happen on the host before this adapter is called, every time.
+ * Versions originate from host authorization/stat; same-owner previews may reuse
+ * the previous version while revalidating in the background.
  * Generations guard in-flight work; stable owner IDs key the durable cache across restarts. */
 export function remoteFileVersionCache(
   device: string,

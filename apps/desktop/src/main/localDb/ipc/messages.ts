@@ -1155,7 +1155,11 @@ export async function commitContextRebuild(
   handoff: string,
   meta: {
     reason:
-      'context-overflow' | 'model-window-switch' | 'pi-prompt-timeout' | 'native-session-recovery';
+      | 'context-overflow'
+      | 'model-window-switch'
+      | 'pi-prompt-timeout'
+      | 'native-session-recovery'
+      | 'idle-gap';
     sourceUserClientId: string | null;
     sourceAgentKind?: 'cc' | 'codex' | 'pi';
     sourceModel?: string | null;

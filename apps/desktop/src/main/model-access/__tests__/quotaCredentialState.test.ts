@@ -1,8 +1,8 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-beforeEach(() => vi.resetModules());
+import * as state from '../quotaCredentialState';
 const status = { state: 'ok', source: 'server', endpoint: 'https://gateway.example.test', accountTier: null } as const;
+beforeEach(() => state.noteQuotaCredentialStatus(null, { state: 'idle', source: null, endpoint: null, accountTier: null }));
 it('requires a successful current-process sync and matches both owner and endpoint', async () => {
-  const state = await import('../quotaCredentialState');
   expect(state.quotaCredentialsReady('owner', status.endpoint)).toBe(false);
   state.noteQuotaCredentialStatus('owner', { ...status, state: 'syncing' });
   expect(state.quotaCredentialsReady('owner', status.endpoint)).toBe(false);
@@ -14,7 +14,6 @@ it('requires a successful current-process sync and matches both owner and endpoi
   expect(state.quotaCredentialsReady('owner', status.endpoint)).toBe(false);
 });
 it('invalidates source changes and logout but not repeated successful synchronization', async () => {
-  const state = await import('../quotaCredentialState');
   const changed = vi.fn();
   const off = state.onQuotaCredentialSourceChanged(changed);
   state.noteQuotaCredentialStatus('owner', status);
@@ -33,10 +32,9 @@ it('invalidates source changes and logout but not repeated successful synchroniz
 });
 
 it.each([null, 'manual'] as const)('invalidates a removed/replaced source in non-ok state (%s)', async (source) => {
-  const state = await import('../quotaCredentialState');
   const changed = vi.fn();
   state.noteQuotaCredentialStatus('owner', status);
-  state.onQuotaCredentialSourceChanged(changed);
+  const off = state.onQuotaCredentialSourceChanged(changed);
   const generation = state.quotaCredentialGeneration();
   state.noteQuotaCredentialStatus('owner', { ...status, state: 'failed' });
   expect(changed).not.toHaveBeenCalled();
@@ -44,4 +42,5 @@ it.each([null, 'manual'] as const)('invalidates a removed/replaced source in non
   expect(state.quotaCredentialGeneration()).toBe(generation + 1);
   expect(changed).toHaveBeenCalledTimes(1);
   expect(state.quotaCredentialsReady('owner', status.endpoint)).toBe(false);
+  off();
 });

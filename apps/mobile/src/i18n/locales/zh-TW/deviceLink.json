@@ -12,8 +12,16 @@
   "resync": "重新同步",
   "resyncing": "正在重新同步",
   "syncShort": "同步",
-  "deviceUnresponsiveTitle": "電腦端未響應",
-  "deviceUnresponsiveHint": "電腦暫時沒有回應請求，正在自動重試。",
+  "deviceUnresponsiveTitle": "連線暫無回應",
+  "deviceUnresponsiveHint": "請求尚未收到回應，正在自動重試。",
+  "localNetwork": {
+    "title": "手機網路無法使用",
+    "hint": "請檢查手機網路，恢復後會自動連線。"
+  },
+  "serviceConnection": {
+    "title": "暫時連不上服務",
+    "hint": "手機暫時連不上服務，正在自動重新連線。"
+  },
   "connectStep1": "在電腦上安裝並開啟 {{appName}}",
   "connectStep2": "用與手機相同的帳號登入",
   "connectStep3": "在「設定 → 遠端連線」中開啟「允許同帳號裝置控制本機」",
@@ -63,7 +71,7 @@
     "remoteDisabled": "遠端電腦已關閉允許遠端控制。",
     "channelNotAllowed": "目前電腦端版本不支援這個遠端能力。",
     "accessRevoked": "這臺電腦已撤銷手機存取權限。",
-    "deviceUnresponsive": "電腦端未回應，正在自動重試，請稍後再試。",
+    "deviceUnresponsive": "請求尚未收到回應，正在自動重試。",
     "versionMismatch": "與服務端協定版本不一致，請升級 App 後重試。",
     "payloadTooLarge": "這次傳輸的內容過大，請拆分後重試。",
     "mediaFetchFailed": "取得電腦端檔案失敗，可以稍後重試。",

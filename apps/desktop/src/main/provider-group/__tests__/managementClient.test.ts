@@ -39,6 +39,11 @@ beforeEach(() => {
 });
 
 describe('provider management client', () => {
+  it.each(['get-run-limits', 'set-run-limits', 'reset-run-limits'] as const)('reports an old computer for %s instead of accepting an unknown command', async (action) => {
+    const invoke: ProviderGroupRemoteInvoke = async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] Unknown command' } });
+    const command = action === 'set-run-limits' ? { action, limits: { perDevice: 16, total: 64 } } : { action };
+    await expect(invokeProviderManagement(invoke, 'old-computer', { action: 'manage-share', command })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+  });
   it('does not dispatch management while account teardown is pending with the same owner key', async () => {
     state.boundaryPending = true;
     const invoke = replying(null);
@@ -178,6 +183,14 @@ describe('provider management client', () => {
     const old = vi.fn(async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] unknown provider group action' } })) as unknown as ProviderGroupRemoteInvoke;
     await expect(invokeProviderManagement(old, 'group-host', createLink)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
     expect(host.watch).not.toHaveBeenCalled();
+  });
+
+  // 旧版组所在电脑不认识按天明细：明确拒绝成「需要更新」，管理页据此退回所有时间的合计，不重试。
+  it('reports a share command an old group computer does not know as needing an update', async () => {
+    const old = vi.fn(async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] Unknown command' } })) as unknown as ProviderGroupRemoteInvoke;
+    const request: ProviderManagementRequest = { action: 'manage-share', command: { action: 'usage-history', providerId: 'anthropic' } };
+    await expect(invokeProviderManagement(old, 'group-host', request)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    expect(old).toHaveBeenCalledTimes(1);
   });
 
   it('forwards conditional writes and never retries a conflict or falls back to an unconditional old-host write', async () => {

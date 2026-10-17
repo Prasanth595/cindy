@@ -9,6 +9,7 @@ import { BotPronounProvider, useBotTranslation } from './botPronounContext';
 import { BotSettings } from './BotsHomeView';
 import { useBotProfiles } from './botStore';
 import { useCompanionCloud } from './companionCloudStore';
+import { isBotChannelLaneSession } from './botGroupLane';
 import { useRemoteBots } from './useRemoteBots';
 import { RemoteBotSettings } from './RemoteBotSettings';
 
@@ -38,6 +39,9 @@ export function BotSettingsDrawer() {
 
   const requestedPage = searchParams.get('settingsPage');
   const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
+  // 「模型」「消息平台」只有本机伙伴有; 远端伙伴仍只认上面两页。
+  const localInitialPage =
+    requestedPage === 'model' || requestedPage === 'channels' ? requestedPage : initialPage;
   const allowNavigation = useRef(false);
   const pendingGuard = useRef<Promise<boolean> | null>(null);
   const beforeCloseRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -150,13 +154,15 @@ export function BotSettingsDrawer() {
             ) : bot ? (
               <BotPronounProvider bot={bot}>
                 <BotSettings
-                  key={`${bot.id}:${open}:${requestedPage === 'model' ? 'model' : initialPage}`}
-                  initialPage={requestedPage === 'model' ? 'model' : initialPage}
+                  key={`${bot.id}:${open}:${localInitialPage}`}
+                  initialPage={localInitialPage}
                   beforeCloseRef={beforeCloseRef}
                   bot={bot}
                   onBack={performClose}
                   onOpenSession={(sessionId, searchJump) => {
                     const projection = bot.sessions.find((item) => item.id === sessionId);
+                    // IM 专线的记录在 IM 里，不在伙伴页面打开。
+                    if (isBotChannelLaneSession(projection)) return;
                     const route =
                       projection?.kind === 'history'
                         ? `/bots/${bot.id}/history/${sessionId}`

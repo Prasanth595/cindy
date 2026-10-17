@@ -130,7 +130,7 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
 
     connect: (agentDeviceId) => deps.connect(agentDeviceId),
 
-    noteStartFailure(providerId, member: GroupRelayMember, error) {
+    noteStartFailure(providerId, member: GroupRelayMember, error, model) {
       const config = deps.readGroup(providerId);
       if (!config?.members.some((m) => m.key === member.memberKey)) return false;
       const message = errorText(error);
@@ -157,14 +157,15 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
         deps.scope().router.markCooling(
           providerId,
           member.memberKey,
-          now + (decision.cause === 'usage-limit' ? PROVIDER_GROUP_DEFAULT_COOLDOWN_MS : PROVIDER_GROUP_FAILURE_COOLDOWN_MS),
+          now + (decision.cause === 'usage-limit' && model ? PROVIDER_GROUP_DEFAULT_COOLDOWN_MS : PROVIDER_GROUP_FAILURE_COOLDOWN_MS),
+          decision.cause === 'usage-limit' ? model : undefined,
         );
       }
       // 账号问题仍冷却，关闭自动换电脑时把原错误交给受邀者，与运行中的口径一致。
       return config.autoSwitch;
     },
 
-    noteRunFailure(providerId, member: GroupRelayMember, failure) {
+    noteRunFailure(providerId, member: GroupRelayMember, failure, model) {
       // 没有组，或那台已被移出组：已经在它上面的任务成为普通的远程 Agent 任务，不再自动换电脑(§9 #4)。
       const config = deps.readGroup(providerId);
       if (!config?.members.some((m) => m.key === member.memberKey)) return false;
@@ -186,7 +187,9 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
               ? Math.min(resetAt, now + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS)
               : now + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS)
           : now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS;
-        deps.scope().router.markCooling(providerId, member.memberKey, until);
+        const scopedModel = decision.cause === 'usage-limit' ? model : undefined;
+        deps.scope().router.markCooling(providerId, member.memberKey,
+          scopedModel ? until : Math.min(until, now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS), scopedModel);
       }
       // 冷却照常(之后的新任务避开它)；组设置里关掉了自动换电脑时不发凭证，受邀者照现有方式看到错误(§6.1)。
       return config.autoSwitch;

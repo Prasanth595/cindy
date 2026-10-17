@@ -42,6 +42,25 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
+  it('isolates error cooldowns by model while total quota and account failures still block all models', async () => {
+    const h = harness();
+    h.config.strategy = 'order';
+    const remote = h.config.members[1].key;
+    h.router.markCooling('anthropic', 'local', NOW + 86_400_000, OPUS);
+    expect(await h.pick(OPUS)).toMatchObject({ member: { key: remote } });
+    expect(await h.pick(SONNET)).toMatchObject({ member: { key: 'local' } });
+    expect((await h.router.view('anthropic')).members[0].state).toBe('available');
+    expect((await h.router.view('anthropic', OPUS)).members[0].state).toBe('cooling');
+    h.usage.set('local', snapshot(0, 100));
+    expect(await h.pick(SONNET)).toMatchObject({ member: { key: remote } });
+    expect((await h.router.view('anthropic')).members[0].state).toBe('cooling');
+    h.usage.set('local', snapshot(0, 20));
+    h.router.markCooling('anthropic', 'local', NOW + 60_000);
+    expect(await h.pick(SONNET)).toMatchObject({ member: { key: remote } });
+    h.advance(60_001);
+    expect(await h.pick(SONNET)).toMatchObject({ member: { key: 'local' } });
+    expect(await h.pick(OPUS)).toMatchObject({ member: { key: remote } });
+  });
   it.each(PROVIDER_GROUP_STRATEGIES)('gives own tasks the same %s choice as incoming tasks, apart from the external pause', async (strategy) => {
     const remote = harness().config.members[1].key;
     const choose = async (localTask: boolean, paused: boolean, localUsage: [number, number]) => {

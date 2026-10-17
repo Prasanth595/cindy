@@ -461,7 +461,7 @@ Mobile 的入口读取和残留表单提交都检查该身份，元数据补齐�
 - MCP 工具：`cindy_orca` 20 工具（17 team + 3 只读诊断）的 role gate、ctx 缺失、worker/main 误调用、soft/hard limit、duplicate label、budget model API mode gate；`create_workers` 另覆盖默认 hard limit、配置 hard=3、部分成功、连续失败与 hard-limit 后不再调用 host；诊断工具的纯只读语义（无 active team 时返回空 workspace、不建 team）；排队消息控制 6 工具的归属校验（跨 lead 拒绝）、完整 consuming 投影、非 lead 条目拒绝（`NOT_LEAD_MESSAGE`）、自身队列非协同条目拒绝（`NOT_ORCA_MESSAGE`）、steering 拒绝（`MESSAGE_CONSUMING`）、撤回结清 accepted 暂存、合并的连续性、冲突零修改与移除回调结清，以及转插话的原因回执与排序落点；`send_to_worker` / `send_to_lead` 的 `delivery` 缺省不透传、显式插话与各类 fallback 原因；`interrupt_worker` 另覆盖队首预留、暂停态、graceful-stop 全部 outcome、auto-bridge 抑制和 done 互斥。
 - Codex MCP context：`CodexMcpThreadContextStore` 覆盖按 threadId 查 context、unknown / missing threadId fail-closed、unregister 后清理、`vendorOptions` 引用保持；`codexHttpBridge` 覆盖从 JSON-RPC `params._meta.threadId` 注入真实 session context。
 - Host 归属校验：`send_to_worker`、`interrupt_worker`、队列控制、`idle_worker`、`archive_worker` 经共享 `resolveWorkerRef`（同时接受 worker_id / session_id 两种 id）必须以 caller 自身 Lead 身份校验，拒绝跨 workflow worker id 与 ctx 缺失；即使模型传错 id 或换用另一种 id，也不能越权操作。
-- UI route：Orca worker 不出现在 sidebar，Lead 自动进 split route，worker deep link 解析到 Lead split route；已有测试守住“不用 fork parentSessionId 或标题推断 Orca mapping”，见 `apps/desktop/src/renderer/__tests__/orcaWorkflowRoute.test.ts` 的 `does not use fork parentSessionId or title-linked worker lookup for Orca mapping`。
+- UI route：Orca worker 不出现在 sidebar，Lead 自动进 split route，worker deep link 解析到 Lead split route；对应行为由 `apps/desktop/src/renderer/features/cc-agent/__tests__/OrcaWorkflowRoute.navigation.test.tsx` 与 `OrcaWorkflowRoute.compat.test.tsx` 覆盖。
 - Fork / side_chat 底座：user fork、assistant fork、Codex `tailTurnsToDrop`、Claude turn-final assistant uuid、tool_use 拒绝。
 - Worktree：toggle off/on、非 git/已在 worktree 只 disable worktree toggle、不阻断 send；Lead close 后清 worktree。
 - 重启后 Lead↔Worker 互访(resume)回归矩阵：覆盖开启路径 `enableTeam` 自动首 worker / MCP `start_team` + `create_worker` / renderer `requestEnableCollab` → `SESSION_ENABLE_ORCA` → `enableTeam`，以及重启时机“对话中途”和“初始化完毕但未对话”；验收动作至少包含 `list_workers` 可见 worker、Lead 侧 `send_to_worker` 可投递或排队、Worker 侧 `send_to_lead` 可回传、focused / idle worker 可 resume。
@@ -540,7 +540,7 @@ defaults 则按当前 snapshot 解析并保存实际来源。这样 Claude Code 
 
 #### 9. `parent_session_id` 不表示 Orca 派单（状态：不变量）
 
-`parent_session_id` 是 fork/session-branch 关系，不是 worker 归属关系。Orca 归属必须查 `orca_teams/orca_workers`。已有 route 测试防止 split view 用 `parentSessionId` 或标题匹配 worker，见 `apps/desktop/src/renderer/__tests__/orcaWorkflowRoute.test.ts` 的 `does not use fork parentSessionId or title-linked worker lookup for Orca mapping`。
+`parent_session_id` 是 fork/session-branch 关系，不是 worker 归属关系。Orca 归属必须查 `orca_teams/orca_workers`；route 行为回归见 `apps/desktop/src/renderer/features/cc-agent/__tests__/OrcaWorkflowRoute.navigation.test.tsx` 与 `OrcaWorkflowRoute.compat.test.tsx`。
 
 #### 10. Worker 回收要克制（状态：无损 idle release 已落地）
 

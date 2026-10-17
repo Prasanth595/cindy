@@ -63,6 +63,7 @@ import {
   reliableRetryDelayMs,
   retransmitBaseMs,
   updateRetransmitEstimate,
+  updateDeliveryEstimate,
   byteLength,
   type RetransmitEstimate,
 } from './transport.js';
@@ -152,10 +153,10 @@ const RELIABLE_ACK_BATCH_MESSAGES = 2;
 const RELIABLE_ACK_BATCH_BYTES = 256 * 1024;
 const RECOVERY_TRACE_WINDOW_MS = 30_000;
 // Allow slow relay -> controller delivery before duplicating an entire message.
-// With the default 2s tick this allows 8KiB/s, capped at 30s per attempt. Small
+// With the default 2s tick this allows 8KiB/s, capped at 120s per attempt. Small
 // messages retain their existing retry cadence; dead peers still exhaust retries.
 const RELIABLE_RETRY_BYTES_PER_INTERVAL = 16 * 1024;
-const RELIABLE_RETRY_MAX_SIZE_INTERVALS = 15;
+const RELIABLE_RETRY_MAX_SIZE_INTERVALS = 60;
 /** 连续三次握手成功后仍没撑过稳定期，才把普通抖动升级为可见问题。 */
 const SHORT_LIVED_STREAK_LIMIT = 3;
 const MAX_LEGACY_INBOUND_FRAMES = 128;
@@ -271,6 +272,12 @@ export interface DeviceLinkClientOptions {
    * 不传时 wire 行为与旧版完全相同。
    */
   transferCodec?: DeviceLinkTransferCodec;
+  /** Optional local counters; no content/identities, never part of delivery decisions. */
+  invokeMetrics?: {
+    enabled(): boolean;
+    record(event: { channel: string; phase: 'sent' | 'result'; payloadBytes?: number;
+      notModified?: boolean; gzip?: boolean }): void;
+  };
   /** 测试注入:覆盖重连/心跳的时间参数 */
   timing?: Partial<DeviceLinkTiming>;
 }
@@ -711,7 +718,12 @@ interface ReceiveStreamState {
 // ─── 客户端实现 ───────────────────────────────────────────────────────────────
 
 export class DeviceLinkClient {
-  private readonly invokeScheduler = new InvokeScheduler();
+  private readonly invokeScheduler = new InvokeScheduler((id) => {
+    const peer = this.peerTransport.get(id);
+    return (this.ws?.bufferedAmount ?? 0) > SOCKET_DATA_LOW_WATER_BYTES
+      || (peer?.pendingBytes ?? 0) > SOCKET_DATA_LOW_WATER_BYTES
+      || (peer?.pending.size ?? 0) >= MAX_TRANSPORT_REASSEMBLIES / 2;
+  });
   private readonly opts: DeviceLinkClientOptions;
   private readonly timing: DeviceLinkTiming;
   private readonly log: DeviceLinkLogger;
@@ -1091,6 +1103,12 @@ export class DeviceLinkClient {
     return !!peer && this.isPeerSendReady(peer) && peer.receiveReady;
   }
 
+  /** Even unlinked reads queue behind a previously negotiated reliable link. */
+  needsLinkRecovery(dst: string): boolean {
+    const peer = this.peerTransport.get(dst);
+    return !!peer?.reliable && !this.isPeerSendReady(peer);
+  }
+
   /** Mirror admission only: listing-only/legacy peers need no bidirectional link. */
   canSendPush(dst: string): boolean {
     if (this.status !== 'online') return false;
@@ -1427,35 +1445,38 @@ export class DeviceLinkClient {
     dst: string,
     payload: InvokePayload,
     timeoutMs?: number,
-    options?: { preSend?: () => void },
+    options?: { preSend?: () => void; background?: boolean },
   ): Promise<InvokeResultPayload> {
     if (this.status !== 'online') throw new DeviceLinkError('NOT_CONNECTED', 'not connected to relay');
-    const reuse = this.messageReuse.prepare(dst, payload);
-    const tagged = requestSessionTagCatalog(reuse.payload);
-    // Scoped cross-account peers keep the plain wire format.
-    const transfer = isScopedPeer(dst) ? null : this.invokeResultCache.prepare(dst, tagged);
-    const send = () => {
+    const send = async () => {
       // Admission may wait: validate caller ownership/cancellation after dequeue,
       // synchronously before creating the request or retaining a transport frame.
       options?.preSend?.();
-      return this.request(
+      // Prepare at dispatch, not when joining the admission queue. Earlier
+      // reads may have filled the existing cache while this one was waiting.
+      const reuse = this.messageReuse.prepare(dst, payload);
+      const tagged = requestSessionTagCatalog(reuse.payload);
+      const transfer = isScopedPeer(dst) ? null : this.invokeResultCache.prepare(dst, tagged);
+      const env = await this.request(
         { v: PROTOCOL_VERSION, kind: 'invoke', dst, payload: transfer?.payload ?? tagged },
         'invoke-result',
         timeoutMs,
       );
+      this.reportInvokeMetric(payload.channel, env.payload as InvokeResultPayload);
+      const result = transfer
+        ? transfer.decode(env.payload as InvokeResultPayload)
+        : env.payload as InvokeResultPayload;
+      return result.ok
+        ? {
+            ...result,
+            result: reuse.decode(decodeSessionTagCatalog(payload.channel, result.result)),
+          }
+        : result;
     };
-    const env = await (bypassInvokeScheduling(payload) ? send() : this.invokeScheduler.run(
-      dst, isBackgroundInvoke(payload.channel), Math.min(timeoutMs ?? this.timing.requestTimeoutMs, 30_000), send,
-    ));
-    const result = transfer
-      ? transfer.decode(env.payload as InvokeResultPayload)
-      : env.payload as InvokeResultPayload;
-    return result.ok
-      ? {
-          ...result,
-          result: reuse.decode(decodeSessionTagCatalog(payload.channel, result.result)),
-        }
-      : result;
+    return bypassInvokeScheduling(payload) ? send() : this.invokeScheduler.run(
+      dst, options?.background ?? isBackgroundInvoke(payload.channel),
+      Math.min(timeoutMs ?? this.timing.requestTimeoutMs, 30_000), send,
+    );
   }
 
   /** 被控端:回 invoke-result(对应入站 invoke 的 id) */
@@ -1616,6 +1637,17 @@ export class DeviceLinkClient {
 
   // ─── 内部:请求配对 ─────────────────────────────────────────────────────────
 
+  private reportInvokeMetric(channel: string, result?: InvokeResultPayload): void {
+    try {
+      if (!this.opts.invokeMetrics?.enabled()) return;
+      this.opts.invokeMetrics.record(result === undefined ? { channel, phase: 'sent' } : {
+        channel, phase: 'result', payloadBytes: byteLength(JSON.stringify(result)),
+        notModified: result.ok && result.transfer?.notModified === true,
+        gzip: result.ok && typeof result.transfer?.gzipBase64 === 'string',
+      });
+    } catch { /* Diagnostics must never affect delivery or response decoding. */ }
+  }
+
   /** 发送请求帧并等待同 id 响应;同 id relay-error 转成 DeviceLinkError reject */
   private request(
     env: Omit<Envelope, 'id'>,
@@ -1689,6 +1721,7 @@ export class DeviceLinkClient {
         noteFirstWrite: () => {
           if (firstWriteAt !== undefined) return;
           firstWriteAt = this.monotonicNow();
+          if (env.kind === 'invoke') this.reportInvokeMetric((env.payload as InvokePayload).channel);
           // Only the first write can move the deadline. Replays and partial writes
           // cannot extend it; total transport lifetime is at most sendWaitMs + timeout.
           deadlineMonotonicAt = Math.min(firstWriteAt + timeout, startedMonotonicAt + sendWaitMs + timeout);
@@ -3952,6 +3985,10 @@ export class DeviceLinkClient {
     peer.highestAckSeq = ackSeq;
     this.logRecoveryStage(src, 'ack-received', ` ack=${ackSeq}`, false);
     let rttSample: number | null = null;
+    const acknowledgedAt = this.monotonicNow();
+    let deliveryStartedAt = acknowledgedAt;
+    let deliveryBytes = 0;
+    let deliverySampleValid = true;
     for (const [seq, pending] of peer.pending) {
       if (seq > ackSeq) break;
       if (pending.envelope.id) {
@@ -3964,8 +4001,20 @@ export class DeviceLinkClient {
       if (pending.firstSentAt !== undefined && pending.bytes <= RELIABLE_RETRY_BYTES_PER_INTERVAL) {
         rttSample = this.monotonicNow() - pending.firstSentAt;
       }
+      if (pending.firstSentAt !== undefined && pending.attempts === 1) {
+        deliveryStartedAt = Math.min(deliveryStartedAt, pending.firstSentAt);
+        deliveryBytes += pending.bytes;
+      } else {
+        deliverySampleValid = false;
+      }
       peer.pending.delete(seq);
       peer.pendingBytes -= pending.bytes;
+    }
+    // A cumulative ACK measures the whole acknowledged burst. Sampling its
+    // tail separately counts time spent delivering preceding messages as slowness.
+    // Retransmitted batches have ambiguous timing and cannot teach delivery pace.
+    if (deliverySampleValid) {
+      updateDeliveryEstimate(peer.rtt, deliveryBytes, acknowledgedAt - deliveryStartedAt);
     }
     if (rttSample !== null) updateRetransmitEstimate(peer.rtt, rttSample);
     if (peer.recoveryNeedsAck) {
@@ -4327,6 +4376,7 @@ export class DeviceLinkClient {
         this.timing.transportRetryIntervalMs,
         sizeIntervals,
         pending.attempts,
+        pending.bytes,
       );
       if (pending.sent && !opts.ignoreInterval && now - pending.lastSentAt < retryDelayMs) {
         // A large head frame may still be inside its byte-based cooldown while

@@ -1,7 +1,7 @@
 /**
  * 统一伙伴列表里的群聊行，和伙伴私聊共同按最新消息排序。
  *
- * 群行与伙伴行同一套 IM 行几何（见 __tests__/botsSidebarSpacing.test.ts）：左侧按人数
+ * 群行与伙伴行同一套 IM 行几何（见 __tests__/teammatesSectionSpacing.test.ts）：左侧按人数
  * 显示组合头像，第一行群名，第二行最近一条消息「作者：内容」。有伙伴正在发言时，
  * 第二行临时让位给运行中标记（橙色 sparkles + 发言伙伴的工作状态，DESIGN.md §2
  * Thinking Orange 的侧栏运行态），一轮结束就落回最近消息。

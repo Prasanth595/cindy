@@ -35,6 +35,7 @@ import { evictTaskTagCatalog } from '../task-tags/taskTagEvents';
 import { useEffect, useRef } from 'react';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { projectScheduleEvent } from '@cindy/maker-shared/schedule-events';
+import { historyTurnEnded } from '@cindy/maker-shared/message-window';
 import { useAuth } from '@/contexts/AuthContext';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { createLogger } from '@/lib/logger';
@@ -854,6 +855,19 @@ export function useDeviceLinkRemoteProjects(
     const offRemotePush = window.electronAPI.deviceLink.onRemotePush((push, localOwnerStamp) => {
       if (disposed || !eligible.has(push.deviceId)) return;
       if (!isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) return;
+      if (windowRole === 'main' && push.channel === 'local-db:sessions:patched') {
+        const payload = push.payload as { sessionId?: string; patch?: { lastTurnEndedAt?: unknown } } | null;
+        if (typeof payload?.sessionId === 'string' && payload.patch && historyTurnEnded({}, payload.patch)) {
+          const sessionId = payload.sessionId;
+          // Let the ordinary push router apply metadata first, independent of
+          // listener registration order. Only this completed task is eligible.
+          queueMicrotask(() => {
+            if (!disposed && eligible.has(push.deviceId) && isDeviceLinkRemotePushCurrent(push, localOwnerStamp)) {
+              void makerChatStore.prefetchRemoteHistories(push.deviceId, new Set([sessionId]));
+            }
+          });
+        }
+      }
       if (push.channel === 'maker:schedule:event') {
         // 推送照收；闲着不跟事件去拉整份自动化索引。人回来 wake/10s 用 scope both 补上。
         const watching =

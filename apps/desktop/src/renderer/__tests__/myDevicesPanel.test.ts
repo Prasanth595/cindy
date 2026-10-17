@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,15 +12,19 @@ import type { DeviceLinkSettings } from '@/hooks/useDeviceLinkSettings';
 import { MyDevicesPanel } from '@/components/settings/MyDevicesPanel';
 
 describe('MyDevicesPanel rename guards', () => {
-  it('does not write a manual name when rename is confirmed without changes', () => {
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/renderer/components/settings/MyDevicesPanel.tsx'),
-      'utf8',
-    );
+  afterEach(cleanup);
 
-    expect(source).toContain('const currentName =');
-    expect(source).toContain('if (name && name === currentName) return;');
-    expect(source).toContain('await s.rename(deviceId, name || null);');
+  it('does not write a manual name when rename is confirmed without changes', () => {
+    const s = settings();
+    render(createElement(MyDevicesPanel, { s, variant: 'self' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.devices.rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.devices.renameConfirm' }));
+    expect(s.rename).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.devices.rename' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Renamed Mac' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.devices.renameConfirm' }));
+    expect(s.rename).toHaveBeenCalledExactlyOnceWith('self', 'Renamed Mac');
   });
 });
 

@@ -408,7 +408,7 @@ export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
   | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
   /** 那台电脑出了问题(用量上限、登录失效、服务繁忙)：组所在电脑冷却它，不再分新任务。 */
-  | { action: 'cool'; providerId: string; memberKey: string; cause: ProviderGroupRemoteCoolCause; resetAt?: number }
+  | { action: 'cool' | 'cool-model'; providerId: string; memberKey: string; cause: ProviderGroupRemoteCoolCause; resetAt?: number; model?: string }
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
@@ -511,17 +511,21 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         exclude: exclude.map(remoteMemberKey),
       };
     }
-    case 'cool': {
+    case 'cool':
+    case 'cool-model': {
+      if (value.model !== undefined && (typeof value.model !== 'string' || !value.model.trim() || value.model.length > 512)) invalidRemote('invalid model');
+      if (value.action === 'cool-model' && (typeof value.model !== 'string' || value.cause !== 'usage-limit')) invalidRemote('invalid model cooldown');
       const cause = value.cause;
       if (!REMOTE_COOL_CAUSES.includes(cause as ProviderGroupRemoteCoolCause)) invalidRemote('invalid cause');
       const resetAt = typeof value.resetAt === 'number' && Number.isFinite(value.resetAt) && value.resetAt > 0
         ? value.resetAt
         : undefined;
       return {
-        action: 'cool',
+        action: value.action,
         providerId: remoteProviderId(value.providerId),
         memberKey: remoteMemberKey(value.memberKey),
         cause: cause as ProviderGroupRemoteCoolCause,
+        ...(typeof value.model === 'string' ? { model: value.model } : {}),
         ...(resetAt !== undefined ? { resetAt } : {}),
       };
     }

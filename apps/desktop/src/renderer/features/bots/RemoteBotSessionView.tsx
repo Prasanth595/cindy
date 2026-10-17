@@ -13,9 +13,13 @@ import { parseRemoteBots, type RemoteBot } from './remoteBotRoster';
 import { markRemoteBotRead, useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
 import { cloudCompanionAt } from './companionCloudPresentation';
+import { useDelayedFlag } from '@/features/cc-agent/workdir-browse/hooks/useDelayedFlag';
 // Loaded only when a main computer is offline; keeps the live remote path light.
 const CloudCompanionOfflineView = lazy(() => import('./CloudCompanionOfflineView')
   .then((module) => ({ default: module.CloudCompanionOfflineView })));
+
+/** How long an open chat stays in place while its main computer cannot be reached. */
+export const CLOUD_HOME_GRACE_MS = 15_000;
 
 /** The session id comes from the host's collection, never from an arbitrary URL. */
 export function RemoteBotSessionView() {
@@ -94,10 +98,14 @@ export function RemoteBotSessionView() {
     }
   }, [bot, failed, ready, validatedSessionId]);
 
+  const liveChat = !!bot && !failed && !!ready?.sessionId && ready.id === botId && ready.deviceId === deviceId;
+  const homeAway = !!cloudActor && !!deviceId && !!botId && cloudActor.homeDeviceId !== cloud.selfDeviceId
+    && (!bot || (!bot.online && bot.connectionKnown !== false));
+  // Like IM, a brief drop keeps the open chat in place (cloud-companions.md §3.1).
+  const homeAwayLong = useDelayedFlag(homeAway && liveChat, CLOUD_HOME_GRACE_MS);
   // Its main computer is offline (or never reachable here): read the cloud conversation
   // and offer to continue on this computer instead of a stale read-only mirror.
-  if (cloudActor && deviceId && botId && cloudActor.homeDeviceId !== cloud.selfDeviceId
-    && (!bot || (!bot.online && bot.connectionKnown !== false))) {
+  if (cloudActor && deviceId && botId && homeAway && (!liveChat || homeAwayLong)) {
     return (
       <Suspense fallback={<main className="flex h-full items-center justify-center bg-[var(--surface)]"><Spinner size={18} /></main>}>
       <CloudCompanionOfflineView

@@ -22,6 +22,12 @@ import {
 } from '@cindy/device-link';
 import { mountRemoteDesktopViewer } from '@cindy/maker-shared/remote-desktop-viewer';
 import { extractIpcError } from '@/utils/ipcError';
+import { createLogger } from '@/lib/logger';
+import {
+  DesktopHeartbeatHistory,
+  desktopDiagnosticCode,
+  desktopDiagnosticId,
+} from '../../../shared/remoteDesktopDiagnostics';
 import type {
   RemoteDesktopViewerApi,
   RemoteViewerState,
@@ -37,6 +43,9 @@ import {
 } from '../../../shared/remoteDesktopViewer';
 
 type Size = { width: number; height: number };
+const log = createLogger('remote-desktop:viewer');
+type FailureSource =
+  'connection-timeout' | 'connect' | 'heartbeat' | 'frame' | 'media' | 'input-overflow' | 'input';
 
 export interface ViewerSnapshot {
   target: RemoteViewerState['target'];
@@ -135,6 +144,12 @@ export class DesktopViewerController {
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
   private frameBusy: string | null = null;
   private heartbeatBusy: string | null = null;
+  private heartbeats = new DesktopHeartbeatHistory();
+  private lastRequestFailure: {
+    at: number;
+    operation: RemoteDesktopRequest['op'];
+    code: string;
+  } | null = null;
   private streaming = false;
   private clipboardQueue: Promise<void> = Promise.resolve();
   private clipboardQueued = 0;
@@ -259,7 +274,7 @@ export class DesktopViewerController {
     } else if (this.connectionTimer === null) {
       // Transient failures and media fallback must not renew the total budget.
       this.connectionTimer = setTimeout(() => {
-        this.fail(new Error('DESKTOP_CONNECTION_TIMEOUT'));
+        this.fail(new Error('DESKTOP_CONNECTION_TIMEOUT'), 'connection-timeout');
       }, budget);
     }
     if (!this.disposed) this.changed(this.state);
@@ -316,6 +331,7 @@ export class DesktopViewerController {
   ): Promise<T> => {
     beforeSend?.();
     const scope = this.scope;
+    const epoch = this.epoch;
     if (!scope.active || this.disposed) throw new Error('DESKTOP_STOPPED');
     try {
       return (await this.api.request(
@@ -324,7 +340,14 @@ export class DesktopViewerController {
         request.op === 'offer' || request.op === 'ice' ? this.media.attemptId : undefined,
       )) as T;
     } catch (error) {
-      throw new Error(extractIpcError(error)?.message ?? 'DESKTOP_UNAVAILABLE');
+      const message = extractIpcError(error)?.message ?? 'DESKTOP_UNAVAILABLE';
+      if (epoch === this.epoch)
+        this.lastRequestFailure = {
+          at: Date.now(),
+          operation: request.op,
+          code: desktopDiagnosticCode(message),
+        };
+      throw new Error(message);
     }
   };
   private updateScope(scope: RemoteViewerState): void {
@@ -369,6 +392,8 @@ export class DesktopViewerController {
   }
   private cancel(preserveFrame = false): void {
     this.epoch++;
+    this.heartbeats = new DesktopHeartbeatHistory();
+    this.lastRequestFailure = null;
     if (this.settingsTimer) clearTimeout(this.settingsTimer);
     this.settingsTimer = null;
     // A paste waiting on the old session must not open the next session's gate.
@@ -453,13 +478,35 @@ export class DesktopViewerController {
         this.applySettings();
       } else await this.acquireControl();
     } catch (error) {
-      if (epoch === this.epoch) this.fail(error);
+      if (epoch === this.epoch) this.fail(error, 'connect');
     } finally {
       if (epoch === this.epoch) this.opening = false;
     }
   }
-  private fail(error: unknown): void {
+  private fail(error: unknown, source: FailureSource): void {
     const code = error instanceof Error ? error.message : '';
+    const lease = this.session.lease?.lease;
+    const diagnostic = {
+      at: Date.now(),
+      source,
+      code: desktopDiagnosticCode(code),
+      generation: this.scope.generation,
+      active: this.scope.active,
+      ready: this.state.ready,
+      streaming: this.streaming,
+      hidden: this.hidden,
+      transport: this.state.transport,
+      latencyMs: this.state.latency,
+      controlling: this.session.lease?.controlling ?? false,
+      heartbeatPending: !!lease && this.heartbeatBusy === lease,
+      heartbeats: this.heartbeats.snapshot(),
+      lastRequestFailure: this.lastRequestFailure,
+    };
+    // Capture before cancel resets the session. Hashing never delays recovery.
+    void (lease ? desktopDiagnosticId(lease) : Promise.resolve(null))
+      .catch(() => null)
+      .then((session) => log.debug('viewer failure', { ...diagnostic, session }))
+      .catch(() => {});
     const blocked =
       remoteDesktopFailureKey(code) ??
       (/DESKTOP_(VIEW_ONLY|INPUT_(BUSY|UNSUPPORTED|UNAVAILABLE|TIMEOUT))/.test(code)
@@ -986,17 +1033,22 @@ export class DesktopViewerController {
     const leaseId = this.session.lease.lease;
     if (this.heartbeatBusy === leaseId) return;
     this.heartbeatBusy = leaseId;
+    const sample = this.heartbeats.add({ requestedAt: Date.now() });
     const epoch = this.epoch;
     try {
       const result = await this.session.heartbeat();
+      sample.settledAt = Date.now();
+      sample.result = result.controlling ? 'controlling' : 'view-only';
       if (epoch === this.epoch) {
         if (!result.controlling && !this.opening && !this.state.controlPending)
-          this.fail(new Error('DESKTOP_VIEW_ONLY'));
+          this.fail(new Error('DESKTOP_VIEW_ONLY'), 'heartbeat');
         else this.syncControl();
       }
     } catch (error) {
+      sample.settledAt = Date.now();
+      sample.result = desktopDiagnosticCode(error);
       if (epoch === this.epoch && !(error instanceof Error && error.message === 'INVOKE_TIMEOUT'))
-        this.fail(error);
+        this.fail(error, 'heartbeat');
     } finally {
       if (this.heartbeatBusy === leaseId) this.heartbeatBusy = null;
     }
@@ -1042,7 +1094,7 @@ export class DesktopViewerController {
         });
       }
     } catch (error) {
-      if (this.session.lease === lease) this.fail(error);
+      if (this.session.lease === lease) this.fail(error, 'frame');
     } finally {
       if (this.frameBusy === lease.lease) this.frameBusy = null;
     }
@@ -1052,7 +1104,7 @@ export class DesktopViewerController {
     if (!lease || message.epoch !== lease.lease || this.disposed) return;
     if (['iceConfig', 'offer', 'ice'].includes(String(message.type))) {
       void this.media.handle(message).catch((error) => {
-        if (this.session.lease === lease) this.fail(error);
+        if (this.session.lease === lease) this.fail(error, 'media');
       });
       return;
     }
@@ -1132,7 +1184,7 @@ export class DesktopViewerController {
         break;
       }
       case 'inputOverflow':
-        this.fail(new Error('DESKTOP_INPUT_UNAVAILABLE'));
+        this.fail(new Error('DESKTOP_INPUT_UNAVAILABLE'), 'input-overflow');
         break;
       case 'clipboardIntent':
         if (message.action === 'paste' || message.action === 'copy')
@@ -1157,7 +1209,7 @@ export class DesktopViewerController {
               this.session.lease === lease &&
               !(error instanceof Error && error.message === 'INVOKE_TIMEOUT')
             )
-              this.fail(error);
+              this.fail(error, 'input');
           })
           .finally(() => {
             if (this.session.lease === lease)

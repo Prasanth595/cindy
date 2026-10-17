@@ -75,6 +75,8 @@
     "next": "次へ",
     "answerRequired": "回答を選択または入力すると続行できます。",
     "submit": "送信",
+    "sendAndContinue": "送信して続行",
+    "closeAnswer": "閉じる",
     "planReviewTitle": "Claude のプランを確認",
     "planExpand": "プランを展開",
     "planEditHint": "編集モードでプランを調整",

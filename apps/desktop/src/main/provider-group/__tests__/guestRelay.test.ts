@@ -115,7 +115,7 @@ describe('provider group guest relay planner', () => {
     env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] gone'));
     expect(env.router.markCooling).not.toHaveBeenCalled();
     env.relay.noteStartFailure('anthropic', mini, new Error('401 unauthorized'));
-    expect(env.router.markCooling).toHaveBeenCalledWith('anthropic', MINI.key, expect.any(Number));
+    expect(env.router.markCooling).toHaveBeenCalledWith('anthropic', MINI.key, expect.any(Number), undefined);
     expect(env.router.markCooling.mock.calls[0][2]).toBeLessThan(1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
   });
 
@@ -166,8 +166,8 @@ describe('provider group guest relay planner', () => {
     // 换到哪台都一样的失败：不冷却，也不换。
     expect(env.relay.noteRunFailure('anthropic', mini, { message: 'prompt is too long', sdkError: 'invalid_request' })).toBe(false);
     expect(env.router.markCooling).not.toHaveBeenCalled();
-    expect(env.relay.noteRunFailure('anthropic', mini, { usageLimit: true, message: 'usage limit' })).toBe(true);
-    expect(env.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    expect(env.relay.noteRunFailure('anthropic', mini, { usageLimit: true, message: 'usage limit' }, 'claude-fable-5')).toBe(true);
+    expect(env.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, 'claude-fable-5');
     // 连不上：照常换一台，但不记进组的状态。
     const cooled = env.router.markCooling.mock.calls.length;
     expect(env.relay.noteRunFailure('anthropic', mini, { reason: 'remote_agent_closed' })).toBe(true);
@@ -201,18 +201,18 @@ describe('provider group guest relay planner', () => {
       log: { warn: vi.fn() },
     });
     const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
-    relay.noteRunFailure('anthropic', mini, { usageLimit: true });
-    expect(router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, resetAt);
+    relay.noteRunFailure('anthropic', mini, { usageLimit: true }, 'claude-fable-5');
+    expect(router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, resetAt, 'claude-fable-5');
     resetAt = 1_000 + 30 * 24 * 60 * 60_000;
-    relay.noteRunFailure('anthropic', mini, { usageLimit: true });
-    expect(router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 1_000 + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS);
+    relay.noteRunFailure('anthropic', mini, { usageLimit: true }, 'claude-fable-5');
+    expect(router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 1_000 + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS, 'claude-fable-5');
   });
 
   it('still cools the computer but offers no switch when the group has automatic switching turned off', () => {
     const env = setup([MINI], { ...CONFIG, autoSwitch: false });
     const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
-    expect(env.relay.noteRunFailure('anthropic', mini, { usageLimit: true, message: 'usage limit' })).toBe(false);
-    expect(env.router.markCooling).toHaveBeenCalledWith('anthropic', MINI.key, expect.any(Number));
+    expect(env.relay.noteRunFailure('anthropic', mini, { usageLimit: true, message: 'usage limit' }, 'claude-fable-5')).toBe(false);
+    expect(env.router.markCooling).toHaveBeenCalledWith('anthropic', MINI.key, expect.any(Number), 'claude-fable-5');
   });
 
   it('counts the picked computer in the same step it is picked, when asked to', async () => {

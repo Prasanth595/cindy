@@ -161,7 +161,9 @@ async function ensurePortalCapture(lease: string): Promise<void> {
   });
   return portalReady;
 }
-const captureWindow = new DesktopCaptureWindow(() => remoteDesktop.stop());
+const captureWindow = new DesktopCaptureWindow(() =>
+  remoteDesktop.stop(undefined, undefined, 'capture-exited'),
+);
 const nativeCapture = new NativeDesktopCapture();
 const hyprlandCapture = new HyprlandCapture();
 const linuxAudio = new LinuxDesktopAudio();
@@ -465,9 +467,9 @@ async function offer(
     nativeOverlay =
       Boolean(handoff) ||
       (cursorOverlay === true &&
-      (process.platform === 'darwin' ||
-        (process.platform === 'win32' && nativeAvailable) ||
-        (hyprland && (await readLinuxCursorSupport()))));
+        (process.platform === 'darwin' ||
+          (process.platform === 'win32' && nativeAvailable) ||
+          (hyprland && (await readLinuxCursorSupport()))));
     if (!current() || host !== currentHost || currentHost.isDestroyed())
       throw new Error('DESKTOP_LEASE_EXPIRED');
     nativeSettings = settings;
@@ -962,7 +964,7 @@ export function registerRemoteDesktopIpc(
   onQuit('remote-desktop-stop', () => {
     clearInterval(timer);
     permissions.dismiss();
-    remoteDesktop.stop();
+    remoteDesktop.stop(undefined, undefined, 'shutdown');
   });
   onQuit('remote-desktop-restore', () => remoteDesktop.stopAndRestore(), 'async');
   const linuxLayoutChanged = () => {
@@ -977,22 +979,25 @@ export function registerRemoteDesktopIpc(
         if (generation !== offerGeneration || remoteDesktop.changingDisplay) return;
         const display = linuxDisplay(monitor);
         if (!remoteDesktop.displayGeometryMatches(id, display.width, display.height))
-          remoteDesktop.stop();
+          remoteDesktop.stop(undefined, undefined, 'display-changed');
       })
       .catch(() => {
-        if (generation === offerGeneration && !remoteDesktop.changingDisplay) remoteDesktop.stop();
+        if (generation === offerGeneration && !remoteDesktop.changingDisplay)
+          remoteDesktop.stop(undefined, undefined, 'display-failed');
       });
   };
   screen.on('display-removed', (_event, display) => {
     linuxLayoutChanged();
     if (remoteDesktop.changingDisplay) return;
-    if (String(display.id) === remoteDesktop.displayId) remoteDesktop.stop();
+    if (String(display.id) === remoteDesktop.displayId)
+      remoteDesktop.stop(undefined, undefined, 'display-changed');
   });
   screen.on('display-added', () => {
     linuxLayoutChanged();
     // A new screen invalidates mask coverage, not the selected capture geometry.
     // Include masks still being prepared, before the controller reports enabled.
-    if (privacyScreen.active && !remoteDesktop.changingDisplay) remoteDesktop.stop();
+    if (privacyScreen.active && !remoteDesktop.changingDisplay)
+      remoteDesktop.stop(undefined, undefined, 'display-changed');
   });
   screen.on('display-metrics-changed', (_event, display, metrics) => {
     if (
@@ -1021,7 +1026,7 @@ export function registerRemoteDesktopIpc(
         (metric) => metric === 'bounds' || metric === 'scaleFactor' || metric === 'rotation',
       )
     )
-      remoteDesktop.stop();
+      remoteDesktop.stop(undefined, undefined, 'display-changed');
   });
   let sessionTransition = 0;
   const sessionChanged = (unlock = false) => {
@@ -1033,7 +1038,7 @@ export function registerRemoteDesktopIpc(
       try {
         input.input([{ kind: 'release' }]);
       } catch {
-        remoteDesktop.stop();
+        remoteDesktop.stop(undefined, undefined, 'input-failed');
       }
     }
     if (videoLease && nativeDisplay && host && !host.isDestroyed())
@@ -1149,7 +1154,7 @@ export function registerRemoteDesktopIpc(
     if (event.sender !== getDeepLinkMainWindow()?.webContents || windowsSetupBusy)
       throwIpcError('PERMISSION_DENIED', 'Windows desktop setup unavailable');
     windowsSetupBusy = true;
-    remoteDesktop.stop();
+    remoteDesktop.stop(undefined, undefined, 'disabled');
     try {
       await configureWindowsDesktopSupport(enabled);
     } catch {
@@ -1164,7 +1169,7 @@ export function registerRemoteDesktopIpc(
     if (typeof enabled !== 'boolean') throwIpcError('INVALID_PARAMS', 'Invalid desktop setting');
     await writeDeviceLinkSetting('remoteDesktopEnabled', enabled);
     if (!enabled) {
-      remoteDesktop.stop();
+      remoteDesktop.stop(undefined, undefined, 'disabled');
       permissions.dismiss();
     } else {
       await permissions.showIfNeeded(() => readDeviceLinkSettings().remoteDesktopEnabled);
@@ -1266,7 +1271,7 @@ export function registerRemoteDesktopIpc(
   });
   ipcMain.handle(DESKTOP_LOCAL.CAPTURE_STOP, (event) => {
     captureWindow.assertSender(event);
-    remoteDesktop.stop();
+    remoteDesktop.stop(undefined, undefined, 'capture-stop');
   });
   ipcMain.handle(DESKTOP_LOCAL.REPLY, (event, id: unknown, sdp: unknown) => {
     captureWindow.assertSender(event);

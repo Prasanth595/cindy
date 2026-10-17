@@ -192,6 +192,17 @@ describe('buildMenubarView', () => {
     const view = buildMenubarView(input([low, codex('beta', 20)]));
     expect(view.sources.find((cell) => cell.id === 'alpha')).toMatchObject({ when: 'Resets in 3h 5m', whenLevel: 'warn' });
     expect(view.headlineSecondary).toBe('alpha resets in 3h 5m.');
+    expect(view.headlineAlert).toBe(true);
+  });
+
+  it('ripples only the tubes of sources a running task draws on', () => {
+    const view = buildMenubarView(input([codex('alpha', 50, { consuming: true }), codex('beta', 20)]));
+    expect(view.sources.map((cell) => [cell.id, cell.active])).toEqual([
+      ['alpha', true],
+      ['beta', false],
+    ]);
+    // Nothing is low, so the headline carries no warning mark.
+    expect(view.headlineAlert).toBe(false);
   });
 
   it('localizes the headline', () => {

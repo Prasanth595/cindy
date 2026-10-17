@@ -16,9 +16,9 @@ const region =
 const directory = args.find((arg) => arg.startsWith("--directory="))?.slice(12);
 const verifyOnly = args.includes("--verify-only");
 const checkCdn = args.includes("--check-cdn");
-if (!["global", "cn"].includes(region)) {
+if (!["global", "cn", "dev"].includes(region)) {
   throw new Error(
-    "Usage: node scripts/publish-wallpaper-videos.mjs [--directory=<originals>] --region=global|cn [--verify-only | --check-cdn]",
+    "Usage: node scripts/publish-wallpaper-videos.mjs [--directory=<originals>] --region=global|cn|dev [--verify-only | --check-cdn]",
   );
 }
 const source =
@@ -40,7 +40,7 @@ for (const [id, entry] of Object.entries(manifest)) {
   if (!["bundled", "cdn"].includes(entry.delivery))
     throw new Error("Unknown wallpaper delivery: " + id);
   for (const [asset, ext, mime] of [
-    [entry, ".mp4", "video/mp4"],
+    [entry.sha256 ? entry : null, ".mp4", "video/mp4"],
     [entry.image, ".webp", "image/webp"],
   ]) {
     if (!asset) continue;
@@ -69,7 +69,8 @@ for (const [id, entry] of Object.entries(manifest)) {
       createHash("sha256").update(bytes).digest("hex") !== asset.sha256
     )
       throw new Error("Asset differs from reviewed manifest: " + id + ext);
-    if (entry.delivery === "cdn") assets.push({ file, ...asset, ext, mime });
+    if (entry.delivery === "cdn")
+      assets.push({ id, file, ...asset, ext, mime });
     console.log(id + ext + ": " + asset.bytes + " bytes");
   }
 }
@@ -80,17 +81,32 @@ console.log(
 );
 if (checkCdn || !verifyOnly) {
   // Read-only verification needs no OSS credentials and never uploads.
-  const endpointFile =
-    region === "global" ? "endpoint.global.json" : "endpoint.json";
-  const endpoint = JSON.parse(
-    await fs.readFile(
-      new URL("../config/" + endpointFile, import.meta.url),
-      "utf8",
-    ),
-  );
-  const config = checkCdn
-    ? { cdnBase: endpoint.cdnBaseUrl }
-    : resolveOssConfig(region);
+  let config;
+  if (checkCdn) {
+    const cdnEnvName = {
+      global: "XDT_GLOBAL_CDN_BASE_URL",
+      cn: "XDT_CDN_BASE_URL",
+      dev: "XDT_DEVCH_CDN_BASE_URL",
+    }[region];
+    let cdnBase = process.env[cdnEnvName]?.trim();
+    if (!cdnBase) {
+      const endpointFile = {
+        global: "endpoint.global.json",
+        cn: "endpoint.json",
+        dev: "endpoint.dev.json",
+      }[region];
+      const endpoint = JSON.parse(
+        await fs.readFile(
+          new URL("../config/" + endpointFile, import.meta.url),
+          "utf8",
+        ),
+      );
+      cdnBase = endpoint.cdnBaseUrl;
+    }
+    config = { cdnBase };
+  } else {
+    config = resolveOssConfig(region);
+  }
   const client = checkCdn ? null : createOSSClient(region);
   for (const asset of assets) {
     const relative = "wallpapers/" + asset.sha256 + asset.ext;
@@ -114,7 +130,9 @@ if (checkCdn || !verifyOnly) {
       },
     );
     if (!response.ok)
-      throw new Error("CDN resource is not readable: " + response.status);
+      throw new Error(
+        `CDN resource is not readable (${region}, ${asset.id}${asset.ext}): ${response.status}`,
+      );
     const bytes = Buffer.from(await response.arrayBuffer());
     if (
       bytes.length !== asset.bytes ||

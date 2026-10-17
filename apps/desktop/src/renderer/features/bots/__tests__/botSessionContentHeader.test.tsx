@@ -32,6 +32,7 @@ vi.mock('../feature-context', () => ({ useRegisterContentHeader: () => undefined
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => <span data-testid="bot-avatar" /> }));
 
 const { BotSessionContentHeader } = await import('../BotSessionContentHeader');
+const { resetCompanionCloudStoreForTests } = await import('../companionCloudStore');
 
 const bot = { id: 'bot-1', name: '小可' };
 const localCindy = { id: 'local-cindy', name: 'Cindy', templateId: 'cindy', status: 'active' } as import('../botStore').BotProfile;
@@ -46,6 +47,7 @@ function appRegionOf(element: HTMLElement): string {
 
 afterEach(() => {
   cleanup();
+  resetCompanionCloudStoreForTests();
   navigate.mockClear();
   deviceData.local = [];
   deviceData.remote = [];
@@ -149,5 +151,17 @@ describe('BotSessionContentHeader', () => {
     // Header action controls follow the current pill-first design rules.
     expect(className).not.toMatch(/shadow|gradient/);
     expect(className).toMatch(/rounded-full/);
+  });
+
+  it('names the main computer of a cloud companion instead of listing per-computer copies', () => {
+    resetCompanionCloudStoreForTests({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: [],
+      actors: [{ id: 'a-cindy', externalId: 'cindy-default', name: 'Cindy', avatar: null, homeDeviceId: 'cloud',
+        homeDevice: { deviceId: 'cloud', name: 'Cloud', online: true, isSelf: false } }] });
+    deviceData.local = [localCindy];
+    deviceData.remote = [remoteCindy];
+    render(<BotSessionContentHeader bot={remoteCindy} />);
+    expect(screen.getByTestId('bot-home-computer-chip').textContent).toContain('bots.cloud.runsOn');
+    expect(screen.queryByRole('combobox', { name: 'bots.devicePicker.switchDevice' })).toBeNull();
+    expect(screen.queryByText('Cloud')).toBeNull();
   });
 });

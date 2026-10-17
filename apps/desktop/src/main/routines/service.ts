@@ -490,3 +490,40 @@ export async function relocateRoutinePluginSource(fromPart: string, toPart: stri
   const next = rewriteRoutinePluginSource(state, fromPart, toPart);
   if (next !== state) await store.save(next);
 }
+
+/** A routine as it travels with its companion (cloud-companions.md §2); run history stays behind. */
+export interface CompanionRoutineValue {
+  id: string;
+  input: RoutineInput;
+  /** The computer the definition was saved on: its check command may only work there. */
+  originDeviceId: string | null;
+}
+
+export async function listCompanionRoutines(botId: string, selfDeviceId: string | null): Promise<CompanionRoutineValue[]> {
+  return (await routineTools.list(botId)).map((routine) => ({
+    id: routine.id,
+    input: { name: routine.name, prompt: routine.prompt, enabled: routine.enabled, triggers: routine.triggers,
+      ...(routine.silentWhenIdle !== undefined ? { silentWhenIdle: routine.silentWhenIdle } : {}),
+      ...(routine.preRunHook !== undefined ? { preRunHook: routine.preRunHook } : {}) },
+    originDeviceId: selfDeviceId,
+  }));
+}
+
+/**
+ * The companion moved here: its routines from the cloud are created or updated with their ids;
+ * `remove` ids are deleted. Timers start from now (nothing missed is replayed). A routine whose
+ * check command came from another computer, or whose one-time trigger has passed, arrives turned
+ * off so it never runs a command this computer may not have.
+ */
+export async function importCompanionRoutines(botId: string, routines: CompanionRoutineValue[], remove: string[], selfDeviceId: string | null): Promise<void> {
+  const existing = new Set((await routineTools.list(botId)).map((routine) => routine.id));
+  const now = Date.now();
+  for (const routine of routines) {
+    const foreignHook = !!routine.input.preRunHook?.command?.trim() && routine.originDeviceId !== selfDeviceId;
+    const passed = routine.input.triggers.some((trigger) => trigger.kind === 'once' && trigger.at <= now);
+    const input: RoutineInput = { ...routine.input, enabled: routine.input.enabled && !foreignHook && !passed };
+    if (existing.has(routine.id)) await routineTools.save(botId, input, routine.id);
+    else await routineTools.createOnce(botId, input, routine.id);
+  }
+  for (const id of remove) if (existing.has(id)) await routineTools.remove(botId, id);
+}

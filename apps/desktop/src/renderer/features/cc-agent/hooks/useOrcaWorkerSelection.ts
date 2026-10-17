@@ -360,7 +360,10 @@ export function useOrcaWorkerSelection({
     (workerId: string) => {
       clearSelectionHints();
       const worker = workersRef.current.find((item) => item.workerId === workerId);
-      const acknowledgeDone = worker?.status === 'done';
+      const isDone = worker?.status === 'done';
+      // 只有对话真的可见才算看过结果；看不到对话(如分离窗只显示占位)时选中不确认、
+      // 不清提醒，等对话可见后由 visibleDoneWorkerId 的 effect 确认。
+      const acknowledgeDone = isDone && viewVisible;
       void (async () => {
         try {
           const workflows = orcaWorkflowsFor(leadSessionId);
@@ -377,7 +380,7 @@ export function useOrcaWorkerSelection({
               toast.error(msg);
             }
           }
-          if (!acknowledgeDone || acknowledged) clearWorkerAttention(workerId);
+          if (!isDone || acknowledged) clearWorkerAttention(workerId);
           await refresh();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -385,7 +388,7 @@ export function useOrcaWorkerSelection({
         }
       })();
     },
-    [acknowledgeDoneWorker, clearSelectionHints, leadSessionId, refresh],
+    [acknowledgeDoneWorker, clearSelectionHints, leadSessionId, refresh, viewVisible],
   );
 
   const handleArchiveWorker = useCallback(

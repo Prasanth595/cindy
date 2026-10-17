@@ -117,6 +117,15 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
       }
       // Persisted completion never re-enters delivery, even after missing files or lost host history.
       if (isDurableOutboxSettled(record)) return await finish();
+      // Reentry may restore history without restoring the raw message window.
+      // Its persisted user row is already sufficient proof for a host-owned
+      // send; do not keep its pending bubble behind projection/history RPCs.
+      if (hasDurableOwnership(record) && !record.cancelRequested && deps.cacheHistory
+        && await deps.cacheHistory(record)) {
+        if (current(record)) await finish();
+        return;
+      }
+      if (!current(record)) return;
       let projection: DeliveryProjection;
       try {
         projection = await deps.projection(record);

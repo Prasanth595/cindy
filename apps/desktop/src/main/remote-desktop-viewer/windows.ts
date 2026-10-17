@@ -6,11 +6,23 @@ import {
   type IpcMainInvokeEvent,
   type WebContents,
 } from 'electron';
-import { REMOTE_DESKTOP_CHANNEL, DeviceLinkError, parseClipboardContent } from '@cindy/device-link';
+import {
+  REMOTE_DESKTOP_CHANNEL,
+  DeviceLinkError,
+  parseClipboardContent,
+  parseRemoteDesktopRequest,
+} from '@cindy/device-link';
+import { createHash } from 'node:crypto';
+import { desktopDiagnosticCode } from '../../shared/remoteDesktopDiagnostics';
 import { REMOTE_VIEWER, type RemoteViewerTarget } from '../../shared/remoteDesktopViewer.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getAppCapabilities } from '../appCapabilities.js';
-import { getSelfDeviceId, remoteInvoke } from '../device-link/index.js';
+import {
+  getSelfDeviceId,
+  remoteInvoke,
+  getDeviceLinkStatus,
+  getUnresponsiveDeviceIds,
+} from '../device-link/index.js';
 import { loadDesktopIceServers } from '../remote-desktop/iceConfig.js';
 import {
   assertTrustedAppRendererEvent,
@@ -39,6 +51,8 @@ async function requestRemote<T>(device: string, request: unknown, check: () => v
   check();
   if (!getAppCapabilities().canUseDeviceLink || isAppSessionBoundaryPending())
     throw new Error('DESKTOP_STOPPED');
+  const startedAt = Date.now();
+  const startedMonotonic = performance.now();
   try {
     const result = await remoteInvoke(device, REMOTE_DESKTOP_CHANNEL, [request], {
       preSend: () => {
@@ -51,6 +65,27 @@ async function requestRemote<T>(device: string, request: unknown, check: () => v
       throw new Error(result.error.code === 'IPC_ERROR' ? result.error.message : result.error.code);
     return result.result as T;
   } catch (error) {
+    try {
+      const parsed = parseRemoteDesktopRequest(request);
+      const lease = 'lease' in parsed ? parsed.lease : null;
+      log.debug('desktop request failed', {
+        at: Date.now(),
+        startedAt,
+        elapsedMs: performance.now() - startedMonotonic,
+        operation: parsed.op,
+        session: lease ? createHash('sha256').update(lease).digest('hex').slice(0, 16) : null,
+        code: desktopDiagnosticCode(
+          error instanceof DeviceLinkError
+            ? error.code
+            : (extractIpcError(error)?.message ?? error),
+        ),
+        signaling: getDeviceLinkStatus(),
+        peerUnresponsive: getUnresponsiveDeviceIds().includes(device),
+        inFlight: error instanceof DeviceLinkError ? (error.inFlight ?? null) : null,
+      });
+    } catch {
+      /* Diagnostics must preserve the original request failure. */
+    }
     if (error instanceof DeviceLinkError) throw new Error(error.code);
     const parsed = extractIpcError(error);
     if (parsed?.code === 'DEVICE_LINK_CONTROL_DISABLED') throw new Error('REMOTE_DISABLED');

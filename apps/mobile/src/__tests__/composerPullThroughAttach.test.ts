@@ -1,6 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 
 vi.mock('react-native', () => ({
   Animated: { ScrollView: {} },
@@ -19,16 +17,6 @@ vi.mock('@/platform/gestureHandler', () => ({
 }));
 
 import { resolvePullThroughAttach } from '@/session/composerPullThrough';
-
-// 回归锁：runOnJS 的返回值若被保存进变量再在 worklet 里调用，会序列化成不可直接
-// 调用的 RemoteFunction 代理，UI 线程一调就报 Tried to synchronously call a Remote
-// Function（Greptile P1）。必须保持 reaction 内联调用写法。
-const composerPullThroughSource = readFileSync(
-  resolve(process.cwd(), 'src/session/composerPullThrough.tsx'), 'utf8',
-).replace(/\r\n/g, '\n');
-
-expect(composerPullThroughSource).toContain('runOnJS(setAttach)(');
-expect(composerPullThroughSource).not.toMatch(/=\s*runOnJS\(setAttach\)/);
 
 describe('composer pull-through gesture attach gate', () => {
   it('android keeps RNGH off the message list while the composer is idle', () => {

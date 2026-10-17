@@ -14,6 +14,7 @@ import {
 import { CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY, CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY } from '../codexBuiltinToolPolicy.js';
 import { registerAppServer, clearAppServerConfigs } from '../../mcp-apps/runtime.js';
 import { CINDY_MAKE_VENDOR_OPTION_KEY } from '../../../shared/cindyMakeSession.js';
+import { BOT_IM_CHANNELS_VENDOR_KEY } from '../../../shared/botImConnection.js';
 import { CustomMcpProvider } from '../custom-mcp-provider.js';
 
 function noopLogger(): Logger {
@@ -211,6 +212,46 @@ describe('codexEnvironment', () => {
     });
     expect(make['mcp_servers.cindy_make.enabled']).toBeUndefined();
     expect(make['mcp_servers.cindy_make.url']).toEqual(expect.stringContaining('/mcp/cindy_make'));
+  });
+
+  it('disables cindy_telegram_bot per thread unless the Session carries a Telegram channel marker', async () => {
+    const telegramBot: McpProvider = {
+      name: 'cindy_telegram_bot',
+      // Mirrors mcp-providers: the shared app-server builds its server list with an empty ctx.
+      isEnabled: (ctx) => typeof ctx.vendorOptions?.telegramChatId === 'string'
+        || ((ctx.agentKind === 'codex' || ctx.agentKind === 'pi') && !ctx.workingDir),
+      toClaudeSdkConfig: () => ({
+        type: 'sdk',
+        name: 'cindy_telegram_bot',
+        instance: new McpServer({ name: 'cindy_telegram_bot', version: '1.0.0' }),
+      }),
+    };
+    const config = await getCodexExtraSpawnConfig({
+      mcpProviders: [testProvider(), telegramBot],
+      logger: noopLogger(),
+    });
+    expect(config.extraArgs.some((arg) => arg.startsWith('mcp_servers.cindy_telegram_bot.url='))).toBe(true);
+
+    const desktop = config.buildSessionMcpConfig!('instance-desktop', { vendorOptions: {} });
+    expect(desktop['mcp_servers.cindy_telegram_bot.enabled']).toBe(false);
+    expect(desktop['mcp_servers.cindy_test.enabled']).toBeUndefined();
+    expect(config.buildSessionMcpConfig!('instance-legacy')['mcp_servers.cindy_telegram_bot.enabled']).toBe(false);
+
+    // Group / topic lane and personal bot session: chat-based vendor options.
+    const lane = config.buildSessionMcpConfig!('instance-lane', {
+      vendorOptions: { telegramChatId: 'g/-100123', source: 'telegram' },
+    });
+    expect(lane['mcp_servers.cindy_telegram_bot.enabled']).toBeUndefined();
+    // Bot canonical chat: bound-channel marker written by botProfileRuntime.
+    const canonical = config.buildSessionMcpConfig!('instance-main', {
+      vendorOptions: { [BOT_IM_CHANNELS_VENDOR_KEY]: ['telegram'] },
+    });
+    expect(canonical['mcp_servers.cindy_telegram_bot.enabled']).toBeUndefined();
+    // A Bot that only bound Feishu does not see the Telegram tool.
+    const feishuOnly = config.buildSessionMcpConfig!('instance-feishu', {
+      vendorOptions: { [BOT_IM_CHANNELS_VENDOR_KEY]: ['feishu'] },
+    });
+    expect(feishuOnly['mcp_servers.cindy_telegram_bot.enabled']).toBe(false);
   });
 
   it('freezes policy within one session instance but replaces it on thread rebinding', async () => {

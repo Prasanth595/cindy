@@ -417,7 +417,8 @@ export const botSessionLinks = sqliteTable(
       .references(() => sessions.id, { onDelete: 'cascade' }),
     /** ProfileVersion pinned when this Session became canonical/delegation-linked. */
     profileVersion: integer('profile_version').notNull().default(1),
-    role: text('role', { enum: ['canonical', 'history', 'delegation', 'group'] }).notNull(),
+    // TS-only enum (SQLite `text`, no CHECK): `channel` = 伙伴接管的个人 IM 群 / 话题专线。
+    role: text('role', { enum: ['canonical', 'history', 'delegation', 'group', 'channel'] }).notNull(),
     routeKey: text('route_key'),
     createdAt: integer('created_at').notNull(),
     archivedAt: integer('archived_at'),

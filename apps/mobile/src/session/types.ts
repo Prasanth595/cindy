@@ -132,6 +132,8 @@ export interface RemoteSessionRuntimePending {
 }
 
 export interface RemoteMessage {
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: import('@cindy/maker-shared/message-window').HistoryCacheReceipt;
   id: string;
   clientId: string;
   sessionId: string;
@@ -310,6 +312,8 @@ export interface InputProjection {
 }
 
 export interface PendingInteraction {
+  /** Controller-only draft retention; never sent to the Host. */
+  retainedDraft?: boolean;
   request: {
     kind?: string;
     requestId?: string;

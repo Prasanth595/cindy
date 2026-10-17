@@ -503,6 +503,8 @@ export interface MakerSendTransactionDeps {
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
    */
   prepareUnhealthySession?(sessionId: string): Promise<boolean | void>;
+  /** Restore durable task status before route changes or native session resume. */
+  restoreArchivedSessionForSend?(sessionId: string): Promise<void>;
   /**
    * session-agent-switch:pending 交接读取(agentHandoff 注册表)。命中时把交接
    * 文本前置进 wire payload(不影响 persistUserMessage 落库显示内容),并在
@@ -1008,6 +1010,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       if (typeof sessionId !== 'string') throwIpcError('INVALID_PARAMS', 'sessionId required');
       const dispatchProductTurn = deps.prepareProductTurn?.(sessionId);
       const requestedSendOpts = (sendOpts ?? {}) as MakerSendOptions;
+      if (!requestedSendOpts.signal?.aborted) {
+        await deps.restoreArchivedSessionForSend?.(sessionId);
+      }
       // session-agent-switch:pending 切换在发送时刻生效(用户语义:「消息真正发出
       // 去时才切」)。必须在 getSession 之前——apply 会 close 旧引擎的 live session,
       // 让下方走 lazy-create 按 DB 新值 spawn 新引擎。

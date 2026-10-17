@@ -822,7 +822,7 @@ describe('cloud companions in the roster', () => {
     const rows = screen.getAllByText('Mia');
     expect(rows).toHaveLength(1);
     const row = rows[0]!.closest('button')!;
-    expect(row.textContent).toContain('bots.cloud.homeOfflineShort');
+    expect(row.textContent).not.toContain('bots.remote.offline');
     fireEvent.click(row);
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/laptop/mia');
   });

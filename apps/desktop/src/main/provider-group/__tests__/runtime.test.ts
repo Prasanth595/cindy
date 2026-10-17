@@ -32,6 +32,15 @@ const { getProviderGroupDirectory, getProviderGroupOwnerScope, getProviderGroupR
 afterEach(() => setProviderGroupClaudeUsageReader(null));
 
 describe('provider group runtime', () => {
+  it('keeps the affected model through the runtime facade', () => {
+    owner = 'model-cooldown-owner';
+    const router = getProviderGroupRouter();
+    const until = Date.now() + 86_400_000;
+    router.markCooling('anthropic', 'local', until, 'claude-fable-5');
+    expect(router.coolingUntil('anthropic', 'local', 'fable')).toBe(until);
+    expect(router.coolingUntil('anthropic', 'local', 'opus')).toBeNull();
+    expect(router.coolingUntil('anthropic', 'local')).toBeNull();
+  });
   it('does not return the previous owner’s details after an account change', async () => {
     owner = 'detail-owner';
     const scope = getProviderGroupOwnerScope();

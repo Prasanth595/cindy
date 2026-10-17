@@ -437,7 +437,6 @@ const MarkdownRemoteMediaContext = createContext<ResolveRemoteMediaFn | undefine
 /** 分享模式吸顶 check 与行内 check 共用 44px 触达高度。 */
 const SHARE_STICKY_CHECK_HEIGHT = 44;
 const STICKY_SHARE_CHECK_THROTTLE_MS = 150;
-const SCREENSHOT_SHARE_VISIBLE_PERCENT_THRESHOLD = 10;
 // LegendList 变高 item 的初始估高(仅影响首帧布局定位,LegendList 挂载后按实测尺寸修正)。
 /** Bound the hidden initial correction so live measurement churn cannot blank the list for seconds. */
 const MOBILE_INITIAL_REVEAL_MAX_MS = 300;
@@ -644,11 +643,6 @@ export interface MobileMessageDraft {
 
 export type MobileMessageActionBusyKind = 'fork' | 'rewind' | 'delete';
 
-export interface ShareableMessageViewport {
-  visibleBottom: number;
-  visibleTop: number;
-}
-
 /** Desktop BotAvatar `sm` beside teammate replies; exported so the host renders a matching portrait. */
 export const COMPANION_AVATAR_SIZE = 28;
 const COMPANION_AVATAR_GAP = 10;
@@ -698,8 +692,6 @@ interface MessageActions {
    */
   onOpenPayloadFromItem?: (payload: MessagePayload, sourceGroupKey: string) => void;
   onLoadToolInput?: (ref: MobileToolInputProjection) => Promise<MobileToolInputDetail>;
-  onBlockingOverlayChange?: (blocked: boolean) => void;
-  onMessageActionSheetOpenChange?: (clientId: string, open: boolean) => void;
   /** 正文里会话深链 chip(xdt-maker://session/…)点击回调,app 内跳转。 */
   onOpenSessionLink?: (url: string) => void;
   onPreviewRewind?: (clientId: string, draft: MobileMessageDraft) => void;
@@ -710,7 +702,7 @@ interface MessageActions {
   /** 待发送气泡(pending_send 项)的展开态与队列操作回调。 */
   pendingSend?: PendingSendBubbleActions;
   getSentImagePreview?: GetSentMessageImagePreview;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   busyClientId?: string | null;
@@ -753,11 +745,9 @@ export function MessageRenderer({
   onOpenOriginSession,
   viewerDeviceId,
   onOpenSourceDevice,
-  onBlockingOverlayChange,
   onOpenSessionLink,
   onPreviewRewind,
   onEnterShareSelection,
-  onVisibleShareableMessageIdsReaderChange,
   shareSelectionActive,
   shareSelectionBusy,
   onQuoteSelection,
@@ -838,9 +828,6 @@ export function MessageRenderer({
   /** 全屏图片查看器的圈点标注配置(画笔 → 发送到对话;由会话屏接线附件管线)。 */
   imageAnnotation?: ImageLightboxAnnotationConfig;
   onEnterShareSelection?: (clientId: string) => void;
-  onVisibleShareableMessageIdsReaderChange?: (
-    reader: ((viewport: ShareableMessageViewport) => Promise<readonly string[]>) | null,
-  ) => void;
   shareSelectionActive?: boolean;
   shareSelectionBusy?: boolean;
   /** DEV-only:把内部列表控制器暴露给性能 harness 驱动自动滚动(临时,profiling/回归测量用)。 */
@@ -1108,27 +1095,9 @@ export function MessageRenderer({
     setPayloadSourceGroupKey(sourceGroupKey);
     setPayload(next);
   }, []);
-  const payloadRef = useRef(payload);
-  payloadRef.current = payload;
-  const openMessageActionSheetsRef = useRef(new Set<string>());
-  const handleMessageActionSheetOpenChange = useCallback((clientId: string, open: boolean) => {
-    if (open) openMessageActionSheetsRef.current.add(clientId);
-    else openMessageActionSheetsRef.current.delete(clientId);
-    if (!historyActiveRef.current) return;
-    onBlockingOverlayChange?.(
-      payloadRef.current !== null || openMessageActionSheetsRef.current.size > 0,
-    );
-  }, [onBlockingOverlayChange]);
   useEffect(() => {
-    if (!historyActive) {
-      setPayload(null);
-      return;
-    }
-    onBlockingOverlayChange?.(
-      payload !== null || openMessageActionSheetsRef.current.size > 0,
-    );
-    return () => onBlockingOverlayChange?.(false);
-  }, [historyActive, onBlockingOverlayChange, payload]);
+    if (!historyActive) setPayload(null);
+  }, [historyActive, payload]);
   // 关闭回调必须引用稳定:内联闭包每次渲染换新,会经 ImageLightbox 透传成
   // LightboxPage 手势 useMemo 的依赖,流式回复期间每 token 重建手势图,
   // 可能打断进行中的捏合/拖动手势(rule 7)。
@@ -1799,7 +1768,6 @@ export function MessageRenderer({
     onOpenPayload: openPayload,
     onOpenPayloadFromItem: openPayloadFromItem,
     onLoadToolInput,
-    onMessageActionSheetOpenChange: handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
     // 待发送气泡(pending_send 项)的展开态与队列操作:漏了这一项 actions.pendingSend 就是
     // undefined,渲染分支直接 null —— 气泡整个不画,乐观显示消失。
@@ -1846,7 +1814,6 @@ export function MessageRenderer({
     onPreviewRewind,
     onEnterShareSelection,
     handleShareableMessageViewChange,
-    handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
     openPayload,
     openPayloadFromItem,
@@ -1943,45 +1910,6 @@ export function MessageRenderer({
   useEffect(() => () => {
     if (stickyCheckTimerRef.current) clearTimeout(stickyCheckTimerRef.current);
   }, []);
-  const readActuallyVisibleShareableMessageIds = useCallback(async (
-    viewport: ShareableMessageViewport,
-  ): Promise<readonly string[]> => {
-    const list = listRef.current;
-    if (!list) return [];
-    const listFrame = await measureInWindow(list.getNativeScrollRef());
-    if (!listFrame || listFrame.height <= 0) return [];
-    const visibleTop = Math.max(listFrame.y, viewport.visibleTop);
-    const visibleBottom = Math.min(
-      listFrame.y + listFrame.height,
-      viewport.visibleBottom,
-    );
-    if (visibleBottom <= visibleTop) return [];
-    const measuredItems = await Promise.all(
-      Array.from(shareableMessageViewsRef.current.entries()).map(async ([clientId, view]) => {
-        const frame = await measureInWindow(view);
-        if (!frame || frame.height <= 0) return null;
-        const visibleHeight = Math.max(
-          0,
-          Math.min(frame.y + frame.height, visibleBottom) - Math.max(frame.y, visibleTop),
-        );
-        if (
-          visibleHeight / frame.height
-          < SCREENSHOT_SHARE_VISIBLE_PERCENT_THRESHOLD / 100
-        ) return null;
-        return { clientId, y: frame.y };
-      }),
-    );
-    return measuredItems
-      .filter((item): item is { clientId: string; y: number } => item !== null)
-      .sort((left, right) => left.y - right.y)
-      .map((item) => item.clientId);
-  }, []);
-  useEffect(() => {
-    if (!historyActive) return;
-    onVisibleShareableMessageIdsReaderChange?.(readActuallyVisibleShareableMessageIds);
-    return () => onVisibleShareableMessageIdsReaderChange?.(null);
-  }, [historyActive, onVisibleShareableMessageIdsReaderChange, readActuallyVisibleShareableMessageIds]);
-
   // 贴底跟随由 handleContentSize 的手动补滚承担(nearBottomRef 是跟随意图的唯一真相);
   // 跳底先命令式 scrollToEnd,随后复用同一轮有界落底校验。
   const scrollToBottom = useCallback(() => {
@@ -3499,11 +3427,6 @@ function MessageBubble({
   const isUser = presentation.isUserAligned && !item.message.hookSource;
   const isStreamingAssistant = item.message.kind === 'assistant' && item.message.isStreaming === true;
   const clientId = messageClientId(item);
-  useEffect(() => {
-    if (!historyActive || !actionSheetOpen) return undefined;
-    actions.onMessageActionSheetOpenChange?.(clientId, true);
-    return () => actions.onMessageActionSheetOpenChange?.(clientId, false);
-  }, [historyActive, actionSheetOpen, actions.onMessageActionSheetOpenChange, clientId]);
   const shareableMessage = isShareableMessage(item.message);
   const handleShareableMessageViewChange = useCallback((view: View | null) => {
     actions.onShareableMessageViewChange?.(clientId, view);
@@ -7266,7 +7189,7 @@ function MessagePayloadModal({
   /** 图表导出图的标注配置(来自聊天 lightbox 的同一份 chatAnnotation)。 */
   imageAnnotation?: ImageLightboxAnnotationConfig;
   onClose(): void;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   onShareImage?: ComponentProps<typeof ImageLightbox>['onShareImage'];
@@ -7651,7 +7574,7 @@ function MessagePayloadBody({
   onResolveRemoteMedia,
 }: {
   payload: MessagePayload;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
   onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
 }) {
@@ -7845,7 +7768,7 @@ function DiffPayloadBody({
 }: {
   diff: NormalizedToolDiff;
   layout: PayloadBodyLayout;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
 }) {
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -8033,7 +7956,7 @@ function FilePayloadBody({
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   layout: PayloadBodyLayout;
   payload: Extract<MessagePayload, { kind: 'file' }>;
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>;
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>;
 }) {
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -8132,26 +8055,34 @@ type RemoteTextFilePreviewLoadState =
 
 function useRemoteTextFilePreview(
   sourcePath: string,
-  onReadTextFilePreview?: (filePath: string) => Promise<RemoteTextFilePreviewResult>,
+  onReadTextFilePreview?: (filePath: string, options?: { signal?: AbortSignal }) => Promise<RemoteTextFilePreviewResult>,
 ) {
   const { i18n: i18nInstance } = useTranslation();
   const [previewLoadState, setPreviewLoadState] = useState<RemoteTextFilePreviewLoadState>(
     { status: 'idle' },
   );
   const previewSeqRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
   const previewKind = useMemo(() => remoteFilePreviewKind(sourcePath), [sourcePath]);
   const canPreview = previewKind === 'text' && !!sourcePath && !!onReadTextFilePreview;
 
   useEffect(() => {
     previewSeqRef.current += 1;
     setPreviewLoadState({ status: 'idle' });
-  }, [sourcePath]);
+    return () => {
+      previewSeqRef.current += 1;
+      previewAbortRef.current?.abort();
+    };
+  }, [sourcePath, onReadTextFilePreview]);
 
   const loadPreview = useCallback(() => {
     if (!canPreview || previewLoadState.status === 'loading') return;
     const seq = ++previewSeqRef.current;
+    previewAbortRef.current?.abort();
+    const abort = new AbortController();
+    previewAbortRef.current = abort;
     setPreviewLoadState({ status: 'loading' });
-    void onReadTextFilePreview(sourcePath)
+    void onReadTextFilePreview(sourcePath, { signal: abort.signal })
       .then((result) => {
         if (previewSeqRef.current !== seq) return;
         if (result.success && typeof result.data === 'string') {

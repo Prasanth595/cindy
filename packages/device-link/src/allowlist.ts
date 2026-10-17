@@ -35,7 +35,15 @@ import {
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
 } from './orcaRemoteWorker.js';
 import { TASK_MIGRATION_CHANNEL } from './taskMigration.js';
-import { COMPANION_CLOUD_CAPS_CHANNEL } from './companionCloud.js';
+import {
+  COMPANION_CLOUD_CAPS_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
+  COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_MERGE_TIMEOUT_MS,
+  COMPANION_CLOUD_TARGETS_CHANNEL,
+} from './companionCloud.js';
 import { SESSION_ACTIVITY_CHANNEL, SESSION_SYNC_CHANNEL } from './topics.js';
 import { REMOTE_DESKTOP_INVOKE_MS } from './remoteDesktopIce.js';
 import {
@@ -440,6 +448,17 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 云端伙伴：交出伙伴前探测目标电脑是否支持接手(只读常量，无 sender 依赖、无本机 UI 副作用)。
   // 老版本无 handler → CHANNEL_NOT_ALLOWED，交出方拒绝该目标。
   COMPANION_CLOUD_CAPS_CHANNEL,
+  // 云端伙伴：在任一台电脑上更换伙伴的主力电脑。只读读取主力电脑视角的可接手电脑，以及请主力电脑
+  // 交出伙伴(写)。准入同本机伙伴设置的「主力电脑」一行：同账号 + 主力电脑开启远程控制时控制端本就
+  // 能远程改这个伙伴；交出走被控端同一业务流程(同步、忙碌检查、比较后改主力电脑)，handler 不依赖
+  // sender、无本机 UI 副作用。仅同账号远控，不进 sharedTask 访客白名单。老版本无 handler →
+  // CHANNEL_NOT_ALLOWED；控制端按 caps 版本隐藏入口。
+  COMPANION_CLOUD_TARGETS_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_CHANNEL,
+  // 云端伙伴：请保留的那个 Cindy 所在电脑合并其他 Cindy（写；同账号远控，准入同上，业务 handler 只在
+  // 本机运行保留的那个 Cindy 时执行）。合并前请各来源 Cindy 的主力电脑先同步（写，只上传、不改主力电脑）。
+  COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
   // —— Rewind / Fork / Title / Context ——
   'maker:rewind:preview',
   'maker:rewind:commit',
@@ -836,6 +855,10 @@ export const INVOKE_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   [DL_SESSION_HANDOFF_CHANNEL]: 65_000,
   // 运行设备准备工作目录并启动 Worker 的 Agent，可能超过默认 30s。
   [ORCA_REMOTE_WORKER_OPEN_CHANNEL]: ORCA_REMOTE_WORKER_OPEN_TIMEOUT_MS,
+  // 交出伙伴先把积压对话与全部资料传到服务器，再改主力电脑。
+  [COMPANION_CLOUD_HAND_OVER_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
+  [COMPANION_CLOUD_MERGE_CHANNEL]: COMPANION_CLOUD_MERGE_TIMEOUT_MS,
+  [COMPANION_CLOUD_FLUSH_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
   // listing tier 轻量 DB 读:毫秒级查询,12s 仍等不到只能是链路问题,快速失败喂给熔断器。
   // 12s 同时覆盖被控端冷启动 DB 迁移的常见时长(那类失败是快速返回的 DbClient not ready,
   // 不吃满超时),不会误伤首拉重试。

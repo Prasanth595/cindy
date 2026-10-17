@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { encodeInvokeResultTransfer, InvokeResultCache } from '@cindy/device-link';
 import { desktopTransferCodec } from '../transferCodec';
+import { decodeGzipBase64TextBounded } from '../../../../../mobile/src/utils/gzipBase64';
 
 describe('desktop device-link transfer codec', () => {
-  it('round-trips a large result between a desktop host and a desktop controller', () => {
+  // Protocol regression: the shared Node compressor must retain both desktop
+  // zlib and mobile pako compatibility. No native Mobile dependency changes.
+  it.each([
+    ['desktop', desktopTransferCodec],
+    ['mobile', { gunzipBase64: decodeGzipBase64TextBounded }],
+  ] as const)('round-trips a large result between a desktop host and a %s controller', (_name, codec) => {
     const result = Array.from({ length: 300 }, (_, i) => ({ id: `s-${i}`, title: '远程任务 ✓' }));
-    const controller = new InvokeResultCache(desktopTransferCodec);
+    const controller = new InvokeResultCache(codec);
     const request = controller.prepare('desktop-b', { channel: 'local-db:sessions:list', args: [] });
     const wire = encodeInvokeResultTransfer(request.payload.transfer!, { ok: true, result }, desktopTransferCodec);
     expect(wire.ok && wire.transfer?.gzipBase64).toEqual(expect.any(String));

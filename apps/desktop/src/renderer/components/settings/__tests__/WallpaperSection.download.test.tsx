@@ -3,9 +3,10 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WallpaperSection } from '../WallpaperSection';
-import { DEFAULT_APPEARANCE_SETTINGS } from '@/../shared/appearanceSettings';
+import { DEFAULT_APPEARANCE_SETTINGS, type WallpaperId } from '@/../shared/appearanceSettings';
 
 const state = vi.hoisted(() => ({
+  id: 'cindy-window' as WallpaperId,
   pending: false,
   failed: false,
   progress: 0,
@@ -16,7 +17,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/hooks/useWallpaperSettings', () => ({
   useWallpaperSettings: () => ({
     ...DEFAULT_APPEARANCE_SETTINGS,
-    wallpaperId: 'cindy-window',
+    wallpaperId: state.id,
     visibility: 1,
     downloadPending: state.pending,
     downloadFailed: state.failed,
@@ -31,6 +32,7 @@ vi.mock('@/hooks/useWallpaperSettings', () => ({
   }),
 }));
 beforeEach(() => {
+  state.id = 'cindy-window';
   state.pending = false;
   state.failed = false;
   state.progress = 0;
@@ -51,74 +53,99 @@ afterEach(() => {
 });
 
 describe('wallpaper download feedback', () => {
-  it('shows pending work only over the selected thumbnail, then removes it on completion', () => {
-    state.pending = true;
-    const { rerender } = render(<WallpaperSection />);
-    const selected = screen.getByRole('radio', {
-      name: 'settings.appearance.wallpaper.options.cindy-window',
-    });
-    const status = within(selected).getByRole('progressbar');
-    expect(screen.getAllByRole('progressbar')).toEqual([status]);
-    expect(status.getAttribute('aria-valuenow')).toBe('0');
-    expect(selected.getAttribute('aria-busy')).toBe('true');
-    // The status remains available to assistive technology without a visible text row.
-    const description = within(status).getByText('settings.appearance.wallpaper.downloading');
-    expect(description.classList.contains('sr-only')).toBe(true);
-    expect(selected.getAttribute('aria-describedby')).toBe(description.id);
-    expect(
-      within(
-        screen.getByRole('radio', {
-          name: 'settings.appearance.wallpaper.options.cindy-studio',
-        }),
-      ).queryByRole('progressbar'),
-    ).toBeNull();
-    for (const progress of [0.25, 0.75, 1]) {
-      state.progress = progress;
+  // User request 2026-10-17: still-only originals share download progress/retry
+  // with scenes, but have no motion switch. Existing cases only exercised
+  // cindy-window; minimum additional input is cindy-whisper; unit tier.
+  it.each(['cindy-window', 'cindy-whisper'] as const)(
+    'shows progress for %s while keeping its tile visible',
+    (id) => {
+      state.id = id;
+      state.pending = true;
+      const { rerender } = render(<WallpaperSection />);
+      const status = screen.getByRole('progressbar', {
+        name: 'settings.appearance.wallpaper.downloading',
+      });
+      expect(
+        screen
+          .getByRole('radio', {
+            name: 'settings.appearance.wallpaper.options.' + id,
+          })
+          .getAttribute('aria-checked'),
+      ).toBe('true');
+      expect(screen.getAllByRole('progressbar')).toEqual([status]);
+      if (id === 'cindy-whisper')
+        expect(screen.queryByText('settings.appearance.wallpaper.motionLabel')).toBeNull();
+      expect(status.getAttribute('aria-valuenow')).toBe('0');
+      for (const progress of [0.25, 0.75, 1]) {
+        state.progress = progress;
+        rerender(<WallpaperSection />);
+        expect(status.getAttribute('aria-valuenow')).toBe(String(progress * 100));
+        expect(
+          within(screen.getByRole('status')).getByText(String(progress * 100) + '%'),
+        ).toBeTruthy();
+      }
+      state.pending = false;
       rerender(<WallpaperSection />);
-      expect(status.getAttribute('aria-valuenow')).toBe(String(progress * 100));
-      const fill = status.querySelector<HTMLElement>('[aria-hidden="true"]')!;
-      expect(fill.classList.contains('origin-bottom')).toBe(true);
-      expect(fill.style.transform).toBe(`scaleY(${progress})`);
-    }
-    state.pending = false;
-    rerender(<WallpaperSection />);
-    expect(screen.queryByRole('status')).toBeNull();
-    expect(screen.queryByRole('progressbar')).toBeNull();
-    expect(selected.hasAttribute('aria-busy')).toBe(false);
-    expect(selected.hasAttribute('aria-describedby')).toBe(false);
-  });
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
+    },
+  );
 
-  it('retries from the failed thumbnail while other thumbnails still change the selection', () => {
-    state.failed = true;
-    const { rerender } = render(<WallpaperSection />);
-    const selected = screen.getByRole('radio', {
-      name: 'settings.appearance.wallpaper.options.cindy-window',
-    });
-    expect(within(selected).getByRole('status').textContent).toContain('wallpaper.downloadFailed');
-    expect(selected.title).toBe('settings.appearance.wallpaper.retryDownload');
-    expect(
-      screen.queryByRole('button', { name: 'settings.appearance.wallpaper.retryDownload' }),
-    ).toBeNull();
-    fireEvent.click(selected);
-    expect(state.retry).toHaveBeenCalledOnce();
-    expect(state.select).not.toHaveBeenCalled();
-    fireEvent.click(
-      screen.getByRole('radio', {
-        name: 'settings.appearance.wallpaper.options.cindy-studio',
-      }),
-    );
-    expect(state.select).toHaveBeenCalledWith('cindy-studio');
-    expect(state.retry).toHaveBeenCalledOnce();
+  it.each(['cindy-window', 'cindy-whisper'] as const)(
+    'keeps manual retry reachable for %s and lets new tiles change selection',
+    (id) => {
+      state.id = id;
+      state.failed = true;
+      const { rerender } = render(<WallpaperSection />);
+      expect(screen.getByRole('status').textContent).toContain('wallpaper.downloadFailed');
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: 'settings.appearance.wallpaper.retryDownload',
+        }),
+      );
+      expect(state.retry).toHaveBeenCalledOnce();
+      expect(state.select).not.toHaveBeenCalled();
+      fireEvent.click(
+        screen.getByRole('radio', {
+          name: 'settings.appearance.wallpaper.options.cindy-whisper',
+        }),
+      );
+      expect(state.select).toHaveBeenCalledWith('cindy-whisper');
+      expect(state.retry).toHaveBeenCalledOnce();
 
+      state.pending = true;
+      rerender(<WallpaperSection />);
+      expect(
+        screen.queryByRole('button', {
+          name: 'settings.appearance.wallpaper.retryDownload',
+        }),
+      ).toBeNull();
+      expect(screen.getByRole('progressbar')).toBeTruthy();
+      state.pending = false;
+      state.failed = false;
+      rerender(<WallpaperSection />);
+      expect(screen.queryByRole('status')).toBeNull();
+    },
+  );
+
+  it('does not show stale CDN feedback when no wallpaper is selected', () => {
+    state.id = 'none';
     state.pending = true;
-    rerender(<WallpaperSection />);
-    expect(selected.hasAttribute('title')).toBe(false);
-    expect(selected.getAttribute('aria-busy')).toBe('true');
-    fireEvent.click(selected);
-    expect(state.retry).toHaveBeenCalledOnce();
-    state.pending = false;
-    state.failed = false;
-    rerender(<WallpaperSection />);
+    state.failed = true;
+    render(<WallpaperSection />);
+    expect(screen.queryByRole('progressbar')).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
+    expect(
+      screen.queryByRole('button', {
+        name: 'settings.appearance.wallpaper.retryDownload',
+      }),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole('radio', {
+          name: 'settings.appearance.wallpaper.options.none',
+        })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
   });
 });

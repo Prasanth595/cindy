@@ -109,8 +109,9 @@ describe('WechatIM host boundary', () => {
     await expect(im.startStreamingText('peer')).rejects.toThrow('WECHAT_RICH_OUTPUT_UNSUPPORTED');
   });
 
-  it('uses the shared empty-output copy after filtering the final text', () => {
-    expect(__testing.normalizeFinalOutputText('')).toBe('✅ (本轮无文本输出)');
+  it('preserves empty output after filtering the final text', () => {
+    expect(__testing.normalizeFinalOutputText('')).toBe('');
+    expect(__testing.normalizeFinalOutputText(' \n ')).toBe('');
     expect(__testing.normalizeFinalOutputText('hello')).toBe('hello');
   });
 

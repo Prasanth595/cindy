@@ -169,11 +169,16 @@ describe('sharedTask dispatch scope', () => {
     expect(() => assertSharedTaskInvoke(noHistory, { channel, args: ['task', 'bash-1'] })).toThrow();
   });
   it('accepts media preparation and OSS fallback without granting the file-peer channel', () => {
-    for (const prepareOnly of [true, false]) {
-      expect(() => assertSharedTaskInvoke(capture(), {
-        channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', prepareOnly }],
-      })).not.toThrow();
+    for (const options of [{ prepareOnly: true, metadataOnly: true }, { prepareOnly: true }, { prepareOnly: false }]) {
+      const request = { channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', ...options }] };
+      for (const phase of ['invoke', 'result'] as const) {
+        expect(() => assertSharedTaskInvoke(capture(), request, undefined, phase)).not.toThrow();
+        expect(() => assertSharedTaskInvoke({ ...capture(), authorize: () => false }, request, undefined, phase)).toThrow('PERMISSION_DENIED');
+      }
     }
+    expect(() => assertSharedTaskInvoke(capture(), {
+      channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', metadataOnly: 'true' }],
+    })).toThrow('PERMISSION_DENIED');
     expect(() => assertSharedTaskInvoke(capture(), {
       channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', prepareOnly: true, sessionId: 'other' }],
     })).toThrow();

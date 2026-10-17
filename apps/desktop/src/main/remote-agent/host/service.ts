@@ -1,3 +1,4 @@
+import { readRemoteAgentLimitsState } from './limitsStore.js';
 /**
  * 远程 Agent 运行服务的被控端接线：把 `maker:remote-agent:v1` 接到本机 Maker 的 Agent。
  * 准入：本机打开了「允许远程控制」且没有撤销该控制端；账号切换后进行中的任务全部结束。
@@ -118,6 +119,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     log,
   });
   host = createRemoteAgentHost({
+    readLimits: () => readRemoteAgentLimitsState().value,
     isAgentAvailable: (kind) => {
       try {
         return options.getMaker().listAvailableAgents().includes(kind);
@@ -196,6 +198,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     abortReshare: (match, reshareKey) => current.abortReshare(match, reshareKey),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
+    limitUsage: () => current.limitUsage(),
     turnRunningControllers: () => current.turnRunningControllers(),
     sharedGroupStatus: (providerId, guestController) => groupRelay.sharedStatus(providerId, guestController),
   });

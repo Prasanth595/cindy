@@ -38,6 +38,9 @@ import { importMemoryMedia } from './memoryMedia.js';
 import { projectImportedSkill } from './skillResources.js';
 import { assertImportedAutomationReady } from './automationRuntime.js';
 
+/** Bot tokens saved resolved, so delivery and the companion's own connection read the real value. */
+const IM_BOT_CREDENTIAL_FORMATS = new Set(['telegram', 'discord', 'feishu', 'wecom', 'dingtalk']);
+
 interface Owned<T> { owner: string; controller: string; value: T; createdAt: number }
 const sources = new Map<string, Owned<ImportSource>>();
 const previews = new Map<string, Owned<ImportSnapshot> & { bytes: number }>();
@@ -112,10 +115,14 @@ async function retainPreview(id: string, entry: Owned<ImportSnapshot>, assertOwn
   previews.set(id, { ...entry, bytes });
 }
 
-export async function previewCompanionImport(sourceId: string, controller: string): Promise<CompanionImportPreview> {
+/**
+ * `bots`: the controller renders the bots category (local UI, `import_agent`, remote clients that
+ * advertise it). The retained snapshot keeps that choice in each item's category, through start and recovery.
+ */
+export async function previewCompanionImport(sourceId: string, controller: string, bots = true): Promise<CompanionImportPreview> {
   const scope = owner();
   const source = owned(sources, sourceId, controller);
-  const inspected = await inspectImportSource(source, readers()); scope.assert();
+  const inspected = await inspectImportSource(source, readers(), undefined, { bots }); scope.assert();
   const snapshot = { ...inspected, items: inspected.items.map((item, index) => ({ ...item, sourceIndex: index })) };
   if (snapshot.avatarImageBase64) {
     const original = Buffer.from(snapshot.avatarImageBase64, 'base64');
@@ -137,7 +144,7 @@ export async function previewCompanionImport(sourceId: string, controller: strin
 
 /** Freeze each public read while transferring it; never re-inspect a source between chunks.
  * UTF-16 slices are at most 1.5 MiB after JSON escaping, well below a 2 MiB frame. */
-export async function readRemoteCompanionImport(id: string, controller: string, chunked: boolean): Promise<Record<string, unknown>> {
+export async function readRemoteCompanionImport(id: string, controller: string, chunked: boolean, bots = false): Promise<Record<string, unknown>> {
   const scope = owner();
   const chunk = (token: string, text: string, offset: number) => ({
     chunk: { id: token, offset, total: text.length, text: text.slice(offset, offset + COMPANION_IMPORT_CHUNK_LENGTH) },
@@ -151,7 +158,7 @@ export async function readRemoteCompanionImport(id: string, controller: string, 
     return chunk(match[1]!, text, offset);
   }
   const data = id === 'sources' ? { sources: await listCompanionImportSources(controller) }
-    : id.startsWith('preview:') ? { preview: await previewCompanionImport(id.slice(8), controller) }
+    : id.startsWith('preview:') ? { preview: await previewCompanionImport(id.slice(8), controller, bots) }
       : id.startsWith('result:') ? { result: await getCompanionImportResult(id.slice(7)) ?? null } : undefined;
   scope.assert();
   if (!data) throw new CompanionImportError('INVALID_REQUEST');
@@ -769,7 +776,7 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
           }
           return [server];
         }),
-        credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || item.credential.format !== 'telegram') ? [{ id: item.view.id, ...item.credential, ...(item.credential.format === 'telegram' ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
+        credentials: items.flatMap(item => item.credential && !item.view.dependsOn?.some(id => !chosen.has(id)) && (!item.view.issues?.length || !IM_BOT_CREDENTIAL_FORMATS.has(item.credential.format)) ? [{ id: item.view.id, ...item.credential, ...(IM_BOT_CREDENTIAL_FORMATS.has(item.credential.format) ? { value: resolveReferences(item.credential.value) } : {}) }] : []),
         files: Object.fromEntries(items.flatMap(item => item.asset && !isMemoryItem(item) ? [[item.asset.name, item.asset.bytes.toString('base64')]] : [])),
         fileExecutables: Object.fromEntries(items.flatMap(item => item.asset && !isMemoryItem(item) ? [[item.asset.name, item.asset.executable === true]] : [])),
         memoryFiles: Object.fromEntries(items.flatMap(memoryFileEntries)),
@@ -803,6 +810,29 @@ export async function startCompanionImport(selection: CompanionImportSelection, 
       return routine.id;
     },
     verifyAutomation: (botId, item) => verifyImportedAutomation(scope.root, botId, item, scope.assert, selected, snapshot.source.root),
+    async connectImBot(botId, item) {
+      if (!item.credential) return undefined;
+      // Loaded lazily so the import pipeline does not pull the IM runtime into its own module graph.
+      const { connectImportedImBot } = await import('./imBotConnections.js'); scope.assert();
+      const value = resolveImportReferences(item.credential.value, selectedImportEnvironment(selected));
+      const issue = await connectImportedImBot(botId, { format: item.credential.format, value }); scope.assert();
+      return issue;
+    },
+    async takeOverImBot(botId, item, record, save) {
+      if (!item.credential) return undefined;
+      // Loaded lazily so the import pipeline does not pull the IM runtime into its own module graph.
+      const [{ importedImBotTarget }, { takeOverImportedBot }] = await Promise.all([import('./imBotConnections.js'), import('./botTakeover.js')]); scope.assert();
+      const target = importedImBotTarget(botId, { format: item.credential.format, value: resolveImportReferences(item.credential.value, selectedImportEnvironment(selected)) });
+      if (typeof target === 'string') return target;
+      try {
+        return await takeOverImportedBot({ source: snapshot.source, item, target, record, save, readers: readers(), assertOwner: scope.assert });
+      } catch (error) {
+        scope.assert();
+        if (error instanceof CompanionImportError && error.code === 'OWNER_CHANGED') throw error;
+        // The durable record stays as saved; an explicit retry resumes from it.
+        return 'IMPORT_IM_BOT_CONNECT_FAILED';
+      }
+    },
     pauseSource: (item, source, resumeInterruptedPause) => changeSourceAutomationState(source.source, item, false, readers(), scope.assert, resumeInterruptedPause, selectedImportEnvironment(selected)),
     resumeSource: (item, source) => changeSourceAutomationState(source.source, item, true, readers(), scope.assert, false, selectedImportEnvironment(selected)),
     async enableRoutine(botId, routineId, item) {

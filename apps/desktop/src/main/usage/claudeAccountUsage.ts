@@ -104,6 +104,22 @@ let lastFetchAt = 0;
 let lastFetchOwnerKey: string | null = null;
 let idlePollTimer: NodeJS.Timeout | null = null;
 
+/** Reset process-local quota state for tests that share one module instance. */
+export function __resetClaudeAccountUsageForTesting(): void {
+  if (idlePollTimer) clearInterval(idlePollTimer);
+  idlePollTimer = null;
+  snapshot = null;
+  snapshotOwnerKey = null;
+  clearReason = 'unlimited';
+  fetchInFlight = false;
+  fetchOwnerKey = null;
+  refreshQueued = false;
+  lastFetchAt = 0;
+  lastFetchOwnerKey = null;
+  quotaSnapshotRevision = 0;
+  quotaSnapshotListeners.clear();
+}
+
 interface LiteLlmUserInfo {
   spend?: number;
   max_budget?: number;

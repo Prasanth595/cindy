@@ -349,7 +349,7 @@ describe('provider group relay for shared users', () => {
     const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
     expect(env.memberStarted.mini).toHaveLength(0);
     expect(env.memberStarted.studio).toHaveLength(1);
-    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', MEMBER_MINI, expect.any(Error));
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', MEMBER_MINI, expect.any(Error), 'claude-opus');
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
     await client.close('close', 'navigation');
   });
@@ -359,7 +359,7 @@ describe('provider group relay for shared users', () => {
     const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
     expect(env.memberStarted.mini).toHaveLength(1);
     // 与组内电脑接不下同一个判定；换下一台时不再回到本机这一台。
-    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', expect.objectContaining({ memberKey: 'local' }), expect.any(Error));
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', expect.objectContaining({ memberKey: 'local' }), expect.any(Error), 'claude-opus');
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set(['local']) }));
     await client.close('close', 'navigation');
   });
@@ -688,6 +688,7 @@ describe('provider group "switch to another computer" for shared users', () => {
       'shared-provider',
       MEMBER_MINI,
       expect.objectContaining({ usageLimit: true, message: 'You have hit your usage limit' }),
+      'claude-opus',
     );
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
     await first.client.close('close', 'navigation');
@@ -804,6 +805,7 @@ describe('provider group "switch to another computer" for shared users', () => {
     expect(guest.stream).toContainEqual(expect.objectContaining({ t: 'event', event: expect.objectContaining({ type: 'error', data }) }));
     expect(env.relay.noteRunFailure).toHaveBeenCalledWith(
       'shared-provider', expect.anything(), expect.objectContaining({ sdkError: 'max_output_tokens' }),
+      'claude-opus',
     );
     expect(switchTokenIn(guest.stream)).toBeUndefined();
     expect(env.relay.plan).toHaveBeenCalledTimes(1);
@@ -826,6 +828,7 @@ describe('provider group "switch to another computer" for shared users', () => {
       'shared-provider',
       expect.objectContaining({ memberKey: 'local' }),
       expect.objectContaining({ usageLimit: true }),
+      'claude-opus',
     );
     await first.client.close('close', 'navigation');
 
@@ -851,6 +854,7 @@ describe('provider group "switch to another computer" for shared users', () => {
       'shared-provider',
       expect.objectContaining({ memberKey: 'local' }),
       expect.objectContaining({ reason: 'remote_agent_closed' }),
+      'claude-opus',
     );
   });
 
@@ -869,6 +873,7 @@ describe('provider group "switch to another computer" for shared users', () => {
       'shared-provider',
       MEMBER_MINI,
       expect.objectContaining({ reason: 'remote_agent_closed' }),
+      'claude-opus',
     );
   });
 
@@ -1061,7 +1066,7 @@ describe('provider group reshare consent', () => {
     const { client } = await openAsGuest(env, C_AT_B, openPayload(SESSION));
     expect(opened).toEqual(['mini']);
     expect(env.memberStarted.studio).toHaveLength(0);
-    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', shared, expect.objectContaining({ message: expect.stringContaining('REMOTE_AGENT_PEER_TOO_OLD') }));
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', shared, expect.objectContaining({ message: expect.stringContaining('REMOTE_AGENT_PEER_TOO_OLD') }), 'claude-opus');
     await client.close('close', 'navigation');
   });
 

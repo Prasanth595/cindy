@@ -50,6 +50,21 @@ let readCurrentCredentialStatus: (() => ModelAccessStatus | null) | null = null;
 export function setQuotaCredentialStatusReader(reader: () => ModelAccessStatus | null): void {
   readCurrentCredentialStatus = reader;
 }
+
+/** Reset the process-local credential snapshot without notifying production listeners. */
+export function __resetQuotaCredentialStateForTesting(
+  ownerKey: string | null,
+  status: ModelAccessStatus,
+): void {
+  owner = ownerKey;
+  endpoint = status.endpoint?.trim().replace(/\/+$/, '') || null;
+  source = status.source;
+  ready = status.state === 'ok' && status.source === 'server' && !!endpoint;
+  synchronized = ready;
+  generation = 0;
+  readCurrentCredentialStatus = null;
+}
+
 export function refreshQuotaCredentialOwner(ownerKey: string): void {
   if (owner === ownerKey) return;
   const status = readCurrentCredentialStatus?.();

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { WallpaperId } from '@/../shared/appearanceSettings';
-import { isSceneWallpaper } from '@/lib/wallpaper';
+import { isCdnWallpaper } from '@/lib/wallpaper';
 import manifest from '@/../shared/wallpaper-video-manifest.json';
 
 type AssetState = {
@@ -16,9 +16,10 @@ export function useWallpaperAsset(id: WallpaperId, kind: 'image' | 'video', enab
   const [state, setState] = useState<AssetState | null>(null);
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
-  const active = enabled && isSceneWallpaper(id);
-  const entry = isSceneWallpaper(id) ? manifest[id] : null;
-  const total = entry ? (kind === 'image' ? entry.image.bytes : entry.bytes) : 0;
+  const entry = isCdnWallpaper(id) ? manifest[id] : null;
+  const videoBytes = entry && 'bytes' in entry && typeof entry.bytes === 'number' ? entry.bytes : 0;
+  const total = kind === 'image' ? (entry?.image.bytes ?? 0) : videoBytes;
+  const active = enabled && total > 0;
   const url = state?.key === key ? state.url : null;
 
   useEffect(() => {

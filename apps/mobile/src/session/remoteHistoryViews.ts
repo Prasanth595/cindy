@@ -49,6 +49,7 @@ export function getRemoteHistoryView(deviceId: string, sessionId: string, reader
   if (existing) return existing;
   const entry: Entry = { deviceId, sessionId, reader, consumers: 0,
     view: new HistoryViewController<RemoteMessage>({
+      refreshOnResume: false,
       page: (before) => entry.reader.readHistoryView(sessionId, before),
       details: (ref, after) => entry.reader.readWorkDetails(sessionId, ref, after),
       expanded: (refs) => entry.reader.setHistoryExpanded(sessionId, refs),

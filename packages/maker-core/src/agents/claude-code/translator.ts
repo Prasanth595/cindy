@@ -38,7 +38,6 @@ import {
 import type { UsageTracker } from '../shared/usage-tracker.js';
 import { isModelAccessDenied } from './model-access-error.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
-import { isFileWritingTool } from '../shared/token-speed.js';
 import {
   beginClaudeGeneration,
   beginClaudeGenerationAtRequestStart,
@@ -1697,7 +1696,7 @@ function observeClaudeTokenSpeed(
     case 'content_block_delta': {
       const delta = event.delta;
       const text = delta?.type === 'input_json_delta'
-        ? (isFileWritingTool(tools.get(index)) ? delta.partial_json : undefined)
+        ? (tools.has(index) ? delta.partial_json : undefined)
         : delta?.text ?? delta?.thinking;
       if (typeof text === 'string' && speed.recordDelta(text)) {
         queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
@@ -1705,7 +1704,7 @@ function observeClaudeTokenSpeed(
       return;
     }
     case 'content_block_stop':
-      if (tools.has(index) && !isFileWritingTool(tools.get(index))) speed.pause();
+      if (tools.has(index)) speed.pause();
       return;
   }
 }

@@ -7,6 +7,7 @@
  * JS 层引用,不影响 fingerprint(以 mobile:release:check 实测为准)。
  */
 import { Directory, File, Paths } from "expo-file-system";
+import { releasePeerMedia } from '@/device-link/peerFileRegistry';
 
 import {
   extOfMime,
@@ -27,12 +28,18 @@ async function downloadCancellable(
   url: string,
   target: File,
   signal: AbortSignal,
+  maxBytes?: number,
 ): Promise<File> {
   const FileSystem = await import("expo-file-system/legacy");
-  const task = FileSystem.createDownloadResumable(url, target.uri);
   let rejectStopped: (reason: Error) => void = () => undefined;
   const stopped = new Promise<never>((_, reject) => {
     rejectStopped = reject;
+  });
+  const task = FileSystem.createDownloadResumable(url, target.uri, {}, (progress) => {
+    if (maxBytes !== undefined && progress.totalBytesWritten > maxBytes) {
+      rejectStopped(new Error('PREVIEW_TOO_LARGE'));
+      void task.cancelAsync().catch(() => undefined);
+    }
   });
   const stop = () => {
     rejectStopped(new Error("DOWNLOAD_CANCELLED"));
@@ -61,9 +68,12 @@ async function copyRemoteFile(
   url: string,
   target: File,
   signal?: AbortSignal,
+  maxBytes?: number,
 ): Promise<File> {
   if (url.startsWith("file://")) {
-    await new File(url).copy(target);
+    const source = new File(url);
+    if (maxBytes !== undefined && source.size > maxBytes) throw new Error('PREVIEW_TOO_LARGE');
+    await source.copy(target);
     return target;
   }
   if (url.startsWith("data:")) {
@@ -75,8 +85,21 @@ async function copyRemoteFile(
     target.write(Uint8Array.from(atob(match[1]), (char) => char.charCodeAt(0)));
     return target;
   }
-  if (signal) return downloadCancellable(url, target, signal);
+  if (signal || maxBytes !== undefined) return downloadCancellable(url, target, signal ?? new AbortController().signal, maxBytes);
   return File.downloadFileAsync(url, target, { idempotent: true });
+}
+
+/** A visible preview owns its copy; transport staging and cache eviction cannot expire it. */
+export async function retainRemoteFilePreview(url: string, mimeType: string, fileName: string) {
+  if (!url.startsWith('file://') && !url.startsWith('data:')) return { uri: url, release() {} };
+  const uri = await downloadRemoteMediaShareTemp(url, mimeType, fileName);
+  if (!uri) throw new Error('PREVIEW_CACHE_FAILED');
+  return {
+    uri,
+    release() {
+      try { const file = new File(uri); if (file.exists) file.delete(); } catch { /* OS reclaims cache files. */ }
+    },
+  };
 }
 
 /**
@@ -93,6 +116,7 @@ export async function downloadRemoteMediaShareTemp(
   signal?: AbortSignal,
 ): Promise<string | null> {
   try {
+    if (signal?.aborted) return null;
     const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
     dir.create({ intermediates: true, idempotent: true });
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -117,6 +141,10 @@ export async function downloadRemoteMediaShareTemp(
     return file.exists ? file.uri : null;
   } catch {
     return null; // 分享失败由调用方兜底提示
+  } finally {
+    // Sharing and visible previews both own their new copy after this handoff.
+    // Only registered transport staging is released; ordinary local files stay.
+    if (url.startsWith('file://')) releasePeerMedia(url);
   }
 }
 
@@ -152,20 +180,24 @@ export async function withDownloadedRemoteMediaFile<T>(
   mimeType: string,
   maxBytes: number,
   read: (file: File) => Promise<T | null>,
+  signal?: AbortSignal,
 ): Promise<T | null> {
   const dir = new Directory(Paths.cache, SHARE_TMP_DIR_NAME);
   let target: File | null = null;
   try {
+    if (signal?.aborted) return null;
     dir.create({ intermediates: true, idempotent: true });
     const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     target = new File(dir, `res-${unique}.${extOfMime(mimeType)}`);
-    const file = await copyRemoteFile(url, target);
+    const file = await copyRemoteFile(url, target, signal, signal ? maxBytes : undefined);
     const size = file.size ?? 0;
-    if (size <= 0 || size > maxBytes) return null;
-    return await read(file);
+    if (signal?.aborted || size <= 0 || size > maxBytes) return null;
+    const result = await read(file);
+    return signal?.aborted ? null : result;
   } catch {
     return null;
   } finally {
+    if (url.startsWith('file://')) releasePeerMedia(url);
     // 临时文件用完即删:资源可能几十个,留着会把 cache 目录堆满。
     try {
       target?.delete();
@@ -220,7 +252,7 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
           encoding: FileSystem.EncodingType.Base64,
         });
         const size = tmp.size ?? 0;
-        if (size <= 0) {
+        if (size < 0) {
           if (tmp.exists) tmp.delete();
           return null;
         }
@@ -235,16 +267,17 @@ export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMedi
         return null; // 缓存是纯优化,写入失败静默(渲染回退 data URI)
       }
     },
-    async download(url, name) {
+    async download(url, name, expectedSize) {
       // 契约(RemoteMediaDiskCacheIO.download):失败不得破坏既有同名好文件。
       // downloadFileAsync 直接写目标(Android 失败可留半成品),所以先下到临时名,
-      // 正尺寸成功后原子顶替;失败 / 空文件清临时、不动现有文件(返回 null,上层
-      // 保留旧条目继续离线可看)。残留的 .dl.tmp 由 init 对账当孤儿清掉。
+      // 成功后原子顶替;仅明确声明 expectedSize === 0 时接受空文件。
+      // 失败或意外空文件不动现有文件。残留的 .dl.tmp 由 init 对账当孤儿清掉。
       const tmp = new File(dir, `${name}.dl.tmp`);
       try {
         const downloaded = await copyRemoteFile(url, tmp);
-        const size = downloaded.size ?? 0;
-        if (size <= 0) {
+        const size = downloaded.size ?? -1;
+        if (!downloaded.exists || size < 0 || (size === 0 && expectedSize !== 0) ||
+            (expectedSize !== undefined && size !== expectedSize)) {
           if (tmp.exists) tmp.delete();
           return null;
         }

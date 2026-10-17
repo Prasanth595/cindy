@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { downloadRemoteChatEntry, fetchChatFileWithToasts, openRemoteChatFile } from '../lib/remoteFileOpen';
 import { getToastSnapshot, toast } from '../lib/toast';
+import { getFileTransferToasts } from '../lib/fileTransferToasts';
 import messages from '../i18n/locales/en/common.json';
 import {
   createFileTransferProgressValues,
@@ -52,7 +53,7 @@ function emit(
     listener({ requestId, workdir, relPath: absPath, received, total, phase });
 }
 
-const active = () => getToastSnapshot().filter((item) => !item.exiting);
+const active = () => [...getFileTransferToasts(), ...getToastSnapshot().filter((item) => !item.exiting)];
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -266,6 +267,31 @@ describe('remote file transfer toasts', () => {
     expect(active()).toHaveLength(1);
     expect(active()[0].variant).toBe('error');
     expect(listeners.size).toBe(0);
+  });
+
+  it('keeps more than three downloads visible and cancels only the selected request', async () => {
+    const results = Array.from({ length: 4 }, () => deferred<typeof success>());
+    results.forEach((result) => chatFetch.mockReturnValueOnce(result.promise));
+    const pending = results.map((_, index) => fetchChatFileWithToasts(origin, workdir, `${workdir}/${index}.zip`));
+    await vi.advanceTimersByTimeAsync(600);
+    const shown = getFileTransferToasts();
+    expect(shown.map((item) => item.name)).toEqual(['0.zip', '1.zip', '2.zip', '3.zip']);
+    expect(getToastSnapshot().filter((item) => !item.exiting)).toEqual([]);
+    const cancelled = shown[1];
+    cancelled.action!.onClick();
+    cancelled.action!.onClick();
+    expect(chatCancel).toHaveBeenCalledExactlyOnceWith(cancelled.id);
+    emit(cancelled.id, 4096);
+    emit(shown[3].id, 3072);
+    expect(getFileTransferToasts().map((item) => item.name)).toEqual(['0.zip', '2.zip', '3.zip']);
+    expect(getFileTransferToasts()[2].message).toContain('75%');
+    results.forEach((result) => result.resolve(success));
+    expect(await Promise.all(pending)).toEqual([success.cachePath, null, success.cachePath, success.cachePath]);
+    expect(getFileTransferToasts()).toEqual([]);
+    expect(listeners.size).toBe(0);
+    // An old button reference cannot cancel a completed or later request.
+    shown[0].action!.onClick();
+    expect(chatCancel).toHaveBeenCalledTimes(1);
   });
 
   it('keeps stale-copy warnings separate from loading', async () => {

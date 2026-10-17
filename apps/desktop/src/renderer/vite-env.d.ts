@@ -2315,6 +2315,56 @@ interface ElectronAPI {
     ) => () => void;
   };
 
+  // ── 伙伴自有 IM 机器人连接(Telegram / 飞书, 伙伴设置「消息平台」页)──
+  botImConnection: {
+    list: () => Promise<import('../shared/botImConnection').BotImConnectionListPayload>;
+    /**
+     * 填凭证并建连。伙伴不存在 → NOT_FOUND; 其余都是 PRECONDITION_FAILED, 以 message 前缀
+     * 区分: BOT_INACTIVE(未启用)、TOKEN_IN_USE / APP_IN_USE(同一个 bot 已在这台电脑上用)、
+     * CONNECT_FAILED(连不上, 后面带原因)。
+     */
+    add: (
+      payload: import('../shared/botImConnection').BotImConnectionAddInput,
+    ) => Promise<import('../shared/botImConnection').BotImConnectionAddResult>;
+    remove: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionRemoveResult>;
+    /** 这条(Telegram)连接进过的群 + 每群参与模式; 渠道没有群参与模式时 groups 为空。 */
+    listGroups: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload>;
+    setGroupActivation: (payload: {
+      id: string;
+      chatId: string;
+      mode: import('../shared/botImConnection').BotImGroupActivationMode;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload>;
+    /** 这条连接下有任务的落点(主人私聊 + 群 / 话题 / 其他人私聊的隐藏任务)。 */
+    listLanes: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
+    /**
+     * 让其中一条重新开始(同一条任务, 记录保留, 下一条消息换干净的上下文)。不属于这条
+     * 连接的任务 → NOT_FOUND(LANE_NOT_FOUND); 重启失败 → PRECONDITION_FAILED。
+     */
+    resetLane: (payload: {
+      id: string;
+      sessionId: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
+    /** 设置 → IM 机器人 里已配好、可以移给伙伴的个人 bot(只给身份, 不含凭证)。 */
+    listAdoptable: () => Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload>;
+    /**
+     * 把个人 bot 移给这位伙伴: 先停个人 bot 再建连; 成功后个人 bot 清空, 失败恢复原样。
+     * 错误码同 add(TOKEN_IN_USE / APP_IN_USE / CONNECT_FAILED / BOT_INACTIVE), 另有
+     * PERSONAL_BOT_NOT_CONFIGURED / ADOPT_IN_PROGRESS / IM_NOT_READY。
+     */
+    adopt: (
+      payload: import('../shared/botImConnection').BotImAdoptPersonalBotInput,
+    ) => Promise<import('../shared/botImConnection').BotImConnectionAddResult>;
+    onChanged: (
+      listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
+    ) => () => void;
+  };
+
   // ── Personal DingTalk Bot (Settings → IM Bot → Personal) ──
   dingtalkBot: {
     getState: () => Promise<{
@@ -2701,7 +2751,9 @@ interface ElectronAPI {
         | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
       absPath: string;
+      requestId?: string;
     }) => Promise<{ ok: true; url: string }>;
+    cancelHtmlPreview: (requestId: string) => Promise<{ ok: true }>;
     chatFetch: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
@@ -4010,7 +4062,7 @@ interface ElectronAPI {
     openLink: (deviceId: string) => Promise<{ appVersion: string; allowlistHash: string }>;
     closeLink: (deviceId: string) => Promise<{ ok: true }>;
     /** 远程调用被控端 allowlist 内 channel;成功拿返回值,失败 reject 带 code 的 Error */
-    invoke: (deviceId: string, channel: string, args: unknown[]) => Promise<unknown>;
+    invoke: (deviceId: string, channel: string, args: unknown[], scheduling?: { background?: boolean }) => Promise<unknown>;
     /** 控制端:订阅被控端某 topic 的变更推送(push 驱动侧边栏 / 会话视图) */
     subscribe: (deviceId: string, topics: string[]) => Promise<{ ok: true }>;
     /** 控制端:取消订阅某 topic */
@@ -4858,7 +4910,8 @@ interface ElectronAPI {
           botId: string,
           path: string,
         ) => Promise<{ ok: true } | { ok: false; errorCode: 'NOT_A_DIRECTORY' | 'TOO_MANY' }>;
-        removeDirectory: (botId: string, path: string) => Promise<void>;
+        /** `deviceId`: the folder is on that computer (cloud companions); absent for this computer's. */
+        removeDirectory: (botId: string, path: string, deviceId?: string) => Promise<void>;
         readTask: (
           botId: string,
           taskId: string,
@@ -5433,9 +5486,13 @@ interface ElectronAPI {
     ) => () => void;
     getCompanionCloudState: () => Promise<import('../shared/companionCloud').CompanionCloudSnapshot>;
     takeOverCompanion: (botId: string) => Promise<import('../shared/companionCloud').CompanionCloudActionResult>;
-    transferCompanion: (botId: string, targetDeviceId: string) => Promise<import('../shared/companionCloud').CompanionCloudActionResult>;
+    switchCompanionHome: (botId: string, targetDeviceId: string, options?: import('../shared/companionCloud').CompanionSwitchOptions) => Promise<import('../shared/companionCloud').CompanionCloudActionResult>;
     getCompanionTranscript: (botId: string, before?: string) => Promise<import('../shared/companionCloud').CompanionTranscriptPage>;
-    listCompanionTransferTargets: () => Promise<import('../shared/companionCloud').CompanionTransferTarget[]>;
+    getCompanionHomeChoices: (botId: string) => Promise<import('../shared/companionCloud').CompanionHomeChoices>;
+    listCindyCopies: () => Promise<import('../shared/companionCloud').CompanionCindyCopy[]>;
+    mergeCindy: (keepBotId: string, fromBotIds: string[]) => Promise<import('../shared/companionCloud').CompanionMergeResult>;
+    getCompanionAttachment: (botId: string, mediaId: string) => Promise<import('../shared/botGroupChat').BotGroupAttachment>;
+    resolveCompanionAvatar: (request: { avatar: string; deviceId?: string | null; fetch?: boolean }) => Promise<string | null>;
     onCompanionCloudChanged: (
       cb: (
         payload: import('../shared/companionCloud').CompanionCloudSnapshot,

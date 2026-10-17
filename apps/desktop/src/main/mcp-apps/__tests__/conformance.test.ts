@@ -80,6 +80,7 @@ class RawPeer {
   ): Promise<T> {
     const id = this.nextId++;
     const result = new Promise<unknown>((resolve, reject) => {
+      // real-wait: exercise the production RPC timeout when a fixture never responds.
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error('Fixture RPC timed out: ' + method));

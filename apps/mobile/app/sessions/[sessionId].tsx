@@ -23,6 +23,8 @@ import { FailedScheduleNotice } from '@/session/FailedScheduleNotice';
 import { shouldShowFailedScheduleNotice, type FailedScheduleRunSnapshot } from '@cindy/maker-shared/schedule-model';
 import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { CompanionHeader } from '@/session/CompanionHeader';
+import { CloudHomeUnreachableNotice, useSustained } from '@/session/CloudHomeUnreachableNotice';
+import { useCloudCompanionHome } from '@/chat/useCloudCompanion';
 import { CHAT_HEADER_BLUR_FADE_INSIDE } from '@/session/ChatIdentityHeader';
 import { useHiddenHistoryChase } from '@/session/hiddenHistoryChase';
 import { collectCompanionPluginInvocations } from '@/session/pluginInvocations';
@@ -71,11 +73,8 @@ import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
-import {
-  addScreenshotListener,
-  renderConversationShareHtmlToPng,
-} from 'xdt-screenshot-monitor';
-import { Stack, useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { renderConversationShareHtmlToPng } from 'xdt-screenshot-monitor';
+import { Stack, useFocusEffect, useIsFocused, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject, type SetStateAction } from 'react';
 import {
   ActivityIndicator,
@@ -99,6 +98,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { Text, TextInput } from '@/components/AppText';
+import { usePendingQuestionScroll } from '@/session/usePendingQuestionScroll';
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated';
 import { MobileAgentMark } from '@/components/MobileAgentMark';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
@@ -142,6 +142,7 @@ import {
   createRemoteSyncReopenCoordinator,
   retryRemoteSyncRead,
   useRemoteSyncCoordinator,
+  waitForCachedSubscription,
   type RemoteSyncRun,
 } from '@/device-link/remoteSyncTask';
 import {
@@ -167,7 +168,6 @@ import {
   MessageRenderer,
   type MobileMessageActionBusyKind,
   type MobileMessageDraft,
-  type ShareableMessageViewport,
 } from '@/session/MessageRenderer';
 import {
   bundledAssetToDataUri,
@@ -280,6 +280,7 @@ import { RecentPhotosStrip } from '@/session/ContextSheetMediaViews';
 import { ContextSheetGoalView, goalStatusLabel } from '@/session/ContextSheetGoalView';
 import { parseGoalLimitsRouteParam } from '@/session/goalLimitsRouteParam';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from '@/session/ComposerAttachmentTray';
+import { useComposerPendingImagePreview } from '@/session/useComposerPendingImagePreview';
 import { useSlowSendVisible, type SlowSendPhase } from '@/session/SlowSendNotice';
 import { ComposerActivityPill, composerActivityPillOverlayColor, makeComposerActivityPillStyles } from '@/session/ComposerActivityPill';
 import { PlanModeChip } from '@/session/PlanModeChip';
@@ -288,10 +289,11 @@ import { pickWriteFields, retryPatchWhileLatest, writeGuardFields } from '@/sess
 import {
   dismissNewSessionCreation,
   getNewSessionCreationTask,
-  retryNewSessionCreation,
   shouldBlockSessionSync,
   stashNewSessionDraftForEdit,
   useNewSessionCreationTask,
+  withNewSessionCreationRemoval,
+  appendNewSessionEditComposer,
 } from '@/session/newSessionCreation';
 import {
   useComposerImageAnnotations,
@@ -647,7 +649,7 @@ import {
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
 import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
-import { returnNewSessionToEdit } from '@/session/returnNewSessionToEdit';
+import { useFailedCreationReturnToEdit } from '@/session/useFailedCreationReturnToEdit';
 import type {
   MobileGoalLimitsInput,
   MobileGoalStatusPayload,
@@ -768,7 +770,6 @@ const REOPEN_MESSAGE_WINDOW_LIMITS = [20, 10, 5, 1] as const;
 // session-tail-banner「重试」短窗口隐藏的超时兜底(接管信号全部丢失时恢复错误入口);
 // 覆盖 settling 窗口上限(10s)之后仍无任何在途证据的场景。
 const TAIL_RETRY_HIDE_TIMEOUT_MS = 15_000;
-const SCREENSHOT_SHARE_ACTIVATION_DEBOUNCE_MS = 1_200;
 const nativeConversationShareAvailable = Platform.OS === 'ios';
 
 // 原生 WKWebView 只能稳定读取 data URI；SVG 兜底直接使用同一组 bundle asset。
@@ -813,27 +814,6 @@ function buildComposerRuntimeSummary(
 function choiceLabel(options: readonly { id: string; label: string }[], value: string | null | undefined): string {
   if (!value) return '';
   return options.find((option) => option.id === value)?.label ?? value;
-}
-
-function measureViewInWindow(view: View | null): Promise<{
-  height: number;
-  width: number;
-  x: number;
-  y: number;
-} | null> {
-  return new Promise((resolve) => {
-    if (!view) {
-      resolve(null);
-      return;
-    }
-    view.measureInWindow((x, y, width, height) => {
-      if (![x, y, width, height].every(Number.isFinite)) {
-        resolve(null);
-        return;
-      }
-      resolve({ height, width, x, y });
-    });
-  });
 }
 
 /** 会话已读回执的驻留门槛:聚焦本会话且消息已渲染后停满这段时间才算「真实看到」。 */
@@ -1210,19 +1190,12 @@ function SessionScreenContent() {
   const conversationShareSvgRef = useRef<ConversationShareSvgHandle | null>(null);
   const topOverlayRef = useRef<View>(null);
   const bottomOverlayRef = useRef<View>(null);
-  const visibleShareableMessageIdsReaderRef = useRef<(
-    (viewport: ShareableMessageViewport) => Promise<readonly string[]>
-  ) | null>(null);
-  const screenshotBlockedByOverlayRef = useRef(false);
-  const [messageBlockingOverlay, setMessageBlockingOverlay] = useState(false);
   const shareSelectionActiveRef = useRef(shareSelectionActive);
   shareSelectionActiveRef.current = shareSelectionActive;
   const shareSelectionRevisionRef = useRef(shareSelectionRevision);
   shareSelectionRevisionRef.current = shareSelectionRevision;
-  const lastScreenshotActivationAtRef = useRef(0);
   const shareOperationSeqRef = useRef(0);
   const [conversationShareBusy, setConversationShareBusy] = useState(false);
-  const [shareSelectionTriggeredByScreenshot, setShareSelectionTriggeredByScreenshot] = useState(false);
   const [shareCharacterSrc, setShareCharacterSrc] = useState<string | null>(null);
   const [shareLogoSrc, setShareLogoSrc] = useState<string | null>(null);
   const shareLogoModeRef = useRef<string | null>(null);
@@ -1236,75 +1209,15 @@ function SessionScreenContent() {
     appendQuote(sessionId, { text: truncateQuoteText(quote.text) });
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }, [sessionId]);
-  const handleVisibleShareableMessageIdsReaderChange = useCallback((
-    reader: ((viewport: ShareableMessageViewport) => Promise<readonly string[]>) | null,
-  ) => {
-    visibleShareableMessageIdsReaderRef.current = reader;
-  }, []);
-  const handleMessageBlockingOverlayChange = useCallback((blocked: boolean) => {
-    setMessageBlockingOverlay(blocked);
-  }, []);
   useEffect(() => {
     shareOperationSeqRef.current += 1;
-    lastScreenshotActivationAtRef.current = 0;
     setConversationShareBusy(false);
-    setShareSelectionTriggeredByScreenshot(false);
     shareSelectionStore.exitIfNotSession(sessionId);
     return () => {
       shareOperationSeqRef.current += 1;
       if (shareSelectionStore.getActiveSessionId() === sessionId) shareSelectionStore.exit();
     };
   }, [sessionId]);
-  useFocusEffect(
-    useCallback(() => {
-      if (Platform.OS !== 'ios' || !sessionId) return undefined;
-      let cancelled = false;
-      const subscription = addScreenshotListener(() => {
-        if (
-          AppState.currentState !== 'active'
-          || shareSelectionActiveRef.current
-          || screenshotBlockedByOverlayRef.current
-        ) return;
-        const now = Date.now();
-        if (now - lastScreenshotActivationAtRef.current < SCREENSHOT_SHARE_ACTIVATION_DEBOUNCE_MS) return;
-        lastScreenshotActivationAtRef.current = now;
-        void (async () => {
-          const [topOverlayFrame, bottomOverlayFrame] = await Promise.all([
-            measureViewInWindow(topOverlayRef.current),
-            measureViewInWindow(bottomOverlayRef.current),
-          ]);
-          if (
-            cancelled
-            || AppState.currentState !== 'active'
-            || shareSelectionActiveRef.current
-            || screenshotBlockedByOverlayRef.current
-          ) return;
-          const reader = visibleShareableMessageIdsReaderRef.current;
-          if (!topOverlayFrame || !bottomOverlayFrame || !reader) return;
-          const measuredClientIds = await reader({
-            visibleBottom: bottomOverlayFrame.y,
-            visibleTop: topOverlayFrame.y + topOverlayFrame.height,
-          });
-          if (
-            cancelled
-            || AppState.currentState !== 'active'
-            || shareSelectionActiveRef.current
-            || screenshotBlockedByOverlayRef.current
-          ) return;
-          const visibleClientIds = [...new Set(measuredClientIds)];
-          if (visibleClientIds.length === 0) return;
-          Keyboard.dismiss();
-          setShareSelectionTriggeredByScreenshot(true);
-          shareSelectionStore.enter(sessionId);
-          shareSelectionStore.setSelection(visibleClientIds);
-        })();
-      });
-      return () => {
-        cancelled = true;
-        subscription?.remove();
-      };
-    }, [sessionId]),
-  );
   useEffect(() => {
     if (!nativeConversationShareAvailable || !shareSelectionActive) return undefined;
     let cancelled = false;
@@ -1412,10 +1325,12 @@ function SessionScreenContent() {
     waitForPendingUploads,
     beginOutboxAttachmentHandoff,
     getUploadedSource,
+    getUploadedAttachmentId,
     releaseUploadedSources,
     waitForPastePlaceholdersSettled,
     hasPastePlaceholders,
     getPendingUploadCount,
+    hasAttachmentInput,
   } = useMobileLocalAttachments({
     attachmentScopeKey: sessionId,
     deviceId,
@@ -2357,6 +2272,15 @@ function SessionScreenContent() {
     connectionIssue,
     isDeviceUnresponsive,
   );
+  // A cloud companion on its main computer (cloud-companions.md §3.1): like an IM chat, a briefly
+  // unreachable computer does not interrupt reading; only a message that cannot get through for a
+  // while offers to continue on another computer.
+  const cloudHome = useCloudCompanionHome(!!companionResource);
+  const cloudHomeActor = cloudHome.supported && companionResource
+    ? cloudHome.actors.find(actor => actor.kind === 'bot' && actor.externalId === companionResource.ref.id && actor.homeDeviceId === deviceId) ?? null
+    : null;
+  const cloudHomeUnreachable = useSustained(!!cloudHomeActor && outboxItems.length > 0 && outboxConnectionDispatchBlocked);
+  const quietConnection = !!cloudHomeActor;
   const hasCurrentSession = currentSession !== null;
   const currentAgentKind = useMemo(
     () => currentSession ? agentKindForSession(currentSession) : null,
@@ -2476,6 +2400,9 @@ function SessionScreenContent() {
   const activePendingKind = activePendingInteraction
     ? interactionKind(activePendingInteraction)
     : null;
+  const pendingQuestionScroll = usePendingQuestionScroll(
+    activePendingKind === 'ask_user_question' ? activePendingRequestId : null,
+  );
   const activePendingCollapsed = isPendingInteractionCollapsed(
     collapsedPendingRequestIds,
     activePendingRequestId,
@@ -2576,7 +2503,11 @@ function SessionScreenContent() {
       setPendingPlanViewerState('half');
     }
   }, [activePendingKind, activePendingRequestId, sessionOperationLayout.composerSlot]);
-  const canUseComposer = sessionOperationLayout.canUseComposer && !sessionResourceCards.blocked && companionEntry.canCompose;
+  const creationTask = useNewSessionCreationTask(sessionId);
+  // A failed chat is handing its composer to the editor. Running creation still
+  // keeps the normal composer; stop further edits only during this handoff.
+  const canUseComposer = sessionOperationLayout.canUseComposer && !sessionResourceCards.blocked && companionEntry.canCompose
+    && creationTask?.status !== 'create-failed';
   const canUseRemoteSessionControls = canUseComposer
     && !sessionSettingsLocked
     && !remoteRealtimeControlsUnavailable;
@@ -3722,7 +3653,7 @@ function SessionScreenContent() {
     const reportSyncPhase = (phase: string, extra: { readMs?: number; commitMs?: number; outcome?: string } = {}) => {
       if (syncRun.isStale() || !messageAuthorityCurrent()) return;
       mobileDebugLog('debug', 'recovery', 'detail sync phase', {
-        startedAt: snapshotStartedAt, connection: readAckEpochAtStart, phase,
+        startedAt: snapshotStartedAt, connection: readAckEpochAtStart, phase, reasons: syncRun.reasons,
         totalMs: Math.max(0, Date.now() - snapshotStartedAt), ...extra,
       });
     };
@@ -3773,9 +3704,9 @@ function SessionScreenContent() {
       await retryRemoteSyncRead(syncRun, () => openLink(deviceId));
       if (subscriptionRetryIsStale()) return;
       let subscriptionAttemptVersion = syncReopenCoordinator.captureVersion();
-      // sessions topic 只负责之后的实时推送,不挡快照读。自己在后台
-      // 处理瞬时 route / ACK 失败;重试前重开 peer link,不再等未来 rehydrate 碰运气。
-      void sessionsSubscriptionCoordinatorRef.current?.start({
+      // 订阅重试独立于快照；缓存返回只在下方有限等待 ACK，冷启动不等待。
+      // 瞬时 route / ACK 失败时先重开 peer link，不等未来 rehydrate。
+      const sessionsReady = sessionsSubscriptionCoordinatorRef.current!.start({
         identity: subscriptionIdentityAtStart,
         isStale: subscriptionRetryIsStale,
         reopenLink: () => syncReopenCoordinator.reopenAfter(subscriptionAttemptVersion),
@@ -3784,6 +3715,12 @@ function SessionScreenContent() {
           return subscribe(`session:${sessionId}`, deviceId, ['sessions']);
         },
       });
+      // The focused owner starts the heavy topic independently. Wait only when
+      // cached content is already readable; timeout/failure still permits a snapshot.
+      // An ACK after the read starts retains the existing recovery follow-up.
+      const needsAck = (getSubscriptionIdentity?.(deviceId, ['sessions', `session:${sessionId}`]) ?? null) === null;
+      await waitForCachedSubscription(syncRun, isReopen && needsAck, sessionsReady,
+        () => (getSubscriptionIdentity?.(deviceId, ['sessions', `session:${sessionId}`]) ?? null) !== null);
     };
     const retryRead = <T,>(read: () => Promise<T>): Promise<T> => {
       let failedAtVersion: number | null = null;
@@ -4082,11 +4019,78 @@ function SessionScreenContent() {
 
   // 新建会话乐观管线的收口响应:
   //  - running → task 移除(成功):守卫解除,补一轮完整同步(权威 meta / 交互 / projection);
-  //  - create-failed:Alert 重试面(重试 = 同 id 重跑管线,幂等安全;返回编辑 = 草稿
-  //    stash 回新建页并移除合成行)+ 常驻错误条兜底(Alert 被系统关掉时仍有指引);
+  //  - create-failed:带回草稿与附件并自动返回编辑，不要求用户选择恢复方式;
   //  - enqueue-failed:会话已建成,首条消息文本 / 附件回填 composer,用户走正常发送
   //    (新桌面有 clientId 幂等去重,重复风险已兜)。
-  const creationTask = useNewSessionCreationTask(sessionId);
+  const creationScreenFocused = useIsFocused();
+  useFailedCreationReturnToEdit({
+    getToken: auth.getAccessToken,
+    task: creationTask?.deviceId === deviceId ? creationTask : null,
+    focused: creationScreenFocused,
+    sending,
+    connectionEpoch,
+    onReady: params => router.replace({ pathname: '/sessions/new', params: {
+      ...params,
+      creationError: creationTask?.error ?? t('session.screen.createFailedDefault'),
+    } }),
+    onError: err => setError(t('session.screen.createFailedNotice', { message: formatRemoteError(err) })),
+    beforeNavigate: async () => {
+      const owner = getMobileAuthOwner();
+      if (outboxSessionAliveRef.current !== sessionId) return;
+      const notice = hasAttachmentInput()
+        ? t('session.screen.pendingAttachmentsNotCarriedBack')
+        : attachmentError;
+      // Seal native picker/paste callbacks as well as queued uploads. Keep the
+      // warning in the existing error state if durable saving needs another try.
+      if (notice) setAttachmentError(notice);
+      discardAllPendingUploadsForScopeChange();
+      const text = draftRef.current;
+      const files = [...attachmentsRef.current];
+      if (!text && files.length === 0 && !notice) return;
+      const dropped = await appendNewSessionEditComposer(sessionId, deviceId, { text, attachments: files, notice, getUploadedSource });
+      if (!isMobileAuthOwnerCurrent(owner) || outboxSessionAliveRef.current !== sessionId) return;
+      // Ownership changed only after the save succeeded. Unmount cleanup must
+      // not delete attachments now owned by the recovered new-task draft.
+      releaseUploadedSources(files.map(file => file.id));
+      attachmentsRef.current = [];
+      setAttachments([]);
+      replaceComposerDraft('');
+      discardRecoveredAttachments(dropped);
+    },
+    stashDraft: prepared => {
+      // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
+      // 而下一行 dismiss 会连同合成会话行一起删掉——会话页 unmount 时 cleanup 会把它们
+      // 写进那个已经不存在的会话的草稿,用户在新建页看不到、也再也找不回来。
+      // 新建页只有一个首条消息输入框,所以按序拼成文本、附件按 id 去重合并后一起 stash。
+      // 上传任务保不住:本页(连同 upload controller)马上要销毁,只能取消
+      // 并回收,再把「没能带回多少」告知用户(review P1:静默丢等于偷走内容)。
+      const { items: followUps, cancelledUploadCount } = takeOutboxForSession(sessionId, 'cancel');
+      if (followUps.length > 0) {
+        const { merged, dropped } = mergeAttachmentsWithinLimit(
+          prepared.attachments,
+          followUps.flatMap(outboxItemAttachments),
+        );
+        // 装不下的中转对象在这里回收:草稿带不走它们,留着就是没人认领的垃圾。
+        discardRecoveredAttachments(dropped);
+        const unrecoveredCount = dropped.length + cancelledUploadCount;
+        stashNewSessionDraftForEdit(prepared, {
+          draft: {
+            ...prepared.draft,
+            firstMessage: [
+              prepared.draft.firstMessage,
+              ...followUps.map(outboxItemDraftText),
+            ].filter(Boolean).join('\n\n'),
+          },
+          attachments: merged,
+          notice: unrecoveredCount > 0
+            ? t('session.screen.attachmentsNotCarriedBack', { count: unrecoveredCount })
+            : null,
+        });
+      } else {
+        stashNewSessionDraftForEdit(prepared);
+      }
+    },
+  });
   const prevCreationStatusRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevCreationStatusRef.current;
@@ -4098,90 +4102,6 @@ function SessionScreenContent() {
         setError(null);
         void load();
       }
-      return;
-    }
-    if (status === 'create-failed') {
-      const message = creationTask?.error ?? t('session.screen.createFailedDefault');
-      setError(t('session.screen.createFailedNotice', { message }));
-      Alert.alert(t('session.screen.createFailedTitle'), message, [
-        {
-          text: t('session.screen.backToEdit'),
-          style: 'cancel',
-          onPress: () => {
-            if (!creationTask) return;
-            const owner = getMobileAuthOwner();
-            const isCurrent = () => isMobileAuthOwnerCurrent(owner)
-              && outboxSessionAliveRef.current === sessionId && navigation.isFocused();
-            void returnNewSessionToEdit({
-              sessionId, deviceId,
-              isCurrent,
-              onReady: params => router.replace({ pathname: '/sessions/new', params }),
-              stashDraft: prepared => {
-                // 创建期间发出的后续消息必须一起带回新建页(review P1):它们此刻在 outbox 里,
-                // 而下一行 dismiss 会连同合成会话行一起删掉——会话页 unmount 时 cleanup 会把它们
-                // 写进那个已经不存在的会话的草稿,用户在新建页看不到、也再也找不回来。
-                // 新建页只有一个首条消息输入框,所以按序拼成文本、附件按 id 去重合并后一起 stash。
-                // 上传任务保不住:本页(连同 upload controller)马上要销毁,只能取消
-                // 并回收,再把「没能带回多少」告知用户(review P1:静默丢等于偷走内容)。
-                const { items: followUps, cancelledUploadCount } = takeOutboxForSession(sessionId, 'cancel');
-                if (followUps.length > 0) {
-                  const { merged, dropped } = mergeAttachmentsWithinLimit(
-                    prepared.attachments,
-                    followUps.flatMap(outboxItemAttachments),
-                  );
-                  // 装不下的中转对象在这里回收:草稿带不走它们,留着就是没人认领的垃圾。
-                  discardRecoveredAttachments(dropped);
-                  const unrecoveredCount = dropped.length + cancelledUploadCount;
-                  stashNewSessionDraftForEdit(prepared, {
-                    draft: {
-                      ...prepared.draft,
-                      firstMessage: [
-                        prepared.draft.firstMessage,
-                        ...followUps.map(outboxItemDraftText),
-                      ].filter(Boolean).join('\n\n'),
-                    },
-                    attachments: merged,
-                    notice: unrecoveredCount > 0
-                      ? t('session.screen.attachmentsNotCarriedBack', { count: unrecoveredCount })
-                      : null,
-                  });
-                } else {
-                  stashNewSessionDraftForEdit(prepared);
-                }
-              },
-            })
-              .catch((err: unknown) => {
-                // Recovery continues after leaving, but its error UI belongs to this page.
-                if (!isCurrent()) return;
-                // 补偿回收失败时保留 task + 合成行，绝不先跳回表单再创建第二个孤儿
-                // worktree。用户可取消等待连接恢复，或直接复用同 sessionId 重试创建。
-                const cleanupError = formatRemoteError(err);
-                setError(t('session.screen.createFailedNotice', { message: cleanupError }));
-                Alert.alert(t('session.screen.createFailedTitle'), cleanupError, [
-                  {
-                    text: t('session.common.cancel'),
-                    style: 'cancel',
-                  },
-                  {
-                    text: t('session.screen.retry'),
-                    onPress: () => {
-                      if (!isCurrent()) return;
-                      setError(null);
-                      retryNewSessionCreation(sessionId);
-                    },
-                  },
-                ]);
-              });
-          },
-        },
-        {
-          text: t('session.screen.retry'),
-          onPress: () => {
-            setError(null);
-            retryNewSessionCreation(sessionId);
-          },
-        },
-      ]);
       return;
     }
     if (status === 'enqueue-failed') {
@@ -4890,16 +4810,19 @@ function SessionScreenContent() {
       prefix: renderWindow.prefix,
     };
   }, [renderWindow.items, renderWindow.prefix, sessionId]);
-  // Known stale entry content bypasses the quiet delay; routine sync stays subtle.
-  const showSyncingIndicator = !showConnectionBanner && !showCachedHistoryNotice
-    && (loading || historyView.snapshot.loading || status === 'connecting' || contentRecoveryState === 'syncing');
-  const showSyncingImmediately = showSyncingIndicator && hasSessionEntryPreviewMismatch(
+  const entryPreviewMismatch = hasSessionEntryPreviewMismatch(
     sessionId,
     remoteSessionStore.getSessionMessagePreview(sessionId),
     currentSession?.preview,
     messages,
     historyView.snapshot,
   );
+  // Reopening a cached task performs background validation. Do not make that
+  // look like the finished task is running again; show actual recovery/missing content.
+  const showSyncingIndicator = !showConnectionBanner && !showCachedHistoryNotice
+    && (!hasRenderedMessages || entryPreviewMismatch || outboxRecoverySyncHeld || status === 'connecting')
+    && (loading || historyView.snapshot.loading || status === 'connecting' || contentRecoveryState === 'syncing');
+  const showSyncingImmediately = showSyncingIndicator && entryPreviewMismatch;
   const diffCount = renderWindow.diffCount;
   const searchHits = useMemo(
     () => searchOpen && searchQuery.trim()
@@ -6236,14 +6159,12 @@ function SessionScreenContent() {
   });
   const enterShareSelection = useCallback((clientId: string) => {
     Keyboard.dismiss();
-    setShareSelectionTriggeredByScreenshot(false);
     shareSelectionStore.enter(sessionId, clientId);
   }, [sessionId]);
   const cancelShareSelection = useCallback(() => {
     shareOperationSeqRef.current += 1;
     shareImages.cancel();
     setConversationShareBusy(false);
-    setShareSelectionTriggeredByScreenshot(false);
     shareSelectionStore.exit();
   }, [shareImages.cancel]);
   const exportConversationSharePng = useCallback(async () => {
@@ -6313,7 +6234,6 @@ function SessionScreenContent() {
       // 也必须交给下一次有界清理，不能在 finally 中提前删除。
       shareCompleted = true;
       if (!isShareOperationActive()) return;
-      setShareSelectionTriggeredByScreenshot(false);
       shareSelectionStore.exit();
     } catch (error) {
       if (!isShareOperationActive()) return;
@@ -7197,6 +7117,7 @@ function SessionScreenContent() {
       .finally(() => setStopPending(false));
   };
 
+  const pendingImagePreview = useComposerPendingImagePreview({ attachments, previews: attachmentPreviews, pendingUploads, getUploadedAttachmentId });
   const renderComposerControls = ({ composerLayout, composerSendUnavailableReason, composerStopDisabledReason, composerStopDisabled, composerShowInlineStop, composerSendSlotIsStop, composerShowSendButton, composerSendDisabled, voiceIsListening, voiceIsProcessing, voiceProcessingIndicator, voiceIsBusy, voiceRecordingTimer, composerVoicePlacement }: SessionComposerControlState): SessionComposerControls => {
     composerSendTargetEnabledRef.current = composerShowSendButton && !composerLayout.send.disabled;
     if (!composerShowSendButton) sendButtonFrameRef.current = null;
@@ -7407,6 +7328,7 @@ function SessionScreenContent() {
   const renderComposerAttachmentTray = () => (
     <ComposerAttachmentTray
       attachments={attachments}
+      onPreviewPending={pendingImagePreview.open}
       onPreview={setComposerPreviewAttachmentId}
       onRemove={removeRemoteFileAttachment}
       onRemovePending={removePendingUpload}
@@ -8924,17 +8846,6 @@ function SessionScreenContent() {
   }, []);
   const dismissTransientNotice = useCallback(() => setTransientNotice(null), []);
   const [chipShareBusy, setChipShareBusy] = useState(false);
-  screenshotBlockedByOverlayRef.current = Boolean(
-    settingsOpen
-    || searchOpen
-    || contextSheetOpen
-    || chipMenuTarget !== null
-    || (modelSheetOpen && canUseComposer)
-    || (permissionSheetOpen && canUseComposer)
-    || composerPreviewAttachmentId !== null
-    || sessionListDrawerOverlayMounted
-    || messageBlockingOverlay
-  );
 
   // 聊天正文文件 chip 上下文(消息树内 inline chip 经 context 消费,不走多层 prop):
   // stat 走被控端 fs:stat-path(失败由 verdict 层归为 unknown 乐观点亮)。
@@ -9003,9 +8914,7 @@ function SessionScreenContent() {
     t,
   ]);
 
-  /** chip 菜单「导出 / 分享」:两段式导出 → 系统分享单(与文件浏览器同链路);
-   *  mtime 先列一拍父目录拿真实值(导出 URL 缓存 key 依赖),拿不到用当前时间
-   *  兜底——宁可多导出一次也不复用同路径被覆写前的旧文件。
+  /** chip 菜单「导出 / 分享」:优先复用完整文件缓存，后台复验版本，再交给系统分享单。
    *  workdir 外文件(relPath 为 null)改走被控端 media:fetch 绝对路径取件
    *  (xdt-file://open?path=…,与文件浏览器 gallery / 预览页 absPath 模式同一通道)。 */
   const shareChipFile = useCallback(async (target: ChatFilePathTarget) => {
@@ -9018,29 +8927,23 @@ function SessionScreenContent() {
         '/api/device-link/media/presign-get',
         { baseUrl: DEVICE_LINK_API_BASE_URL, method: 'POST', body: { key: ossKey } },
       );
+      const deleteOssObject = (key: string) => {
+        void auth.apiFetch('/api/device-link/media', {
+          baseUrl: DEVICE_LINK_API_BASE_URL, method: 'DELETE', body: { key },
+        }).catch(() => undefined);
+      };
       let url: string;
       if (target.relPath === null) {
         url = await fetchRemoteAbsFileToUrl(
-          { maker, deviceId, openLink, presignGet, stream: false },
+          { maker, deviceId, openLink, presignGet, stream: false, deleteOssObject },
           target.absPath,
         );
       } else {
-        let mtimeMs = Date.now();
-        try {
-          const raw = await withTransientRemoteRetry(async () => {
-            await openLink(deviceId);
-            return maker.fileBrowser.listDir(workdir, parentRelPath(target.relPath ?? '') ?? '');
-          });
-          const entry = normalizeRemoteOpDirEntries(raw).find((item) => item.relPath === target.relPath);
-          if (entry) mtimeMs = entry.mtimeMs;
-        } catch {
-          /* 列目录失败不阻断分享,退当前时间 key */
-        }
         url = await exportRemoteFileToUrl(
-          { maker, deviceId, openLink, presignGet },
+          { maker, deviceId, openLink, presignGet, deleteOssObject },
           workdir,
           target.relPath,
-          mtimeMs,
+          0,
         );
       }
       const mime = shareMimeForFileName(name);
@@ -9147,7 +9050,8 @@ function SessionScreenContent() {
     const releasePending = sessionPendingWrites.track(sessionId, fields);
     void (async () => {
       try {
-        const updated = await sessionMetaWriteQueue.enqueue(sessionId, fields, () => retryPatchWhileLatest(
+        const updated = await withNewSessionCreationRemoval(sessionId, rpcDeviceId, patch.status,
+          () => sessionMetaWriteQueue.enqueue(sessionId, fields, () => retryPatchWhileLatest(
           write.isLatest,
           // preSend:重连等待(最长 1.5s)之后、真正出网之前再查一次让位——本页同
           // 字段连续两次操作时,前笔在等待中被取代不得再发出(review P2)。
@@ -9157,7 +9061,7 @@ function SessionScreenContent() {
             [sessionId, patch],
             { preSend: assertStillLatest },
           ),
-        ));
+        )), write.isLatest);
         if (updated && write.isLatest()) {
           // 字段级对账 + updatedAt 单调下限(同首页):整对象覆盖会冲掉其它字段
           // 上并发写的乐观值。
@@ -9593,8 +9497,10 @@ function SessionScreenContent() {
     }
   }, [applyComposerDocument, deviceId, maker, messageActionBusy, requestSync, rewindState, sessionId]);
 
+  const pendingInteractionDock = sessionOperationLayout.composerSlot === 'pending-interaction';
   const dockKeyboardFollow = Platform.OS === 'ios' && composerDock.enabled && nativeComposerFrameAvailable
-    && adaptiveWindow.regions.length === 0 && sessionOperationLayout.composerSlot === 'editable'
+    && adaptiveWindow.regions.length === 0
+    && (sessionOperationLayout.composerSlot === 'editable' || pendingInteractionDock)
     && !shareSelectionActive && !isSharedTaskAccessRevoked;
   const companionHeaderShown = companionChat && !!companionResource && !shareSelectionActive;
   const headerNode = (
@@ -9704,7 +9610,14 @@ function SessionScreenContent() {
           <View style={[styles.sessionChromeContent, { paddingTop: horizontalSystemHeader ? nativeHeaderHeight : insets.top + (paneLayout.persistent ? spacing.lg : 0) }, companionChat && Platform.OS !== 'ios' && { backgroundColor: colors.surface }]}>
             {headerNode}
 
-            {!isSharedTaskAccessRevoked && (showConnectionBanner || showCachedHistoryNotice) ? (
+            {cloudHomeActor && cloudHomeUnreachable ? (
+              <CloudHomeUnreachableNotice deviceName={deviceName} onSwitch={() => router.push({
+                pathname: '/companions/cloud/[actorId]',
+                params: { actorId: cloudHomeActor.id, botId: cloudHomeActor.externalId, deviceId, deviceName,
+                  title: resolveRemoteText(companionResource!.display.title, i18nInstance.language) },
+              })} />
+            ) : null}
+            {!isSharedTaskAccessRevoked && !quietConnection && (showConnectionBanner || showCachedHistoryNotice) ? (
               <ConnectionBanner
                 density="compact"
                 cachedOnly={showCachedHistoryNotice}
@@ -10134,6 +10047,7 @@ function SessionScreenContent() {
             testID="session.permissionSheet"
           />
         ) : null}
+        {pendingImagePreview.host}
         {composerPreviewUrl && composerGalleryImages.length > 0 ? (
           // composer 托盘图片的全屏查看(沿用聊天消息同款 ImageLightbox;本地图无需远端取件)。
           // annotation:托盘图可圈点标注 / 再编辑,保存后烧录替换附件重新上传。
@@ -10237,11 +10151,9 @@ function SessionScreenContent() {
                     // 设备来源标签只标别的设备发来的消息:本机发出的不标。
                     viewerDeviceId={auth.deviceId}
                     onOpenSourceDevice={openSourceDevice}
-                    onBlockingOverlayChange={handleMessageBlockingOverlayChange}
                     onOpenSessionLink={openSessionLink}
                     onPreviewRewind={isSharedTaskPeer(deviceId) ? undefined : previewRewindAtMessage}
                     onEnterShareSelection={enterShareSelection}
-                    onVisibleShareableMessageIdsReaderChange={handleVisibleShareableMessageIdsReaderChange}
                     shareSelectionActive={shareSelectionActive}
                     shareSelectionBusy={conversationShareBusy}
                     // chat-text-quote:选中消息文字 → 引用进本会话草稿(截断后写
@@ -10340,7 +10252,9 @@ function SessionScreenContent() {
           width={paneLayout.detail.width}
         >
         {!isSharedTaskAccessRevoked && <DockKeyboardLift
-          active={dockKeyboardFollow} restingBottom={composerDock.restingBottom} keyboardGap={composerDock.keyboardGap}
+          active={dockKeyboardFollow}
+          restingBottom={pendingInteractionDock ? 0 : composerDock.restingBottom}
+          keyboardGap={pendingInteractionDock ? 0 : composerDock.keyboardGap}
           pointerEvents="box-none"
           testID="session.bottomViewport"
           style={[
@@ -10535,8 +10449,13 @@ function SessionScreenContent() {
                 </View>
               ) : (
                 <ScrollView
+                  ref={pendingQuestionScroll.scrollRef}
                   keyboardShouldPersistTaps="handled"
                   nestedScrollEnabled
+                  onFocus={pendingQuestionScroll.onFocus}
+                  onBlur={pendingQuestionScroll.onBlur}
+                  onLayout={pendingQuestionScroll.reveal}
+                  onContentSizeChange={pendingQuestionScroll.reveal}
                   testID="interaction.bottomScroll"
                 >
                 <InteractionPanel
@@ -10564,32 +10483,39 @@ function SessionScreenContent() {
                   例外:新建任务慢发送时这一行要说明卡在哪一步,不能被同步占位藏掉。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+              {/* 保留活动行的位置：提示出现、切换与结束不改变消息列表底部留白。 */}
+              {!companionChat ? (
                 <View
+                  pointerEvents="box-none"
                   style={[
                     styles.composerActivityFrame,
-                    { paddingHorizontal: composerTouchLayout.composerPaddingHorizontal },
+                    {
+                      paddingHorizontal: composerTouchLayout.composerPaddingHorizontal,
+                      minHeight: 44,
+                    },
                   ]}
                 >
-                  <ComposerActivityStatus
-                    availableRegion={composerRegion}
-                    key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
-                    sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
-                    reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
-                    pendingRecovery={pendingRecoveryStatus}
-                    sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
-                    startedAt={composerActivityStartedAtMs}
-                    rateStartedAt={remoteSessionRunStatus.startedAt}
-                    streaming={isSessionStreaming}
-                    tokenUsage={composerActivityTokenUsage}
-                    outputTokens={remoteSessionRunStatus.outputTokens}
-                    generationDurationMs={remoteSessionRunStatus.generationDurationMs}
-                    generationReliable={remoteSessionRunStatus.generationReliable}
-                    tokenSpeed={remoteSessionRunStatus.tokenSpeed}
-                    generationActive={remoteSessionRunStatus.generationActive}
-                    visible={showComposerActivity}
-                    slowSendPhase={creationSlowPhase}
-                  />
+                  {(showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+                    <ComposerActivityStatus
+                      availableRegion={composerRegion}
+                      key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
+                      sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
+                      reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
+                      pendingRecovery={pendingRecoveryStatus}
+                      sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
+                      startedAt={composerActivityStartedAtMs}
+                      rateStartedAt={remoteSessionRunStatus.startedAt}
+                      streaming={isSessionStreaming}
+                      tokenUsage={composerActivityTokenUsage}
+                      outputTokens={remoteSessionRunStatus.outputTokens}
+                      generationDurationMs={remoteSessionRunStatus.generationDurationMs}
+                      generationReliable={remoteSessionRunStatus.generationReliable}
+                      tokenSpeed={remoteSessionRunStatus.tokenSpeed}
+                      generationActive={remoteSessionRunStatus.generationActive}
+                      visible={showComposerActivity}
+                      slowSendPhase={creationSlowPhase}
+                    />
+                  ) : null}
                 </View>
               ) : null}
               {/* Desktop BotWorkingStatus: a teammate's paced public status stays above the composer,
@@ -10732,7 +10658,6 @@ function SessionScreenContent() {
             <ShareSelectionBar
               busy={conversationShareBusy}
               count={shareSelectionCount}
-              screenshotTriggered={shareSelectionTriggeredByScreenshot}
               onCancel={cancelShareSelection}
               onShare={() => void shareSelectedConversation()}
             />
@@ -10760,13 +10685,16 @@ function SessionScreenContent() {
           width={conversationShareWidth}
         />
       ) : null}
-      <SessionTransientNotice
-        notice={transientNotice}
-        onDismiss={dismissTransientNotice}
-        top={Math.max(topOverlayHeight, insets.top + 44) + spacing.sm}
-      />
       <MessageHistoryOverlay>
-        {/* Keep the drawer above resident histories, including its closing animation. */}
+        <SessionTransientNotice
+          notice={transientNotice}
+          onDismiss={dismissTransientNotice}
+          top={Math.max(topOverlayHeight, insets.top + 44) + spacing.sm}
+        />
+      </MessageHistoryOverlay>
+      <MessageHistoryOverlay enabled={!paneLayout.persistent || sessionListDrawerOverlayMounted}>
+        {/* The persistent panel stays below the shared resident list. Only modal
+            drawers cover resident histories, including their closing animation. */}
         <SessionListDrawer
           newSessionActionRef={homeNewSessionActionRef}
           newSessionInSystemBar={paneLayout.persistent && Platform.OS === 'ios' && adaptiveWindow.barEdge !== 'none'}

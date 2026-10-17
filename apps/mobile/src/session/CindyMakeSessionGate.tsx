@@ -8,7 +8,7 @@ import { useMobileMakerTransport } from '@/device-link/useMobileMakerTransport';
 import { remoteSessionStore } from './remoteSessionStore';
 import { MainWindowActionButton } from '@/components/MobilePrimitives';
 import { useNewSessionCreationTask } from './newSessionCreation';
-import { LocalSessionCreationRecovery, SessionEntryStatus } from './SessionEntryRecovery';
+import { SessionEntryStatus } from './SessionEntryRecovery';
 
 export const SESSION_ENTRY_LOOKUP_TIMEOUT_MS = 20_000;
 type Lookup = { key: string; status: 'loading' | 'failed' | 'missing' | 'timedOut' | 'loaded' };
@@ -37,7 +37,7 @@ export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, child
     && (!deviceId || session.deviceLinkDeviceId === deviceId));
   const knownSource = knownSession?.source;
   const task = useNewSessionCreationTask(sessionId);
-  const localCreation = task?.deviceId === deviceId
+  const localCreation = task?.sessionId === sessionId && task.deviceId === deviceId
     && (task.status === 'running' || task.status === 'create-failed') ? task : null;
   const creationBlocked = localCreation !== null;
   const [attempt, setAttempt] = useState(0);
@@ -85,15 +85,11 @@ export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, child
     loaded?.scope === scope ? loaded.source : undefined
   );
   if (!CINDY_MAKE_ENABLED && isCindyMakeSource(source)) return <Redirect href="/" />;
-  if (localCreation && (localCreation.readyForEdit || localCreation.worktreeCleanupAcknowledged)) {
-    return <LocalSessionCreationRecovery
-      key={JSON.stringify([sessionId, deviceId, accountGeneration, localCreation.startedAt, localCreation.status])}
-      task={localCreation} />;
-  }
+  // Locally initiated tasks already have an optimistic message/composer. Keep
+  // that screen mounted; it also owns automatic draft recovery after failure.
+  // File routes still require confirmed remote metadata.
+  if (localCreation && ownsSessionSubscription) return children;
   if (!CINDY_MAKE_ENABLED && source === undefined) {
-    if (localCreation) return <LocalSessionCreationRecovery
-      key={JSON.stringify([sessionId, deviceId, accountGeneration, localCreation.startedAt, localCreation.status])}
-      task={localCreation} />;
     const status = lookup?.key === key ? lookup.status : 'loading';
     return <SessionEntryStatus title={t('session.entry.title')}
       copy={t(`session.entry.${status}`)} loading={status === 'loading'}>

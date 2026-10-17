@@ -1416,6 +1416,7 @@ export function UserMessage({
             {fileAttachmentNodes}
             <HookTaskCard
               im={hookSource.im}
+              origin={hookSource.origin}
               userText={displayContent}
               collapseUserText={hookSource.contentFormat === 'user-text'}
               threadContext={hookSource.threadContext}
