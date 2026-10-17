@@ -544,7 +544,11 @@ import {
   getRemoteCcTurnSettledHandler,
   getRemoteCcStaleQuery,
 } from '../maker-host/remote-session-start-ensure.js';
-import { getCodexProxyAuthInjectionState } from '../maker-host/codex-proxy-host.js';
+import {
+  clearSessionChatImageCapabilityState,
+  getCodexProxyAuthInjection,
+  getCodexProxyAuthInjectionState,
+} from '../maker-host/codex-proxy-host.js';
 import {
   readCollaborationSettings,
   readCollaborationSettingsState,
@@ -6049,6 +6053,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   setSessionRuntimeCleanup((sessionId) => {
     workingDirectoryRecovery.discard(sessionId);
     clearSessionRuntimeControlState(sessionId);
+    clearSessionChatImageCapabilityState(sessionId);
     clearSessionProvider(sessionId);
     setSessionEffort(sessionId, null);
     setSessionFastMode(sessionId, false);
