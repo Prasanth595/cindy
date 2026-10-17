@@ -52,7 +52,14 @@ export async function startPartnerBridge(opts: {
     startedAt: Date.now(),
     protocol: 'cindy-partner-bridge/1',
   };
-  const endpointFile = writePartnerEndpointFile(opts.endpointDir, endpoint);
+  let endpointFile: string;
+  try {
+    endpointFile = writePartnerEndpointFile(opts.endpointDir, endpoint);
+  } catch (err) {
+    // 端点文件写不出来时调用方拿不到 token,服务必须立刻停掉,不能留一个空转的监听端口。
+    await server.shutdown();
+    throw err;
+  }
   opts.deps.log.info('partner bridge endpoint written', { endpointFile, port: server.port });
 
   return {

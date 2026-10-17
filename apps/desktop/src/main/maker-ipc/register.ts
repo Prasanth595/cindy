@@ -14063,26 +14063,44 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       broadcastSessionCreated(sessionId);
       return sessionId;
     },
-    getDraftDefaults: () => {
-      // 跟随 New Maker 草稿里"有选择记录"的 vendor(与 Orca worker 同源):
-      // 未登录的本地模式默认模型可能是 codex 侧的托管模型,写死 claude-code
-      // 会拿不到凭证(真机:claude-code not authenticated: no_key)。
-      const cc = getWorkerDefaultsFromNewMaker('claude-code');
-      if (cc.model) return { agentKind: 'cc' as const, ...cc };
-      const codex = getWorkerDefaultsFromNewMaker('codex');
-      if (codex.model) return { agentKind: 'codex' as const, ...codex };
-      const pi = getWorkerDefaultsFromNewMaker('pi');
-      if (pi.model) return { agentKind: 'pi' as const, ...pi };
-      return {};
+    getDraftDefaults: (agentKind) => {
+      // 先定 agent,再取该 agent 自己的草稿默认。未登录的本地模式默认模型可能
+      // 是 codex 侧的托管模型,写死 claude-code 会拿不到凭证(真机:no_key)。
+      const pick = (vendor: 'cc' | 'codex' | 'pi') => {
+        const defaults = getWorkerDefaultsFromNewMaker(
+          vendor === 'cc' ? 'claude-code' : vendor,
+        );
+        return defaults.model ? { agentKind: vendor, ...defaults } : null;
+      };
+      if (agentKind) return pick(agentKind) ?? { agentKind };
+      return pick('cc') ?? pick('codex') ?? pick('pi') ?? {};
     },
-    normalizeWorkingDir: (dir) => normalizeWorkingDirForStorage(dir),
-    isSessionBusy: isSessionInTurn,
+    normalizeWorkingDir: async (dir) => {
+      // normalizeWorkingDirForStorage 只整理字符串,不能证明这个目录真的存在。
+      if (!path.isAbsolute(dir)) return null;
+      try {
+        const stat = await fsp.stat(dir);
+        if (!stat.isDirectory()) return null;
+      } catch {
+        return null;
+      }
+      return normalizeWorkingDirForStorage(dir);
+    },
+    isSessionBusy: (sessionId) =>
+      isSessionInTurn(sessionId) ||
+      inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0,
     dispatch: async ({ targetSessionId, message }) => {
-      const r = await sendToSessionInternal({ targetSessionId, message });
+      // 会话是"只建了 DB 行"的懒启动态:不恢复已保存的权限档,首轮会落到
+      // bypassPermissions,默认的 plan 任务就绕过了只读限制。
+      const r = await sendToSessionInternal({
+        targetSessionId,
+        message,
+        resumeWithStoredPermissionMode: true,
+      });
       if (!r.ok) return { ok: false, errorCode: r.errorCode, message: r.message };
       return { ok: true, wakeKind: r.wakeKind };
     },
-    abortSession: abortPartnerBridgeSession,
+    abortSession: stopSessionTurnExplicitly,
     getObservableSession: (sessionId) => maker.getSession(sessionId) ?? null,
     onSilentStopSettled,
     readLatestAssistantText: async (sessionId, sinceMs) => {
@@ -14168,24 +14186,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       });
     },
   );
-
-  /**
-   * partner-bridge 的取消入口:只中止当前这一轮,与桌面端 Stop 同语义。
-   * 单列成具名函数 —— register.ts 有基于源码顺序的契约测试,内联箭头函数会
-   * 撞上它们找的 needle。
-   */
-  async function abortPartnerBridgeSession(sessionId: string): Promise<void> {
-    const target = maker.getSession(sessionId);
-    if (!target) return;
-    try {
-      await target.abort();
-    } catch (error) {
-      log.warn('partner bridge abort failed', {
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
 
   // Ghost 的 workspace 槽:判重/创建走 localDb 服务,创建后广播与 scheduler
   // 同一条 `local-db:sessions:created` 通道让侧边栏刷新;focus 复用 deep link

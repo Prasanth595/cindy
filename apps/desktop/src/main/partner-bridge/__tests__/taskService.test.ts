@@ -72,7 +72,7 @@ function createHarness() {
       return id;
     },
     getDraftDefaults: () => ({}),
-    normalizeWorkingDir: (dir) => (dir.startsWith('/') ? dir : null),
+    normalizeWorkingDir: async (dir) => (dir.startsWith('/') ? dir : null),
     isSessionBusy: () => false,
     dispatch: async (params) => {
       dispatched.push(params);
@@ -335,5 +335,72 @@ describe('partner task service', () => {
       agentKind: 'gpt' as never,
     });
     expect(outcome).toMatchObject({ ok: false, errorCode: 'INVALID_REQUEST' });
+  });
+
+  it('显式 agent 只取该 agent 的草稿默认', async () => {
+    const h = createHarness();
+    h.deps.getDraftDefaults = (agentKind) =>
+      agentKind === 'codex'
+        ? { agentKind: 'codex', model: 'gpt-5.6' }
+        : { agentKind: 'cc', model: 'claude-x' };
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({
+      key: 'agent-defaults',
+      prompt: '干活',
+      agentKind: 'codex',
+    });
+    expect(submitted.ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(h.createParams).toHaveLength(1);
+    });
+    expect(h.createParams[0]).toMatchObject({ agentKind: 'codex', model: 'gpt-5.6' });
+  });
+
+  it('同 key 换 agent 会换新会话', async () => {
+    const h = createHarness();
+    h.deps.getDraftDefaults = (agentKind) =>
+      agentKind === 'codex'
+        ? { agentKind: 'codex', model: 'gpt-5.6' }
+        : { agentKind: 'cc', model: 'claude-x' };
+    const service = createPartnerTaskService(h.deps);
+
+    const first = await service.submit({ key: 'switch-agent', prompt: '第一单', agentKind: 'cc' });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const firstSession = await waitForSession(h);
+    firstSession.emitDone();
+    await vi.waitFor(() => {
+      expect(service.get(first.task.taskId)?.status).toBe('succeeded');
+    });
+
+    const second = await service.submit({
+      key: 'switch-agent',
+      prompt: '第二单',
+      agentKind: 'codex',
+    });
+    expect(second.ok).toBe(true);
+    await vi.waitFor(() => {
+      expect(h.createParams).toHaveLength(2);
+    });
+    expect(h.createParams[1]).toMatchObject({ agentKind: 'codex' });
+  });
+
+  it('会话解析完成前取消也能落 cancelled', async () => {
+    const h = createHarness();
+    const deferred: { resolve?: (id: string) => void } = {};
+    h.deps.createSession = () =>
+      new Promise<string>((resolve) => {
+        deferred.resolve = resolve;
+      });
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({ key: 'early-cancel', prompt: '慢活' });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+
+    await service.cancel(submitted.task.taskId);
+    deferred.resolve?.('sess-slow');
+    await vi.waitFor(() => {
+      expect(service.get(submitted.task.taskId)?.status).toBe('cancelled');
+    });
   });
 });

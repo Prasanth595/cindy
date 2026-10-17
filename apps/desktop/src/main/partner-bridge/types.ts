@@ -107,10 +107,14 @@ export interface PartnerBridgeDeps {
   writeSessionId(key: string, sessionId: string | null): void;
   getSessionRow(sessionId: string): Promise<PartnerSessionRow | null>;
   createSession(params: PartnerSessionCreateParams): Promise<string>;
-  /** 跟随 New Maker 当前草稿默认(含 agent 种类):外部调用不该把 agent 写死。 */
-  getDraftDefaults(): PartnerDraftDefaults;
-  /** 宿主侧路径规范化(不存在/非法返回 null)。 */
-  normalizeWorkingDir(dir: string): string | null;
+  /**
+   * 取某个 agent 的草稿默认。不传 = 按 New Maker 里有选择记录的第一档
+   * (cc → codex → pi);传了 = 只取该 agent 对应 vendor 的默认,避免把另一个
+   * agent 的模型／来源写进会话。
+   */
+  getDraftDefaults(agentKind?: 'cc' | 'codex' | 'pi'): PartnerDraftDefaults;
+  /** 宿主侧路径校验 + 规范化(非绝对路径/不存在/不是目录返回 null)。 */
+  normalizeWorkingDir(dir: string): Promise<string | null>;
   isSessionBusy(sessionId: string): boolean;
   dispatch(params: { targetSessionId: string; message: string }): Promise<PartnerDispatchResult>;
   /** 中止该会话当前这一轮(取消任务时调用)。 */

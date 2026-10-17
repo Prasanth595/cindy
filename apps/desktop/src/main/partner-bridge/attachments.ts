@@ -50,6 +50,9 @@ export async function collectPartnerAttachments(
 ): Promise<{ text: string; attachments: PartnerTaskAttachment[] }> {
   const attachments: PartnerTaskAttachment[] = [];
   const seen = new Set<string>();
+  /** 真正进入结果清单的引用;未命中的引用不能对调用方声称"已提供"。 */
+  const providedImageUrls = new Set<string>();
+  const providedFileUrls = new Set<string>();
 
   const imageRefs = collectXdtImageRefs(text);
   const fileRefs = collectXdtFileRefs(text);
@@ -64,6 +67,7 @@ export async function collectPartnerAttachments(
     const bytes = await safeSize(absPath, deps);
     if (bytes === null) continue;
     pushAttachment(attachments, seen, { absPath, bytes, kind: 'image' });
+    providedImageUrls.add(ref.url);
   }
 
   for (const ref of fileRefs) {
@@ -87,11 +91,13 @@ export async function collectPartnerAttachments(
     const bytes = await safeSize(absPath, deps);
     if (bytes === null) continue;
     pushAttachment(attachments, seen, { absPath, bytes, kind: 'file' });
+    providedFileUrls.add(ref.url);
   }
 
   const transformed = transformXdtRefs(text, {
-    image: () => '（图片已作为附件提供）',
-    file: () => '（已作为附件提供）',
+    image: (ref) =>
+      providedImageUrls.has(ref.url) ? '（图片已作为附件提供）' : '（附图未能提供）',
+    file: (ref) => (providedFileUrls.has(ref.url) ? '（已作为附件提供）' : '（附件未能提供）'),
   });
   return { text: transformed, attachments };
 }

@@ -78,5 +78,7 @@ describe('partner attachments', () => {
 
     expect(result.attachments).toHaveLength(1);
     expect(warnings.join(' ')).toContain('image unresolved');
+    // 没收集到的图片不能对调用方声称"已提供"。
+    expect(result.text).toContain('附图未能提供');
   });
 });

@@ -106,9 +106,12 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     row: PartnerSessionRow,
     permissionMode: string,
     workingDir: string | undefined,
+    agentKind: string | undefined,
   ): boolean {
     if (row.status !== 'active') return false;
     if (row.permissionMode !== permissionMode) return false;
+    // 显式指定 agent 时必须命中同一 agent,否则同一 key 换 agent 会静默沿用旧会话。
+    if (agentKind && row.agentKind !== agentKind) return false;
     if (workingDir) {
       if (row.workspaceKind !== 'project' || row.workingDir !== workingDir) return false;
     } else if (row.workspaceKind !== 'dialogue') {
@@ -125,15 +128,19 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     | { ok: true; sessionId: string }
     | { ok: false; errorCode: 'NOT_READY' | 'SESSION_UNAVAILABLE'; message: string }
   > {
+    const requestedAgentKind = request.agentKind ?? deps.getDraftDefaults().agentKind;
     const existing = deps.readSessionId(request.key);
     if (existing) {
       const row = await deps.getSessionRow(existing);
-      if (row && sessionMatches(row, permissionMode, workingDir)) return { ok: true, sessionId: existing };
+      if (row && sessionMatches(row, permissionMode, workingDir, requestedAgentKind)) {
+        return { ok: true, sessionId: existing };
+      }
       // 旧间不可用或配置已变:解除映射换新间(旧会话留在侧边栏,历史可查)。
       deps.writeSessionId(request.key, null);
     }
-    const draft = deps.getDraftDefaults();
-    const agentKind = request.agentKind ?? draft.agentKind;
+    // 先定 agent,再只取该 agent 的模型／强度／供应商默认。
+    const agentKind = requestedAgentKind;
+    const draft = deps.getDraftDefaults(agentKind);
     try {
       const sessionId = await deps.createSession({
         key: request.key,
@@ -242,6 +249,9 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     const cancelled = new Promise<never>((_, reject) => {
       inflightTask.cancel = (reason) => reject(reason);
     });
+    // 取消可能发生在 resolveSession 期间 —— 那时还没进入 race,先挂一个接收方
+    // 避免 unhandled rejection;真正的终态由下面的 cancelled 检查落。
+    void cancelled.catch(() => {});
     const session = await resolveSession(request, permissionMode, workingDir);
     if (!session.ok) {
       fail(task, session.errorCode, session.message);
@@ -250,7 +260,13 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     const sessionId = session.sessionId;
     task.sessionId = sessionId;
     inflightTask.sessionId = sessionId;
-    if (inflightTask.cancelled) return;
+    if (inflightTask.cancelled) {
+      task.status = 'cancelled';
+      task.errorCode = 'CANCELLED';
+      task.error = '调用方已取消这一单';
+      finish(task);
+      return;
+    }
 
     if (deps.isSessionBusy(sessionId)) {
       fail(task, 'BUSY', '这个 key 的会话正被占用(可能用户正在里面操作),请稍后重试');
@@ -287,7 +303,11 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     if (dispatched.wakeKind === 'queued') {
       // 忙检与投递之间的窄竞态:消息已进队,但结果不再属于这一单。
       deps.log.warn('partner message queued behind a foreign turn', { taskId: task.taskId, sessionId });
-      fail(task, 'BUSY', '会话恰好正忙,本单消息已排队但结果不再取回;请稍后重新提交');
+      fail(
+        task,
+        'BUSY',
+        '会话恰好正忙,本单消息已入队但结果不再取回;请先确认上一单结果,不要重复提交同一指令',
+      );
       return;
     }
 
@@ -415,7 +435,7 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
 
       let workingDir: string | undefined;
       if (typeof request.workingDir === 'string' && request.workingDir.trim()) {
-        const normalized = deps.normalizeWorkingDir(request.workingDir.trim());
+        const normalized = await deps.normalizeWorkingDir(request.workingDir.trim());
         if (!normalized) {
           return {
             ok: false,
