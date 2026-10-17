@@ -12,7 +12,7 @@ import {
 } from './index.js';
 import { CodexForkError } from './fork-error.js';
 import { Session } from '../../session.js';
-import { Method, type TurnStartParams } from './app-server/protocol.js';
+import { Method, type TurnStartParams, type TurnError } from './app-server/protocol.js';
 import type { Effort } from '../../types/common.js';
 import type { AppServerHost, ThreadEventHandlers } from './app-server/host.js';
 import {
@@ -11058,7 +11058,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     function compact(host: ReturnType<typeof installFakeHost>, turnId = 'turn-1') {
       host.getThreadHandlers()!.itemStarted!({ threadId: nativeId, turnId, item: { id: 'compact', type: 'contextCompaction' } });
     }
-    function fail(host: ReturnType<typeof installFakeHost>, turnId = 'turn-1', error = failure) {
+    function fail(host: ReturnType<typeof installFakeHost>, turnId = 'turn-1', error: TurnError = failure) {
       const h = host.getThreadHandlers()!;
       h.error!({ threadId: nativeId, turnId, willRetry: false, error });
       h.turnCompleted!({ threadId: nativeId, turn: { id: turnId, status: 'failed', error } });
@@ -11160,6 +11160,50 @@ describe('CodexAgent MCP thread context hooks', () => {
       fail(host, 'turn-1', { message, codexErrorInfo: 'other' });
       await waitForExpectation(() => expect(handle.isTurnRunning?.()).toBe(false));
       expect(host.request.mock.calls.filter(([m]) => m === Method.ThreadFork)).toHaveLength(0);
+      await handle.close();
+    });
+    it('marks a compact response-stream disconnect as accepted-turn continuation-only', async () => {
+      const { host, handle, events } = await start();
+      compact(host);
+      fail(host, 'turn-1', {
+        message: 'stream disconnected before completion: Transport error: network error: error decoding response body',
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      });
+      await waitForExpectation(() => expect(events).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_compaction_transport_interrupted',
+          isTerminal: true,
+        }),
+      })));
+
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(host.request.mock.calls.filter(([m]) => m === Method.ThreadFork)).toHaveLength(0);
+      expect(host.request.mock.calls.filter(([m]) => m === Method.TurnStart)).toHaveLength(1);
+      await handle.close();
+    });
+    it('marks a completed-only compact disconnect as accepted-turn continuation-only', async () => {
+      const { host, handle, events } = await start();
+      compact(host);
+      const error = {
+        message: 'stream disconnected before completion: Transport error: network error: error decoding response body',
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      };
+      host.getThreadHandlers()!.turnCompleted!({
+        threadId: nativeId,
+        turn: { id: 'turn-1', status: 'failed', error },
+      });
+      await waitForExpectation(() => expect(events).toContainEqual(expect.objectContaining({
+        type: 'error',
+        data: expect.objectContaining({
+          reason: 'codex_compaction_transport_interrupted',
+          isTerminal: true,
+        }),
+      })));
+
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(host.request.mock.calls.filter(([m]) => m === Method.ThreadFork)).toHaveLength(0);
+      expect(host.request.mock.calls.filter(([m]) => m === Method.TurnStart)).toHaveLength(1);
       await handle.close();
     });
     it.each([502, 503])('recovers explicit compact HTTP %s after the native turn has failed', async (status) => {

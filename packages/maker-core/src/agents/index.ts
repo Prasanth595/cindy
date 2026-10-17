@@ -12,6 +12,7 @@ export type {
   ClaudeSubagentModelAccessStatus,
 } from './claude-code/subagent-model-access.js';
 export { CodexAgent } from './codex/index.js';
+export { CODEX_COMPACTION_TRANSPORT_INTERRUPTED_REASON } from './codex/compaction-transport-interrupt.js';
 export { findUnenforcedCapabilityRoutes } from './capability-route-support.js';
 export { isCodexExplicitOnlyOverlayRoute } from './codex/capability-routing.js';
 export { isCodexHistoryRecoveryRequired } from './codex/history-recovery.js';
