@@ -93,6 +93,11 @@ export function useCompanionCloud(): CompanionCloudSnapshot {
   return useSyncExternalStore(subscribe, read, read);
 }
 
+/** Latest snapshot outside React (e.g. while waiting for a companion to arrive here). */
+export function getCompanionCloudSnapshot(): CompanionCloudSnapshot {
+  return read();
+}
+
 /** Test-only reset of the module mirror. */
 export function resetCompanionCloudStoreForTests(next: CompanionCloudSnapshot = EMPTY_COMPANION_CLOUD_SNAPSHOT): void {
   owner = getDataOwnerGeneration();

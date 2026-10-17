@@ -123,7 +123,7 @@ export function pendingRequestCountByProvider(
 export interface ProviderSharePendingRequest {
   request: ProviderShareRequestItem;
   share: { shareId: string; providerId: string; providerLabel: string };
-  /** 分享在同账号另一台电脑上：本机生成了链接，由本机弹窗，处理转交那台电脑。本机的分享不带。 */
+  /** 分享在同账号另一台电脑上：本机生成链接或从管理页手动审批时带上，处理转交那台电脑。本机的分享不带。 */
   hostDeviceId?: string;
   /** 链接由同账号另一台电脑生成：由那台弹窗，本机只计入提示点与管理页。 */
   quiet?: boolean;

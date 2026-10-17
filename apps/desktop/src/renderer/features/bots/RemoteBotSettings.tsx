@@ -30,6 +30,8 @@ import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
 import type { RemoteBot } from './remoteBotRoster';
 import { useCompanionCloud } from './companionCloudStore';
 import { cloudCompanionAt } from './companionCloudPresentation';
+import { BotHomeComputerSetting } from './BotHomeComputerSetting';
+import { CindyMergeSetting } from './CindyMergeSetting';
 import {
   readRemoteBotSettings,
   readRemoteBotModelChain,
@@ -58,7 +60,7 @@ export function RemoteBotSettings(props: Props) {
 }
 function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage = 'home' }: Props) {
   const { t, i18n } = useTranslation();
-  // Read-only here: the main computer is changed from that computer's own settings.
+  // The main computer can be changed from here too (it is asked to hand the companion over).
   const homeActor = cloudCompanionAt(useCompanionCloud(), bot.deviceId, bot.id);
   const { confirm } = useConfirmDialog();
   const [data, setData] = useState<RemoteBotSettingsData | null>(null);
@@ -578,9 +580,14 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage 
   const panels = data?.panels ?? [];
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 text-[var(--text-primary)]">
-      <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">
-        {homeActor ? t('bots.cloud.homeReadOnly', { device: homeActor.homeDevice?.name?.trim() || bot.deviceName }) : bot.deviceName}
-      </p>
+      {homeActor ? (
+        <>
+          <BotHomeComputerSetting bot={{ id: bot.id, name: bot.name }} className="mb-4" />
+          <CindyMergeSetting bot={{ id: bot.id, name: bot.name }} className="mb-4" />
+        </>
+      ) : (
+        <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">{bot.deviceName}</p>
+      )}
       {page || resourceId !== bot.id ? (
         <Button
           variant="secondary"

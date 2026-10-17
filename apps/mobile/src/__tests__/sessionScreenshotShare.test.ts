@@ -1,3 +1,4 @@
+// guard: engineering-conventions.md 3.2 race contract: overlay ownership and selection revisions fence the screenshot listener and asynchronous exporter across renderer/page boundaries.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";

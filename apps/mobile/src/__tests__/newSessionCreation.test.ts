@@ -660,7 +660,7 @@ describe('newSessionCreation pipeline', () => {
       ts.forEachChild(node, findEffect);
     }
     findEffect(page);
-    expect(effect).not.toBe('');
+    if (!effect) throw new Error('Missing production creation recovery effect');
     const restore = vi.fn(() => expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable'));
     const bindings = {
       outboxOwner: owner, params: { recoverySessionId: 's1' }, routeDeviceId: scope === 'device' ? 'dev-2' : 'dev-1',

@@ -12,6 +12,7 @@ function Controls() {
   return (
     <>
       <button onClick={() => settings.setWallpaper('cindy-window')}>Choose</button>
+      <button onClick={() => settings.setWallpaper('cindy-whisper')}>Choose Still</button>
       <button onClick={settings.resetWallpaper}>Reset</button>
       <button onClick={() => settings.setMotion('dynamic')}>Animate</button>
       <button onClick={() => settings.setMotion('static')}>Static</button>
@@ -40,6 +41,51 @@ afterEach(() => {
 });
 
 describe('application wallpaper lifecycle', () => {
+  it('switches from a pending CDN scene to an offline still without using the late download', async () => {
+    let finish!: (url: string) => void;
+    const ensureImage = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const ensureVideo = vi.fn();
+    const setPatch = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal(
+      'Image',
+      class {
+        src = '';
+        decode = async () => {};
+      },
+    );
+    vi.stubGlobal('electronAPI', {
+      appearanceSettings: {
+        getSync: () => ({ ...DEFAULT_APPEARANCE_SETTINGS, wallpaperId: 'cindy-window' }),
+        onChanged: () => () => {},
+        setPatch,
+        ensureWallpaperImage: ensureImage,
+        ensureWallpaperVideo: ensureVideo,
+      },
+    });
+    render(
+      <WallpaperSettingsProvider>
+        <Controls />
+      </WallpaperSettingsProvider>,
+    );
+    await waitFor(() => expect(ensureImage).toHaveBeenCalledExactlyOnceWith('cindy-window'));
+    fireEvent.click(screen.getByText('Choose Still'));
+    await waitFor(() =>
+      expect(setPatch).toHaveBeenCalledExactlyOnceWith({ wallpaperId: 'cindy-whisper' }),
+    );
+    const background = () =>
+      document.documentElement.style.getPropertyValue('--app-wallpaper-image');
+    expect(background()).toContain('cindy-whisper.webp');
+    await act(async () => finish(`cindy-media://client-wallpaper/${'a'.repeat(64)}.webp`));
+    expect(background()).toContain('cindy-whisper.webp');
+    expect(ensureImage).toHaveBeenCalledTimes(1);
+    expect(ensureVideo).not.toHaveBeenCalled();
+  });
+
   it('weights required image and video progress by bytes, excluding video in static mode', async () => {
     const listeners = new Set<(progress: WallpaperDownloadProgress) => void>();
     vi.stubGlobal('electronAPI', {

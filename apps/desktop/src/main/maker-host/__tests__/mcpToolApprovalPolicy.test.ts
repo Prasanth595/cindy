@@ -351,6 +351,13 @@ describe('helper task workspace and SkillHub publication authorization', () => {
     expect(getDesktopClaudeReadOnlyAllowedTools()).not.toContain('mcp__cindy_helper__call_tool');
   });
 
+  it('lets the task permission mode decide moving a teammate to another computer, but not reading its home', () => {
+    const move = { name: 'move_teammate_home', args: { teammate_id: 'mia', target_device_id: 'laptop' } };
+    expect(policy('call_tool', move)).toBe('prompt-each-time');
+    expect(policy('move_teammate_home', move.args)).toBe('prompt-each-time');
+    expect(policy('call_tool', { name: 'get_teammate_home', args: { teammate_id: 'mia' } })).not.toBe('prompt-each-time');
+  });
+
   it('does not infer a safe helper action from missing or malformed evidence', () => {
     for (const params of [undefined, null, [], 'invalid JSON', {}, { name: '' }, { name: 42 }]) {
       expect(policy('call_tool', params)).toBe('prompt-each-time');

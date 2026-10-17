@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { DbClient } from '../../localDb/client/DbClient';
 import type { PluginUsageIdentity } from '../../../shared/pluginUsage';
+import { currentPluginUsageService, flushPluginUsageLifecycle } from '../current';
 const state = vi.hoisted(() => ({
   snapshot: null as { client: DbClient; userId: string; clientEpoch: number } | null,
   owner: 'owner1',
@@ -30,12 +31,12 @@ const identity: PluginUsageIdentity = {
   version: '1',
   releaseId: null,
 };
-beforeEach(() => {
-  vi.resetModules();
+beforeEach(async () => {
   state.owner = 'owner1';
   state.key = 'owner1:1';
   state.boundary = false;
   state.snapshot = null;
+  await flushPluginUsageLifecycle();
 });
 function client() {
   return {
@@ -49,7 +50,6 @@ function client() {
 it('never treats a retained inproc client reference as proof of owner/epoch continuity', async () => {
   const db = client();
   state.snapshot = { client: db, userId: state.owner, clientEpoch: 1 };
-  const { currentPluginUsageService } = await import('../current');
   const old = currentPluginUsageService()!;
   await old.bind(identity);
   const h = old.captureBound('plugin', 'revision')!;
@@ -66,7 +66,6 @@ it('never treats a retained inproc client reference as proof of owner/epoch cont
 it('blocks recreation throughout DB teardown/quit and only reopens for a newly attached epoch', async () => {
   const db = client();
   state.snapshot = { client: db, userId: state.owner, clientEpoch: 1 };
-  const { currentPluginUsageService, flushPluginUsageLifecycle } = await import('../current');
   expect(currentPluginUsageService()).not.toBeNull();
   await flushPluginUsageLifecycle();
   expect(currentPluginUsageService()).toBeNull();
@@ -76,7 +75,6 @@ it('blocks recreation throughout DB teardown/quit and only reopens for a newly a
 });
 it('does not bind a DB during a boundary or to a different account', async () => {
   state.snapshot = { client: client(), userId: 'other', clientEpoch: 1 };
-  const { currentPluginUsageService } = await import('../current');
   expect(currentPluginUsageService()).toBeNull();
   state.snapshot.userId = state.owner;
   state.boundary = true;

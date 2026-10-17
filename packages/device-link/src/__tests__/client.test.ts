@@ -1049,58 +1049,63 @@ describe('DeviceLinkClient', () => {
   });
 
   it('双方协商可靠传输后，大 invoke-result 分片并在累计 ACK 后停止重发', async () => {
+    vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 10_000 } });
-    h.client.start();
-    await tick();
-    h.current().ack();
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(1);
+      h.current().ack();
 
-    const open = h.client.openLink('dev-b', {
-      controllerName: 'Test',
-      protocolVersion: 1,
-      appVersion: '1',
-    });
-    const sentOpen = h.current().sent.find((e) => e.kind === 'link-open')!;
-    expect((sentOpen.payload as { capabilities: string[] }).capabilities).toContain(
-      DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT,
-    );
-    h.current().push({
-      v: PROTOCOL_VERSION,
-      kind: 'link-accept',
-      id: sentOpen.id,
-      src: 'dev-b',
-      payload: {
+      const open = h.client.openLink('dev-b', {
+        controllerName: 'Test',
+        protocolVersion: 1,
         appVersion: '1',
-        allowlistHash: 'hash',
-        capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
-      },
-    });
-    await open;
+      });
+      const sentOpen = h.current().sent.find((e) => e.kind === 'link-open')!;
+      expect((sentOpen.payload as { capabilities: string[] }).capabilities).toContain(
+        DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT,
+      );
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-accept',
+        id: sentOpen.id,
+        src: 'dev-b',
+        payload: {
+          appVersion: '1',
+          allowlistHash: 'hash',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT],
+        },
+      });
+      await open;
 
-    const before = h.current().sent.length;
-    h.client.sendInvokeResult('dev-b', 'req-large', {
-      ok: true,
-      result: { text: '弱'.repeat(100_000) },
-    });
-    const chunks = h.current().sent.slice(before).filter((env) => env.kind === 'invoke-result');
-    expect(chunks.length).toBeGreaterThan(1);
-    const parsed = chunks.map((env) => parseTransportPayload(env.payload)!);
-    expect(parsed.map((part) => part.meta.segment!.index)).toEqual(
-      Array.from({ length: chunks.length }, (_, i) => i),
-    );
-    const { streamId, seq } = parsed[0].meta;
-    h.current().push({
-      v: PROTOCOL_VERSION,
-      kind: 'push',
-      src: 'dev-b',
-      payload: {
-        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
-        payload: { streamId, ackSeq: seq },
-      },
-    });
-    const afterAck = h.current().sent.length;
-    await tick(2_100);
-    expect(h.current().sent).toHaveLength(afterAck);
-    h.client.stop();
+      const before = h.current().sent.length;
+      h.client.sendInvokeResult('dev-b', 'req-large', {
+        ok: true,
+        result: { text: '弱'.repeat(100_000) },
+      });
+      const chunks = h.current().sent.slice(before).filter((env) => env.kind === 'invoke-result');
+      expect(chunks.length).toBeGreaterThan(1);
+      const parsed = chunks.map((env) => parseTransportPayload(env.payload)!);
+      expect(parsed.map((part) => part.meta.segment!.index)).toEqual(
+        Array.from({ length: chunks.length }, (_, i) => i),
+      );
+      const { streamId, seq } = parsed[0].meta;
+      h.current().push({
+        v: PROTOCOL_VERSION,
+        kind: 'push',
+        src: 'dev-b',
+        payload: {
+          channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
+          payload: { streamId, ackSeq: seq },
+        },
+      });
+      const afterAck = h.current().sent.length;
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(h.current().sent).toHaveLength(afterAck);
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
   }, 5_000);
 
   it('累计 ACK 推进后不立即重发，定时重放时刷新 wrapper baseSeq', async () => {
@@ -2504,6 +2509,7 @@ describe('DeviceLinkClient', () => {
   });
 
   it('已排期的通知重试在本地永久 closeLink 后被撤销,不补发迟到的 transport-timeout', async () => {
+    vi.useFakeTimers();
     const h = makeHarness({
       timing: {
         pingIntervalMs: 60_000,
@@ -2511,43 +2517,50 @@ describe('DeviceLinkClient', () => {
         transportMaxRetryAttempts: 2,
       },
     });
-    h.client.start();
-    await tick();
-    h.current().ack();
-    await establishInboundReliableLink(h, 'late-notify-local-close');
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(1);
+      h.current().ack();
+      const linked = establishInboundReliableLink(h, 'late-notify-local-close');
+      await vi.advanceTimersByTimeAsync(1);
+      await linked;
 
-    const socket = h.current();
-    h.client.sendInvokeResult('dev-b', 'late-1', { ok: true, result: [] });
+      const socket = h.current();
+      h.client.sendInvokeResult('dev-b', 'late-1', { ok: true, result: [] });
 
-    // 让 link-close 的首发持续失败 → 重试被排期
-    const originalSend = socket.send.bind(socket);
-    let blockedCloses = 0;
-    socket.send = (data: string) => {
-      const env = JSON.parse(data) as Envelope;
-      if (env.kind === 'link-close') {
-        blockedCloses += 1;
-        throw new Error('simulated backpressure');
-      }
-      originalSend(data);
-    };
-    await vi.waitFor(() => expect(blockedCloses).toBeGreaterThanOrEqual(1));
+      // 让 link-close 的首发持续失败 → 重试被排期
+      const originalSend = socket.send.bind(socket);
+      let blockedCloses = 0;
+      socket.send = (data: string) => {
+        const env = JSON.parse(data) as Envelope;
+        if (env.kind === 'link-close') {
+          blockedCloses += 1;
+          throw new Error('simulated backpressure');
+        }
+        originalSend(data);
+      };
+      await vi.waitFor(() => expect(blockedCloses).toBeGreaterThanOrEqual(1));
 
-    // 重试排期期间,本地永久关闭该链路(如用户断开/被控开关关闭)
-    socket.send = originalSend;
-    h.client.closeLink('dev-b', 'user');
-    const sentBefore = socket.sent.length;
+      // 重试排期期间,本地永久关闭该链路(如用户断开/被控开关关闭)
+      socket.send = originalSend;
+      h.client.closeLink('dev-b', 'user');
+      const sentBefore = socket.sent.length;
 
-    // 超过数个重试周期:不得再补发任何 transport-timeout
-    await tick(100);
-    const lateTimeouts = socket.sent.slice(sentBefore).filter((env) => (
-      env.kind === 'link-close'
-      && (env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout'
-    ));
-    expect(lateTimeouts).toHaveLength(0);
-    h.client.stop();
+      // 超过数个重试周期:不得再补发任何 transport-timeout
+      await vi.advanceTimersByTimeAsync(100);
+      const lateTimeouts = socket.sent.slice(sentBefore).filter((env) => (
+        env.kind === 'link-close'
+        && (env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout'
+      ));
+      expect(lateTimeouts).toHaveLength(0);
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('收到对端永久 link-close 后,迟到的通知重试回调复验状态后终止,不补发 transport-timeout', async () => {
+    vi.useFakeTimers();
     const h = makeHarness({
       timing: {
         pingIntervalMs: 60_000,
@@ -2555,44 +2568,50 @@ describe('DeviceLinkClient', () => {
         transportMaxRetryAttempts: 3,
       },
     });
-    h.client.start();
-    await tick();
-    h.current().ack();
-    await establishInboundReliableLink(h, 'late-notify-peer-close');
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(1);
+      h.current().ack();
+      const linked = establishInboundReliableLink(h, 'late-notify-peer-close');
+      await vi.advanceTimersByTimeAsync(1);
+      await linked;
 
-    const socket = h.current();
-    h.client.sendInvokeResult('dev-b', 'late-2', { ok: true, result: [] });
+      const socket = h.current();
+      h.client.sendInvokeResult('dev-b', 'late-2', { ok: true, result: [] });
 
-    const originalSend = socket.send.bind(socket);
-    let blockedCloses = 0;
-    socket.send = (data: string) => {
-      const env = JSON.parse(data) as Envelope;
-      if (env.kind === 'link-close') {
-        blockedCloses += 1;
-        throw new Error('simulated backpressure');
-      }
-      originalSend(data);
-    };
-    await vi.waitFor(() => expect(blockedCloses).toBeGreaterThanOrEqual(1));
+      const originalSend = socket.send.bind(socket);
+      let blockedCloses = 0;
+      socket.send = (data: string) => {
+        const env = JSON.parse(data) as Envelope;
+        if (env.kind === 'link-close') {
+          blockedCloses += 1;
+          throw new Error('simulated backpressure');
+        }
+        originalSend(data);
+      };
+      await vi.waitFor(() => expect(blockedCloses).toBeGreaterThanOrEqual(1));
 
-    // 重试排期期间收到对端的永久关闭(对方用户关掉了它对本机的控制)
-    socket.send = originalSend;
-    socket.push({
-      v: PROTOCOL_VERSION,
-      kind: 'link-close',
-      src: 'dev-b',
-      payload: { reason: 'user' },
-    });
-    await tick();
-    const sentBefore = socket.sent.length;
+      // 重试排期期间收到对端的永久关闭(对方用户关掉了它对本机的控制)
+      socket.send = originalSend;
+      socket.push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-close',
+        src: 'dev-b',
+        payload: { reason: 'user' },
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      const sentBefore = socket.sent.length;
 
-    await tick(150);
-    const lateTimeouts = socket.sent.slice(sentBefore).filter((env) => (
-      env.kind === 'link-close'
-      && (env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout'
-    ));
-    expect(lateTimeouts).toHaveLength(0);
-    h.client.stop();
+      await vi.advanceTimersByTimeAsync(150);
+      const lateTimeouts = socket.sent.slice(sentBefore).filter((env) => (
+        env.kind === 'link-close'
+        && (env.payload as { reason?: string } | undefined)?.reason === 'transport-timeout'
+      ));
+      expect(lateTimeouts).toHaveLength(0);
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('入站方向被永久关闭后,出站重试耗尽不得再发 transport-timeout(不诱使对端重开用户已关闭的方向)', async () => {
@@ -5937,31 +5956,38 @@ describe('DeviceLinkClient', () => {
   });
 
   it('可靠 invoke 分片在重组前也算入站活性', async () => {
+    vi.useFakeTimers();
     const h = makeHarness({ timing: { pingIntervalMs: 50, pongMissLimit: 2 } });
-    h.client.start();
-    await tick();
-    h.current().ack();
-    await establishInboundReliableLink(h, 'heartbeat-fragment-stream');
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(1);
+      h.current().ack();
+      const linked = establishInboundReliableLink(h, 'heartbeat-fragment-stream');
+      await vi.advanceTimersByTimeAsync(1);
+      await linked;
 
-    const frames = encodeReliableFrames({
-      v: PROTOCOL_VERSION,
-      kind: 'invoke',
-      id: 'fragmented-heartbeat-invoke',
-      src: 'dev-b',
-      dst: 'dev-self',
-      payload: { channel: 'maker:large', args: ['x'.repeat(150_000)] },
-    }, 'heartbeat-fragment-stream', 1);
-    expect(frames.length).toBeGreaterThan(1);
+      const frames = encodeReliableFrames({
+        v: PROTOCOL_VERSION,
+        kind: 'invoke',
+        id: 'fragmented-heartbeat-invoke',
+        src: 'dev-b',
+        dst: 'dev-self',
+        payload: { channel: 'maker:large', args: ['x'.repeat(150_000)] },
+      }, 'heartbeat-fragment-stream', 1);
+      expect(frames.length).toBeGreaterThan(1);
 
-    const activity = setInterval(() => {
-      for (const frame of frames) h.current().push(frame);
-    }, 10);
-    await tick(180);
-    clearInterval(activity);
+      const activity = setInterval(() => {
+        for (const frame of frames) h.current().push(frame);
+      }, 10);
+      await vi.advanceTimersByTimeAsync(180);
+      clearInterval(activity);
 
-    expect(h.current().terminated).toBe(false);
-    expect(h.client.getStatus()).toBe('online');
-    h.client.stop();
+      expect(h.current().terminated).toBe(false);
+      expect(h.client.getStatus()).toBe('online');
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('缺少 src 或 id 的可靠 invoke 不会喂活 heartbeat', async () => {

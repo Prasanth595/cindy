@@ -10,6 +10,7 @@
   },
   "renderer": {
     "moreActions": "更多消息操作",
+    "reply": "回复",
     "newMessagesToBottom": "有新消息，跳到底部",
     "jumpToBottom": "跳到底部",
     "openForkOrigin": "打开分叉来源消息",

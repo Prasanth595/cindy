@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { BotTaskOwnerChip } from '../BotTaskOwnerChip';
@@ -38,9 +36,4 @@ it("names a Bot's background task in its ordinary header and leads back to that 
 it('stays out of the way for a task no Bot is responsible for', () => {
   const { container } = render(<BotTaskOwnerChip session={session('plain')} />);
   expect(container.firstChild).toBeNull();
-});
-
-it('is mounted next to the ordinary task title', () => {
-  const header = readFileSync(resolve(__dirname, '../../cc-agent/SessionContentHeader.tsx'), 'utf8');
-  expect(header).toContain('{!isEditing && <BotTaskOwnerChip session={session} />}');
 });

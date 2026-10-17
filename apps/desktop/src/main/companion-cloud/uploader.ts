@@ -10,13 +10,27 @@ import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from '
 export const COMPANION_PROFILE_KEY = 'companion.profile.v1';
 export const COMPANION_MEMORY_PREFIX = 'companion.memory.v1:';
 export const COMPANION_SKILL_PREFIX = 'companion.skill.v1:';
-const OWNED_PREFIXES = [COMPANION_PROFILE_KEY, COMPANION_MEMORY_PREFIX, COMPANION_SKILL_PREFIX];
+/** One open (or recently closed) todo per key; the whole file would not fit one value. */
+export const COMPANION_TODO_PREFIX = 'companion.todo.v1:';
+/** One routine definition per key (run history stays on the computer it ran on). */
+export const COMPANION_ROUTINE_PREFIX = 'companion.routine.v1:';
+/** Workbench folders (with the computer each is on) and portable judgments. */
+export const COMPANION_WORKBENCH_KEY = 'companion.workbench.v1';
+const OWNED_PREFIXES = [COMPANION_PROFILE_KEY, COMPANION_MEMORY_PREFIX, COMPANION_SKILL_PREFIX,
+  COMPANION_TODO_PREFIX, COMPANION_ROUTINE_PREFIX, COMPANION_WORKBENCH_KEY];
 const MAX_KEY_LENGTH = 160;
 export const COMPANION_VALUE_MAX_BYTES = 60 * 1024;
 /** A value over the size limit was not uploaded (thrown only when every value is required). */
 export const COMPANION_VALUE_TOO_LARGE = 'COMPANION_VALUE_TOO_LARGE';
 
-export interface CompanionPreferenceValue { key: string; value: unknown }
+/**
+ * One value to upload. `unread` marks a key prefix that could not be read this cycle (e.g. the
+ * routine engine is not ready): its server values stay as they are and nothing under it is
+ * tombstoned; a hand-over, which needs everything, fails instead.
+ */
+export interface CompanionPreferenceValue { key: string; value: unknown; unread?: boolean }
+/** A required part of the companion could not be read: the hand-over waits for the next try. */
+export const COMPANION_READ_INCOMPLETE = 'COMPANION_READ_INCOMPLETE';
 
 const PROFILE_FIELDS = ['name', 'description', 'soul', 'systemPrompt', 'user'] as const;
 export type CompanionProfileSnapshot = Record<(typeof PROFILE_FIELDS)[number], string>;
@@ -107,12 +121,17 @@ export function createCompanionUploader(deps: {
    */
   async function syncBot(botId: string, actorId: string, budget = Number.POSITIVE_INFINITY,
     options: { requireAll?: boolean } = {}): Promise<number> {
-    const values = await deps.readValues(botId);
+    const read = await deps.readValues(botId);
+    const unread = read.filter(entry => entry.unread).map(entry => entry.key);
+    if (unread.length && options.requireAll) throw new Error(COMPANION_READ_INCOMPLETE);
+    const values = read.filter(entry => !entry.unread);
     if (deps.state.bot(botId)?.actorId !== actorId || !deps.state.bot(botId)?.prefsSeeded) await seed(botId, actorId);
     const desired = new Map<string, unknown>();
     for (const { key, value } of values) desired.set(key, value);
-    // Only keys this device itself had are tombstoned; never what merely exists on the server.
+    // Only keys this device itself had are tombstoned; never what merely exists on the server,
+    // nor anything under a part that could not be read this time.
     for (const [key, entry] of Object.entries(deps.state.bot(botId)?.prefs ?? {})) {
+      if (unread.some(prefix => key.startsWith(prefix))) continue;
       if (!desired.has(key) && entry.local && entry.hash !== TOMBSTONE_HASH) desired.set(key, null);
     }
     let writes = 0;

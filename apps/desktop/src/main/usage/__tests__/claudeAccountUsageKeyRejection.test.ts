@@ -2,7 +2,7 @@
  * 额度查询遇到 Cindy 网关 401 时上报 Cindy AI Key 失效(其余状态不上报)。
  * 只断言上报行为;配额解析契约见 claudeAccountUsageSource.test.ts。
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   outboundFetch: vi.fn(),
@@ -39,30 +39,35 @@ vi.mock('../../model-access/gatewayKeyRejection', () => ({
 
 // This suite exercises the explicit old-server / Nova compatibility path.
 vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage: async () => undefined }));
-let triggerClaudeAccountUsageRefresh: typeof import('../claudeAccountUsage')['triggerClaudeAccountUsageRefresh'];
+let usage: typeof import('../claudeAccountUsage');
+let credentials: typeof import('../../model-access/quotaCredentialState');
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
 describe('claudeAccountUsage Cindy AI key rejection', () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
+    // reset-modules: load the mocked usage module once before this suite; per-test resets use its production test reset API.
     vi.resetModules();
+    usage = await import('../claudeAccountUsage');
+    credentials = await import('../../model-access/quotaCredentialState');
+  });
+  beforeEach(() => {
+    usage.__resetClaudeAccountUsageForTesting();
     vi.useFakeTimers();
     mocks.outboundFetch.mockReset();
     mocks.report.mockReset();
-    const credentials = await import('../../model-access/quotaCredentialState');
-    credentials.noteQuotaCredentialStatus('cloud:user-1:1', {
+    credentials.__resetQuotaCredentialStateForTesting('cloud:user-1:1', {
       state: 'ok', source: 'server', endpoint: 'https://gateway.test.invalid', accountTier: null,
     });
-    ({ triggerClaudeAccountUsageRefresh } = await import('../claudeAccountUsage'));
   });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
   it('reports the sent key when user/info and daily/activity are rejected with 401', async () => {
     mocks.outboundFetch.mockImplementation(async () => jsonResponse({ error: 'invalid key' }, 401));
 
-    await triggerClaudeAccountUsageRefresh(true);
+    await usage.triggerClaudeAccountUsageRefresh(true);
 
     expect(mocks.outboundFetch).toHaveBeenCalledTimes(2);
     for (const call of mocks.outboundFetch.mock.calls) {
@@ -80,7 +85,7 @@ describe('claudeAccountUsage Cindy AI key rejection', () => {
         : jsonResponse({ spend: 1, max_budget: 10, budget_reset_at: null }),
     );
 
-    await triggerClaudeAccountUsageRefresh(true);
+    await usage.triggerClaudeAccountUsageRefresh(true);
 
     expect(mocks.report).toHaveBeenCalledTimes(1);
     expect(mocks.report).toHaveBeenCalledWith('usage-key-sent');
@@ -89,7 +94,7 @@ describe('claudeAccountUsage Cindy AI key rejection', () => {
   it.each([403, 500])('does not report HTTP %s', async (status) => {
     mocks.outboundFetch.mockImplementation(async () => jsonResponse({ error: 'nope' }, status));
 
-    await triggerClaudeAccountUsageRefresh(true);
+    await usage.triggerClaudeAccountUsageRefresh(true);
 
     expect(mocks.outboundFetch).toHaveBeenCalled();
     expect(mocks.report).not.toHaveBeenCalled();
@@ -102,7 +107,7 @@ describe('claudeAccountUsage Cindy AI key rejection', () => {
         : jsonResponse({ spend: 1, max_budget: 10, budget_reset_at: null }),
     );
 
-    await triggerClaudeAccountUsageRefresh(true);
+    await usage.triggerClaudeAccountUsageRefresh(true);
 
     expect(mocks.outboundFetch).toHaveBeenCalledTimes(2);
     expect(mocks.report).not.toHaveBeenCalled();

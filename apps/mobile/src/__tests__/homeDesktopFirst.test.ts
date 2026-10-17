@@ -853,3 +853,118 @@ describe('home menu presentation', () => {
     expect(home).toContain('pendingMenuActionRef.current = () => setSearchOpen(true);');
   });
 });
+
+// Guard: remote-and-mobile-adaptation lifecycle/ownership contract. HomeSurface
+// must coordinate freshness tokens, shared remote-store reseeds and schedule
+// event generations; reordered commits can clear a newer request or miss rows
+// while Home is covered. Unit planner/store behavior remains in homeListFreshness.
+describe('Home list sync wiring', () => {
+  const source = readFileSync(resolve(process.cwd(), 'src/session/HomeSurface.tsx'), 'utf8').replace(/\r\n/g, '\n');
+
+  it('keeps the visible-device sync scope while Home is covered', () => {
+    const scope = source.slice(source.indexOf('const homeSyncDeviceIds = useMemo('), source.indexOf('const homeSyncDeviceIdSet'));
+    expect(scope).toContain('resolveHomeDeviceSyncIds(');
+    expect(scope).not.toContain('screenFocused');
+    // Devices that stop being visible/usable are still released and unsubscribed.
+    const reconcile = source.slice(source.indexOf('const reconcileHomeDeviceSyncScope'), source.indexOf('useEffect(() => () => {'));
+    expect(reconcile).toMatch(/for \(const deviceId of diff\.release\) \{[\s\S]*homeListFreshnessRef\.current\.invalidate\(deviceId\);[\s\S]*releaseHomeListOwner\(deviceId\);/);
+    expect(source).toContain("void unsubscribe(HOME_LIST_SUBSCRIPTION_OWNER, deviceId, ['sessions']).catch(() => undefined);");
+  });
+
+  it('records freshness only after a successful list pull and invalidates on failure', () => {
+    const hydrate = source.slice(source.indexOf('const hydrateDeviceSessionsOnce = useCallback('), source.indexOf('const hydrateDeviceSessions = useCallback('));
+    const capture = hydrate.indexOf('homeListFreshnessRef.current.capture(device.deviceId)');
+    const subscribe = hydrate.indexOf("await subscribe(HOME_LIST_SUBSCRIPTION_OWNER, device.deviceId, ['sessions']);");
+    const list = hydrate.indexOf("'local-db:sessions:list'");
+    const applied = hydrate.indexOf('remoteSessionStore.setDeviceSessions(');
+    const fresh = hydrate.indexOf('homeListFreshnessRef.current.markFresh(');
+    expect(capture).toBeGreaterThan(-1);
+    expect(capture).toBeLessThan(subscribe);
+    expect(subscribe).toBeLessThan(list);
+    expect(applied).toBeLessThan(fresh);
+    expect(hydrate.slice(hydrate.indexOf('} catch (err) {'))).toContain('homeListFreshnessRef.current.invalidate(device.deviceId);');
+  });
+
+  it('refills only stale devices on focus return and keeps the full sync for other triggers', () => {
+    const focus = source.slice(source.indexOf('const refillStaleHomeDevices = useCallback('), source.indexOf('// 把当前权威设备列表注入 remoteSessionStore'));
+    expect(focus).toContain('screenFocusedRef.current = true;');
+    expect(focus).toContain('const plan = planHomeListFocusReturn({');
+    expect(focus).toMatch(/if \(plan\.kind === 'refill'\) \{\s*refillStaleHomeDevices\(plan\.deviceIds\);\s*if \(scheduleDirty\.size > 0\) refreshHomeScheduleIndexes\(scheduleDirty\);\s*return;\s*\}\s*refreshHomeScheduleIndexes\(\);\s*startSilentHomeSync\(\);/);
+    expect(focus).toContain("if (nextState === 'background') homeListFreshnessRef.current.invalidateAll();");
+    expect(focus).toContain("if (nextState === 'active') startSilentHomeSync();");
+  });
+
+  it('keeps a full-reload request from every full-sync trigger until a loadHome started after it commits', () => {
+    // Invariant: any trigger needing a full sync (mount, foreground, reconnect, a full focus return,
+    // dependency changes) leaves a request that only a later-started, committed loadHome clears.
+    // A sync that fails, is skipped while covered or exits because Home blurred mid-flight keeps it,
+    // so a quick return cannot downgrade to a device-row refill and miss bound/unbound computers.
+    const silent = source.slice(source.indexOf('const startSilentHomeSync = useCallback(() => {'), source.indexOf('}, [deviceIdentityCacheReady, homeListCacheHydrated'));
+    expect(silent.indexOf('requestHomeFullReload();')).toBeGreaterThan(-1);
+    expect(silent.indexOf('requestHomeFullReload();')).toBeLessThan(silent.indexOf('if (!screenFocusedRef.current) return;'));
+    // Single funnel: no other call site sets the request, nothing but a commit or account reset clears it.
+    expect(source.match(/requestHomeFullReload\(\);/g)).toHaveLength(1);
+    expect(source.match(/homeFullReloadOnFocusRef\.current = null/g)).toHaveLength(2);
+    const focus = source.slice(source.indexOf('useFocusEffect(\n    useCallback(() => {\n      // The focus event'));
+    const focusBody = focus.slice(0, focus.indexOf('}, [refillStaleHomeDevices'));
+    expect(focusBody).toContain('const forceFull = homeFullReloadOnFocusRef.current !== null;');
+    const load = source.slice(source.indexOf('const loadHome = useCallback('), source.indexOf('loadHomeRef.current = loadHome;'));
+    expect(load.indexOf('const fullReloadRequestAtStart = homeFullReloadOnFocusRef.current;'))
+      .toBeLessThan(load.indexOf('const rawTask = (async () => {'));
+    // Blurring after the device-list read exits before the commit, leaving the request in place.
+    expect(load.indexOf('if (!screenFocusedRef.current) return;')).toBeLessThan(load.indexOf('lastSyncedAtRef.current = now;'));
+    const commit = load.slice(load.indexOf('lastSyncedAtRef.current = now;'));
+    expect(commit).toContain('if (homeFullReloadOnFocusRef.current === fullReloadRequestAtStart) homeFullReloadOnFocusRef.current = null;');
+  });
+
+  it('refreshes automation badges on return only for devices that sent schedule events while away', () => {
+    const events = source.slice(source.indexOf('useEffect(() => remoteScheduleEventStore.subscribe('), source.indexOf('const refreshHomeScheduleIndexes = useCallback('));
+    expect(events).toMatch(/if \(!screenFocusedRef\.current\) \{\s*markHomeScheduleIndexDirty\(deviceId\);\s*continue;\s*\}\s*refreshDeviceScheduleIndex\(deviceId, sessionIds\);/);
+    // The old unconditional "refresh every device on focus" effect is gone.
+    expect(source).not.toContain('兜底刷新一次 scheduleIndex');
+    const focus = source.slice(source.indexOf('useFocusEffect(\n    useCallback(() => {\n      // The focus event'));
+    expect(focus.indexOf('screenFocusedRef.current = true;')).toBeLessThan(focus.indexOf('refreshHomeScheduleIndexes('));
+    expect(focus).toContain('const scheduleDirty = new Set(homeScheduleIndexDirtyRef.current.keys());');
+  });
+
+  it('keeps automation badge refreshes pending until one is applied', () => {
+    const refresh = source.slice(source.indexOf('const refreshDeviceScheduleIndex = useCallback('), source.indexOf('const hydrateDeviceSessionsOnce = useCallback('));
+    // Recorded before the focus gate, so a skipped refresh or a dropped in-flight result is refilled on return.
+    expect(refresh.indexOf('const pendingSeq = markHomeScheduleIndexDirty(deviceId);'))
+      .toBeLessThan(refresh.indexOf("if (!screenFocusedRef.current || AppState.currentState !== 'active') return;"));
+    const apply = refresh.slice(refresh.indexOf('setScheduleIndex((current) => replaceSessionScheduleIndexEntries('));
+    expect(apply).toMatch(/if \(homeScheduleIndexDirtyRef\.current\.get\(deviceId\) === pendingSeq\) \{\s*homeScheduleIndexDirtyRef\.current\.delete\(deviceId\);/);
+    const hydrate = source.slice(source.indexOf('const hydrateDeviceSessionsOnce = useCallback('), source.indexOf('const hydrateDeviceSessions = useCallback('));
+    expect(hydrate.indexOf('markHomeScheduleIndexDirty(device.deviceId);'))
+      .toBeLessThan(hydrate.indexOf('scheduleIndexDeferRegistryRef.current.schedule(device.deviceId'));
+    expect(hydrate).toContain('nextSessions.length >= LIST_LIMIT');
+    expect(hydrate).toContain('remoteSessionStore.captureDeviceSessionListMutationEpoch(device.deviceId)');
+  });
+
+  it('marks a device stale whenever its list asks for a reseed, even while Home is covered', () => {
+    const reseed = source.slice(source.indexOf('remoteSessionStore.registerReseedHandler(item.device.deviceId'));
+    expect(reseed.indexOf('homeListFreshnessRef.current.invalidate(item.device.deviceId);'))
+      .toBeLessThan(reseed.indexOf('void hydrateDeviceSessions(item.device, accountGeneration'));
+  });
+
+  it('clears freshness with the rest of the account-owned Home state', () => {
+    const reset = source.slice(source.indexOf('useLayoutEffect(() => {\n    syncInFlightRef.current = null;'), source.indexOf('}, [accountGeneration]);'));
+    expect(reset).toContain('homeListFreshnessRef.current.clear();');
+    expect(reset).toContain('homeFullReloadOnFocusRef.current = null;');
+    expect(reset).toContain('homeScheduleIndexDirtyRef.current.clear();');
+  });
+});
+
+
+// Guard: list projection and per-row usage subscriptions are one cross-file data contract.
+describe('Home usage subscription contract', () => {
+  const meta = readSource('src/session/HomeSessionInfoMeta.tsx');
+  const store = readSource('src/session/remoteSessionStore.ts');
+  it('reads token / cost per row because the Home projection strips usage fields', () => {
+    // Home 列表投影刻意去掉用量(避免用量推送重排分组),行上的 Token / 费用必须单独订阅。
+    expect(store).toContain('delete projected.totalTokenUsage;');
+    expect(meta).toContain("taskInfoFields.includes('tokens') || taskInfoFields.includes('cost')");
+    expect(meta.match(/useRemoteSessionUsage\(/g)?.length).toBe(2);
+  });
+
+});

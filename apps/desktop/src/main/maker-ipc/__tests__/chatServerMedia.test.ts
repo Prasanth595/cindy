@@ -58,6 +58,14 @@ describe('chat private media', () => {
     await expect(media.download('room', 'media')).rejects.toThrow('CONVERSATION_NOT_FOUND');
     expect(api).toHaveBeenCalledTimes(2);
   });
+  it('keeps the status of a failed download, so a file that is gone is told from a failing server', async () => {
+    const api = vi.fn(async () => ({ name: 'p.png', type: 'image/png', size: 3, url: 'https://download.example.test/signed' })) as unknown as ChatApi;
+    f.fetch.mockResolvedValueOnce(new Response('', { status: 404 }));
+    await expect(createChatMedia(api, () => true).download('room', 'gone')).rejects.toMatchObject({ message: 'MEDIA_DOWNLOAD_FAILED', status: 404 });
+    f.fetch.mockResolvedValueOnce(new Response('', { status: 503 }));
+    await expect(createChatMedia(api, () => true).download('room', 'later')).rejects.toMatchObject({ message: 'MEDIA_DOWNLOAD_FAILED', status: 503 });
+  });
+
   it('uploads a send\'s files three at a time and keeps their order', async () => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png') });
     f.fetch.mockResolvedValue(new Response('', { status: 200 }));

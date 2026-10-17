@@ -241,6 +241,7 @@ import {
 import { initGhostSetupCoordinator } from '../cindy-brain/ghostSetupCoordinator.js';
 import { classifyGhostVisibility } from '../cindy-brain/ghostVisibility.js';
 import { resolveSafe as resolveCindyMediaUrl } from '../cindy-media/blobStore.js';
+import { companionAvatarCache } from '../companion-cloud/avatarCacheHost.js';
 import { ingestMedia } from '../cindy-media/ingest.js';
 import { removeRefs as removeMediaRefs } from '../cindy-media/ledger.js';
 import { sniffMediaMime } from '../cindy-media/sniffMediaMime.js';
@@ -467,6 +468,7 @@ import {
   getSessionRowSnapshotStrict,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
+  restoreArchivedSessionForSend,
   scheduleWorktreeRecycleForStatusChange,
   setSessionRuntimeCleanup,
 } from '../localDb/ipc/sessions.js';
@@ -573,7 +575,7 @@ import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js
 import { createCompanionCloudHost } from '../companion-cloud/host.js';
 import { activeCompanionCloud } from '../companion-cloud/runtime.js';
 import { companionCloudView } from '../companion-cloud/view.js';
-import type { CompanionCloudActionResult } from '../../shared/companionCloud.js';
+import type { CompanionCloudActionResult, CompanionCloudFailureCode, CompanionHomeChoices, CompanionMergeResult, CompanionSwitchOptions } from '../../shared/companionCloud.js';
 import { createBotGroupPlanDecider } from './botGroupPlanDecider.js';
 import { botGroupMembersVisibleRemotely, registerBotGroupRemoteResourceProvider } from './botGroupRemoteResourceProvider.js';
 import { broadcastBotGroupRemoteResourceChanged } from './botGroupRemoteResourceInvalidation.js';
@@ -979,7 +981,19 @@ import {
 } from './orcaRemoteWorkerHost.js';
 import { createOrcaRemoteWorkers, invokeDeviceValue, isExecutionDeviceCandidate, type OrcaRemoteWorkers } from './orcaRemoteWorkers.js';
 import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
-import { ORCA_EXECUTION_DEVICES_CHANNEL, COMPANION_CLOUD_CAPS_CHANNEL, COMPANION_CLOUD_VERSION, isCompanionCloudCaps } from '@cindy/device-link';
+import {
+  ORCA_EXECUTION_DEVICES_CHANNEL,
+  COMPANION_CLOUD_CAPS_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
+  COMPANION_CLOUD_HAND_OVER_CHANNEL,
+  COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_RECEIVE_VERSION,
+  COMPANION_CLOUD_TARGETS_CHANNEL,
+  COMPANION_CLOUD_VERSION,
+  companionCloudCapsVersion,
+  parseCompanionCloudRemoteActionResult,
+  parseCompanionCloudRemoteTargets,
+} from '@cindy/device-link';
 import { INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_LOCAL_PICTURE_CHANNEL, type InputHandoffHolder, type InputHandoffSnapshot } from '@cindy/device-link';
 import { getInputHandoffService, initInputHandoffService } from '../input-handoff/service.js';
 import { closeInputHandoffAskpass, initInputHandoffAskpass } from '../input-handoff/askpass/index.js';
@@ -2668,6 +2682,43 @@ let botGroupChatServiceHolder: BotGroupChatService | null = null;
 function settleCompanionOwner(): void { void botGroupChatServiceHolder?.chatServer; }
 let unsubscribeCompanionCloudBroadcast: (() => void) | null = null;
 const listCompanionDevices = async () => (await handleListDevices(deviceDirectoryDeps())).devices;
+/** Cloud-companion version of another computer's Cindy; 0 when it is old or cannot be reached. */
+async function companionCloudPeerVersion(deviceId: string): Promise<number> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      invokeDeviceValue(invokeBotPeer, deviceId, COMPANION_CLOUD_CAPS_CHANNEL, []),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('[INVOKE_TIMEOUT] caps probe timed out')), 5_000); }),
+    ]);
+    return companionCloudCapsVersion(value);
+  } catch { return 0; } finally { clearTimeout(timer); }
+}
+const COMPANION_FAILURE_CODES: ReadonlySet<CompanionCloudFailureCode> = new Set<CompanionCloudFailureCode>(
+  ['HOME_CONFLICT', 'OFFLINE', 'NOT_ENABLED', 'FAILED', 'TARGET_UNAVAILABLE', 'BUSY', 'HOME_OUTDATED', 'PAUSED']);
+/** Kept and merged Cindy ids from a request (local IPC or another computer). */
+function companionMergeIds(keepBotId: unknown, fromBotIds: unknown): { keep: string; from: string[] } {
+  if (typeof keepBotId !== 'string' || !keepBotId || keepBotId.length > 200) throwIpcError('INVALID_PARAMS', 'keepBotId required');
+  if (!Array.isArray(fromBotIds) || !fromBotIds.length || fromBotIds.length > 20
+    || fromBotIds.some(id => typeof id !== 'string' || !id || id.length > 200)) throwIpcError('INVALID_PARAMS', 'fromBotIds required');
+  return { keep: keepBotId, from: [...new Set(fromBotIds as string[])].filter(id => id !== keepBotId) };
+}
+/** A merge answered by another computer; anything malformed is a plain failure. */
+function companionMergeResult(value: unknown): CompanionMergeResult {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const count = (key: string) => typeof record[key] === 'number' && Number.isFinite(record[key]) ? record[key] as number : 0;
+  if (record.ok === true) return { ok: true, merged: count('merged'), messages: count('messages'), memories: count('memories'), skills: count('skills'),
+    renamed: Array.isArray(record.renamed) ? record.renamed.filter((name): name is string => typeof name === 'string').slice(0, 200) : [] };
+  return { ok: false, code: companionFailureCode(typeof record.code === 'string' ? record.code : 'FAILED') };
+}
+/** What a move does while the companion is still working; anything else is the default (fail as busy). */
+function companionSwitchOptions(value: unknown): CompanionSwitchOptions | undefined {
+  const whenBusy = value && typeof value === 'object' ? (value as { whenBusy?: unknown }).whenBusy : undefined;
+  return whenBusy === 'wait' || whenBusy === 'stop' ? { whenBusy } : undefined;
+}
+/** A failure code answered by another computer; unknown codes (newer versions) are plain failures. */
+function companionFailureCode(code: string): CompanionCloudFailureCode {
+  return COMPANION_FAILURE_CODES.has(code as CompanionCloudFailureCode) ? code as CompanionCloudFailureCode : 'FAILED';
+}
 
 const botRuntimeRestoreCoordinator = createBotRuntimeRestoreCoordinator({
   readDbIdentity: () => {
@@ -5392,7 +5443,16 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       // Read at the coordinator boundary, as before: only a close/rebuild window
       // preserves the signal currently driving that rebuild, not the old queue.
       shouldPreserveInputBoundary: () => rehydrateCloseSuppression.isSuppressed(session.id),
-      closeInputCoordinator: (options) => {
+      closeInputCoordinator: (boundaryOptions) => {
+        const options = {
+          ...boundaryOptions,
+          // Requested / rebuild closes own their follow-up; a self-close has no
+          // done event, so queued user input would otherwise wait forever.
+          // 'unexpected' only means no Maker reason was recorded: direct product
+          // closes (IM /new, archive sync) also land there, so require the
+          // runtime's own self-close signal before resurrecting the queue.
+          wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),
+        };
         agentInputCoordinatorHolder?.onSessionClosed(session.id, options);
       },
       cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
@@ -9071,6 +9131,24 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
   // Cloud companions: another computer asks before handing a companion here (read-only constant).
   makerSessionRegistry.handle(COMPANION_CLOUD_CAPS_CHANNEL, () => ({ companionCloud: COMPANION_CLOUD_VERSION }));
+  // Another computer of this account changes where a companion runs: this computer (its home)
+  // lists the computers that can receive it and hands it over, exactly as from its own settings.
+  makerSessionRegistry.handle(COMPANION_CLOUD_TARGETS_CHANNEL, async () =>
+    (await activeCompanionCloud()?.transferTargets()) ?? []);
+  makerSessionRegistry.handle(COMPANION_CLOUD_MERGE_CHANNEL, async (_event: unknown, keepBotId: unknown, fromBotIds: unknown) => {
+    const keep = companionMergeIds(keepBotId, fromBotIds);
+    return (await activeCompanionCloud()?.mergeCindyHere(keep.keep, keep.from)) ?? { ok: false, code: 'NOT_ENABLED' };
+  });
+  // A merge on another computer reads the cloud: this computer (the copy's home) sends what it has not yet.
+  makerSessionRegistry.handle(COMPANION_CLOUD_FLUSH_CHANNEL, async (_event: unknown, botId: unknown) => {
+    if (typeof botId !== 'string' || !botId.trim() || botId.length > 200) throwIpcError('INVALID_PARAMS', 'botId required');
+    return (await activeCompanionCloud()?.flushHere(botId)) ?? { ok: false, code: 'NOT_ENABLED' };
+  });
+  makerSessionRegistry.handle(COMPANION_CLOUD_HAND_OVER_CHANNEL, async (_event: unknown, botId: unknown, targetDeviceId: unknown, options: unknown) => {
+    if (typeof botId !== 'string' || !botId.trim() || botId.length > 200) throwIpcError('INVALID_PARAMS', 'botId required');
+    if (typeof targetDeviceId !== 'string' || !targetDeviceId || targetDeviceId.length > 200) throwIpcError('INVALID_PARAMS', 'targetDeviceId required');
+    return (await activeCompanionCloud()?.transfer(botId, targetDeviceId, companionSwitchOptions(options))) ?? { ok: false, code: 'NOT_ENABLED' };
+  });
   registerOrcaRemoteWorkerHandlers(makerSessionRegistry, createOrcaRemoteWorkerHost({
     getCaller: () => {
       const context = getDeviceLinkInvokeContext();
@@ -11907,17 +11985,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return 'rebuilt';
       },
       isTurnActive: companionTurnActive,
+      // Moving a companion that is still working, when the user chose to stop it first.
+      stopTurn: stopSessionTurnExplicitly,
       listDevices: listCompanionDevices,
       // Old clients answer CHANNEL_NOT_ALLOWED; unreachable ones time out. Neither may receive a companion.
-      probeCompanionCloud: async (deviceId) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const value = await Promise.race([
-            invokeDeviceValue(invokeBotPeer, deviceId, COMPANION_CLOUD_CAPS_CHANNEL, []),
-            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('[INVOKE_TIMEOUT] caps probe timed out')), 5_000); }),
-          ]);
-          return isCompanionCloudCaps(value);
-        } catch { return false; } finally { clearTimeout(timer); }
+      probeCompanionCloud: async (deviceId) => (await companionCloudPeerVersion(deviceId)) >= COMPANION_CLOUD_RECEIVE_VERSION,
+      selfDeviceId: getSelfDeviceId,
+      homeLink: {
+        version: companionCloudPeerVersion,
+        targets: async (deviceId) =>
+          parseCompanionCloudRemoteTargets(await invokeDeviceValue(invokeBotPeer, deviceId, COMPANION_CLOUD_TARGETS_CHANNEL, [])),
+        handOver: async (deviceId, botId, targetDeviceId, options) => {
+          const result = parseCompanionCloudRemoteActionResult(await invokeDeviceValue(invokeBotPeer, deviceId,
+            COMPANION_CLOUD_HAND_OVER_CHANNEL, options?.whenBusy ? [botId, targetDeviceId, { whenBusy: options.whenBusy }] : [botId, targetDeviceId]));
+          return result.ok ? result : { ...result, code: companionFailureCode(result.code) };
+        },
+        merge: async (deviceId, keepBotId, fromBotIds) =>
+          companionMergeResult(await invokeDeviceValue(invokeBotPeer, deviceId, COMPANION_CLOUD_MERGE_CHANNEL, [keepBotId, fromBotIds])),
+        flush: async (deviceId, botId) => {
+          const result = parseCompanionCloudRemoteActionResult(await invokeDeviceValue(invokeBotPeer, deviceId, COMPANION_CLOUD_FLUSH_CHANNEL, [botId]));
+          return result.ok ? result : { ...result, code: companionFailureCode(result.code) };
+        },
       },
       // A message the owner wrote in the companion's room reaches its main task like any user input.
       deliverToCanonical: async (botId, text, clientId) => {
@@ -12296,12 +12384,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     currentCompanionHomes();
     return activeCompanionCloud()?.takeOver(id) ?? companionNotEnabled;
   });
-  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSFER, async (event, botId: unknown, targetDeviceId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_SWITCH_HOME, async (event, botId: unknown, targetDeviceId: unknown, options: unknown) => {
     assertTrustedAppRendererEvent(event);
     const id = companionBotId(botId);
     if (typeof targetDeviceId !== 'string' || !targetDeviceId || targetDeviceId.length > 200) throwIpcError('INVALID_PARAMS', 'targetDeviceId required');
     currentCompanionHomes();
-    return activeCompanionCloud()?.transfer(id, targetDeviceId) ?? companionNotEnabled;
+    return activeCompanionCloud()?.switchHome(id, targetDeviceId, companionSwitchOptions(options)) ?? companionNotEnabled;
   });
   ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_TRANSCRIPT, async (event, botId: unknown, before: unknown) => {
     assertTrustedAppRendererEvent(event);
@@ -12317,9 +12405,45 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       throwIpcError('PRECONDITION_FAILED', 'Companion conversation is not available');
     }
   });
-  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_DEVICES, async (event) => {
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_CINDY_COPIES, async (event) => {
     assertTrustedAppRendererEvent(event);
-    return (await activeCompanionCloud()?.transferTargets()) ?? [];
+    currentCompanionHomes();
+    return (await activeCompanionCloud()?.cindyCopies()) ?? [];
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_MERGE_CINDY, async (event, keepBotId: unknown, fromBotIds: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const ids = companionMergeIds(keepBotId, fromBotIds);
+    currentCompanionHomes();
+    return (await activeCompanionCloud()?.mergeCindy(ids.keep, ids.from)) ?? companionNotEnabled;
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_ATTACHMENT, async (event, botId: unknown, mediaId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    if (typeof mediaId !== 'string' || !/^[0-9a-f-]{1,64}$/i.test(mediaId)) throwIpcError('INVALID_PARAMS', 'Invalid media id');
+    const runtime = activeCompanionCloud();
+    if (!runtime) throwIpcError('PRECONDITION_FAILED', 'Cloud companions are not available');
+    try {
+      return await runtime.attachment(id, mediaId);
+    } catch (error) {
+      log.warn('companion attachment read failed', { error: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
+      throwIpcError('PRECONDITION_FAILED', 'Companion attachment is not available');
+    }
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_AVATAR_RESOLVE, async (event, request: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const input = request && typeof request === 'object' ? request as Record<string, unknown> : {};
+    const { avatar, deviceId, fetch } = input;
+    if (typeof avatar !== 'string' || !avatar || avatar.length > 2048) throwIpcError('INVALID_PARAMS', 'avatar required');
+    if (deviceId !== undefined && deviceId !== null && (typeof deviceId !== 'string' || deviceId.length > 200))
+      throwIpcError('INVALID_PARAMS', 'Invalid deviceId');
+    return companionAvatarCache.resolve({ avatar, deviceId: typeof deviceId === 'string' ? deviceId : null, fetch: fetch === true });
+  });
+  ipcMain.handle(MAKER_INVOKE.COMPANION_CLOUD_HOME_CHOICES, async (event, botId: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    const id = companionBotId(botId);
+    currentCompanionHomes();
+    const choices: CompanionHomeChoices = { homeDeviceId: null, mode: 'unavailable', reason: 'NOT_ENABLED', targets: [] };
+    return (await activeCompanionCloud()?.homeChoices(id)) ?? choices;
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_DISMISS, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
@@ -16146,6 +16270,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }));
 
   const { sendToAgentAccepted: sendToAgentAcceptedUnlocked } = createMakerSendTransaction({
+    restoreArchivedSessionForSend,
     prepareProductTurn: (sessionId) => {
       const dispatch = prepareUpstreamMergeTurn(sessionId);
       return dispatch

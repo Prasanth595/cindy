@@ -26,6 +26,12 @@ const bot = z.object({
     /** Recently imported local message ids, so the trailing re-scan does not re-send them. */
     recent: z.array(z.string()).optional(),
   }).optional(),
+  /**
+   * Older history of the Session (before the mirror cursor) uploaded so far, so the room holds the
+   * whole conversation, not only what happened since mirroring began. Rows strictly after it, up to
+   * the mirror cursor, are still to go; `done` once it reached the cursor.
+   */
+  backfill: z.object({ sessionId: z.string(), createdAt: z.number(), id: z.string(), done: z.boolean().optional() }).optional(),
   prefs: z.record(z.string(), pref).default({}),
   /** Revisions were read back from the server once (after a fresh or lost state file). */
   prefsSeeded: z.boolean().optional(),

@@ -101,7 +101,8 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
         const root = ownerScopedUserDataPath();
         const db = getDbClient().drizzle;
         const response = await net.fetch(signedUrl(media.url), { redirect: 'error', signal: AbortSignal.timeout(60000) });
-        if (!response.ok || !response.body) throw new Error('MEDIA_DOWNLOAD_FAILED');
+        // The status tells a file that is gone (4xx: never comes) from a failing server (retried).
+        if (!response.ok || !response.body) throw Object.assign(new Error('MEDIA_DOWNLOAD_FAILED'), response.ok ? {} : { status: response.status });
         const chunks: Uint8Array[] = []; let received = 0;
         const reader = response.body.getReader();
         try {

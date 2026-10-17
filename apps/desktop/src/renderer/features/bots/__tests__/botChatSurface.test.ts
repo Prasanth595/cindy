@@ -14,12 +14,17 @@ const read = (relativePath: string): string =>
   readFileSync(resolve(__dirname, '..', '..', '..', relativePath), 'utf8').replace(/\r\n/g, '\n');
 
 const sessionView = read('features/cc-agent/CCAgentSessionView.tsx');
+const sessionHeader = read('features/cc-agent/SessionContentHeader.tsx');
 const messageStream = read('components/chat/MessageStream.tsx');
 const messageActionBar = read('components/chat/MessageActionBar.tsx');
 const chatInput = read('components/new-chat/ChatInput.tsx');
 const botSettings = read('features/bots/BotsHomeView.tsx');
 
 describe('Bot 对话的判定条件', () => {
+  it('is mounted next to the ordinary task title', () => {
+    expect(sessionHeader).toContain('{!isEditing && <BotTaskOwnerChip session={session} />}');
+  });
+
   it('气泡头像只在 Bot 对话下传给消息流', () => {
     expect(sessionView).toContain('assistantAvatar={botAssistantAvatar}');
     expect(sessionView).toContain('<BotAvatar bot={botChatIdentity} size="sm" />');

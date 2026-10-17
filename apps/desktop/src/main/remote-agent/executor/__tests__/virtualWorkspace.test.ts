@@ -134,6 +134,57 @@ describe('virtual workspace', () => {
     await executor.close();
   });
 
+  // 2026-10 实际问题：Agent 在 Windows、任务在 Mac 时，Agent 按 bash 规矩把双引号里的反斜杠写成两个，
+  // 命令原样送到 Mac 执行而找不到目录。
+  it('maps bash-escaped Windows virtual paths in commands and Agent text', async () => {
+    const virtual = 'C:\\Agent\\workspace';
+    const { workspace, project, executor } = setup(virtual);
+    const real = project.replace(/\\/g, '/');
+    const escaped = virtual.replace(/\\/g, '\\\\');
+    expect(workspace.mapCommand('ls "' + escaped + '\\\\目录 空格\\\\a.txt"'))
+      .toBe('ls "' + real + '/目录 空格/a.txt"');
+    expect(workspace.mapCommand('cd ' + escaped + '\\\\src && ls')).toBe("cd '" + real + "'/src && ls");
+    expect(workspace.mapCommand("cat '" + escaped + "\\\\src'")).toBe("cat '" + real + "/src'");
+    // 后面不是目录名的 `\\` 仍是转义，原样留给 shell。
+    expect(workspace.mapCommand('printf "%s" "' + escaped + '\\\\dir\\\\"'))
+      .toBe('printf "%s" "' + real + '/dir\\\\"');
+    // 回复正文同样还原；本机是 Windows 时保留 Agent 的转义写法。
+    const local = process.platform === 'win32'
+      ? project.replace(/\\/g, '\\\\') + '\\\\src\\\\a.txt'
+      : project + '/src/a.txt';
+    expect(workspace.mapTextFromAgent('见 "' + escaped + '\\\\src\\\\a.txt"')).toBe('见 "' + local + '"');
+    await executor.close();
+  });
+
+  it('does not treat the leading backslashes of a network share path as an escaped separator', () => {
+    const aliases = [{ from: '//server/share/project', to: 'C:\\Agent\\workspace' }];
+    // 本机 → Agent：不认转义写法的方向保持原行为。
+    expect(projectPathText('cat \\\\server\\share\\project\\file', aliases)).toBe('cat C:\\Agent\\workspace\\file');
+    // Agent → 本机方向即使认转义，UNC 开头的 `\\server` 也不是转义。
+    expect(projectPathText('cat \\\\server\\share\\project\\file', aliases, 'text', undefined, { escapedSeparators: true }))
+      .toBe('cat C:\\Agent\\workspace\\file');
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps Windows paths in local output intact when the task computer uses POSIX paths', () => {
+    const mirror = 'C:\\Users\\XD\\AppData\\Roaming\\Cindy\\remote-agent\\workspaces\\c\\s\\fs';
+    const shadow = mirror + '\\workspace\\p\\p';
+    const workspace = new ExecutorWorkspace({
+      workingDir: '/Users/xw/heartopia',
+      aliases: [
+        { from: shadow, to: '/Users/xw/heartopia' },
+        { from: mirror + '\\workspace\\p', to: '/Users/xw' },
+        { from: mirror + '\\workspace', to: '/Users' },
+      ],
+    });
+    workspace.setVirtualRoot(mirror);
+    // Mac 上的报错带着没能还原的 Windows 路径：`\Users`、`C:/Users` 不是本机的 /Users，不能再被投影一遍。
+    const error = 'ls: C:\\Users\\XD\\AppData\\Roaming\\Cindy\\x: No such file or directory';
+    expect(workspace.mapTextForAgent(error)).toBe(error);
+    expect(workspace.mapTextForAgent('cat C:/Users/XD/notes.txt')).toBe('cat C:/Users/XD/notes.txt');
+    // 真正的本机路径照常投影成 Agent 那边的路径。
+    expect(workspace.mapTextForAgent('ls /Users/xw/heartopia/src')).toBe('ls ' + shadow + '\\src');
+  });
+
   it.each([
     '$file', '$' + '{file}', '$(printf "%s" "$file")', String.fromCharCode(96) + 'printf "%s" "$file"' + String.fromCharCode(96), '\\$file', '\\"quoted\\"', '*.txt',
   ])('preserves Bash syntax in a quoted POSIX path suffix: %s', (expression) => {

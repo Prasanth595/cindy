@@ -35,7 +35,7 @@ import {
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import { useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
-import { cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
+import { cloudRemoteBots, isCloudCompanionRemote, withoutCloudCompanions, withoutShadowedBots } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
@@ -231,7 +231,9 @@ export function TeammatesSection() {
   };
   // 伙伴搜索并入侧栏总搜索(TeammateSearchResults),段内不再单独筛选。
   const roster = partitionBotRoster(rosterBots, { query: '', showHidden });
-  const cindyOptions = cindyDeviceOptions(bots, remoteBots, devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
+  // A cloud companion is one row wherever it runs; only per-computer Cindys still merge into one entry.
+  const cindyOptions = cindyDeviceOptions(withoutCloudCompanions(bots, cloud), withoutCloudCompanions(remoteBots, cloud),
+    devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
   const hasMultipleCindys = cindyOptions.length > 1;
   const routeCindy = cindyOptions.find(option => option.key === cindyDeviceKey({ id: botId ?? '', deviceId }));
   // Follow the open Cindy chat; otherwise the local-first roster is the default.
@@ -618,11 +620,11 @@ export function TeammatesSection() {
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex min-w-0 items-baseline gap-2">
                         <span className="min-w-0 truncate text-14 leading-5">{bot.name}</span>
-                        <BotConnectionStatus inline online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />
+                        <BotConnectionStatus inline online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />
                       </span>
                       <span className={cn('truncate text-12 leading-4', selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]')}>{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
@@ -670,8 +672,8 @@ export function TeammatesSection() {
                   {/* 定稿原型 `.row-open{padding:8px 10px;gap:10px}`:整行只有这一个
                       可点区域,左右内边距对称。行尾曾经还挂过一列齿轮/状态图标,
                       它下线后 `pr-2` 的占位残留了下来 —— 右边比左边窄一截,
-                      单看不出问题,和左侧头像一比就是歪的。数值基线见
-                      __tests__/botsSidebarSpacing.test.ts。 */}
+                      单看不出问题,和左侧头像一比就是歪的。这里的行内边距与下方按钮样式
+                      保持同一套几何基线。 */}
                   <button
                     type="button"
                     onClick={() => navigate(`/bots/${bot.id}`)}

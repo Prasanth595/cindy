@@ -556,7 +556,8 @@ export function removeBotWorkbenchProjectForCaller(params: { callerSessionId: st
     const userDataDir = ownerScopedUserDataPath();
     const caller = await resolveWorkbenchCaller(params.callerSessionId);
     if (!caller.ok) return caller;
-    const before = await readBotWorkbenchDirectoryPaths(userDataDir, caller.botId);
+    // A path names a folder on this computer; folders on other computers are removed from their row.
+    const before = (await readBotWorkbenchState(userDataDir, caller.botId)).directories;
     const matched = await findHandedProject(params.path, before, {
       homeDir: os.homedir(),
       caseInsensitive: process.platform === 'darwin' || isCaseInsensitivePlatform(process.platform),

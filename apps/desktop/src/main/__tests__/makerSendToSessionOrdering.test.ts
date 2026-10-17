@@ -109,7 +109,9 @@ describe('sendToSession ordering', () => {
     );
 
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).toContain('onAccepted: async () => {');
@@ -375,7 +377,9 @@ describe('sendToSession ordering', () => {
     expect(orcaInterAgentDispatcherSource).toContain('resolveCollabDispatchResult');
     expect(helperBlock).toContain('Promise<CollabDirectDispatchResult>');
     expect(helperBlock).toContain('const result = await resolveCollabDispatchResult(');
-    expect(helperBlock).toMatch(/\(\) =>\s+session\.send\(agentMessage, \{/);
+    expect(helperBlock).toMatch(
+      /async \(\) => \{\s+const sendResult = await session\.send\((?:agentMessage|outgoingMessage), \{/,
+    );
     expect(helperBlock).toContain('planMode: false,');
     expect(helperBlock).toContain('throwOnStartFailure: true,');
     expect(helperBlock).not.toContain('await session.send(agentMessage, {');

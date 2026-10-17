@@ -1,4 +1,6 @@
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
+import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
+import { isComposerTypingRecently } from './composerTypingActivity';
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
 export type { PluginSetupCommandError } from './pluginSetupCommandError';
@@ -773,6 +775,9 @@ export interface PendingPermission {
 export interface PendingAskUser {
   requestId: string;
   questions: AskUserQuestionItem[];
+  delivery?: 'async';
+  persistId?: string;
+  resumeOnSubmit?: boolean;
 }
 
 export type PluginSetupAction = GhostSetupAllowedAction;
@@ -857,6 +862,10 @@ export interface AskUserDraft {
   requestId: string;
   currentIndex: number;
   answers: Record<string, string>;
+  started?: boolean;
+  customInput?: string;
+  selectedLabels?: string[];
+  showCustomInput?: boolean;
 }
 
 /** FP-3: Pending plan-review data for the Plan Viewer Card. */
@@ -2444,6 +2453,7 @@ function cancelRemoteOptimisticSendsForRemoteClear(
         queueAbortPending: false,
         queueInteractionLocks: [],
         queueEditLocks: [],
+        protectedAskUser: opts.historicalHydration ? state.protectedAskUser : undefined,
       };
     });
   }
@@ -2688,6 +2698,8 @@ export interface SessionChatState {
    * See AskUserDraft typedef for the staleness contract.
    */
   askUserDraft: AskUserDraft | null;
+  /** Local editing survives provider dismissal; it is not a pending Host interaction. */
+  protectedAskUser?: { pending: PendingAskUser; draft: AskUserDraft };
   /** FP-3: Currently pending plan-review; null when none. */
   pendingPlanReview: PendingPlanReview | null;
   /** issue_confirm: 提交 GitHub issue 前的确认卡片; null when none. */
@@ -3224,6 +3236,13 @@ const globalListeners = new Set<() => void>();
 // 工具事件风暴时仍同步写入权威 state，但把 React/sidebar 订阅通知压成每会话每帧一次。
 // Stop、terminal、interaction 等控制路径会取消该会话的待发通知并立即广播最新快照。
 const HIGH_FREQUENCY_NOTIFY_INTERVAL_MS = 32;
+// 用户正在 composer 打字时把通知节奏拉稀：多会话同时流式输出时，32ms 批会让
+// React 在按键间隙反复重渲染重子树，打字延迟被渲染吃掉。打字优先拿主线程。
+// 注意：恢复不是瞬时的——最后一次按键后续窗，已排队的 tick 仍按 250ms 走完
+// 当前窗口（尾部最多滞后 ~1s）才回 32ms；嫌慢可调小
+// composerTypingActivity 的 TYPING_ACTIVITY_WINDOW_MS。控制路径不走这里，
+// 交互卡/权限卡不受影响。
+const TYPING_PRIORITY_NOTIFY_INTERVAL_MS = 250;
 const HIGH_FREQUENCY_NOTIFY_MAX_SESSIONS_PER_TICK = 8;
 const pendingDeferredStateNotifications = new Set<string>();
 const pendingMessageCreatedPatches = new Map<string, string>();
@@ -3243,7 +3262,9 @@ function scheduleDeferredStateNotifications(): void {
   if (deferredStateNotificationTimer) return;
   deferredStateNotificationTimer = setTimeout(
     flushDeferredStateNotifications,
-    HIGH_FREQUENCY_NOTIFY_INTERVAL_MS,
+    isComposerTypingRecently()
+      ? TYPING_PRIORITY_NOTIFY_INTERVAL_MS
+      : HIGH_FREQUENCY_NOTIFY_INTERVAL_MS,
   );
 }
 
@@ -3648,14 +3669,7 @@ function _evictLruIfNeeded(): void {
       // 驱逐会丢 taskUpdates 让 sidebar spinner 熄灭。远程会话豁免(同折算口径)。
       return (
         s &&
-        !s.isStreaming &&
-        !s.agentStatus.isRunning &&
-        !hasBackgroundAgentWork(id, s) &&
-        !remoteOptimisticSends.has(id) &&
-        ![...remoteOptimisticMaterializationRecoveries.values()].some(
-          (recovery) =>
-            recovery.sessionId === id && isRemoteOptimisticMaterializationRecoveryActive(recovery),
-        ) &&
+        !_isSessionBusy(id, s) &&
         !_activeViewSessions.has(id)
       );
     });
@@ -3691,6 +3705,7 @@ function _isSessionBusy(sessionId: string, s: SessionChatState): boolean {
     hasBackgroundAgentWork(sessionId, s) ||
     s.pendingPermission ||
     s.pendingAskUser ||
+    s.protectedAskUser ||
     hasPendingPluginSetupInteraction(s.pendingPluginSetup, s.pendingPluginSetupQueue) ||
     s.pendingPlanReview ||
     s.pendingIssueConfirm ||
@@ -3819,7 +3834,6 @@ function updateIslandsAfterAroundMerge(
   // 块完全落在主段更老一侧:与既有孤岛合并(经块连通的孤岛合并成一座)或新建一座。
   let mergedOldestClientId: string | null = null;
   let mergedNewestClientId: string | null = null;
-  let mergedAny = false;
   const next: LoadedWindowIsland[] = [];
   for (const island of islands) {
     const oldestIdx = messageIndexByClientId(messages, island.oldestClientId);
@@ -3830,7 +3844,6 @@ function updateIslandsAfterAroundMerge(
       next.push(island);
       continue;
     }
-    mergedAny = true;
     if (mergedOldestClientId === null || oldestIdx < blockStart) {
       mergedOldestClientId = island.oldestClientId;
     }
@@ -4156,8 +4169,7 @@ function persistTurnErrorDeferredTracked(
 ): void {
   // 必须在 live error 已经 setState 之后调用,这样抓到的是这一代横幅的 epoch。
   const epoch = _liveErrorEpoch.get(sessionId) ?? 0;
-  let pending: Promise<string | undefined>;
-  pending = makerApiFor(sessionId)
+  const pending: Promise<string | undefined> = makerApiFor(sessionId)
     .input.persistTurnErrorDeferred(sessionId, errData, agentMeta)
     .then((persistId) => {
       const id = typeof persistId === 'string' && persistId ? persistId : undefined;
@@ -6656,6 +6668,7 @@ export function handleStreamEvent(
       }
       if (
         state.pendingAskUser?.requestId === data.requestId ||
+        state.protectedAskUser?.pending.requestId === data.requestId ||
         state.messages.some((m) => m.role === 'ask_user' && m.askUserRequestId === data.requestId)
       ) {
         // resolved + answers → 翻成 answered 并填答案(与答题端 answerUserQuestion 同款 reply / answers,
@@ -6666,6 +6679,8 @@ export function handleStreamEvent(
         const askUserReply = answers && !dismissed ? formatAskUserReply(answers) : '';
         return {
           ...state,
+          protectedAskUser: data.reason === 'resolved' && !dismissed && state.protectedAskUser?.pending.requestId === data.requestId
+            ? undefined : state.protectedAskUser,
           pendingAskUser:
             state.pendingAskUser?.requestId === data.requestId ? null : state.pendingAskUser,
           askUserViewerState:
@@ -6728,6 +6743,7 @@ export function handleStreamEvent(
       const data = event.data as {
         requestId: string;
         questions: AskUserQuestionItem[];
+        delivery?: 'async';
       };
       // Codex done reconciles pending interactions with fresh IPC objects. Keep
       // the same question's identity: AskUserQuestionPrompt restores selections
@@ -6798,6 +6814,8 @@ export function handleStreamEvent(
         pendingAskUser: keepAskProgress ? previousAsk : {
           requestId: data.requestId,
           questions: data.questions,
+          delivery: data.delivery,
+          persistId: event.persistId,
         },
         // F-AUQ-MIN-1: Every new pendingAskUser starts expanded — even if the
         // previous question in this same session was minimized. Folding never
@@ -7630,7 +7648,13 @@ function flushAllPendingTextDeltas(): void {
 
 function scheduleTextDeltaFlush(): void {
   if (textDeltaFlushTimer) return;
-  textDeltaFlushTimer = setTimeout(flushAllPendingTextDeltas, TEXT_DELTA_BATCH_INTERVAL_MS);
+  // 与 deferred state 通知同一口径：打字期间拉稀（见 TYPING_PRIORITY_NOTIFY_INTERVAL_MS）。
+  textDeltaFlushTimer = setTimeout(
+    flushAllPendingTextDeltas,
+    isComposerTypingRecently()
+      ? TYPING_PRIORITY_NOTIFY_INTERVAL_MS
+      : TEXT_DELTA_BATCH_INTERVAL_MS,
+  );
 }
 
 function enqueueTextDeltaPayload(
@@ -7944,7 +7968,18 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       return;
     }
     const deferNotification = isHighFrequencyStreamEvent(event);
-    flushPendingTextDelta(sessionId, deferNotification);
+    // status 纯刷新帧（见 status 分支的 isLiveStatusRefreshFrame）在打字窗口内也要拉稀，
+    // 且它入口处的前置 flush 必须带 defer：否则 ~4Hz 的 status 帧会以立即通知把
+    // 排队文本提前冲出去，绕过 text 层的 typing-first 节奏。turnOrigin 不参与判定：
+    // 定时任务的整轮事件都带来源，而 isRunning=true 帧上 turnOrigin 只影响
+    // handleStatusUpdate 内的 state 字段重置，与通知时机无关。
+    const isLiveStatusRefreshFrame =
+      event.type === 'status' &&
+      (event.data as Record<string, unknown> | undefined)?.isRunning === true &&
+      !isTurnContinuationBoundaryEvent(event) &&
+      (event.data as Record<string, unknown> | undefined)?.skipTurnReset !== true &&
+      getOrCreateState(sessionId).agentStatus.isRunning === true;
+    flushPendingTextDelta(sessionId, deferNotification || isLiveStatusRefreshFrame);
 
     // session_id: 老链路是单独 IPC channel, 新链路融进 maker:event (Claude / Codex 同源)
     if (event.type === 'session_id') {
@@ -7984,13 +8019,19 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       if (!isTurnContinuationBoundaryEvent(event) && !update.skipTurnReset && !update.isRunning) {
         supersedeInputProjectionRequests(sessionId, { supersedeOperations: true });
       }
-      setState(sessionId, (s) => {
-        const next = handleStatusUpdate(s, update);
-        if (isTurnContinuationBoundaryEvent(event) || update.skipTurnReset || update.isRunning) return next;
-        return event.turnOrigin
-          ? { ...next, lastStopWasIm: event.turnOrigin.surface === 'im' }
-          : next;
-      });
+      // typing-first：isLiveStatusRefreshFrame 在事件入口处已算好（前置 flush 与
+      // 本分支共用同一判定）；turn 起止/边界帧保持立即广播。
+      setState(
+        sessionId,
+        (s) => {
+          const next = handleStatusUpdate(s, update);
+          if (isTurnContinuationBoundaryEvent(event) || update.skipTurnReset || update.isRunning) return next;
+          return event.turnOrigin
+            ? { ...next, lastStopWasIm: event.turnOrigin.surface === 'im' }
+            : next;
+        },
+        { deferNotification: isLiveStatusRefreshFrame },
+      );
       scheduleWakeBridgeReconciliation(sessionId);
       return;
     }
@@ -8467,10 +8508,11 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     }
 
     if (request.kind === 'ask_user_question') {
-      const data: CCAgentAskUserQuestionPayload = {
+      const data: CCAgentAskUserQuestionPayload & { delivery?: 'async' } = {
         sessionId,
         requestId: request.requestId,
         questions: request.questions as CCAgentAskUserQuestionPayload['questions'],
+        ...(request.delivery === 'async' ? { delivery: 'async' as const } : {}),
       };
       setState(sessionId, (s) =>
         handleStreamEvent(s, { sessionId, type: 'ask_user_question', data, persistId }),
@@ -9703,6 +9745,19 @@ function subscribe(sessionId: string, cb: () => void): () => void {
   };
 }
 
+const resumeQuestionPresentations = new WeakMap<PendingAskUser, PendingAskUser>();
+function visibleAskUser(state: SessionChatState): PendingAskUser | null {
+  const pending = state.protectedAskUser?.pending;
+  if (!pending) return state.pendingAskUser;
+  if (state.agentStatus.isRunning && !state.turnStoppedByUser && !state.queuePaused) return pending;
+  let presentation = resumeQuestionPresentations.get(pending);
+  if (!presentation) {
+    presentation = { ...pending, resumeOnSubmit: true };
+    resumeQuestionPresentations.set(pending, presentation);
+  }
+  return presentation;
+}
+
 function selectLightState(state: SessionChatState): SessionChatLightState {
   return {
     agentSwitchIntent: state.agentSwitchIntent,
@@ -9727,15 +9782,15 @@ function selectLightState(state: SessionChatState): SessionChatLightState {
     historyWindowHasIsland: state.historyWindowIslands.length > 0,
     isFirstMessage: state.isFirstMessage,
     historyLoaded: state.historyLoaded,
-    pendingPermission: state.pendingPermission,
-    pendingAskUser: state.pendingAskUser,
+    pendingPermission: state.protectedAskUser ? null : state.pendingPermission,
+    pendingAskUser: visibleAskUser(state),
     pendingPluginSetup: state.pendingPluginSetup,
     pluginSetupViewerState: state.pluginSetupViewerState,
     pluginSetupCommandInFlight: state.pluginSetupCommandInFlight,
     pluginSetupCommandError: state.pluginSetupCommandError,
     askUserViewerState: state.askUserViewerState,
-    askUserDraft: state.askUserDraft,
-    pendingPlanReview: state.pendingPlanReview,
+    askUserDraft: state.protectedAskUser?.draft ?? state.askUserDraft,
+    pendingPlanReview: state.protectedAskUser ? null : state.pendingPlanReview,
     pendingIssueConfirm: state.pendingIssueConfirm,
     pendingInputHandoff: state.pendingInputHandoff,
     pendingRenameSessionsConfirm: state.pendingRenameSessionsConfirm,
@@ -11180,8 +11235,9 @@ async function pumpRemoteOptimisticSends(sessionId: string): Promise<void> {
   if (existing) return existing;
   // Self-reference is intentional: a detached clear/owner generation must not
   // keep draining after a newer pump replaces this Promise in the registry.
-  // eslint-disable-next-line prefer-const
   let run!: Promise<void>;
+  // TypeScript needs definite assignment for the async closure's self-reference.
+  // eslint-disable-next-line prefer-const
   run = (async () => {
     while (true) {
       const record = firstUnacceptedRemoteOptimisticSend(sessionId);
@@ -16219,6 +16275,7 @@ async function clearSessionAfterGuardImpl(sessionId: string, clearedAt: string):
       askUserViewerState: 'expanded',
       // F-AUQ-DRAFT: Clear session also wipes any in-progress draft.
       askUserDraft: null,
+      protectedAskUser: undefined,
       pendingPlanReview: null,
       pendingIssueConfirm: null,
       pendingInputHandoff: null,
@@ -16504,6 +16561,11 @@ function answerUserQuestion(
   answers: Record<string, string>,
 ): void {
   if (!sessionId) return;
+  const state = getOrCreateState(sessionId);
+  if (state.protectedAskUser?.pending.requestId === requestId) {
+    void sendProtectedQuestionSupplement(sessionId, requestId, answers);
+    return;
+  }
   if (getOrCreateState(sessionId).pendingAskUser?.requestId !== requestId) return;
   const submittedAnswers = { ...answers };
   const replySummary = formatAskUserReply(submittedAnswers);
@@ -16511,6 +16573,7 @@ function answerUserQuestion(
     kind: 'ask_user_question', answers: submittedAnswers,
   }, () => setState(sessionId, (s) => ({
     ...s,
+    protectedAskUser: s.protectedAskUser?.pending.requestId === requestId ? undefined : s.protectedAskUser,
     pendingAskUser: s.pendingAskUser?.requestId === requestId ? null : s.pendingAskUser,
     askUserViewerState: s.pendingAskUser?.requestId === requestId ? 'expanded' : s.askUserViewerState,
     askUserDraft: s.pendingAskUser?.requestId === requestId ? null : s.askUserDraft,
@@ -16522,6 +16585,95 @@ function answerUserQuestion(
   })));
   // Persistence belongs exclusively to Main's onInteractionResolved, including
   // local sessions. A late renderer write must not overwrite a winning decision.
+}
+
+/** Expired async questions are submitted through the ordinary, idempotent user-input path. */
+async function sendProtectedQuestionSupplement(sessionId: string, requestId: string, answers: Record<string, string>): Promise<void> {
+  const state = getOrCreateState(sessionId);
+  const protectedQuestion = state.protectedAskUser;
+  if (protectedQuestion?.pending.requestId !== requestId) return;
+  const text = formatAsyncQuestionSupplement(protectedQuestion.pending.questions, answers);
+  const clear = () => setState(sessionId, (s) => s.protectedAskUser?.pending.requestId === requestId
+    ? { ...s, protectedAskUser: undefined } : s);
+  const key = `${sessionId}:${requestId}:supplement`;
+  if (questionDecisionsInFlight.has(key)) return;
+  questionDecisionsInFlight.add(key);
+  const owner = getDataOwnerGeneration();
+  const epoch = _messagesEpoch.get(sessionId) ?? 0;
+  const origin = getStickySessionDeviceId(sessionId);
+  // A protected reply outlives the original turn. Terminal events invalidate
+  // queue snapshots, not this draft; operation responses keep their own guard.
+  const current = () => isDataOwnerGenerationCurrent(owner) &&
+    (_messagesEpoch.get(sessionId) ?? 0) === epoch &&
+    getStickySessionDeviceId(sessionId) === origin &&
+    sessions.get(sessionId)?.protectedAskUser?.pending.requestId === requestId;
+  try {
+    const needsSupplement = await asyncQuestionNeedsSupplement(
+      () => makerApiFor(sessionId).resolveInteraction(requestId, { kind: 'ask_user_question', answers }),
+      async () => {
+        if (!current()) return undefined;
+        const persistId = protectedQuestion.pending.persistId;
+        if (!persistId) return undefined;
+        const rows = origin
+          ? await aroundMessagesByClientIdForDevice(origin, sessionId, persistId, { radius: 0 })
+          : await aroundMessagesByClientIdFor(sessionId, persistId, { radius: 0 });
+        return rows.find((row) => row.clientId === persistId && row.role === 'ask_user')?.content;
+      }, requestId,
+    );
+    if (!current()) return;
+    if (!needsSupplement) {
+      setState(sessionId, (s) => ({ ...s, protectedAskUser: undefined,
+        pendingAskUser: s.pendingAskUser?.requestId === requestId ? null : s.pendingAskUser,
+        askUserDraft: s.askUserDraft?.requestId === requestId ? null : s.askUserDraft,
+      }));
+      return;
+    }
+    if (!text) { clear(); return; }
+    const session = await getSessionFor(sessionId);
+    // Exact retries share an ID; an edited answer is a new supplemental input.
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const answerId = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    if (!current()) return;
+    const queued = buildQueuedMessage(sessionId, text, session.model, session.effort,
+      session.permissionMode, session.workingDir ?? '', undefined, undefined, undefined,
+      { clientId: `question-reply:${requestId}:${answerId}`, createdAt: new Date().toISOString() });
+    queued.createOpts = { ...queued.createOpts, planMode: false,
+      agentKind: dbAgentKindToMakerKind(session.agentKind, state.agentKind),
+      ...(session.sdkSessionId ? { resumeSessionId: session.sdkSessionId } : {}),
+      ...(session.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
+    };
+    const operation = beginInputProjectionOperation(sessionId, origin);
+    // A false steer is a definite rejection. An exception/unknown receipt must
+    // never cause a second delivery through enqueue.
+    if (state.agentStatus.isRunning && !state.turnStoppedByUser) {
+      const steered = await operation.api.input.steer(sessionId, queued, {
+        touchUserSend: true, ...getRemoteInputClearBoundaryOpts(sessionId),
+      });
+      if (steered === true) {
+        if (current()) clear();
+        return;
+      }
+      if (steered !== false) throw new Error('Supplement receipt unavailable');
+    }
+    if (!current()) return;
+    let projection = await operation.api.input.enqueue(sessionId, queued, {
+      sendAtMs: Date.now(), ...getRemoteInputClearBoundaryOpts(sessionId),
+    });
+    if (!current()) return;
+    if (projection.queuePaused && (state.turnStoppedByUser || state.queuePaused)) {
+      projection = await operation.api.input.resume(sessionId, getRemoteInputClearBoundaryOpts(sessionId));
+    }
+    if (!current()) return;
+    applyInputProjectionOperationResponse(sessionId, operation, projection);
+    clear();
+  } catch (error) {
+    if (current()) {
+      log.warn('Async question supplement was not confirmed', error);
+      toast.warning(i18n.t('newChat.permissionPrompt.submissionFailed'));
+    }
+  } finally {
+    questionDecisionsInFlight.delete(key);
+  }
 }
 
 function respondToPluginSetup(
@@ -17171,16 +17323,23 @@ function setPluginSetupViewerState(sessionId: string, next: PluginSetupViewerSta
 function setAskUserDraft(sessionId: string, next: AskUserDraft | null): void {
   if (!sessionId) return;
   setState(sessionId, (s) => {
-    const prev = s.askUserDraft;
+    const prev = s.protectedAskUser?.draft ?? s.askUserDraft;
     if (prev === next) return s;
     if (
       prev &&
       next &&
       prev.requestId === next.requestId &&
       prev.currentIndex === next.currentIndex &&
-      prev.answers === next.answers
+      prev.answers === next.answers &&
+      prev.started === next.started && prev.customInput === next.customInput &&
+      prev.showCustomInput === next.showCustomInput &&
+      JSON.stringify(prev.selectedLabels) === JSON.stringify(next.selectedLabels)
     ) {
       return s;
+    }
+    const pending = s.protectedAskUser?.pending ?? s.pendingAskUser;
+    if (next && pending?.requestId === next.requestId && pending.delivery === 'async' && next.started) {
+      return { ...s, protectedAskUser: { pending, draft: next } };
     }
     return { ...s, askUserDraft: next };
   });

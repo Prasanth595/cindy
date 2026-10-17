@@ -107,14 +107,35 @@ interface AliasPrefixes<T extends ExecutorPathAlias> {
   prefixes: Array<{ alias: T; pattern: RegExp }>;
 }
 
-/** 别名需已按 from 由长到短排好；Windows 路径不区分大小写，其余按原样比较。 */
-function aliasPrefixes<T extends ExecutorPathAlias>(aliases: readonly T[]): AliasPrefixes<T> {
-  const prefixes = aliases.map((alias) => ({
-    alias,
-    pattern: new RegExp(alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'), WINDOWS_PATH.test(alias.from) ? 'iy' : 'y'),
-  }));
+/**
+ * 别名需已按 from 由长到短排好；Windows 路径不区分大小写，其余按原样比较。
+ * 分隔符按路径写法认：Mac / Linux 路径只认 `/`(`C:\Users\x` 里的 `\Users` 不是 `/Users`)；Windows 路径认
+ * `\` 与 `/`。escapedSeparators 时 Windows 路径还认转义成两个的 `\\`(Windows 上的 Agent 按 bash / 源码
+ * 字符串的写法写 `"C:\\Users\\x"`，它表示的仍是同一个路径)。
+ */
+function aliasPrefixes<T extends ExecutorPathAlias>(
+  aliases: readonly T[], { escapedSeparators = false }: { escapedSeparators?: boolean } = {},
+): AliasPrefixes<T> {
+  const prefixes = aliases.map((alias) => {
+    const windows = WINDOWS_PATH.test(alias.from);
+    const separator = !windows ? '/' : escapedSeparators ? String.raw`(?:\\\\|[/\\])` : String.raw`[/\\]`;
+    return {
+      alias,
+      pattern: new RegExp(alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(separator), windows ? 'iy' : 'y'),
+    };
+  });
   return { finder: new RegExp(prefixes.map((item) => item.pattern.source).join('|'), 'gi'), prefixes };
+}
+
+/** Mac / Linux 路径前面紧挨着盘符(`C:/Users`)时，它是 Windows 路径的一部分。 */
+function followsDriveLetter(text: string, index: number): boolean {
+  return /(?:^|[^A-Za-z0-9_])[A-Za-z]:$/.test(text.slice(Math.max(0, index - 3), index));
+}
+
+/** 路径里第一个分隔符的写法：`\\`(转义)、`\` 或 `/`。 */
+function separatorToken(value: string): string | undefined {
+  return /\\\\|[\\/]/.exec(value)?.[0];
 }
 
 /** 从 start 起找下一个完整的目录前缀；同一位置先试最长的别名，不成立再试它的上级。 */
@@ -130,6 +151,7 @@ function nextAliasPrefix<T extends ExecutorPathAlias>(
     const index = found.index;
     if (index === 0 || !/[A-Za-z0-9_]/.test(text[index - 1])) {
       for (const { alias, pattern } of prefixes) {
+        if (!WINDOWS_PATH.test(alias.from) && followsDriveLetter(text, index)) continue;
         pattern.lastIndex = index;
         const hit = pattern.exec(text);
         if (!hit) continue;
@@ -154,14 +176,18 @@ const PATH_SUFFIX = /[/\\][^\s\x60'";:|&)<>}\]*?$%]*/y;
  */
 export type SeparatorStyle = 'target' | 'source';
 
-function joinMapped(to: string, matched: string, suffix: string, style: SeparatorStyle): string {
+function joinMapped(to: string, matched: string, suffix: string, style: SeparatorStyle, escapedSeparators = false): string {
   const base = to.replace(/[\\/]+$/, '');
+  // 只在认转义写法的方向(Agent 写回本机)：Agent 写的是转义的 `\\` 时，后缀里的 `\\` 是一个分隔符，
+  // 目标端仍用反斜杠时保持转义写法。网络共享路径开头的 `\\server` 不是转义。
+  const escaped = escapedSeparators && separatorToken(matched.replace(/^[\\/]{2}(?=[^\\/])/, '')) === '\\\\';
+  const suffixSeparators = escaped ? /\\\\|[\\/]/g : /[\\/]/g;
   if (style === 'source' && WINDOWS_PATH.test(base)) {
-    const separator = /[\\/]/.exec(matched)?.[0] ?? '\\';
-    return base.replace(/[\\/]/g, separator) + suffix.replace(/[\\/]/g, separator);
+    const separator = escaped ? '\\\\' : /[\\/]/.exec(matched)?.[0] ?? '\\';
+    return base.replace(/[\\/]/g, separator) + suffix.replace(suffixSeparators, separator);
   }
-  const separator = to.includes('\\') ? '\\' : '/';
-  return base + suffix.replace(/[\\/]/g, separator);
+  const separator = to.includes('\\') ? (escaped ? '\\\\' : '\\') : '/';
+  return (escaped && separator === '\\\\' ? base.replace(/\\/g, separator) : base) + suffix.replace(suffixSeparators, separator);
 }
 
 /** 记录 / 还原路径的原写法：text 为正文 token，decoded 为 JSON 字符串里的值，json 为 JSON 字符串字面量。 */
@@ -181,6 +207,8 @@ export interface ProjectPathTextOptions {
   json?: boolean;
   /** 目录名后接空白或标点时，核对它是否其实是同级目录名的一部分。 */
   continuesName?: (alias: ExecutorPathAlias, rest: string) => boolean;
+  /** Agent 写回本机的方向：Windows 虚拟路径也认转义的 `\\` 分隔符(见 aliasPrefixes)。 */
+  escapedSeparators?: boolean;
   spellings?: PathSpellingHooks;
   /** 原始正文中的位置，不包含 JSON 解码后的临时字符串。 */
   restoreOriginal?(offset: number, input: string): string | undefined;
@@ -252,7 +280,7 @@ export function projectPathText(
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
-  const prefixes = aliasPrefixes(entries);
+  const prefixes = aliasPrefixes(entries, { escapedSeparators: options.escapedSeparators });
   const { spellings } = options;
   // 同一个路径在 JSON 字符串里和正文里的转义不同，原写法按所处层级分别记录与还原。
   let depth = 0;
@@ -297,7 +325,7 @@ export function projectPathText(
       for (const alias of entries) {
         if (stripAliasPrefix(pathValue, alias.from) === null) continue;
         const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
-        const mapped = joinMapped(alias.to, pathValue, suffix, options.wholeSeparators ?? 'target');
+        const mapped = joinMapped(alias.to, pathValue, suffix, options.wholeSeparators ?? 'target', options.escapedSeparators);
         // 明确的路径字段可整体映射；歧义字段(如 script)只有现存完整路径才整体映射，
         // 否则按正文逐 token 投影，避免把脚本源码里的 /api/v1 等内容当成路径。
         if (valueContext === 'path' || isCompletePath?.(mapped)) return replace(pathValue, () => mapped, offset) + lineEnd;
@@ -312,7 +340,7 @@ export function projectPathText(
       const suffix = PATH_SUFFIX.exec(value)?.[0] ?? '';
       const input = value.slice(hit.index, hit.end + suffix.length);
       const { to } = hit.alias;
-      result += value.slice(position, hit.index) + replace(input, () => joinMapped(to, input, suffix, options.separators ?? 'target'), offset === null ? null : offset + hit.index);
+      result += value.slice(position, hit.index) + replace(input, () => joinMapped(to, input, suffix, options.separators ?? 'target', options.escapedSeparators), offset === null ? null : offset + hit.index);
       position = hit.end + suffix.length;
     }
     return result + value.slice(position);
@@ -668,7 +696,9 @@ export class ExecutorWorkspace {
 
   mapTextFromAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
-    return projectPathText(text, this.agentPathsToLocal(), context, (mapped) => fs.existsSync(mapped), { separators: 'source', continuesName: this.localContinuesName });
+    return projectPathText(text, this.agentPathsToLocal(), context, (mapped) => fs.existsSync(mapped), {
+      separators: 'source', continuesName: this.localContinuesName, escapedSeparators: true,
+    });
   }
 
   /** 正文里的单个完整路径(代码段、尖括号链接)：还原成本机路径，分隔符沿用 Agent 的写法。 */
@@ -751,6 +781,7 @@ export class ExecutorWorkspace {
   private contentFromAgent(text: string, spellings?: PathSpellings, options: ProjectPathTextOptions = {}, pass?: 'A' | 'B' | 'unique'): string {
     return projectPathText(text, this.agentPathsToLocal(), 'text', (mapped) => fs.existsSync(mapped), {
       ...options, separators: 'source', wholeSeparators: 'source', spellings: spellings?.restorer(pass), continuesName: this.localContinuesName,
+      escapedSeparators: true,
     });
   }
 
@@ -807,7 +838,7 @@ export class ExecutorWorkspace {
     if (!aliases.length) return command;
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
-    const prefixes = aliasPrefixes(aliases);
+    const prefixes = aliasPrefixes(aliases, { escapedSeparators: true });
     const commandContext = (input: string, end: number): { quote: 'none' | 'single' | 'double'; wordStart: number } => {
       let quote: 'none' | 'single' | 'double' = 'none';
       let wordStart = 0;
@@ -878,6 +909,15 @@ export class ExecutorWorkspace {
         for (; suffixEnd < command.length; suffixEnd += 1) {
           const char = command[suffixEnd];
           if (char === '\r' || char === '\n') break;
+          // bash 里 `\\` 表示一个反斜杠：Windows 路径中后面紧跟目录名时，它就是一个分隔符。
+          // 后面是引号、变量、换行等时仍按转义处理，交给下面的判断原样保留。
+          const named = command[suffixEnd + 2];
+          if (dialect === 'bash' && windowsPath && char === '\\' && command[suffixEnd + 1] === '\\'
+            && named !== undefined && !/[\\/"'$\x60\r\n]/.test(named)
+            && (context !== 'none' || !/[\s;|&()<>]/.test(named))) {
+            suffixEnd += 1;
+            continue;
+          }
           if (context === 'single' && char === "'") break;
           if (context === 'double' && char === '"') break;
           if (pathList && char === listSeparator) break;
@@ -888,8 +928,10 @@ export class ExecutorWorkspace {
           if (dialect === 'cmd' && /[%^!]/.test(char)) break;
         }
       }
+      // 上面只把后接目录名的 `\\` 收进后缀，所以后缀里的 `\\` 都是一个分隔符。
+      const suffixSeparators = windowsPath && dialect === 'bash' ? /\\\\|[\\/]/g : /[\\/]/g;
       result += command.slice(end, start) + quote(alias.to.replace(/[\\/]+$/, ''), context)
-        + command.slice(suffixStart, suffixEnd).replace(/[\\/]/g, separator);
+        + command.slice(suffixStart, suffixEnd).replace(suffixSeparators, separator);
       end = suffixEnd;
     }
     return result + command.slice(end);

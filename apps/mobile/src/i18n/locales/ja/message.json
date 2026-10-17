@@ -10,6 +10,7 @@
   },
   "renderer": {
     "moreActions": "その他のメッセージ操作",
+    "reply": "返信",
     "newMessagesToBottom": "新着メッセージあり、最下部へ移動",
     "jumpToBottom": "最下部へ移動",
     "openForkOrigin": "分岐元メッセージを開く",

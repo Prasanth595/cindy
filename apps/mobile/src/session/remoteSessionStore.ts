@@ -43,6 +43,7 @@ import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { EMPTY_INPUT_PROJECTION, normalizeInputProjection } from '@/session/inputProjection';
 import { sortPendingInteractions } from '@/session/interactionModel';
+import { clearAskUserDraft } from '@/session/interactionDraftStore';
 import { applySessionModelPrefPush } from '@/session/sessionModelMirror';
 import {
   createLatestWriteGuard,
@@ -252,6 +253,9 @@ const listMessageKeys = new Map<string, Set<string>>();
 // overwrite a newer live state with the first stale 0/N snapshot.
 const livePlanSnapshots = new Map<string, Map<string, LivePlanSnapshot>>();
 const pendingInteractions = new Map<string, PendingInteraction[]>();
+// Editing is local to the controller. It must not keep a provider turn alive.
+const protectedQuestions = new Map<string, PendingInteraction>();
+const visibleInteractionCache = new Map<string, { raw: PendingInteraction[]; protected?: PendingInteraction; result: PendingInteraction[] }>();
 /**
  * 这个会话的 pending 列表当前是不是**权威**的(来自被控端的一次全量快照)。
  *
@@ -1038,6 +1042,7 @@ function sessionStoreProtected(sessionId: string, includeVisible = true): boolea
   if (readSessionRunStatus(sessionId).isRunning) return true;
   if (sessionMakerTurnRunning.get(sessionId) === true) return true;
   if ((pendingInteractions.get(sessionId)?.length ?? 0) > 0) return true;
+  if (protectedQuestions.has(sessionId)) return true;
   if ((inputProjections.get(sessionId)?.pendingQueue.length ?? 0) > 0) return true;
   if (sessionMessageLifecycle.hasLocalWork(sessionId)) return true;
   if (retentionForSession(sessionId) === 'regular' && hasComposerDraft(sessionId)) return true;
@@ -1123,6 +1128,8 @@ function invalidateSessionMessageWindowState(
 }
 
 function removeSessionRuntimeState(sessionId: string): void {
+  protectedQuestions.delete(sessionId);
+  visibleInteractionCache.delete(sessionId);
   void clearHistoryDisk(undefined, sessionId);
   clearRemoteHistoryViews(undefined, sessionId);
   invalidateSessionMessageWindowState(sessionId, false);
@@ -3268,9 +3275,11 @@ export const remoteSessionStore = {
    * 清内存与磁盘预览并登记一次刷新；页面可见时立即 load，隐藏时下次打开再拉。
    */
   invalidateSessionMessageWindow(sessionId: string, deviceId?: string): void {
+    const removedDraft = protectedQuestions.delete(sessionId);
+    visibleInteractionCache.delete(sessionId);
     void clearHistoryDisk(deviceId, sessionId);
     resetRemoteHistoryViews(deviceId, sessionId);
-    const changed = invalidateSessionMessageWindowState(sessionId, true);
+    const changed = invalidateSessionMessageWindowState(sessionId, true) || removedDraft;
     clearSessionMessageCache(sessionId, deviceId);
     if (changed) {
       bumpMessageVersion(sessionId);
@@ -3525,6 +3534,8 @@ export const remoteSessionStore = {
     }
     let shouldReseedAfterPatch = false;
     if (patch.status === 'deleted' || patch.status === 'archived') {
+      protectedQuestions.delete(sessionId);
+      visibleInteractionCache.delete(sessionId);
       void clearHistoryDisk(deviceId, sessionId);
       clearRemoteHistoryViews(deviceId, sessionId);
       shard.sessions = shard.sessions.filter((s) => s.id !== sessionId);
@@ -4775,6 +4786,9 @@ export const remoteSessionStore = {
       const sessionId = readString(payload, 'sessionId');
       const requestId = readString(payload, 'requestId');
       if (sessionId && requestId) {
+        if (payload.reason === 'resolved' && !(isRecord(payload.decision) && payload.decision.dismissed === true)) {
+          this.confirmProtectedQuestion(sessionId, requestId);
+        }
         // 注意:这里**不**提前回收延长抑制条目——push 到达只说明被控端已确认,
         // 不排除仍有「决定提交前发出、此刻还在途」的旧 getPendingInteractions
         // 快照晚于本 push 返回(弱网高发);提前回收会让那份旧快照把已解决的卡
@@ -5303,6 +5317,8 @@ export const remoteSessionStore = {
     listMessageKeys.clear();
     emptySessionMessageStructureTokens.clear();
     livePlanSnapshots.clear();
+    protectedQuestions.clear();
+    visibleInteractionCache.clear();
     if (pendingInteractions.size > 0) {
       pendingInteractions.clear();
       bumpHomeStatusVersion();
@@ -5557,6 +5573,41 @@ export const remoteSessionStore = {
 
   getPendingInteractions(sessionId: string): PendingInteraction[] {
     return pendingInteractions.get(sessionId) ?? emptyPendingInteractions;
+  },
+
+  protectAsyncQuestion(sessionId: string, item: PendingInteraction): void {
+    if (item.request.kind !== 'ask_user_question' || item.request.delivery !== 'async') return;
+    if (protectedQuestions.get(sessionId)?.request.requestId === item.request.requestId) return;
+    protectedQuestions.set(sessionId, { ...item, retainedDraft: true });
+    emit();
+  },
+
+  releaseProtectedQuestion(sessionId: string, requestId: string): void {
+    if (protectedQuestions.get(sessionId)?.request.requestId !== requestId) return;
+    protectedQuestions.delete(sessionId);
+    visibleInteractionCache.delete(sessionId);
+    emit();
+  },
+
+  /** Both the resolve receipt and a resolved push complete the same draft. */
+  confirmProtectedQuestion(sessionId: string, requestId: string): void {
+    if (protectedQuestions.get(sessionId)?.request.requestId !== requestId) return;
+    // Register the existing stale-snapshot suppression before publishing removal.
+    this.settleOptimisticInteractionDismiss(sessionId, requestId, { kind: 'confirmed' });
+    clearAskUserDraft(requestId);
+    this.dismissInteraction(sessionId, requestId);
+    this.releaseProtectedQuestion(sessionId, requestId);
+  },
+
+  getVisiblePendingInteractions(sessionId: string): PendingInteraction[] {
+    const raw = this.getPendingInteractions(sessionId);
+    const retained = protectedQuestions.get(sessionId);
+    if (!retained) return raw;
+    const cached = visibleInteractionCache.get(sessionId);
+    if (cached?.raw === raw && cached.protected === retained) return cached.result;
+    const result = [retained, ...raw.filter((item) => item.request.requestId !== retained.request.requestId)];
+    visibleInteractionCache.set(sessionId, { raw, protected: retained, result });
+    return result;
   },
 
   /**
@@ -6274,7 +6325,7 @@ export function useRemoteNewMakerWorktreeBranchPreference(
 export function useSessionPendingInteractions(sessionId: string): PendingInteraction[] {
   return useSyncExternalStore(
     remoteSessionStore.subscribe,
-    () => remoteSessionStore.getPendingInteractions(sessionId),
+    () => remoteSessionStore.getVisiblePendingInteractions(sessionId),
   );
 }
 

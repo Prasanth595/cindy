@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-win",
-  "documentNamespace": "https://cindy.app/spdx/desktop-win/fbd812b5cbc037720954e4383ed77b9fcf31d516c3a3bd92b5de5ee3fa5642d6",
+  "documentNamespace": "https://cindy.app/spdx/desktop-win/70e3c1d7f04682667887b13411a7bfee4c15d473889451fe2e816a8a818303f3",
   "creationInfo": {
-    "created": "2026-10-12T13:33:06Z",
+    "created": "2026-10-16T03:37:01Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -7056,6 +7056,23 @@
       ]
     },
     {
+      "name": "@modelcontextprotocol/ext-apps",
+      "SPDXID": "SPDXRef-Package-9e0306ad8a98ba5b",
+      "versionInfo": "1.7.5",
+      "downloadLocation": "https://github.com/modelcontextprotocol/ext-apps",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40modelcontextprotocol/ext-apps@1.7.5"
+        }
+      ]
+    },
+    {
       "name": "@modelcontextprotocol/sdk",
       "SPDXID": "SPDXRef-Package-5d5fbd6fc6e1950f",
       "versionInfo": "1.29.0",
@@ -8242,6 +8259,23 @@
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
           "referenceLocator": "pkg:npm/%40smithy/util-utf8@2.3.0"
+        }
+      ]
+    },
+    {
+      "name": "@standard-schema/spec",
+      "SPDXID": "SPDXRef-Package-e38b4bfcbb9b79f3",
+      "versionInfo": "1.1.0",
+      "downloadLocation": "https://github.com/standard-schema/standard-schema",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40standard-schema/spec@1.1.0"
         }
       ]
     },
@@ -22707,6 +22741,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-9e0306ad8a98ba5b"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-5d5fbd6fc6e1950f"
     },
     {
@@ -23053,6 +23092,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-1bdd35301f7ae8c9"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-e38b4bfcbb9b79f3"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

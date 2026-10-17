@@ -1,5 +1,5 @@
 /**
- * 供应商分享的全局宿主(只在主窗口 MainLayout 挂一次)：
+ * 供应商分享的窗口宿主：主窗口处理自动提醒，副窗口只展示管理页手动打开的审批。
  *
  *  - 分享者：启动时读一次 `owned`，把本次运行还没弹过的待审批申请排队；之后靠 REQUESTED 推送。
  *    逐条弹审批弹窗，Esc / × = 稍后处理(申请留在管理页)。系统通知点击 → 打开对应管理页。
@@ -29,22 +29,24 @@ import {
   getProviderSharePendingRequests,
   getProviderSharePendingReshares,
   refreshProviderShareOwnerPending,
+  useProviderShareApprovalSelection,
   useProviderSharePendingRequests,
 } from './providerShareStore';
 import { subscribeProviderShareJoin } from './joinIntent';
 
 const SETTLED_TOAST_MS = 6000;
 
-export function ProviderShareGlobalHost() {
+export function ProviderShareGlobalHost({ manualOnly = false }: { manualOnly?: boolean }) {
   const { t } = useTranslation();
   const { dataOwnerId, dataOwnerGeneration } = useAuth();
   useEffect(() => {
+    if (manualOnly) return;
     refreshProviderShareFavoriteMembership();
-  }, [dataOwnerId, dataOwnerGeneration]);
+  }, [dataOwnerId, dataOwnerGeneration, manualOnly]);
   const favoriteCleanupFailed = useProviderShareFavoriteCleanupFailed();
   useEffect(() => {
-    if (favoriteCleanupFailed) toast.error(t('newChat.modelSelector.unified.favoritesCleanupFailed'));
-  }, [favoriteCleanupFailed, t]);
+    if (!manualOnly && favoriteCleanupFailed) toast.error(t('newChat.modelSelector.unified.favoritesCleanupFailed'));
+  }, [favoriteCleanupFailed, manualOnly, t]);
   const navigate = useNavigate();
   const location = useLocation();
   const navigateRef = useRef(navigate);
@@ -55,6 +57,7 @@ export function ProviderShareGlobalHost() {
   tRef.current = t;
 
   const pending = useProviderSharePendingRequests();
+  const selection = useProviderShareApprovalSelection();
   // 本次运行已排过队的申请：main 重连后会重新推送全部待审批申请，不重复弹。
   const queuedRef = useRef(new Set<string>());
   const [queue, setQueue] = useState<readonly string[]>([]);
@@ -76,6 +79,7 @@ export function ProviderShareGlobalHost() {
   }, []);
 
   useEffect(() => {
+    if (manualOnly) return;
     const api = (window as Partial<Window>).electronAPI?.providerShare;
     if (!api) return;
     let disposed = false;
@@ -142,19 +146,32 @@ export function ProviderShareGlobalHost() {
       offSettled();
       offJoinIntent();
     };
-  }, [enqueue, openJoin]);
+  }, [enqueue, openJoin, manualOnly]);
+
+  const selectedId = selection?.item.request.requestId;
+  useEffect(() => {
+    if (!selectedId) return;
+    // 手动打开也算本次运行已弹过：启动读取与重连推送不能再把它排入自动队列。
+    queuedRef.current.add(selectedId);
+    setQueue((items) => items.filter((id) => id !== selectedId));
+  }, [selectedId]);
 
   const currentId = queue[0] ?? null;
-  const current = currentId ? pending.find((item) => item.request.requestId === currentId) ?? null : null;
+  const queued = currentId ? pending.find((item) => item.request.requestId === currentId) ?? null : null;
+  const current = selection?.item ?? queued;
 
   // 队首的申请已不在待审批里(在管理页处理了、被撤回或过期)：跳过。
   useEffect(() => {
-    if (currentId && !current) setQueue((items) => items.filter((id) => id !== currentId));
-  }, [current, currentId]);
+    if (currentId && !queued) setQueue((items) => items.filter((id) => id !== currentId));
+  }, [queued, currentId]);
 
   const closeApproval = useCallback(() => {
+    if (selection) {
+      selection.onClose();
+      return;
+    }
     setQueue((items) => (items.length > 0 ? items.slice(1) : items));
-  }, []);
+  }, [selection]);
 
   const openNewTask = useCallback(() => {
     navigateRef.current('/cc-agent/new', { state: makeGenericNewMakerRouteState(pathnameRef.current) });
@@ -162,7 +179,12 @@ export function ProviderShareGlobalHost() {
 
   return (
     <>
-      {current && <ProviderShareApproveDialog key={current.request.requestId} item={current} onClose={closeApproval} />}
+      {current && <ProviderShareApproveDialog
+        key={current.request.requestId}
+        item={current}
+        onClose={closeApproval}
+        returnFocusTo={selection?.trigger}
+      />}
       {join && (
         <ProviderShareApplyDialog
           key={join.id}

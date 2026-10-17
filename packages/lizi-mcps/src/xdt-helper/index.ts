@@ -183,6 +183,11 @@ export {
   type CreateTeammateCallbacks,
 } from './create_teammate.js';
 export {
+  registerTeammateHomeTools,
+  type TeammateHomeCallbacks,
+  type TeammateHomeComputerWire,
+} from './teammate_home.js';
+export {
   registerBotCapabilityTools,
   buildFindBotCapabilitiesDescription,
   withCindyGatedBotToolDescriptions,

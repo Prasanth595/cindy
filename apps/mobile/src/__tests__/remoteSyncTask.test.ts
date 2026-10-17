@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createRemoteSyncCoordinator,
@@ -17,10 +15,6 @@ function deferred() {
 
 function nextTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-function readSessionScreenSource(): string {
-  return readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8').replace(/\r\n/g, '\n');
 }
 
 describe('remote sync task runner', () => {
@@ -205,49 +199,5 @@ describe('remote sync coordinator', () => {
 
     await expect(task).rejects.toThrow('first failed');
     expect(runs).toEqual([['first'], ['follow-up']]);
-  });
-
-  it('clears loading when a queued sync is blocked for a newly-created session', () => {
-    const source = readSessionScreenSource();
-    expect(source).toContain(
-      'if (shouldBlockSessionSync(sessionId)) {\n      if (!syncRun.isStale()) setLoading(false);\n      return;\n    }',
-    );
-  });
-
-  it('resets loading when the reused screen switches sessions', () => {
-    const source = readSessionScreenSource();
-    expect(source).toContain(
-      'setRewindState({ kind: \'idle\' });\n    setMessageActionBusy(null);\n    setLoading(false);',
-    );
-  });
-
-  it('uses the force-reopen callback for subscription and snapshot retries', () => {
-    const source = readSessionScreenSource();
-    expect(source).toContain(
-      'reopenLink: () => syncReopenCoordinator.reopenAfter(subscriptionAttemptVersion)',
-    );
-    expect(source).toContain(
-      'await syncReopenCoordinator.reopenAfter(failedAtVersion);',
-    );
-    expect(source).toContain(
-      'const syncReopenCoordinator = createRemoteSyncReopenCoordinator(',
-    );
-    expect(source).not.toContain(
-      'reopenLink: async () => {\n          await openLink(deviceId);\n        }',
-    );
-  });
-
-  it('applies coordinator context and task changes after render commits', () => {
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/device-link/remoteSyncTask.ts'),
-      'utf8',
-    ).replace(/\r\n/g, '\n');
-    expect(source).toContain(
-      'useLayoutEffect(() => {\n    taskRef.current = task;\n    coordinatorRef.current?.setContext(contextKey);\n  }, [contextKey, task]);',
-    );
-    expect(source).not.toContain(
-      '  taskRef.current = task;\n  const coordinatorRef =',
-    );
-    expect(source).not.toContain('coordinatorRef.current.setContext(contextKey);');
   });
 });

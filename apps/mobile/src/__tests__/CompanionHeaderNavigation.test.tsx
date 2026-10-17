@@ -11,6 +11,8 @@ import type { RemoteResource } from '@cindy/device-link';
 const h = vi.hoisted(() => ({
   todos: {} as any, profile: {} as any, dismiss: vi.fn(), chooseMode: vi.fn(), screenOptions: [] as Array<Record<string, unknown>>,
   auth: { accountGeneration: 1, user: null },
+  cloud: { supported: false, actors: [] as Array<{ kind: string; externalId: string; homeDeviceId: string | null }> },
+  homeSheet: {} as any,
 }));
 vi.mock('react-native', () => ({
   Keyboard: { dismiss: h.dismiss },
@@ -34,6 +36,8 @@ vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: ({ ac
 vi.mock('@/session/CompanionTodos', () => ({ CompanionTodos: (props: unknown) => { h.todos = props; return null; } }));
 vi.mock('@/session/CompanionProfileSheet', () => ({ CompanionProfileSheet: (props: unknown) => { h.profile = props; return null; } }));
 vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () => ({ chooseMode: h.chooseMode }) }));
+vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => h.cloud }));
+vi.mock('@/session/CloudHomeSwitchSheet', () => ({ CloudHomeSwitchSheet: (props: unknown) => { h.homeSheet = props; return null; } }));
 import { CompanionHeader } from '@/session/CompanionHeader';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root; let host: HTMLDivElement;
@@ -41,6 +45,7 @@ const resource = { ref: { kind: 'bot', collectionId: 'bots', id: 'bot' }, displa
 const button = (id: string) => host.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!;
 beforeEach(() => {
   vi.clearAllMocks(); h.auth.accountGeneration = 1; h.profile = {}; h.todos = {}; h.screenOptions = [];
+  h.cloud = { supported: false, actors: [] }; h.homeSheet = {};
   host = document.createElement('div'); root = createRoot(host);
 });
 afterEach(() => act(() => root.unmount()));
@@ -190,3 +195,25 @@ it('only opens Todo for an advertised host capability after entry validation and
   await act(async () => root.render(<CompanionHeader {...props} resource={withTodos} />));
   expect(h.todos.visible).toBe(false);
 });
+
+it('names the main computer of a cloud companion and lets the profile change it', async () => {
+  h.cloud = { supported: true, actors: [{ kind: 'bot', externalId: 'bot', homeDeviceId: 'pc' }] };
+  await act(async () => root.render(<CompanionHeader resource={resource} deviceId="pc" deviceName="Office iMac" online onBack={() => {}} onSearch={() => {}} />));
+  expect(host.textContent).toContain('devices.cloudCompanion.runsOn');
+  await act(async () => button('companion.settings').click());
+  await act(async () => h.profile.onOpenHome());
+  // Opens once the profile sheet has closed.
+  expect(h.homeSheet.visible).toBe(false);
+  await act(async () => h.profile.onClosed());
+  expect(h.homeSheet.visible).toBe(true);
+  expect(h.homeSheet).toMatchObject({ botId: 'bot', homeDeviceId: 'pc', homeName: 'Office iMac' });
+  await act(async () => h.homeSheet.onMoved({ deviceId: 'mac', name: 'Mac', online: true }));
+  expect(h.chooseMode).toHaveBeenCalledWith('teammates');
+});
+
+it('offers no computer change for a companion without a known main computer', async () => {
+  await act(async () => root.render(<CompanionHeader resource={resource} deviceId="pc" deviceName="PC" online onBack={() => {}} onSearch={() => {}} />));
+  await act(async () => button('companion.settings').click());
+  expect(h.profile.onOpenHome).toBeUndefined();
+});
+
