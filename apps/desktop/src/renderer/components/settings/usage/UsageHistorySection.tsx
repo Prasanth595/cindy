@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 /**
  * UsageHistorySection — 设置 → 用量历史 (issue #2785)。
  *
@@ -290,12 +291,7 @@ export function UsageHistorySection(): React.JSX.Element {
           <Spinner size={20} />
         </div>
       ) : loadFailed ? (
-        <div
-          className="flex min-h-[176px] items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 text-center text-13 text-[var(--error-fg)]"
-          role="alert"
-        >
-          {t('usageHistory.loadFailed')}
-        </div>
+        <ErrorNotice role="alert" message={t('usageHistory.loadFailed')} />
       ) : empty ? (
         <div className="rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-8 text-center text-13 text-[var(--text-tertiary)]">
           {t('usageHistory.empty')}

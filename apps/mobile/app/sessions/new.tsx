@@ -1,4 +1,5 @@
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
+import { ErrorNotice } from '@/components/ErrorNotice';
 import { useNewSessionDefaultSelection } from '@/session/useNewSessionDefaultSelection';
 import { parseGoalCommand } from '@cindy/maker-shared/goal-command';
 import { mergeMobileGoalCommand, parseMobileDesktopCommand } from '@/session/desktopSlashCommands';
@@ -6313,7 +6314,7 @@ export default function NewRemoteSessionScreen() {
                     {newSessionText('showHiddenDirectories')}
                   </Text>
                 </Pressable>
-                {browseError ? <Text style={styles.errorText}>{browseError}</Text> : null}
+                {browseError ? <ErrorNotice message={browseError} /> : null}
                 <FlatList
                   style={styles.browseList}
                   contentContainerStyle={styles.browseListContent}
@@ -6338,7 +6339,7 @@ export default function NewRemoteSessionScreen() {
             ) : null}
 
             {error ? (
-              <Text style={styles.errorText}>{describeAgentAuthError(error) ?? error}</Text>
+              <ErrorNotice message={describeAgentAuthError(error) ?? error} />
             ) : null}
             {/* 发送前鉴权提示:选中 agent 在被控端无已连接供应商时提前告知;
                 error 已展示(含被门禁拦截的同款文案)时不重复出现。 */}

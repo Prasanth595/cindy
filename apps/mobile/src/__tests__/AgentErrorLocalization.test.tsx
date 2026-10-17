@@ -23,7 +23,7 @@ vi.mock('react-native', async () => {
     StyleSheet: { create: (s: unknown) => s, hairlineWidth: 1 } };
 });
 vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text }));
-vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null }));
+vi.mock('lucide-react-native', () => ({ Pause: () => null, Play: () => null, CircleAlert: () => null, Split: () => null, X: () => null, ChevronRight: () => null, ChevronDown: () => null }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
   return { ...tokens, useTheme: () => ({ colors: tokens.lightColors }),
@@ -48,12 +48,13 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
     await i18n.changeLanguage(locale);
     const recover = vi.fn();
     const retry = vi.fn();
+    const dismiss = vi.fn();
     const error = 'stream disconnected before completion: stream closed before response.completed';
     const renderBanner = (busy: boolean) => surface === 'live'
       ? <InlineQueueSection projection={{ error, errorRetryText: 'original' } as InputProjection} busy={busy}
-          onRecoverHistory={recover} onRetryError={retry} onClearError={vi.fn()} onResume={vi.fn()} />
+          onRecoverHistory={recover} onRetryError={retry} onClearError={dismiss} onResume={vi.fn()} />
       : <SessionTailBanner state={{ kind: 'error-tail', text: error, rawError: error, clientId: 'e', continueKind: 'error', retryable: true }}
-          busy={busy} onRecoverHistory={recover} onContinue={retry} onDismiss={vi.fn()} />;
+          busy={busy} onRecoverHistory={recover} onContinue={retry} onDismiss={dismiss} />;
     await act(async () => root.render(renderBanner(false)));
     expect(host.textContent).toContain(i18n.t('session.tail.readableHistoryRecoveryDescription'));
     expect(recover).not.toHaveBeenCalled();
@@ -62,9 +63,17 @@ describe.each(SUPPORTED_LOCALES)('mobile errors in %s', locale => {
     expect(retry).not.toHaveBeenCalled();
     await act(async () => root.render(renderBanner(true)));
     const button = host.querySelector<HTMLButtonElement>('[data-testid="session.readableHistoryRecovery"]')!;
+    const closeId = surface === 'live' ? 'queue.inline.clearErrorButton' : 'session.tailBanner.dismiss';
+    const close = host.querySelector<HTMLButtonElement>(`[data-testid="${closeId}"]`)!;
+    expect(close.disabled).toBe(true);
+    await act(async () => close.click());
+    expect(dismiss).not.toHaveBeenCalled();
     expect(button.disabled).toBe(true);
     await act(async () => button.click());
     expect(recover).toHaveBeenCalledOnce();
+    await act(async () => root.render(renderBanner(false)));
+    await act(async () => host.querySelector<HTMLButtonElement>(`[data-testid="${closeId}"]`)!.click());
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 
   it.each(['live', 'tail'] as const)('localizes %s, preserves retry and switches locale without another request', async surface => {

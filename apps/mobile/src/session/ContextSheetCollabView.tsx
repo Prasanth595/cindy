@@ -24,6 +24,7 @@ import { Text } from '@/components/AppText';
 import {
   ContextSheetChoiceRow,
   ContextSheetGroup,
+  ContextSheetError,
   ContextSheetNote,
   ContextSheetRow,
   ContextSheetSelectRow,
@@ -196,7 +197,7 @@ export function OrcaWorkerFormView({
         </ContextSheetGroup>
       ) : null}
       {executionDevicesError ? <ContextSheetGroup label={t('session.collab.executionDeviceLabel')}>
-        <ContextSheetNote text={executionDevicesError} tone="error" />
+        <ContextSheetError text={executionDevicesError} />
       </ContextSheetGroup> : null}
       <ContextSheetGroup label={t('session.collab.agentLabel')}>
         <ContextSheetChoiceRow
@@ -254,7 +255,7 @@ export function OrcaWorkerFormView({
       {notice || error ? (
         <ContextSheetGroup label="">
           {notice ? <ContextSheetNote text={notice} /> : null}
-          {error ? <ContextSheetNote text={error} tone="error" testID="collab.formError" /> : null}
+          {error ? <ContextSheetError text={error} testID="collab.formError" /> : null}
         </ContextSheetGroup>
       ) : null}
     </>
@@ -372,7 +373,7 @@ export function OrcaTeamPanelView({
           })}
           />
         ) : null}
-        {error ? <ContextSheetNote text={error} tone="error" testID="collab.teamError" /> : null}
+        {error ? <ContextSheetError text={error} testID="collab.teamError" /> : null}
       </ContextSheetGroup>
     </>
   );

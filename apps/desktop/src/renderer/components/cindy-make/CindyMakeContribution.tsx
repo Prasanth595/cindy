@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useTranslation } from 'react-i18next';
@@ -232,9 +233,7 @@ export function CindyMakeContributionDialog({
           )}
           {loadError && (
             <div className="mt-4 flex flex-col gap-4">
-              <p role="alert" className="text-13 text-[var(--error-fg)]">
-                {t(`${key}.errors.${loadError}`)}
-              </p>
+              <ErrorNotice role="alert" message={t(`${key}.errors.${loadError}`)} />
               <div className="flex justify-end">
                 <Dialog.Close asChild>
                   <Button type="button" variant="secondary" size="lg" palette="confirmation">
@@ -366,9 +365,7 @@ export function CindyMakeContributionDialog({
                 <span>{t(`${key}.dialog.dco`, { name: name.trim(), email: email.trim() })}</span>
               </label>
               {submitError && (
-                <p role="alert" className="text-13 text-[var(--error-fg)]">
-                  {t(`${key}.errors.${submitError}`)}
-                </p>
+                <ErrorNotice role="alert" message={t(`${key}.errors.${submitError}`)} />
               )}
               <div className="flex flex-wrap justify-end gap-2">
                 <Dialog.Close asChild>

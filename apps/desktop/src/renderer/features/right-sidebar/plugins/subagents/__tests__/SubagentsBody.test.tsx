@@ -574,7 +574,11 @@ describe('SubagentsBody', () => {
     expect(container.querySelector('[data-subagent-error-kind]')?.getAttribute('data-subagent-error-kind'))
       .toBe(kind);
     expect(screen.queryByTestId('session-assistant-message')).toBeNull();
-    expect(screen.getByText(rawError).closest('details')?.hasAttribute('open')).toBe(false);
+    expect(screen.queryByText(rawError)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.networkShowRaw' }));
+    expect(screen.getByText(rawError)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.networkHideRaw' }));
+    expect(screen.queryByText(rawError)).toBeNull();
   });
 
   it('protects a completed child result and offers follow-up instead of steer', async () => {

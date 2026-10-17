@@ -5304,7 +5304,6 @@ function CCAgentSessionContent({
                   onContinue={handleErrorTailContinue}
                   onDismiss={handleErrorTailDismiss}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               ) : (
                 <ErrorTailErrorBanner
@@ -5333,7 +5332,6 @@ function CCAgentSessionContent({
                   }
                   forkStripEncryptedRunning={forkStripEncryptedRunning}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               ))}
 
@@ -5352,7 +5350,6 @@ function CCAgentSessionContent({
                   onContinue={handleSessionInterruptContinue}
                   onDismiss={handleSessionInterruptDismiss}
                   style={{ width: inputWidth }}
-                  className="py-1"
                 />
               )}
 
@@ -5411,7 +5408,6 @@ function CCAgentSessionContent({
                 }
                 forkStripEncryptedRunning={forkStripEncryptedRunning}
                 style={{ width: inputWidth }}
-                className="py-1"
               />
             )}
 
@@ -5422,7 +5418,6 @@ function CCAgentSessionContent({
               <WorktreeRestoreBanner
                 sessionId={sessionId}
                 style={{ width: inputWidth }}
-                className="py-1"
               />
             )}
 

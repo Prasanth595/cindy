@@ -1,6 +1,6 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Button } from '@/components/ui/button';
 import {
-  CircleAlert,
   Folder,
   FolderPlus,
   Globe,
@@ -488,34 +488,26 @@ export function FolderPickerPopover({
                 </div>
               ) : deviceScope?.status === 'error' ? (
                 <>
-                  <div
+                  <ErrorNotice
                     role="alert"
-                    className="mx-1 flex items-start gap-2 rounded-[8px] border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2"
-                  >
-                    <CircleAlert size={14} className="mt-0.5 shrink-0 text-[var(--error-fg)]" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs leading-[1.45] text-[var(--error-fg)]">
-                        {t('newChat.folderPicker.remoteProjectsLoadFailed', {
-                          device: deviceScope.deviceName,
-                        })}
-                      </p>
-                      {deviceScope.retry && (
+                    className="mx-1"
+                    message={t('newChat.folderPicker.remoteProjectsLoadFailed', {
+                      device: deviceScope.deviceName,
+                    })}
+                    actions={
+                      deviceScope.retry && (
                         <Button
-                          variant="secondary"
-                          size="xs"
+                          size="sm"
                           compact
-                          tone="danger"
-                          type="button"
                           disabled={selectionPending}
                           onClick={deviceScope.retry}
-                          className="mt-1"
                         >
                           <RefreshCw size={12} />
                           {t('newChat.folderPicker.retryRemoteProjects')}
                         </Button>
-                      )}
-                    </div>
-                  </div>
+                      )
+                    }
+                  />
                   {visibleProjectOptions.map(renderProject)}
                 </>
               ) : visibleProjectOptions.length > 0 ? (
