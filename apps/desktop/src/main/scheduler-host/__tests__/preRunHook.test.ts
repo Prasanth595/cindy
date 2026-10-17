@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setMainLocale } from '../../i18n';
 
 vi.mock('electron', () => ({ app: { getPreferredSystemLanguages: () => ['en'] } }));
@@ -381,6 +382,108 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
     });
   }
 
+  it.each([
+    ['cli', 'exit0'], ['cli', 'exit2'], ['cli', 'throw'],
+    ['cli', 'normal0'], ['cli', 'normal2'],
+    ['cli-equals', 'exit0'], ['cli-equals', 'normal0'],
+    ['env', 'exit0'], ['env', 'normal0'], ['cjs-reset', 'exit0'],
+    ['cjs-reset', 'normal0'], ['package', 'normal0'], ['multiple', 'normal0'],
+  ] as const)('attests after %s ESM preloads (%s)', async (kind, outcome) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-esm-preload-'));
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const normal = outcome.startsWith('normal');
+    const exitCode = outcome.endsWith('2') ? 2 : 0;
+    try {
+      writeFileSync(path.join(dir, 'user preload.mjs'), [
+        "import { appendFileSync } from 'node:fs';",
+        "appendFileSync('preload.txt', 'user;'); console.log('CINDY_PRECHECK_OK');",
+        kind === 'multiple' ? "if (await (await import('node:fs/promises')).readFile('first.txt', 'utf8') !== 'first;') throw new Error('preload order');" : '',
+        normal ? '' : outcome === 'throw' ? "throw new Error('user-esm-preload-throw');" : 'process.exit(' + exitCode + ');',
+      ].join('\n'));
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        "writeFileSync('gate.json', JSON.stringify({ argv: process.argv.slice(2), execArgv: process.execArgv }));",
+        "console.log('gate-executed'); process.exit(" + exitCode + ');',
+      ].join('\n'));
+      let flags = kind === 'cli-equals' ? '"--import=./user preload.mjs"' : '--import "./user preload.mjs"';
+      if (kind === 'package') {
+        const packageDir = path.join(dir, 'node_modules', 'receipt-preload-fixture');
+        mkdirSync(packageDir, { recursive: true });
+        writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+          type: 'module', exports: { 'receipt-fixture': './chosen.mjs', import: './wrong.mjs' },
+        }));
+        writeFileSync(path.join(packageDir, 'chosen.mjs'), "import '../../user preload.mjs';");
+        writeFileSync(path.join(packageDir, 'wrong.mjs'), "throw new Error('wrong package condition');");
+        flags = '--conditions=receipt-fixture --import receipt-preload-fixture';
+      } else if (kind === 'multiple') {
+        writeFileSync(path.join(dir, 'first.mjs'), "import { writeFileSync } from 'node:fs'; await new Promise(resolve => setTimeout(resolve, 10)); writeFileSync('first.txt', 'first;');");
+        flags = '--import=./first.mjs ' + flags;
+      } else if (kind === 'env') {
+        process.env.NODE_OPTIONS = '--import=' + JSON.stringify(pathToFileURL(path.join(realpathSync(dir), 'user preload.mjs')).href)
+          + (originalNodeOptions ? ' ' + originalNodeOptions : '');
+        flags = '';
+      } else if (kind === 'cjs-reset') {
+        writeFileSync(path.join(dir, 'reset.cjs'), 'process.execArgv.length = 0;');
+        flags = '-r ./reset.cjs ' + flags;
+      }
+      const result = await executePreRunHook({
+        command: 'xdt-node ' + flags + ' gate.mjs "--import=business-argument" "two words"',
+        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+      });
+      expect(readFileSync(path.join(dir, 'preload.txt'), 'utf8')).toBe('user;');
+      expect(result.exitCode).toBe(outcome === 'throw' ? 1 : exitCode);
+      if (normal) {
+        const expectedExecArgv = kind === 'env' || kind === 'cjs-reset' ? []
+          : kind === 'cli-equals' ? ['--import=./user preload.mjs']
+            : kind === 'package' ? ['--conditions=receipt-fixture', '--import', 'receipt-preload-fixture']
+              : kind === 'multiple' ? ['--import=./first.mjs', '--import', './user preload.mjs']
+                : ['--import', './user preload.mjs'];
+        expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+        expect(result.status).toBe(exitCode === 0 ? 'passed' : 'skipped');
+        expect(result.checkSucceeded).toBe(true);
+        expect(result.stdout).toContain('gate-executed');
+        expect(result.stderr).toBe('');
+        expect(JSON.parse(readFileSync(path.join(dir, 'gate.json'), 'utf8'))).toEqual({
+          argv: ['--import=business-argument', 'two words'],
+          execArgv: expectedExecArgv,
+        });
+      } else {
+        expect(result.status).toBe('failed');
+        expect(result.decision).toBe('block');
+        expect(result.checkSucceeded).toBeUndefined();
+        expect(existsSync(path.join(dir, 'gate.json'))).toBe(false);
+        expect(result.error).toBe('Cindy did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.');
+        if (outcome === 'throw') expect(result.stderr).toContain('user-esm-preload-throw');
+      }
+    } finally {
+      if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalNodeOptions;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit disabling of the preload resolver fail-closed', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-no-preload-resolver-'));
+    try {
+      writeFileSync(path.join(dir, 'preload.mjs'), "import { writeFileSync } from 'node:fs'; writeFileSync('preload.txt', 'ran');");
+      writeFileSync(path.join(dir, 'gate.mjs'), "import { writeFileSync } from 'node:fs'; writeFileSync('gate.txt', 'ran');");
+      const result = await executePreRunHook({
+        command: 'xdt-node --no-experimental-import-meta-resolve --import ./preload.mjs gate.mjs',
+        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+      });
+      expect(result.status).toBe('failed');
+      expect(result.decision).toBe('block');
+      expect(result.exitCode).toBe(1);
+      expect(result.checkSucceeded).toBeUndefined();
+      expect(result.error).toBe('Cindy did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.');
+      expect(result.stderr).toContain('ERR_UNSUPPORTED_RESOLVE_REQUEST');
+      expect(existsSync(path.join(dir, 'preload.txt'))).toBe(false);
+      expect(existsSync(path.join(dir, 'gate.txt'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each([0, 2, 'preload-exit'] as const)('isolates startup proof before a user CJS preload forks (outcome %s)', async (exitCode) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-cjs-fork-'));
     const originalNodeOptions = process.env.NODE_OPTIONS;
@@ -596,8 +699,7 @@ describe('resolveHookCommand(xdt-node 前缀解析)', () => {
       expect(result.decision).toBe('block');
       expect(result.exitCode).toBe(exitCode);
       expect(result.checkSucceeded).toBeUndefined();
-      expect(result.error).toMatch(/Node runtime.*did not start/i);
-      expect(result.error).toContain('pre-run check was not executed');
+      expect(result.error).toBe('Cindy did not receive Node startup verification. This run was blocked. Check the Node command and its preload configuration.');
     } finally {
       process.execPath = originalExecPath;
       rmSync(dir, { recursive: true, force: true });

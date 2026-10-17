@@ -77,6 +77,12 @@ const XDT_NODE_PREFIX = /^xdt-node\s+/;
 // Darwin has 104 bytes in sun_path, including its terminating NUL.
 const UNIX_SOCKET_PATH_MAX_BYTES = 103;
 
+// Supported since Node 20.6: resolve CLI preloads with Node's native cwd /
+// package conditions, rather than approximating ESM resolution with require.
+// A user's later --no-experimental-import-meta-resolve retains precedence:
+// unsupported preload resolution fails closed instead of overriding that flag.
+const PRELOAD_RESOLVE_FLAG = '--experimental-import-meta-resolve';
+
 /** 一轮独占的启动回执。只证明 Node 启动，不代替脚本最终退出结果。 */
 interface NodeRuntimeReceipt {
   importArgument: string;
@@ -136,18 +142,32 @@ async function createNodeRuntimeReceipt(): Promise<NodeRuntimeReceipt> {
   const bootstrap = Buffer.from([
     "import { createConnection } from 'node:net';",
     "import { isMainThread } from 'node:worker_threads';",
+    "import { createRequire } from 'node:module';",
+    "import { pathToFileURL } from 'node:url';",
+    "import { sep } from 'node:path';",
     "const index = process.execArgv.indexOf('--import=' + import.meta.url);",
     'if (index !== -1) process.execArgv.splice(index, 1);',
     // Workers can inherit Node's native argument snapshot despite the early
     // CJS isolation. Only the root runtime sends this run's startup proof.
-    'if (isMainThread) await new Promise((resolve, reject) => {',
+    'if (!isMainThread) {',
+    '  const flagIndex = process.execArgv.indexOf(' + JSON.stringify(PRELOAD_RESOLVE_FLAG) + ');',
+    '  if (flagIndex !== -1) process.execArgv.splice(flagIndex, 1);',
+    '} else {',
+    // The earliest CJS preload captured Node's parsed CLI imports before
+    // user CJS preloads could change execArgv. Import with the same cwd parent
+    // as Node's native preload loop; its later imports reuse the module cache.
+    '  const preloads = createRequire(' + JSON.stringify(bootstrapPath) + ')(' + JSON.stringify(bootstrapPath) + ');',
+    '  const parent = pathToFileURL(process.cwd() + sep).href;',
+    '  for (const specifier of preloads) await import(import.meta.resolve(specifier, parent));',
+    '  await new Promise((resolve, reject) => {',
     '  const socket = createConnection(' + JSON.stringify(endpoint) + ');',
     "  let reply = ''; socket.setEncoding('utf8');",
     '  socket.on(\'connect\', () => socket.end(' + JSON.stringify(value) + '));',
     "  socket.on('data', chunk => { reply += chunk; if (reply.length > 2) socket.destroy(new Error('Invalid startup receipt')); });",
     "  socket.on('error', reject);",
     "  socket.on('end', () => reply === 'ok' ? resolve() : reject(new Error('Missing startup receipt')));",
-    '});',
+    '  });',
+    '}',
   ].join('\n')).toString('base64');
   const importArgument = '--import=data:text/javascript;base64,' + bootstrap;
   // NODE_OPTIONS requires run before command-line -r, and in their listed
@@ -172,6 +192,15 @@ async function createNodeRuntimeReceipt(): Promise<NodeRuntimeReceipt> {
     writeFileSync(bootstrapPath, [
       'const index = process.execArgv.indexOf(' + JSON.stringify(importArgument) + ');',
       'if (index !== -1) process.execArgv.splice(index, 1);',
+      'const flagIndex = process.execArgv.indexOf(' + JSON.stringify(PRELOAD_RESOLVE_FLAG) + ');',
+      'if (flagIndex !== -1) process.execArgv.splice(flagIndex, 1);',
+      'const preloads = [];',
+      'for (let i = 0; i < process.execArgv.length; i++) {',
+      '  const arg = process.execArgv[i];',
+      "  if (arg === '--import') preloads.push(process.execArgv[++i]);",
+      "  else if (arg.startsWith('--import=')) preloads.push(arg.slice('--import='.length));",
+      '}',
+      'module.exports = Object.freeze(preloads);',
       'const prefix = ' + JSON.stringify(optionsPrefix) + ';',
       "if (process.env.NODE_OPTIONS?.startsWith(prefix)) {",
       '  process.env.NODE_OPTIONS = process.env.NODE_OPTIONS.slice(prefix.length);',
@@ -197,7 +226,7 @@ export function resolveHookCommand(command: string, receipt?: NodeRuntimeReceipt
 } {
   if (XDT_NODE_PREFIX.test(command.trim())) {
     const rest = command.trim().replace(XDT_NODE_PREFIX, '');
-    const preload = receipt ? ' "' + receipt.importArgument + '"' : '';
+    const preload = receipt ? ' ' + PRELOAD_RESOLVE_FLAG + ' "' + receipt.importArgument + '"' : '';
     return {
       command: `"${process.execPath}"${preload} ${rest}`,
       extraEnv: {
