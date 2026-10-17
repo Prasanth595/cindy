@@ -13,8 +13,13 @@
  *     可控文本注入主人轮次,注入可借主人身份把内容发到别的群);
  *   - 置顶 / 取消置顶 / 撤回需要主人触发;
  *   - `call_api` 默认把 chat 钉在当前对话;非主人触发只能读取、在本对话里发消息 / 回复 / 表情 /
- *     上传;鉴权、应用管理、租户管理类接口任何人都不开放。
+ *     上传;鉴权、应用管理、租户管理类接口任何人都不开放;
+ *   - `send_file` 在非主人触发的轮次只能发当前任务工作目录内的文件(按 realpath 判定,
+ *     与 cindy_telegram_bot 的 send_media 同一裁决)。
  */
+
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -126,6 +131,26 @@ async function resolveMessageId(
   return { ok: true, messageId };
 }
 
+/** candidate 是 root 本身或在 root 之内(两者都应是 realpath)。 */
+function withinDir(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * 非主人触发的轮次只能发当前任务工作目录内的文件:两端都取 realpath,工作目录里指向外面的
+ * symlink 也拦下。返回校验过的真实路径(出站用它,避免校验后再被换指向),不允许时返回 null。
+ */
+async function realPathInsideWorkingDir(workingDir: string | undefined, absPath: string): Promise<string | null> {
+  if (!workingDir) return null;
+  try {
+    const [rootReal, fileReal] = await Promise.all([fs.realpath(workingDir), fs.realpath(absPath)]);
+    return withinDir(rootReal, fileReal) ? fileReal : null;
+  } catch {
+    return null;
+  }
+}
+
 function readString(obj: unknown, key: string): string | undefined {
   if (!obj || typeof obj !== 'object') return undefined;
   const v = (obj as Record<string, unknown>)[key];
@@ -134,8 +159,10 @@ function readString(obj: unknown, key: string): string | undefined {
 
 /**
  * call_api 的目标钉死:除主人私聊轮次外,path / params / data 里出现的 chat_id 都必须是当前
- * chat;`messages` 创建接口缺 receive_id 时自动补成当前 chat,指定别的 receive_id(含按
- * open_id 私发给别人)一律拒绝;带 message_id 的路径按 resolveMessageId 校验归属。
+ * chat;消息列表等按 container 选对话的接口,container_id_type 只能是 chat、container_id 必须是
+ * 当前 chat(否则可借 `GET messages?container_id=<别的群>` 读别的群历史);`messages` 创建接口
+ * 缺 receive_id 时自动补成当前 chat,指定别的 receive_id(含按 open_id 私发给别人)一律拒绝;
+ * 带 message_id 的路径按 resolveMessageId 校验归属。
  */
 async function pinCallApiTarget(
   scope: FeishuBotLaneScope,
@@ -152,6 +179,11 @@ async function pinCallApiTarget(
     const chatId = readString(source, 'chat_id');
     if (chatId && chatId !== scope.chatId) {
       return { ok: false, result: denied('chat_id 必须是本轮所在的对话; 只有主人私聊触发的轮次可以指定别的 chat_id。') };
+    }
+    const containerIdType = readString(source, 'container_id_type');
+    const containerId = readString(source, 'container_id');
+    if ((containerIdType && containerIdType !== 'chat') || (containerId && containerId !== scope.chatId)) {
+      return { ok: false, result: denied('container_id 必须是本轮所在的对话(container_id_type=chat); 只有主人私聊触发的轮次可以读别的对话。') };
     }
   }
   let nextParams = params;
@@ -240,16 +272,26 @@ export function registerFeishuLaneTools(
 
   server.tool(
     'send_file',
-    '把本机一个文件(图片按图片消息、其它按文件消息)发到当前飞书 / Lark 对话。目标由本轮作用域钉死。',
+    '把本机一个文件(图片按图片消息、其它按文件消息)发到当前飞书 / Lark 对话。目标由本轮作用域钉死; 非主人触发的轮次只能发当前任务工作目录内的文件。',
     {
       path: z.string().min(1).describe('本机文件绝对路径。'),
       display_name: z.string().trim().min(1).max(255).optional().describe('展示文件名; 缺省用原文件名。'),
     },
-    async ({ path, display_name }) => {
+    async ({ path: absPath, display_name }) => {
       const scope = getLaneScope();
       if (!scope) return noScope();
+      if (!path.isAbsolute(absPath)) {
+        return result({ ok: false, errorCode: 'PATH_NOT_ABSOLUTE', error: 'path 必须是绝对路径' }, true);
+      }
+      let sendPath = absPath;
+      // 非主人触发的轮次只能发本任务工作目录里的文件: 群成员不能借 bot 把本机任意文件发进群。
+      if (!scope.requesterIsOwner) {
+        const real = await realPathInsideWorkingDir(scope.workingDir, absPath);
+        if (!real) return denied('非主人触发的轮次只能发送当前任务工作目录内的文件。');
+        sendPath = real;
+      }
       try {
-        const sent = await scope.im.sendFile(scope.laneUserId, path, display_name);
+        const sent = await scope.im.sendFile(scope.laneUserId, sendPath, display_name);
         if (!sent.ok) {
           return result({ ok: false, errorCode: sent.reason ?? 'SEND_FAILED', error: sent.reason ?? 'unknown' }, true);
         }

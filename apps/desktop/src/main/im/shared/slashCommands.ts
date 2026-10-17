@@ -43,7 +43,12 @@ import {
   renderTextPermissionModeResult,
   resolvePermissionMode,
 } from './permissionModeControl';
-import { isBotCommandAvailableOnChannel, isCompanionManagedCommand, tokenizeBotCommand } from './botCommands';
+import {
+  COMPANION_MANAGED_COMMAND_FALLBACK,
+  isBotCommandAvailableOnChannel,
+  isCompanionManagedCommand,
+  tokenizeBotCommand,
+} from './botCommands';
 
 /** Quick text-only check; treat anything starting with '/' (no spaces before) as a command. */
 export function looksLikeSlashCommand(text: string): boolean {
@@ -215,13 +220,9 @@ export function createSlashHandlers(
     }
 
     // 连接已交给伙伴: 模型 / 权限 / 工作目录归伙伴设置管, 不在渠道里改伙伴任务的配置
-    // (伙伴的 Home 工作区与模型链是伙伴的正本)。
-    if (
-      isCompanionManagedCommand(cmd) &&
-      ui.slash.companionManagedCommand &&
-      turnRunner.companionBotIdFor?.(ctx.botContextId)
-    ) {
-      await safeSendText(ctx, ui.slash.companionManagedCommand);
+    // (伙伴的 Home 工作区与模型链是伙伴的正本)。每个渠道都拦, 不看文案包有没有这条提示。
+    if (isCompanionManagedCommand(cmd) && turnRunner.companionBotIdFor?.(ctx.botContextId)) {
+      await safeSendText(ctx, ui.slash.companionManagedCommand ?? COMPANION_MANAGED_COMMAND_FALLBACK);
       return true;
     }
 
@@ -602,7 +603,7 @@ export function createSlashHandlers(
           : null;
         if (companionBound && !companionRow) {
           // 伙伴暂停 / 任务还没建起来: 没有一份能如实报的配置, 指回伙伴设置。
-          await safeSendText(ctx, ui.slash.companionManagedCommand ?? ui.slash.unknownCommand(cmd));
+          await safeSendText(ctx, ui.slash.companionManagedCommand ?? COMPANION_MANAGED_COMMAND_FALLBACK);
           return true;
         }
         // 只读查询必须走只读路径: resolveRouteTarget 没有现成会话时会**建**一条,

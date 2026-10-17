@@ -2,6 +2,10 @@
  * cindy_feishu_bot 轮次内直通工具:作用域 fail closed、目标钉死、主人 / 成员分档、
  * call_api 的接口族与目标钳制、Open API 错误形态。
  */
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -193,6 +197,80 @@ describe('cindy_feishu_bot 轮次内直通工具', () => {
     const dm = await harness(() => scopeOf(im, { laneUserId: 'ou_owner', chatId: 'oc_p2p', chatKind: 'direct' }));
     expect((await dm.call('call_api', { method: 'GET', path: '/open-apis/im/v1/chats/oc_other' })).payload.ok).toBe(true);
     await dm.close();
+  });
+
+  // 回归(PR #6289 review): 消息列表接口按 container_id 选对话, 之前只钉 chat_id, 群成员触发的
+  // 轮次能借 `GET messages?container_id=<别的群>` 读别的群历史。
+  it('call_api: container_id / container_id_type 也钉在当前 chat; 主人私聊轮次不受限', async () => {
+    const im = fakeTransport();
+    const guest = await harness(() => scopeOf(im, { requesterIsOwner: false }));
+    for (const params of [
+      { container_id_type: 'chat', container_id: 'oc_other' },
+      { container_id_type: 'thread', container_id: 'omt_x' },
+    ]) {
+      const r = await guest.call('call_api', { method: 'GET', path: '/open-apis/im/v1/messages', params });
+      expect(r.payload.errorCode).toBe('PERMISSION_DENIED');
+    }
+    expect((await guest.call('call_api', {
+      method: 'POST', path: '/open-apis/im/v1/messages', data: { container_id: 'oc_other', msg_type: 'text', content: '{}' },
+    })).payload.errorCode).toBe('PERMISSION_DENIED');
+    expect(im.callApi).not.toHaveBeenCalled();
+    const same = await guest.call('call_api', {
+      method: 'GET', path: '/open-apis/im/v1/messages', params: { container_id_type: 'chat', container_id: 'oc_here' },
+    });
+    expect(same.payload.ok).toBe(true);
+    expect(im.callApi).toHaveBeenLastCalledWith(expect.objectContaining({
+      method: 'GET',
+      path: '/open-apis/im/v1/messages',
+      params: expect.objectContaining({ container_id_type: 'chat', container_id: 'oc_here' }),
+    }));
+    await guest.close();
+
+    const dm = await harness(() => scopeOf(im, { laneUserId: 'ou_owner', chatId: 'oc_p2p', chatKind: 'direct' }));
+    expect((await dm.call('call_api', {
+      method: 'GET', path: '/open-apis/im/v1/messages', params: { container_id_type: 'chat', container_id: 'oc_other' },
+    })).payload.ok).toBe(true);
+    await dm.close();
+  });
+
+  // 回归(PR #6289 review): send_file 之前把任意本机路径交给 transport, 群成员可借 bot 把
+  // ~/.ssh 之类的文件发进群; 现与 Telegram send_media 一致, 非主人只能发工作目录内(按 realpath)的文件。
+  it('send_file: 非主人只能发工作目录内的真实文件(symlink 越界也拦); 主人不受限', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'feishu-lane-'));
+    try {
+      const workingDir = join(root, 'work');
+      const outsideDir = join(root, 'outside');
+      mkdirSync(workingDir);
+      mkdirSync(outsideDir);
+      const inside = join(workingDir, 'report.txt');
+      const outside = join(outsideDir, 'secret.txt');
+      writeFileSync(inside, 'ok');
+      writeFileSync(outside, 'secret');
+      symlinkSync(outside, join(workingDir, 'link.txt'));
+
+      const im = fakeTransport();
+      const guest = await harness(() => scopeOf(im, { requesterIsOwner: false, workingDir }));
+      for (const p of [outside, join(workingDir, 'link.txt'), join(workingDir, 'missing.txt')]) {
+        expect((await guest.call('send_file', { path: p })).payload.errorCode).toBe('PERMISSION_DENIED');
+      }
+      expect((await guest.call('send_file', { path: 'report.txt' })).payload.errorCode).toBe('PATH_NOT_ABSOLUTE');
+      expect(im.sendFile).not.toHaveBeenCalled();
+      expect((await guest.call('send_file', { path: inside })).payload).toEqual({ ok: true, messageId: 'om_file' });
+      expect(im.sendFile).toHaveBeenLastCalledWith('g/oc_here', realpathSync(inside), undefined);
+      await guest.close();
+
+      // 没有工作目录的非主人轮次一律拒绝。
+      const noDir = await harness(() => scopeOf(im, { requesterIsOwner: false }));
+      expect((await noDir.call('send_file', { path: inside })).payload.errorCode).toBe('PERMISSION_DENIED');
+      await noDir.close();
+
+      const owner = await harness(() => scopeOf(im, { workingDir }));
+      expect((await owner.call('send_file', { path: outside })).payload.ok).toBe(true);
+      expect(im.sendFile).toHaveBeenLastCalledWith('g/oc_here', outside, undefined);
+      await owner.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('Open API 失败以业务码 + msg 回给模型; 其它异常不泄内部细节', async () => {

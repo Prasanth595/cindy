@@ -19,6 +19,7 @@
  * "bot 刚才发了什么"。
  */
 
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -158,6 +159,17 @@ function withinDir(root: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/** workingDir 与 candidate 都取 realpath 后判定包含关系; 任一端解析失败或越界返回 null。 */
+async function realPathWithinDir(workingDir: string | undefined, candidate: string): Promise<string | null> {
+  if (!workingDir) return null;
+  try {
+    const [rootReal, fileReal] = await Promise.all([fs.realpath(workingDir), fs.realpath(candidate)]);
+    return withinDir(rootReal, fileReal) ? fileReal : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 群 / 私聊两种 chat 的只读信息(管理员列表只在群里有)。 */
 async function describeChat(scope: TelegramToolScope) {
   const api = scope.im.getBotApi();
@@ -264,22 +276,23 @@ export function createTelegramBotMcpServer(deps: TelegramBotMcpDeps): McpServer 
       if (reply_to_message_id !== undefined && nativeMessageId(reply_to_message_id, '') === null) {
         return result({ ok: false, errorCode: 'INVALID_MESSAGE_ID' }, true);
       }
+      let uploadPath = absPath;
       if (absPath) {
         if (!path.isAbsolute(absPath)) {
           return result({ ok: false, errorCode: 'PATH_NOT_ABSOLUTE', error: 'path 必须是绝对路径' }, true);
         }
         // 非主人触发的轮次只能发本任务工作目录里的文件: 群成员不能借 bot 把本机任意文件发进群。
+        // 两端都按 realpath 判定(工作目录里指向外面的 symlink 也拦), 出站用校验过的真实路径。
         if (!scope.requesterIsOwner) {
-          const workingDir = deps.getSessionContext().workingDir;
-          if (!workingDir || !withinDir(workingDir, absPath)) {
-            return denied('非主人触发的轮次只能发送当前任务工作目录内的文件。');
-          }
+          const real = await realPathWithinDir(deps.getSessionContext().workingDir, absPath);
+          if (!real) return denied('非主人触发的轮次只能发送当前任务工作目录内的文件。');
+          uploadPath = real;
         }
       }
       try {
         const sent = await scope.im.sendMedia(scope.laneUserId, {
           kind: kind as keyof typeof TELEGRAM_OUTBOUND_MEDIA,
-          ...(absPath ? { absPath } : {}),
+          ...(uploadPath ? { absPath: uploadPath } : {}),
           ...(url ? { url } : {}),
           ...(file_id ? { fileId: file_id } : {}),
           ...(caption ? { caption } : {}),

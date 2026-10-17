@@ -159,6 +159,11 @@ export interface FeishuBotLaneScope {
   triggerMessageId: string;
   /** 伙伴自有连接(true)还是设置页个人 bot(false)。 */
   companion: boolean;
+  /**
+   * 当前任务工作目录(来自本次 tool-call 的 session ctx,不来自模型参数);非主人触发的
+   * 轮次 send_file 只能发这里面的文件,缺省时一律拒绝。
+   */
+  workingDir?: string;
 }
 
 export interface FeishuBotMcpHostDeps {

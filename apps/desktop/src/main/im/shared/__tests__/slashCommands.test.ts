@@ -53,6 +53,8 @@ import type { ChannelIM, TextChannelIM } from '@cindy/im';
 
 import { ui } from '../../feishu/uiText';
 import { ui as telegramUi } from '../../telegram/uiText';
+import { ui as wecomUi } from '../../wecom/uiText';
+import { COMPANION_MANAGED_COMMAND_FALLBACK } from '../botCommands';
 import { createSlashHandlers } from '../slashCommands';
 import type { ImCardBuilders } from '../cardBuilders';
 import type { ImSessionRepo, ImSessionRow } from '../sessionRepo';
@@ -561,6 +563,36 @@ describe('IM slash commands', () => {
       ['/model', '/ctr', '/session'].map((command) => ui.slash.unknownCommand(command)),
     );
     expect(mocks.sendMarkdownText.mock.calls[3]?.[1]).toContain('/permission auto');
+  });
+
+  // 回归(PR #6289 review): 拦截之前要求文案包定义了 companionManagedCommand, 企业微信 / Discord 没定义,
+  // 伙伴连接上主人的 /permission 会直接改伙伴主任务的权限模式。
+  it.each([
+    ['WeCom pack', wecomUi, wecomUi.slash.companionManagedCommand],
+    ['a pack without the hint', { ...wecomUi, slash: { ...wecomUi.slash, companionManagedCommand: undefined } }, COMPANION_MANAGED_COMMAND_FALLBACK],
+  ])('intercepts /permission on a WeCom companion lane (%s)', async (_label, packUi, expected) => {
+    const textIm = { sendMarkdownText: mocks.sendMarkdownText } as unknown as TextChannelIM;
+    const changePermissionMode = vi.fn();
+    const turnRunner = makeTurnRunner({
+      changePermissionMode,
+      companionBotIdFor: vi.fn(() => 'bot-mimi'),
+    } as Partial<ImTurnRunner>);
+    const { handlers } = makeHarness({
+      turnRunner,
+      adapterOverrides: {
+        channel: 'wecom',
+        ui: packUi,
+        im: textIm,
+        output: { kind: 'chunked-text', im: textIm, commitFinal: vi.fn() },
+      },
+    });
+
+    expect(await handlers.handleSlashCommand('/permission bypass', { botContextId: 'bot', userId: 'owner' })).toBe(true);
+
+    expect(expected).toBeTruthy();
+    expect(mocks.sendMarkdownText).toHaveBeenCalledWith('owner', expected);
+    expect(changePermissionMode).not.toHaveBeenCalled();
+    expect(turnRunner.resolveRouteTarget).not.toHaveBeenCalled();
   });
 
   it('requires text-channel Full Access to pass through the shared confirmation flow', async () => {

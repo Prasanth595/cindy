@@ -425,9 +425,26 @@ function describeStatusFailure(status: IMStatus): string {
   return status.kind;
 }
 
-export async function addBotImConnection(
+/**
+ * 添加串行化: 身份查重读的是已落盘的凭证, 而凭证要等记录建好、传输层 setConfig 之后才写;
+ * 两次并发添加(另一个窗口、并发导入)会都通过查重, 给同一个 bot 建出两条连接。整段(含前置
+ * 检查)排进这条链, 失败不断链。只有 addBotImConnection 自己入队, 调用方先单独跑
+ * assertBotImConnectionAddable 不占队列, 不会自锁。
+ */
+let addQueue: Promise<unknown> = Promise.resolve();
+
+export function addBotImConnection(
   input: BotImConnectionAddInput,
   options: BotImConnectionAddOptions = {},
+): Promise<BotImConnectionAddResult> {
+  const run = addQueue.then(() => addBotImConnectionNow(input, options));
+  addQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function addBotImConnectionNow(
+  input: BotImConnectionAddInput,
+  options: BotImConnectionAddOptions,
 ): Promise<BotImConnectionAddResult> {
   await assertBotImConnectionAddable(input, options);
 

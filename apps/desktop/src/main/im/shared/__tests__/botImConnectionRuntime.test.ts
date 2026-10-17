@@ -17,6 +17,9 @@ const h = vi.hoisted(() => ({
   archived: [] as string[],
   archiveCalls: [] as unknown[],
   sent: [] as Array<{ channel: string; payload: unknown }>,
+  ownerKey: 'owner-a',
+  /** 每次 Telegram setConfig 落盘前调用(测并发添加 / 建连期间切账号)。 */
+  beforeTelegramSetConfig: null as (() => Promise<void> | void) | null,
 }));
 
 vi.mock('electron', () => ({
@@ -34,7 +37,10 @@ vi.mock('../../../logger', () => ({
 vi.mock('../../../maker-host/logger-adapter.js', () => ({
   desktopMakerLogger: { child: () => ({ info: vi.fn(), warn: vi.fn() }) },
 }));
-vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a' }));
+vi.mock('../../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => h.ownerKey,
+  isAppSessionBoundaryPending: () => false,
+}));
 // 记录存储(.js 说明符)与凭证存储(无后缀说明符)解析到同一个模块: 一份 mock 同时提供两者。
 vi.mock('../../ownerScopedStorage.js', () => ({
   ownerScopedImUserDataPath: (...parts: string[]) => path.join(h.root, 'owners', 'owner-a', ...parts),
@@ -113,6 +119,7 @@ function fakeTelegram(prefix: string, opts: { connect: boolean }) {
     },
     getConfigState: () => ({ status, ownerUserId: h.secrets.get(`${prefix}telegram-owner-user-id`) ?? null, botUsername: 'mia_bot' }),
     setConfig: vi.fn(async (payload: { token: string; ownerUserId: string }) => {
+      await h.beforeTelegramSetConfig?.();
       h.secrets.set(`${prefix}telegram-bot-token`, payload.token);
       h.secrets.set(`${prefix}telegram-owner-user-id`, payload.ownerUserId);
       if (!opts.connect) {
@@ -278,6 +285,8 @@ describe('bot im connection runtime', () => {
     h.archived = [];
     h.archiveCalls = [];
     h.sent = [];
+    h.ownerKey = 'owner-a';
+    h.beforeTelegramSetConfig = null;
     created.length = 0;
     createdOther.length = 0;
     connectOutcome = true;
@@ -390,6 +399,27 @@ describe('bot im connection runtime', () => {
     ).rejects.toThrow(/TOKEN_IN_USE/);
     expect(created).toHaveLength(0);
     expect(listBotImConnections()).toEqual([]);
+  });
+
+  // 回归(PR #6289 review): 查重读的凭证要到 setConfig 才落盘, 两次并发添加(另一个窗口 / 并发导入)
+  // 之前都能通过查重, 给同一个 bot 建出两条连接。
+  it('serializes concurrent adds of the same bot: the second one sees the first and is refused', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.beforeTelegramSetConfig = () => gate;
+    const input = { botId: 'bot-mia', channel: 'telegram' as const, token: '1:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '4242' };
+    const first = addBotImConnection(input);
+    const second = addBotImConnection(input);
+    await vi.waitFor(() => expect(created[0]?.im.setConfig).toHaveBeenCalled(), { interval: 5 });
+    release();
+    await expect(first).resolves.toMatchObject({ connection: { botId: 'bot-mia', channel: 'telegram' } });
+    await expect(second).rejects.toThrow(/TOKEN_IN_USE/);
+    expect(created).toHaveLength(1);
+    expect(listBotImConnections()).toHaveLength(1);
+    // 失败不断链: 之后的添加照常排队执行。
+    await expect(addBotImConnection({ ...input, token: '2:ABCDEFGHIJKLMNOPQRSTUVWXYZ' })).resolves.toBeTruthy();
   });
 
   it('removes a connection: archives its lanes, disconnects, purges credentials and unregisters', async () => {
@@ -567,6 +597,34 @@ describe('bot im connection runtime', () => {
       expect(personal.telegram.start).toHaveBeenCalledOnce();
       expect(personal.telegram.clear).not.toHaveBeenCalled();
       expect(listBotImConnections()).toEqual([]);
+    });
+
+    // 回归(PR #6289 review): 安全存储按当前数据主人现取, 建连期间切了账号的话, 成功分支会删掉
+    // 新账号的个人 bot 凭证, 失败分支会把旧账号的快照写进新账号。
+    it('leaves the personal bot alone when the account changes while the teammate connection is being added', async () => {
+      for (const connect of [true, false]) {
+        const personal = personalTransports();
+        connectOutcome = connect;
+        h.secrets.clear();
+        h.ownerKey = 'owner-a';
+        h.secrets.set('telegram-bot-token', '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+        h.secrets.set('telegram-owner-user-id', '42');
+        personal.telegram.stop.mockImplementation(async () => {
+          h.secrets.delete('telegram-owner-user-id');
+        });
+        h.beforeTelegramSetConfig = () => {
+          h.ownerKey = 'owner-b';
+        };
+        await expect(adoptPersonalBot({ botId: `bot-${String(connect)}`, channel: 'telegram' })).rejects.toThrow(
+          connect ? /OWNER_SCOPE_CHANGED/ : /CONNECT_FAILED/,
+        );
+        // 没删(成功分支)、也没把快照写回(失败分支): 存储保持 stop 之后的样子。
+        expect(h.secrets.get('telegram-bot-token')).toBe('123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+        expect(h.secrets.has('telegram-owner-user-id')).toBe(false);
+        expect(personal.telegram.clear).not.toHaveBeenCalled();
+        expect(personal.telegram.start).not.toHaveBeenCalled();
+        await stopBotImConnections();
+      }
     });
 
     it('keeps the WeCom owner already recognised by the personal bot', async () => {

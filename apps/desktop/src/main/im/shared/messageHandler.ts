@@ -37,6 +37,7 @@ import { describeInteractionSource } from './interactionSource';
 import { buildImReplyContextBlock } from './replyContext';
 import { captureImContext } from '../../../shared/imMessageSource';
 import { imChannelNoteSourceFromEvent, imMessageOriginFor, type ImChannelNoteSource } from './channelNote';
+import { isLaneTurnScopeChannel, type ChannelToolScope } from './channelToolScope';
 
 /**
  * `!stop` 控制指令 — 半角/全角感叹号、大小写不敏感(issue #867)。
@@ -415,7 +416,26 @@ export function createMessageHandler(
     // 按事件挂 per-turn 权限策略(telegram 群成员触发 → 破坏性调用强确认)。
     const turnPermissionPolicy = adapter.turnPermissionPolicyFor?.(event);
     const groupHistoryAccess = adapter.groupHistoryAccessFor?.(event);
-    const channelToolScope = adapter.channelToolScopeFor?.(event);
+    // A channel policy's own identity verdict wins (personal WeChat is always
+    // `unknown`); otherwise the control-command owner check applies.
+    const requesterIsOwner = turnPermissionPolicy?.autoReviewContext
+      ? turnPermissionPolicy.autoReviewContext.requesterAuthority === 'owner'
+      : isCommandAuthorized(event);
+    // Telegram / 飞书由渠道自己登记带 transport 的作用域; 企业微信 / 钉钉 / Discord 的伙伴专线
+    // 轮次登记一份不带 transport 的, 让伙伴技能等能按本轮触发者授权(否则主人也只读)。
+    const channelToolScope: ChannelToolScope | undefined =
+      adapter.channelToolScopeFor?.(event) ??
+      (isLaneTurnScopeChannel(channel) && turnRunner.companionBotIdFor?.(event.contextId)
+        ? {
+            channel,
+            botId: event.contextId,
+            laneUserId: event.senderId,
+            chatId: event.chatId?.trim() || event.senderId,
+            chatKind: channelNoteSource?.chatKind ?? (event.speaker ? 'group' : 'direct'),
+            requesterIsOwner,
+            companion: true,
+          }
+        : undefined);
     const fallbackReplyPrefix = !adapter.prepareAgentTurnText && event.replyContext
       ? buildImReplyContextBlock(event.replyContext)
       : '';
@@ -435,11 +455,7 @@ export function createMessageHandler(
         userId: event.senderId,
         userMessageId: event.messageId,
         sourceDescription: describeInteractionSource(event),
-        // A channel policy's own identity verdict wins (personal WeChat is always
-        // `unknown`); otherwise the control-command owner check applies.
-        requesterIsOwner: turnPermissionPolicy?.autoReviewContext
-          ? turnPermissionPolicy.autoReviewContext.requesterAuthority === 'owner'
-          : isCommandAuthorized(event),
+        requesterIsOwner,
         ...(channelNoteSource ? { channelNoteSource } : {}),
         ...(messageOrigin ? { messageOrigin } : {}),
         text: event.text,

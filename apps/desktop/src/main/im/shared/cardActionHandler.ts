@@ -79,6 +79,7 @@ import {
   updateModelEffort,
   updatePermissionMode,
 } from './sessionRepo';
+import { COMPANION_MANAGED_COMMAND_FALLBACK } from './botCommands';
 import { markImSessionManualRouteOverride } from './manualRouteOverride';
 import { changeSessionPermissionMode } from './permissionModeControl';
 import type { ImCardBuilders } from './cardBuilders';
@@ -1326,7 +1327,7 @@ export function createCardActionHandler(
       await patchProjectCard(
         im,
         event.messageId,
-        adapter.ui.slash.companionManagedCommand ?? projectUi.attachedUnsupported,
+        adapter.ui.slash.companionManagedCommand ?? COMPANION_MANAGED_COMMAND_FALLBACK,
       );
       return;
     }

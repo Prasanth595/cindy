@@ -265,7 +265,13 @@ export function createLiziMcpProviders(
             );
           },
           // 轮次内直通工具的作用域:逐轮租约,不来自模型参数;非飞书轮次为 null。
-          getLaneScope: () => opts.feishuBot!.readLaneScope?.(resolveLiziMcpSessionContext(ctx)) ?? null,
+          // 工作目录取本次 tool-call 的 session ctx(与 cindy_telegram_bot 同源)。
+          getLaneScope: () => {
+            const current = resolveLiziMcpSessionContext(ctx);
+            const scope = opts.feishuBot!.readLaneScope?.(current);
+            if (!scope) return null;
+            return current.workingDir ? { ...scope, workingDir: current.workingDir } : scope;
+          },
           // slack-hook 会话里按来源在构建期注入渠道路由提示,
           // 把「发给我」的默认通道钉死在会话自身渠道(规则 9)。
           sessionSource: readSessionSource(ctx),

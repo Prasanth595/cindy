@@ -12,6 +12,8 @@
  *   5. 成功: 清空个人 bot(只清凭证 / 主人 / 运行期游标, 保留生命周期播报等偏好), 设置页随
  *      各渠道既有的状态广播显示「未配置」;
  *      失败: 把第 2 步的键值原样写回, 重新起个人 bot, 原错误照抛。
+ *   6. 第 5 步前复核账号: 安全存储按「当前」数据主人现取, 等建连期间切了账号的话, 删键 / 写回
+ *      会落到新账号头上 —— 这时不碰凭证与个人 bot, 只记日志(成功分支报 OWNER_SCOPE_CHANGED)。
  *
  * 不共用: 移过去之后个人 bot 是空的, 想再要个人 bot 需要另配一个。
  * 传输层装配由 im/index.ts 注入(configureBotImPersonalAdoption), 这里不 import host.ts。
@@ -19,6 +21,7 @@
 
 import { ipcMain } from 'electron';
 
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessionState.js';
 import { createLogger } from '../../logger';
 import { assertTrustedAppRendererEvent } from '../../security/trustedAppRenderer';
 import { throwIpcError } from '../../utils/ipcValidate';
@@ -212,6 +215,9 @@ export async function adoptPersonalBot(input: BotImAdoptPersonalBotInput): Promi
   const credentials = readPersonalCredentials(input.channel, input.botId);
   if (!credentials) throwIpcError('PRECONDITION_FAILED', 'PERSONAL_BOT_NOT_CONFIGURED');
   inFlight = true;
+  // 安全存储每次读写都按当前数据主人解析; 后面每次动个人 bot 的凭证 / 传输层前复核仍是同一个账号。
+  const ownerKey = activeOwnerScopeKey();
+  const sameOwner = () => !isAppSessionBoundaryPending() && activeOwnerScopeKey() === ownerKey;
   try {
     // 不合格的(伙伴不可用、已被另一位伙伴用着)在停个人 bot 之前就拒绝。
     await assertBotImConnectionAddable(credentials.input, { adoptingSettingsBot: true });
@@ -226,6 +232,10 @@ export async function adoptPersonalBot(input: BotImAdoptPersonalBotInput): Promi
         ...(carriedGroupActivation(input.channel) ? { groupActivation: carriedGroupActivation(input.channel) } : {}),
       });
     } catch (err) {
+      if (!sameOwner()) {
+        log.warn(`personal ${input.channel} bot adoption failed after the account changed; personal bot left untouched`);
+        throw err;
+      }
       restorePersonalSecrets(snapshot);
       try {
         await personal.start();
@@ -234,6 +244,12 @@ export async function adoptPersonalBot(input: BotImAdoptPersonalBotInput): Promi
       }
       log.info(`personal ${input.channel} bot adoption failed, personal bot restored`);
       throw err;
+    }
+    if (!sameOwner()) {
+      log.warn(
+        `personal ${input.channel} bot moved to connection ${result.connection.id} but the account changed; personal bot left untouched`,
+      );
+      throwIpcError('PRECONDITION_FAILED', 'OWNER_SCOPE_CHANGED');
     }
     // 先删键再让传输层归位: 凭证不能留在个人 bot 上(否则下次启动两处抢同一个 bot)。
     purgePersonalSecrets(input.channel);

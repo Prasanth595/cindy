@@ -205,6 +205,8 @@ describe('cindy_telegram_bot sends into the current lane', () => {
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-'));
     const inside = path.join(workingDir, 'chart.png');
     fs.writeFileSync(inside, 'png');
+    const escapeLink = path.join(workingDir, 'hosts-link');
+    fs.symlinkSync('/etc/hosts', escapeLink);
     try {
       await withServer(
         groupScope(t),
@@ -214,8 +216,13 @@ describe('cindy_telegram_bot sends into the current lane', () => {
             messageId: '-100|501',
             file: 'chart.png',
           });
-          expect(t.sendMedia).toHaveBeenLastCalledWith('g/-100/7', { kind: 'photo', absPath: inside, caption: 'c' });
+          expect(t.sendMedia).toHaveBeenLastCalledWith('g/-100/7', { kind: 'photo', absPath: fs.realpathSync(inside), caption: 'c' });
           expect(await call('send_media', { kind: 'document', path: '/etc/passwd' })).toMatchObject({
+            ok: false,
+            errorCode: 'PERMISSION_DENIED',
+          });
+          // 回归(PR #6289 review): 工作目录里指向外面的 symlink 之前按字面路径放行。
+          expect(await call('send_media', { kind: 'document', path: escapeLink })).toMatchObject({
             ok: false,
             errorCode: 'PERMISSION_DENIED',
           });
