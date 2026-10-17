@@ -2395,6 +2395,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       mode: import('../shared/botImConnection').BotImGroupActivationMode;
     }): Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload> =>
       ipcRenderer.invoke('botImConnection:set-group-activation', payload),
+    listLanes: (payload: {
+      id: string;
+    }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
+      ipcRenderer.invoke('botImConnection:list-lanes', payload),
+    resetLane: (payload: {
+      id: string;
+      sessionId: string;
+    }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
+      ipcRenderer.invoke('botImConnection:reset-lane', payload),
+    listAdoptable: (): Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload> =>
+      ipcRenderer.invoke('botImConnection:list-adoptable'),
+    adopt: (
+      payload: import('../shared/botImConnection').BotImAdoptPersonalBotInput,
+    ): Promise<import('../shared/botImConnection').BotImConnectionAddResult> =>
+      ipcRenderer.invoke('botImConnection:adopt', payload),
     onChanged: (
       listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
     ): (() => void) => {

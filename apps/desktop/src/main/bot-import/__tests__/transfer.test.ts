@@ -97,6 +97,23 @@ it.each([
   }
 });
 
+it('reports an imported bot that could not become its own connection without blocking the import', async () => {
+  const bot = { view: { id: 'bot', name: 'Telegram · default', category: 'connections' as const, selected: true }, credential: { format: 'telegram', value: { account: 'default', token: '123:fake-token' } } };
+  const task = structuredClone(snapshot.items.find(item => item.automation)!);
+  task.view.dependsOn = ['bot'];
+  const items = [bot, task];
+  const { deps } = harness();
+  deps.connectImBot = vi.fn(async () => 'IMPORT_IM_BOT_OWNER_MISSING');
+  const result = await transferCompanion({ ...snapshot, items }, { ...selection, entryIds: ['bot', task.view.id] }, deps);
+  expect(deps.connectImBot).toHaveBeenCalledWith(result.botId, bot);
+  expect(result.checks.find(check => check.entryId === 'bot')).toMatchObject({ status: 'needs-attention', message: 'IMPORT_IM_BOT_OWNER_MISSING' });
+  // The credential is still saved and an automation using it still runs.
+  expect(vi.mocked(deps.saveEnvironment).mock.calls[0]![1]).toContain(bot);
+  expect(bot.view).not.toHaveProperty('issues');
+  expect(deps.enableRoutine).toHaveBeenCalledOnce();
+  expect(result.checks.find(check => check.entryId === task.view.id)?.status).not.toBe('needs-attention');
+});
+
 it.each(['personal', 'missing'])('uses local delivery even when the source names Telegram account %s', async accountId => {
   const source = { ...snapshot.source, kind: 'openclaw' as const };
   const accounts = ['work', 'personal'].map(account => ({

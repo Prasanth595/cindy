@@ -1123,14 +1123,17 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             source = (await deps.listMessages(sessionId)).filter((message) => message.role !== 'error');
             assertCanCommit();
           }
+          // 显式重启(target=null)对伙伴的每段对话一视同仁: 主任务与 IM / 群专线按空闲间隔
+          // 刷新同一口径写交接(isBotChatContext)。换路由恢复仍只认主任务。
+          const companionChat = target ? isCanonicalBotContext(row) : isBotChatContext(row);
           const handoff = buildHandoffText(source, {
             fromLabel: engineLabelForOverflow(row.agentKind),
             toLabel: engineLabelForOverflow(row.agentKind),
             sessionId,
             reason: 'native-session-recovery',
             includeToolResults: !target || isCanonicalBotContext(row),
-            companion: isCanonicalBotContext(row),
-            ...(await companionRecall(sessionId, isCanonicalBotContext(row))),
+            companion: companionChat,
+            ...(await companionRecall(sessionId, companionChat)),
             workingMemory: await readWorkingMemoryNote(sessionId),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.

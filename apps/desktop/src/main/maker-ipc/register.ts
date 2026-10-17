@@ -83,6 +83,7 @@ import {
 import { registerModelFavoritesSync } from './modelFavoritesSync.js';
 import { advanceRuntimeRecoveryNotice } from '../im/shared/runtimeRecoveryNotice.js';
 import { removeBotImConnectionsForBot } from '../im/shared/botImConnectionRuntime.js';
+import { configureBotImLaneRuntime } from '../im/shared/botImLaneRuntime.js';
 import { markImSessionManualRouteOverride } from '../im/shared/manualRouteOverride.js';
 import { configureAppDefaultModelSelection, inspectAppDefaultModel } from './appDefaultModelControl.js';
 import type { BuiltinApiKeyBridgeDeps } from '../secrets/builtinApiKeyBridge.js';
@@ -11792,6 +11793,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       onClosed: (id) => agentInputCoordinatorHolder?.onSessionClosed(id),
     });
   }
+  // 「消息平台」页的隐藏任务「重新开始」: 主任务与 IM 专线共用伙伴这一条显式重启。
+  configureBotImLaneRuntime({
+    isTurnRunning: (sessionId) => !!maker.getSession(sessionId)?.isTurnRunning?.(),
+    restartSession: async (sessionId) => {
+      const scope = captureDataOwnerBroadcastScope();
+      await restartBotCanonicalRuntime(sessionId, () => {
+        if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new Error('OWNER_CHANGED');
+      });
+    },
+  });
   // A turn is running or queued in a companion's main task: no context rebuild, no hand-over.
   const companionTurnActive = (sessionId: string) => !!maker.getSession(sessionId)?.isTurnRunning?.()
     || inputCoordinator.getQueueControlSnapshot(sessionId).pendingQueue.length > 0;

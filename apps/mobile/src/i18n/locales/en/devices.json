@@ -813,7 +813,11 @@
     "setupDeferred": "Continue sign-in and verification in the teammate chat.",
     "automationInvalid": "The automation definition could not be converted; it was not created.",
     "itemFailed": "This item is unfinished. Retry or view import details.",
-    "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available."
+    "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available.",
+    "imBotOwnerMissing": "No owner user ID was found. Finish connecting this bot on the teammate’s Messaging platforms page.",
+    "imBotGatewayRunning": "The original gateway is still using this bot. Stop it, then connect the bot on Messaging platforms.",
+    "imBotInUse": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
+    "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page."
   },
   "teammateTodo": {
     "title": "Todos",

@@ -2338,6 +2338,28 @@ interface ElectronAPI {
       chatId: string;
       mode: import('../shared/botImConnection').BotImGroupActivationMode;
     }) => Promise<import('../shared/botImConnection').BotImConnectionGroupsPayload>;
+    /** 这条连接下有任务的落点(主人私聊 + 群 / 话题 / 其他人私聊的隐藏任务)。 */
+    listLanes: (payload: {
+      id: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
+    /**
+     * 让其中一条重新开始(同一条任务, 记录保留, 下一条消息换干净的上下文)。不属于这条
+     * 连接的任务 → NOT_FOUND(LANE_NOT_FOUND); 重启失败 → PRECONDITION_FAILED。
+     */
+    resetLane: (payload: {
+      id: string;
+      sessionId: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
+    /** 设置 → IM 机器人 里已配好、可以移给伙伴的个人 bot(只给身份, 不含凭证)。 */
+    listAdoptable: () => Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload>;
+    /**
+     * 把个人 bot 移给这位伙伴: 先停个人 bot 再建连; 成功后个人 bot 清空, 失败恢复原样。
+     * 错误码同 add(TOKEN_IN_USE / APP_IN_USE / CONNECT_FAILED / BOT_INACTIVE), 另有
+     * PERSONAL_BOT_NOT_CONFIGURED / ADOPT_IN_PROGRESS / IM_NOT_READY。
+     */
+    adopt: (
+      payload: import('../shared/botImConnection').BotImAdoptPersonalBotInput,
+    ) => Promise<import('../shared/botImConnection').BotImConnectionAddResult>;
     onChanged: (
       listener: (payload: import('../shared/botImConnection').BotImConnectionListPayload) => void,
     ) => () => void;

@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DingTalkIM, RichChannelIM } from '@cindy/im';
 import { decodeDingTalkLaneUserId } from '@cindy/im';
 
+import { captureImContext } from '../../../shared/imMessageSource';
 import type { ImChannelAdapter, ImOrchestratorConfig } from '../shared/types';
+import { DINGTALK_PERSONAL_GROUP_WINDOW } from '../shared/channelGroupWindow';
+import { createLogger } from '../../logger';
 import { imChannelNoteSourceFromEvent } from '../shared/channelNote';
 import { ownerScopedImUserDataPath } from '../ownerScopedStorage';
 import { handleDingTalkTextInteraction } from './interaction';
@@ -38,6 +41,8 @@ function sanitizeSpeaker(value: string): string {
     .slice(0, 64);
 }
 
+const log = createLogger('im:dingtalk-adapter');
+
 export interface DingTalkAdapterOptions {
   /** 伙伴自有连接: 主人私聊进伙伴主任务, 群按 lane 一条专线, 权限档是唯一开关。 */
   companionBotId?: string;
@@ -57,7 +62,25 @@ export function buildDingTalkAdapter(
     output: {
       kind: 'chunked-text',
       im: dingtalkIm,
-      commitFinal: (output) => dingtalkIm.commitFinal(output),
+      commitFinal: async (output) => {
+        await dingtalkIm.commitFinal(output);
+        // 群消息本地窗口(与 Telegram 同一张表): 机器人自己发出的终稿也入窗, 下次群里
+        // @ 时作为背景; 报错文案不入窗。入窗失败只告警, 不影响已发出的回复。
+        const lane = decodeDingTalkLaneUserId(output.userId);
+        const status = dingtalkIm.getStatus();
+        const appKey = status.kind === 'connected' ? status.appId : '';
+        if (!lane || !appKey || output.terminal === 'error' || !output.text.trim()) return;
+        await DINGTALK_PERSONAL_GROUP_WINDOW.record({
+          botId: appKey,
+          chatId: lane.conversationId,
+          threadId: '',
+          messageId: `out:${randomUUID()}`,
+          chatName: null,
+          author: { name: 'bot', isBot: true },
+          text: output.text,
+          sentAt: Date.now(),
+        }).catch((err) => log.warn(`dingtalk group window outbound record failed: ${String(err)}`));
+      },
     },
     config,
     ui,
@@ -101,11 +124,52 @@ export function buildDingTalkAdapter(
     },
     // 群里发言人已由下面的 `[发言人]` 行写明(含主人标记), 渠道说明不再重复。
     channelNoteSourceFor: (event) => imChannelNoteSourceFromEvent(event, { omitSender: true }),
+    // 群: 先把这条入窗, 再拼「自上次以来群里的消息」前缀(与 Telegram 同一张表、同一套
+    // 游标语义, 游标在消息被受理后 commit), 然后是发言人行与正文。
     prepareAgentTurnText: async (event) => {
       if (!event.speaker) return null;
       const speaker = sanitizeSpeaker(event.speaker.name);
+      const speakerLine = `[发言人] ${speaker} · id:${event.speaker.id}${event.speaker.isOwner ? ' · 主人' : ''}\n`;
+      const lane = decodeDingTalkLaneUserId(event.senderId);
+      if (!lane) return { agentText: `${speakerLine}${event.text}` };
+      const chatName = event.interactionSource?.chatName
+        ? sanitizeSpeaker(event.interactionSource.chatName) || null
+        : null;
+      // 窗口是尽力而为的背景: 入窗或拼装失败只告警, 本轮照常带发言人行与正文。
+      const assembly = await (async () => {
+        await DINGTALK_PERSONAL_GROUP_WINDOW.record({
+          botId: event.contextId,
+          chatId: lane.conversationId,
+          threadId: '',
+          messageId: event.messageId,
+          chatName,
+          author: { name: speaker || 'user' },
+          text: event.text,
+          ...(event.attachments.length > 0
+            ? { fileNames: event.attachments.map((att) => att.originalName) }
+            : {}),
+          sentAt: Date.now(),
+        });
+        return DINGTALK_PERSONAL_GROUP_WINDOW.buildContextPrefix({
+          botId: event.contextId,
+          chatId: lane.conversationId,
+          threadId: '',
+          triggerMessageId: event.messageId,
+        });
+      })().catch((err: unknown) => {
+        log.warn(`dingtalk group window context failed (degraded): ${String(err)}`);
+        return null;
+      });
+      if (!assembly) return { agentText: `${speakerLine}${event.text}` };
       return {
-        agentText: `[发言人] ${speaker} · id:${event.speaker.id}${event.speaker.isOwner ? ' · 主人' : ''}\n${event.text}`,
+        agentText: `${assembly.prefix}${speakerLine}${event.text}`,
+        contextSnapshot: captureImContext({
+          groupPrefix: assembly.prefix,
+          groupMessageCount: assembly.messageCount,
+        }),
+        commit: async () => {
+          await assembly.commit();
+        },
       };
     },
   };

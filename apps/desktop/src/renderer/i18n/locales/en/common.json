@@ -9735,7 +9735,11 @@
       "setupDeferred": "Continue sign-in and verification in the teammate chat.",
       "automationInvalid": "The automation definition could not be converted; it was not created.",
       "itemFailed": "This item is unfinished. Retry or view import details.",
-      "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available."
+      "chatPartial": "Your teammate is created, but some content was not fully saved. The items below still need attention; other content and chat remain available.",
+      "imBotOwnerMissing": "No owner user ID was found. Finish connecting this bot on the teammate’s Messaging platforms page.",
+      "imBotGatewayRunning": "The original gateway is still using this bot. Stop it, then connect the bot on Messaging platforms.",
+      "imBotInUse": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
+      "imBotConnectFailed": "Couldn’t connect this bot. Try again on the teammate’s Messaging platforms page."
     },
     "learning": {
       "memory": "Remembered: {{title}}",
@@ -9815,6 +9819,37 @@
           "always": "Always"
         }
       },
+      "lanes": {
+        "title": "Hidden tasks",
+        "hint": "Each group, topic, and DM from someone else has its own hidden task. If one gets stuck or goes off track, start it over. Its history is kept.",
+        "ownerName": "Your DM",
+        "kind": {
+          "ownerDm": "Main task",
+          "group": "Group",
+          "topic": "Topic",
+          "guestDm": "DM"
+        },
+        "state": {
+          "running": "Replying",
+          "failed": "Last reply failed"
+        },
+        "noActivity": "No messages yet",
+        "messageCount_one": "{{count}} message in context",
+        "messageCount_other": "{{count}} messages in context",
+        "reset": "Start over",
+        "resetAria": "Start “{{lane}}” over",
+        "resetConfirm": {
+          "title": "Start “{{lane}}” over?",
+          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this hidden task, and {{name}}’s memory is unchanged.",
+          "ownerDescription": "This is {{name}}’s main task, shared by your desktop conversation and this DM. The next message starts with a clean context, and any reply in progress stops. History, memory, and files are kept.",
+          "confirm": "Start over",
+          "cancel": "Cancel"
+        },
+        "resetDone": "“{{lane}}” started over. The next message begins with a clean context.",
+        "resetFailed": "Couldn’t start it over. Try again later.",
+        "loadFailed": "Couldn’t load hidden tasks",
+        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM."
+      },
       "add": {
         "button": "Add platform",
         "title": "Add a platform for {{name}}",
@@ -9868,7 +9903,14 @@
           "conflict": "This bot is already connected on this computer, in Settings → IM bots or on another teammate.",
           "botUnavailable": "{{name}} is unavailable right now. Try again once it’s back.",
           "connectFailed": "Couldn’t connect: {{reason}}",
-          "failed": "Couldn’t finish. Try again later."
+          "failed": "Couldn’t finish. Try again later.",
+          "personalBotGone": "This bot is no longer set up in Settings → IM bots. Enter its credentials instead."
+        },
+        "source": {
+          "label": "How to connect",
+          "existing": "Use the bot already set up in Cindy",
+          "manual": "Enter new credentials",
+          "moveNote": "The bot moves out of Settings → IM bots, which will be left empty. Its chats continue with {{name}}."
         }
       },
       "removeConfirm": {

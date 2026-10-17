@@ -85,6 +85,12 @@ import {
   __testing,
 } from '../botImConnectionRuntime';
 import { listBotImConnections, secretKeyPrefixFor } from '../botImConnectionStore';
+import {
+  adoptPersonalBot,
+  configureBotImPersonalAdoption,
+  __testing as adoptionTesting,
+  type PersonalBotTransport,
+} from '../botImPersonalAdoption';
 
 type StatusHandler = (status: { kind: string; appId?: string }) => void;
 
@@ -116,6 +122,8 @@ function fakeTelegram(prefix: string, opts: { connect: boolean }) {
         return { status, ownerUserId: null, botUsername: null, saveErrorStatus: status };
       }
       set({ kind: 'connected', appId: '777' });
+      // 原来的网关还在轮询同一个 token: Telegram 在连上之后才回 409。
+      if (telegramConflictAfterConnect) setTimeout(() => set({ kind: 'conflict' }), 0);
       return { status, ownerUserId: payload.ownerUserId, botUsername: 'mia_bot' };
     }),
     disconnect: vi.fn(async () => {
@@ -147,6 +155,10 @@ function fakeWecom(prefix: string, opts: { connect: boolean }) {
       return () => handlers.delete(handler);
     },
     getOwnerUserId: () => h.secrets.get(`${prefix}wecom-owner-user-id`) ?? '',
+    presetOwnerUserId: vi.fn((ownerUserId: string) => {
+      h.secrets.set(`${prefix}wecom-owner-user-id`, ownerUserId);
+      return true;
+    }),
     setConfig: vi.fn(async (payload: { botId: string; secret: string }) => {
       h.secrets.set(`${prefix}wecom-bot-id`, payload.botId);
       h.secrets.set(`${prefix}wecom-bot-secret`, payload.secret);
@@ -256,6 +268,7 @@ const createdOther: Array<{
   orchestrator: ReturnType<typeof fakeOrchestrator>;
 }> = [];
 let connectOutcome = true;
+let telegramConflictAfterConnect = false;
 
 describe('bot im connection runtime', () => {
   beforeEach(() => {
@@ -268,6 +281,8 @@ describe('bot im connection runtime', () => {
     created.length = 0;
     createdOther.length = 0;
     connectOutcome = true;
+    telegramConflictAfterConnect = false;
+    adoptionTesting.reset();
     configureBotImConnectionRuntime({
       create: (record) => {
         const prefix = secretKeyPrefixFor(record.id);
@@ -491,5 +506,77 @@ describe('bot im connection runtime', () => {
     expect((createdOther[0]!.im as ReturnType<typeof fakeWecom>).clearCredentials).toHaveBeenCalled();
     expect([...h.secrets.keys()]).toEqual([]);
     expect(listBotImConnections()).toEqual([]);
+  });
+  it('rejects a Telegram bot whose token another process starts polling right after connecting', async () => {
+    telegramConflictAfterConnect = true;
+    await expect(
+      addBotImConnection(
+        { botId: 'bot-mia', channel: 'telegram', token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '42' },
+        { rejectConflictWithinMs: 50 },
+      ),
+    ).rejects.toThrow(/CONNECT_FAILED: conflict/);
+    expect(listBotImConnections()).toEqual([]);
+    expect([...h.secrets.keys()]).toEqual([]);
+  });
+
+  describe('moving the settings-page bot to a teammate', () => {
+    function personalTransports() {
+      const make = (): PersonalBotTransport & Record<'stop' | 'start' | 'clear', ReturnType<typeof vi.fn>> => ({
+        identity: () => '@mia_bot',
+        stop: vi.fn(async () => undefined),
+        start: vi.fn(async () => undefined),
+        clear: vi.fn(async () => undefined),
+      });
+      const personal = { telegram: make(), feishu: make(), wecom: make(), dingtalk: make(), discord: make() };
+      configureBotImPersonalAdoption({
+        isReady: () => true,
+        personal,
+        telegramGroupActivation: () => ({ '-1001': 'always', '-1002': 'mention' }),
+      });
+      return personal;
+    }
+
+    it('moves Telegram with its owner and group activation, then empties the personal bot', async () => {
+      const personal = personalTransports();
+      h.secrets.set('telegram-bot-token', '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+      h.secrets.set('telegram-owner-user-id', '42');
+      const result = await adoptPersonalBot({ botId: 'bot-mia', channel: 'telegram' });
+      const prefix = secretKeyPrefixFor(result.connection.id);
+      expect(personal.telegram.stop.mock.invocationCallOrder[0]).toBeLessThan(created[0]!.im.setConfig.mock.invocationCallOrder[0]!);
+      expect(created[0]!.im.setConfig).toHaveBeenCalledWith({ token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '42' });
+      expect(listBotImConnections()[0]?.groupActivation).toEqual({ '-1001': 'always' });
+      expect(h.secrets.has('telegram-bot-token')).toBe(false);
+      expect(h.secrets.has('telegram-owner-user-id')).toBe(false);
+      expect(h.secrets.get(`${prefix}telegram-bot-token`)).toBe('123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+      expect(personal.telegram.clear).toHaveBeenCalledOnce();
+      expect(personal.telegram.start).not.toHaveBeenCalled();
+    });
+
+    it('restores and restarts the personal bot when the teammate connection cannot connect', async () => {
+      const personal = personalTransports();
+      connectOutcome = false;
+      h.secrets.set('telegram-bot-token', '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+      h.secrets.set('telegram-owner-user-id', '42');
+      const before = new Map(h.secrets);
+      // Whatever the stop did to the stored keys, a failed move puts them back as they were.
+      personal.telegram.stop.mockImplementation(async () => {
+        h.secrets.delete('telegram-owner-user-id');
+      });
+      await expect(adoptPersonalBot({ botId: 'bot-mia', channel: 'telegram' })).rejects.toThrow(/CONNECT_FAILED/);
+      expect(new Map(h.secrets)).toEqual(before);
+      expect(personal.telegram.start).toHaveBeenCalledOnce();
+      expect(personal.telegram.clear).not.toHaveBeenCalled();
+      expect(listBotImConnections()).toEqual([]);
+    });
+
+    it('keeps the WeCom owner already recognised by the personal bot', async () => {
+      personalTransports();
+      h.secrets.set('wecom-bot-id', 'wb-1');
+      h.secrets.set('wecom-bot-secret', 's3cret');
+      h.secrets.set('wecom-owner-user-id', 'zhangsan');
+      const result = await adoptPersonalBot({ botId: 'bot-mia', channel: 'wecom' });
+      expect(h.secrets.get(`${secretKeyPrefixFor(result.connection.id)}wecom-owner-user-id`)).toBe('zhangsan');
+      expect([...h.secrets.keys()].filter((key) => key.startsWith('wecom-'))).toEqual([]);
+    });
   });
 });

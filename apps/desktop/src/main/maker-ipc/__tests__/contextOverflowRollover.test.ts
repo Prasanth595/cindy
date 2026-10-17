@@ -656,6 +656,20 @@ describe('createContextOverflowRollover', () => {
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
   });
 
+  // 「消息平台」页对 IM 专线点「重新开始」走同一条显式重启: 交接要按伙伴对话口径(与空闲间隔
+  // 刷新一致)带按需回忆指引, 不能像普通任务那样退化成无回忆的交接。
+  it('explicit restart of an IM channel lane writes the companion handoff with recall guidance', async () => {
+    const deps = makeDeps([msg('user', 'group asked about the release', 'u1', 1), msg('assistant', 'Release is Friday', 'a1', 2)]);
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'channel' });
+    const withOwn = { ...deps, listCompanionSessionIds: vi.fn(async () => ({ sessionIds: ['s1', 's-main'], chatsTruncated: false })) };
+    await createContextOverflowRollover(withOwn).prepareNativeSessionRecovery('s1', null, vi.fn());
+    const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
+    expect(handoff).toContain('Release is Friday');
+    expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
+    expect(handoff).toContain('"session_ids":["s1","s-main"]');
+    expect(deps.replayUserMessage).not.toHaveBeenCalled();
+  });
+
   it.each(['cc', 'codex', 'pi'] as const)('explicit Bot restart replaces a running %s context without replay', async (agentKind) => {
     const deps = makeDeps([msg('user', 'keep my request', 'u1', 1)]);
     deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', agentKind });

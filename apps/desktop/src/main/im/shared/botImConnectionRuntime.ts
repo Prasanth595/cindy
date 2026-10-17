@@ -8,6 +8,8 @@
  *   - 伙伴页「添加平台」: 建记录 → 起实例 → 把凭证交给传输层建连; 连不上就整条撤销,
  *     不留半配置的记录。
  *   - 「移除」/ 伙伴被删: 归档这条连接的隐藏专线、释放运行时、清凭证、删记录。
+ *   - 把 设置 → IM 机器人 那份个人 bot 移给伙伴走 botImPersonalAdoption.ts, 最后一步仍是
+ *     这里的 addBotImConnection(带上原主人与群参与模式)。
  *
  * 传输层与编排器的具体装配由 im/index.ts 注入(configureBotImConnectionRuntime),
  * 这里不 import host.ts, 避免把 IM 子系统拽进单测收集期。
@@ -49,6 +51,7 @@ import {
   updateBotImConnectionRecord,
 } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
+import { listBotImConnectionLanes, resetBotImConnectionLane } from './botImLaneRuntime';
 import type { ImOrchestrator } from './orchestrator';
 
 const log = createLogger('im:bot-connections');
@@ -111,7 +114,7 @@ const DISCORD_SECRET_KEYS = [
   'discord-bot-runtime-active',
   'discord-bot-lifecycle-announcement',
 ] as const;
-const SECRET_KEYS_BY_CHANNEL: Record<BotImChannel, readonly string[]> = {
+export const SECRET_KEYS_BY_CHANNEL: Record<BotImChannel, readonly string[]> = {
   telegram: TELEGRAM_SECRET_KEYS,
   feishu: FEISHU_SECRET_KEYS,
   wecom: WECOM_SECRET_KEYS,
@@ -123,7 +126,7 @@ const SECRET_KEYS_BY_CHANNEL: Record<BotImChannel, readonly string[]> = {
  * 各渠道「同一个 bot 已在别处连着」的判据: 设置页那份身份字段 + 本机其它连接按前缀存的
  * 同名键。凭证身份只比相等, 不读出来展示。
  */
-const IDENTITY_SECRET_KEY: Record<BotImChannel, string> = {
+export const IDENTITY_SECRET_KEY: Record<BotImChannel, string> = {
   telegram: 'telegram-bot-token',
   feishu: 'feishu_bot_app_id',
   wecom: 'wecom-bot-id',
@@ -311,19 +314,60 @@ function settingsIdentityValueOf(settings: BotImSettingsIdentity, channel: BotIm
   }
 }
 
-function assertNoDuplicateIdentity(input: BotImConnectionAddInput): void {
-  const value = identityValueOf(input);
-  const fromSettings = settingsIdentityValueOf(requireDeps().settingsIdentity(), input.channel);
-  const sameAsSettings = fromSettings !== null && fromSettings === value;
-  const key = IDENTITY_SECRET_KEY[input.channel];
-  const sameAsOther = listBotImConnections().some(
-    (record) =>
-      record.channel === input.channel &&
-      ownerScopedImSecrets.read(`${secretKeyPrefixFor(record.id)}${key}`) === value,
+/** 本机已有的伙伴连接里, 用着同一个平台身份(token / app id / bot id / AppKey)的那条; 没有为 null。 */
+export function findBotImConnectionByIdentity(
+  channel: BotImChannel,
+  identityValue: string,
+): BotImConnectionRecord | null {
+  const key = IDENTITY_SECRET_KEY[channel];
+  return (
+    listBotImConnections().find(
+      (record) =>
+        record.channel === channel &&
+        ownerScopedImSecrets.read(`${secretKeyPrefixFor(record.id)}${key}`) === identityValue,
+    ) ?? null
   );
+}
+
+function assertNoDuplicateIdentity(input: BotImConnectionAddInput, ignoreSettings: boolean): void {
+  const value = identityValueOf(input);
+  const fromSettings = ignoreSettings ? null : settingsIdentityValueOf(requireDeps().settingsIdentity(), input.channel);
+  const sameAsSettings = fromSettings !== null && fromSettings === value;
+  const sameAsOther = findBotImConnectionByIdentity(input.channel, value) !== null;
   if (sameAsSettings || sameAsOther) {
     throwIpcError('PRECONDITION_FAILED', IDENTITY_IN_USE_CODE[input.channel]);
   }
+}
+
+export interface BotImConnectionAddOptions {
+  /**
+   * 把 设置 → IM 机器人 那份个人 bot 移过来: 调用方已先停掉个人 bot, 所以不按
+   * 「设置页已在用」拒绝(仍拒绝已被另一位伙伴用着的)。
+   */
+  adoptingSettingsBot?: boolean;
+  /**
+   * 沿用已认定的主人: 企业微信 / 钉钉 / 飞书写进本连接, 不再等首个私聊者(TOFU)。
+   * Telegram / Discord 的主人本来就在 input 里。
+   */
+  ownerUserId?: string;
+  /** Telegram 群参与模式(chatId → always), 建连前写进记录。 */
+  groupActivation?: Record<string, 'always'>;
+  /**
+   * 连上后这么久内转成 conflict(同一个 token 另有进程在轮询, 例如原来的网关还开着)
+   * 就当没连上, 整条撤销。缺省不等。
+   */
+  rejectConflictWithinMs?: number;
+}
+
+/** 添加前的检查(伙伴在、可用, 平台身份没被别处用着); 移交个人 bot 前先跑一遍, 免得白停一次。 */
+export async function assertBotImConnectionAddable(
+  input: BotImConnectionAddInput,
+  options: Pick<BotImConnectionAddOptions, 'adoptingSettingsBot'> = {},
+): Promise<void> {
+  const status = await readBotProfileStatus(input.botId);
+  if (status === null) throwIpcError('NOT_FOUND', 'BOT_NOT_FOUND');
+  if (status !== 'active') throwIpcError('PRECONDITION_FAILED', `BOT_INACTIVE: ${status}`);
+  assertNoDuplicateIdentity(input, options.adoptingSettingsBot === true);
 }
 
 /**
@@ -356,23 +400,47 @@ function awaitSettledStatus(
   });
 }
 
+/** 在 timeoutMs 内是否转成了 conflict(另一个进程在用同一个 token 轮询)。 */
+function awaitConflict(
+  im: Pick<BotImTransportInstance['im'], 'getStatus' | 'onStatusChange'>,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (im.getStatus().kind === 'conflict') return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const finish = (value: boolean) => {
+      clearTimeout(timer);
+      off();
+      resolve(value);
+    };
+    const off = im.onStatusChange((status) => {
+      if (status.kind === 'conflict') finish(true);
+    });
+    const timer = setTimeout(() => finish(im.getStatus().kind === 'conflict'), timeoutMs);
+  });
+}
+
 function describeStatusFailure(status: IMStatus): string {
   if (status.kind === 'error') return status.code ? `${status.code}: ${status.reason}` : status.reason;
   if (status.kind === 'conflict') return 'conflict';
   return status.kind;
 }
 
-export async function addBotImConnection(input: BotImConnectionAddInput): Promise<BotImConnectionAddResult> {
-  const status = await readBotProfileStatus(input.botId);
-  if (status === null) throwIpcError('NOT_FOUND', 'BOT_NOT_FOUND');
-  if (status !== 'active') throwIpcError('PRECONDITION_FAILED', `BOT_INACTIVE: ${status}`);
-  assertNoDuplicateIdentity(input);
+export async function addBotImConnection(
+  input: BotImConnectionAddInput,
+  options: BotImConnectionAddOptions = {},
+): Promise<BotImConnectionAddResult> {
+  await assertBotImConnectionAddable(input, options);
 
-  const record = await addBotImConnectionRecord({
+  let record = await addBotImConnectionRecord({
     botId: input.botId,
     channel: input.channel,
     ...(input.channel === 'feishu' ? { service: input.service } : {}),
   });
+  const groupActivation = input.channel === 'telegram' ? options.groupActivation : undefined;
+  if (groupActivation && Object.keys(groupActivation).length > 0) {
+    // 传输层的行为 getter 每次现读记录, 建连前写好, 第一条群消息就按原来的参与模式走。
+    record = (await updateBotImConnectionRecord(record.id, { groupActivation })) ?? record;
+  }
   let live: LiveInstance;
   try {
     live = instantiate(record);
@@ -380,6 +448,7 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
     await removeBotImConnectionRecord(record.id);
     throw err;
   }
+  const carriedOwner = options.ownerUserId?.trim() || '';
 
   const rollback = async (reason: string): Promise<never> => {
     await releaseInstance(live);
@@ -406,6 +475,7 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
           appId: input.appId,
           appSecret: input.appSecret,
           service: input.service as BotImFeishuService,
+          ...(carriedOwner ? { ownerOpenId: carriedOwner } : {}),
         });
         if (verdict !== 'connected' && verdict !== 'pending') return rollback(verdict);
         break;
@@ -417,6 +487,7 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
         if (state.saveErrorStatus) return rollback(describeStatusFailure(state.saveErrorStatus));
         const settled = await awaitSettledStatus(transport.im, ASYNC_CONNECT_SETTLE_MS);
         if (settled.kind === 'error' || settled.kind === 'conflict') return rollback(describeStatusFailure(settled));
+        if (carriedOwner && !transport.im.presetOwnerUserId(carriedOwner)) return rollback('secret-unavailable');
         break;
       }
       case 'dingtalk': {
@@ -425,6 +496,8 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
         await transport.im.saveCredentials({ appKey: input.appKey, appSecret: input.appSecret });
         const status = transport.im.getStatus();
         if (status.kind === 'error' || status.kind === 'conflict') return rollback(describeStatusFailure(status));
+        // 换 AppKey 时 saveCredentials 会清主人, 所以沿用的主人在它之后写。
+        if (carriedOwner && !transport.im.presetOwnerUserId(carriedOwner)) return rollback('secret-unavailable');
         break;
       }
       case 'discord': {
@@ -437,6 +510,13 @@ export async function addBotImConnection(input: BotImConnectionAddInput): Promis
     }
   } catch (err) {
     return rollback(err instanceof Error ? err.message : String(err));
+  }
+  if (
+    options.rejectConflictWithinMs &&
+    options.rejectConflictWithinMs > 0 &&
+    (await awaitConflict(live.transport.im, options.rejectConflictWithinMs))
+  ) {
+    return rollback('conflict');
   }
 
   const connected = live.transport.im.getStatus();
@@ -539,7 +619,8 @@ export async function removeBotImConnectionsForBot(botId: string): Promise<void>
   }
 }
 
-function readAddInput(payload: unknown): BotImConnectionAddInput {
+/** 校验「添加平台」的入参(IPC 与导入共用); 不合法抛 INVALID_PARAMS。 */
+export function parseBotImConnectionAddInput(payload: unknown): BotImConnectionAddInput {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
   if (typeof p.botId !== 'string' || !p.botId.trim()) throwIpcError('INVALID_PARAMS', 'botId is required');
   if (!isBotImChannel(p.channel)) throwIpcError('INVALID_PARAMS', 'channel is invalid');
@@ -589,7 +670,7 @@ export function registerBotImConnectionIpc(): void {
   });
   ipcMain.handle('botImConnection:add', (e, payload) => {
     assertTrustedAppRendererEvent(e);
-    return addBotImConnection(readAddInput(payload));
+    return addBotImConnection(parseBotImConnectionAddInput(payload));
   });
   ipcMain.handle('botImConnection:remove', (e, payload) => {
     assertTrustedAppRendererEvent(e);
@@ -612,6 +693,23 @@ export function registerBotImConnectionIpc(): void {
     }
     const mode = p.mode === 'always' ? 'always' : 'mention';
     return setBotImConnectionGroupMode(p.id, p.chatId, mode);
+  });
+  // 隐藏任务小节: 群名沿用「群聊」小节同一份已知群(deps.listKnownGroups)。
+  const laneOptions = { knownGroups: (record: BotImConnectionRecord) => requireDeps().listKnownGroups(record) };
+  ipcMain.handle('botImConnection:list-lanes', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const id = (payload as { id?: unknown } | null)?.id;
+    if (!isBotImConnectionId(id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    return listBotImConnectionLanes(id, laneOptions);
+  });
+  ipcMain.handle('botImConnection:reset-lane', (e, payload) => {
+    assertTrustedAppRendererEvent(e);
+    const p = (payload ?? {}) as { id?: unknown; sessionId?: unknown };
+    if (!isBotImConnectionId(p.id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
+    if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
+      throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
+    }
+    return resetBotImConnectionLane(p.id, p.sessionId, laneOptions);
   });
 }
 

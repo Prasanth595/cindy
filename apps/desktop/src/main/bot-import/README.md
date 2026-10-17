@@ -427,6 +427,36 @@ runtime interpreter parses the selected script without executing business action
 This checks availability and syntax, not a full business execution; scripts with
 external data still require actual read evidence.
 
+## Telegram and Discord bots become the teammate's own connections
+
+`sources.ts` reads Telegram tokens (`channels.telegram[.accounts.<id>].botToken` or
+`tokenFile`; Hermes `TELEGRAM_BOT_TOKEN`) and Discord tokens (`channels.discord[.accounts.<id>].token`,
+a plain string or an env SecretRef; `DISCORD_BOT_TOKEN` for the default account; Hermes
+`DISCORD_BOT_TOKEN`). Token values keep `${NAME}` references until selection, like every
+other credential. The owner ID comes from one explicit user ID only:
+
+- OpenClaw: `commands.ownerAllowFrom` entries `telegram:<id>` / `discord:<id>`, otherwise the
+  account's effective `allowFrom` (a named account without its own list inherits
+  `channels.<channel>.allowFrom`; Discord also reads the legacy `dm.allowFrom`). The
+  `telegram:` / `tg:` and `discord:` / `user:` prefixes are stripped.
+- Hermes: `TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS` (comma-separated).
+
+Wildcards, access groups and lists naming several users give no owner; the import does
+not guess. After the teammate is created, the connections pass calls `connectImBot`, which
+runs the same `addBotImConnection` as 伙伴设置 → 消息平台 with the resolved token. A
+Telegram connection that reports a polling conflict within 5 seconds (the source gateway
+still running) is removed again. Retries reuse an existing connection for the same token
+and teammate, and background reconciliation keeps an earlier outcome instead of
+reconnecting.
+
+A missing owner or a failed connection never fails the import. The entry shows
+`needs-attention` with `IMPORT_IM_BOT_OWNER_MISSING`, `IMPORT_IM_BOT_GATEWAY_RUNNING`,
+`IMPORT_IM_BOT_IN_USE` or `IMPORT_IM_BOT_CONNECT_FAILED` (copy under `bots.import.*` on
+Desktop and `companionImport.*` on Mobile), and the user can add the bot later from
+消息平台. These codes are advisory: the resolved credential is still saved for legacy
+delivery, and automations that depend on the entry are not blocked. Tokens are never
+logged; only the channel and the issue code are.
+
 ## Save first, finish setup in chat
 
 GUI imports send the additive `deferSetup` flag (the command defaults it to true).

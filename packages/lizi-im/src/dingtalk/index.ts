@@ -165,6 +165,19 @@ export class DingTalkIM extends BaseIM implements ChannelIM {
   }
 
   /**
+   * 直接认定主人(不等首个私聊): 宿主把设置页那份个人 bot 移给伙伴时带上原主人,
+   * 避免 TOFU 在迁移后换人。须在 saveCredentials 之后调用(换 AppKey 会清主人)。
+   * 写不进安全存储时返回 false, 内存态不变。
+   */
+  presetOwnerUserId(ownerUserId: string): boolean {
+    const next = ownerUserId.trim();
+    if (!next) return false;
+    if (!this.host.secrets.write(this.key(OWNER_USER_ID_SECRET), next)) return false;
+    this.ownerUserId = next;
+    return true;
+  }
+
+  /**
    * 保存凭证并建连(设置卡与伙伴连接共用): 先连通再落盘, 连不上抛错并回滚到
    * 之前的凭证。
    */

@@ -2,7 +2,8 @@
  * 伙伴自有 IM 机器人连接的 IPC 线上类型(main / preload / renderer 共用)。
  *
  * 一位伙伴可以挂多个平台的机器人(Telegram、飞书 / Lark、企业微信、钉钉、Discord), 凭证由用户自己在平台申请,
- * 在伙伴设置「消息平台」页直接填; 与 设置 → IM 机器人 里那份独立的个人 bot 互不相干。
+ * 在伙伴设置「消息平台」页直接填; 与 设置 → IM 机器人 里那份个人 bot 各用各的凭证, 也可以把个人 bot
+ * 一次性移过来(个人 bot 随之清空, 不共用)。
  * 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线。
  * 正本与语义见 main/im/shared/botImConnectionStore.ts 与 botImConnectionRuntime.ts。
  */
@@ -121,9 +122,60 @@ export interface BotImConnectionAddResult extends BotImConnectionListPayload {
   connection: BotImConnectionView;
 }
 
+/**
+ * 设置 → IM 机器人 里已经配好、可以整个移给伙伴的个人 bot(只给身份, 不给凭证)。
+ * 移过去后个人 bot 清空; Telegram 的群参与模式与各渠道已认定的主人一并带上。
+ */
+export interface BotImAdoptablePersonalBot {
+  channel: BotImChannel;
+  /** 给人看的身份: Telegram @用户名 / 飞书 App ID / 企业微信 Bot ID / 钉钉 Client ID / Discord bot 标签; 读不到为 null。 */
+  identity: string | null;
+  /** 飞书 / Lark(只有 feishu 渠道有)。 */
+  service?: BotImFeishuService;
+}
+
+export interface BotImAdoptablePersonalBotsPayload {
+  bots: BotImAdoptablePersonalBot[];
+}
+
+export interface BotImAdoptPersonalBotInput {
+  botId: string;
+  channel: BotImChannel;
+}
+
 export interface BotImConnectionRemoveResult extends BotImConnectionListPayload {
   /** 随连接一起归档的隐藏专线任务。 */
   archivedSessionIds: string[];
+}
+
+/**
+ * 一条连接下有任务的落点(「消息平台」页的隐藏任务小节): 主人私聊落在伙伴主任务,
+ * 群 / 话题 / 其他人的私聊各一条隐藏专线。只读投影, 状态取自已有任务状态, 不另存。
+ */
+export type BotImLaneKind = 'owner-dm' | 'group' | 'topic' | 'guest-dm';
+
+/** idle = 空闲; running = 正在回复; failed = 上一轮以错误收尾(最近一条消息是错误行)。 */
+export type BotImLaneState = 'idle' | 'running' | 'failed';
+
+export interface BotImConnectionLane {
+  sessionId: string;
+  kind: BotImLaneKind;
+  /** 群 / 话题的群 id, 其他人私聊的用户 id; 主人私聊为 null。 */
+  chatId: string | null;
+  /** 话题 id(只有 kind = topic 有)。 */
+  threadId: string | null;
+  /** 存储里已有的名字(群名 / 发言人名); 没有为 null, 界面回落到 id。 */
+  name: string | null;
+  state: BotImLaneState;
+  /** 最近一条消息的时间(unix ms); 还没有消息为 null。 */
+  lastActivityAt: number | null;
+  /** 当前上下文(上次重新开始 / 自动整理之后)里收到的消息数。 */
+  contextMessageCount: number;
+}
+
+export interface BotImConnectionLanesPayload {
+  connectionId: string;
+  lanes: BotImConnectionLane[];
 }
 
 export const BOT_IM_CONNECTION_CHANGED_EVENT = 'botImConnection:changed';

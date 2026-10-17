@@ -9691,7 +9691,11 @@
       "setupDeferred": "可在夥伴對話中繼續登入與驗證。",
       "automationInvalid": "自動化定義無法轉換，尚未建立。",
       "itemFailed": "此項未完成，可重試並查看匯入詳情。",
-      "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。"
+      "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。",
+      "imBotOwnerMissing": "沒找到主人的使用者 ID，請到夥伴的「訊息平台」頁把這個機器人連上。",
+      "imBotGatewayRunning": "原本的閘道還在使用這個機器人。先停掉它，再到「訊息平台」頁連線。",
+      "imBotInUse": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
+      "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。"
     },
     "learning": {
       "memory": "已記住：{{title}}",
@@ -9771,6 +9775,36 @@
           "always": "全回應"
         }
       },
+      "lanes": {
+        "title": "隱藏任務",
+        "hint": "每個群組、話題和其他人的私聊各有一條隱藏任務。哪條卡住或答非所問，可以讓它重新開始，記錄會保留。",
+        "ownerName": "你的私聊",
+        "kind": {
+          "ownerDm": "主任務",
+          "group": "群組",
+          "topic": "話題",
+          "guestDm": "私聊"
+        },
+        "state": {
+          "running": "正在回覆",
+          "failed": "上次回覆出錯"
+        },
+        "noActivity": "還沒有訊息",
+        "messageCount_other": "目前上下文 {{count}} 則訊息",
+        "reset": "重新開始",
+        "resetAria": "讓「{{lane}}」重新開始",
+        "resetConfirm": {
+          "title": "讓「{{lane}}」重新開始？",
+          "description": "下一則訊息會從乾淨的上下文開始，進行中的回覆會停下。完整記錄仍留在這條隱藏任務裡，{{name}} 的記憶不變。",
+          "ownerDescription": "這是 {{name}} 的主任務，桌面上的對話和這裡的私聊共用它。下一則訊息會從乾淨的上下文開始，進行中的回覆會停下；記錄、記憶和檔案都會保留。",
+          "confirm": "重新開始",
+          "cancel": "取消"
+        },
+        "resetDone": "「{{lane}}」已重新開始，下一則訊息從乾淨的上下文開始。",
+        "resetFailed": "未能重新開始，請稍後再試",
+        "loadFailed": "無法讀取隱藏任務",
+        "empty": "還沒有群組或其他人的私聊。有人在群組或私聊裡和 {{name}} 說話後，會出現在這裡。"
+      },
       "add": {
         "button": "新增平台",
         "title": "為 {{name}} 新增平台",
@@ -9824,7 +9858,14 @@
           "conflict": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
           "botUnavailable": "{{name}} 目前無法使用，等 TA 恢復後再試。",
           "connectFailed": "未能連線：{{reason}}",
-          "failed": "未能完成，請稍後再試。"
+          "failed": "未能完成，請稍後再試。",
+          "personalBotGone": "設定 → IM 機器人 裡已經沒有這個機器人了，請改為填寫憑證。"
+        },
+        "source": {
+          "label": "連線方式",
+          "existing": "使用已在 Cindy 設定的機器人",
+          "manual": "填寫新的憑證",
+          "moveNote": "這個機器人會從 設定 → IM 機器人 移過來，那裡將變為空；原本的私訊和群組改由 {{name}} 接著回覆。"
         }
       },
       "removeConfirm": {

@@ -66,6 +66,7 @@ function installApi(payload: BotImConnectionListPayload) {
     remove: vi.fn(async () => ({ connections: [], archivedSessionIds: ['lane-1'] })),
     onChanged: vi.fn(() => () => undefined),
     ...groupsApi,
+    ...lanesApi,
   };
   Object.assign(window, { electronAPI: { botImConnection: api } });
   return api;
@@ -77,10 +78,17 @@ let groupsApi: {
   setGroupActivation?: ReturnType<typeof vi.fn>;
 } = {};
 
+/** 隐藏任务小节的 IPC(可选: 旧 preload 没有时整节不显示)。 */
+let lanesApi: {
+  listLanes?: ReturnType<typeof vi.fn>;
+  resetLane?: ReturnType<typeof vi.fn>;
+} = {};
+
 beforeEach(() => {
   mocks.confirm.mockReset();
   mocks.confirm.mockResolvedValue(true);
   groupsApi = {};
+  lanesApi = {};
 });
 afterEach(cleanup);
 
@@ -116,6 +124,51 @@ describe('BotChannelsPage', () => {
         screen.getByRole('radio', { name: 'bots.channels.groups.mode.always' }).getAttribute('aria-checked'),
       ).toBe('true'),
     );
+  });
+
+  it('starts one hidden task over through the connection it belongs to', async () => {
+    const lanes = [
+      { sessionId: 's-main', kind: 'owner-dm', chatId: null, threadId: null, name: null, state: 'idle', lastActivityAt: null, contextMessageCount: 0 },
+      { sessionId: 's-group', kind: 'group', chatId: '-1001', threadId: null, name: 'Hulu Report', state: 'failed', lastActivityAt: null, contextMessageCount: 0 },
+    ];
+    lanesApi = {
+      listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
+      resetLane: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
+    };
+    installApi({ connections: [connection()] });
+    render(<BotChannelsPage bot={mia} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.resetAria:{"lane":"Hulu Report"}' }));
+    await waitFor(() =>
+      expect(lanesApi.resetLane).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6', sessionId: 's-group' }),
+    );
+    expect(mocks.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'bots.channels.lanes.resetConfirm.description:{"name":"Mia"}' }),
+    );
+    expect(await screen.findByRole('status')).toBeTruthy();
+    expect(lanesApi.resetLane).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a hidden task over when the owner cancels', async () => {
+    mocks.confirm.mockResolvedValue(false);
+    lanesApi = {
+      listLanes: vi.fn(async () => ({
+        connectionId: 'a1b2c3d4e5f6',
+        lanes: [{ sessionId: 's-main', kind: 'owner-dm', chatId: null, threadId: null, name: null, state: 'running', lastActivityAt: null, contextMessageCount: 0 }],
+      })),
+      resetLane: vi.fn(),
+    };
+    installApi({ connections: [connection()] });
+    render(<BotChannelsPage bot={mia} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.resetAria:{"lane":"bots.channels.lanes.ownerName"}' }));
+    await waitFor(() =>
+      expect(mocks.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({ description: 'bots.channels.lanes.resetConfirm.ownerDescription:{"name":"Mia"}' }),
+      ),
+    );
+    expect(lanesApi.resetLane).not.toHaveBeenCalled();
+    expect(screen.getByText('bots.channels.lanes.empty:{"name":"Mia"}')).toBeTruthy();
   });
 
   it('does not render the groups section when the bot has not seen any group yet', async () => {
@@ -218,6 +271,30 @@ describe('BotChannelsPage', () => {
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(within(await screen.findByRole('list')).getAllByRole('listitem')).toHaveLength(1);
+  });
+
+  it('offers the bot already set up in Cindy first, and moves it without asking for credentials', async () => {
+    const api = Object.assign(installApi({ connections: [] }), {
+      listAdoptable: vi.fn(async () => ({ bots: [{ channel: 'telegram', identity: '@mia_bot' }] })),
+      adopt: vi.fn(async () => ({ connections: [connection()], connection: connection() })),
+    });
+    render(<BotChannelsPage bot={mia} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.add.button' }));
+    const dialog = await screen.findByRole('dialog');
+    const existing = await within(dialog).findByRole('radio', { name: /bots\.channels\.add\.source\.existing/ });
+    expect(existing.getAttribute('aria-checked')).toBe('true');
+    expect(existing.textContent).toContain('@mia_bot');
+    expect(within(dialog).queryByLabelText('bots.channels.add.telegram.tokenLabel')).toBeNull();
+
+    // Entering new credentials stays one click away.
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'bots.channels.add.source.manual' }));
+    expect(within(dialog).getByLabelText('bots.channels.add.telegram.tokenLabel')).toBeTruthy();
+    fireEvent.click(existing);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'bots.channels.add.confirm' }));
+    await waitFor(() => expect(api.adopt).toHaveBeenCalledWith({ botId: 'bot-1', channel: 'telegram' }));
+    expect(api.add).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   it('switches to the Feishu form and explains a connect failure in place', async () => {

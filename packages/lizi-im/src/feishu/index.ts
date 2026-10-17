@@ -433,8 +433,15 @@ export class FeishuIM extends BaseIM implements ChannelIM {
     appId: string;
     appSecret: string;
     service: 'feishu' | 'lark';
+    /** 已知主人(把个人 bot 移给伙伴时沿用原主人, 不再等首个私聊者认定)。 */
+    ownerOpenId?: string;
   }): Promise<{ verdict: 'connected' | 'conflict' | 'error' | 'pending' }> {
-    return saveAndConnect(creds.appId, creds.appSecret, creds.service);
+    return saveAndConnect(
+      creds.appId,
+      creds.appSecret,
+      creds.service,
+      creds.ownerOpenId ? { replacementOwnerOpenId: creds.ownerOpenId } : {},
+    );
   }
 
   /** 断开并清除全部凭证与 TOFU 主人(与设置卡 `feishuBot:clear` 同一条路径)。 */

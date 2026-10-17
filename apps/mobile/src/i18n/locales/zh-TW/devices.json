@@ -813,7 +813,11 @@
     "setupDeferred": "可在夥伴對話中繼續登入與驗證。",
     "automationInvalid": "自動化定義無法轉換，尚未建立。",
     "itemFailed": "此項未完成，可重試並查看匯入詳情。",
-    "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。"
+    "chatPartial": "夥伴已建立，但部分資料未完整儲存。以下項目仍需處理；其他內容和對話可以正常使用。",
+    "imBotOwnerMissing": "沒找到主人的使用者 ID，請到夥伴的「訊息平台」頁把這個機器人連上。",
+    "imBotGatewayRunning": "原本的閘道還在使用這個機器人。先停掉它，再到「訊息平台」頁連線。",
+    "imBotInUse": "這個機器人已經在這台電腦上使用了：在 設定 → IM 機器人 裡，或是在另一位夥伴那裡。",
+    "imBotConnectFailed": "沒能連上這個機器人，請到夥伴的「訊息平台」頁重試。"
   },
   "teammateTodo": {
     "title": "待辦",

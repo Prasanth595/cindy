@@ -4,12 +4,14 @@
  * 用户在平台(Telegram BotFather / 飞书开放平台 / 企业微信 / 钉钉 / Discord)自己申请机器人,
  * 把凭证填在这里, 这个机器人就是这位伙伴: 主人私聊进伙伴主任务, 群 / 话题 / 外部用户私聊各一条隐藏专线,
  * 同一伙伴的所有渠道共享记忆(规则见 docs/product-rules/cindy-bots-runtime.md)。
- * 与 设置 → IM 机器人 里那份独立的个人 bot 互不相干。远端伙伴没有这一页。
+ * 与 设置 → IM 机器人 里那份个人 bot 各用各的凭证; 添加时也可以把那份个人 bot 一次性移过来
+ * (个人 bot 随之清空)。远端伙伴没有这一页。
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Briefcase, Gamepad2, MessageSquare, Plus, Send, Zap, type LucideIcon } from 'lucide-react';
 
+import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { FormField } from '@/components/ui/form-field';
@@ -18,11 +20,14 @@ import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
+import { formatRelative } from '@/hooks/useRelativeTime';
 import { extractIpcError } from '@/utils/ipcError';
 import type {
+  BotImAdoptablePersonalBot,
   BotImChannel,
   BotImConnectionAddInput,
   BotImConnectionGroup,
+  BotImConnectionLane,
   BotImConnectionListPayload,
   BotImConnectionView,
   BotImFeishuService,
@@ -32,10 +37,15 @@ import { useBotTranslation } from './botPronounContext';
 import type { BotProfile } from './botStore';
 import {
   addBotImConnection,
+  adoptPersonalBot,
   botImConnectionGroupsSupported,
+  botImConnectionLanesSupported,
   listBotImConnectionGroups,
+  listBotImConnectionLanes,
+  listAdoptablePersonalBots,
   maskBotImContextId,
   removeBotImConnection,
+  resetBotImConnectionLane,
   setBotImConnectionGroupActivation,
   useBotImConnections,
 } from './botImConnectionClient';
@@ -198,6 +208,9 @@ export function BotChannelsPage({ bot }: { bot: BotProfile }) {
                 {view.channel === 'telegram' && view.botContextId && botImConnectionGroupsSupported() ? (
                   <ConnectionGroups connectionId={view.id} botName={bot.name} />
                 ) : null}
+                {view.botContextId && botImConnectionLanesSupported() ? (
+                  <ConnectionLanes connectionId={view.id} botName={bot.name} />
+                ) : null}
               </li>
             );
           })}
@@ -320,7 +333,228 @@ function ConnectionGroups({ connectionId, botName }: { connectionId: string; bot
   );
 }
 
+/** 状态在后台会变(正在回复 → 空闲): 页面开着时隔一会儿重读一次, 窗口不可见时不读。 */
+const LANES_REFRESH_MS = 20_000;
+
+const LANE_KIND_KEY: Record<BotImConnectionLane['kind'], string> = {
+  'owner-dm': 'ownerDm',
+  group: 'group',
+  topic: 'topic',
+  'guest-dm': 'guestDm',
+};
+
+/**
+ * 一条连接的「隐藏任务」小节: 主人私聊(伙伴主任务)、每个群 / 话题与其他人的私聊各一行,
+ * 显示状态、最近活动和当前上下文里的消息数; 卡住时可以让某一条重新开始(同一条任务,
+ * 记录保留, 下一条消息换干净的上下文)。隐藏任务没有自己的任务页, 所以这里不提供打开。
+ */
+function ConnectionLanes({ connectionId, botName }: { connectionId: string; botName: string }) {
+  const { t } = useBotTranslation();
+  const { confirm } = useConfirmDialog();
+  const [lanes, setLanes] = useState<BotImConnectionLane[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [resettingId, setResettingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'done' | 'failed'; text: string } | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const resettingRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void listBotImConnectionLanes(connectionId)
+        .then((payload) => {
+          if (cancelled) return;
+          setLanes(payload.lanes);
+          setLoadFailed(false);
+          setNow(Date.now());
+        })
+        .catch(() => {
+          if (!cancelled) setLoadFailed(true);
+        });
+    };
+    load();
+    const timer = setInterval(() => {
+      if (!document.hidden && !resettingRef.current) load();
+    }, LANES_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [connectionId, reloadToken]);
+
+  const laneName = (lane: BotImConnectionLane) =>
+    lane.kind === 'owner-dm' ? t('bots.channels.lanes.ownerName') : lane.name || lane.chatId || '';
+
+  const reset = async (lane: BotImConnectionLane) => {
+    if (resettingRef.current) return;
+    const name = laneName(lane);
+    const ok = await confirm({
+      title: t('bots.channels.lanes.resetConfirm.title', { lane: name }),
+      description: t(
+        lane.kind === 'owner-dm'
+          ? 'bots.channels.lanes.resetConfirm.ownerDescription'
+          : 'bots.channels.lanes.resetConfirm.description',
+        { name: botName },
+      ),
+      confirmText: t('bots.channels.lanes.resetConfirm.confirm'),
+      cancelText: t('bots.channels.lanes.resetConfirm.cancel'),
+    });
+    if (!ok) return;
+    resettingRef.current = true;
+    setResettingId(lane.sessionId);
+    setNotice(null);
+    try {
+      const payload = await resetBotImConnectionLane(connectionId, lane.sessionId);
+      setLanes(payload.lanes);
+      setNow(Date.now());
+      setNotice({ tone: 'done', text: t('bots.channels.lanes.resetDone', { lane: name }) });
+    } catch {
+      setNotice({ tone: 'failed', text: t('bots.channels.lanes.resetFailed') });
+      setReloadToken((value) => value + 1);
+    } finally {
+      resettingRef.current = false;
+      setResettingId(null);
+    }
+  };
+
+  if (lanes === null && !loadFailed) return null;
+  const others = (lanes ?? []).filter((lane) => lane.kind !== 'owner-dm');
+  return (
+    <div className="mt-3 flex flex-col gap-2 border-t border-[var(--border-default)] pt-3">
+      <div className="text-12 font-medium text-[var(--text-primary)]">{t('bots.channels.lanes.title')}</div>
+      <p className="text-11 leading-[1.5] text-[var(--text-tertiary)]">
+        {t('bots.channels.lanes.hint', { name: botName })}
+      </p>
+      {loadFailed ? (
+        <p className="flex items-center gap-2 text-12 text-[var(--text-danger)]">
+          <span>{t('bots.channels.lanes.loadFailed')}</span>
+          <button
+            type="button"
+            className="underline-offset-2 hover:underline"
+            onClick={() => setReloadToken((value) => value + 1)}
+          >
+            {t('bots.channels.groups.retry')}
+          </button>
+        </p>
+      ) : null}
+      {(lanes ?? []).map((lane) => {
+        const name = laneName(lane);
+        const meta = [
+          // 同一个群的几个话题同名: 种类后跟话题 id 末几位区分。
+          lane.kind === 'topic' && lane.threadId
+            ? `${t('bots.channels.lanes.kind.topic')} ${lane.threadId.slice(-6)}`
+            : t(`bots.channels.lanes.kind.${LANE_KIND_KEY[lane.kind]}`),
+          lane.state === 'running'
+            ? t('bots.channels.lanes.state.running')
+            : lane.state === 'failed'
+              ? t('bots.channels.lanes.state.failed')
+              : null,
+          lane.lastActivityAt !== null
+            ? formatRelative(lane.lastActivityAt, Math.max(now, lane.lastActivityAt), t)
+            : t('bots.channels.lanes.noActivity'),
+          lane.lastActivityAt !== null
+            ? t('bots.channels.lanes.messageCount', { count: lane.contextMessageCount })
+            : null,
+        ].filter((part): part is string => !!part);
+        return (
+          <div key={lane.sessionId} className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 truncate text-12 text-[var(--text-primary)]" title={name}>
+                  {name}
+                </span>
+                {lane.state === 'running' ? (
+                  <Spinner size={12} aria-hidden className="shrink-0 text-[var(--text-tertiary)]" />
+                ) : lane.state === 'failed' ? (
+                  <AttentionDot tone="error" />
+                ) : null}
+              </div>
+              <div className="text-11 leading-[1.5] text-[var(--text-tertiary)]">{meta.join(' · ')}</div>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="md"
+              compact
+              loading={resettingId === lane.sessionId}
+              disabled={resettingId !== null && resettingId !== lane.sessionId}
+              aria-label={t('bots.channels.lanes.resetAria', { lane: name })}
+              onClick={() => void reset(lane)}
+            >
+              {t('bots.channels.lanes.reset')}
+            </Button>
+          </div>
+        );
+      })}
+      {lanes !== null && others.length === 0 ? (
+        <p className="text-11 leading-[1.5] text-[var(--text-tertiary)]">
+          {t('bots.channels.lanes.empty', { name: botName })}
+        </p>
+      ) : null}
+      {notice ? (
+        <p
+          role="status"
+          className={cn(
+            'text-12 leading-[1.5]',
+            notice.tone === 'failed' ? 'text-[var(--text-danger)]' : 'text-[var(--text-secondary)]',
+          )}
+        >
+          {notice.text}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 const PLATFORMS: ReadonlyArray<BotImChannel> = ['telegram', 'feishu', 'wecom', 'dingtalk', 'discord'];
+
+/** 个人 bot 给人看的身份: Telegram @用户名 / Discord 标签原样, 其它平台的 id 打码。 */
+function adoptableIdentity(item: BotImAdoptablePersonalBot): string | undefined {
+  if (!item.identity) return undefined;
+  if (item.channel === 'telegram' || item.channel === 'discord') return item.identity;
+  return maskBotImContextId(item.identity);
+}
+
+/** 添加弹窗里「使用已设置的机器人 / 填写新的凭证」二选一的一行(与平台选项同一套样式)。 */
+function SourceOption({
+  checked,
+  disabled,
+  title,
+  detail,
+  onSelect,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  title: string;
+  detail?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        'flex min-h-11 w-full min-w-0 flex-col items-start justify-center gap-0.5 rounded-xl border px-3 py-2 text-left outline-none transition-colors',
+        'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]',
+        'disabled:cursor-not-allowed',
+        checked
+          ? 'border-[var(--accent-cta-bg-pure)] bg-[var(--model-item-hover)]'
+          : 'border-[var(--border-default)] enabled:hover:bg-[var(--model-item-hover)]',
+      )}
+    >
+      <span className={cn('text-13 leading-[1.5]', checked ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]')}>
+        {title}
+      </span>
+      {detail ? (
+        <span className="max-w-full truncate text-12 leading-[1.5] text-[var(--text-secondary)]">{detail}</span>
+      ) : null}
+    </button>
+  );
+}
 
 function BotChannelAddDialog({
   bot,
@@ -349,12 +583,28 @@ function BotChannelAddDialog({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const firstOptionRef = useRef<HTMLButtonElement>(null);
+  // 设置 → IM 机器人 里已配好的个人 bot: 这个平台有时默认「使用已设置的机器人」。
+  const [adoptable, setAdoptable] = useState<BotImAdoptablePersonalBot[]>([]);
+  const [source, setSource] = useState<'existing' | 'manual'>('existing');
+  const existing = adoptable.find((item) => item.channel === channel) ?? null;
+  const useExisting = existing !== null && source === 'existing';
 
-  useEffect(() => setError(null), [channel]);
+  const refreshAdoptable = useCallback(() => {
+    void listAdoptablePersonalBots()
+      .then((next) => setAdoptable(next.bots))
+      .catch(() => setAdoptable([]));
+  }, []);
+  useEffect(refreshAdoptable, [refreshAdoptable]);
+
+  useEffect(() => {
+    setError(null);
+    setSource('existing');
+  }, [channel]);
 
   const filled = (...values: string[]) => values.every((value) => value.trim().length > 0);
-  const canSubmit =
-    channel === 'telegram'
+  const canSubmit = useExisting
+    ? true
+    : channel === 'telegram'
       ? filled(token, ownerUserId)
       : channel === 'feishu'
         ? filled(appId, appSecret)
@@ -404,7 +654,7 @@ function BotChannelAddDialog({
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!canSubmit || busyRef.current) return;
-    const input = buildInput();
+    const input = useExisting ? null : buildInput();
     if (typeof input === 'string') {
       setError(input);
       return;
@@ -413,13 +663,17 @@ function BotChannelAddDialog({
     setBusy(true);
     setError(null);
     try {
-      const next = await addBotImConnection(input);
+      const next = input ? await addBotImConnection(input) : await adoptPersonalBot({ botId: bot.id, channel });
       onApplied(next);
       onOpenChange(false);
     } catch (failure) {
       const ipc = extractIpcError(failure);
       const message = ipc?.message ?? '';
-      if (message.includes('TOKEN_IN_USE') || message.includes('APP_IN_USE')) {
+      if (message.includes('PERSONAL_BOT_NOT_CONFIGURED')) {
+        // 个人 bot 在别处被清掉了: 刷新后这个平台回到填写凭证。
+        refreshAdoptable();
+        setError(t('bots.channels.add.errors.personalBotGone'));
+      } else if (message.includes('TOKEN_IN_USE') || message.includes('APP_IN_USE')) {
         setError(t('bots.channels.add.errors.conflict'));
       } else if (ipc?.code === 'NOT_FOUND' || message.includes('BOT_INACTIVE')) {
         setError(t('bots.channels.add.errors.botUnavailable', { name: bot.name }));
@@ -493,7 +747,32 @@ function BotChannelAddDialog({
             </div>
 
             <div className="mt-4 flex min-h-0 flex-col gap-3 overflow-y-auto">
-              {channel === 'telegram' ? (
+              {existing ? (
+                <div
+                  role="radiogroup"
+                  aria-label={t('bots.channels.add.source.label')}
+                  className="flex flex-col gap-2"
+                >
+                  <SourceOption
+                    checked={useExisting}
+                    disabled={busy}
+                    title={t('bots.channels.add.source.existing')}
+                    detail={adoptableIdentity(existing)}
+                    onSelect={() => setSource('existing')}
+                  />
+                  <SourceOption
+                    checked={!useExisting}
+                    disabled={busy}
+                    title={t('bots.channels.add.source.manual')}
+                    onSelect={() => setSource('manual')}
+                  />
+                </div>
+              ) : null}
+              {useExisting ? (
+                <p className="px-1 text-12 leading-[1.5] text-[var(--text-secondary)]">
+                  {t('bots.channels.add.source.moveNote', { name: bot.name })}
+                </p>
+              ) : channel === 'telegram' ? (
                 <>
                   <FormField label={t('bots.channels.add.telegram.tokenLabel')}>
                     {(control) => (

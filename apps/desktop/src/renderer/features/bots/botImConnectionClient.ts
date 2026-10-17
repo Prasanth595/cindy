@@ -7,9 +7,12 @@
 import { useEffect, useState } from 'react';
 
 import type {
+  BotImAdoptablePersonalBotsPayload,
+  BotImAdoptPersonalBotInput,
   BotImConnectionAddInput,
   BotImConnectionAddResult,
   BotImConnectionGroupsPayload,
+  BotImConnectionLanesPayload,
   BotImConnectionListPayload,
   BotImConnectionRemoveResult,
   BotImGroupActivationMode,
@@ -93,6 +96,39 @@ export function setBotImConnectionGroupActivation(
   const api = botImConnectionApi();
   if (!api?.setGroupActivation) return Promise.reject(new Error('botImConnection IPC unavailable'));
   return api.setGroupActivation({ id, chatId, mode });
+}
+
+/** 旧 preload 没有隐藏任务接口时整个小节不显示。 */
+export function botImConnectionLanesSupported(): boolean {
+  const api = botImConnectionApi();
+  return !!api && typeof api.listLanes === 'function' && typeof api.resetLane === 'function';
+}
+
+export function listBotImConnectionLanes(id: string): Promise<BotImConnectionLanesPayload> {
+  const api = botImConnectionApi();
+  if (!api?.listLanes) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.listLanes({ id });
+}
+
+/** 让一条隐藏任务重新开始(下一条消息从干净的上下文开始, 记录保留)。 */
+export function resetBotImConnectionLane(id: string, sessionId: string): Promise<BotImConnectionLanesPayload> {
+  const api = botImConnectionApi();
+  if (!api?.resetLane) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.resetLane({ id, sessionId });
+}
+
+/** 设置 → IM 机器人 里可以移给伙伴的个人 bot; 旧 preload 没有这个接口时当作没有。 */
+export function listAdoptablePersonalBots(): Promise<BotImAdoptablePersonalBotsPayload> {
+  const api = botImConnectionApi();
+  if (!api?.listAdoptable) return Promise.resolve({ bots: [] });
+  return api.listAdoptable();
+}
+
+/** 把个人 bot 移给伙伴(个人 bot 随之清空)。 */
+export function adoptPersonalBot(input: BotImAdoptPersonalBotInput): Promise<BotImConnectionAddResult> {
+  const api = botImConnectionApi();
+  if (!api?.adopt) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.adopt(input);
 }
 
 /** 飞书 app id 打码(头 4 尾 4), 列表里不展示完整身份。 */

@@ -88,12 +88,19 @@ import { wireDingTalkOrchestrator } from './dingtalk';
 import { wireWechatOrchestrator } from './wechat';
 import { wireWecomOrchestrator } from './wecom';
 import { resetTelegramGroupContextCursors } from './telegram/groupWindow';
+import { resetChannelGroupContextCursors } from './shared/channelGroupWindow';
 import { getImOrchestrator, listImOrchestrators } from './shared/orchestrator';
 import {
   configureBotImConnectionRuntime,
+  registerBotImConnectionIpc as registerBotImConnectionRuntimeIpc,
   startBotImConnections,
   stopBotImConnections,
 } from './shared/botImConnectionRuntime';
+import {
+  configureBotImPersonalAdoption,
+  registerBotImPersonalAdoptionIpc,
+} from './shared/botImPersonalAdoption';
+import { readTelegramBehavior } from './telegram/behaviorStore';
 import { readBotImConnection, secretKeyPrefixFor } from './shared/botImConnectionStore';
 import { ownerScopedImSecrets } from './ownerScopedStorage';
 import { backfillLegacyImDefaultRoutes, backfillLegacyImDefaultRoutesAtStartup } from './shared/channelDefaultRouteSync';
@@ -121,7 +128,11 @@ import {
   writeWechatWorkingDir,
 } from './wechat/channelSettings';
 
-export { registerBotImConnectionIpc } from './shared/botImConnectionRuntime';
+/** 伙伴「消息平台」的 IPC: 连接增删 / 群聊 / 隐藏任务, 以及把个人 bot 移给伙伴。 */
+export function registerBotImConnectionIpc(): void {
+  registerBotImConnectionRuntimeIpc();
+  registerBotImPersonalAdoptionIpc();
+}
 export {
   registerTelegramBotConfigIpc,
   im,
@@ -314,6 +325,55 @@ export function startImOrchestrators(): void {
       record.channel === 'telegram' && record.botContextId
         ? listTelegramKnownGroups(record.botContextId)
         : Promise.resolve([]),
+  });
+
+  // 把设置页那份个人 bot 移给伙伴: 停 = 与登出同一个 dispose(静默、凭证保留),
+  // 恢复 = init(按安全存储里的凭证重连); 凭证删掉之后再 init / clearCredentials 让设置页
+  // 随各渠道的状态广播回到「未配置」。Telegram / Discord 不走 disconnect: 它会给主人发
+  // 「已断开」并删命令菜单, 而同一个 bot 已经由伙伴接着用。
+  configureBotImPersonalAdoption({
+    isReady: () => connectionLifecycle.isStarted(),
+    telegramGroupActivation: () => readTelegramBehavior().groupActivation,
+    personal: {
+      telegram: {
+        identity: () => {
+          const username = telegramIm.getConfigState().botUsername;
+          return username ? `@${username}` : null;
+        },
+        stop: () => telegramIm.dispose(),
+        start: () => telegramIm.init(),
+        clear: () => telegramIm.init(),
+      },
+      feishu: {
+        identity: () => feishuIm.getBotAppId() ?? (ownerScopedImSecrets.read('feishu_bot_app_id')?.trim() || null),
+        stop: () => feishuIm.dispose(),
+        start: () => feishuIm.init(),
+        clear: () => feishuIm.clearCredentials(),
+      },
+      wecom: {
+        identity: () => wecomIm.getConfigState().botId,
+        stop: () => wecomIm.dispose(),
+        start: () => wecomIm.init(),
+        clear: async () => {
+          await wecomIm.clearCredentials();
+        },
+      },
+      dingtalk: {
+        identity: () => dingtalkIm.getPublicState().appKey,
+        stop: () => dingtalkIm.dispose(),
+        start: () => dingtalkIm.init(),
+        clear: () => dingtalkIm.clearCredentials(),
+      },
+      discord: {
+        identity: () => {
+          const status = discordIm.getStatus();
+          return status.kind === 'connected' && status.appId ? status.appId : null;
+        },
+        stop: () => discordIm.dispose(),
+        start: () => discordIm.init(),
+        clear: () => discordIm.init(),
+      },
+    },
   });
 
   ipcMain.handle('wechatBot:get-state', (event) => {
@@ -675,6 +735,8 @@ const connectionLifecycle = createSerializedConnectionLifecycle({
       // 只有明确删除账号数据时才清持久表。Telegram bot 解绑由 hook-control 的
       // binding identity reset 单独处理, 不把 auth logout 误当成数据删除。
       await resetTelegramGroupContextCursors({ clearPersisted: reason === 'account-deletion' });
+      // 企业微信 / 钉钉的群窗口与 Telegram 共用同一张表, 游标同一口径清理。
+      await resetChannelGroupContextCursors({ clearPersisted: reason === 'account-deletion' });
     }
   },
   onStartError: (err) => {

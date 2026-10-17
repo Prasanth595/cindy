@@ -57,6 +57,7 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | `controlState.inProgress` / 绑定库 | `im/shared/controlState.ts` / `im/binding.ts` | bot:user | 保留（`/ctr` 是个人渠道能力） |
 | `pendingInteractions.pending` / `interactions.ts pending` | 两侧 | requestId / interactionId | 并入（批次 5：交互挂起表合一，超时策略按渠道参数） |
 | `groupHistoryAccess.activeBySession` | `im/shared` | sessionId | 已同源，不动 |
+| 群消息本地窗口（`hook_group_messages`）与上下文游标（`hook_group_context_cursors`） | `im/shared/groupWindowCore.ts`；个人渠道经 `im/shared/channelGroupWindow.ts`（Telegram / 企业微信 / 钉钉各一份 provider 前缀，`<渠道>-personal:<botContextId>`），官方经 `hook-control/groupWindow.ts` | provider + chat / cursorKey | 已同源，不另建存储：新渠道接群上下文时复用 `createChannelGroupWindow`，在 `prepareAgentTurnText` 入窗并拼前缀、受理后 `commit`，终稿发出后把机器人回复入窗 |
 | `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。两个可绑定给伙伴的渠道（Telegram、飞书 / Lark）各一种作用域，带着触发本轮那条连接自己的 transport；`cindy_feishu_bot` 的 `send_*_to_user` 也按它选出站 bot（2026-10-17 前恒走设置页那份，伙伴绑定的飞书连接会从错的 bot 发出） |
 | Telegram 传输层（`chatQueues` / `typingLoops` / 回挂目标） | `packages/lizi-im/src/telegram/index.ts` | chat | 保留（个人出站载体） |
 
