@@ -3308,11 +3308,15 @@ export class PiAgent extends BaseAgent {
       await writeFile(joinRemotePosixPath(extensionsDir, CINDY_GUEST_CONTEXT_DATA_FILENAME), JSON.stringify({ files }), 0o600);
       await writeFile(guestContextExtensionPath, CINDY_GUEST_CONTEXT_EXTENSION_SOURCE);
     }
-    // 「后台命令」能力:与本地 subagent 同一能力面(本地、非 Review、非 Bot)。
+    // 「后台命令」能力:与本地 subagent 同一能力面(本地、非 Review、非 Bot、非设备托管)。
     // 不依赖 spawnPiSubagentRunner —— 命令由 host 自己的 child_process 跑,但同样
     // 不能跑在 SSH 远端语义下(那会跑到控制端本机、工作区与路径都不对)。
+    // 设备托管(hosted)时 Pi 进程虽在本机,但 bash 工具会被 registerCindyHostedTools
+    // 替换成 host exec 通道 —— 它不支持后台标记,若仍暴露 background,显式的
+    // background:true 会静默变前台等待(dev server 占住工具调用,面板无任务)。与
+    // allowPiPackageManagement 同口径排除。
     // bridge 侧据 env 开关决定是否暴露 background 参数,未开启时显式拒绝。
-    const backgroundCommandsSupported = !reviewMode && !remote && !opts.botRuntimeProfile;
+    const backgroundCommandsSupported = !reviewMode && !remote && !opts.botRuntimeProfile && !hosted;
     // 控制通道 bearer(与 Pi 包管理 token 同一口径):title + payload 在 Pi 进程内对所有
     // 扩展可见,而这条通道会以父会话的 env/cwd spawn 进程,所以 host 只认自己签发过的 token。
     // 不进 piSecretEnvNames 以外的面向模型清单,子代理 runner 另行剥离(见 runner 源)。
@@ -5965,6 +5969,15 @@ export class PiAgent extends BaseAgent {
             void cleanupConfigHome();
             cleanupRuntimeFiles();
           }
+          // 后台命令执行器属于 live 会话:Pi 进程死了,宿主启动的后台命令虽然还在跑
+          // (detached),但会话内的停止入口已随事件队列结束而消失 —— 同 close() 的
+          // 语义(杀全部 + 按 stopped 收口),不能只挂在显式 close() 上。dispose 幂等,
+          // 与 close() 先到先清。
+          void backgroundCommands?.dispose().catch((error) => {
+            this.deps.logger?.warn('pi background commands dispose on exit failed (non-fatal)', {
+              message: error instanceof Error ? error.message : String(error),
+            });
+          });
           queue.end();
         },
       });

@@ -675,6 +675,18 @@ describe('removePiBackgroundCommandRoot owner 判定', () => {
     const shapeless = seedDir(['owner.json', 'owner-abc.json']);
     await expect(removePiBackgroundCommandRoot(shapeless)).resolves.toBe('kept-unowned');
   });
+
+  it('ownedByThisProcess overrides kept-unowned: same-main deletion of a fully settled session reclaims the dir', async () => {
+    // Greptile P2:会话删除与 spawn 同在 main 进程——全部命令正常结束后标记已按设计
+    // 撤销,目录不是「归属未知」而是「本进程已不再使用」;调用方能证明这一点时就应回收,
+    // 否则单实例正常生命周期也会永久残留日志(每条最多 8 MiB)。跨实例目录不会命中
+    // liveManagers,保守保护不受影响。
+    const unowned = seedDir();
+    await expect(
+      removePiBackgroundCommandRoot(unowned, { ownedByThisProcess: true }),
+    ).resolves.toBe('removed');
+    expect(existsSync(unowned)).toBe(false);
+  });
 });
 describe('piBackgroundCommandRoot', () => {
   it('keeps the session id inside the runtime tree', () => {

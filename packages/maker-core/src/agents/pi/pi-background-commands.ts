@@ -326,6 +326,19 @@ export async function sweepStalePiBackgroundCommandAnonRoots(
   return results.filter((result) => result === 'removed').length;
 }
 
+/** `liveManagers` 里是否有实例的 logDir 就是这个目录（本进程曾 spawn 过该会话的后台命令）。
+ *  供会话删除侧给「无标记」提供正面归属证据（见 removePiBackgroundCommandRoot）。 */
+export function hasPiBackgroundCommandManagerForRoot(root: string): boolean {
+  const wanted = root.replace(/[\\/]+$/, '');
+  for (const manager of liveManagers) {
+    // options 是私有字段:模块内同类访问(同文件)不受限制。
+    if ((manager as unknown as { options: { logDir: string } }).options.logDir.replace(/[\\/]+$/, '') === wanted) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** `anon-<pid>-<ts>` → pid;名字不符 / pid 非法返回 null。 */
 function parseAnonOwnerPid(entry: string): number | null {
   const match = /^anon-(\d+)-\d+$/.exec(entry);
@@ -355,17 +368,31 @@ function defaultIsProcessAlive(pid: number): boolean {
  *   停不掉那边的进程,删日志只会让它连输出与线索一起消失(调用方应记 warn)。
  * - `'kept-unowned'`:目录里**一个归属标记都没有**(写入失败 / 标记被清掉 / 目录来自更早的
  *   构建)。判据缺失时**默认保守保留**(`keepWhenUnowned` 默认 true):我们无法证明没有人
- *   在用,而删错的代价是另一个实例的进程还在跑、日志却没了。有正面证据的调用方(例如启动期
- *   sweep 手里有目录名里的死 pid)可以显式关掉这一保守行为。
+ *   在用,而删错的代价是另一个实例的进程还在跑、日志却没了。有正面证据的调用方可以显式
+ *   关掉这一保守行为(例如启动期 sweep 手里有目录名里的死 pid,或 `ownedByThisProcess`
+ *   —— 见下)。
+ *
+ * `ownedByThisProcess`(Greptile P2):调用方(同一 main 进程内的 sessions IPC)能证明
+ * 本进程**正是** spawn 这个会话后台命令的实例 —— `PiBackgroundCommands` 的 logDir 就建
+ * 在 `piBackgroundCommandRoot(agentHome, sessionId)` 下,`liveManagers` 里只要有实例的
+ * logDir 命中该目录,「无标记」就只能意味着「本实例的命令都已正常结束、标记已按设计
+ * 撤销」,而不是归属未知 → 回收有了可确认的依据;真正跨实例的目录里不会有本进程的
+ * liveManagers 命中,保护不受影响。
  */
 export async function removePiBackgroundCommandRoot(
   root: string,
-  opts?: { isProcessAlive?: (pid: number) => boolean; keepWhenUnowned?: boolean },
+  opts?: {
+    isProcessAlive?: (pid: number) => boolean;
+    keepWhenUnowned?: boolean;
+    ownedByThisProcess?: boolean;
+  },
 ): Promise<'removed' | 'kept-foreign-owner' | 'kept-unowned'> {
   const owners = await readPiBackgroundCommandOwnerPids(root);
   const alive = opts?.isProcessAlive ?? defaultIsProcessAlive;
   if (owners.some((pid) => pid !== process.pid && alive(pid))) return 'kept-foreign-owner';
-  if (owners.length === 0 && (opts?.keepWhenUnowned ?? true)) return 'kept-unowned';
+  if (owners.length === 0 && (opts?.keepWhenUnowned ?? true) && !opts?.ownedByThisProcess) {
+    return 'kept-unowned';
+  }
   // Windows:刚死的进程还占着 cwd / 打开的 .log,第一次 rmdir 会 EBUSY/EPERM —— 与
   // subagent 那边的 stopAndRemovePiSubagentRuns 同一补救(Node 自带重试)。
   await fsp
@@ -998,15 +1025,54 @@ export class PiBackgroundCommands {
       : text;
   }
 
+  /**
+   * 进程组是否仍有存活成员（POSIX detached spawn 建独立组；Windows 无进程组语义 →
+   * 永远视为「无法确认」，由调用方退回 shell 退出口径）。`kill(-pid, 0)` 只探测不投递。
+   *
+   * Greptile P1：shell 收到 SIGTERM 退出但组内子进程忽略信号时，仅凭 `record.exit`
+   * 判定收口会漏掉仍在工作的整棵子树 —— 任务已出运行表，退出清扫也不再覆盖它们。
+   */
+  private processGroupAlive(record: RunningCommand): boolean | null {
+    const pid = record.child?.pid;
+    if (this.platform === 'win32' || pid === undefined) return null;
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === 'ESRCH') return false;
+      // EPERM = 组还在但无权发信号（判活口径下仍算存活）。
+      if (code === 'EPERM') return true;
+      return null;
+    }
+  }
+
   private async waitForExit(record: RunningCommand, timeoutMs: number): Promise<boolean> {
-    // 口径是**操作系统报告进程结束**,不是 UI 收口(finalize 可能由 dispose 提前触发)。
-    if (record.exit) return true;
+    // 口径是**操作系统报告进程组消亡**,不是 UI 收口(finalize 可能由 dispose 提前触发)。
+    // shell 已退而组仍活着(组内子进程忽略 SIGTERM)时不能就此确认 —— 那正是 Greptile
+    // P1 指出的「看到已停止、实际还在跑」。Windows 无进程组语义(group === null)时
+    // 退回原来的 shell 退出口径。
+    if (record.exit) {
+      const group = this.processGroupAlive(record);
+      if (group !== true) return true;
+      // 组仍活:落到下面的轮询,等它消亡或超时(超时由调用方升级 SIGKILL)。
+    }
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<boolean>((resolve) => {
       timer = setTimeout(() => resolve(false), timeoutMs);
       timer.unref?.();
     });
-    const result = await Promise.race([record.nativeExited.then(() => true), timeout]);
+    const nativeDone = record.nativeExited.then(async () => {
+      // shell 死后组可能还活着;轮询等组消亡(含 Windows 的 null 判定 → 立即算已停)。
+      const pollDeadline = Date.now() + timeoutMs;
+      while (Date.now() < pollDeadline) {
+        const group = this.processGroupAlive(record);
+        if (group !== true) return true;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return false;
+    });
+    const result = await Promise.race([nativeDone, timeout]);
     if (timer) clearTimeout(timer);
     return result;
   }

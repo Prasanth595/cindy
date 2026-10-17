@@ -23,6 +23,7 @@ import {
   writePiSubagentDeletedTombstone,
 } from '@cindy/maker-core/pi-subagent-runs';
 import {
+  hasPiBackgroundCommandManagerForRoot,
   piBackgroundCommandRoot,
   removePiBackgroundCommandRoot,
 } from '@cindy/maker-core/pi-background-commands';
@@ -2720,9 +2721,14 @@ function scheduleDeletedPiSubagentCleanup(sessionId: string, attempt = 0): void 
           // 面板也按历史行显示「已停止」,而另一个实例里那条进程可能真的还在跑 —— 这是
           // 静默误导,但不做机制改动(正确做法是去那个实例里停,或直接杀进程树)。
           try {
-            const logCleanup = await removePiBackgroundCommandRoot(
-              piBackgroundCommandRoot(agentHome, sessionId),
-            );
+            const root = piBackgroundCommandRoot(agentHome, sessionId);
+            const logCleanup = await removePiBackgroundCommandRoot(root, {
+              // 本进程就是 spawn 该会话后台命令的实例(main 内 IPC 同进程):「无标记」
+              // 只能是「命令都已正常结束、标记按设计撤销」,可回收 —— 否则单实例全
+              // 正常结束的会话会永远留下目录(Greptile P2)。真正跨实例的目录不会命中
+              // liveManagers,保守保护不受影响。
+              ownedByThisProcess: hasPiBackgroundCommandManagerForRoot(root),
+            });
             if (logCleanup === 'kept-foreign-owner') {
               // 这个会话的日志目录属于**另一个仍然存活的实例**:我们停不掉它的进程
               // (跨实例边界),所以**故意保留**目录 —— 删掉只会让那边还在跑的命令连
