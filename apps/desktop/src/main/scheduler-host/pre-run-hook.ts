@@ -21,7 +21,8 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, mkdtempSync, openSync, readSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Socket } from 'node:net';
 import path from 'node:path';
 import type { PreRunHookRunResult } from '@cindy/maker-scheduler';
 import { capAppend as capAppendBase, killProcessTree } from './proc-util';
@@ -75,8 +76,98 @@ const XDT_NODE_PREFIX = /^xdt-node\s+/;
 
 /** 一轮独占的启动回执。只证明 Node 启动，不代替脚本最终退出结果。 */
 interface NodeRuntimeReceipt {
-  path: string;
-  value: string;
+  importArgument: string;
+  optionsPrefix: string;
+  started: boolean;
+  close(): Promise<void>;
+}
+
+/** Private local IPC needs no hook filesystem write grant or shell-owned fd. */
+async function createNodeRuntimeReceipt(): Promise<NodeRuntimeReceipt> {
+  const value = randomUUID();
+  // Node's preload allowlist uses physical paths; avoid macOS /var aliases.
+  const directory = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'cindy-pre-run-node-'));
+  const bootstrapPath = path.join(directory, 'isolate.cjs');
+  const endpoint = process.platform === 'win32'
+    ? '\\\\.\\pipe\\cindy-pre-run-node-' + value
+    : path.join(directory, 'receipt.sock');
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.unref();
+    let received = '';
+    socket.on('error', () => undefined);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('data', (chunk: Buffer) => {
+      if (received.length + chunk.length > value.length) {
+        socket.destroy();
+        return;
+      }
+      received += chunk.toString('utf8');
+    });
+    socket.on('end', () => {
+      if (received !== value) {
+        socket.destroy();
+        return;
+      }
+      receipt.started = true;
+      socket.end('ok');
+    });
+  });
+  // A malformed/late client must not crash Main; all owned sockets close below.
+  server.on('error', () => undefined);
+  const bootstrap = Buffer.from([
+    "import { createConnection } from 'node:net';",
+    "import { isMainThread } from 'node:worker_threads';",
+    "const index = process.execArgv.indexOf('--import=' + import.meta.url);",
+    'if (index !== -1) process.execArgv.splice(index, 1);',
+    // Workers can inherit Node's native argument snapshot despite the early
+    // CJS isolation. Only the root runtime sends this run's startup proof.
+    'if (isMainThread) await new Promise((resolve, reject) => {',
+    '  const socket = createConnection(' + JSON.stringify(endpoint) + ');',
+    "  let reply = ''; socket.setEncoding('utf8');",
+    '  socket.on(\'connect\', () => socket.end(' + JSON.stringify(value) + '));',
+    "  socket.on('data', chunk => { reply += chunk; if (reply.length > 2) socket.destroy(new Error('Invalid startup receipt')); });",
+    "  socket.on('error', reject);",
+    "  socket.on('end', () => reply === 'ok' ? resolve() : reject(new Error('Missing startup receipt')));",
+    '});',
+  ].join('\n')).toString('base64');
+  const importArgument = '--import=data:text/javascript;base64,' + bootstrap;
+  // NODE_OPTIONS requires run before command-line -r, and in their listed
+  // order. Remove only our prefix before any user preload can fork(). Node
+  // automatically allows reading its preload, including in permission mode.
+  const optionsPrefix = '--require=' + JSON.stringify(bootstrapPath) + ' ';
+  const receipt: NodeRuntimeReceipt = {
+    importArgument, optionsPrefix, started: false,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => {
+        if (!server.listening) return resolve();
+        server.close(() => resolve());
+      });
+      try { rmSync(directory, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+  try {
+    writeFileSync(bootstrapPath, [
+      'const index = process.execArgv.indexOf(' + JSON.stringify(importArgument) + ');',
+      'if (index !== -1) process.execArgv.splice(index, 1);',
+      'const prefix = ' + JSON.stringify(optionsPrefix) + ';',
+      "if (process.env.NODE_OPTIONS?.startsWith(prefix)) {",
+      '  process.env.NODE_OPTIONS = process.env.NODE_OPTIONS.slice(prefix.length);',
+      '  if (!process.env.NODE_OPTIONS) delete process.env.NODE_OPTIONS;',
+      '}',
+    ].join('\n'), { flag: 'wx', mode: 0o600 });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(endpoint, () => { server.off('error', reject); resolve(); });
+    });
+    server.unref();
+    return receipt;
+  } catch (error) {
+    await receipt.close();
+    throw error;
+  }
 }
 
 /** 解析 xdt-node 前缀;执行时附带回执，语法预检时不创建临时文件。 */
@@ -86,44 +177,16 @@ export function resolveHookCommand(command: string, receipt?: NodeRuntimeReceipt
 } {
   if (XDT_NODE_PREFIX.test(command.trim())) {
     const rest = command.trim().replace(XDT_NODE_PREFIX, '');
-    let preload = '';
-    if (receipt) {
-      // A private file keeps shell fd redirections and business output intact.
-      // Only this Node preload writes the per-run nonce; a GUI never loads it.
-      const bootstrap = Buffer.from([
-        "import { writeFileSync } from 'node:fs';",
-        "import { isMainThread } from 'node:worker_threads';",
-        'if (isMainThread) writeFileSync(' + JSON.stringify(receipt.path) + ', ' + JSON.stringify(receipt.value)
-          + ", { flag: 'wx', mode: 0o600 });",
-        // Worker defaults can use Node's original argument snapshot even after
-        // JS mutates execArgv, hence the isMainThread guard above. Remove our
-        // own import in each thread for fork() and explicit execArgv consumers.
-        "const index = process.execArgv.indexOf('--import=' + import.meta.url);",
-        'if (index !== -1) process.execArgv.splice(index, 1);',
-      ].join('\n')).toString('base64');
-      preload = ' "--import=data:text/javascript;base64,' + bootstrap + '"';
-    }
+    const preload = receipt ? ' "' + receipt.importArgument + '"' : '';
     return {
       command: `"${process.execPath}"${preload} ${rest}`,
-      extraEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      extraEnv: {
+        ELECTRON_RUN_AS_NODE: '1',
+        ...(receipt ? { NODE_OPTIONS: receipt.optionsPrefix + (process.env.NODE_OPTIONS ?? '') } : {}),
+      },
     };
   }
   return { command, extraEnv: {} };
-}
-
-/** 限长读取独占文件;缺失、无效或不可读的回执一律不能证明 Node 启动。 */
-function receivedNodeRuntimeReceipt(receipt: NodeRuntimeReceipt): boolean {
-  let fd: number | undefined;
-  try {
-    fd = openSync(receipt.path, 'r');
-    const bytes = Buffer.alloc(receipt.value.length + 1);
-    const length = readSync(fd, bytes, 0, bytes.length, 0);
-    return length === receipt.value.length && bytes.subarray(0, length).toString('utf8') === receipt.value;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
 }
 
 export type PreRunHookResult = PreRunHookRunResult;
@@ -261,18 +324,14 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     };
   }
 
-  let receipt: (NodeRuntimeReceipt & { directory: string }) | undefined;
+  let receipt: NodeRuntimeReceipt | undefined;
   try {
     if (XDT_NODE_PREFIX.test(input.command.trim())) {
-      const value = randomUUID();
-      const directory = mkdtempSync(path.join(os.tmpdir(), 'cindy-pre-run-node-'));
-      receipt = { directory, path: path.join(directory, 'started'), value };
+      receipt = await createNodeRuntimeReceipt();
       resolved = resolveHookCommand(input.command, receipt);
     }
   } catch {
-    if (receipt) {
-      try { rmSync(receipt.directory, { recursive: true, force: true }); } catch { /* best effort */ }
-    }
+    await receipt?.close();
     return {
       status: 'failed', decision: 'block', exitCode: null,
       durationMs: Date.now() - startedAt,
@@ -280,6 +339,10 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       timedOut: false, aborted: false,
       error: t('scheduler.runs.preRun.receiptUnavailable'),
     };
+  }
+  if (input.signal?.aborted) {
+    await receipt?.close();
+    return abortedResult();
   }
 
   return new Promise<PreRunHookResult>((resolve) => {
@@ -298,7 +361,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       if (timer) clearTimeout(timer);
       input.signal?.removeEventListener('abort', onAbort);
       const exitCode = partial.exitCode;
-      const runtimeError = receipt && !receivedNodeRuntimeReceipt(receipt)
+      const runtimeError = receipt && !receipt.started
         ? t('scheduler.runs.preRun.runtimeNotStarted')
         : undefined;
       const status = aborted
@@ -354,7 +417,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
         : setTimeout(() => {
             timedOut = true;
             killProcessTree(child?.pid, child, armForceSettle);
-          }, remainingTimeoutMs);
+          }, Math.max(0, (timeoutMs ?? 0) - (Date.now() - startedAt)));
     timer?.unref?.();
 
     // 任务 pause/delete → 与超时同款树杀 + 1s 强制 settle:abortInflightAndWait
@@ -406,14 +469,7 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     } catch {
       /* ignore stdin write failures */
     }
-  }).finally(() => {
-    if (!receipt) return;
-    try {
-      rmSync(receipt.directory, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup of this run's own temporary directory only.
-    }
-  });
+  }).finally(() => receipt?.close());
 }
 
 /** 给 run 错误、通知和日志共用的前置检查失败摘要。 */

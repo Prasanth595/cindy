@@ -8,12 +8,28 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setMainLocale } from '../../i18n';
 
 vi.mock('electron', () => ({ app: { getPreferredSystemLanguages: () => ['en'] } }));
+
+// Observe only directories allocated in this test process; keep the real IO.
+const ownedReceiptDirectories = vi.hoisted(() => [] as string[]);
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    mkdtempSync: ((...args: Parameters<typeof actual.mkdtempSync>) => {
+      const directory = actual.mkdtempSync(...args);
+      if (path.basename(String(args[0])) === 'cindy-pre-run-node-') {
+        ownedReceiptDirectories.push(String(directory));
+      }
+      return directory;
+    }) as typeof actual.mkdtempSync,
+  };
+});
 
 // 透传真实 spawn,只计数:用来断言某些路径根本没有启动真实命令。
 const spawnCalls = vi.hoisted(() => ({ count: 0 }));
@@ -272,14 +288,124 @@ describe('resolvePreRunHookTimeoutMs(无默认超时)', () => {
 });
 
 describe('resolveHookCommand(xdt-node 前缀解析)', () => {
-  let receiptsBefore: string[];
+  const foreignReceiptDirectories: string[] = [];
   beforeEach(() => {
-    receiptsBefore = readdirSync(tmpdir()).filter((name) => name.startsWith('cindy-pre-run-node-'));
+    ownedReceiptDirectories.length = 0;
   });
   afterEach(() => {
     // Covers pass, skip, throw, GUI false-success, timeout and abort cleanup.
-    expect(readdirSync(tmpdir()).filter((name) => name.startsWith('cindy-pre-run-node-'))).toEqual(receiptsBefore);
+    try {
+      for (const directory of ownedReceiptDirectories) expect(existsSync(directory)).toBe(false);
+    } finally {
+      for (const directory of foreignReceiptDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
+    }
   });
+  it.each([
+    ['--permission', 0], ['--permission', 2],
+    ['--experimental-permission', 0], ['--experimental-permission', 2],
+  ] as const)('keeps permission-mode checks executable without granting business writes (%s, exit %s)', async (flag, exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-permission-'));
+    try {
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        "try { writeFileSync('business-denied', 'must not be allowed'); process.exit(90); }",
+        "catch (error) { if (error.code !== 'ERR_ACCESS_DENIED') throw error; }",
+        "console.log('gate-executed:business-write-denied');",
+        "console.log('CINDY_PRECHECK_OK'); process.exit(" + exitCode + ');',
+      ].join('\n'));
+      const result = await executePreRunHook({
+        command: 'xdt-node --no-warnings ' + flag + ' gate.mjs',
+        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+      });
+      expect(result.stderr).toBe('');
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+      expect(result.stdout).toBe('gate-executed:business-write-denied\nCINDY_PRECHECK_OK\n');
+      expect(result.checkSucceeded).toBe(true);
+      expect(existsSync(path.join(dir, 'business-denied'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 2, 'preload-exit'] as const)('isolates startup proof before a user CJS preload forks (outcome %s)', async (exitCode) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-cjs-fork-'));
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    try {
+      writeFileSync(path.join(dir, 'env-preload.cjs'),
+        "require('node:fs').appendFileSync('env-preload.txt', 'user;');");
+      process.env.NODE_OPTIONS = '--require=' + JSON.stringify(path.join(realpathSync(dir), 'env-preload.cjs'))
+        + (originalNodeOptions ? ' ' + originalNodeOptions : '');
+      writeFileSync(path.join(dir, 'preload.cjs'), [
+        "const fs = require('node:fs');",
+        "if (!process.env.HOOK_PRELOAD_CHILD) {",
+        "  require('node:child_process').fork('./child.cjs', [], {",
+        "    env: { ...process.env, HOOK_PRELOAD_CHILD: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],",
+        '  });',
+        '  const deadline = Date.now() + 3000;',
+        "  while (!fs.existsSync('child-ran.json')) {",
+        "    if (Date.now() > deadline) throw new Error('preload child did not execute');",
+        '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);',
+        '  }',
+        exitCode === 'preload-exit' ? '  process.exit(0);' : '',
+        '}',
+      ].join('\n'));
+      writeFileSync(path.join(dir, 'child.cjs'),
+        "require('node:fs').writeFileSync('child-ran.json', JSON.stringify(process.execArgv));");
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { writeFileSync } from 'node:fs';",
+        "writeFileSync('gate-ran.json', JSON.stringify(process.execArgv));",
+        "console.log('CINDY_PRECHECK_OK'); process.exit(" + (exitCode === 'preload-exit' ? 0 : exitCode) + ');',
+      ].join('\n'));
+      const result = await executePreRunHook({
+        command: 'xdt-node -r ./preload.cjs gate.mjs',
+        cwd: dir, stdinPayload: payload, timeoutMs: 5_000,
+      });
+      expect(result.stderr).toBe('');
+      if (exitCode === 'preload-exit') {
+        // A descendant must not attest a parent that exits before its import.
+        expect(result.exitCode).toBe(0);
+        expect(result.decision).toBe('block');
+        expect(result.checkSucceeded).toBeUndefined();
+        expect(existsSync(path.join(dir, 'gate-ran.json'))).toBe(false);
+        expect(JSON.parse(readFileSync(path.join(dir, 'child-ran.json'), 'utf8'))).toEqual(['-r', './preload.cjs']);
+        return;
+      }
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.decision).toBe(exitCode === 0 ? 'run' : 'skip');
+      expect(result.checkSucceeded).toBe(true);
+      for (const file of ['child-ran.json', 'gate-ran.json']) {
+        expect(JSON.parse(readFileSync(path.join(dir, file), 'utf8'))).toEqual(['-r', './preload.cjs']);
+      }
+      expect(readFileSync(path.join(dir, 'env-preload.txt'), 'utf8')).toBe('user;user;');
+    } finally {
+      if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalNodeOptions;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('checks only owned receipt cleanup while another process creates its own directory', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-foreign-receipt-'));
+    try {
+      writeFileSync(path.join(dir, 'gate.mjs'), [
+        "import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import path from 'node:path';",
+        "console.log(mkdtempSync(path.join(tmpdir(), 'cindy-pre-run-node-')));",
+      ].join('\n'));
+      const result = await executePreRunHook({ command: 'xdt-node gate.mjs', cwd: dir, stdinPayload: payload });
+      const foreign = result.stdout.trim();
+      // Only remove the controlled fixture's own newly-created directory.
+      const isFixtureDirectory = path.dirname(foreign) === path.resolve(tmpdir())
+        && /^cindy-pre-run-node-[A-Za-z0-9]+$/.test(path.basename(foreign));
+      if (isFixtureDirectory) foreignReceiptDirectories.push(foreign);
+      expect(result.decision).toBe('run');
+      expect(isFixtureDirectory).toBe(true);
+      expect(existsSync(foreign)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each([0, 2])('supports ESM Workers without repeating internal startup proof (exit %s)', async (exitCode) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hook-runtime-worker-'));
     try {
