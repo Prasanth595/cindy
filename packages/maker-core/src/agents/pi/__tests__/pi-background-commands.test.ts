@@ -79,6 +79,19 @@ function makeManager(overrides: {
   return { manager, updates, logDir };
 }
 
+/** 轮询等待一个条件成立(异步收尾是真实的 exit 事件驱动,条件满足即走)。 */
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 8_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('timed out waiting for condition');
+}
+
 async function waitForUpdate(
   updates: PiBackgroundCommandUpdate[],
   predicate: (update: PiBackgroundCommandUpdate) => boolean,
@@ -357,9 +370,9 @@ describe('PiBackgroundCommands', () => {
     await expect(manager.start({ command: 'echo hi', shell: NODE_EVAL_SHELL }))
       .rejects.toThrow(/unavailable/);
     // 同步路径自己不发终态 update,但进程必须真的死:退出事件到达后记录被 finalize
-    // (并按 stopRequested 报 stopped),第二次尝试无对象可杀。
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(manager.killAllSync()).toBe(0);
+    // (并按 stopRequested 报 stopped),第二次尝试无对象可杀。等那个真实退出事件,
+    // 而不是死等(等待的是「不再有对象可杀」,满足即走)。
+    await waitForCondition(() => manager.killAllSync() === 0);
     expect(manager.list()).toEqual([]);
     const terminal = updates.find((u) => u.taskId === 'sync-kill-1' && u.status === 'stopped');
     expect(terminal).toBeTruthy();
@@ -388,8 +401,8 @@ describe('PiBackgroundCommands', () => {
     }
     const killed = manager.killAllSync();
     expect(killed).toBeGreaterThanOrEqual(0);
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(manager.pendingKillCount).toBe(0);
+    // 同步清扫后 pendingKills 的清空由真实的 exit 事件驱动,等它而不是死等。
+    await waitForCondition(() => manager.pendingKillCount === 0);
   });
 
   it('keeps the raw PI tool call id and derives a safe log file name', async () => {
