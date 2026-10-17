@@ -10,12 +10,14 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setMainLocale } from '../../i18n';
-import { stagePreRunNode } from '../../../../forge-pre-run-node';
+import { prunePackagedPreRunNode, stagePreRunNode } from '../../../../forge-pre-run-node';
+import { nodeRuntimeArtifact } from '../../managed-tools/nodeArtifact';
+import { signPreRunNode } from '../../../../scripts/ci/pre-run-node-signing.mjs';
 
 vi.mock('electron', () => ({ app: { getPreferredSystemLanguages: () => ['en'] } }));
 
@@ -119,6 +121,56 @@ for (const flag of permissionFlags) {
 if (supportedPermissionFlags.size === 0) throw new Error('Node supports neither permission flag; permission coverage is required');
 
 describe('packaged pre-run assets fail closed', () => {
+  it('keeps only the target across consecutive architectures, preserving source and other tools', () => {
+    const source = path.join(fixtureRoot, 'tools-source');
+    mkdirSync(source);
+    writeFileSync(path.join(source, 'other-tool'), 'keep');
+    for (const arch of ['arm64', 'x64']) {
+      const artifact = nodeRuntimeArtifact('darwin', arch)!;
+      const target = path.join(source, 'pre-run-node', artifact.host);
+      mkdirSync(target, { recursive: true });
+      for (const file of ['node', 'supervisor', 'gate-client.cjs', 'NODE-LICENSE.txt']) writeFileSync(path.join(target, file), 'asset');
+      writeFileSync(path.join(target, 'manifest.json'), JSON.stringify({ host: artifact.host, version: artifact.version, archiveSha256: artifact.sha256 }));
+      mkdirSync(path.join(source, 'pre-run-node', '.stale-generation'), { recursive: true });
+      const resources = path.join(fixtureRoot, 'package-' + arch);
+      cpSync(source, path.join(resources, 'tools'), { recursive: true });
+      prunePackagedPreRunNode(resources, 'darwin', arch);
+      expect(readdirSync(path.join(resources, 'tools', 'pre-run-node'))).toEqual([artifact.host]);
+      expect(readFileSync(path.join(resources, 'tools', 'other-tool'), 'utf8')).toBe('keep');
+      expect(readFileSync(path.join(resources, 'tools', 'pre-run-node', artifact.host, 'node'), 'utf8')).toBe('asset');
+    }
+    expect(readdirSync(path.join(source, 'pre-run-node')).sort()).toEqual(['.stale-generation', 'darwin-arm64', 'darwin-x64']);
+  });
+
+  it('validates the target before pruning any previous generation', () => {
+    const resources = path.join(fixtureRoot, 'incomplete-package');
+    const root = path.join(resources, 'tools', 'pre-run-node');
+    mkdirSync(path.join(root, 'darwin-arm64'), { recursive: true });
+    writeFileSync(path.join(root, 'darwin-arm64', 'previous'), 'keep');
+    expect(() => prunePackagedPreRunNode(resources, 'darwin', 'x64')).toThrow(/pre-run Node/);
+    expect(readFileSync(path.join(root, 'darwin-arm64', 'previous'), 'utf8')).toBe('keep');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('runs a gate with the ad-hoc hardened signed Node asset', async () => {
+    const tools = path.join(fixtureRoot, 'signed-tools');
+    const host = path.join(tools, 'pre-run-node', 'darwin-' + process.arch);
+    mkdirSync(host, { recursive: true });
+    const node = path.join(host, 'node');
+    copyFileSync(process.execPath, node);
+    signPreRunNode(tools, process.arch);
+    const entitlements = execFileSync('/usr/bin/codesign', ['--display', '--entitlements', ':-', node], { encoding: 'utf8' });
+    expect(entitlements).toContain('com.apple.security.cs.allow-jit');
+    for (const forbidden of ['apple-events', 'keychain-access-groups', 'audio-input', 'disable-library-validation']) expect(entitlements).not.toContain(forbidden);
+    const gate = path.join(fixtureRoot, 'signed-gate.mjs');
+    const marker = path.join(fixtureRoot, 'signed-gate-ran');
+    writeManagedGate(gate, 'import { writeFileSync } from "node:fs"; writeFileSync(' + JSON.stringify(marker) + ', "yes"); console.log("CINDY_PRECHECK_OK");');
+    const result = await executeNativePreRunHook({ command: 'xdt-node signed-gate.mjs', cwd: fixtureRoot, stdinPayload: payload }, { ...nativeRuntime, node });
+    expect(result.status).toBe('passed');
+    expect(result.decision).toBe('run');
+    expect(result.checkSucceeded).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('yes');
+  });
+
   it('rejects unsupported targets before preparing a runtime', async () => {
     await expect(stagePreRunNode('win32', 'arm64', { download: false })).rejects.toThrow('Unsupported packaged pre-run Node target');
   });

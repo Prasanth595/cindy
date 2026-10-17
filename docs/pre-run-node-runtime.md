@@ -33,6 +33,10 @@ CJS 可在 async 函数中使用同一动态 import 和 await 调用；未捕获
 
 forge prePackage 使用共享 Node pin、现有下载/哈希/解压基础设施准备目标平台文件。缺资产、下载/哈希/编译失败会阻止打包；运行期间不下载、不安装、不改全局 PATH。完整上游 Node LICENSE 随目标资源一起分发。Make 和 scheduler 共用 apps/desktop/resources/node-runtime-artifacts.json。
 
+afterCopyExtraResources 在包内副本先校验目标 host 的完整文件与 pin manifest，再移除其他 host 和陈旧暂存目录；源码的多架构缓存和其他 tools 保留。目标不完整时，在删除任何代次前阻止打包。
+
+macOS 的 ad-hoc 与 Developer ID 签名均在通用 tools 签名后，使用 standalone Node 专属的 allow-jit entitlement 重签目标 Node；不授予主 App 的 Apple Events、Keychain、音频或 library-validation 豁免。签后 strict 校验失败阻止产出；本机架构另外执行签后的 Node JIT smoke（清除构建者 NODE_OPTIONS，10 秒超时），跨架构只验签并明确记录未执行。签前 packaged smoke 不能替代这项签后检查，也不能替代真实签后 gate 的平台验收。
+
 新增 native/pre-run-node/supervisor.c 无第三方 native 依赖：POSIX 使用 cc、pthread、进程组和 Unix peer PID；Windows 使用 MSVC C11、仅当前执行账号的 named pipe、挂起创建并绑定 KILL_ON_JOB_CLOSE Job Object 后恢复。Windows 构建需在目标 Windows SDK/MSVC 环境，Linux 同架构构建，macOS 可用 -arch 选择架构。不复用远程桌面的服务、提权 token 或插件 broker。
 
 POSIX 超时/取消终止本轮 shell 进程组；主动 setsid 脱离组的用户子进程不在此保证内。Windows Job 禁止 breakaway；Windows/macOS x64/Linux 的真实运行与签名/TCC仍需对应实包验收。仅源码实现不等于这些平台已验证。
