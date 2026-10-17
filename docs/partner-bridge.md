@@ -54,6 +54,7 @@ Authorization: Bearer 加 token。
 - workingDir：可选，绝对路径，必须存在且是目录；缺省用 app 托管的对话目录。
 - permissionMode：可选，plan / acceptEdits / auto，缺省 plan（只读）。
 - callbackUrl：可选，完成后 POST 结果到这个地址，只允许 http／https。
+- agentKind：可选，cc / codex / pi；缺省跟随 New Maker 草稿默认。
 
 返回 202：
 

@@ -36,6 +36,11 @@ export interface PartnerTurnRequest {
   /** 工作目录(绝对路径);缺省落 app 托管的对话间。 */
   workingDir?: string;
   permissionMode?: PartnerPermissionMode;
+  /**
+   * 可选:本单用哪个 agent。缺省跟随 New Maker 草稿默认(与用户手动新建一致);
+   * 外部系统有明确偏好时可以显式指定。
+   */
+  agentKind?: 'cc' | 'codex' | 'pi';
 }
 
 export type PartnerTaskStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -84,6 +89,7 @@ export interface PartnerSessionCreateParams {
 }
 
 export interface PartnerDraftDefaults {
+  agentKind?: 'cc' | 'codex' | 'pi';
   model?: string;
   effort?: string;
   fastMode?: boolean;
@@ -101,7 +107,8 @@ export interface PartnerBridgeDeps {
   writeSessionId(key: string, sessionId: string | null): void;
   getSessionRow(sessionId: string): Promise<PartnerSessionRow | null>;
   createSession(params: PartnerSessionCreateParams): Promise<string>;
-  getDraftDefaults(vendor: 'cc' | 'codex' | 'pi'): PartnerDraftDefaults;
+  /** 跟随 New Maker 当前草稿默认(含 agent 种类):外部调用不该把 agent 写死。 */
+  getDraftDefaults(): PartnerDraftDefaults;
   /** 宿主侧路径规范化(不存在/非法返回 null)。 */
   normalizeWorkingDir(dir: string): string | null;
   isSessionBusy(sessionId: string): boolean;

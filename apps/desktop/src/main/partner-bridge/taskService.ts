@@ -44,6 +44,7 @@ const DEFAULT_CALLBACK_RETRIES = 3;
 const CALLBACK_BACKOFF_BASE_MS = 1_000;
 
 const KEY_PATTERN = /^[^\u0000-\u001f\u007f]+$/;
+const AGENT_KINDS = ['cc', 'codex', 'pi'] as const;
 
 export type PartnerSubmitOutcome =
   | { ok: true; task: PartnerTaskRecord }
@@ -120,7 +121,10 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     request: PartnerTurnRequest,
     permissionMode: PartnerPermissionMode,
     workingDir: string | undefined,
-  ): Promise<{ ok: true; sessionId: string } | { ok: false; message: string }> {
+  ): Promise<
+    | { ok: true; sessionId: string }
+    | { ok: false; errorCode: 'NOT_READY' | 'SESSION_UNAVAILABLE'; message: string }
+  > {
     const existing = deps.readSessionId(request.key);
     if (existing) {
       const row = await deps.getSessionRow(existing);
@@ -128,12 +132,14 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
       // 旧间不可用或配置已变:解除映射换新间(旧会话留在侧边栏,历史可查)。
       deps.writeSessionId(request.key, null);
     }
-    const draft = deps.getDraftDefaults('cc');
+    const draft = deps.getDraftDefaults();
+    const agentKind = request.agentKind ?? draft.agentKind;
     try {
       const sessionId = await deps.createSession({
         key: request.key,
         title: `伙伴任务 · ${request.key.slice(0, 40)}`,
         permissionMode,
+        ...(agentKind ? { agentKind } : {}),
         ...(workingDir ? { workingDir } : {}),
         ...(draft.model ? { model: draft.model } : {}),
         ...(draft.effort ? { effort: draft.effort } : {}),
@@ -145,7 +151,11 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       deps.log.warn('partner session create failed', { key: request.key, error: message });
-      return { ok: false, message };
+      return {
+        ok: false,
+        errorCode: /DbClient not ready/i.test(message) ? 'NOT_READY' : 'SESSION_UNAVAILABLE',
+        message,
+      };
     }
   }
 
@@ -234,7 +244,7 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     });
     const session = await resolveSession(request, permissionMode, workingDir);
     if (!session.ok) {
-      fail(task, 'SESSION_UNAVAILABLE', session.message);
+      fail(task, session.errorCode, session.message);
       return;
     }
     const sessionId = session.sessionId;
@@ -252,7 +262,8 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
     try {
       dispatched = await deps.dispatch({ targetSessionId: sessionId, message: request.prompt });
     } catch (err) {
-      fail(task, 'INTERNAL', err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      fail(task, classifyTurnSetupError(message), message);
       return;
     }
     if (!dispatched.ok) {
@@ -269,7 +280,8 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
         fail(task, 'BUSY', dispatched.message);
         return;
       }
-      fail(task, 'INTERNAL', dispatched.message);
+      // 投递返回失败也走同一套分类:agent 缺凭证是最常见的首次失败。
+      fail(task, classifyTurnSetupError(dispatched.message), dispatched.message);
       return;
     }
     if (dispatched.wakeKind === 'queued') {
@@ -383,6 +395,16 @@ export function createPartnerTaskService(deps: PartnerBridgeDeps): PartnerTaskSe
       if (callbackUrl.length > MAX_CALLBACK_URL_CHARS) {
         return { ok: false, errorCode: 'INVALID_REQUEST', message: 'callbackUrl 过长' };
       }
+      if (
+        request.agentKind !== undefined &&
+        !(AGENT_KINDS as readonly string[]).includes(request.agentKind)
+      ) {
+        return {
+          ok: false,
+          errorCode: 'INVALID_REQUEST',
+          message: 'agentKind 只接受 cc / codex / pi',
+        };
+      }
       if (findInflightByKey(key)) {
         return {
           ok: false,
@@ -494,4 +516,18 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 把"还没准备好"与"真的坏了"分开:外部系统据此决定是等一会儿重试,
+ * 还是去 Cindy 里补登录／模型配置。
+ */
+function classifyTurnSetupError(
+  message: string,
+): 'NOT_READY' | 'AGENT_NOT_AUTHENTICATED' | 'INTERNAL' {
+  if (/DbClient not ready/i.test(message)) return 'NOT_READY';
+  if (/not authenticated|no_key|missing credentials/i.test(message)) {
+    return 'AGENT_NOT_AUTHENTICATED';
+  }
+  return 'INTERNAL';
 }

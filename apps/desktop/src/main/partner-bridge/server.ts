@@ -200,6 +200,7 @@ function toTurnRequest(body: Record<string, unknown>): PartnerTurnRequest {
     ...(typeof body.callbackUrl === 'string' ? { callbackUrl: body.callbackUrl } : {}),
     ...(typeof body.workingDir === 'string' ? { workingDir: body.workingDir } : {}),
     ...(typeof body.permissionMode === 'string' ? { permissionMode: body.permissionMode } : {}),
+    ...(typeof body.agentKind === 'string' ? { agentKind: body.agentKind } : {}),
   } as PartnerTurnRequest;
 }
 

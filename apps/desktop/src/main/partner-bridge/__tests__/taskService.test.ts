@@ -48,6 +48,7 @@ function createHarness() {
   const aborted: string[] = [];
   const callbacks: { url: string; payload: unknown }[] = [];
   const created: string[] = [];
+  const createParams: Array<Record<string, unknown>> = [];
 
   const deps: PartnerBridgeDeps = {
     readSessionId: (key) => keyToSession.get(key) ?? null,
@@ -56,9 +57,10 @@ function createHarness() {
       else keyToSession.set(key, sessionId);
     },
     getSessionRow: async (id) => rows.get(id) ?? null,
-    createSession: async () => {
+    createSession: async (params) => {
       const id = `sess-${rows.size + 1}`;
       created.push(id);
+      createParams.push(params as unknown as Record<string, unknown>);
       rows.set(id, {
         status: 'active',
         agentKind: 'cc',
@@ -90,7 +92,7 @@ function createHarness() {
     sleep: async () => {},
   };
 
-  return { deps, sessions, rows, keyToSession, dispatched, aborted, callbacks, created };
+  return { deps, sessions, rows, keyToSession, dispatched, aborted, callbacks, created, createParams };
 }
 
 /** 会话是在后台分支里建的,断言前先等它出现。 */
@@ -236,5 +238,102 @@ describe('partner task service', () => {
     expect(
       await service.submit({ key: 'k', prompt: 'x', workingDir: 'relative/dir' }),
     ).toMatchObject({ ok: false, errorCode: 'INVALID_REQUEST' });
+  });
+
+  it('应用还没就绪时给 NOT_READY,而不是把锅甩给会话', async () => {
+    const h = createHarness();
+    h.deps.createSession = async () => {
+      throw new Error('DbClient not ready');
+    };
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({ key: 'early', prompt: '来早了' });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    await vi.waitFor(() => {
+      expect(service.get(submitted.task.taskId)?.status).toBe('failed');
+    });
+    expect(service.get(submitted.task.taskId)?.errorCode).toBe('NOT_READY');
+  });
+
+  it('agent 缺凭证时给 AGENT_NOT_AUTHENTICATED,调用方知道该去补配置', async () => {
+    const h = createHarness();
+    h.deps.dispatch = async () => {
+      throw new Error('claude-code not authenticated: no_key');
+    };
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({ key: 'no-creds', prompt: '干活' });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    await vi.waitFor(() => {
+      expect(service.get(submitted.task.taskId)?.status).toBe('failed');
+    });
+    expect(service.get(submitted.task.taskId)?.errorCode).toBe('AGENT_NOT_AUTHENTICATED');
+  });
+
+  it('dispatch 返回失败(而不是抛错)时同样区分凭证问题', async () => {
+    const h = createHarness();
+    h.deps.dispatch = async () => ({
+      ok: false,
+      errorCode: 'INTERNAL',
+      message: 'claude-code not authenticated: no_key',
+    });
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({ key: 'no-creds-2', prompt: '干活' });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    await vi.waitFor(() => {
+      expect(service.get(submitted.task.taskId)?.status).toBe('failed');
+    });
+    expect(service.get(submitted.task.taskId)?.errorCode).toBe('AGENT_NOT_AUTHENTICATED');
+  });
+
+  it('新建会话跟随草稿默认的 agent 与模型', async () => {
+    const h = createHarness();
+    h.deps.getDraftDefaults = () => ({
+      agentKind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+    });
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({ key: 'draft-follow', prompt: '干活' });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    await vi.waitFor(() => {
+      expect(h.createParams).toHaveLength(1);
+    });
+    expect(h.createParams[0]).toMatchObject({
+      agentKind: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'high',
+      permissionMode: 'plan',
+    });
+  });
+
+  it('请求可以显式覆盖 agent', async () => {
+    const h = createHarness();
+    h.deps.getDraftDefaults = () => ({ agentKind: 'cc', model: 'claude-x' });
+    const service = createPartnerTaskService(h.deps);
+    const submitted = await service.submit({
+      key: 'explicit-agent',
+      prompt: '干活',
+      agentKind: 'codex',
+    });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    await vi.waitFor(() => {
+      expect(h.createParams).toHaveLength(1);
+    });
+    expect(h.createParams[0]).toMatchObject({ agentKind: 'codex' });
+  });
+
+  it('拒绝未知 agent', async () => {
+    const h = createHarness();
+    const service = createPartnerTaskService(h.deps);
+    const outcome = await service.submit({
+      key: 'bad-agent',
+      prompt: '干活',
+      agentKind: 'gpt' as never,
+    });
+    expect(outcome).toMatchObject({ ok: false, errorCode: 'INVALID_REQUEST' });
   });
 });

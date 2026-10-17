@@ -14056,8 +14056,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .limit(1);
       return row ?? null;
     },
-    createSession: (params) => createPartnerSession(params),
-    getDraftDefaults: () => getWorkerDefaultsFromNewMaker('claude-code'),
+    createSession: async (params) => {
+      const sessionId = await createPartnerSession(params);
+      // 与 errand／scheduler 同一条 local-db:sessions:created 通道刷新侧边栏:
+      // 外部调用建的会话必须立刻可见(透明是这个能力的安全边界之一)。
+      broadcastSessionCreated(sessionId);
+      return sessionId;
+    },
+    getDraftDefaults: () => {
+      // 跟随 New Maker 草稿里"有选择记录"的 vendor(与 Orca worker 同源):
+      // 未登录的本地模式默认模型可能是 codex 侧的托管模型,写死 claude-code
+      // 会拿不到凭证(真机:claude-code not authenticated: no_key)。
+      const cc = getWorkerDefaultsFromNewMaker('claude-code');
+      if (cc.model) return { agentKind: 'cc' as const, ...cc };
+      const codex = getWorkerDefaultsFromNewMaker('codex');
+      if (codex.model) return { agentKind: 'codex' as const, ...codex };
+      const pi = getWorkerDefaultsFromNewMaker('pi');
+      if (pi.model) return { agentKind: 'pi' as const, ...pi };
+      return {};
+    },
     normalizeWorkingDir: (dir) => normalizeWorkingDirForStorage(dir),
     isSessionBusy: isSessionInTurn,
     dispatch: async ({ targetSessionId, message }) => {
