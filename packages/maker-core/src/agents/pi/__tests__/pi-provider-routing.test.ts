@@ -5199,6 +5199,75 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("restores the applied effort level, not the stale off state, when thinking was re-enabled via setEffort", async () => {
+    // 关闭思考后用 setEffort 应用新档位：应用档位本身就意味着思考开着，关闭记录必须被
+    // 覆盖。否则 reload 恢复会把刚应用的档位用 off 关掉，后续回答不再按用户选的档位跑。
+    const declared = { image: false };
+    const agent = new PiAgent({
+      ...byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-re-enable",
+              name: "Native Re-enable",
+              baseUrl: "http://re-enable.test",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "local-model",
+                  input: ["text"],
+                  reasoning: true,
+                  thinkingLevelMap: { low: "low", max: "max" },
+                },
+              ],
+            },
+          ],
+          env: {},
+        }),
+      ),
+      readModelImageInput: (providerId, modelId) =>
+        providerId === "native-re-enable" && modelId === "local-model" && declared.image
+          ? true
+          : undefined,
+    });
+    const handle = await agent.startSession({
+      sessionId: "image-reload-re-enable",
+      workingDir: cwd,
+      model: "local-model",
+      providerId: "native-re-enable",
+      effort: "max",
+    });
+    await handle.setThinkingEnabled!(false);
+    await handle.setEffort!("max");
+    declared.image = true;
+    const imagePath = path.join(cwd, "re-enable.png");
+    writeFileSync(
+      imagePath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY4YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    captured.requests.length = 0;
+    await handle.send({
+      type: "user" as const,
+      content: [
+        {
+          type: "image" as const,
+          path: imagePath,
+          managedUrl: "xdt-image://pi-managed/re-enable.png",
+        },
+      ],
+    });
+
+    // 重载后的恢复必须是刚应用的 max，而不是过期的关闭状态。
+    expect(captured.requests.map((request) => request.type)).toContain("switch_session");
+    expect(
+      captured.requests.filter((request) => request.type === "set_thinking_level"),
+    ).toEqual([{ type: "set_thinking_level", level: "max" }]);
+    await handle.close();
+  });
+
   it("does not rewrite models.json or reload the runtime when the catalog already matches the snapshot", async () => {
     // 心跳会反复以同路由下发 setModel；声明与会话快照一致时必须零 I/O —— 不热写、不 switch_session。
     const agent = new PiAgent({
