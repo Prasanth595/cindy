@@ -1,4 +1,5 @@
 import { taskResultClientIdForInput } from '../../shared/botCollaboration.js';
+import { HANDOFF_RECEIPT_INPUT_PREFIX } from '@cindy/maker-shared/handoff-receipt';
 import { isQuietScheduledOutput } from '../scheduler-host/silent-output.js';
 import { captureTurnUsageContext, type TurnUsageContext } from './turnUsageContext.js';
 import type { BotCompactRuntimeRefreshCoordinator } from './botCompactRuntimeRefresh.js';
@@ -118,6 +119,11 @@ export interface PrepareSessionEventDeps {
     AgentInputCoordinator,
     'onTurnEvent' | 'noteSuppressedTerminalError' | 'getActiveInputClientId' | 'getActiveInputClientIds' | 'isActiveTaskCoordination'
   > | null;
+  /** send_to_session 完成回执回投;实现在 register(setup 作用域),fire-and-forget。 */
+  readonly deliverHandoffReceipts?: (
+    targetSessionId: string,
+    inputClientIds: readonly string[],
+  ) => Promise<void>;
   readonly handleSilentStopTurnEnd: (
     session: Session,
     doneAt: number,
@@ -210,6 +216,10 @@ export function prepareSessionEvent(
   const botTaskResultInputIds = event.type === 'done' && event.turnScope !== 'background'
     ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
       .filter(id => taskResultClientIdForInput(id) !== null) : [];
+  // send_to_session 完成回执:同一时点快照本 turn 消费的回执请求输入。
+  const handoffReceiptInputIds = event.type === 'done' && event.turnScope !== 'background'
+    ? (deps.agentInputCoordinatorHolder?.getActiveInputClientIds?.(session.id, event.sessionTurnGeneration) ?? [])
+      .filter(id => id.startsWith(HANDOFF_RECEIPT_INPUT_PREFIX)) : [];
   const activeInputId = event.turnScope === 'background' ? null
     : deps.agentInputCoordinatorHolder?.getActiveInputClientId(session.id, event.sessionTurnGeneration);
   // The host's accepted input owns provenance across all three SDKs. Explicit
@@ -430,6 +440,15 @@ export function prepareSessionEvent(
         sessionTurnGeneration: event.sessionTurnGeneration,
         sessionInstanceId: event.sessionInstanceId,
       });
+      // 真实产品终态才回投 send_to_session 完成回执;续跑边界与 silent-stop 不算结束。
+      if (handoffReceiptInputIds.length > 0) {
+        void deps.deliverHandoffReceipts?.(session.id, handoffReceiptInputIds).catch((error) => {
+          deps.log.warn('handoff receipt delivery crashed', {
+            sessionId: session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     } else {
       // silent-stop 自动续跑:translator 判定本 turn 被上游空内容消息静默收尾时在
       // done.data 附加 silentStop 标记(见 maker-core translator)。延迟一拍再决策,
