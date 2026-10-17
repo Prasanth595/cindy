@@ -101,6 +101,12 @@ export interface MarkdownPreviewPlan {
  */
 export const MARKDOWN_PREVIEW_MAX_SEGMENTS = 120;
 
+/**
+ * 块级对齐的单侧块数预算：超过就不再尝试对齐（直接降级展示新版）。
+ * 真实文档远低于此值；到达量级的碎块文档做全文 Myers 对齐的最坏代价会卡死渲染。
+ */
+export const MARKDOWN_ALIGN_MAX_BLOCKS = 2000;
+
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
 /** 与切块解析器同一实例：块级对齐也需要把公式识别成 math 节点（含注入判定）。 */
 const mathParser = parser;
@@ -258,6 +264,12 @@ function alignBlocks(input: {
   headingIdsByBlock: Map<SourceBlock, string>;
 }): MarkdownPreviewSegment[] | null {
   const { afterLines, beforeLines, afterBlocks, beforeBlocks, appendices, headingIdsByBlock } = input;
+  // 对齐工作量预算：diffArrays 是同步无预算的，两侧都是上万短段落且正文整体替换时
+  // （体积仍远低于读取上限），Myers 最坏代价会在页面渲染期间卡死窗口。超限直接
+  // 降级展示新版（宁可少标不可卡死）；阈值远超真实文档（requirements.md 约百块）。
+  if (afterBlocks.length > MARKDOWN_ALIGN_MAX_BLOCKS || beforeBlocks.length > MARKDOWN_ALIGN_MAX_BLOCKS) {
+    return null;
+  }
   const parts = diffArrays(
     beforeBlocks.map((block) => block.normalized),
     afterBlocks.map((block) => block.normalized),

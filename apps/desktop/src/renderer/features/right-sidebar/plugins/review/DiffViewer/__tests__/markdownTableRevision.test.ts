@@ -10,6 +10,7 @@ import {
   remarkReviewAnnotations,
 } from '@/components/chat/remarkReviewAnnotations';
 
+import { buildMarkdownPreviewPlan } from '../markdownBlockDiff';
 import { buildMarkdownTableRevision } from '../markdownTableRevision';
 
 /** 与 MarkdownRenderer 打开 reviewAnnotations 时相同的渲染链。 */
@@ -294,6 +295,17 @@ describe('buildMarkdownTableRevision — 整行增删', () => {
 });
 
 describe('buildMarkdownTableRevision — 回退边界', () => {
+  it('returns null when only the alignment row changes so the fallback keeps it visible (regression)', () => {
+    // 只改列对齐（`| --- |` → `| :---: |`）时逐格文字全同，修订片段不会带任何标记，
+    // 格式变化就看不见了 —— 放弃表格路径，计划层回退旧表删除 / 新表新增。
+    const before = ['| 名称 | 取值 |', '| --- | --- |', '| a | 1 |'].join('\n');
+    const after = ['| 名称 | 取值 |', '| --- | :---: |', '| a | 1 |'].join('\n');
+    expect(buildMarkdownTableRevision(before, after)).toBeNull();
+
+    const plan = buildMarkdownPreviewPlan(after, before);
+    expect(plan.segments.map((segment) => segment.kind)).toEqual(['removed', 'added']);
+  });
+
   it('returns null when the column count changes', () => {
     const after = ['| 名称 | 取值 |', '| --- | --- |', '| a | 1 |'].join('\n');
     expect(buildMarkdownTableRevision(BEFORE, after)).toBeNull();

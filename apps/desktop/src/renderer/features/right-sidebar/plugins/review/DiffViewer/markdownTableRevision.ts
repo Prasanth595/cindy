@@ -463,6 +463,9 @@ export function buildMarkdownTableRevision(before: string, after: string): strin
   let rows: string[][];
   if (beforeTable && afterTable) {
     if (beforeTable.header.length !== afterTable.header.length) return null;
+    // 只改列对齐行时逐格文字全同，修订片段不会带任何标记，这处格式变化就看不见了
+    //（Greptile P2）—— 放弃表格路径，回退旧表删除 / 新表新增，改动可见。
+    if (beforeTable.align !== afterTable.align) return null;
     header = afterTable.header.map(
       (cell, index) => reviseCell(beforeTable.header[index] ?? '', cell) ?? cell,
     );

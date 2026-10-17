@@ -9,7 +9,11 @@ import {
   REVIEW_REHYPE_HANDLERS,
   remarkReviewAnnotations,
 } from '@/components/chat/remarkReviewAnnotations';
-import { buildMarkdownPreviewPlan, MARKDOWN_PREVIEW_MAX_SEGMENTS } from '../markdownBlockDiff';
+import {
+  buildMarkdownPreviewPlan,
+  MARKDOWN_ALIGN_MAX_BLOCKS,
+  MARKDOWN_PREVIEW_MAX_SEGMENTS,
+} from '../markdownBlockDiff';
 
 /** 与 MarkdownRenderer（打开 reviewAnnotations）相同的核心解析链。 */
 function renderSegment(content: string): string {
@@ -29,6 +33,22 @@ function kinds(plan: ReturnType<typeof buildMarkdownPreviewPlan>): string[] {
 }
 
 describe('buildMarkdownPreviewPlan', () => {
+  it('skips alignment entirely when either side exceeds the block budget (regression)', () => {
+    // 上万碎块且正文整体替换的极端输入：diffArrays 同步无预算，Myers 最坏代价会在
+    // 渲染期间卡死窗口。超预算直接降级展示新版（宁可少标不可卡死）。
+    const paragraphs = Array.from(
+      { length: MARKDOWN_ALIGN_MAX_BLOCKS + 1 },
+      (_, index) => `段落${index}内容。`,
+    );
+    const before = `${paragraphs.join('\n\n')}\n`;
+    const after = `${paragraphs.join('\n\n').replace('段落0内容。', '段落0改了。')}\n`;
+    const plan = buildMarkdownPreviewPlan(after, before);
+
+    expect(plan.blockAligned).toBe(false);
+    expect(plan.segments).toHaveLength(1);
+    expect(plan.segments[0].kind).toBe('context');
+  });
+
   it('degrades to a single context segment without a baseline', () => {
     const after = '# Title\n\nBody\n';
     const plan = buildMarkdownPreviewPlan(after, null);
