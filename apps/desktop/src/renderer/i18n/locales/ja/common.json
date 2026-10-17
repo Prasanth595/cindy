@@ -11713,7 +11713,18 @@
       "openInSidebarFailed": "サイドバーのブラウザで開けませんでした",
       "openInCurrentWindow": "現在のウィンドウで開く",
       "locateProject": "プロジェクトを表示",
-      "shiftClick": "Shift+クリック"
+      "shiftClick": "Shift+クリック",
+      "appPicker": {
+        "title": "別のアプリで開く…",
+        "description": "このファイルを一度だけ開きます。既定のアプリは変更しません。",
+        "search": "アプリを検索",
+        "open": "開く",
+        "cancel": "キャンセル",
+        "empty": "対応するアプリが見つかりません。既定のアプリまたはファイルマネージャーを使用してください。",
+        "noMatch": "一致するアプリはありません。",
+        "failed": "利用可能なアプリを取得できませんでした。再試行してください。",
+        "changed": "ファイルが変更されました。メニューを開き直してください。"
+      }
     },
     "ghostSummon": {
       "directiveLabel": "モデルに追加された指示",

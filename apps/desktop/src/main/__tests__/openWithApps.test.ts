@@ -6,10 +6,10 @@ import {
   expandWindowsEnv,
   parseChcpCodepage,
   parseCommandLineExe,
+  parseWindowsOpenCommand,
   parseRegSubkeys,
   parseRegValues,
   parseWindowsApplicationClaims,
-  parseWindowsInstalledApps,
   type OpenWithDeps,
 } from '../openWithApps';
 
@@ -34,7 +34,9 @@ describe('expandWindowsEnv', () => {
       'C:\\Windows\\notepad.exe',
     );
     expect(expandWindowsEnv('%NOPE%\\a.exe', {})).toBe('%NOPE%\\a.exe');
-    expect(expandWindowsEnv('%LOCALAPPDATA%\\a.exe', { LocalAppData: 'C:\\User' })).toBe('C:\\User\\a.exe');
+    expect(expandWindowsEnv('%LOCALAPPDATA%\\a.exe', { LocalAppData: 'C:\\User' })).toBe(
+      'C:\\User\\a.exe',
+    );
   });
 });
 
@@ -75,11 +77,16 @@ describe('reg.exe output parsing', () => {
   });
 
   it('accepts real expanded hive output and ignores grandchildren', () => {
-    expect(parseRegSubkeys([
-      'HKEY_CLASSES_ROOT\\Applications\\Code.exe',
-      'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\shell',
-      'HKEY_CURRENT_USER\\Applications\\Other.exe',
-    ].join('\r\n'), 'HKCR\\Applications')).toEqual(['Code.exe']);
+    expect(
+      parseRegSubkeys(
+        [
+          'HKEY_CLASSES_ROOT\\Applications\\Code.exe',
+          'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\shell',
+          'HKEY_CURRENT_USER\\Applications\\Other.exe',
+        ].join('\r\n'),
+        'HKCR\\Applications',
+      ),
+    ).toEqual(['Code.exe']);
   });
 
   it('accepts exact application extension claims, not search hits in unrelated keys', () => {
@@ -93,7 +100,10 @@ describe('reg.exe output parsing', () => {
       'HKEY_CLASSES_ROOT\\Applications\\Unrelated.exe\\Other',
       '    .md    REG_SZ    something',
     ].join('\r\n');
-    expect(parseWindowsApplicationClaims(output, '.md')).toEqual(['code.exe', 'typora.exe']);
+    expect(parseWindowsApplicationClaims(output, '.md')).toEqual({
+      exeNames: ['code.exe', 'typora.exe'],
+      progIds: ['Typora.md'],
+    });
   });
 });
 
@@ -132,11 +142,13 @@ function makeDeps(overrides: Partial<OpenWithDeps> = {}): OpenWithDeps & {
     'HKCR\\.xlsx\\OpenWithProgids': '    Wps.Sheet    REG_NONE    \r\n',
     'HKCR\\Wps.Sheet\\shell\\open\\command':
       '    (Default)    REG_SZ    "C:\\WPS\\wps.exe" "%1"\r\n',
-    'HKCR\\Wps.Sheet': '    (Default)    REG_SZ    WPS 表格\r\n',
+    'HKCR\\Wps.Sheet': '    (Default)    REG_SZ    WPS document type\r\n',
+    'HKCR\\Applications\\wps.exe': '    FriendlyAppName    REG_SZ    WPS 表格\r\n',
   };
   const spawnDetached = vi.fn();
   const base: OpenWithDeps = {
     platform: 'win32',
+    resolveFile: async (p) => ({ path: p, isFile: (overrides.fileExists ?? (() => true))(p) }),
     isPathAllowed: () => true,
     fileExists: () => true,
     regQuery: async (keyPath: string) => registry[keyPath] ?? '',
@@ -149,47 +161,19 @@ function makeDeps(overrides: Partial<OpenWithDeps> = {}): OpenWithDeps & {
 const FILE = 'C:\\work\\报表.xlsx';
 
 describe('createOpenWithHandlers.list', () => {
-  it('keeps discovered editors if optional installation-date queries fail', async () => {
-    const base = makeDeps();
-    const onDiscoveryError = vi.fn();
-    const result = await createOpenWithHandlers(makeDeps({
-      onDiscoveryError,
-      regQuery: async (key, args) => {
-        if (key.endsWith('Uninstall')) throw new Error('optional metadata unavailable');
-        return base.regQuery(key, args);
-      },
-    })).list({ filePath: FILE });
-    expect(result.success).toBe(true);
-    expect(result.apps.map((app) => app.label)).toEqual(['Microsoft Excel', 'WPS 表格']);
-    expect(onDiscoveryError).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    ['HKCU', 'Software\\Editor\\Capabilities', 'HKCU\\Software\\Editor\\Capabilities'],
-    ['HKLM', 'Software\\Editor\\Capabilities', 'HKLM\\Software\\Editor\\Capabilities'],
-    ['HKCU', 'HKLM\\Software\\Editor\\Capabilities', 'HKLM\\Software\\Editor\\Capabilities'],
-    ['HKLM', 'HKEY_CURRENT_USER\\Software\\Editor\\Capabilities', 'HKEY_CURRENT_USER\\Software\\Editor\\Capabilities'],
-  ])('resolves capability paths in their registered hive: %s %s', async (hive, registeredPath, resolvedPath) => {
-    const base = makeDeps();
-    const query = vi.fn(async (key: string, args?: string[]) => {
-      if (key === hive + '\\Software\\RegisteredApplications') return '    Editor    REG_SZ    ' + registeredPath;
-      if (key === resolvedPath + '\\FileAssociations') return '    .xlsx    REG_SZ    Wps.Sheet';
-      return base.regQuery(key, args);
-    });
-    const result = await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
-    expect(result.apps.filter((app) => app.label === 'WPS 表格')).toHaveLength(1);
-    expect(query.mock.calls.filter(([key]) => key.endsWith('Capabilities\\FileAssociations'))).toHaveLength(1);
-  });
-
   it('bounds capability queries to four concurrent subprocesses', async () => {
     let active = 0;
     let peak = 0;
     const query = vi.fn(async (key: string) => {
       if (key === 'HKCU\\Software\\RegisteredApplications') {
-        return Array.from({ length: 30 }, (_, i) => '    App' + i + '    REG_SZ    Software\\App' + i + '\\Capabilities').join('\r\n');
+        return Array.from(
+          { length: 30 },
+          (_, i) => '    App' + i + '    REG_SZ    Software\\App' + i + '\\Capabilities',
+        ).join('\r\n');
       }
       if (key.endsWith('Capabilities\\FileAssociations')) {
-        active++; peak = Math.max(peak, active);
+        active++;
+        peak = Math.max(peak, active);
         await Promise.resolve();
         active--;
       }
@@ -197,25 +181,39 @@ describe('createOpenWithHandlers.list', () => {
     });
     await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
     expect(peak).toBe(4);
-    expect(query.mock.calls.filter(([key]) => key.endsWith('Capabilities\\FileAssociations'))).toHaveLength(30);
+    expect(
+      query.mock.calls.filter(([key]) => key.endsWith('Capabilities\\FileAssociations')),
+    ).toHaveLength(30);
   });
 
   it('resolves SupportedTypes applications through user-level App Paths with one bulk query', async () => {
     const query = vi.fn(async (key: string) => {
-      if (key === 'HKCR\\Applications') return [
-        'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\SupportedTypes',
-        '    .md    REG_SZ    ',
-        ...Array.from({ length: 100 }, (_, i) =>
-          'HKEY_CLASSES_ROOT\\Applications\\Other' + i + '.exe\\SupportedTypes\r\n    .txt    REG_SZ    '),
-      ].join('\r\n');
+      if (key === 'HKCR\\Applications')
+        return [
+          'HKEY_CLASSES_ROOT\\Applications\\Code.exe\\SupportedTypes',
+          '    .md    REG_SZ    ',
+          ...Array.from(
+            { length: 100 },
+            (_, i) =>
+              'HKEY_CLASSES_ROOT\\Applications\\Other' +
+              i +
+              '.exe\\SupportedTypes\r\n    .txt    REG_SZ    ',
+          ),
+        ].join('\r\n');
       if (key === 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\code.exe') {
         return '    (Default)    REG_SZ    "C:\\Code\\Code.exe"';
       }
       return '';
     });
-    const result = await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: 'C:\\work\\README.md' });
+    const result = await createOpenWithHandlers(makeDeps({ regQuery: query })).list({
+      filePath: 'C:\\work\\README.md',
+    });
     expect(result.apps.map((app) => app.label)).toEqual(['Code']);
-    expect(query).toHaveBeenCalledWith('HKCR\\Applications', ['/s', '/f', '.md', '/e']);
+    expect(query).toHaveBeenCalledWith(
+      'HKCR\\Applications',
+      ['/s', '/f', '.md', '/e'],
+      expect.any(AbortSignal),
+    );
     expect(query.mock.calls.length).toBeLessThan(20);
     expect(query.mock.calls.some(([key]) => key.includes('Other'))).toBe(false);
   });
@@ -224,7 +222,9 @@ describe('createOpenWithHandlers.list', () => {
     vi.useFakeTimers();
     try {
       const query = vi.fn(() => new Promise<string>(() => {}));
-      const pending = createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
+      const pending = createOpenWithHandlers(makeDeps({ regQuery: query })).list({
+        filePath: FILE,
+      });
       await vi.advanceTimersByTimeAsync(8000);
       expect(await pending).toEqual({ success: false, apps: [], error: '无法查询可用应用' });
       expect(query).toHaveBeenCalledOnce();
@@ -242,7 +242,8 @@ describe('createOpenWithHandlers.list', () => {
         '    .md    REG_SZ    VSCode.md\r\n',
       'HKCR\\VSCode.md\\shell\\open\\command':
         '    (Default)    REG_SZ    "C:\\Users\\test\\Code.exe" "%1"\r\n',
-      'HKCR\\VSCode.md': '    (Default)    REG_SZ    Visual Studio Code\r\n',
+      'HKCR\\VSCode.md': '    (Default)    REG_SZ    Markdown source file\r\n',
+      'HKCR\\Applications\\Code.exe': '    FriendlyAppName    REG_SZ    Visual Studio Code\r\n',
     };
     const deps = makeDeps({
       regQuery: async (keyPath: string, args?: string[]) =>
@@ -281,9 +282,12 @@ describe('createOpenWithHandlers.list', () => {
       }
       return base.regQuery(key, args);
     };
-    const result = await createOpenWithHandlers(makeDeps({
-      regQuery: query, fileExists: (p) => p !== 'C:\\Removed\\EXCEL.EXE',
-    })).list({ filePath: FILE });
+    const result = await createOpenWithHandlers(
+      makeDeps({
+        regQuery: query,
+        fileExists: (p) => p !== 'C:\\Removed\\EXCEL.EXE',
+      }),
+    ).list({ filePath: FILE });
     expect(result.apps.map((app) => app.label)).toContain('Microsoft Excel');
   });
 
@@ -340,7 +344,7 @@ describe('createOpenWithHandlers surface', () => {
   });
 });
 
-describe('macOS local apps and chronological ordering', () => {
+describe('macOS local applications', () => {
   const filePath = '/tmp/README.md';
   const NOW = 10000;
   const vscode = { exePath: '/Applications/Visual Studio Code.app', label: 'Visual Studio Code' };
@@ -353,70 +357,6 @@ describe('macOS local apps and chronological ordering', () => {
       ...overrides,
     });
   }
-
-  it('sorts by the newer of last use and installation, not system default order', async () => {
-    const deps = macDeps({
-      listMacApps: async () => [
-        { ...typora, lastUsedAt: 7000, installedAt: 1000 },
-        { ...vscode, installedAt: 9000 },
-        { exePath: '/Applications/Obsidian.app', label: 'Obsidian', lastUsedAt: 8000 },
-      ],
-    });
-    const result = await createOpenWithHandlers(deps).list({ filePath });
-    expect(result.apps.map((app) => app.label)).toEqual([
-      'Visual Studio Code',
-      'Obsidian',
-      'Typora',
-    ]);
-  });
-
-  it('puts the most recently used application first', async () => {
-    const result = await createOpenWithHandlers(
-      macDeps({
-        listMacApps: async () => [
-          { ...typora, lastUsedAt: 2000 },
-          { ...vscode, lastUsedAt: 9000 },
-        ],
-      }),
-    ).list({ filePath });
-    expect(result.apps[0].label).toBe('Visual Studio Code');
-  });
-
-  it('uses alphabetic order for unknown, invalid or future times without inventing times', async () => {
-    const result = await createOpenWithHandlers(
-      macDeps({
-        listMacApps: async () => [
-          { ...vscode, installedAt: NOW + 1, lastUsedAt: NaN },
-          { ...typora, installedAt: -1, lastUsedAt: Infinity },
-        ],
-      }),
-    ).list({ filePath });
-    expect(result.apps.map((app) => app.label)).toEqual(['Typora', 'Visual Studio Code']);
-  });
-
-  it('merges Cindy usage with OS usage and records only a successfully opened application', async () => {
-    const used = new Map<string, number>();
-    const recordUsed = vi.fn((appPath: string, timestamp: number) => {
-      used.set(appPath, timestamp);
-    });
-    const deps = macDeps({
-      usage: { getLastUsed: (appPath) => used.get(appPath) ?? 0, recordUsed },
-    });
-    const handlers = createOpenWithHandlers(deps);
-    const first = await handlers.list({ filePath });
-    const code = first.apps.find((app) => app.label === 'Visual Studio Code')!;
-    await handlers.open({ filePath, appId: code.id });
-    expect(deps.spawnDetached).toHaveBeenCalledWith('/usr/bin/open', [
-      '-a',
-      vscode.exePath,
-      '--',
-      filePath,
-    ]);
-    expect(recordUsed).toHaveBeenCalledWith(vscode.exePath, NOW);
-    const second = await handlers.list({ filePath });
-    expect(second.apps[0].label).toBe('Visual Studio Code');
-    expect(second.apps[0].id).toBe(code.id);
-  });
 
   it('does not truncate the available apps after twelve entries', async () => {
     const result = await createOpenWithHandlers(
@@ -471,22 +411,6 @@ describe('macOS local apps and chronological ordering', () => {
     expect(failed).toEqual({ success: false, apps: [], error: '无法查询可用应用' });
   });
 
-  it('does not record a failed launch or block opening when usage storage fails', async () => {
-    const recordUsed = vi.fn();
-    const deps = macDeps({ usage: { getLastUsed: () => 0, recordUsed } });
-    const handlers = createOpenWithHandlers(deps);
-    const result = await handlers.list({ filePath });
-    deps.spawnDetached.mockRejectedValueOnce(new Error('failed to launch'));
-    await expect(handlers.open({ filePath, appId: result.apps[0].id })).rejects.toThrow(
-      'failed to launch',
-    );
-    expect(recordUsed).not.toHaveBeenCalled();
-    recordUsed.mockImplementationOnce(() => {
-      throw new Error('readonly');
-    });
-    await expect(handlers.open({ filePath, appId: result.apps[0].id })).resolves.toBeUndefined();
-  });
-
   it('validates path grants before any native enumeration and never accepts raw bundle paths', async () => {
     const listMacApps = vi.fn(async () => [vscode]);
     const handlers = createOpenWithHandlers(macDeps({ listMacApps, isPathAllowed: () => false }));
@@ -499,21 +423,6 @@ describe('macOS local apps and chronological ordering', () => {
 });
 
 describe('Windows application recency', () => {
-  it('parses real install dates and rejects invalid calendar dates', () => {
-    const rows = [
-      'HKEY_LOCAL_MACHINE\\Software\\Uninstall\\Code',
-      '    InstallDate    REG_SZ    20261012',
-      '    InstallLocation    REG_SZ    C:\\Code',
-      '    DisplayIcon    REG_SZ    "C:\\Code\\Code.exe",0',
-      'HKEY_LOCAL_MACHINE\\Software\\Uninstall\\Invalid',
-      '    InstallDate    REG_SZ    20260231',
-      '    InstallLocation    REG_SZ    C:\\Bad',
-    ].join('\r\n');
-    expect(parseWindowsInstalledApps(rows)).toEqual([
-      { location: 'C:\\Code', icon: 'C:\\Code\\Code.exe', installedAt: Date.UTC(2026, 9, 12) },
-    ]);
-  });
-
   it('sorts using MRUList rather than registry enumeration order when no times exist', async () => {
     const base = makeDeps();
     const deps = makeDeps({
@@ -525,24 +434,234 @@ describe('Windows application recency', () => {
     const result = await createOpenWithHandlers(deps).list({ filePath: FILE });
     expect(result.apps.map((app) => app.label)).toEqual(['WPS 表格', 'Microsoft Excel']);
   });
+});
 
-  it('brings a newly installed app above older installed apps and keeps unrelated paths out', async () => {
+describe('open-with review boundaries', () => {
+  it('preserves registered editor arguments and substitutes the file as one argument', async () => {
     const base = makeDeps();
     const deps = makeDeps({
-      now: () => Date.UTC(2026, 9, 12, 12),
       regQuery: async (key, args) =>
-        key === 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
-          ? [
-              'HKEY_CURRENT_USER\\Software\\Uninstall\\WPS',
-              '    InstallDate    REG_SZ    20261012',
-              '    InstallLocation    REG_SZ    C:\\WPS',
-              'HKEY_CURRENT_USER\\Software\\Uninstall\\Office',
-              '    InstallDate    REG_SZ    20260901',
-              '    DisplayIcon    REG_SZ    "C:\\Office\\EXCEL.EXE",0',
-            ].join('\r\n')
+        key === 'HKCR\\Applications\\EXCEL.EXE\\shell\\open\\command'
+          ? '    (Default)    REG_SZ    "C:\\Office\\EXCEL.EXE" /safe --reuse-window "%1"'
           : base.regQuery(key, args),
     });
-    const result = await createOpenWithHandlers(deps).list({ filePath: FILE });
-    expect(result.apps.map((app) => app.label)).toEqual(['WPS 表格', 'Microsoft Excel']);
+    const handlers = createOpenWithHandlers(deps);
+    const result = await handlers.list({ filePath: FILE });
+    await handlers.open({
+      filePath: FILE,
+      appId: result.apps.find((a) => a.label === 'Microsoft Excel')!.id,
+    });
+    expect(deps.spawnDetached).toHaveBeenCalledWith('C:\\Office\\EXCEL.EXE', [
+      '/safe',
+      '--reuse-window',
+      FILE,
+    ]);
   });
+  it('does not offer commands whose file contract cannot be represented', async () => {
+    const base = makeDeps();
+    const handlers = createOpenWithHandlers(
+      makeDeps({
+        regQuery: async (key, args) =>
+          key === 'HKCR\\Applications\\EXCEL.EXE\\shell\\open\\command'
+            ? '    (Default)    REG_SZ    "C:\\Office\\EXCEL.EXE" /dde'
+            : base.regQuery(key, args),
+      }),
+    );
+    expect((await handlers.list({ filePath: FILE })).apps.map((a) => a.label)).not.toContain(
+      'Microsoft Excel',
+    );
+  });
+  it('binds an application reference to the file actually enumerated, not just its extension', async () => {
+    const handlers = createOpenWithHandlers(makeDeps());
+    const result = await handlers.list({ filePath: FILE });
+    await expect(
+      handlers.open({ filePath: 'C:\\work\\other.xlsx', appId: result.apps[0].id }),
+    ).rejects.toThrow(/NOT_FOUND/);
+  });
+  it('shares concurrent discovery for one file', async () => {
+    const listMacApps = vi.fn(async () => [{ exePath: '/Applications/Code.app', label: 'Code' }]);
+    const handlers = createOpenWithHandlers(makeDeps({ platform: 'darwin', listMacApps }));
+    await Promise.all([
+      handlers.list({ filePath: '/tmp/a.md' }),
+      handlers.list({ filePath: '/tmp/a.md' }),
+    ]);
+    expect(listMacApps).toHaveBeenCalledOnce();
+  });
+  it('does not scan uninstall databases to order a file action', async () => {
+    const query = vi.fn(makeDeps().regQuery);
+    await createOpenWithHandlers(makeDeps({ regQuery: query })).list({ filePath: FILE });
+    expect(query.mock.calls.some(([key]) => key.includes('Uninstall'))).toBe(false);
+  });
+  it('bounds native icon requests without dropping later applications', async () => {
+    let active = 0,
+      peak = 0;
+    const result = await createOpenWithHandlers(
+      makeDeps({
+        platform: 'darwin',
+        listMacApps: async () =>
+          Array.from({ length: 20 }, (_, i) => ({
+            exePath: '/Applications/App' + i + '.app',
+            label: 'App' + i,
+          })),
+        getAppIcon: async () => {
+          active++;
+          peak = Math.max(peak, active);
+          await Promise.resolve();
+          active--;
+          return null;
+        },
+      }),
+    ).list({ filePath: '/tmp/a.md' });
+    expect(result.apps).toHaveLength(20);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('file identity and bounded references', () => {
+  it('checks the real target and requires a regular file before discovering anything', async () => {
+    const regQuery = vi.fn(async () => '');
+    const blocked = createOpenWithHandlers(
+      makeDeps({
+        regQuery,
+        isPathAllowed: (p) => p === FILE,
+        resolveFile: async () => ({ path: 'C:\\Windows\\hidden.xlsx', isFile: true }),
+      }),
+    );
+    expect((await blocked.list({ filePath: FILE })).success).toBe(false);
+    expect(regQuery).not.toHaveBeenCalled();
+    expect(
+      (
+        await createOpenWithHandlers(
+          makeDeps({
+            resolveFile: async (p) => ({ path: p, isFile: false }),
+          }),
+        ).list({ filePath: FILE })
+      ).success,
+    ).toBe(false);
+  });
+  it('rechecks permission on open and rejects a symlink retargeted after enumeration', async () => {
+    let target = FILE;
+    let allowed = true;
+    const deps = makeDeps({
+      isPathAllowed: () => allowed,
+      resolveFile: async () => ({ path: target, isFile: true }),
+    });
+    const handlers = createOpenWithHandlers(deps);
+    const { apps } = await handlers.list({ filePath: FILE });
+    target = 'C:\\work\\different.xlsx';
+    await expect(handlers.open({ filePath: FILE, appId: apps[0].id })).rejects.toThrow(/NOT_FOUND/);
+    target = FILE;
+    allowed = false;
+    await expect(handlers.open({ filePath: FILE, appId: apps[0].id })).rejects.toThrow(
+      /PERMISSION_DENIED/,
+    );
+    expect(deps.spawnDetached).not.toHaveBeenCalled();
+  });
+  it('keeps another file menu valid and expires old references', async () => {
+    let now = 0;
+    const handlers = createOpenWithHandlers(makeDeps({ now: () => now }));
+    const result = await handlers.list({ filePath: FILE });
+    await handlers.list({ filePath: 'C:\\work\\other.xlsx' });
+    await expect(
+      handlers.open({ filePath: FILE, appId: result.apps[0].id }),
+    ).resolves.toBeUndefined();
+    now = 60001;
+    await expect(handlers.open({ filePath: FILE, appId: result.apps[0].id })).rejects.toThrow(
+      /NOT_FOUND/,
+    );
+  });
+  it('evicts old file references rather than growing without a bound', async () => {
+    const handlers = createOpenWithHandlers(makeDeps({ now: () => 0 }));
+    const result = await handlers.list({ filePath: FILE });
+    for (let i = 0; i < 64; i++) await handlers.list({ filePath: 'C:\\work\\file' + i + '.xlsx' });
+    await expect(handlers.open({ filePath: FILE, appId: result.apps[0].id })).rejects.toThrow(
+      /NOT_FOUND/,
+    );
+  });
+  it('returns failure for malformed IPC payloads without discovery or launch', async () => {
+    const deps = makeDeps({ regQuery: vi.fn(async () => '') });
+    const handlers = createOpenWithHandlers(deps);
+    for (const params of [null, undefined, {}, { filePath: FILE + '\0' }]) {
+      expect((await handlers.list(params as never)).success).toBe(false);
+      await expect(handlers.open(params as never)).rejects.toThrow();
+    }
+    expect(deps.regQuery).not.toHaveBeenCalled();
+    expect(deps.spawnDetached).not.toHaveBeenCalled();
+  });
+  it('retains all choices but limits native icon work to the first 32', async () => {
+    const getAppIcon = vi.fn(async () => null);
+    const handlers = createOpenWithHandlers(
+      makeDeps({
+        platform: 'darwin',
+        getAppIcon,
+        listMacApps: async () =>
+          Array.from({ length: 100 }, (_, i) => ({
+            exePath: '/Applications/App' + i + '.app',
+            label: 'App' + i,
+          })),
+      }),
+    );
+    expect((await handlers.list({ filePath: '/tmp/a.md' })).apps).toHaveLength(100);
+    expect(getAppIcon).toHaveBeenCalledTimes(32);
+  });
+});
+
+describe('Windows document command contract', () => {
+  it.each([
+    [
+      String.raw`"C:\Apps\editor.exe" "say ""hello""" "%1"`,
+      { exePath: 'C:\\Apps\\editor.exe', args: ['say "hello"', '%1'] },
+    ],
+    [
+      String.raw`"C:\Apps\editor.exe" "say \"hello\"" "%1"`,
+      { exePath: 'C:\\Apps\\editor.exe', args: ['say "hello"', '%1'] },
+    ],
+    [
+      '"C:\\Apps\\editor.exe" --reuse-window "%1"',
+      { exePath: 'C:\\Apps\\editor.exe', args: ['--reuse-window', '%1'] },
+    ],
+    [
+      '"C:\\Apps\\editor.exe" "%L" /read',
+      { exePath: 'C:\\Apps\\editor.exe', args: ['%L', '/read'] },
+    ],
+    ['"C:\\Apps\\editor.exe" /dde', null],
+    ['"C:\\Apps\\editor.exe" --file=%1', null],
+    ['"C:\\Apps\\editor.exe" "%1" %2', null],
+    ['"C:\\Apps\\editor.exe" "%1', null],
+    ['"C:\\Windows\\cmd.exe" /c "%1"', null],
+  ])('parses or explicitly rejects %s', (command, expected) => {
+    expect(parseWindowsOpenCommand(command as string)).toEqual(expected);
+  });
+});
+
+it('finds capability-only ProgIds without an Applications command or App Paths fallback', async () => {
+  const registry: Record<string, string> = {
+    'HKCR\\Applications':
+      'HKEY_CLASSES_ROOT\\Applications\\Editor.exe\\Capabilities\\FileAssociations\n    .md    REG_SZ    Editor.Markdown',
+    'HKCR\\Editor.Markdown\\shell\\open\\command':
+      '    (Default)    REG_SZ    "C:\\Editor\\Editor.exe" --markdown "%1"',
+    'HKCR\\Editor.Markdown': '    (Default)    REG_SZ    Markdown document',
+  };
+  const deps = makeDeps({ regQuery: async (key) => registry[key] ?? '' });
+  const handlers = createOpenWithHandlers(deps);
+  const result = await handlers.list({ filePath: 'C:\\work\\README.md' });
+  expect(result.apps.map((app) => app.label)).toContain('Editor');
+  await handlers.open({ filePath: 'C:\\work\\README.md', appId: result.apps[0].id });
+  expect(deps.spawnDetached).toHaveBeenCalledWith('C:\\Editor\\Editor.exe', [
+    '--markdown',
+    'C:\\work\\README.md',
+  ]);
+});
+
+it('prefers the extension-specific ProgId arguments over a generic exe association', async () => {
+  const base = makeDeps();
+  const deps = makeDeps({ regQuery: async (key, args) => {
+    if (key === 'HKCR\\.xlsx') return '    (Default)    REG_SZ    Excel.Specific';
+    if (key === 'HKCR\\Excel.Specific\\shell\\open\\command') return '    (Default)    REG_SZ    "C:\\Office\\EXCEL.EXE" /spreadsheet "%1"';
+    return base.regQuery(key, args);
+  }});
+  const handlers = createOpenWithHandlers(deps);
+  const result = await handlers.list({filePath:FILE});
+  await handlers.open({filePath:FILE, appId:result.apps.find(app => app.label === 'Microsoft Excel')!.id});
+  expect(deps.spawnDetached).toHaveBeenCalledWith('C:\\Office\\EXCEL.EXE', ['/spreadsheet', FILE]);
 });

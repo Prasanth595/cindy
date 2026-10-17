@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   context: {
     sessionId: undefined as string | undefined,
     workingDir: '/repo',
-    origin: { kind: 'local' } as { kind: string; deviceId?: string },
+    origin: { kind: 'local' } as { kind: string; deviceId?: string; remoteHostId?: string },
   },
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -22,10 +22,6 @@ vi.mock('@/components/chat/ChatSessionFileContext', () => ({
 vi.mock('@/features/cc-agent/embeddedSessionNavigation', () => ({
   useSidebarTargetSessionId: (id: string | undefined) => id,
 }));
-vi.mock('@/features/right-sidebar/lib/openInSidebarBrowser', () => ({
-  openUrlInSidebarBrowser: vi.fn(),
-  pathToFileUrl: vi.fn(),
-}));
 vi.mock('@/features/right-sidebar/lib/openInSidebarFileBrowser', () => ({
   openDirInSidebarFileBrowser: vi.fn(),
   openExternalFileInSidebarFileBrowser: vi.fn(),
@@ -33,39 +29,45 @@ vi.mock('@/features/right-sidebar/lib/openInSidebarFileBrowser', () => ({
 }));
 vi.mock('@/lib/remoteFileOpen', () => ({
   copyRemoteChatFile: vi.fn(),
-  revealRemoteChatFile: vi.fn(),
+  downloadRemoteChatEntry: vi.fn(),
+  openRemoteChatFile: vi.fn(),
 }));
-
+vi.mock('@/components/chat/useOpenWithMenu', () => ({ openHtmlFileByPreference: vi.fn() }));
 import { useFileChipContextMenu } from '../components/chat/useFileChipContextMenu';
 
-function Fixture() {
-  const { onContextMenu, menu } = useFileChipContextMenu({ getAbsPath: mocks.getAbsPath });
+const TITLE = 'chat.markdownRenderer.appPicker.title';
+const OPEN = 'chat.markdownRenderer.appPicker.open';
+function Fixture({
+  name = 'README.md',
+  html = false,
+  directory = false,
+  resolve = mocks.getAbsPath,
+} = {}) {
+  const { onContextMenu, menu } = useFileChipContextMenu({
+    fileName: name,
+    getAbsPath: resolve,
+    canOpenInBrowser: html,
+    sidebarFileBrowserKind: directory ? 'directory' : 'file',
+  });
   return (
     <>
-      <button onContextMenu={onContextMenu}>README.md</button>
+      <button onContextMenu={onContextMenu}>{name}</button>
       {menu}
     </>
   );
 }
-function openRoot() {
-  fireEvent.contextMenu(screen.getByRole('button', { name: 'README.md' }), {
-    clientX: 10,
-    clientY: 10,
-  });
+function openRoot(name = 'README.md') {
+  fireEvent.contextMenu(screen.getByRole('button', { name }), { clientX: 10, clientY: 10 });
 }
-async function requestSub() {
-  const trigger = await screen.findByRole('menuitem', { name: 'chat.markdownRenderer.openWith' });
-  act(() => trigger.focus());
-  await act(async () => {
-    fireEvent.keyDown(trigger, { key: 'ArrowRight', code: 'ArrowRight' });
-  });
+function requestApps() {
+  fireEvent.click(screen.getByRole('menuitem', { name: TITLE }));
 }
-async function openSub() {
-  await requestSub();
-  await screen.findByRole('menuitem', { name: 'chat.media.openWithApp' });
+async function picker() {
+  requestApps();
+  return screen.findByRole('alertdialog');
 }
-function closeRoot() {
-  fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape', code: 'Escape' });
+function escape() {
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
 }
 
 beforeEach(() => {
@@ -75,7 +77,7 @@ beforeEach(() => {
   mocks.list.mockResolvedValue({
     success: true,
     apps: [
-      { id: 'vscode', label: 'Visual Studio Code', iconDataUrl: 'data:image/png;base64,test' },
+      { id: 'code', label: 'Visual Studio Code' },
       { id: 'typora', label: 'Typora' },
     ],
   });
@@ -84,6 +86,7 @@ beforeEach(() => {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
+      platform: 'darwin',
       listOpenWithApps: mocks.list,
       openFileWithApp: mocks.open,
       openPath: mocks.openPath,
@@ -92,25 +95,27 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe('file chip open-with submenu', () => {
-  it('prefetches on right click, preserves main ordering and opens by application id without changing left click', async () => {
+describe('flat file menu and application picker', () => {
+  it('keeps the default action immediate, resolves lazily, and only opens after explicit choice', async () => {
     render(<Fixture />);
-    expect(mocks.list).not.toHaveBeenCalled();
     openRoot();
-    await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-    await openSub();
-    await screen.findByRole('menuitem', { name: 'Visual Studio Code' });
-    const names = screen.getAllByRole('menuitem').map((el) => el.textContent);
-    expect(names.indexOf('Visual Studio Code')).toBeLessThan(names.indexOf('Typora'));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Visual Studio Code' }));
+    expect(screen.getByRole('menuitem', { name: /chat.media.openWithApp/ })).toBeTruthy();
+    expect(mocks.getAbsPath).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+    await picker();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox')));
+    expect((screen.getByRole('button', { name: OPEN }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'code' } });
+    expect(screen.queryByRole('radio', { name: 'Typora' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Visual Studio Code' }));
+    fireEvent.click(screen.getByRole('button', { name: OPEN }));
     await waitFor(() =>
-      expect(mocks.open).toHaveBeenCalledWith({ filePath: '/repo/README.md', appId: 'vscode' }),
+      expect(mocks.open).toHaveBeenCalledWith({ filePath: '/repo/README.md', appId: 'code' }),
     );
+    expect(mocks.open).toHaveBeenCalledOnce();
     expect(mocks.openPath).not.toHaveBeenCalled();
-    expect(mocks.list).toHaveBeenCalledOnce();
   });
-
-  it('reveals default and local applications together instead of inserting local rows later', async () => {
+  it('does not query twice or show an incomplete application group while discovery is pending', async () => {
     let finish!: (value: unknown) => void;
     mocks.list.mockImplementationOnce(
       () =>
@@ -120,62 +125,19 @@ describe('file chip open-with submenu', () => {
     );
     render(<Fixture />);
     openRoot();
-    await requestSub();
+    requestApps();
+    requestApps();
     await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-    expect(screen.queryByRole('menuitem', { name: 'chat.media.openWithApp' })).toBeNull();
-    expect(screen.queryByRole('menuitem', { name: 'Visual Studio Code' })).toBeNull();
-    await act(async () => {
-      finish({ success: true, apps: [{ id: 'vscode', label: 'Visual Studio Code' }] });
-    });
-    expect(screen.getByRole('menuitem', { name: 'chat.media.openWithApp' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Visual Studio Code' })).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('menuitem', { name: /chat.media.openWithApp/ })).toBeTruthy();
+    await act(async () =>
+      finish({ success: true, apps: [{ id: 'code', label: 'Visual Studio Code' }] }),
+    );
+    expect(screen.getByRole('radio', { name: 'Visual Studio Code' })).toBeTruthy();
   });
-
-  it('refreshes an old prefetch if the user waits in the root menu', async () => {
-    const clock = vi.spyOn(Date, 'now');
-    const startedAt = Date.now();
-    try {
-      render(<Fixture />);
-      openRoot();
-      await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-      await act(async () => {});
-      mocks.list.mockResolvedValueOnce({
-        success: true,
-        apps: [{ id: 'new', label: 'New Editor' }],
-      });
-      clock.mockReturnValue(startedAt + 2000);
-      await openSub();
-      expect(screen.getByRole('menuitem', { name: 'New Editor' })).toBeTruthy();
-      expect(screen.queryByRole('menuitem', { name: 'Visual Studio Code' })).toBeNull();
-      expect(mocks.list).toHaveBeenCalledTimes(2);
-    } finally {
-      clock.mockRestore();
-    }
-  });
-
-  it('reuses a slow pending prefetch instead of starting a duplicate Windows scan', async () => {
-    let finish!: (value: unknown) => void;
-    mocks.list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-    const clock = vi.spyOn(Date, 'now');
-    const startedAt = Date.now();
-    try {
-      render(<Fixture />);
-      openRoot();
-      await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-      clock.mockReturnValue(startedAt + 2000);
-      await requestSub();
-      expect(mocks.list).toHaveBeenCalledOnce();
-      await act(async () => {
-        finish({ success: true, apps: [{ id: 'vscode', label: 'Visual Studio Code' }] });
-      });
-      expect(screen.getByRole('menuitem', { name: 'Visual Studio Code' })).toBeTruthy();
-      expect(screen.getByRole('menuitem', { name: 'chat.media.openWithApp' })).toBeTruthy();
-    } finally { clock.mockRestore(); }
-  });
-
-  it.each(['pointerLeave', 'blur'] as const)(
-    'does not pop open after %s during a pending query',
-    async (event) => {
+  it.each(['escape', 'file change', 'unmount'])(
+    'discards pending results after %s',
+    async (mode) => {
       let finish!: (value: unknown) => void;
       mocks.list.mockImplementationOnce(
         () =>
@@ -183,53 +145,75 @@ describe('file chip open-with submenu', () => {
             finish = resolve;
           }),
       );
-      render(<Fixture />);
+      const view = render(<Fixture />);
       openRoot();
-      await requestSub();
-      const trigger = screen.getByRole('menuitem', { name: 'chat.markdownRenderer.openWith' });
-      fireEvent[event](trigger);
-      await act(async () => {
-        finish({ success: true, apps: [{ id: 'vscode', label: 'Visual Studio Code' }] });
-      });
-      expect(screen.queryByRole('menuitem', { name: 'chat.media.openWithApp' })).toBeNull();
-      expect(screen.queryByRole('menuitem', { name: 'Visual Studio Code' })).toBeNull();
+      requestApps();
+      await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
+      if (mode === 'escape') escape();
+      if (mode === 'file change') view.rerender(<Fixture name="other.md" />);
+      if (mode === 'unmount') view.unmount();
+      await act(async () => finish({ success: true, apps: [{ id: 'old', label: 'Old app' }] }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(mocks.open).not.toHaveBeenCalled();
     },
   );
-
-  it('refreshes applications when reopening the submenu', async () => {
+  it.each(['ssh', 'device'])(
+    'does not resolve or scan local applications for a %s source',
+    (kind) => {
+      mocks.context.origin = { kind, deviceId: 'remote', remoteHostId: 'ssh-host' };
+      render(<Fixture />);
+      openRoot();
+      expect(screen.queryByRole('menuitem', { name: TITLE })).toBeNull();
+      expect(mocks.getAbsPath).not.toHaveBeenCalled();
+      expect(mocks.list).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['html', 'directory', 'linux'])('does not add an app picker to %s', (kind) => {
+    if (kind === 'linux') window.electronAPI.platform = 'linux';
+    render(<Fixture html={kind === 'html'} directory={kind === 'directory'} />);
+    openRoot();
+    expect(screen.queryByRole('menuitem', { name: TITLE })).toBeNull();
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+  it('keeps default opening available when discovery fails and allows an explicit retry', async () => {
+    mocks.list.mockResolvedValueOnce({ success: false, apps: [] });
     render(<Fixture />);
     openRoot();
-    await openSub();
-    await screen.findByRole('menuitem', { name: 'Visual Studio Code' });
-    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Typora' }), {
-      key: 'ArrowLeft',
-      code: 'ArrowLeft',
-    });
-    await waitFor(() =>
-      expect(screen.queryByRole('menuitem', { name: 'Visual Studio Code' })).toBeNull(),
-    );
-    mocks.list.mockResolvedValueOnce({
-      success: true,
-      apps: [{ id: 'obsidian', label: 'Obsidian' }],
-    });
-    await openSub();
-    await screen.findByRole('menuitem', { name: 'Obsidian' });
+    requestApps();
+    await waitFor(() => expect(mocks.error).toHaveBeenCalledOnce());
+    expect(screen.getByRole('menuitem', { name: /chat.media.openWithApp/ })).toBeTruthy();
+    await picker();
     expect(mocks.list).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole('menuitem', { name: 'Visual Studio Code' })).toBeNull();
   });
-
-  it('keeps the default application available if querying fails', async () => {
-    mocks.list.mockRejectedValueOnce(new Error('native query failed'));
+  it('shows an honest empty state, does not select anything automatically and restores chip focus on cancel', async () => {
+    mocks.list.mockResolvedValueOnce({ success: true, apps: [] });
     render(<Fixture />);
     openRoot();
-    await openSub();
-    await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-    fireEvent.click(screen.getByRole('menuitem', { name: 'chat.media.openWithApp' }));
-    await waitFor(() => expect(mocks.openPath).toHaveBeenCalledWith('/repo/README.md'));
-    expect(mocks.error).not.toHaveBeenCalled();
+    await picker();
+    expect(screen.getByText('chat.markdownRenderer.appPicker.empty')).toBeTruthy();
+    expect((screen.getByRole('button', { name: OPEN }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.markdownRenderer.appPicker.cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'README.md' }));
+    expect(mocks.open).not.toHaveBeenCalled();
   });
+  it('refuses a same-name chip whose resolved file changed after choosing an app', async () => {
+    render(<Fixture />);
+    openRoot();
+    await picker();
+    mocks.getAbsPath.mockResolvedValue('/other/README.md');
+    fireEvent.click(screen.getByRole('radio', { name: 'Typora' }));
+    fireEvent.click(screen.getByRole('button', { name: OPEN }));
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith('chat.markdownRenderer.appPicker.changed'),
+    );
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+});
 
-  it('does not restore a stale response after closing and reopening', async () => {
+it.each([true, false])(
+  'uses resolved file identity across a parent rerender (same file: %s)',
+  async (sameFile) => {
     let finish!: (value: unknown) => void;
     mocks.list.mockImplementationOnce(
       () =>
@@ -237,29 +221,18 @@ describe('file chip open-with submenu', () => {
           finish = resolve;
         }),
     );
-    render(<Fixture />);
+    const view = render(<Fixture />);
     openRoot();
-    await requestSub();
+    requestApps();
     await waitFor(() => expect(mocks.list).toHaveBeenCalledOnce());
-    closeRoot();
-    closeRoot();
-    await waitFor(() =>
-      expect(screen.queryByRole('menuitem', { name: 'chat.markdownRenderer.openWith' })).toBeNull(),
+    view.rerender(
+      <Fixture resolve={vi.fn(async () => (sameFile ? '/repo/README.md' : '/other/README.md'))} />,
     );
-    openRoot();
-    await openSub();
-    await screen.findByRole('menuitem', { name: 'Visual Studio Code' });
-    await act(async () => {
-      finish({ success: true, apps: [{ id: 'old', label: 'Uninstalled App' }] });
-    });
-    expect(screen.queryByRole('menuitem', { name: 'Uninstalled App' })).toBeNull();
-  });
-
-  it('does not add a host application list to remote-file menus', () => {
-    mocks.context.origin = { kind: 'device', deviceId: 'remote' };
-    render(<Fixture />);
-    openRoot();
-    expect(screen.queryByRole('menuitem', { name: 'chat.markdownRenderer.openWith' })).toBeNull();
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-});
+    await act(async () =>
+      finish({ success: true, apps: [{ id: 'code', label: 'Visual Studio Code' }] }),
+    );
+    if (sameFile) expect(screen.getByRole('alertdialog')).toBeTruthy();
+    else expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mocks.open).not.toHaveBeenCalled();
+  },
+);

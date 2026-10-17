@@ -11764,7 +11764,18 @@
       "openInSidebarFailed": "Failed to open in sidebar browser",
       "openInCurrentWindow": "Open in current window",
       "locateProject": "Locate project",
-      "shiftClick": "Shift+click"
+      "shiftClick": "Shift+click",
+      "appPicker": {
+        "title": "Open with another app…",
+        "description": "Opens this file once. Your default app stays unchanged.",
+        "search": "Search apps",
+        "open": "Open",
+        "cancel": "Cancel",
+        "empty": "No compatible apps found. Use the default app or the system file manager.",
+        "noMatch": "No matching apps.",
+        "failed": "Could not find available apps. Try again.",
+        "changed": "This file changed. Open its menu again."
+      }
     },
     "ghostSummon": {
       "directiveLabel": "Directive appended for the model",

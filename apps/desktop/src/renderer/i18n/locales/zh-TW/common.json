@@ -11712,7 +11712,18 @@
       "openInSidebarFailed": "在側邊欄瀏覽器中開啟失敗",
       "openInCurrentWindow": "在目前視窗開啟",
       "locateProject": "定位到專案",
-      "shiftClick": "Shift+點擊"
+      "shiftClick": "Shift+點擊",
+      "appPicker": {
+        "title": "使用其他應用程式開啟…",
+        "description": "僅開啟這次檔案，不變更預設應用程式。",
+        "search": "搜尋應用程式",
+        "open": "開啟",
+        "cancel": "取消",
+        "empty": "找不到相容的應用程式，可使用預設應用程式或系統檔案管理員。",
+        "noMatch": "沒有符合的應用程式。",
+        "failed": "無法查詢可用的應用程式，請重試。",
+        "changed": "檔案已變更，請重新開啟選單。"
+      }
     },
     "ghostSummon": {
       "directiveLabel": "追加給模型的指令",

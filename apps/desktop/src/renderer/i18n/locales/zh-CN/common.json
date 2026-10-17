@@ -11713,7 +11713,18 @@
       "openInSidebarFailed": "在侧边栏浏览器中打开失败",
       "openInCurrentWindow": "在当前窗口打开",
       "locateProject": "定位到项目",
-      "shiftClick": "Shift+点击"
+      "shiftClick": "Shift+点击",
+      "appPicker": {
+        "title": "用其他应用打开…",
+        "description": "仅打开本次文件，不改变默认应用。",
+        "search": "搜索应用",
+        "open": "打开",
+        "cancel": "取消",
+        "empty": "未找到兼容应用，可使用默认应用或系统文件管理器。",
+        "noMatch": "没有匹配的应用。",
+        "failed": "无法查询可用应用，请重试。",
+        "changed": "文件已改变，请重新打开菜单。"
+      }
     },
     "ghostSummon": {
       "directiveLabel": "追加给模型的指令",

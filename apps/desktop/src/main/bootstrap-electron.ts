@@ -439,8 +439,8 @@ import {
 } from './filePathPolicy';
 import { readFileThumbnail } from './fileThumbnail';
 import { createOpenWithHandlers, decodeRegOutput, parseChcpCodepage } from './openWithApps';
+import { createOpenWithIconLoader } from './openWithIcons';
 import { listMacOpenWithApps } from './openWithMacApps';
-import { createOpenWithUsageStore } from './openWithUsage';
 import { resolveShellOpenPathTarget } from './shellOpenPath';
 import { handleOpenFileInBrowser } from './openFileInBrowser';
 import { createWindowsFileUrlOpener } from './windowsFileUrlOpener';
@@ -7450,26 +7450,13 @@ const registerIpcHandlers = () => {
   // 业务体在 openWithApps.ts(依赖注入,单测直接调 handler body);appId → exe
   // 映射只存 main 侧,renderer 传路径执行在结构上不可表达(该文件头注释)。
   {
-    // app.getFileIcon 会偶发挂死(见 fileThumbnail.ts),这里同款硬超时 + 按
-    // exe 路径的进程内缓存(打开方式菜单反复展开不重复付原生调用成本)。
-    const appIconCache = new Map<string, string | null>();
-    const getAppIcon = async (exePath: string): Promise<string | null> => {
-      const key = exePath.toLowerCase();
-      const cached = appIconCache.get(key);
-      if (cached !== undefined) return cached;
-      try {
-        const icon = await Promise.race([
-          app.getFileIcon(exePath, { size: 'small' }),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
-        ]);
-        const dataUrl = icon && !icon.isEmpty() ? icon.toDataURL() : null;
-        appIconCache.set(key, dataUrl);
-        return dataUrl;
-      } catch {
-        appIconCache.set(key, null);
-        return null;
-      }
-    };
+    const getAppIcon = createOpenWithIconLoader({
+      platform: process.platform,
+      loadIcon: async (exePath) => {
+        const icon = await app.getFileIcon(exePath, { size: 'small' });
+        return !icon.isEmpty() ? icon.toDataURL() : null;
+      },
+    });
     // reg.exe 重定向输出走控制台代码页(中文系统 GBK)而非 UTF-8,按字节取回、
     // 用 chcp 探测到的代码页解码,否则中文应用名会变 U+FFFD 乱码。
     let consoleCodepagePromise: Promise<number | null> | null = null;
@@ -7482,25 +7469,24 @@ const registerIpcHandlers = () => {
       return consoleCodepagePromise;
     };
     const openWithLog = createLogger('open-with');
-    const usage = createOpenWithUsageStore(
-      path.join(app.getPath('userData'), 'open-with-usage.json'),
-      () => openWithLog.warn('usage history unavailable'),
-    );
     const openWith = createOpenWithHandlers({
       platform: process.platform,
       listMacApps: listMacOpenWithApps,
-      usage,
-      onUsageError: () => openWithLog.warn('usage history could not be saved'),
+      resolveFile: async (filePath) => {
+        const resolved = await fs.promises.realpath(filePath);
+        const stat = await fs.promises.stat(resolved);
+        return { path: resolved, isFile: stat.isFile() };
+      },
       onDiscoveryError: () => openWithLog.warn('application discovery failed'),
       isPathAllowed,
       fileExists: (p) => fs.existsSync(p),
-      regQuery: async (keyPath, args = []) => {
+      regQuery: async (keyPath, args = [], signal) => {
         const codepage = await getConsoleCodepage();
         return new Promise<string>((resolve, reject) => {
           execFile(
             'reg.exe',
             ['query', keyPath, ...args],
-            { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'buffer' },
+            { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'buffer', signal },
             (err, stdout) => {
               // Exit 1 is normal for an absent key/no search hits. Timeouts, missing
               // reg.exe and output overflow must not look like a successful empty list.

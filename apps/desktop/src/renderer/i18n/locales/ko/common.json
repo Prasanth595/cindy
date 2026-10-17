@@ -11713,7 +11713,18 @@
       "openInSidebarFailed": "사이드바 브라우저에서 열지 못했습니다",
       "openInCurrentWindow": "현재 창에서 열기",
       "locateProject": "프로젝트로 이동",
-      "shiftClick": "Shift+클릭"
+      "shiftClick": "Shift+클릭",
+      "appPicker": {
+        "title": "다른 앱으로 열기…",
+        "description": "이 파일을 한 번만 엽니다. 기본 앱은 변경하지 않습니다.",
+        "search": "앱 검색",
+        "open": "열기",
+        "cancel": "취소",
+        "empty": "호환되는 앱을 찾지 못했습니다. 기본 앱이나 시스템 파일 관리자를 사용하세요.",
+        "noMatch": "일치하는 앱이 없습니다.",
+        "failed": "사용 가능한 앱을 조회하지 못했습니다. 다시 시도하세요.",
+        "changed": "파일이 변경되었습니다. 메뉴를 다시 여세요."
+      }
     },
     "ghostSummon": {
       "directiveLabel": "모델에 추가된 지시문",

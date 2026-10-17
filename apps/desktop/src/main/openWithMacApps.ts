@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { ResolvedOpenWithApp } from './openWithApps.js';
 
-// 系统自带 JXA 直接调用 NSWorkspace/Spotlight；不依赖 Swift、第三方原生模块，
+// 系统自带 JXA 直接调用 NSWorkspace；不依赖 Swift、第三方原生模块，
 // 不通过 System Events 自动操作，不扫描文档内容。文件路径只作为 argv 数据传入。
 export const MAC_OPEN_WITH_SCRIPT = [
   'function run(argv) {',
@@ -36,16 +36,7 @@ export const MAC_OPEN_WITH_SCRIPT = [
   '      })) continue;',
   '      const appPath = ObjC.unwrap(url.path);',
   "      const label = String(ObjC.unwrap($.NSFileManager.defaultManager.displayNameAtPath(appPath))).replace(/\\.app$/i, '');",
-  '      const metadata = $.NSMetadataItem.alloc.initWithURL(url);',
-  '      function timestamp(key) {',
-  '        if (metadata.isNil()) return null;',
-  '        const value = metadata.valueForAttribute(key);',
-  '        return value.isNil() ? null : Number(value.timeIntervalSince1970) * 1000;',
-  '      }',
-  '      result.push({ exePath: appPath, label: label,',
-  "        lastUsedAt: timestamp('kMDItemLastUsedDate'),",
-  // Spotlight DateAdded 是进入本机安装位置的系统记录，不拿构建/修改/首次扫描时间替代。
-  "        installedAt: timestamp('kMDItemDateAdded') });",
+  '      result.push({ exePath: appPath, label: label });',
   '    } catch (_) { /* 单个损坏/已卸载 bundle 不阻止其他应用显示。 */ }',
   '  }',
   '  return JSON.stringify(result);',
@@ -69,10 +60,6 @@ export function parseMacOpenWithApps(stdout: string): ResolvedOpenWithApp[] {
     )
       continue;
     const app: ResolvedOpenWithApp = { exePath: entry.exePath, label: entry.label.trim() };
-    for (const key of ['lastUsedAt', 'installedAt'] as const) {
-      const value = entry[key];
-      if (typeof value === 'number' && Number.isFinite(value) && value > 0) app[key] = value;
-    }
     apps.push(app);
   }
   return apps;

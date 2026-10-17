@@ -16,6 +16,9 @@ export interface ConfirmDialogProps {
   /** Explicit design opt-in for standard dialogs; existing callers keep confirm-first order. */
   cancelFirst?: boolean;
   open: boolean;
+  /** Form consumers may focus their input and restore the original invoking control. */
+  onOpenAutoFocus?: (event: Event) => void;
+  onCloseAutoFocus?: (event: Event) => void;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
@@ -103,6 +106,8 @@ export function ConfirmDialog({
   presentation,
   cancelFirst = false,
   onOpenChange,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   title,
   description,
   textClassName,
@@ -220,6 +225,7 @@ export function ConfirmDialog({
             onEscapeKeyDown={(e) => {
               if (loading) e.preventDefault();
             }}
+            onCloseAutoFocus={onCloseAutoFocus}
             onOpenAutoFocus={
               requireTypedConfirmation || autoFocusConfirm
                 ? (e) => {
@@ -232,7 +238,7 @@ export function ConfirmDialog({
                     // 把焦点交给主按钮,避免"取消"天然带 focus ring。
                     confirmBtnRef.current?.focus();
                   }
-                : undefined
+                : onOpenAutoFocus
             }
           >
             {showCloseButton && (

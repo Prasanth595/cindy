@@ -1,18 +1,22 @@
 /**
- * Windows-only registry integration check for the open-with test-package job.
+ * Windows-only opt-in registry integration check.
  * Uses unique temporary HKCU keys and a real existing Node executable; never
  * changes a default association or launches an external application.
  */
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { createOpenWithHandlers, decodeRegOutput, parseChcpCodepage } from '../src/main/openWithApps';
+import {
+  createOpenWithHandlers,
+  decodeRegOutput,
+  parseChcpCodepage,
+} from '../src/main/openWithApps';
 
 const exec = promisify(execFile);
 
@@ -29,24 +33,39 @@ async function main(): Promise<void> {
   const cleanupKeys = [applicationKey, progIdKey];
   let registered = false;
   const codepage = await exec('chcp.com', [], { windowsHide: true }).then(
-    ({ stdout }) => parseChcpCodepage(stdout), () => null,
+    ({ stdout }) => parseChcpCodepage(stdout),
+    () => null,
   );
-  const reg = (args: string[]) => exec('reg.exe', args, {
-    windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'buffer',
-  });
-  const addValue = (key: string, name: string | null, value: string) => reg([
-    'add', key, ...(name === null ? ['/ve'] : ['/v', name]), '/t', 'REG_SZ', '/d', value, '/f',
-  ]);
+  const reg = (args: string[], signal?: AbortSignal) =>
+    exec('reg.exe', args, {
+      windowsHide: true,
+      timeout: 5000,
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'buffer',
+      signal,
+    });
+  const addValue = (key: string, name: string | null, value: string) =>
+    reg([
+      'add',
+      key,
+      ...(name === null ? ['/ve'] : ['/v', name]),
+      '/t',
+      'REG_SZ',
+      '/d',
+      value,
+      '/f',
+    ]);
   let queries = 0;
   let launch: { command: string; args: string[] } | undefined;
   const handlers = createOpenWithHandlers({
     platform: 'win32',
+    resolveFile: async (p) => ({ path: realpathSync(p), isFile: statSync(p).isFile() }),
     isPathAllowed: (candidate) => candidate === filePath,
     fileExists: existsSync,
-    regQuery: async (key, args = []) => {
+    regQuery: async (key, args = [], signal) => {
       queries++;
       try {
-        const { stdout } = await reg(['query', key, ...args]);
+        const { stdout } = await reg(['query', key, ...args], signal);
         return decodeRegOutput(stdout, codepage);
       } catch (error) {
         if ((error as { code?: unknown }).code === 1) return '';
@@ -54,7 +73,9 @@ async function main(): Promise<void> {
       }
     },
     getAppIcon: async () => null,
-    spawnDetached: (command, args) => { launch = { command, args }; },
+    spawnDetached: (command, args) => {
+      launch = { command, args };
+    },
   });
   const assertListed = async (source: string) => {
     const startedAt = performance.now();
@@ -64,7 +85,13 @@ async function main(): Promise<void> {
     assert.equal(result.apps[0].label, id);
     await handlers.open({ filePath, appId: result.apps[0].id });
     assert.deepEqual(launch, { command: process.execPath, args: [filePath] });
-    console.log(source + ': passed; queries=' + queries + '; elapsedMs=' + Math.round(performance.now() - startedAt));
+    console.log(
+      source +
+        ': passed; queries=' +
+        queries +
+        '; elapsedMs=' +
+        Math.round(performance.now() - startedAt),
+    );
     queries = 0;
   };
   try {
@@ -101,8 +128,9 @@ async function main(): Promise<void> {
       ...(registered ? [reg(['delete', registrationKey, '/v', id, '/f'])] : []),
       rm(directory, { recursive: true, force: true }),
     ]);
-    const unexpected = cleanup.filter((result) => result.status === 'rejected' &&
-      (result.reason as { code?: unknown }).code !== 1);
+    const unexpected = cleanup.filter(
+      (result) => result.status === 'rejected' && (result.reason as { code?: unknown }).code !== 1,
+    );
     assert.equal(unexpected.length, 0, 'Temporary fixture cleanup failed');
   }
 }

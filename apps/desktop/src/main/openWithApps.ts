@@ -1,33 +1,13 @@
-/**
- * openWithApps — 聊天文件 chip 右键「打开方式」的 main 侧能力。
- * ---------------------------------------------------------------------------
- * 两个动作:
- *   - list:查询当前文件可用的本地应用，按最近使用/安装时间排序。
- *     macOS 使用 NSWorkspace + Spotlight；Windows 使用文件关联/安装注册表。
- *   - open:只允许通过 main 侧枚举的应用 ID 打开文件。
- *
- * 安全设计(electron-security §5「IPC 是授权边界」):
- *   - renderer 只能回传 **appId**,不能传可执行路径。appId → exe 的映射只存在
- *     main 侧 per-扩展名缓存里,由本模块自己的枚举写入;open 时反查不到即拒绝。
- *     「renderer 递来一个绝对路径就执行」在结构上不可表达。
- *   - 待打开的文件路径每次都重新过绝对路径 + isPathAllowed + 存在性校验。
- *   - 枚举里剔除宿主进程(rundll32 等)——它们不是"应用",且可被用作参数注入
- *     的跳板。
- *
- * Windows 枚举口径(reg.exe query,零原生依赖):
- *   HKCU FileExts\<ext>\OpenWithList(MRU)∪ HKCR/HKCU <ext>\OpenWithProgids
- *   → exe 引用经 HKCR\Applications\<exe> / HKLM App Paths 解析,ProgId 经
- *   HKCR\<ProgId>\shell\open\command 解析 → 去重、验存在。UWP/MSIX 应用不在
- *   这些键下，属既有枚举盲区，不额外增加菜单入口。
- *
- * 错误协议(engineering-conventions §2):list 是查询型,失败仍要渲染菜单其余
- * 项 → `{ success, apps }` 模式;open 是动作型 → throwIpcError。
+/** Local application discovery and one-time opening for Desktop file references.
+ * Windows reads explicit file association registrations; macOS asks NSWorkspace.
+ * No filesystem application crawl, install-date scan, persisted usage or default
+ * association changes. Renderer supplies an opaque application ID, never an exe.
+ * IDs are bound to a validated real file and expire; file permissions are rechecked
+ * before launching. Registry argv is preserved without invoking a shell.
  */
 
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-
-import type { OpenWithUsage } from './openWithUsage.js';
 
 import { throwIpcError } from './utils/ipcValidate.js';
 
@@ -53,16 +33,15 @@ export interface OpenWithDeps {
    * `reg.exe query` 包装(仅 Windows 用)。返回 stdout;键不存在等查询失败按
    * 空 stdout 处理(reg.exe 对 not-found 返回非 0,包装层不抛)。
    */
-  regQuery(keyPath: string, args?: string[]): Promise<string>;
+  regQuery(keyPath: string, args?: string[], signal?: AbortSignal): Promise<string>;
   /** 应用图标 dataURL;实现方必须自带超时防护(app.getFileIcon 会挂死,见 fileThumbnail.ts)。 */
   getAppIcon(exePath: string): Promise<string | null>;
   /** detached + unref 起进程;不回传输出。 */
   spawnDetached(command: string, args: string[]): void | Promise<void>;
   /** macOS 的 NSWorkspace 查询，由 bootstrap 注入；不把应用路径暴露给 renderer。 */
   listMacApps?(filePath: string): Promise<ResolvedOpenWithApp[]>;
-  usage?: OpenWithUsage;
+  resolveFile(filePath: string): Promise<{ path: string; isFile: boolean }>;
   now?(): number;
-  onUsageError?(): void;
   onDiscoveryError?(): void;
 }
 
@@ -88,9 +67,10 @@ const HOST_EXE_DENYLIST = new Set([
 export function expandWindowsEnv(value: string, env: Record<string, string | undefined>): string {
   return value.replace(
     /%([^%]+)%/g,
-    (raw, name: string) => env[name] ?? Object.entries(env).find(
-      ([key]) => key.toLowerCase() === name.toLowerCase(),
-    )?.[1] ?? raw,
+    (raw, name: string) =>
+      env[name] ??
+      Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ??
+      raw,
   );
 }
 
@@ -105,6 +85,65 @@ export function parseCommandLineExe(command: string): string | null {
   // 无引号形态:exe 路径可能含空格(老注册表项),按 `.exe` 边界截。
   const m = trimmed.match(/^(.*?\.exe)(?=\s|$)/i);
   return m ? m[1] : (trimmed.split(/\s+/)[0] ?? null);
+}
+
+/** Decode Windows quoting without a shell. Unknown/embedded document placeholders
+ * and DDE-only commands are omitted rather than launched with a different contract. */
+export function parseWindowsOpenCommand(
+  command: string,
+): { exePath: string; args: string[] } | null {
+  if (!command || command.length > 32768 || /[\0\r\n]/.test(command)) return null;
+  const tokens: string[] = [];
+  let token = '',
+    quoted = false,
+    started = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (!quoted && /\s/.test(ch)) {
+      if (started) {
+        tokens.push(token);
+        token = '';
+        started = false;
+      }
+      continue;
+    }
+    started = true;
+    if (ch === '\\') {
+      let count = 1;
+      while (command[i + 1] === '\\') {
+        count++;
+        i++;
+      }
+      if (command[i + 1] === '"') {
+        token += '\\'.repeat(Math.floor(count / 2));
+        i++;
+        if (count % 2) token += '"';
+        else if (quoted && command[i + 1] === '"') {
+          token += '"';
+          i++;
+        } else quoted = !quoted;
+      } else token += '\\'.repeat(count);
+    } else if (ch === '"') {
+      if (quoted && command[i + 1] === '"') {
+        token += '"';
+        i++;
+      } else quoted = !quoted;
+    }
+    else token += ch;
+  }
+  if (quoted) return null;
+  if (started) tokens.push(token);
+  const exePath = tokens.shift();
+  if (!exePath || !/\.exe$/i.test(exePath)) return null;
+  if (HOST_EXE_DENYLIST.has(path.win32.basename(exePath).toLowerCase())) return null;
+  const args = tokens;
+  if (!args.length) args.push('%1');
+  if (!args.some((arg) => /^%(?:1|l|v|\*)$/i.test(arg))) return null;
+  if (
+    args.some((arg) => /%(?:[0-9*]|[lLvV](?![a-zA-Z_]))/.test(arg) && !/^%(?:1|l|v|\*)$/i.test(arg))
+  )
+    return null;
+  return { exePath, args };
 }
 
 /**
@@ -166,7 +205,10 @@ export function normalizeRegistryKey(key: string): string {
     hkcu: 'hkey_current_user',
     hklm: 'hkey_local_machine',
   };
-  return key.replace(/\\+$/, '').toLowerCase().replace(/^[^\\]+/, (hive) => hives[hive] ?? hive);
+  return key
+    .replace(/\\+$/, '')
+    .toLowerCase()
+    .replace(/^[^\\]+/, (hive) => hives[hive] ?? hive);
 }
 
 export function parseRegSubkeys(stdout: string, parentKey: string): string[] {
@@ -184,68 +226,49 @@ export function parseRegSubkeys(stdout: string, parentKey: string): string[] {
 }
 
 /** Accept only explicit extension claims in these two Windows application contracts. */
-export function parseWindowsApplicationClaims(stdout: string, ext: string): string[] {
+export function parseWindowsApplicationClaims(
+  stdout: string,
+  ext: string,
+): { exeNames: string[]; progIds: string[] } {
   const names = new Set<string>();
+  const progIds = new Set<string>();
   for (const section of stdout.split(/(?=^HKEY_|^HK(?:CR|CU|LM)\\)/m)) {
     const key = normalizeRegistryKey(section.split(/\r?\n/)[0].trim());
-    const match = key.match(/^hkey_classes_root\\applications\\([^\\]+\.exe)\\(?:capabilities\\fileassociations|supportedtypes)$/);
+    const match = key.match(
+      /^hkey_classes_root\\applications\\([^\\]+\.exe)\\(?:capabilities\\fileassociations|supportedtypes)$/,
+    );
     if (match && parseRegValues(section).some((v) => v.name.toLowerCase() === ext)) {
       names.add(match[1]);
+      if (key.endsWith('capabilities\\fileassociations')) {
+        for (const row of parseRegValues(section)) {
+          if (row.name.toLowerCase() === ext && row.data) progIds.add(row.data);
+        }
+      }
     }
   }
-  return [...names];
+  return { exeNames: [...names], progIds: [...progIds] };
 }
 
 /** Keep registry subprocess concurrency bounded even on hosts with many installed apps. */
 async function mapRegistryItems<T, R>(items: T[], resolve: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await resolve(items[index]);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(4, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await resolve(items[index]);
+      }
+    }),
+  );
   return results;
-}
-
-/** 只采用 Windows 安装器明确提供的 InstallDate，不使用 exe mtime/birthtime。 */
-export function parseWindowsInstalledApps(
-  stdout: string,
-): Array<{ location?: string; icon?: string; installedAt: number }> {
-  const result: Array<{ location?: string; icon?: string; installedAt: number }> = [];
-  const sections = stdout.split(/(?=^HKEY_)/m);
-  for (const section of sections) {
-    const values = new Map(parseRegValues(section).map((v) => [v.name.toLowerCase(), v.data]));
-    const date = values.get('installdate');
-    if (!date || !/^\d{8}$/.test(date)) continue;
-    const year = Number(date.slice(0, 4));
-    const month = Number(date.slice(4, 6));
-    const day = Number(date.slice(6, 8));
-    const installedAt = Date.UTC(year, month - 1, day);
-    const parsed = new Date(installedAt);
-    if (
-      parsed.getUTCFullYear() !== year ||
-      parsed.getUTCMonth() !== month - 1 ||
-      parsed.getUTCDate() !== day
-    )
-      continue;
-    const location = values.get('installlocation');
-    const displayIcon = values.get('displayicon');
-    const icon = displayIcon
-      ? (parseCommandLineExe(displayIcon.replace(/,\s*-?\d+$/, '')) ?? undefined)
-      : undefined;
-    if (location || icon) result.push({ location, icon, installedAt });
-  }
-  return result;
 }
 
 export interface ResolvedOpenWithApp {
   /** Windows 可执行文件；macOS .app bundle。只在 main 内流转。 */
   exePath: string;
   label: string;
-  lastUsedAt?: number;
-  installedAt?: number;
+  args?: string[];
   /** Windows MRU 仅给相对次序，不能伪装成最近使用时间。 */
   recentOrder?: number;
 }
@@ -254,29 +277,52 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
   // 该模块是可注入 platform 的纯函数,单测会在 Linux runner 模拟 win32。
   // 路径语义必须跟 deps.platform 走,不能跟测试宿主的 process.platform 走。
   const platformPath = deps.platform === 'win32' ? path.win32 : path.posix;
-  // ext → (appId → exePath)。每次 list 整体重建该 ext 的映射;open 只认最近
-  // 一次枚举写入的 id。进程内存态即可——菜单打开到点击是同进程短会话。
-  const appCacheByExt = new Map<string, Map<string, string>>();
+  // 按真实文件保存短期、有界应用引用；其他窗口查询不会覆盖当前文件。
+  const appCacheByFile = new Map<
+    string,
+    { expires: number; apps: Map<string, ResolvedOpenWithApp> }
+  >();
+  const pending = new Map<string, Promise<ListOpenWithAppsResult>>();
+  let discoveryTail: Promise<unknown> = Promise.resolve();
+  const now = deps.now ?? Date.now;
+  const prune = () => {
+    for (const [key, value] of appCacheByFile)
+      if (value.expires <= now()) appCacheByFile.delete(key);
+    while (appCacheByFile.size > 64) appCacheByFile.delete(appCacheByFile.keys().next().value!);
+  };
   const appKey = (appPath: string): string =>
     deps.platform === 'win32' ? appPath.toLowerCase() : appPath;
 
-  function assertOpenableFile(filePath: string): void {
-    if (typeof filePath !== 'string' || !platformPath.isAbsolute(filePath)) {
+  async function assertOpenableFile(filePath: string): Promise<string> {
+    if (
+      typeof filePath !== 'string' ||
+      filePath.length > 32768 ||
+      filePath.includes('\0') ||
+      !platformPath.isAbsolute(filePath)
+    ) {
       throwIpcError('INVALID_PARAMS', 'filePath must be absolute');
     }
     if (!deps.isPathAllowed(filePath)) {
       throwIpcError('PERMISSION_DENIED', '不允许访问该路径');
     }
-    if (!deps.fileExists(filePath)) {
-      throwIpcError('NOT_FOUND', '文件不存在');
-    }
+    const resolved = await deps.resolveFile(filePath).catch(() => null);
+    if (!resolved) throwIpcError('NOT_FOUND', '文件不存在');
+    if (!resolved!.isFile) throwIpcError('INVALID_PARAMS', '目标必须是文件');
+    if (!deps.isPathAllowed(resolved!.path)) throwIpcError('PERMISSION_DENIED', '不允许访问该路径');
+    return platformPath.normalize(resolved!.path);
   }
 
   /** exe 名引用(`Excel.exe`)→ 完整路径 + 友好名。 */
-  async function resolveExeReference(exeName: string, query = deps.regQuery): Promise<ResolvedOpenWithApp | null> {
+  async function resolveExeReference(
+    exeName: string,
+    query = deps.regQuery,
+  ): Promise<ResolvedOpenWithApp | null> {
     const appKey = `HKCR\\Applications\\${exeName}`;
     const cmdOut = await query(`${appKey}\\shell\\open\\command`, ['/ve']);
-    let exePath = parseCommandLineExe(parseRegValues(cmdOut)[0]?.data ?? '');
+    const command = parseRegValues(cmdOut)[0]?.data;
+    const parsedCommand = command ? parseWindowsOpenCommand(command) : null;
+    if (command && !parsedCommand) return null;
+    let exePath = parsedCommand?.exePath ?? null;
     if (exePath) exePath = expandWindowsEnv(exePath, process.env);
     if (!exePath || !platformPath.isAbsolute(exePath) || !deps.fileExists(exePath)) {
       exePath = null;
@@ -293,7 +339,7 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
         }
       }
     }
-    if (!exePath || !deps.fileExists(exePath)) return null;
+    if (!exePath || !/\.exe$/i.test(exePath) || !deps.fileExists(exePath)) return null;
 
     const friendlyOut = await query(appKey, ['/v', 'FriendlyAppName']);
     const friendly = parseRegValues(friendlyOut)[0]?.data;
@@ -302,35 +348,45 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
       friendly && !friendly.startsWith('@')
         ? friendly
         : platformPath.basename(exePath, platformPath.extname(exePath));
-    return { exePath, label };
+    return { exePath, label, args: parsedCommand?.args ?? ['%1'] };
   }
 
   /** ProgId 引用 → 完整路径 + 友好名。 */
-  async function resolveProgIdReference(progId: string, query = deps.regQuery): Promise<ResolvedOpenWithApp | null> {
+  async function resolveProgIdReference(
+    progId: string,
+    query = deps.regQuery,
+  ): Promise<ResolvedOpenWithApp | null> {
     const cmdOut = await query(`HKCR\\${progId}\\shell\\open\\command`, ['/ve']);
-    const parsed = parseCommandLineExe(parseRegValues(cmdOut)[0]?.data ?? '');
-    const exePath = parsed ? expandWindowsEnv(parsed, process.env) : null;
-    if (!exePath || !deps.fileExists(exePath)) return null;
+    const parsedCommand = parseWindowsOpenCommand(parseRegValues(cmdOut)[0]?.data ?? '');
+    if (!parsedCommand) return null;
+    const exePath = expandWindowsEnv(parsedCommand.exePath, process.env);
+    if (!platformPath.isAbsolute(exePath) || !/\.exe$/i.test(exePath) || !deps.fileExists(exePath))
+      return null;
 
-    const nameOut = await query(`HKCR\\${progId}`, ['/ve']);
+    const nameOut = await query(`HKCR\\Applications\\${platformPath.basename(exePath)}`, [
+      '/v',
+      'FriendlyAppName',
+    ]);
     const friendly = parseRegValues(nameOut)[0]?.data;
     const label =
       friendly && !friendly.startsWith('@')
         ? friendly
         : platformPath.basename(exePath, platformPath.extname(exePath));
-    return { exePath, label };
+    return { exePath, label, args: parsedCommand.args };
   }
 
   async function listWindowsApps(ext: string): Promise<ResolvedOpenWithApp[]> {
     // Bound the entire discovery, not just each individual reg.exe process.
     const deadline = Date.now() + 8000;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const query: OpenWithDeps['regQuery'] = async (key, args) => {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error('Registry discovery timed out');
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([
-          deps.regQuery(key, args),
+          deps.regQuery(key, args, controller.signal),
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error('Registry discovery timed out')), remaining);
           }),
@@ -339,197 +395,194 @@ export function createOpenWithHandlers(deps: OpenWithDeps): OpenWithHandlers {
         if (timer !== undefined) clearTimeout(timer);
       }
     };
-    const fileExtsKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\${ext}`;
+    try {
+      const fileExtsKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\${ext}`;
 
-    const exeNames = new Set<string>();
-    const progIds = new Set<string>();
+      const exeNames = new Set<string>();
+      const progIds = new Set<string>();
 
-    const mruOut = await query(`${fileExtsKey}\\OpenWithList`);
-    const mruValues = parseRegValues(mruOut);
-    const mru = mruValues.find((v) => v.name.toLowerCase() === 'mrulist')?.data ?? '';
-    const recentExeNames = [...mru]
-      .map((key) => mruValues.find((v) => v.name === key)?.data)
-      .filter((value): value is string => !!value && /\.exe$/i.test(value));
-    for (const exe of recentExeNames) exeNames.add(exe);
-    for (const v of mruValues) {
-      if (v.name.toLowerCase() !== 'mrulist' && /\.exe$/i.test(v.data)) exeNames.add(v.data);
-    }
-    const hkcrListKey = `HKCR\\${ext}\\OpenWithList`;
-    for (const sub of parseRegSubkeys(await query(hkcrListKey), hkcrListKey)) {
-      if (/\.exe$/i.test(sub)) exeNames.add(sub);
-    }
-    for (const src of [`${fileExtsKey}\\OpenWithProgids`, `HKCR\\${ext}\\OpenWithProgids`]) {
-      for (const v of parseRegValues(await query(src))) {
-        if (v.name && v.name !== '(Default)') progIds.add(v.name);
+      const mruOut = await query(`${fileExtsKey}\\OpenWithList`);
+      const mruValues = parseRegValues(mruOut);
+      const mru = mruValues.find((v) => v.name.toLowerCase() === 'mrulist')?.data ?? '';
+      const recentExeNames = [...mru]
+        .map((key) => mruValues.find((v) => v.name === key)?.data)
+        .filter((value): value is string => !!value && /\.exe$/i.test(value));
+      for (const exe of recentExeNames) exeNames.add(exe);
+      for (const v of mruValues) {
+        if (v.name.toLowerCase() !== 'mrulist' && /\.exe$/i.test(v.data)) exeNames.add(v.data);
       }
-    }
-    // 扩展名默认 ProgId 也入列(它对应的应用不一定出现在 OpenWith* 里)。
-    const defaultProgId = parseRegValues(await query(`HKCR\\${ext}`, ['/ve']))[0]?.data;
-    if (defaultProgId) progIds.add(defaultProgId);
-
-    // Editors such as VS Code often advertise Markdown through the Windows
-    // RegisteredApplications/Capabilities contract instead of OpenWithList.
-    const registrations = await Promise.all(['HKCU', 'HKLM'].map(async (hive) => {
-      const values = parseRegValues(await query(`${hive}\\Software\\RegisteredApplications`));
-      // A relative Capabilities path belongs to the hive owning this registration.
-      return values.filter((v) => v.data).map((v) =>
-        /^(?:HK(?:CU|LM|CR)|HKEY_(?:CURRENT_USER|LOCAL_MACHINE|CLASSES_ROOT))\\/i.test(v.data)
-          ? v.data : `${hive}\\${v.data}`,
-      );
-    }));
-    const associations = await mapRegistryItems([...new Set(registrations.flat())], (key) =>
-      query(`${key}\\FileAssociations`),
-    );
-    for (const stdout of associations) {
-      for (const association of parseRegValues(stdout)) {
-        if (association.name.toLowerCase() === ext && association.data) progIds.add(association.data);
+      const hkcrListKey = `HKCR\\${ext}\\OpenWithList`;
+      for (const sub of parseRegSubkeys(await query(hkcrListKey), hkcrListKey)) {
+        if (/\.exe$/i.test(sub)) exeNames.add(sub);
       }
-    }
-
-    // Per-user installers may register Capabilities under Applications without
-    // adding RegisteredApplications. Only accept an explicit extension claim.
-    // One exact filtered recursive query replaces two processes per installed app.
-    for (const exeName of parseWindowsApplicationClaims(
-      await query('HKCR\\Applications', ['/s', '/f', ext, '/e']), ext,
-    )) exeNames.add(exeName);
-
-    const seen = new Set<string>();
-    const apps: ResolvedOpenWithApp[] = [];
-    const push = (r: ResolvedOpenWithApp | null): void => {
-      if (!r) return;
-      if (HOST_EXE_DENYLIST.has(platformPath.basename(r.exePath).toLowerCase())) return;
-      const key = appKey(r.exePath);
-      if (seen.has(key)) return;
-      seen.add(key);
-      apps.push(r);
-    };
-    for (const app of await mapRegistryItems([...exeNames], (name) => resolveExeReference(name, query))) push(app);
-    for (const app of await mapRegistryItems([...progIds], (name) => resolveProgIdReference(name, query))) push(app);
-    // 系统 MRU 仅在没有可比较时间时作为排序依据；不拿扫描时间替代使用时间。
-    for (const app of apps) {
-      const index = recentExeNames.findIndex(
-        (exe) => exe.toLowerCase() === platformPath.basename(app.exePath).toLowerCase(),
-      );
-      if (index >= 0) app.recentOrder = index;
-    }
-    const uninstallRoots = [
-      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-      'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-      'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    ];
-    // Sorting metadata must never erase editors already discovered successfully.
-    let installQueryFailed = false;
-    const installData = await Promise.all(
-      uninstallRoots.map(async (root) => {
-        try { return await query(root, ['/s']); }
-        catch { installQueryFailed = true; return ''; }
-      }),
-    );
-    if (installQueryFailed) deps.onDiscoveryError?.();
-    for (const stdout of installData) {
-      for (const entry of parseWindowsInstalledApps(stdout)) {
-        for (const app of apps) {
-          const appPath = appKey(platformPath.normalize(app.exePath));
-          const location = entry.location
-            ? appKey(platformPath.normalize(entry.location)).replace(/\\+$/, '')
-            : '';
-          const icon = entry.icon ? appKey(platformPath.normalize(entry.icon)) : '';
-          if ((location && appPath.startsWith(location + '\\')) || icon === appPath) {
-            app.installedAt = Math.max(app.installedAt ?? 0, entry.installedAt);
-          }
+      for (const src of [`${fileExtsKey}\\OpenWithProgids`, `HKCR\\${ext}\\OpenWithProgids`]) {
+        for (const v of parseRegValues(await query(src))) {
+          if (v.name && v.name !== '(Default)') progIds.add(v.name);
         }
       }
+      // 扩展名默认 ProgId 也入列(它对应的应用不一定出现在 OpenWith* 里)。
+      const defaultProgId = parseRegValues(await query(`HKCR\\${ext}`, ['/ve']))[0]?.data;
+      if (defaultProgId) progIds.add(defaultProgId);
+
+      // Editors such as VS Code often advertise Markdown through the Windows
+      // RegisteredApplications/Capabilities contract instead of OpenWithList.
+      const registrations = await Promise.all(
+        ['HKCU', 'HKLM'].map(async (hive) => {
+          const values = parseRegValues(await query(`${hive}\\Software\\RegisteredApplications`));
+          // A relative Capabilities path belongs to the hive owning this registration.
+          return values
+            .filter((v) => v.data)
+            .map((v) =>
+              /^(?:HK(?:CU|LM|CR)|HKEY_(?:CURRENT_USER|LOCAL_MACHINE|CLASSES_ROOT))\\/i.test(v.data)
+                ? v.data
+                : `${hive}\\${v.data}`,
+            );
+        }),
+      );
+      const associations = await mapRegistryItems([...new Set(registrations.flat())], (key) =>
+        query(`${key}\\FileAssociations`),
+      );
+      for (const stdout of associations) {
+        for (const association of parseRegValues(stdout)) {
+          if (association.name.toLowerCase() === ext && association.data)
+            progIds.add(association.data);
+        }
+      }
+
+      // Per-user installers may register Capabilities under Applications without
+      // adding RegisteredApplications. Only accept an explicit extension claim.
+      // One exact filtered recursive query replaces two processes per installed app.
+      const claims = parseWindowsApplicationClaims(
+        await query('HKCR\\Applications', ['/s', '/f', ext, '/e']),
+        ext,
+      );
+      for (const exeName of claims.exeNames) exeNames.add(exeName);
+      for (const progId of claims.progIds) progIds.add(progId);
+
+      const seen = new Set<string>();
+      const apps: ResolvedOpenWithApp[] = [];
+      const push = (r: ResolvedOpenWithApp | null): void => {
+        if (!r) return;
+        if (HOST_EXE_DENYLIST.has(platformPath.basename(r.exePath).toLowerCase())) return;
+        const key = appKey(r.exePath);
+        if (seen.has(key)) return;
+        seen.add(key);
+        apps.push(r);
+      };
+      for (const app of await mapRegistryItems([...progIds], (name) =>
+        resolveProgIdReference(name, query),
+      ))
+        push(app);
+      for (const app of await mapRegistryItems([...exeNames], (name) =>
+        resolveExeReference(name, query),
+      ))
+        push(app);
+      // 系统 MRU 仅表示相对顺序；不与安装日期或伪造的绝对时间混排。
+      for (const app of apps) {
+        const index = recentExeNames.findIndex(
+          (exe) => exe.toLowerCase() === platformPath.basename(app.exePath).toLowerCase(),
+        );
+        if (index >= 0) app.recentOrder = index;
+      }
+      return apps;
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
     }
-    return apps;
   }
 
+  async function discover(filePath: string): Promise<ListOpenWithAppsResult> {
+    const ext = platformPath.extname(filePath).toLowerCase();
+    if (deps.platform !== 'darwin' && (!ext || !/^\.[\p{L}\p{N}_+-]{1,64}$/u.test(ext)))
+      return { success: true, apps: [] };
+    try {
+      if (!deps.isPathAllowed(filePath)) throw new Error('permission revoked');
+      const resolved =
+        deps.platform === 'darwin'
+          ? ((await deps.listMacApps?.(filePath)) ?? [])
+          : deps.platform === 'win32'
+            ? await listWindowsApps(ext)
+            : [];
+      const seen = new Set<string>();
+      const ranked = resolved.filter((entry) => {
+        if (!deps.fileExists(entry.exePath) || !platformPath.isAbsolute(entry.exePath))
+          return false;
+        const key = appKey(platformPath.normalize(entry.exePath));
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      ranked.sort(
+        (a, b) =>
+          (a.recentOrder ?? Infinity) - (b.recentOrder ?? Infinity) ||
+          a.label.localeCompare(b.label) ||
+          appKey(a.exePath).localeCompare(appKey(b.exePath)),
+      );
+      const idMap = new Map<string, ResolvedOpenWithApp>();
+      // 保留全部应用。仅前 32 项取原生图标，其余使用通用图标；最多四项并发。
+      const apps: OpenWithApp[] = await mapRegistryItems(ranked, async (entry) => {
+        // ID 基于应用身份而非数组下标；重排不能让旧点击指向另一应用。
+        const id =
+          'owa-' +
+          createHash('sha256')
+            .update(JSON.stringify([appKey(entry.exePath), entry.args ?? []]))
+            .digest('hex');
+        idMap.set(id, entry);
+        const iconDataUrl =
+          (ranked.indexOf(entry) < 32
+            ? await deps.getAppIcon(entry.exePath).catch(() => null)
+            : null) ?? undefined;
+        return { id, label: entry.label, ...(iconDataUrl ? { iconDataUrl } : {}) };
+      });
+      appCacheByFile.delete(appKey(filePath));
+      appCacheByFile.set(appKey(filePath), { expires: now() + 60000, apps: idMap });
+      prune();
+      return { success: true, apps };
+    } catch {
+      appCacheByFile.delete(appKey(filePath));
+      deps.onDiscoveryError?.();
+      return { success: false, apps: [], error: '无法查询可用应用' };
+    }
+  }
   return {
-    async list({ filePath }) {
+    async list(params) {
       try {
-        assertOpenableFile(filePath);
-      } catch (err) {
-        return {
-          success: false,
-          apps: [],
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-      const ext = platformPath.extname(filePath).toLowerCase();
-      if (!ext) return { success: true, apps: [] };
-      try {
-        const resolved =
-          deps.platform === 'darwin'
-            ? ((await deps.listMacApps?.(filePath)) ?? [])
-            : deps.platform === 'win32'
-              ? await listWindowsApps(ext)
-              : [];
-        const now = (deps.now ?? Date.now)();
-        const timestamp = (value: number | undefined): number =>
-          value !== undefined && Number.isFinite(value) && value > 0 && value <= now ? value : 0;
-        const seen = new Set<string>();
-        const ranked = resolved
-          .filter((entry) => {
-            if (!deps.fileExists(entry.exePath) || !platformPath.isAbsolute(entry.exePath))
-              return false;
-            const key = appKey(entry.exePath);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          })
-          .map((entry) => ({
-            entry,
-            recency: Math.max(
-              timestamp(entry.lastUsedAt),
-              timestamp(entry.installedAt),
-              timestamp(deps.usage?.getLastUsed(appKey(entry.exePath))),
-            ),
-          }));
-        ranked.sort(
-          (a, b) =>
-            b.recency - a.recency ||
-            (a.entry.recentOrder ?? Infinity) - (b.entry.recentOrder ?? Infinity) ||
-            a.entry.label.localeCompare(b.entry.label) ||
-            appKey(a.entry.exePath).localeCompare(appKey(b.entry.exePath)),
-        );
-        const idMap = new Map<string, string>();
-        // 不截掉第 12 个以后的应用。图标查询由 bootstrap 的超时/缓存约束。
-        const apps: OpenWithApp[] = await Promise.all(
-          ranked.map(async ({ entry }) => {
-            // ID 基于应用身份而非数组下标；重排不能让旧点击指向另一应用。
-            const id = 'owa-' + createHash('sha256').update(appKey(entry.exePath)).digest('hex');
-            idMap.set(id, entry.exePath);
-            const iconDataUrl =
-              (await deps.getAppIcon(entry.exePath).catch(() => null)) ?? undefined;
-            return { id, label: entry.label, ...(iconDataUrl ? { iconDataUrl } : {}) };
-          }),
-        );
-        appCacheByExt.set(ext, idMap);
-        return { success: true, apps };
+        const filePath = await assertOpenableFile(params?.filePath);
+        const key = appKey(filePath);
+        const existing = pending.get(key);
+        if (existing) return existing;
+        if (pending.size >= 8) return { success: false, apps: [], error: '无法查询可用应用' };
+        const work = discoveryTail.then(() => discover(filePath));
+        discoveryTail = work.catch(() => undefined);
+        pending.set(key, work);
+        try {
+          return await work;
+        } finally {
+          pending.delete(key);
+        }
       } catch {
-        deps.onDiscoveryError?.();
         return { success: false, apps: [], error: '无法查询可用应用' };
       }
     },
-
-    async open({ filePath, appId }) {
-      assertOpenableFile(filePath);
-      if (typeof appId !== 'string' || !appId) throwIpcError('INVALID_PARAMS', 'appId required');
-      const ext = platformPath.extname(filePath).toLowerCase();
-      // 只认 main 侧最近一次枚举写入的映射——查不到一律拒绝,绝不把 renderer
-      // 提供的任何字符串当路径执行。
-      const exePath = appCacheByExt.get(ext)?.get(appId);
-      if (!exePath) throwIpcError('NOT_FOUND', '应用引用已失效,请重新打开菜单');
-      if (!deps.fileExists(exePath)) throwIpcError('NOT_FOUND', '应用不存在');
+    async open(params) {
+      const filePath = await assertOpenableFile(params?.filePath);
+      const appId = params?.appId;
+      if (typeof appId !== 'string' || !/^owa-[a-f0-9]{64}$/.test(appId))
+        throwIpcError('NOT_FOUND', '应用引用已失效');
+      prune();
+      const entry = appCacheByFile.get(appKey(filePath))?.apps.get(appId);
+      if (!entry) throwIpcError('NOT_FOUND', '应用引用已失效,请重新打开菜单');
+      if (!deps.fileExists(entry.exePath)) throwIpcError('NOT_FOUND', '应用不存在');
       if (deps.platform === 'darwin') {
-        await deps.spawnDetached('/usr/bin/open', ['-a', exePath, '--', filePath]);
-      } else {
-        await deps.spawnDetached(exePath, [filePath]);
-      }
-      try {
-        deps.usage?.recordUsed(appKey(exePath), (deps.now ?? Date.now)());
-      } catch {
-        deps.onUsageError?.();
-      }
+        await deps.spawnDetached('/usr/bin/open', ['-a', entry.exePath, '--', filePath]);
+      } else if (deps.platform === 'win32') {
+        await deps.spawnDetached(
+          entry.exePath,
+          (entry.args ?? ['%1']).map((arg) =>
+            /^%(?:1|l|v|\*)$/i.test(arg) ? filePath : expandWindowsEnv(arg, process.env),
+          ),
+        );
+      } else throwIpcError('INVALID_PARAMS', '不支持的平台');
     },
   };
 }

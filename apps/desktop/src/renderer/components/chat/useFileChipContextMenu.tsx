@@ -4,7 +4,7 @@ import { isDangerousAttachmentName } from '../../../shared/attachmentSafety';
  * other files retain file operations. Local reveal and remote download occupy
  * the same slot. Path resolution stays lazy until an action is selected. */
 
-import { lazy, Suspense, useRef, useState, type ReactElement } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactElement } from 'react';
 import {
   AppWindow,
   ClipboardCopy,
@@ -43,6 +43,7 @@ import { toWorkdirRel } from '../../../shared/workdirPath';
 import { useSidebarTargetSessionId } from '@/features/cc-agent/embeddedSessionNavigation';
 import { openHtmlFileByPreference } from './useOpenWithMenu';
 import { useChatSessionFile } from './ChatSessionFileContext';
+import { OpenWithAppDialog, type AppChoice } from './OpenWithAppDialog';
 import { isSeparateLinkActivation, linkMenuPosition } from './linkInteraction';
 
 // Load source preview only when requested; TextLightbox itself renders Markdown links.
@@ -83,6 +84,12 @@ export function useFileChipContextMenu({
 }): UseFileChipContextMenu {
   const { t } = useTranslation();
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [appPicker, setAppPicker] = useState<{ filePath: string; apps: AppChoice[] } | null>(null);
+  const requestRef = useRef(0);
+  const queryingRef = useRef(false);
+  const pickerOpeningRef = useRef(false);
+  const resolverRef = useRef(getAbsPath);
+  resolverRef.current = getAbsPath;
   const triggerRef = useRef<HTMLElement | null>(null);
   const [sourcePath, setSourcePath] = useState<string | null>(null);
   // 远程会话(device-link / SSH):文件字节在远端机器,「复制文件 / 定位」改走
@@ -98,6 +105,71 @@ export function useFileChipContextMenu({
     location && sidebarFileBrowserKind === 'file'
       ? formatFileLocation(sessionFileCtx.workingDir, location)
       : null;
+
+  const fileIdentity = JSON.stringify([fileName, location, sessionFileCtx]);
+  useEffect(() => {
+    requestRef.current++;
+    queryingRef.current = false;
+    setAppPicker(null);
+    return () => {
+      requestRef.current++;
+    };
+  }, [fileIdentity]);
+
+  function closePicker(): void {
+    setAppPicker(null);
+    pickerOpeningRef.current = false;
+    if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+  }
+
+  async function handleChooseApplication(): Promise<void> {
+    if (
+      remoteOrigin ||
+      canOpenInBrowser ||
+      sidebarFileBrowserKind !== 'file' ||
+      queryingRef.current
+    )
+      return;
+    const request = ++requestRef.current;
+    queryingRef.current = true;
+    const resolve = getAbsPath;
+    try {
+      const filePath = await resolve();
+      if (request !== requestRef.current) return;
+      const result = await window.electronAPI.listOpenWithApps({ filePath });
+      if (request !== requestRef.current) return;
+      // Inline resolvers may be recreated on every render. Compare the resolved
+      // file, not callback identity, while still rejecting a changed same-name chip.
+      const currentPath = await resolverRef.current();
+      if (request !== requestRef.current || currentPath !== filePath) return;
+      if (!result.success) {
+        toast.error(t('chat.markdownRenderer.appPicker.failed'));
+        return;
+      }
+      pickerOpeningRef.current = true;
+      setAppPicker({ filePath, apps: result.apps });
+      setMenuPos(null);
+    } catch {
+      if (request === requestRef.current) toast.error(t('chat.markdownRenderer.appPicker.failed'));
+    } finally {
+      if (request === requestRef.current) queryingRef.current = false;
+    }
+  }
+
+  async function handleOpenWithApplication(appId: string): Promise<void> {
+    const choice = appPicker;
+    const request = requestRef.current;
+    closePicker();
+    if (!choice || remoteOrigin) return;
+    // A same-name chip may have changed path while the picker was open.
+    const current = await resolverRef.current();
+    if (request !== requestRef.current) return;
+    if (current !== choice.filePath) {
+      toast.error(t('chat.markdownRenderer.appPicker.changed'));
+      return;
+    }
+    await window.electronAPI.openFileWithApp({ filePath: current, appId });
+  }
 
   async function handleCopyLocation(): Promise<void> {
     setMenuPos(null);
@@ -224,6 +296,8 @@ export function useFileChipContextMenu({
   }
 
   const openAt: UseFileChipContextMenu['openAt'] = (x, y, trigger) => {
+    requestRef.current++;
+    queryingRef.current = false;
     triggerRef.current = trigger;
     setMenuPos({ x, y });
   };
@@ -249,16 +323,18 @@ export function useFileChipContextMenu({
   };
   const canLocateInSidebar = Boolean(sidebarFileTargetSessionId && sessionFileCtx.workingDir);
   const canOpenWithDefault =
-    sidebarFileBrowserKind === 'file' &&
-    !(remoteOrigin && isDangerousAttachmentName(fileName));
-  const hasOpenActions =
-    canOpenInBrowser || canLocateInSidebar || canOpenWithDefault;
+    sidebarFileBrowserKind === 'file' && !(remoteOrigin && isDangerousAttachmentName(fileName));
+  const hasOpenActions = canOpenInBrowser || canLocateInSidebar || canOpenWithDefault;
   const menu = (
     <>
       <DropdownMenu
         open={menuPos !== null}
         onOpenChange={(open) => {
-          if (!open) setMenuPos(null);
+          if (!open) {
+            requestRef.current++;
+            queryingRef.current = false;
+            setMenuPos(null);
+          }
         }}
       >
         <DropdownMenuTrigger asChild>
@@ -281,7 +357,8 @@ export function useFileChipContextMenu({
           onClick={(event) => event.stopPropagation()}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+            if (!pickerOpeningRef.current && triggerRef.current?.isConnected)
+              triggerRef.current.focus({ preventScroll: true });
           }}
         >
           {canOpenInBrowser ? (
@@ -321,6 +398,19 @@ export function useFileChipContextMenu({
                   </DropdownMenuShortcut>
                 </DropdownMenuItem>
               ) : null}
+              {!remoteOrigin &&
+              sidebarFileBrowserKind === 'file' &&
+              ['win32', 'darwin'].includes(window.electronAPI.platform) ? (
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    void handleChooseApplication();
+                  }}
+                >
+                  <AppWindow className="mr-2 h-4 w-4" />
+                  {t('chat.markdownRenderer.appPicker.title')}
+                </DropdownMenuItem>
+              ) : null}
             </>
           )}
           {hasOpenActions ? <DropdownMenuSeparator /> : null}
@@ -352,6 +442,20 @@ export function useFileChipContextMenu({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      {appPicker ? (
+        <OpenWithAppDialog
+          apps={appPicker.apps}
+          onClose={closePicker}
+          onRestoreFocus={() => {
+            if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+          }}
+          onChoose={(id) => {
+            void handleOpenWithApplication(id).catch(() =>
+              toast.error(t('chat.markdownRenderer.openWithAppFailed')),
+            );
+          }}
+        />
+      ) : null}
       {sourcePath ? (
         <Suspense fallback={null}>
           <SourcePreview
