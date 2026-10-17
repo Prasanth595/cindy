@@ -23,6 +23,7 @@ import { machineIdSync } from 'node-machine-id';
 import {
   AuthApiError,
   CindyAuthClient,
+  retryAfterDeadline,
   discoverEmailLogin,
   discoverPersonalLoginOrganization,
   discoverSsoOrgRealm,
@@ -50,6 +51,7 @@ import { isEnableBetaUserCustomized, readUpdateChannelSettings } from './updateC
 import { BRAND_IDENTITY } from '@cindy/maker-shared/brand-identity';
 import * as canaryFlagStore from './canaryFlagStore';
 import { decodeAccessTokenOrgSlug } from './authTokenClaims';
+import { AuthRefreshBackoff } from './authRefreshBackoff';
 import { getProviderSecretStore } from './secrets/providerSecretStore.js';
 import {
   runRefreshWithReplacementRetry,
@@ -356,14 +358,10 @@ const stableOwnerPostCommitCoordinator = new StableOwnerPostCommitCoordinator({
   warn: (message, meta) => log.warn(message, meta),
 });
 
-function requestStableOwnerPostCommit(reason: string): void {
+/** Queue optional owner-scoped provisioning without holding authentication or the app shell. */
+export function requestStableOwnerPostCommit(reason: string): void {
   if (isPassiveSharedUserDataInstance()) return;
   void stableOwnerPostCommitCoordinator.ensure(reason);
-}
-
-async function ensureStableOwnerPostCommit(reason: string): Promise<void> {
-  if (isPassiveSharedUserDataInstance()) return;
-  await stableOwnerPostCommitCoordinator.ensure(reason);
 }
 
 // ── Module-level state ──────────────────────────────────────────────────────
@@ -379,6 +377,7 @@ let activeAuthRealm: AuthRegion = AUTH_REGION;
 let pendingAuthRealm: AuthRegion | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<boolean> | null = null;
+const refreshBackoff = new AuthRefreshBackoff();
 let sessionInvalidationPromise: Promise<void> | null = null;
 // Real owner change / logout: keep the renderer fail-closed even if a late
 // notifyRenderer() races the teardown. Same-owner Ghost repair must not set
@@ -405,7 +404,8 @@ function isOwnerChangeShellPending(): boolean {
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
-let loginFlowState: DesktopLoginState | null = null;
+// The offline entry is a renderer landing page, not an auth-server flow step.
+let loginFlowState: Exclude<DesktopLoginState, { step: 'entry' }> | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
 // These live only within the current fresh-login flow; no credentials reach Renderer.
@@ -2271,7 +2271,7 @@ async function apiFetch<T>(
     timeoutMs?: number;
     baseUrl?: string;
   },
-): Promise<{ ok: boolean; status: number; data: T }> {
+): Promise<{ ok: boolean; status: number; data: T; retryAt?: number }> {
   const url = (options?.baseUrl ?? authServerUrl()) + apiPath;
   const method = options?.method ?? 'GET';
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -2289,14 +2289,18 @@ async function apiFetch<T>(
       body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
       signal: effectiveTimeout > 0 ? controller.signal : undefined,
     });
-    const data = (await response.json()) as T;
+    const retryAt = response.status === 429 ? retryAfterDeadline(response) : undefined;
+    let data: T;
+    try { data = (await response.json()) as T; }
+    catch { return { ok: false, status: response.status, data: null as T, retryAt }; }
     const errorCode = (data as AuthErrorResponse | null)?.error?.code;
     if (response.status === 401 && errorCode === 'ACCOUNT_UNAVAILABLE' && currentUser) {
       // Internal auth-server calls (profile/feature flags/refresh) do not pass
       // through serverApiClient, but share the same terminal auth contract.
       void invalidateSession('account-unavailable');
     }
-    return { ok: response.ok, status: response.status, data };
+    return { ok: response.ok, status: response.status, data,
+      ...(retryAt !== undefined ? { retryAt } : {}) };
   } catch {
     return { ok: false, status: 0, data: null as T };
   } finally {
@@ -2615,7 +2619,7 @@ async function recoverAccountFreeOwnerAtStartup(
         commitActiveAppSession(mode);
       }
     }
-    await ensureStableOwnerPostCommit('owner-already-stable');
+    requestStableOwnerPostCommit('owner-already-stable');
     return;
   }
   await withAccountFreeOwnerCommit({
@@ -2857,11 +2861,6 @@ export function setStableOwnerPostCommitTask(task: StableOwnerPostCommitTask | n
   stableOwnerPostCommitCoordinator.setTask(task);
 }
 
-/** Pull-based startup fallback for an owner that was already stable before registration. */
-export async function ensureStableOwnerPostCommitTasks(reason: string): Promise<void> {
-  await ensureStableOwnerPostCommit(reason);
-}
-
 // ── User-level API key sync ─────────────────────────────────────────────────
 //
 // 已移除。XD 网关 key / Mivo key 均为 **本地 only**(Electron safeStorage),
@@ -3085,6 +3084,7 @@ async function openLoopbackBrowserAuthorization(
 // ── Refresh scheduling ──────────────────────────────────────────────────────
 
 function scheduleRefresh(token: string): void {
+  refreshBackoff.clear();
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -3318,12 +3318,22 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-function scheduleRefreshRetryAfterTransientFailure(): void {
+function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number, networkFailure = false): void {
+  if (epoch !== authStateEpoch) return;
+  const delay = refreshBackoff.defer(epoch, retryAt, networkFailure);
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
   }
-  refreshTimer = setTimeout(() => void refresh(), RUNTIME_REFRESH_RETRY_MS);
+  // A long server deadline must not overflow Node's timer into an immediate
+  // retry; re-arm it in bounded chunks without extending the original wait.
+  const retry = () => {
+    if (authStateEpoch !== epoch) return;
+    const remaining = refreshBackoff.remaining(epoch);
+    if (remaining > 0) refreshTimer = setTimeout(retry, Math.min(remaining, 2_147_483_647));
+    else { refreshTimer = null; void refresh(); }
+  };
+  refreshTimer = setTimeout(retry, Math.min(delay, 2_147_483_647));
 }
 
 function clearReplacementIntegrationReloadTimers(): void {
@@ -3651,6 +3661,7 @@ function clearAuth(
 ): void {
   const notify = opts.notify ?? true;
   authStateEpoch += 1; // 迟到的冷启动流程从此作废(见 authStateEpoch 注释)
+  refreshBackoff.clear();
   loginFlowEpoch += 1;
   // Explicit logout clears health. Failed startup keeps its recovery reason
   // in the same synchronous commit, so owner cleanup cannot erase the error.
@@ -4519,7 +4530,7 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       commitCloudAppSession(currentUser.id);
     }
     await migrateLocalProviderBindingsAfterCloudCommit(currentUser.id);
-    await ensureStableOwnerPostCommit('auth-initialize-stable-cloud');
+    requestStableOwnerPostCommit('auth-initialize-stable-cloud');
     return snapshotAuthState();
   }
 
@@ -5260,7 +5271,9 @@ async function finishFreshLogin(
   return completeLogin(outcome, expectedLoginFlowEpoch);
 }
 
-async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
+async function runLoginAction(
+  action: Exclude<DesktopLoginAction, { type: 'back' }>,
+): Promise<DesktopLoginActionResult> {
   const actionLoginFlowEpoch = loginFlowEpoch;
   const startsBuildRealmFlow =
     action.type === 'discover' ||
@@ -5666,6 +5679,24 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   if (!parsedAction) {
     return { success: false, code: 'INVALID_AUTH_ACTION', state: loginFlowState };
   }
+  if (parsedAction.type === 'back') {
+    // Navigation must not wait for the provider request it is abandoning.
+    // Keep an accepted credential commit atomic, just like cancelAddAccountLogin.
+    if (isLoginFlowCommitSealed(loginFlowEpoch)) {
+      return { success: false, code: 'LOGIN_BUSY', state: loginFlowState };
+    }
+    if (!accessToken && credentialStoreHealth.unavailable) return getLoginState();
+    const providers = providerConfig;
+    loginFlowEpoch += 1;
+    browserAuthorizationSlot.cancelActive();
+    resetLoginFlowState();
+    if (providers) {
+      providerConfig = providers;
+      loginFlowState = reduceAuthFlow(null, { type: 'providers-loaded', providers });
+      return { success: true, state: loginFlowState };
+    }
+    return { success: true, state: { step: 'entry' } };
+  }
   if (parsedAction.type === 'cancel-browser') {
     const pendingAction = loginActionPromiseEpoch === loginFlowEpoch ? loginActionPromise : null;
     const cancelled = browserAuthorizationSlot.cancelActive();
@@ -5692,12 +5723,27 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   }
 }
 
-export async function refresh(): Promise<boolean> {
+export async function refresh(options?: { networkRecovered?: boolean }): Promise<boolean> {
   if (getActiveAppSession().mode === 'local') {
     log.debug('runtime refresh skipped in local mode');
     return false;
   }
-  if (refreshPromise !== null) return refreshPromise;
+  if (refreshPromise !== null) {
+    if (!options?.networkRecovered) return refreshPromise;
+    const recoveryEpoch = authStateEpoch;
+    const refreshed = await refreshPromise;
+    if (refreshed || authStateEpoch !== recoveryEpoch) return refreshed;
+    // Another recovery caller may already have started the next single flight.
+    if (refreshPromise !== null) return refreshPromise;
+    if (!refreshBackoff.networkRecovered(recoveryEpoch)) return false;
+    // Consume this hint once, including when the old network failure arrived
+    // after it. A failure of the new attempt must retain its own cooldown.
+    return refresh();
+  }
+  if (options?.networkRecovered) refreshBackoff.networkRecovered(authStateEpoch);
+  // Explicit callers (including chat polling and resume) share the same wait
+  // as the retry timer; skipped calls must not move the deadline forward.
+  if (refreshBackoff.remaining(authStateEpoch) > 0) return false;
 
   refreshPromise = (async () => {
     const refreshEpoch = authStateEpoch;
@@ -5721,7 +5767,7 @@ export async function refresh(): Promise<boolean> {
         await loadClientEndpointsForRealm(persistedSession.realm);
       } catch (error) {
         log.warn('runtime auth realm manifest unavailable; retrying later', error);
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
     }
@@ -5752,7 +5798,7 @@ export async function refresh(): Promise<boolean> {
           }
           // 正常 refresh timer 已经触发过,这里不重排的话,一次密钥链/IO 抖动
           // 会让有效会话在 access token 到期前没有任何后续 refresh(半死)。
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
           return false;
         }
         const previousUserId = currentUser.id;
@@ -5793,7 +5839,7 @@ export async function refresh(): Promise<boolean> {
         // this request was in flight. Its failure cannot expire or delete the
         // newer owner, even when both accounts live in the same realm.
         log.warn('runtime auth session changed on disk; discarding stale refresh failure');
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
       if (!result.ok) {
@@ -5818,14 +5864,14 @@ export async function refresh(): Promise<boolean> {
           });
         } else if (action.kind === 'replacement-retry') {
           log.warn(
-            `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying in ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
+            `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         } else {
           log.warn(
-            `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying in ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
+            `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure();
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         }
         return false;
       }
@@ -5841,7 +5887,7 @@ export async function refresh(): Promise<boolean> {
         log.warn(
           `runtime refresh lost active credential ownership (${credentialCommit}); preserved only the still-saved account token and will reconcile from disk`,
         );
-        scheduleRefreshRetryAfterTransientFailure();
+        scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
         return false;
       }
       lastAcceptedRefreshToken = data.refreshToken;
@@ -5983,7 +6029,7 @@ export async function refresh(): Promise<boolean> {
       // apiFetch 消化了网络错误(status 0 走上面 !ok 分支),这里是本地状态同步异常;
       // 与瞬时失败同等对待:记录并重排,避免刷新链就此断掉。
       log.error('runtime refresh threw — retrying later', err);
-      scheduleRefreshRetryAfterTransientFailure();
+      scheduleRefreshRetryAfterTransientFailure(refreshEpoch);
       return false;
     }
   })();

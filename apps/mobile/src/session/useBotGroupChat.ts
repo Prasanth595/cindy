@@ -1,3 +1,4 @@
+import { useChatServerGroup } from '@/chat/useChatServer';
 import { useCallback, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -28,6 +29,7 @@ const PUSH_COALESCE_MS = 150;
  * through the same resource and are followed by a read.
  */
 export function useBotGroupChat(host: RemoteResourceHostTarget, groupId: string) {
+  const server = useChatServerGroup(groupId, !host.deviceId);
   const { invoke, openLink, status, connectionEpoch, presenceVersion, getPresenceAvailability, onRemoteResourceChanged, subscribe, unsubscribe } = useDeviceLink();
   const { accountGeneration } = useAuth();
   const { i18n } = useTranslation();
@@ -88,24 +90,30 @@ export function useBotGroupChat(host: RemoteResourceHostTarget, groupId: string)
   const act = useCallback(async (actionId: BotGroupRemoteActionId, input?: Record<string, unknown>): Promise<RemoteActionInvokeResponse> => {
     try {
       await openLink(host.deviceId);
-      return await invokeRemoteResourceAction(invoke, host, {
+      if (identityRef.current !== identity) throw new Error('OWNER_CHANGED');
+      const receipt = await invokeRemoteResourceAction(<T,>(deviceId: string, channel: string, args?: unknown[]) =>
+        invoke<T>(deviceId, channel, args, { preSend: () => { if (identityRef.current !== identity) throw new Error('OWNER_CHANGED'); } }), host, {
         collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
         actionId,
         resourceRef: botGroupResourceRef(groupId),
         ...(input ? { input } : {}),
       }, i18n.language);
+      if (actionId === 'hide' && identityRef.current === identity) {
+        await server.acceptListState((receipt.result as { listState?: unknown } | undefined)?.listState);
+      }
+      return receipt;
     } finally {
       // A refused action usually means the phone's copy is stale (PLAN_CLOSED, PLAN_OPEN): re-read either way.
       // A deleted group is left by the screen instead.
       if (actionId !== 'delete' && identityRef.current === identity) reload();
     }
-  }, [groupId, host, i18n.language, identity, invoke, openLink, reload]);
+  }, [groupId, host, i18n.language, identity, invoke, openLink, reload, server.acceptListState]);
 
-  const value: BotGroupChatState = !host.deviceId || !groupId
+  const value: BotGroupChatState = !host.deviceId || !groupId || server.isListHidden()
     ? { kind: 'missing' }
     : state.identity === identity ? state.value : { kind: 'loading' };
   void presenceVersion;
   // Unknown presence still allows actions; the host answers or the link reports offline.
   const online = status === 'online' && !!host.deviceId && getPresenceAvailability(host.deviceId) !== false;
-  return { state: value, reload, act, online };
+  return !host.deviceId ? { ...server, server: true } : { state: value, reload, act, online, server: false, listHidden: server.listHidden, loadOlder: undefined, loadingOlder: false, media: undefined, markRead: undefined };
 }

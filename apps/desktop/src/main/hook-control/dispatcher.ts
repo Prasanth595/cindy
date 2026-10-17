@@ -53,6 +53,7 @@ import {
   HOOK_FEATURE_TELEGRAM_PROGRESS_OPS,
   HOOK_FEATURE_TURN_DELIVERY,
   HOOK_FEATURE_TURN_REOPEN,
+  HOOK_FEATURE_SESSION_RESULT,
   type HookMessage,
   type HookTurnEndMessage,
   type InteractionButton,
@@ -70,12 +71,15 @@ import {
   makeProviderCommandsSet,
 } from '@cindy/slack-hook-protocol';
 import { createTelegramMessageLifecycle, type TelegramMessageLifecycle } from '@cindy/im';
+import type { SendOrigin } from '@cindy/maker-core';
+import type { ChannelTurnSource } from '../maker-ipc/channelTurnSignal.js';
 import type { AutoReviewQuotedMessage } from '@cindy/maker-shared/auto-review-intent';
 
 import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
 import { captureImContext, type ImContextSnapshot } from '../../shared/imMessageSource.js';
 import type { GroupHistoryAccessScope } from '../im/shared/groupHistoryAccess.js';
 import { hookReplyTarget } from '../im/shared/autoReviewReferences.js';
+import { QUOTA_FAILURE_NOTICE_PREFIX } from '../im/shared/turnRetryNotice.js';
 import { groupHistoryAccessForExternalKey } from './groupHistoryScope.js';
 import { isPathWithin } from './paths.js';
 import { createAckReactions, type AckReactionTask } from './ackReactions.js';
@@ -96,6 +100,7 @@ import type { HookBindingStore } from './bindings.js';
 import { terminalDeliveryExpired } from './requestLedger.js';
 import { composeXPrompt } from './xPrompt.js';
 import type { HookRequestLedger, HookTerminalRecord } from './requestLedger.js';
+import { createBackgroundResults } from './backgroundResults.js';
 
 /** 会话执行器抽象 —— 生产实现 session-runner.ts(包 maker), 测试注入假的。 */
 export interface HookSessionRunner {
@@ -161,8 +166,11 @@ export interface HookContinuationWatchRequest {
    * 已不是活跃轮, 于是判定被 Stop 顶掉并就地收口。少了这一步, 附件收集那段时间里它还
    * 挂在表上, 排在后面的桌面消息一 dispatch 就会被误判成顶替
    * (review: "附件收集期间误判顶替")。发帧的闭包不受影响, 迟到的 onEnd 照样如实收口。
+   *
+   * 轮次真正收口时附这一轮的来源(此刻 scheduler run 仍在跑, 可同步读静默态);
+   * 停止观察等其它路径不带。
    */
-  onSettling?: () => void;
+  onSettling?: (origin?: SendOrigin) => void;
   /** 收口(仅 onClaim 之后)。 */
   onEnd: (outcome: HookRunOutcome) => void;
   /** 一个事件都没等到就放弃(onClaim 未发生)。 */
@@ -170,6 +178,8 @@ export interface HookContinuationWatchRequest {
 }
 
 export interface HookRunRequest {
+  /** Untruncated user body for persistence; source.userText is only a bounded display preview. */
+  userText?: string;
   /** Local display snapshot; not part of the server wire protocol. */
   contextSnapshot?: ImContextSnapshot;
   sessionId: string;
@@ -211,8 +221,8 @@ export interface HookRunRequest {
    */
   workspaceKind?: 'dialogue';
   /**
-   * 本次派发的目录别名(内置「对话」= chat)—— runner 据此查本地的目录模型
-   * 来源偏好(workspaceProviderSourceStore)。缺省 = 老 server 未带 workspace。
+   * 目录别名(内置「对话」= chat)，用于读取本地模型与来源偏好。
+   * 复用任务时按任务实际目录匹配，不能使用消息里可能过时的目录提示。
    */
   workspaceAlias?: string;
   title: string | null;
@@ -235,6 +245,8 @@ export interface HookRunRequest {
    * 确认为 dispatched 后 await；失败必须由调用方自行降级，不能反转已受理 turn。
    */
   onProviderAccepted?: () => void | Promise<void>;
+  /** Provider observation ended; attachment collection and channel delivery may still be pending. */
+  onTurnTerminal?: () => void;
   /**
    * 执行中渲染快照回调(turn.progress 链路)。runner 合成「过程区时间线 +
    * 部分正文」的完整 markdown 快照并节流回调; dispatcher 注入的实现把它
@@ -242,7 +254,10 @@ export interface HookRunRequest {
    * 连接不在线时直接丢弃, 不缓存不重发(与 turn.end 的离线补发相反)。
    */
   onProgress?: (text: string) => void;
-  /** Independent, acknowledged channel notice after runtime retirement fails. */
+  /**
+   * Independent, acknowledged channel notice outside the turn result: runtime
+   * retirement failures and the fixed 代输入 pointer.
+   */
   onRuntimeRecovery?: (text: string) => Promise<boolean>;
   /**
    * 执行中交互卡回调(interaction.request 链路)。runner 把 maker 的
@@ -347,6 +362,7 @@ export interface HookDispatcherDeps {
    * 返回退订函数, dispose 时调用。
    */
   subscribeUiContinuation?: (listener: (sessionId: string, clientId: string) => void) => () => void;
+  subscribeChannelTurn?: (listener: (sessionId: string, workingDir: string, phase: 'starting' | 'undispatched', source?: ChannelTurnSource) => void) => () => void;
   /**
    * 可选: 订阅「桌面端在某会话里做了与续跑无关的事」(生产为 maker-ipc 的
    * onUiSessionIntervention)。命中即作废该会话的待续跑记账 —— 记账只按 sessionId
@@ -462,6 +478,20 @@ export interface HookDispatcher {
    * 幂等。
    */
   dispose(): void;
+}
+
+/**
+ * 新任务路由不可用(来源 / 模型 / 停用裁决)的错误前缀。这类错误文本只含供应商与
+ * 模型 id, 可原样进主日志; 其余失败原因可能带路径或用户内容, 日志里只记类别。
+ */
+export const HOOK_ROUTE_UNAVAILABLE_PREFIX = 'hook session route unavailable:';
+
+function hookFailureReasonForLog(errorMessage: string | null | undefined): string {
+  const message = errorMessage ?? '';
+  // 额度说明里带供应商名与上游原文, 日志只记类别。
+  if (message.startsWith(QUOTA_FAILURE_NOTICE_PREFIX)) return 'provider-quota-exhausted';
+  if (!message.startsWith(HOOK_ROUTE_UNAVAILABLE_PREFIX)) return 'unclassified';
+  return message.replace(/\s+/g, ' ').slice(0, 300);
 }
 
 /** 单 session 排队上限 —— 超过按 rejected(invalid) 打回, 防失控上游刷爆。 */
@@ -844,7 +874,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
   /** 每 session 的 FIFO 等待队列。 */
   const queues = new Map<string, PendingTask[]>();
   /** connectionId + requestId -> 正在执行它的 session(cancel 定位与归属校验用, 收口即清)。 */
-  const runningByRequest = new Map<string, { sessionId: string; connectionId: string }>();
+  const runningByRequest = new Map<string, { sessionId: string; connectionId: string; observing?: boolean }>();
   /**
    * 已开始执行但 provider 尚未受理的 Telegram 群任务。账号边界必须把其
    * accepted / queued ACK 收成 cancelled；accepted=true 后消息已交给 agent，
@@ -1419,6 +1449,21 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     return serverFeatures.get(connectionId)?.includes(HOOK_FEATURE_TURN_REOPEN) === true;
   }
 
+  const backgroundResults = createBackgroundResults({
+    bindings, runner,
+    generation: () => accountGeneration,
+    log,
+    owned: (sessionId) => [...runningByRequest.values()].some((entry) => entry.sessionId === sessionId && entry.observing)
+      || activeContinuations.has(sessionId) || pendingClaims.has(sessionId),
+    allowed: (connectionId, dir) => accountActive && dirStillAllowed(connectionId, dir),
+    sender: (connectionId) => accountActive && serverFeatures.get(connectionId)?.includes(HOOK_FEATURE_SESSION_RESULT)
+      ? sendFns.get(connectionId) : undefined,
+  });
+  const unsubscribeBackgroundResults = deps.subscribeChannelTurn?.((sessionId, dir, phase, source) => {
+    if (phase === 'starting') backgroundResults.start(sessionId, dir, source);
+    else backgroundResults.cancel(sessionId);
+  });
+
   /**
    * 放弃这个 session 的续跑回流: 撤销在观察的那一轮 + 清掉记账。
    *
@@ -1751,7 +1796,8 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     // 这条消息线交给新任务了: 撤掉上一轮失败留下的续跑观察与记账。连接还在, 所以要
     // 发收口帧把那条旧消息定稿; 但不再记待续跑(它已经不是"最新一轮"了)。
     dropContinuation(sessionId, { silent: false, remember: false });
-    runningByRequest.set(requestKey, { sessionId, connectionId: task.connectionId });
+    const runningEntry = { sessionId, connectionId: task.connectionId, observing: true };
+    runningByRequest.set(requestKey, runningEntry);
     const messageLifecycle = telegramLegacyLifecycle(
       task.connectionId,
       task.requestId,
@@ -1817,6 +1863,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     };
 
     let outcome: HookRunOutcome;
+    let runnerThrew = false;
     /**
      * 开跑前按当前映射再确认一次(见 dirStillAllowed)。resolveTarget 到这里之间
      * 隔着排队与若干 await(新建路径还要等 worktree 预建 / 对话目录分配), 映射
@@ -1846,6 +1893,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       try {
         outcome = await runner.run({
           ...task.run,
+          onTurnTerminal: () => { runningEntry.observing = false; },
           onProgress,
           ...(task.run.source?.im === 'telegram' ? {
             onRuntimeRecovery: (text: string): Promise<boolean> => {
@@ -1893,10 +1941,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
           isDirAuthorized: (dir) => dirStillAllowed(task.connectionId, dir),
         });
       } catch (err) {
+        runnerThrew = true;
         outcome = {
           status: 'error',
           finalText: '',
           errorMessage: err instanceof Error ? err.message : String(err),
+          // 没有真实测量: runner 在建会话前就失败了, 0 只是占位。
           durationMs: 0,
         };
       }
@@ -1915,6 +1965,12 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const status: 'ok' | 'error' | 'cancelled' = wasCancelled ? 'cancelled' : outcome.status;
     // 协议约束: error 必须带非空 errorMessage, ok / cancelled 必须为 null
     const isError = status === 'error';
+    if (isError) {
+      // 失败原因原先只进 request ledger, 主日志里只有 dispatch / delivered 两行(issue #5912)。
+      log.warn(
+        `hook task ${task.requestId} failed: im=${task.run.source?.im ?? 'none'} via=${runnerThrew ? 'throw' : 'outcome'} reason=${hookFailureReasonForLog(outcome.errorMessage)}`,
+      );
+    }
     let turnEnd: TurnEndPayload = {
       requestId: task.requestId,
       externalKey: task.externalKey,
@@ -2145,6 +2201,13 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const inDialogueRoot = (dir: string | null): boolean =>
       dir !== null && dialogue !== undefined && (dialogue.rootDirs?.() ?? [dialogue.rootDir()])
         .some((root) => isPathWithin(root, dir));
+    const workspaceAliasFor = (dir: string): { workspaceAlias?: string } => {
+      if (inDialogueRoot(dir)) return { workspaceAlias: HOOK_CHAT_WORKSPACE_ALIAS };
+      const alias = Object.entries(getConnection(connectionId)?.workspaces ?? config.workspaces)
+        .filter(([, root]) => isPathWithin(root, dir))
+        .sort(([, left], [, right]) => path.resolve(right).length - path.resolve(left).length)[0]?.[0];
+      return alias !== undefined ? { workspaceAlias: alias } : {};
+    };
     // 显式接管的目标失效时会从旧目录 / 本次别名提示里挑一个安全落点, 然后
     // 复用下方的新建路径。普通派发仍原样使用 payload.workspace。
     let effectiveWorkspace = payload.workspace;
@@ -2191,6 +2254,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             isNew: false,
             laneKind,
             workingDir: pendingDir,
+            ...workspaceAliasFor(pendingDir),
             agentKind,
             model,
             effort,
@@ -2216,6 +2280,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             isNew: false,
             laneKind,
             workingDir: info.workingDir as string,
+            ...workspaceAliasFor(info.workingDir as string),
             agentKind,
             model,
             effort,
@@ -2356,6 +2421,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             laneKind,
             // 尚未落库, 没有 meta 可查 —— 用建它时那个刚重新过完映射校验的目录
             workingDir: pendingDir!,
+            ...workspaceAliasFor(pendingDir!),
             agentKind,
             model,
             effort,
@@ -2395,6 +2461,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             isNew: false,
             laneKind,
             workingDir,
+            ...workspaceAliasFor(workingDir),
             agentKind,
             model,
             effort,
@@ -2677,6 +2744,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
               groupMessageCount,
             }),
             ...(source ? { source } : {}),
+            ...(payload.source?.userText !== undefined ? { userText: payload.source.userText } : {}),
             ...(autoReviewReplyTarget ? { autoReviewReplyTarget } : {}),
             ...(groupHistoryAccess ? { groupHistoryAccess } : {}),
           },
@@ -2789,6 +2857,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       accountActive = true;
     },
     async deactivateAccount() {
+      backgroundResults.clear();
       // Invalidate a deferred activation on every close request, including a
       // duplicate request that arrives while the physical drain is running.
       const wasActive = accountActive;
@@ -3133,6 +3202,8 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
       serverFeatures.delete(connectionId);
     },
     dispose() {
+      backgroundResults.clear();
+      unsubscribeBackgroundResults?.();
       clearRecoveryDeliveries();
       closeTelegramTurnOps();
       unsubscribeUiContinuation?.();

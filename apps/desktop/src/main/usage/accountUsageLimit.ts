@@ -11,13 +11,18 @@
 import { matchCodexBucketForModel } from '@cindy/maker-shared/codex-usage-buckets';
 import {
   isXaiWeeklyUsageCurrent,
-  matchScopedWindowForModel,
 } from '@cindy/maker-shared/subscription-usage';
 import {
   NATIVE_SUBSCRIPTION_DEFAULT_PROVIDER_IDS,
   type NativeSubscriptionAuth,
 } from '@cindy/model-providers';
-import type { ClaudeSubscriptionUsageSnapshot } from '../../shared/claudeSubscriptionUsage.js';
+import {
+  accountUsageLimitFromWindows as fromWindows,
+  claudeAccountUsageLimit,
+  type AccountUsageLimit,
+  type UsageWindow,
+} from '../../shared/accountUsageLimit.js';
+export { claudeAccountUsageLimit, type AccountUsageLimit } from '../../shared/accountUsageLimit.js';
 import type { XaiSubscriptionUsageSnapshot } from '../../shared/xaiSubscriptionUsage.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import {
@@ -28,38 +33,6 @@ import {
   type RateLimitSnapshot,
 } from '../usageBroadcaster.js';
 import { readSubscriptionAccountUsage } from './subscriptionAccountUsage.js';
-
-export interface AccountUsageLimit {
-  /** 快照里有仍在有效期内的窗口显示已用满。 */
-  limited: boolean;
-  /**
-   * 受限时的重置时刻（unix ms）：用满窗口里最晚的（宁晚勿早）；任一用满窗口缺重置时刻
-   * 则为 null（拿别的窗口顶替会提前醒来）。未受限时恒为 null——未用满窗口的重置与限流无关。
-   */
-  resetAtMs: number | null;
-}
-
-interface UsageWindow {
-  usedPercent: number;
-  resetsAtSec: number | null | undefined;
-}
-
-function hasReset(w: UsageWindow): w is UsageWindow & { resetsAtSec: number } {
-  return typeof w.resetsAtSec === 'number' && Number.isFinite(w.resetsAtSec) && w.resetsAtSec > 0;
-}
-
-/**
- * 只认具体窗口显示用满，不认快照级「已触顶」标记（Codex `rateLimitReachedType` 等）：
- * 标记说不清由哪个窗口触发，还混有余额耗尽（`credits_depleted`，要充值、不会重置）。
- */
-function fromWindows(windows: readonly UsageWindow[], nowMs: number): AccountUsageLimit {
-  // 已过重置点的窗口在快照之后已经翻篇，快照里的用量不再成立。
-  const live = windows.filter((w) => !hasReset(w) || w.resetsAtSec * 1000 > nowMs);
-  const exhausted = live.filter((w) => w.usedPercent >= 100);
-  if (exhausted.length === 0) return { limited: false, resetAtMs: null };
-  if (exhausted.some((w) => !hasReset(w))) return { limited: true, resetAtMs: null };
-  return { limited: true, resetAtMs: Math.max(...exhausted.map((w) => w.resetsAtSec as number)) * 1000 };
-}
 
 function codexWindows(snapshot: RateLimitSnapshot | null | undefined): UsageWindow[] {
   if (!snapshot) return [];
@@ -94,35 +67,6 @@ export function codexAccountUsageLimit(
   return fromWindows(windows, nowMs);
 }
 
-const CLAUDE_REJECTED_CLAIM_TO_WINDOW = {
-  five_hour: 'fiveHour',
-  seven_day: 'sevenDay',
-} as const;
-
-/** Claude 订阅：总窗口 + 仅当前模型的专属周窗口（别的模型的专属窗口用满不影响本会话）。 */
-export function claudeAccountUsageLimit(
-  snapshot: ClaudeSubscriptionUsageSnapshot | null,
-  modelId?: string | null,
-  nowMs = Date.now(),
-): AccountUsageLimit | null {
-  if (!snapshot) return null;
-  const scoped = matchScopedWindowForModel(snapshot.scoped, modelId);
-  const windows: UsageWindow[] = [snapshot.fiveHour, snapshot.sevenDay, scoped]
-    .filter((w): w is NonNullable<typeof w> => !!w && typeof w.utilization === 'number')
-    .map((w) => ({ usedPercent: w.utilization, resetsAtSec: w.resetsAt }));
-  // headers 源被拒时只报状态和「最紧窗口」名，不带用量；把那个窗口视为已用满。
-  const rejectedKey =
-    snapshot.rateLimitStatus === 'rejected' && snapshot.representativeClaim
-      ? CLAUDE_REJECTED_CLAIM_TO_WINDOW[
-          snapshot.representativeClaim as keyof typeof CLAUDE_REJECTED_CLAIM_TO_WINDOW
-        ]
-      : undefined;
-  const rejectedWindow = rejectedKey ? snapshot[rejectedKey] : null;
-  if (rejectedWindow) windows.push({ usedPercent: 100, resetsAtSec: rejectedWindow.resetsAt });
-  if (windows.length === 0) return null;
-  return fromWindows(windows, nowMs);
-}
-
 /**
  * SuperGrok 只有周窗口。快照是 cached-first、后台刷新，超过有效期（或已过重置点）的不用，
  * 与用量面板同一判定。
@@ -153,6 +97,17 @@ export function subscriptionFamilyOf(
   }
   const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
   return provider?.auth.native ?? null;
+}
+
+/**
+ * 会话的模型请求是否用另一台机器的登录发出：SSH 远程工作区用远端主机的登录，远程 Agent 用
+ * Agent 所在电脑的登录。此时本机订阅快照属于另一个账号，不能拿来推算重置时刻；报错原文里不带
+ * 时区的钟点也是那台的本地时间，不按本机时区理解。
+ */
+export function sessionUsesOtherMachineAccount(
+  row: { remoteHostId?: string | null; agentDeviceId?: string | null } | null | undefined,
+): boolean {
+  return Boolean(row?.remoteHostId || row?.agentDeviceId);
 }
 
 /**

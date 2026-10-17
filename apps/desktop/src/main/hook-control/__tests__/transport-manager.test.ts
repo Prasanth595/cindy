@@ -24,6 +24,7 @@ import {
   HOOK_FEATURE_PROVIDER_X,
   HOOK_FEATURE_SESSION_PICKER,
   HOOK_FEATURE_SESSION_NEW,
+  HOOK_FEATURE_SESSION_RESULT,
   HOOK_FEATURE_SLACK_TOOLS,
   HOOK_FEATURE_TURN_DELIVERY,
   makeBindState,
@@ -1445,6 +1446,7 @@ describe('hook-control transport + manager(真实 ws server)', () => {
     );
     await expect.poll(() => manager.snapshot().binding?.state, { timeout: 3000 }).toBe('confirmed');
     // 熬过看门狗时限: 已 confirmed 不该被误判超时
+    // real-wait: this regression must cross the real watchdog deadline.
     await new Promise((r) => setTimeout(r, 200));
     expect(store.get().enabled).toBe(true);
     expect(manager.snapshot().binding?.state).toBe('confirmed');
@@ -1969,6 +1971,7 @@ describe('Telegram provider capability, binding and prefs', () => {
     const telegramHello = await telegram.server.waitFor('hello');
     if (telegramHello.type !== 'hello') throw new Error('unreachable');
     expect(telegramHello.payload.features).toContain(HOOK_FEATURE_PROVIDER_BIND);
+    expect(telegramHello.payload.features).toContain(HOOK_FEATURE_SESSION_RESULT);
     expect(telegramHello.payload.features).not.toContain(HOOK_FEATURE_MULTI_TEAM);
     telegram.sock.send(
       serializeHookMessage(
@@ -1987,6 +1990,7 @@ describe('Telegram provider capability, binding and prefs', () => {
     const slackHello = await slack.server.waitFor('hello');
     if (slackHello.type !== 'hello') throw new Error('unreachable');
     expect(slackHello.payload.features).toContain(HOOK_FEATURE_MULTI_TEAM);
+    expect(slackHello.payload.features).toContain(HOOK_FEATURE_SESSION_RESULT);
     expect(slackHello.payload.features).not.toContain(HOOK_FEATURE_PROVIDER_BIND);
     slack.sock.send(
       serializeHookMessage(makeWelcome({ serverName: 'slack-server', features: [] })),

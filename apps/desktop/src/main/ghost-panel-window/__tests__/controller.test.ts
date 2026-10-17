@@ -398,6 +398,18 @@ describe('multi-instance isolation', () => {
     h.controller.open('b');
     expect(winB.show).toHaveBeenCalled();
   });
+  it('same ghostId in different namespaces get independent windows', () => {
+    const h = makeHarness(new Set(['helper', '_ns__acme__helper']));
+    h.controller.setDetached('helper', true);
+    h.controller.setDetached('_ns__acme__helper', true);
+    expect(h.created).toHaveLength(2);
+    expect(h.created[0].ghostId).toBe('helper');
+    expect(h.created[1].ghostId).toBe('_ns__acme__helper');
+    h.controller.setDetached('helper', false);
+    expect(h.created[0].win.isDestroyed()).toBe(true);
+    expect(h.created[1].win.isDestroyed()).toBe(false);
+  });
+
 
   it('setDetached(false) on one ghost does not affect another', () => {
     const h = makeHarness(new Set(['a', 'b']));
@@ -528,9 +540,35 @@ describe('reconcile', () => {
     expect(h.created[0].win.isDestroyed()).toBe(true);
     expect(h.entries().a).toEqual({ detached: false, lastOpen: false });
   });
+  it('reconcile keeps a namespaced detached window and does not treat it as the root id', () => {
+    const h = makeHarness(new Set(['_ns__acme__helper']));
+    h.controller.setDetached('_ns__acme__helper', true);
+    const org = ghost('helper');
+    org.namespace = 'acme';
+    org.dir = '/fake/_ns/acme/helper';
+    h.controller.reconcile([org]);
+    expect(h.created[0].win.isDestroyed()).toBe(false);
+    expect(h.entries()['_ns__acme__helper']).toEqual({ detached: true, lastOpen: true });
+  });
+
 });
 
 describe('two-phase ready + sender guard', () => {
+  it('keeps a legacy organization window when a same-name root is installed separately', () => {
+    const h = makeHarness(new Set(['helper', '_root__helper']));
+    h.controller.setDetached('helper', true);
+    const oldWindow = h.created[0].win;
+    const org = ghost('helper');
+    org.namespace = 'acme';
+    org.dir = '/fake/helper';
+    const root = ghost('helper');
+    root.namespace = null;
+    root.dir = '/fake/_ns/_root/helper';
+    h.controller.reconcile([org, root]);
+    expect(oldWindow.isDestroyed()).toBe(false);
+    expect(h.entries().helper).toEqual({ detached: true, lastOpen: true });
+    expect(h.entries()['_root__helper']).toBeUndefined();
+  });
   it('markRendererReady from correct sender succeeds', () => {
     const h = makeHarness(new Set(['a']));
     h.controller.prewarm('a');
@@ -589,6 +627,50 @@ describe('crash recovery', () => {
 
     replacement.emitWebContentsEvent('render-process-gone', {}, { reason: 'crashed-again' });
     expect(h.created).toHaveLength(2);
+  });
+});
+
+describe('open timeout (window rule §3.1)', () => {
+  it('renderer shell not ready at timeout: invalidates and rebuilds with bounded recovery', () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      h.controller.open('a');
+      const win1 = h.created[0].win;
+
+      vi.advanceTimersByTime(5000);
+
+      // shell 未就绪:不得展示空白窗口;作废缓存并重建重开(有界恢复)。
+      expect(win1.isDestroyed()).toBe(true);
+      expect(h.created).toHaveLength(2);
+      expect(h.created[1].win.show).not.toHaveBeenCalled();
+      expect(h.created[1].win.focus).not.toHaveBeenCalled();
+
+      // 恢复额度耗尽:重建窗口再次超时后不再重建,也不展示。
+      vi.advanceTimersByTime(5000);
+      expect(h.created).toHaveLength(2);
+      expect(h.created[1].win.show).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renderer ready but content pending at timeout: shows the mounted shell', () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness(new Set(['a']));
+      h.controller.open('a');
+      const win = h.created[0].win;
+      h.controller.markRendererReady(win.webContents as unknown as WebContents);
+
+      vi.advanceTimersByTime(5000);
+
+      // 仅 shell 就绪、内容未到:展示已挂载的 Loading 壳(基线允许)。
+      expect(win.show).toHaveBeenCalledTimes(1);
+      expect(win.focus).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
