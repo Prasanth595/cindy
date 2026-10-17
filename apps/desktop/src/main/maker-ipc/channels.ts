@@ -991,6 +991,8 @@ export const MAKER_PUSH = {
   /** 伙伴工作台已接手的项目变化(payload: { botId });renderer 收到后重读项目列表。 */
   BOT_WORKBENCH_CHANGED: 'maker:bot-workbench:changed',
   BOT_LIFECYCLE_CHANGED: 'maker:bot-lifecycle:changed',
+  /** 伙伴自主跟进状态表或「自动跟进所有任务」设置变化（节流 ≤1 次/秒，payload: { botIds?: string[] }，缺省 = 全部伙伴）；renderer 重读「一眼」。 */
+  BOT_AUTONOMY_CHANGED: 'maker:bot-autonomy:changed',
   /**
    * 被控端「当前 New Maker 草稿」全量变更广播。SYNC_NEW_MAKER_DRAFT 落 main 缓存后随即发,
    * 经 device-link tap 转发给控制端(account 级 → sessions topic),控制端刷新远程草稿显示镜像。

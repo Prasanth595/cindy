@@ -8806,124 +8806,53 @@
     "workbench": {
       "title": "工作台",
       "open": "打開工作台",
-      "emptyTitle": "交給{{name}}一個專案",
-      "emptyDescription": "把電腦裡已有的工作交給{{name}}接著做。它會先看一遍專案的文件、最近的提交和 PR、做過的任務，挑出沒做完和值得做的，再問你接著做哪件。",
-      "scanning": "正在尋找電腦上的專案…",
-      "noProjects": "還沒找到有任務的專案，可以選一個資料夾交給{{name}}。",
-      "pickFolder": "選其他資料夾",
-      "cancelAdd": "取消",
-      "projectTasks_other": "{{count}} 個任務",
-      "projectAutomations_other": "{{count}} 個自動化",
-      "sourceCindy_other": "Cindy {{count}} 個任務",
-      "sourceClaude_other": "Claude Code {{count}} 個任務",
-      "sourceCodex_other": "Codex {{count}} 個任務",
-      "moreProjects": "還有 {{count}} 個",
-      "hideMoreProjects": "收起",
-      "grant": "{{name}}可以查看、繼續和停止 {{project}} 裡的{{scope}}，也會替你開新任務。",
-      "grantTasks_other": "{{count}} 個任務",
-      "grantCindy_other": "Cindy 的 {{count}} 個任務",
-      "grantClaude_other": "Claude Code 的 {{count}} 個任務",
-      "grantCodex_other": "Codex 的 {{count}} 個任務",
-      "grantAutomations_other": "{{count}} 個自動化",
-      "grantEverything": "任務和自動化",
-      "handOver": "交給{{name}}",
-      "handoverMessage": "把 {{project}} 交給你了。",
-      "addProject": "再交給{{name}}一個專案",
-      "removeProject": "不再交給{{name}}：{{project}}",
-      "dirMissing": "找不到這個資料夾",
-      "dirUnavailable": "這個資料夾打不開，換一個試試",
-      "tooManyDirs": "最多交給{{name}} {{count}} 個專案",
-      "sendFailed": "沒能傳給{{name}}，請重試",
-      "tasksEmpty": "還沒有需要接著做的任務。",
-      "understanding": "{{name}}正在了解 {{project}}…",
       "untitled": "未命名任務",
-      "continueMessage": "接著做「{{title}}」：{{text}}",
-      "verdict": {
-        "unfinished": "沒做完",
-        "idea": "聊過沒下文"
-      },
-      "detail": {
-        "back": "返回工作台",
-        "stop": "停止這件任務",
-        "openInTasks": "在任務頁開啟",
-        "placeholder": "補一句，讓{{name}}接著做…",
-        "send": "傳送",
-        "sent": "已經告訴{{name}}了",
-        "judgment": "{{name}}的判斷",
-        "empty": "還沒有可顯示的內容。",
-        "loadFailed": "讀不到這件任務的記錄。",
-        "truncated": "只顯示最近的內容",
-        "ref": "參考",
-        "noRef": "沒有附參考連結。",
-        "openPr": "在 GitHub 開啟 PR #{{number}}",
-        "refBlocked": "這個路徑不在交給夥伴的專案裡，沒有開啟。",
-        "stopLabel": "停止",
-        "doing": "正在做",
-        "outputs": "到現在的產出",
-        "recent": "最近內容"
-      },
-      "openTask": "開啟「{{title}}」（{{state}}）",
-      "outputs": "產出",
-      "outputsEmpty": "{{name}}做出的檔案會放在這裡。",
-      "outputsAll": "全部",
-      "outputsLess": "收起",
-      "summary": {
-        "waiting_other": "{{count}} 件等你",
-        "running_other": "{{count}} 件在做",
-        "todo_other": "{{count}} 件待做"
-      },
-      "state": {
-        "running": "在做",
-        "waiting": "等你",
-        "queued": "排隊",
-        "stopped": "停著",
-        "automation": "自動化",
-        "done": "做完"
-      },
-      "group": {
-        "waiting": "等你",
-        "running": "在做",
-        "todo": "待做",
-        "done": "做完"
-      },
-      "followUp": {
-        "label": "跟進",
-        "message": "跟進「{{title}}」",
-        "aria": "跟進「{{title}}」"
-      },
       "followingMark": "{{names}}在跟進這個任務",
-      "olderCount_other": "更早的 {{count}} 個",
-      "kind": {
-        "existing": "原有任務",
-        "delegated": "你交代的",
-        "claudeCode": "來自 Claude Code",
-        "codex": "來自 Codex",
-        "pi": "來自 Pi",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "建議",
-        "automationPlain": "自動化"
+      "glance": {
+        "waiting": "等你",
+        "working": "在做",
+        "loadFailed": "暫時讀不到工作台的內容。",
+        "quiet": "沒有在做的事，也沒有等你的。",
+        "allow": "允許",
+        "answer": "回答",
+        "look": "看看",
+        "waitedFor": "等了 {{duration}}",
+        "offline": "離線",
+        "deviceOffline": "{{device}} 離線",
+        "thisComputer": "這台電腦",
+        "lessThanMinute": "不到 1 分鐘",
+        "minutes_other": "{{count}} 分鐘",
+        "hours_other": "{{count}} 小時",
+        "days_other": "{{count}} 天",
+        "notSeenYet": "還沒看過一遍",
+        "seenJust": "剛看過一遍",
+        "seenMinutesAgo_other": "{{count}} 分鐘前看過一遍",
+        "seenHoursAgo_other": "{{count}} 小時前看過一遍",
+        "doneToday_other": "今天做完 {{count}} 件",
+        "devicesOffline": "{{devices}} 離線",
+        "allowFailed": "沒能允許，請到任務裡處理",
+        "more_other": "還有 {{count}} 件",
+        "less": "收起"
+      }
+    },
+    "autonomy": {
+      "title": "自動跟進所有任務",
+      "descriptionOn": "{{name}}會定時看一遍所有任務，有等你的就告訴你。",
+      "movedFrom": "已從{{name}}移到這裡",
+      "heldBy": "現在由{{name}}負責，打開就移到這裡。",
+      "heldByNobody": "現在沒有夥伴負責。",
+      "restoreDefault": "恢復預設（{{name}}）",
+      "saveFailed": "沒能儲存，請重試",
+      "turnOff": {
+        "title": "關閉自動跟進所有任務？",
+        "description": "關閉後沒有夥伴統一跟進所有任務。",
+        "confirm": "關閉",
+        "cancel": "取消"
       },
-      "cycle": {
-        "manual": "手動",
-        "once": "一次",
-        "event": "事件觸發"
-      },
-      "line": {
-        "waiting": "等你回覆",
-        "waitingPermission": "等你確認",
-        "waitingQuestion": "等你回答",
-        "waitingPlan": "等你看方案",
-        "waitingAction": "等你操作",
-        "waitingFor": "{{label}}：{{text}}",
-        "queued": "排隊中",
-        "interrupted": "上次沒跑完",
-        "errored": "上次出錯了",
-        "failed": "沒做完",
-        "paused": "已暫停",
-        "disabled": "已停用"
-      },
-      "dirElsewhere": "在「{{device}}」上"
+      "allowSchedulerFollow": {
+        "title": "它開的任務也交給{{name}}跟進",
+        "description": "預設{{scheduler}}只看不跟。打開後，{{name}}開的任務沒做完時，{{scheduler}}也會接著跟進。"
+      }
     },
     "remoteSettings": {
       "empty": "暫無內容",
@@ -15533,7 +15462,11 @@
     "checkCommand": "前置檢查命令",
     "checkHint": "選填。在電腦上先檢查：結束代碼 2 跳過本次執行，0 繼續執行，異常仍會回報。清空可移除。",
     "timeoutMs": "檢查逾時（毫秒，留空不限時）",
-    "advancedSettings": "進階設定"
+    "advancedSettings": "進階設定",
+    "builtinFollowUp": {
+      "name": "跟進（內建）",
+      "hint": "任務卡住、等你、出錯、撞上用量上限或做完時叫醒它；內建，只能暫停或恢復。"
+    }
   },
   "cindyMakeDoctor": {
     "description": "檢查本機建置 Cindy 所需的環境。用法：/cindy-make-doctor",

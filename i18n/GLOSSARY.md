@@ -189,7 +189,7 @@ Cindy 在 X 上发出的那条公开回复。zh-CN 取「回帖」以强调它�
 
 ### Workbench
 
-伙伴主任务右侧栏里的标签：主人交给伙伴的项目，以及项目里的任务、自动化与产出（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。
+伙伴主任务右侧栏里的标签：一眼看清这位伙伴手上「等你」与「在做」的任务，加一行页脚（docs/product-rules/cindy-bots-runtime.md「工作台」一节）。只指这个伙伴视图，不泛指任务列表或其它面板。先登记为 proposed，待 Chris 实机试用后再定。
 
 ### Security check
 
@@ -306,6 +306,10 @@ Irreversible group termination, distinct from archive, leave and personal list r
 ### Face ID verification
 
 远程桌面操作菜单的安全设置；仅用于可选的本机保存密码自动解锁。
+
+### Follow Up on All Sessions
+
+伙伴设置里的开关与工作台小标：账号里只有一位伙伴负责定时看一遍所有任务（实现里叫 scheduler / 总调度，默认 Cindy 助理）。面向用户不写「总调度」「调度员」，一律用这句；在别的伙伴上打开就移过去，关闭则没有伙伴统一跟进。session 按已裁决译法写「任务 / Session / セッション / 세션」。
 
 ### Group Admin
 

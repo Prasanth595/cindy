@@ -48,6 +48,7 @@ import {
 } from '../../maker-host/bot-model-chain-settings-store.js';
 import { extractMessagePreview, sessionCreateToRow, sessionToCamel } from '../mapper.js';
 import { normalizeBotToolCapabilities } from '../../../shared/botCapabilitySelection.js';
+import type { BotWorkbench } from '../../../shared/botWorkbench.js';
 import {
   botProfileContentChanged,
   botProfileModelSelectionChanged,
@@ -67,13 +68,6 @@ import { requestBotRuntimeEpochRefresh } from '../../maker-ipc/botRuntimeEpochRe
 import { createLogger } from '../../logger.js';
 import { collectTaskResponsibilityScopes } from '../../maker-ipc/botTaskResponsibility.js';
 import {
-  addBotWorkbenchDirectory,
-  broadcastBotWorkbenchChanged,
-  readBotWorkbench,
-  removeBotWorkbenchDirectory,
-} from '../../maker-ipc/botWorkbenchService.js';
-import {
-  listBotWorkbenchCandidatesForOwner,
   readBotWorkbenchTaskForOwner,
   readBotResponsibilityScope,
   readBotResponsibleSessionIds,
@@ -225,6 +219,8 @@ async function syncBotProfileFolder(
 import { buildDefaultBotIdentity } from '../../../shared/botProfileDefaults.js';
 import { coordinateBotCanonicalReplacement } from '../../maker-ipc/botCanonicalReplacementCoordinator.js';
 import { searchConversations } from '../conversationSearch.js';
+import { registerBotAutonomyIpc } from '../../bot-autonomy/ipc.js';
+import { signalBotAutonomyBotsChanged } from '../../bot-autonomy/botsChangedSignal.js';
 import {
   BOT_FAILURE_REASONS,
   isBotFailureAttentionWorthy,
@@ -1357,6 +1353,8 @@ export function broadcastBotProfileChanged(payload: {
   change: 'created' | 'updated';
 }): void {
   broadcastBotRemoteResourceChanged(payload.botId);
+  // 伙伴自主跟进：新建伙伴、改「它开的任务也交给总调度跟」立即生效。
+  signalBotAutonomyBotsChanged();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {
@@ -2293,11 +2291,10 @@ export function registerBotIpc(): void {
     assertTrustedAppRendererEvent(event);
     const botId = readText(rawBotId, 'botId', 128, true);
     const owner = captureBotOperationOwner();
-    const workbench = await readBotWorkbench(owner.userDataDir, botId);
-    owner.assertCurrent();
     const responsibleSessionIds = await readBotResponsibleSessionIds(owner.userDataDir, botId);
     owner.assertCurrent();
-    return { ...workbench, responsibleSessionIds };
+    const workbench: BotWorkbench = { responsibleSessionIds };
+    return workbench;
   });
   for (const operation of ['list', 'update', 'act'] as const) {
     ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
@@ -2310,16 +2307,6 @@ export function registerBotIpc(): void {
       owner.assertCurrent();return result;
     });
   }
-  ipcMain.handle('local-db:bots:workbench:add-directory', async (event, rawBotId: unknown, rawPath: unknown) => {
-    assertTrustedAppRendererEvent(event);
-    const botId = readText(rawBotId, 'botId', 128, true);
-    const dirPath = readText(rawPath, 'path', 4096, true);
-    const owner = captureBotOperationOwner();
-    const result = await addBotWorkbenchDirectory(owner.userDataDir, botId, dirPath);
-    owner.assertCurrent();
-    if (result.ok) broadcastBotWorkbenchChanged(botId);
-    return result;
-  });
   // Exact per-task responsibility IDs from the current owner, without message bodies.
   ipcMain.handle('local-db:bots:workbench:follow-scopes', async (event) => {
     assertTrustedAppRendererEvent(event);
@@ -2346,26 +2333,6 @@ export function registerBotIpc(): void {
     const result = await readBotWorkbenchTaskForOwner(botId, taskId);
     owner.assertCurrent();
     return result;
-  });
-  // 工作台:已接手项目里近期本机会话的 id 与最近活动(只读、按项目过滤、只看近期)。
-  ipcMain.handle('local-db:bots:workbench:candidates', async (event, rawBotId: unknown) => {
-    assertTrustedAppRendererEvent(event);
-    const botId = readText(rawBotId, 'botId', 128, true);
-    const owner = captureBotOperationOwner();
-    const result = await listBotWorkbenchCandidatesForOwner(botId);
-    owner.assertCurrent();
-    return result;
-  });
-  ipcMain.handle('local-db:bots:workbench:remove-directory', async (event, rawBotId: unknown, rawPath: unknown, rawDeviceId: unknown) => {
-    assertTrustedAppRendererEvent(event);
-    const botId = readText(rawBotId, 'botId', 128, true);
-    const dirPath = readText(rawPath, 'path', 4096, true);
-    // A folder on another computer (cloud companions) is named by that computer too.
-    const deviceId = readText(rawDeviceId, 'deviceId', 200) || undefined;
-    const owner = captureBotOperationOwner();
-    await removeBotWorkbenchDirectory(owner.userDataDir, botId, dirPath, deviceId);
-    owner.assertCurrent();
-    broadcastBotWorkbenchChanged(botId);
   });
   // Local settings read; remote clients already use settings:<botId>/skills.
   ipcMain.handle('local-db:bots:skills:list', async (event, rawBotId: unknown) => {
@@ -2447,4 +2414,6 @@ export function registerBotIpc(): void {
     }
     return result;
   });
+  // 伙伴自主跟进：工作台「一眼」与「自动跟进所有任务」设置。
+  registerBotAutonomyIpc();
 }

@@ -201,7 +201,7 @@ it('expired deferral allows advancing the same next step without altering its re
 
 it('reconciles later legacy writes into the same record after new-format persistence, preserving dates and rejection', async () => {
   const { file } = await fixture();
-  let legacy: Record<string, import('../../../shared/botWorkbench.js').WorkbenchTaskJudgment> = {};
+  let legacy: Record<string, import('../botWorkbenchLegacy.js').LegacyWorkbenchJudgment> = {};
   const s = createBotTodoStore(file, async () => legacy);
   await s.patch(p);
   const j = {

@@ -19,7 +19,7 @@ vi.mock('@/components/onboarding/ConnectProviderCard', () => ({
 const translate = (key: string, opts?: Record<string, unknown>) =>
   key.startsWith('settings.builtinTools.plugins.') ? String(opts?.defaultValue ?? key) : opts ? `${key}:${JSON.stringify(opts)}` : key;
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'fixture-owner' }) }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate, i18n: { language: 'en' } }) }));
 
 const mocks = vi.hoisted(() => {
   const sessionGet = vi.fn();
@@ -92,6 +92,9 @@ vi.mock('../botStore', () => ({
     mocks.modelListeners.add(listener);
     return () => mocks.modelListeners.delete(listener);
   },
+  useBotAutonomySettings: () => null,
+  setBotSchedulerBotId: vi.fn(),
+  resetBotAutonomySettings: vi.fn(),
 }));
 vi.mock('../BotLifecycleSettings', () => ({
   BotLifecycleSettings: () => <div data-testid="bot-lifecycle-settings" />,
@@ -141,6 +144,7 @@ vi.mock('@/components/chat/MarkdownRenderer', () => ({
 }));
 
 import { BotsHomeView, BotSettings } from '../BotsHomeView';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 
 function capabilities(overrides: Partial<BotCapabilities> = {}): BotCapabilities {
   return {
@@ -527,6 +531,29 @@ describe('Bot settings profile consolidation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'bots.homeFolder.title' }));
     fireEvent.click(screen.getByRole('button', { name: 'bots.homeFolder.open' }));
     expect((await screen.findByRole('alert')).textContent).toContain('missing');
+  });
+
+  it('keeps the teammate todos the heartbeat maintains visible on the routines page', async () => {
+    // 伙伴自主跟进：心跳叫醒伙伴后它会更新自己的待办；工作台不再平铺待办，主人在这里看。
+    const api = window.electronAPI as unknown as Record<string, Record<string, unknown>>;
+    api.routines = {
+      list: vi.fn(async () => []), sources: vi.fn(async () => []),
+      history: vi.fn(async () => []), onChanged: vi.fn(() => () => undefined),
+    };
+    (api.localDb.bots as Record<string, unknown>).todos = {
+      list: vi.fn(async () => ({ items: [{
+        id: 'todo-1', revision: 1, key: 'self:1', origin: 'discovered', title: '回复 Dash 的部署窗口问题',
+        progress: '', outcome: '', value: '', next: null, sources: [], associations: [], status: 'open',
+        createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z', sourceDeadline: null,
+        deadlineCandidate: null, suggestedDate: null, decision: null, history: [], action: null,
+      }] })),
+    };
+    api.maker.onBotWorkbenchChanged = vi.fn(() => () => undefined);
+    mocks.initialSearch = 'settings=1&tab=growth';
+    render(<ConfirmDialogProvider><BotSettings bot={bot()} onBack={vi.fn()} onOpenSession={vi.fn()} /></ConfirmDialogProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'routines.title' }));
+    expect(await screen.findByText('回复 Dash 的部署窗口问题')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'teammateTodo.title' })).toBeTruthy();
   });
 
   it('starts at grouped settings and opens real inner pages without exposing hidden inputs', async () => {

@@ -8806,124 +8806,53 @@
     "workbench": {
       "title": "工作台",
       "open": "打开工作台",
-      "emptyTitle": "交给{{name}}一个项目",
-      "emptyDescription": "把电脑里已有的活交给{{name}}接着做。它会先看一遍项目的文档、最近的提交和 PR、做过的任务，挑出没做完和值得做的，再问你接着做哪件。",
-      "scanning": "正在查找电脑上的项目…",
-      "noProjects": "还没找到有任务的项目，可以选一个文件夹交给{{name}}。",
-      "pickFolder": "选其他文件夹",
-      "cancelAdd": "取消",
-      "projectTasks_other": "{{count}} 个任务",
-      "projectAutomations_other": "{{count}} 个自动化",
-      "sourceCindy_other": "Cindy {{count}} 个任务",
-      "sourceClaude_other": "Claude Code {{count}} 个任务",
-      "sourceCodex_other": "Codex {{count}} 个任务",
-      "moreProjects": "还有 {{count}} 个",
-      "hideMoreProjects": "收起",
-      "grant": "{{name}}可以查看、继续和停止 {{project}} 里的{{scope}}，也会替你开新任务。",
-      "grantTasks_other": "{{count}} 个任务",
-      "grantCindy_other": "Cindy 的 {{count}} 个任务",
-      "grantClaude_other": "Claude Code 的 {{count}} 个任务",
-      "grantCodex_other": "Codex 的 {{count}} 个任务",
-      "grantAutomations_other": "{{count}} 个自动化",
-      "grantEverything": "任务和自动化",
-      "handOver": "交给{{name}}",
-      "handoverMessage": "把 {{project}} 交给你了。",
-      "addProject": "再交给{{name}}一个项目",
-      "removeProject": "不再交给{{name}}：{{project}}",
-      "dirMissing": "找不到这个文件夹",
-      "dirUnavailable": "这个文件夹打不开，换一个试试",
-      "tooManyDirs": "最多交给{{name}} {{count}} 个项目",
-      "sendFailed": "没能发给{{name}}，请重试",
-      "tasksEmpty": "还没有需要接着做的任务。",
-      "understanding": "{{name}}正在了解 {{project}}…",
       "untitled": "未命名任务",
-      "continueMessage": "接着做「{{title}}」：{{text}}",
-      "verdict": {
-        "unfinished": "没做完",
-        "idea": "聊过没下文"
-      },
-      "detail": {
-        "back": "返回工作台",
-        "stop": "停止这件任务",
-        "openInTasks": "在任务页打开",
-        "placeholder": "补一句，让{{name}}接着做…",
-        "send": "发送",
-        "sent": "已经告诉{{name}}了",
-        "judgment": "{{name}}的判断",
-        "empty": "还没有可显示的内容。",
-        "loadFailed": "读不到这件任务的记录。",
-        "truncated": "只显示最近的内容",
-        "ref": "参考",
-        "noRef": "没有附参考链接。",
-        "openPr": "在 GitHub 打开 PR #{{number}}",
-        "refBlocked": "这个路径不在交给伙伴的项目里，没有打开。",
-        "stopLabel": "停止",
-        "doing": "正在做",
-        "outputs": "到现在的产出",
-        "recent": "最近内容"
-      },
-      "openTask": "打开「{{title}}」（{{state}}）",
-      "outputs": "产出",
-      "outputsEmpty": "{{name}}做出的文件会放在这里。",
-      "outputsAll": "全部",
-      "outputsLess": "收起",
-      "summary": {
-        "waiting_other": "{{count}} 件等你",
-        "running_other": "{{count}} 件在做",
-        "todo_other": "{{count}} 件待做"
-      },
-      "state": {
-        "running": "在做",
-        "waiting": "等你",
-        "queued": "排队",
-        "stopped": "停着",
-        "automation": "自动化",
-        "done": "做完"
-      },
-      "group": {
-        "waiting": "等你",
-        "running": "在做",
-        "todo": "待做",
-        "done": "做完"
-      },
-      "followUp": {
-        "label": "跟进",
-        "message": "跟进「{{title}}」",
-        "aria": "跟进「{{title}}」"
-      },
       "followingMark": "{{names}}在跟进这个任务",
-      "olderCount_other": "更早的 {{count}} 个",
-      "kind": {
-        "existing": "原有任务",
-        "delegated": "你交代的",
-        "claudeCode": "来自 Claude Code",
-        "codex": "来自 Codex",
-        "pi": "来自 Pi",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "建议",
-        "automationPlain": "自动化"
+      "glance": {
+        "waiting": "等你",
+        "working": "在做",
+        "loadFailed": "暂时读不到工作台的内容。",
+        "quiet": "没有在做的事，也没有等你的。",
+        "allow": "允许",
+        "answer": "回答",
+        "look": "看看",
+        "waitedFor": "等了 {{duration}}",
+        "offline": "离线",
+        "deviceOffline": "{{device}} 离线",
+        "thisComputer": "这台电脑",
+        "lessThanMinute": "不到 1 分钟",
+        "minutes_other": "{{count}} 分钟",
+        "hours_other": "{{count}} 小时",
+        "days_other": "{{count}} 天",
+        "notSeenYet": "还没看过一遍",
+        "seenJust": "刚看过一遍",
+        "seenMinutesAgo_other": "{{count}} 分钟前看过一遍",
+        "seenHoursAgo_other": "{{count}} 小时前看过一遍",
+        "doneToday_other": "今天做完 {{count}} 件",
+        "devicesOffline": "{{devices}} 离线",
+        "allowFailed": "没能允许，请到任务里处理",
+        "more_other": "还有 {{count}} 件",
+        "less": "收起"
+      }
+    },
+    "autonomy": {
+      "title": "自动跟进所有任务",
+      "descriptionOn": "{{name}}会定时看一遍所有任务，有等你的就告诉你。",
+      "movedFrom": "已从{{name}}移到这里",
+      "heldBy": "现在由{{name}}负责，打开就移到这里。",
+      "heldByNobody": "现在没有伙伴负责。",
+      "restoreDefault": "恢复默认（{{name}}）",
+      "saveFailed": "没能保存，请重试",
+      "turnOff": {
+        "title": "关闭自动跟进所有任务？",
+        "description": "关闭后没有伙伴统一跟进所有任务。",
+        "confirm": "关闭",
+        "cancel": "取消"
       },
-      "cycle": {
-        "manual": "手动",
-        "once": "一次",
-        "event": "事件触发"
-      },
-      "line": {
-        "waiting": "等你回复",
-        "waitingPermission": "等你确认",
-        "waitingQuestion": "等你回答",
-        "waitingPlan": "等你看方案",
-        "waitingAction": "等你操作",
-        "waitingFor": "{{label}}：{{text}}",
-        "queued": "排队中",
-        "interrupted": "上次没跑完",
-        "errored": "上次出错了",
-        "failed": "没做完",
-        "paused": "已暂停",
-        "disabled": "已停用"
-      },
-      "dirElsewhere": "在「{{device}}」上"
+      "allowSchedulerFollow": {
+        "title": "它开的任务也交给{{name}}跟进",
+        "description": "默认{{scheduler}}只看不跟。打开后，{{name}}开的任务没做完时，{{scheduler}}也会接着跟进。"
+      }
     },
     "remoteSettings": {
       "empty": "暂无内容",
@@ -15533,7 +15462,11 @@
     "checkCommand": "前置检查命令",
     "checkHint": "可选。在电脑上先检查：退出码 2 跳过本轮，0 继续执行，异常仍会报告。清空可移除。",
     "timeoutMs": "检查超时（毫秒，留空不限时）",
-    "advancedSettings": "高级设置"
+    "advancedSettings": "高级设置",
+    "builtinFollowUp": {
+      "name": "跟进（内置）",
+      "hint": "任务卡住、等你、出错、撞上用量上限或做完时叫醒它；内置，只能暂停或恢复。"
+    }
   },
   "cindyMakeDoctor": {
     "description": "检查本机构建 Cindy 所需的环境。用法：/cindy-make-doctor",

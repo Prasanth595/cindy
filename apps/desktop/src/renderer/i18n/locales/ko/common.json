@@ -8806,124 +8806,53 @@
     "workbench": {
       "title": "작업대",
       "open": "워크벤치 열기",
-      "emptyTitle": "{{name}}에게 프로젝트 맡기기",
-      "emptyDescription": "컴퓨터에 있는 작업을 {{name}}에게 넘겨 이어서 하게 합니다. 먼저 프로젝트의 문서, 최근 커밋과 PR, 지난 세션을 살펴보고, 끝나지 않았거나 해 볼 만한 것을 골라낸 뒤 무엇을 이어서 할지 물어봅니다.",
-      "scanning": "컴퓨터에서 프로젝트를 찾는 중…",
-      "noProjects": "세션이 있는 프로젝트가 아직 없습니다. 폴더를 골라 {{name}}에게 맡길 수 있습니다.",
-      "pickFolder": "다른 폴더 선택",
-      "cancelAdd": "취소",
-      "projectTasks_other": "세션 {{count}}개",
-      "projectAutomations_other": "자동화 {{count}}개",
-      "sourceCindy_other": "Cindy 세션 {{count}}개",
-      "sourceClaude_other": "Claude Code 세션 {{count}}개",
-      "sourceCodex_other": "Codex 세션 {{count}}개",
-      "moreProjects": "{{count}}개 더 보기",
-      "hideMoreProjects": "접기",
-      "grant": "{{name}}은(는) {{project}}의 {{scope}}을(를) 보고, 이어서 하고, 멈출 수 있으며 새 세션도 대신 시작합니다.",
-      "grantTasks_other": "세션 {{count}}개",
-      "grantCindy_other": "Cindy 세션 {{count}}개",
-      "grantClaude_other": "Claude Code 세션 {{count}}개",
-      "grantCodex_other": "Codex 세션 {{count}}개",
-      "grantAutomations_other": "자동화 {{count}}개",
-      "grantEverything": "세션과 자동화",
-      "handOver": "{{name}}에게 맡기기",
-      "handoverMessage": "{{project}}을(를) 맡길게요.",
-      "addProject": "{{name}}에게 다른 프로젝트 맡기기",
-      "removeProject": "{{name}}에게서 {{project}} 돌려받기",
-      "dirMissing": "폴더를 찾을 수 없습니다",
-      "dirUnavailable": "이 폴더를 열 수 없습니다. 다른 폴더를 선택하세요.",
-      "tooManyDirs": "{{name}}에게는 프로젝트를 최대 {{count}}개까지 맡길 수 있습니다",
-      "sendFailed": "{{name}}에게 보내지 못했습니다. 다시 시도하세요.",
-      "tasksEmpty": "이어서 할 세션이 아직 없습니다.",
-      "understanding": "{{name}}이(가) {{project}}을(를) 파악하는 중…",
       "untitled": "제목 없는 세션",
-      "continueMessage": "‘{{title}}’ 이어서: {{text}}",
-      "verdict": {
-        "unfinished": "미완료",
-        "idea": "후속 없음"
-      },
-      "detail": {
-        "back": "작업대로 돌아가기",
-        "stop": "이 세션 중지",
-        "openInTasks": "세션 화면에서 열기",
-        "placeholder": "{{name}}에게 이어서 하도록 한마디…",
-        "send": "보내기",
-        "sent": "{{name}}에게 전했습니다",
-        "judgment": "{{name}}의 판단",
-        "empty": "아직 표시할 내용이 없습니다.",
-        "loadFailed": "이 세션의 기록을 읽을 수 없습니다.",
-        "truncated": "최근 내용만 표시합니다",
-        "ref": "참고",
-        "noRef": "첨부된 참고 링크가 없습니다.",
-        "openPr": "GitHub에서 PR #{{number}} 열기",
-        "refBlocked": "맡긴 프로젝트 밖의 경로라서 열지 않았습니다.",
-        "stopLabel": "중지",
-        "doing": "지금 하는 일",
-        "outputs": "지금까지의 결과물",
-        "recent": "최근 내용"
-      },
-      "openTask": "‘{{title}}’ 열기({{state}})",
-      "outputs": "결과물",
-      "outputsEmpty": "{{name}}이(가) 만든 파일이 여기에 표시됩니다.",
-      "outputsAll": "전체",
-      "outputsLess": "접기",
-      "summary": {
-        "waiting_other": "응답 대기 {{count}}개",
-        "running_other": "실행 중 {{count}}개",
-        "todo_other": "할 일 {{count}}개"
-      },
-      "state": {
-        "running": "실행 중",
-        "waiting": "응답 대기",
-        "queued": "대기 중",
-        "stopped": "멈춤",
-        "automation": "자동화",
-        "done": "완료"
-      },
-      "group": {
-        "waiting": "응답 대기",
-        "running": "실행 중",
-        "todo": "할 일",
-        "done": "완료"
-      },
-      "followUp": {
-        "label": "진행",
-        "message": "「{{title}}」 이어서 진행해 줘",
-        "aria": "「{{title}}」 진행하기"
-      },
       "followingMark": "이 세션 담당: {{names}}",
-      "olderCount_other": "이전 {{count}}개",
-      "kind": {
-        "existing": "기존 세션",
-        "delegated": "요청한 일",
-        "claudeCode": "Claude Code에서",
-        "codex": "Codex에서",
-        "pi": "Pi에서",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "제안",
-        "automationPlain": "자동화"
+      "glance": {
+        "waiting": "응답 대기",
+        "working": "실행 중",
+        "loadFailed": "작업대를 불러오지 못했습니다.",
+        "quiet": "실행 중인 일도, 응답을 기다리는 일도 없습니다.",
+        "allow": "허용",
+        "answer": "답하기",
+        "look": "살펴보기",
+        "waitedFor": "{{duration}} 대기",
+        "offline": "오프라인",
+        "deviceOffline": "{{device}} 오프라인",
+        "thisComputer": "이 컴퓨터",
+        "lessThanMinute": "1분 미만",
+        "minutes_other": "{{count}}분",
+        "hours_other": "{{count}}시간",
+        "days_other": "{{count}}일",
+        "notSeenYet": "아직 확인하지 않음",
+        "seenJust": "방금 확인함",
+        "seenMinutesAgo_other": "{{count}}분 전에 확인함",
+        "seenHoursAgo_other": "{{count}}시간 전에 확인함",
+        "doneToday_other": "오늘 {{count}}건 완료",
+        "devicesOffline": "{{devices}} 오프라인",
+        "allowFailed": "허용하지 못했습니다. 세션에서 처리하세요",
+        "more_other": "{{count}}건 더 보기",
+        "less": "접기"
+      }
+    },
+    "autonomy": {
+      "title": "모든 세션 자동 후속 관리",
+      "descriptionOn": "{{name}}이(가) 모든 세션을 주기적으로 확인하고, 응답을 기다리는 일이 있으면 알려 줍니다.",
+      "movedFrom": "{{name}}에서 여기로 옮겼습니다",
+      "heldBy": "지금은 {{name}}이(가) 맡고 있습니다. 켜면 여기로 옮겨집니다.",
+      "heldByNobody": "지금 맡은 동료가 없습니다.",
+      "restoreDefault": "기본값으로 복원({{name}})",
+      "saveFailed": "저장하지 못했습니다. 다시 시도하세요",
+      "turnOff": {
+        "title": "모든 세션 자동 후속 관리를 끌까요?",
+        "description": "끄면 모든 세션을 함께 챙기는 동료가 없습니다.",
+        "confirm": "끄기",
+        "cancel": "취소"
       },
-      "cycle": {
-        "manual": "수동",
-        "once": "1회",
-        "event": "이벤트 발생 시"
-      },
-      "line": {
-        "waiting": "응답을 기다리는 중",
-        "waitingPermission": "승인을 기다리는 중",
-        "waitingQuestion": "답변을 기다리는 중",
-        "waitingPlan": "계획 검토를 기다리는 중",
-        "waitingAction": "작업을 기다리는 중",
-        "waitingFor": "{{label}}: {{text}}",
-        "queued": "대기 중",
-        "interrupted": "지난번 실행이 끝나지 않았습니다",
-        "errored": "지난번 실행에서 오류가 났습니다",
-        "failed": "끝내지 못했습니다",
-        "paused": "일시 중지됨",
-        "disabled": "꺼짐"
-      },
-      "dirElsewhere": "“{{device}}”에 있음"
+      "allowSchedulerFollow": {
+        "title": "시작한 세션도 {{name}}에게 맡기기",
+        "description": "기본적으로 {{scheduler}}은(는) 보기만 하고 후속 관리는 하지 않습니다. 켜면 {{name}}이(가) 시작한 세션이 끝나지 않았을 때 {{scheduler}}도 이어서 챙깁니다."
+      }
     },
     "remoteSettings": {
       "empty": "아직 항목이 없습니다.",
@@ -15533,7 +15462,11 @@
     "checkCommand": "사전 확인 명령",
     "checkHint": "선택 사항입니다. 컴퓨터에서 먼저 확인합니다. 종료 코드 2는 이번 실행을 건너뛰고, 0은 계속합니다. 오류는 보고됩니다. 비우면 제거됩니다.",
     "timeoutMs": "확인 제한 시간(ms, 비우면 제한 없음)",
-    "advancedSettings": "고급 설정"
+    "advancedSettings": "고급 설정",
+    "builtinFollowUp": {
+      "name": "후속 관리(기본 제공)",
+      "hint": "세션이 멈추거나, 응답을 기다리거나, 오류가 나거나, 사용량 한도에 도달하거나, 끝나면 깨웁니다. 기본 제공 루틴이라 일시 중지와 재개만 할 수 있습니다."
+    }
   },
   "cindyMakeDoctor": {
     "description": "Cindy 빌드에 필요한 로컬 환경을 확인합니다. 사용법: /cindy-make-doctor",

@@ -8806,124 +8806,53 @@
     "workbench": {
       "title": "ワークベンチ",
       "open": "ワークベンチを開く",
-      "emptyTitle": "{{name}} にプロジェクトを任せる",
-      "emptyDescription": "このコンピューターにある作業を {{name}} に引き継ぎます。まずプロジェクトのドキュメント、最近のコミットと PR、これまでのセッションに目を通し、終わっていないものややる価値のあるものを選び出してから、どれを続けるか確認します。",
-      "scanning": "このコンピューターのプロジェクトを探しています…",
-      "noProjects": "セッションのあるプロジェクトがまだありません。フォルダーを選んで {{name}} に任せられます。",
-      "pickFolder": "別のフォルダーを選ぶ",
-      "cancelAdd": "キャンセル",
-      "projectTasks_other": "{{count}} 件のセッション",
-      "projectAutomations_other": "{{count}} 件の自動化",
-      "sourceCindy_other": "Cindy {{count}} 件のセッション",
-      "sourceClaude_other": "Claude Code {{count}} 件のセッション",
-      "sourceCodex_other": "Codex {{count}} 件のセッション",
-      "moreProjects": "ほか {{count}} 件",
-      "hideMoreProjects": "閉じる",
-      "grant": "{{name}} は {{project}} の{{scope}}を確認・続行・停止でき、新しいセッションも代わりに始めます。",
-      "grantTasks_other": "{{count}} 件のセッション",
-      "grantCindy_other": "Cindy の {{count}} 件のセッション",
-      "grantClaude_other": "Claude Code の {{count}} 件のセッション",
-      "grantCodex_other": "Codex の {{count}} 件のセッション",
-      "grantAutomations_other": "{{count}} 件の自動化",
-      "grantEverything": "セッションと自動化",
-      "handOver": "{{name}} に任せる",
-      "handoverMessage": "{{project}} を任せます。",
-      "addProject": "{{name}} に別のプロジェクトを任せる",
-      "removeProject": "{{project}} を {{name}} から外す",
-      "dirMissing": "フォルダーが見つかりません",
-      "dirUnavailable": "このフォルダーを開けません。別のフォルダーを選んでください。",
-      "tooManyDirs": "{{name}} に任せられるプロジェクトは最大 {{count}} 件です",
-      "sendFailed": "{{name}} に送信できませんでした。もう一度お試しください。",
-      "tasksEmpty": "続けるべきセッションはまだありません。",
-      "understanding": "{{name}} が {{project}} を把握しています…",
       "untitled": "無題のセッション",
-      "continueMessage": "「{{title}}」を続けて：{{text}}",
-      "verdict": {
-        "unfinished": "未完了",
-        "idea": "話したまま"
-      },
-      "detail": {
-        "back": "ワークベンチに戻る",
-        "stop": "このセッションを停止",
-        "openInTasks": "セッション画面で開く",
-        "placeholder": "{{name}} に続けてもらう一言…",
-        "send": "送信",
-        "sent": "{{name}} に伝えました",
-        "judgment": "{{name}} の見立て",
-        "empty": "表示できる内容はまだありません。",
-        "loadFailed": "このセッションの記録を読み込めません。",
-        "truncated": "最近の内容のみ表示しています",
-        "ref": "参考",
-        "noRef": "参考リンクはありません。",
-        "openPr": "GitHub で PR #{{number}} を開く",
-        "refBlocked": "このパスは任せたプロジェクトの外にあるため開きませんでした。",
-        "stopLabel": "停止",
-        "doing": "実行中の作業",
-        "outputs": "これまでの成果物",
-        "recent": "最近の内容"
-      },
-      "openTask": "「{{title}}」を開く（{{state}}）",
-      "outputs": "成果物",
-      "outputsEmpty": "{{name}} が作ったファイルはここに表示されます。",
-      "outputsAll": "すべて",
-      "outputsLess": "折りたたむ",
-      "summary": {
-        "waiting_other": "返信待ち {{count}} 件",
-        "running_other": "実行中 {{count}} 件",
-        "todo_other": "やること {{count}} 件"
-      },
-      "state": {
-        "running": "実行中",
-        "waiting": "返信待ち",
-        "queued": "待機中",
-        "stopped": "停止中",
-        "automation": "自動化",
-        "done": "完了"
-      },
-      "group": {
-        "waiting": "返信待ち",
-        "running": "実行中",
-        "todo": "やること",
-        "done": "完了"
-      },
-      "followUp": {
-        "label": "進める",
-        "message": "「{{title}}」を進めて",
-        "aria": "「{{title}}」を進める"
-      },
       "followingMark": "このセッションの担当: {{names}}",
-      "olderCount_other": "さらに前の {{count}} 件",
-      "kind": {
-        "existing": "既存のセッション",
-        "delegated": "あなたの依頼",
-        "claudeCode": "Claude Code から",
-        "codex": "Codex から",
-        "pi": "Pi から",
-        "pr": "PR #{{number}}",
-        "issue": "Issue #{{number}}",
-        "idea": "提案",
-        "automationPlain": "自動化"
+      "glance": {
+        "waiting": "返信待ち",
+        "working": "実行中",
+        "loadFailed": "ワークベンチを読み込めませんでした。",
+        "quiet": "実行中のものも、返信待ちのものもありません。",
+        "allow": "許可",
+        "answer": "回答する",
+        "look": "見てみる",
+        "waitedFor": "{{duration}}待機",
+        "offline": "オフライン",
+        "deviceOffline": "{{device}}はオフライン",
+        "thisComputer": "このパソコン",
+        "lessThanMinute": "1分未満",
+        "minutes_other": "{{count}}分",
+        "hours_other": "{{count}}時間",
+        "days_other": "{{count}}日",
+        "notSeenYet": "まだ確認していません",
+        "seenJust": "先ほど確認しました",
+        "seenMinutesAgo_other": "{{count}}分前に確認",
+        "seenHoursAgo_other": "{{count}}時間前に確認",
+        "doneToday_other": "今日{{count}}件完了",
+        "devicesOffline": "{{devices}}はオフライン",
+        "allowFailed": "許可できませんでした。セッションで対応してください",
+        "more_other": "ほか{{count}}件",
+        "less": "閉じる"
+      }
+    },
+    "autonomy": {
+      "title": "すべてのセッションを自動でフォロー",
+      "descriptionOn": "{{name}}が定期的にすべてのセッションを確認し、返信待ちのものがあればお知らせします。",
+      "movedFrom": "{{name}}からここに移しました",
+      "heldBy": "現在は{{name}}が担当しています。オンにするとここに移ります。",
+      "heldByNobody": "現在担当している仲間はいません。",
+      "restoreDefault": "デフォルトに戻す（{{name}}）",
+      "saveFailed": "保存できませんでした。もう一度お試しください",
+      "turnOff": {
+        "title": "すべてのセッションの自動フォローをオフにしますか？",
+        "description": "オフにすると、すべてのセッションをまとめてフォローする仲間がいなくなります。",
+        "confirm": "オフにする",
+        "cancel": "キャンセル"
       },
-      "cycle": {
-        "manual": "手動",
-        "once": "1 回",
-        "event": "イベント時"
-      },
-      "line": {
-        "waiting": "あなたの返信を待っています",
-        "waitingPermission": "あなたの承認を待っています",
-        "waitingQuestion": "あなたの回答を待っています",
-        "waitingPlan": "プランの確認を待っています",
-        "waitingAction": "あなたの操作を待っています",
-        "waitingFor": "{{label}}：{{text}}",
-        "queued": "待機中",
-        "interrupted": "前回は最後まで実行されませんでした",
-        "errored": "前回エラーが発生しました",
-        "failed": "完了しませんでした",
-        "paused": "一時停止中",
-        "disabled": "オフ"
-      },
-      "dirElsewhere": "「{{device}}」上"
+      "allowSchedulerFollow": {
+        "title": "始めたセッションも{{name}}にフォローしてもらう",
+        "description": "既定では{{scheduler}}は見るだけでフォローしません。オンにすると、{{name}}が始めたセッションが終わっていないとき、{{scheduler}}もフォローします。"
+      }
     },
     "remoteSettings": {
       "empty": "まだ項目がありません。",
@@ -15533,7 +15462,11 @@
     "checkCommand": "事前確認コマンド",
     "checkHint": "任意。コンピューターで先に確認します。終了コード 2 は今回の実行をスキップし、0 は続行します。エラーは報告されます。空欄で解除します。",
     "timeoutMs": "確認のタイムアウト（ミリ秒、空欄は無制限）",
-    "advancedSettings": "詳細設定"
+    "advancedSettings": "詳細設定",
+    "builtinFollowUp": {
+      "name": "フォロー（組み込み）",
+      "hint": "セッションが止まったとき、返信待ちになったとき、エラーになったとき、使用量の上限に達したとき、完了したときに起こします。組み込みのため、一時停止と再開のみできます。"
+    }
   },
   "cindyMakeDoctor": {
     "description": "Cindy のビルドに必要なローカル環境を確認します。使い方：/cindy-make-doctor",

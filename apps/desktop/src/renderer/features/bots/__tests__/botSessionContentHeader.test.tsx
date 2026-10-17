@@ -30,6 +30,8 @@ vi.mock('react-router-dom', () => ({
 }));
 vi.mock('../feature-context', () => ({ useRegisterContentHeader: () => undefined }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => <span data-testid="bot-avatar" /> }));
+const openWorkbench = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('@/features/right-sidebar/lib/openBotWorkbenchTab', () => ({ openBotWorkbenchTab: openWorkbench }));
 
 const { BotSessionContentHeader } = await import('../BotSessionContentHeader');
 const { resetCompanionCloudStoreForTests } = await import('../companionCloudStore');
@@ -84,15 +86,18 @@ describe('BotSessionContentHeader', () => {
     expect(screen.queryByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeNull();
   });
 
-  it('keeps the device label and opens settings for a sole remote Cindy', () => {
+  it('keeps the device label, opens settings and keeps the workbench entry for a sole remote Cindy', () => {
     deviceData.remote = [remoteCindy];
     deviceData.pathname = '/bots/remote/cloud/cindy-default';
     render(<BotSessionContentHeader bot={remoteCindy} />);
     expect(screen.queryByRole('combobox', { name: 'bots.devicePicker.switchDevice' })).toBeNull();
     expect(screen.getByText('Cloud')).toBeTruthy();
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getAllByRole('button')).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', { name: 'Cindy' }));
     expect(navigate).toHaveBeenCalledWith('/bots/remote/cloud/cindy-default?settings=1');
+    // 工作台只自动打开一次；别的电脑上的伙伴也要能从头部随时打开（伙伴自主跟进方案）。
+    fireEvent.click(screen.getByRole('button', { name: 'bots.workbench.open' }));
+    expect(openWorkbench).toHaveBeenCalledWith('remote-chat', 'cindy-default');
   });
 
   it('offers the same device switch in a remote Cindy header and returns to the local route', async () => {

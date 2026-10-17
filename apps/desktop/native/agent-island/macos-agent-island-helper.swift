@@ -1622,9 +1622,9 @@ final class AgentIslandModel: ObservableObject {
 }
 
 private let expandedIslandMaxVisibleRows = 5
-private let expandedIslandMultiRowSlotHeight: CGFloat = 90
-private let expandedIslandMultiRowHeight: CGFloat = 84
+private let expandedIslandMultiRowHeight: CGFloat = 64
 private let expandedIslandMultiRowGap: CGFloat = 6
+private let expandedIslandMultiRowSlotHeight = expandedIslandMultiRowHeight + expandedIslandMultiRowGap
 private let expandedIslandMultiVerticalPadding: CGFloat = 60
 private let expandedIslandCardHorizontalPadding: CGFloat = 18
 private let expandedIslandTopBarHeight: CGFloat = 24
@@ -2282,7 +2282,7 @@ struct AgentIslandLayout: Equatable {
         )
       )
     }
-    return 190
+    return state.currentSession?.permissionAction == nil ? 128 : 164
   }
 
   private static func shapeForStatus(_ status: String) -> (topExtension: CGFloat, bottomRadius: CGFloat) {
@@ -2691,7 +2691,7 @@ struct CompactSessionView: View {
   }
 
   private func measuredCompactTitleWidth() -> CGFloat {
-    let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+    let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let width = (compactTitle as NSString).size(withAttributes: [.font: font]).width
     return max(1, ceil(width + 1))
   }
@@ -2717,7 +2717,7 @@ struct CompactSessionView: View {
     color: Color,
     baseOpacity: Double
   ) -> some View {
-    let font = Font.system(size: fontSize, weight: weight, design: .monospaced)
+    let font = Font.system(size: fontSize, weight: weight)
     if session.phase == "running" {
       AgentIslandWaveText(
         text: text,
@@ -2842,7 +2842,7 @@ struct IdleCreateConversationRow: View {
   @State private var isHovered = false
 
   var body: some View {
-    let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     Button(action: action) {
       HStack(alignment: .center, spacing: 10) {
         ZStack {
@@ -3402,7 +3402,7 @@ struct ExpandedSessionRow: View, Equatable {
   }
 
   var body: some View {
-    let shape = RoundedRectangle(cornerRadius: 13, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: rowSpacing) {
       if session.permissionAction == nil {
         rowMainContent
@@ -3423,10 +3423,9 @@ struct ExpandedSessionRow: View, Equatable {
         .padding(.top, 4)
       }
     }
-    .frame(maxWidth: .infinity, minHeight: expandedIslandMultiRowHeight, alignment: .leading)
     .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, minHeight: expandedIslandMultiRowHeight, alignment: .leading)
     .background(
       shape
         .fill(Color.white.opacity(expandedCardFillOpacity(session: session, hovered: isHovered)))
@@ -3438,6 +3437,7 @@ struct ExpandedSessionRow: View, Equatable {
         )
     )
     .contentShape(Rectangle())
+    .help(expandedMetaText(for: session, updatedAt: updatedAt))
     .onHover { isHovered = $0 }
     .onTapGesture {
       if session.permissionAction == nil {
@@ -3448,7 +3448,7 @@ struct ExpandedSessionRow: View, Equatable {
   }
 
   private var rowSpacing: CGFloat {
-    session.permissionAction == nil ? 5 : 8
+    4
   }
 
   private var rowMainContent: some View {
@@ -3456,25 +3456,25 @@ struct ExpandedSessionRow: View, Equatable {
       ExpandedSessionHeaderLine(
         session: session,
         strings: strings,
-        titleFontSize: 12,
+        titleFontSize: 13,
         mascotSkin: mascotSkin,
         onFocus: onFocus
       )
       ExpandedRowSummaryLine(session: session, strings: strings)
-      ExpandedSessionMetaLine(session: session, updatedAt: updatedAt, fontSize: 9.5)
+        .padding(.leading, 28)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 func expandedCardFillOpacity(session: AgentIslandSession, hovered: Bool) -> Double {
-  let base = session.phase == "needs-interaction" ? 0.075 : 0.055
+  let base = session.phase == "needs-interaction" ? 0.065 : 0.035
   return hovered ? base + 0.035 : base
 }
 
 func expandedCardStrokeOpacity(session: AgentIslandSession, hovered: Bool) -> Double {
-  let base = session.phase == "needs-interaction" ? 0.18 : 0.045
-  return hovered ? max(base, 0.18) : base
+  let base = session.phase == "needs-interaction" ? 0.18 : 0
+  return hovered ? max(base, 0.10) : base
 }
 
 struct ExpandedSessionHeaderLine: View {
@@ -3503,94 +3503,61 @@ struct ExpandedSessionHeaderLine: View {
       )
 
       Text(expandedPrimaryTitle(for: session, strings: strings))
-        .font(.system(size: titleFontSize, weight: .bold, design: .monospaced))
-        .foregroundColor(sessionIdentityColor(for: session))
+        .font(.system(size: titleFontSize, weight: .medium))
+        .foregroundColor(Color.white.opacity(0.92))
         .lineLimit(1)
         .truncationMode(.tail)
         .layoutPriority(1)
+        .help(expandedPrimaryTitle(for: session, strings: strings))
 
       Spacer(minLength: 8)
 
       if session.phase == "needs-interaction", session.permissionAction == nil {
         InteractionInlineButton(label: strings.review, action: onFocus)
       } else {
-        SessionStatusCapsule(session: session, strings: strings)
+        SessionStatusLabel(session: session, strings: strings)
       }
     }
-  }
-}
-
-struct ExpandedSessionMetaLine: View {
-  let session: AgentIslandSession
-  let updatedAt: Double
-  let fontSize: CGFloat
-
-  var body: some View {
-    Text(expandedMetaText(for: session, updatedAt: updatedAt))
-      .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-      .foregroundColor(Color.white.opacity(0.34))
-      .lineLimit(1)
-      .truncationMode(.tail)
   }
 }
 
 struct ExpandedRowSummaryLine: View {
   let session: AgentIslandSession
   let strings: AgentIslandStrings
-  var fontSize: CGFloat = 11
+  var fontSize: CGFloat = 12
 
   var body: some View {
     let summary = expandedRowSummary(for: session, strings: strings)
     HStack(alignment: .firstTextBaseline, spacing: 5) {
-      if !summary.prefix.isEmpty {
-        Text(summary.prefix)
-          .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-          .foregroundColor(summary.accent)
+      if summary.isUser {
+        Image(systemName: "person.fill")
+          .font(.system(size: 9, weight: .regular))
+          .foregroundColor(agentIslandBlue)
+          .accessibilityHidden(true)
       }
-
-      summaryTextView(summary)
-    }
-  }
-
-  @ViewBuilder
-  private func summaryTextView(_ summary: ExpandedRowSummary) -> some View {
-    let font = Font.system(size: fontSize, weight: summary.isUser ? .medium : .regular, design: .monospaced)
-    if session.phase == "running" && !summary.isUser {
-      AgentIslandWaveText(
-        text: summary.text,
-        font: font,
-        color: .white,
-        baseOpacity: 0.62,
-        lineLimit: 2,
-        lineSpacing: 1,
-        bandWidth: 96
-      )
-    } else {
-      Text(summary.text)
-        .font(font)
-        .foregroundColor(Color.white.opacity(summary.isUser ? 0.88 : 0.76))
-        .lineLimit(2)
+      Text(compactText(summary.text))
+        .font(.system(size: fontSize, weight: .regular))
+        .foregroundColor(Color.white.opacity(summary.isUser ? 0.78 : 0.62))
+        .lineLimit(1)
         .truncationMode(.tail)
-        .lineSpacing(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .help(summary.text)
   }
 }
 
-struct SessionStatusCapsule: View {
+struct SessionStatusLabel: View {
   let session: AgentIslandSession
   let strings: AgentIslandStrings
 
   var body: some View {
     let accent = statusAccentColor(for: session)
     Text(expandedStatusBadgeText(for: session, strings: strings))
-      .font(.system(size: 10, weight: .medium, design: .monospaced))
-      .foregroundColor(accent.opacity(session.attention ? 0.95 : 0.72))
+      .font(.system(size: 11, weight: .regular))
+      .foregroundColor(accent.opacity(session.attention ? 0.95 : 0.85))
       .lineLimit(1)
       .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, 8)
       .frame(height: 20)
-      .background(accent.opacity(session.attention ? 0.16 : 0.08))
-      .clipShape(Capsule())
       .layoutPriority(2)
   }
 }
@@ -3605,7 +3572,7 @@ struct InteractionInlineButton: View {
         Image(systemName: "arrowshape.turn.up.right.fill")
           .font(.system(size: 9, weight: .bold))
         Text(label)
-          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .font(.system(size: 11, weight: .medium))
           .lineLimit(1)
       }
       .foregroundColor(agentIslandBlue.opacity(0.98))
@@ -3674,7 +3641,7 @@ struct PermissionActionButton: View {
         Image(systemName: systemImage)
           .font(.system(size: 9, weight: .bold))
         Text(label)
-          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .font(.system(size: 11, weight: .medium))
           .lineLimit(1)
       }
       .foregroundColor(foregroundColor)
@@ -3708,16 +3675,11 @@ struct PermissionActionButton: View {
 }
 
 struct ExpandedRowSummary {
-  let prefix: String
   let text: String
-  let accent: Color
   let isUser: Bool
 }
 
 func expandedPrimaryTitle(for session: AgentIslandSession, strings: AgentIslandStrings) -> String {
-  if session.permissionAction != nil {
-    return strings.permissionPromptTitle
-  }
   let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
   if isMeaningfulExpandedTitle(title) {
     return title
@@ -3725,6 +3687,9 @@ func expandedPrimaryTitle(for session: AgentIslandSession, strings: AgentIslandS
   let project = session.projectName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   if !project.isEmpty {
     return project
+  }
+  if session.permissionAction != nil {
+    return strings.permissionPromptTitle
   }
   return "#\(String(session.sessionId.prefix(8)))"
 }
@@ -3770,9 +3735,7 @@ func expandedRowSummary(for session: AgentIslandSession, strings: AgentIslandStr
   switch session.phase {
   case "needs-interaction":
     return ExpandedRowSummary(
-      prefix: session.permissionAction == nil ? "!" : "?",
       text: bestInteractionSummary(for: session, strings: strings),
-      accent: agentIslandBlue,
       isUser: false
     )
   case "completed":
@@ -3780,16 +3743,12 @@ func expandedRowSummary(for session: AgentIslandSession, strings: AgentIslandStr
       return preview
     }
     return ExpandedRowSummary(
-      prefix: "",
       text: bestCompletedSummary(for: session, strings: strings),
-      accent: Color.white.opacity(0.72),
       isUser: false
     )
   case "error":
     return ExpandedRowSummary(
-      prefix: "!",
       text: bestErrorSummary(for: session, strings: strings),
-      accent: agentIslandErrorRed,
       isUser: false
     )
   default:
@@ -3805,40 +3764,30 @@ func bestRunningSummary(for session: AgentIslandSession, strings: AgentIslandStr
   let detail = stripLeadingPromptSymbol(session.detail)
   if !detail.isEmpty && !isGenericRunningStatusDetail(detail) {
     return ExpandedRowSummary(
-      prefix: "$",
       text: detail,
-      accent: statusAccentColor(for: session),
       isUser: false
     )
   }
   if let line = latestActivityLine(for: session, kinds: ["assistant", "status", "tool"]) {
     return ExpandedRowSummary(
-      prefix: line.kind == "assistant" ? "" : "$",
       text: stripLeadingPromptSymbol(compactText(line.text)),
-      accent: line.kind == "assistant" ? Color.white.opacity(0.72) : agentIslandOrange,
       isUser: false
     )
   }
   if let line = latestActivityLine(for: session, kinds: ["user"]) {
     return ExpandedRowSummary(
-      prefix: ">",
       text: stripLeadingPromptSymbol(compactText(line.text)),
-      accent: agentIslandBlue,
       isUser: true
     )
   }
   if !detail.isEmpty {
     return ExpandedRowSummary(
-      prefix: "$",
       text: detail,
-      accent: statusAccentColor(for: session),
       isUser: false
     )
   }
   return ExpandedRowSummary(
-    prefix: "$",
     text: expandedStatusText(for: session, strings: strings),
-    accent: statusAccentColor(for: session),
     isUser: false
   )
 }
@@ -3849,17 +3798,13 @@ func messagePreviewSummary(for session: AgentIslandSession) -> ExpandedRowSummar
   if text.isEmpty { return nil }
   if line.kind == "user" {
     return ExpandedRowSummary(
-      prefix: ">",
       text: text,
-      accent: agentIslandBlue,
       isUser: true
     )
   }
   if line.kind == "assistant" {
     return ExpandedRowSummary(
-      prefix: "",
       text: text,
-      accent: Color.white.opacity(0.72),
       isUser: false
     )
   }

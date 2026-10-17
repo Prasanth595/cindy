@@ -372,6 +372,23 @@ export function remoteErrorMessageForBanner(msg: string): string {
   const key = remoteErrorI18nKey(msg);
   return key && i18n.exists(key) ? msg : decodeRemoteErrorMessage(msg);
 }
+
+/**
+ * 终态 error 事件写进 live 横幅的文案。空响应/无详情失败 banner 文案走 i18n(四语言),不直接
+ * 渲染 maker-core 发来的中文 message(规则 18:UI 文案必须 i18n)。maker-core 用稳定 reason 当
+ * key('empty-response' / 'turn-failed'), message 仅作非 renderer 消费方(IM/orca)的兜底。
+ */
+function liveErrorBannerText(message: string, reason: string | undefined): string {
+  return reason === 'empty-response'
+    ? i18n.t('logic.errors.emptyResponse')
+    : reason === 'turn-failed'
+      ? i18n.t('logic.errors.turnFailed')
+      : reason === 'silent-stop-exhausted'
+        ? i18n.t('logic.errors.silentStopExhausted')
+        : reason === 'codex-auto-review-unavailable'
+          ? i18n.t('logic.errors.codexAutoReviewUnavailable')
+          : remoteErrorMessageForBanner(message);
+}
 // 专门给"出现在用户面前的红色 ErrorBanner"打日志,scope 以 `maker/` 开头
 // 是为了让它落在统一 agent 流(agent-*.ndjson,跟 agent runtime 抛出的底层错误同一份,
 // 且带 sessionId 可按 session 过滤),用户截图反馈时直接拉这一份就能看到完整因果链。
@@ -3582,6 +3599,8 @@ function getLastInboundEventAt(sessionId: string): number | undefined {
 }
 
 function bumpRendererClearGeneration(sessionId: string): void {
+  // /clear、删除、归档、LRU 驱逐都经过这里:关闭错误的待认领意图随旧上下文一起作废。
+  _disposedLiveErrorIntents.delete(sessionId);
   rendererClearGenerationBySession.set(
     sessionId,
     (rendererClearGenerationBySession.get(sessionId) ?? 0) + 1,
@@ -4097,6 +4116,15 @@ const _liveErrorEpoch = new Map<string, number>();
  * 脏信号不带 renderer epoch(跨窗口对不上),用这份名单拒绝把 A 绑到 B。
  */
 const _staleDeferredErrorPersistIds = new Map<string, Set<string>>();
+/**
+ * 关闭/重试时没有绑定落库行的 live 错误:记下当时的横幅文案与队列快照,等同文案的
+ * error 行落库信号到达后补标 dismissed。时序与作废规则见 claimDisposedLiveErrorRow。
+ */
+interface DisposedLiveErrorIntent {
+  text: string;
+  queueIds: Set<string>;
+}
+const _disposedLiveErrorIntents = new Map<string, DisposedLiveErrorIntent>();
 
 /** Terminal error 后、配对 done 到达前，凭据刷新必须等 host 空闲。 */
 const GATEWAY_PROXY_TOKEN_TURN_SETTLE_MS = 5_000;
@@ -4226,10 +4254,12 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     !state.errorPersistId &&
     state.error &&
     !_deferredTurnErrorPersist.has(sessionId) &&
-    !_staleDeferredErrorPersistIds.get(sessionId)?.has(persistId)
+    !_staleDeferredErrorPersistIds.get(sessionId)?.has(persistId) &&
+    !disposedIntentCoversLiveError(sessionId, state)
   ) {
     // 本窗口没有 in-flight deferred(设备互联控制端只收到脏信号):绑到当前未绑定横幅。
     // 本窗口刚拒绝过的迟到 persistId 不算控制端信号,不能绑到下一轮错误。
+    // 横幅是刚被关掉那次错误的重亮时不绑,交给下面的补标(见 disposedIntentCoversLiveError)。
     bindLiveErrorPersistId(sessionId, persistId);
   }
   const latest = sessions.get(sessionId) ?? state;
@@ -4237,6 +4267,10 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     // 上一轮错误的写成功:不能绑到或清掉当前横幅。历史仍可能因那一行落库而脏。
     if (!_activeViewSessions.has(sessionId) && latest.historyLoaded) {
       setState(sessionId, (s) => (s.historyLoaded ? { ...s, historyLoaded: false } : s));
+    }
+    // 这一行也可能是用户刚关掉、当时还没落库的那次错误。
+    if (!_staleDeferredErrorPersistIds.get(sessionId)?.has(persistId)) {
+      claimDisposedLiveErrorRow(sessionId, persistId);
     }
     return;
   }
@@ -4430,6 +4464,9 @@ function setState(
   if (next === prev) return;
   if (prev.error !== next.error) {
     _liveErrorEpoch.set(sessionId, (_liveErrorEpoch.get(sessionId) ?? 0) + 1);
+  }
+  if (_disposedLiveErrorIntents.size > 0) {
+    invalidateDisposedLiveErrorIntentOnTransition(sessionId, prev, next);
   }
   const previousIssueRequestId = prev.pendingIssueConfirm?.requestId;
   if (previousIssueRequestId && next.pendingIssueConfirm?.requestId !== previousIssueRequestId) {
@@ -4673,6 +4710,19 @@ function applyInputProjection(
   // #2194: 人工 Retry 的一次性意图认领——必须在落库广播（onCreated）可能
   // 到达之前完成登记，main 的 emit 先于 scheduleDrain，这里一定更早。
   claimLocalRetryProductFromProjection(projection);
+  // 投影带来文案不同的新错误:用户关掉的那次错误已被顶替,之后落库的行不再代它补标。
+  const disposedIntent = _disposedLiveErrorIntents.get(projection.sessionId);
+  if (
+    disposedIntent &&
+    projection.error &&
+    !liveErrorTextMatchesRow(
+      disposedIntent.text,
+      projection.error,
+      projection.errorReason ?? undefined,
+    )
+  ) {
+    _disposedLiveErrorIntents.delete(projection.sessionId);
+  }
   // wire 上「字段缺省」就是旧被控端的能力信号；新版没有续跑项时也会显式发 null。
   // 必须在 `?? null` 归一化前按 own property 读取，不能让 undefined/null 混淆版本。
   const continuationInFlightProjectionCapability: ContinuationInFlightProjectionCapability =
@@ -6390,19 +6440,7 @@ export function handleStreamEvent(
         !new RegExp(`\\b${errorStatus}\\b`).test(safeErrMsgRaw)
           ? `${safeErrMsgRaw} (HTTP ${errorStatus})`
           : safeErrMsgRaw;
-      // 空响应/无详情失败 banner 文案走 i18n(四语言),不直接渲染 maker-core 发来的
-      // 中文 message(规则 18:UI 文案必须 i18n)。maker-core 用稳定 reason 当 key
-      // ('empty-response' / 'turn-failed'), message 仅作非 renderer 消费方(IM/orca)的兜底。
-      const errMsg =
-        reason === 'empty-response'
-          ? i18n.t('logic.errors.emptyResponse')
-          : reason === 'turn-failed'
-            ? i18n.t('logic.errors.turnFailed')
-            : reason === 'silent-stop-exhausted'
-              ? i18n.t('logic.errors.silentStopExhausted')
-              : reason === 'codex-auto-review-unavailable'
-                ? i18n.t('logic.errors.codexAutoReviewUnavailable')
-                : remoteErrorMessageForBanner(safeErrMsg);
+      const errMsg = liveErrorBannerText(safeErrMsg, reason);
       const isTerminalError = isTerminalErrorData(event.data);
       // 终态错误 = turn 收口（含失败）：清掉该 session 的「正在识别图片中」toast，
       // 避免视觉桥未输出就终结时 loading toast 残留（done/abort/terminal error 兜底）。
@@ -9712,6 +9750,7 @@ function __teardownGlobalListeners(): void {
   _deferredTurnErrorPersist.clear();
   _liveErrorEpoch.clear();
   _staleDeferredErrorPersistIds.clear();
+  _disposedLiveErrorIntents.clear();
   remotePresenceOnlineByDevice.clear();
   resetRemoteDataOwnerPushFence();
   const remoteOptimisticSessionIds = new Set([
@@ -15116,6 +15155,11 @@ async function sendMessageCore(
     }
   }
 
+  // 消息已过完所有本端拒绝点(clear/scope/beforeEnqueue),之后一定交给 coordinator 或
+  // 远程 outbox:之后落库的错误属于这次发送,不再代关掉的那次错误补标。被拒的发送不作废,
+  // 否则关掉的错误随后落库时补标不了。
+  _disposedLiveErrorIntents.delete(sessionId);
+
   // 一次性契约收口(bot review P2):计划勾选在**点击发送**时消耗——本条消息的计划
   // 意图已定格在行内快照(createOpts.planMode,派发时经 SendOptions.planMode 权威
   // 生效),这里立即熄灭 store/DB/runtime 的勾选,会话忙时连续排队的后续消息不再
@@ -15515,6 +15559,9 @@ async function steerMessageCore(
       throw err;
     }
   }
+  // 插话被受理(远程 outbox 收下 / 主进程受理或物化进队列)才作废关闭错误的待补标意图:之后
+  // 落库的错误属于这次插话,不再代关掉的那次错误补标。被拒的插话不作废,否则关掉的错误随后
+  // 落库时补标不了。
   touchSessionUserSend(sessionId, workingDir, false);
   // 补起名同样要覆盖 steer:首条是纯附件的会话标题此时是合成占位,而用户完全
   // 可能趁这一轮还在跑就用「插话」写下第一句话。只走普通发送的话,这句话不会
@@ -15535,6 +15582,7 @@ async function steerMessageCore(
     if (materializationPending) remoteRecord.onMaterializationReady = commitAutoTitle;
     else commitAutoTitle();
     remoteRecord.composerResolvedOptimistically = true;
+    _disposedLiveErrorIntents.delete(sessionId);
     void pumpRemoteOptimisticSends(sessionId);
     return true;
   }
@@ -15544,6 +15592,7 @@ async function steerMessageCore(
     .steer(sessionId, queued, { touchUserSend: true })
     .then(async (ok) => {
       if (ok) {
+        _disposedLiveErrorIntents.delete(sessionId);
         commitAutoTitle();
         requestInputProjection(sessionId);
         return true;
@@ -15564,6 +15613,7 @@ async function steerMessageCore(
           // 物化进队列 = 这条输入已被主端接管、日后会派发,与受理同等 —— 起名也要
           // 跟上,否则纯附件/fork 之后的第一句话恰好在这条不确定路径上不改名
           // (review P1)。是否真该改名仍由 main 权威判定。
+          _disposedLiveErrorIntents.delete(sessionId);
           commitAutoTitle();
           return true;
         }
@@ -15895,23 +15945,163 @@ function popQueueTail(sessionId: string): boolean {
  * 并尽快把即将/已经落库的 error 行标 dismissed。离开视图不会走这里。
  */
 function disposeLiveErrorPersist(sessionId: string): void {
-  const persistId = sessions.get(sessionId)?.errorPersistId;
+  const state = sessions.get(sessionId);
+  const persistId = state?.errorPersistId;
   if (persistId) {
-    setState(sessionId, (s) =>
-      s.disposedErrorPersistId === persistId ? s : { ...s, disposedErrorPersistId: persistId },
-    );
-    void dismissErrorTailMessage(sessionId, persistId);
+    markLiveErrorRowDisposed(sessionId, persistId);
     return;
   }
   const pending = _deferredTurnErrorPersist.get(sessionId);
-  if (!pending) return;
-  void pending.then((id) => {
-    if (!id) return;
-    setState(sessionId, (s) =>
-      s.disposedErrorPersistId === id ? s : { ...s, disposedErrorPersistId: id },
-    );
-    void dismissErrorTailMessage(sessionId, id);
+  if (pending) {
+    void pending.then((id) => {
+      if (id) markLiveErrorRowDisposed(sessionId, id);
+    });
+    return;
+  }
+  if (!state?.error) return;
+  const tailRowId = persistedTailRowIdForLiveError(state);
+  if (tailRowId) markLiveErrorRowDisposed(sessionId, tailRowId);
+  _disposedLiveErrorIntents.set(sessionId, {
+    text: state.error,
+    queueIds: new Set(state.pendingQueue.map((item) => item.clientId)),
   });
+}
+
+function markLiveErrorRowDisposed(sessionId: string, clientId: string): void {
+  setState(sessionId, (s) =>
+    s.disposedErrorPersistId === clientId ? s : { ...s, disposedErrorPersistId: clientId },
+  );
+  void dismissErrorTailMessage(sessionId, clientId).then((persisted) => {
+    // 落库失败时 errorDismissed 已回滚;这里一并撤掉跳过标记,让尾部错误提示重新出现、
+    // 用户可以再关一次。否则提示被藏着,重启后这一行又冒出来。
+    if (persisted || sessions.get(sessionId)?.disposedErrorPersistId !== clientId) return;
+    setState(sessionId, (s) =>
+      s.disposedErrorPersistId === clientId ? { ...s, disposedErrorPersistId: null } : s,
+    );
+  });
+}
+
+/**
+ * live 横幅没有绑定落库行时，找出它对应的已落库尾部错误行。
+ *
+ * 错误落库后若用户没在看这个任务(或之后离开过)，live 横幅会交给历史错误卡，绑定一并清掉；
+ * main 的输入投影仍带着这次错误，之后任何一次投影(打开任务、队列变化、协同派活等)都会把
+ * live 横幅重新点亮，但投影只有错误文案、没有它对应的行，也没有错误代次。所以不在交接时
+ * 保留绑定：后来的新错误(远程断线期间漏收的新一轮、scheduler 发送前失败直接换掉错误等)
+ * 可能不经过新一轮启动就顶替旧错误，保留的绑定会被错用到新错误上，关闭标掉的是旧行。
+ *
+ * 改在关闭时按当前看到的内容认领：已加载历史的最后一条(与尾部错误卡同一判定)是未处置的
+ * error 行，且文案与 live 横幅一致(liveErrorTextMatchesRow)，才认为是同一次错误。对不上
+ * (历史未加载、尾部不是 error、文案不同)就什么都不标，不会标到无关行。
+ * 关闭的错误可能还没落库：尾部仍是同文案的旧行时，这里会把旧行一起标掉(它不在尾部之后
+ * 就不再显示，没有可见影响)，真正那一行由 claimDisposedLiveErrorRow 等它落库后补标。
+ */
+function persistedTailRowIdForLiveError(state: SessionChatState): string | null {
+  if (!state.error || !state.historyLoaded) return null;
+  const tail = state.messages[state.messages.length - 1];
+  return tail && isUndisposedErrorRowFor(tail, state.error, state.disposedErrorPersistId)
+    ? tail.clientId
+    : null;
+}
+
+function isUndisposedErrorRowFor(
+  row: ChatMessage,
+  liveText: string,
+  disposedErrorPersistId: string | null,
+): boolean {
+  return (
+    row.role === 'error' &&
+    !row.errorDismissed &&
+    row.clientId !== disposedErrorPersistId &&
+    typeof row.content === 'string' &&
+    liveErrorTextMatchesRow(liveText, row.content, row.errorReason ?? undefined)
+  );
+}
+
+/**
+ * live 横幅文案是否就是这条错误(行 message / 投影 message + reason)。横幅有两种来源:
+ * - error 事件写入：liveErrorBannerText(message, reason)。行 message 与事件 message 经同一
+ *   redactSensitiveText 落库，事件附带的 errorStatus 不落库，所以横幅末尾的「(HTTP 4xx)」
+ *   后缀去掉再比；
+ * - 投影点亮：coordinator 记录的是同一条 message 原文，直接相等。
+ */
+function liveErrorTextMatchesRow(
+  liveText: string,
+  message: string,
+  reason: string | undefined,
+): boolean {
+  if (liveText === message) return true;
+  const bannerText = liveErrorBannerText(message, reason);
+  return liveText === bannerText || liveText.replace(/ \(HTTP \d{3}\)$/, '') === bannerText;
+}
+
+/**
+ * 当前未绑定的 live 横幅是不是刚被关掉的那次错误重新亮起来(例如关闭请求返回前，已在途的
+ * 同文案投影又把它点亮)。是的话落库信号不能绑到它：绑上后这一行就算「属于当前横幅」，走不到
+ * 补标，关闭请求随后清掉横幅，这一行仍未处置，刷新后又出现。
+ * 意图有效期内同文案的横幅只可能是这种重亮：新错误要经过新一轮启动、新队列项或文案不同的
+ * 投影，这些都会先作废意图(见 claimDisposedLiveErrorRow)。
+ * 两边都是横幅文案，可能分别来自 error 事件和投影，所以两个方向各按行口径比一次。
+ */
+function disposedIntentCoversLiveError(sessionId: string, state: SessionChatState): boolean {
+  const intent = _disposedLiveErrorIntents.get(sessionId);
+  if (!intent || !state.error) return false;
+  const reason = state.errorReason ?? undefined;
+  return (
+    liveErrorTextMatchesRow(intent.text, state.error, reason) ||
+    liveErrorTextMatchesRow(state.error, intent.text, reason)
+  );
+}
+
+/**
+ * 关闭(或重试)走了兜底的 live 错误，等它的行落库后补标 dismissed。
+ *
+ * 时序：旧错误 A 已交给历史、尾部是 A；投影点亮同文案的新错误 B(没有绑定)；B 的落库信号
+ * 到达前用户点了关闭。兜底只能看到尾部的 A，标掉 A 后 B 落库仍未处置，刷新后又出现。
+ * 所以关闭时登记意图(横幅文案 + 当时的队列快照)，之后第一条不属于当前横幅的落库信号带着
+ * persistId 到这里：读最新一页历史找到这一行，是未处置的 error 行且文案对得上就标 dismissed
+ * (远程任务经 dismissErrorTailMessage 走隧道写被控端)。
+ *
+ * 直接读权威历史而不是等内存窗口重载：落库信号到达时这一行一定已写入；当前视图不会因此
+ * 重载，后台任务要等用户再打开才重载，等它会让刷新/重启前这一行一直未处置。标记时同时设
+ * disposedErrorPersistId，并发的历史重载即使先读到未处置的旧值，尾部横幅也会跳过它。
+ *
+ * 作废(之后同文案的行不再补标)：读到一条 error 行后(对上就标，对不上说明已是别的错误)；
+ * 新一轮启动、新的队列项、本窗口发送/插话被受理、UI 触发；投影带来文案不同的新错误；/clear、
+ * 删除、归档、LRU 驱逐。不设时间上限：新错误都要经过上面某一条，远程落库慢时也不该丢标记。
+ * 剩余边界：作废之前落库的同文案新错误也会被标掉——它正是用户刚关掉的那种错误。
+ */
+function claimDisposedLiveErrorRow(sessionId: string, persistId: string): void {
+  const intent = _disposedLiveErrorIntents.get(sessionId);
+  if (!intent) return;
+  void listMessagesFor(sessionId)
+    .then((rows) => {
+      if (_disposedLiveErrorIntents.get(sessionId) !== intent) return;
+      const row = rows.find((m) => m.clientId === persistId);
+      const mapped = row ? mapServerMessages([row])[0] : undefined;
+      if (mapped?.role !== 'error') return;
+      _disposedLiveErrorIntents.delete(sessionId);
+      if (!isUndisposedErrorRowFor(mapped, intent.text, null)) return;
+      markLiveErrorRowDisposed(sessionId, persistId);
+    })
+    .catch((err: unknown) => log.warn('read persisted error row for dismiss failed:', err));
+}
+
+function invalidateDisposedLiveErrorIntentOnTransition(
+  sessionId: string,
+  prev: SessionChatState,
+  next: SessionChatState,
+): void {
+  const intent = _disposedLiveErrorIntents.get(sessionId);
+  if (!intent) return;
+  const turnStarted = !prev.agentStatus.isRunning && next.agentStatus.isRunning;
+  // 本端乐观排进来、主进程还没收下的项不算：发送可能随后被拒、撤回，受理时由发送路径作废。
+  const queueGrew =
+    prev.pendingQueue !== next.pendingQueue &&
+    next.pendingQueue.some(
+      (item) => item.isPendingEnqueue !== true && !intent.queueIds.has(item.clientId),
+    );
+  if (turnStarted || queueGrew) _disposedLiveErrorIntents.delete(sessionId);
 }
 
 /** 取消账号限额重置后的自动继续:错误与手动重试保留,只撤等待。 */
@@ -17454,6 +17644,9 @@ export { UI_ACTION_TRIGGER_PREFIX };
  */
 
 function sendUiTriggerCore(sessionId: string, prompt: string): Promise<void> {
+  // 已拿到发送 token(Agent 切换在途时 sendUiTrigger 直接拒绝、走不到这里),之后一定发出:
+  // 同 sendMessageCore,只在这里作废关闭错误的待补标意图。
+  _disposedLiveErrorIntents.delete(sessionId);
   const state = getOrCreateState(sessionId);
   // UI triggers can be invoked from an error card while the mirror is being
   // reseeded. Pin every mutation in this attempt to the device that owned the
