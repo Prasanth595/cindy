@@ -1,0 +1,10 @@
+mutation {
+  addReplyToReviewThread(input: {threadId: "PRRT_kwDOTgdRUs6tcVqI", body: """已修（commit 8d726f0c98），两条路径都处理了：
+
+1. **空闲直发**：宿主在 requestReceipt 拦截层强制 forceQueue: true，回执输入统一走持久队列（enqueue → drain → sendToAgent → activeTurn.item 建立 → done 快照可见）。这与 coordination / delegated-continuation 的既有模式一致（sendUserMessageWithAwaitedGitBaseline 的注释本身也写明「Idle direct sends never carry internal coordination (that is force-queued)」）。副作用：回执请求的 wake_kind 返 queued（空闲目标同样立即派发），工具描述已同步。
+2. **create 模式**：首派同样不经持久队列且无法在不重写 create 分支的前提下安全改造，v1 明确拒绝（工具层 + 宿主拦截层双层 INVALID_ARGS），描述指引新建任务的完成回传走委派链路。契约文档（protocol-compatibility.md）已按最终口径修订。
+
+测试：sendToSessionTool.test.ts 透传用例改为带 target_session_id 并断言 queued + receipt_id；新增 create 拒绝用例。""") {
+    comment { id }
+  }
+}
