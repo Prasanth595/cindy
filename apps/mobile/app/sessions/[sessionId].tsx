@@ -10789,8 +10789,9 @@ function SessionScreenContent() {
         onDismiss={dismissTransientNotice}
         top={Math.max(topOverlayHeight, insets.top + 44) + spacing.sm}
       />
-      <MessageHistoryOverlay>
-        {/* Keep the drawer above resident histories, including its closing animation. */}
+      <MessageHistoryOverlay inline={paneLayout.persistent && !sessionListDrawerOverlayMounted}>
+        {/* 常驻侧栏原地渲染:常驻任务列表画在路由子树之上,面板留在下面才不会盖住列表;
+            临时抽屉仍走根浮层,压在常驻历史与顶栏之上。 */}
         <SessionListDrawer
           newSessionActionRef={homeNewSessionActionRef}
           newSessionInSystemBar={paneLayout.persistent && Platform.OS === 'ios' && adaptiveWindow.barEdge !== 'none'}

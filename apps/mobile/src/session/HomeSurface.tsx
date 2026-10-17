@@ -3284,7 +3284,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       </View>
 
       {residentList.enabled ? (
-        <ResidentHomeList focused={screenFocused && active} top={chromeHeight}
+        <ResidentHomeList focused={screenFocused && active} slot={embedded ? 'sidebar' : 'home'} top={chromeHeight}
           left={embedded ? 0 : edgePadding.paddingLeft} right={embedded ? 0 : edgePadding.paddingRight}>
           <ActiveHomeSession.Provider value={activeHomeSession}>
               <View pointerEvents="box-none" style={{ flex: 1, paddingLeft: embedded ? 0 : edgePadding.paddingLeft, paddingRight: embedded ? 0 : edgePadding.paddingRight }}>

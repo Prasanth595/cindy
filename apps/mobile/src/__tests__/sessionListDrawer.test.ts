@@ -55,12 +55,18 @@ describe('mobile session list drawer', () => {
     expect(text).toContain('.activeOffsetX(-16)');
     expect(text).toContain('.failOffsetX(16)');
     expect(text).toContain('.failOffsetY([-16, 16])');
+    // 手势被滚动或系统取消时不走 onEnd。取消也要把 dragX 弹回，否则栏停在裁切标题的位置。
+    expect(text).toContain('.onFinalize((_event, success) => {');
+    expect(text).toContain('if (success) return;');
     // 关闭动画期间 overlay 恒拦截,不放行点击穿透半透明 scrim(review #1328)。
     expect(text).toContain('pointerEvents="auto"');
     // 临时面板不再有重复主页底栏;左上角与常驻列一样是系统菜单,关闭走遮罩、左滑与系统返回。
     expect(text).not.toContain('sessionDrawer.home');
     expect(text).not.toContain('onDismiss');
     expect(text).toContain('newSessionInHeader={!persistent}');
+    // 常驻栏不能在 absoluteFill（left+right）上再叠 width，否则安卓忽略宽度、点击层铺满整窗。
+    expect(text).toContain('persistent ? styles.persistentOverlay : styles.overlay');
+    expect(text).toContain("persistentOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, zIndex: 40 }");
   });
 
   it('uses the actual Home instead of maintaining a second list or data controller', () => {

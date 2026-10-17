@@ -5,6 +5,7 @@ import { NavigationContext, NavigationRouteContext, useIsFocused } from 'expo-ro
 import { PaneViewportProvider, usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { getRecentTasks, recentTaskKey, subscribeRecentTasks } from './recentTasks';
 import { NativeHistoryHost, NativeHistorySlot, needsResidentHistoryUpgrade } from './NativeResidentHistory';
+import { stabilizeMessageHistoryFrame } from './messageHistoryFrame';
 import { useResidentHomeListContextBridge } from './ResidentHomeList';
 import { RemoteSessionStoreSubscriptionGate } from './remoteSessionStore';
 
@@ -98,11 +99,11 @@ export function RecentMessageHistoriesProvider({ children }: { children: ReactNo
         // their route and must remain above/outside the resident scroll surface.
         const top = Math.min(entry.frame.height, Math.max(0, entry.topInset));
         const bottom = Math.min(entry.frame.height - top, Math.max(0, entry.bottomInset));
-        return <View key={key} pointerEvents={active && entry.interactive ? 'auto' : 'none'}
+        return <View key={key} collapsable={false} pointerEvents={active && entry.interactive ? 'auto' : 'none'}
           accessibilityElementsHidden={!active} importantForAccessibility={active ? 'auto' : 'no-hide-descendants'}
           style={[styles.clip, { left: entry.frame.left, top: entry.frame.top + top,
             width: entry.frame.width, height: entry.frame.height - top - bottom, opacity: active ? 1 : 0 }]}>
-          <View style={{ position: 'absolute', top: -top, width: entry.frame.width, height: entry.frame.height }}>
+          <View collapsable={false} style={{ overflow: 'hidden', position: 'absolute', top: -top, width: entry.frame.width, height: entry.frame.height }}>
             {content}
           </View>
         </View>;
@@ -125,19 +126,23 @@ export function RecentMessageHistories({ activeKey, children, topInset = 0, bott
   const navigation = useContext(NavigationContext);
   const route = useContext(NavigationRouteContext);
   const viewport = usePaneViewport();
+  const paneX = viewport.x;
+  const paneWidth = viewport.width;
   const anchor = useRef<View>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
   const revision = useRef(0);
   const measure = useCallback(() => {
     const version = ++revision.current;
+    const pane = Number.isFinite(paneX) && paneWidth > 0 ? { x: paneX, width: paneWidth } : null;
     anchor.current?.measureInWindow((x, y, width, height) => {
       host.current?.measureInWindow((hostX, hostY) => {
         if (version !== revision.current || width <= 0 || height <= 0) return;
-        const next = { left: x - hostX, top: y - hostY, width, height };
+        const next = stabilizeMessageHistoryFrame(
+          { left: x - hostX, top: y - hostY, width, height }, pane, hostX);
         setFrame(previous => previous && Object.keys(next).every(k => previous[k as keyof Frame] === next[k as keyof Frame]) ? previous : next);
       });
     });
-  }, [host]);
+  }, [host, paneWidth, paneX]);
   useLayoutEffect(() => { measure(); return () => { ++revision.current; }; }, [measure, focused, viewport.width, viewport.height]);
   useLayoutEffect(() => () => release(owner), [release, owner]);
   useLayoutEffect(() => {
@@ -167,8 +172,11 @@ const styles = StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFill, zIndex: 40 },
 });
 
-/** Route-owned drawers must be above the root-owned histories, not beneath them. */
-export function MessageHistoryOverlay({ children }: { children: ReactNode }) {
+/** Route-owned drawers must be above the root-owned histories, not beneath them.
+ * A persistent pane sidebar is the exception: its opaque panel must stay under the
+ * resident home list (`inline`), otherwise it paints over the shared list instead
+ * of containing it. Temporary slide-over drawers keep the root host. */
+export function MessageHistoryOverlay({ children, inline = false }: { children: ReactNode; inline?: boolean }) {
   const context = useContext(Context);
   const residentChildren = useResidentHomeListContextBridge(children);
   if (!context) throw new Error('RecentMessageHistoriesProvider is missing');
@@ -179,10 +187,12 @@ export function MessageHistoryOverlay({ children }: { children: ReactNode }) {
   const route = useContext(NavigationRouteContext);
   useLayoutEffect(() => {
     if (NativeHistorySlot || needsResidentHistoryUpgrade) return;
+    // 切回常驻时把早先挂到根浮层的副本撤掉,否则同一抽屉会渲染两份。
+    if (inline) { setOverlay(owner, null); return; }
     setOverlay(owner, focused ? <NavigationContext.Provider value={navigation}>
       <NavigationRouteContext.Provider value={route}>{residentChildren}</NavigationRouteContext.Provider>
     </NavigationContext.Provider> : null);
-  }, [setOverlay, owner, focused, navigation, route, residentChildren]);
+  }, [inline, setOverlay, owner, focused, navigation, route, residentChildren]);
   useLayoutEffect(() => () => setOverlay(owner, null), [setOverlay, owner]);
-  return NativeHistorySlot || needsResidentHistoryUpgrade ? children : null;
+  return NativeHistorySlot || needsResidentHistoryUpgrade || inline ? children : null;
 }
