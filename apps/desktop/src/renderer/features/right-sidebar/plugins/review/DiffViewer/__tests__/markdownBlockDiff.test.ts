@@ -391,6 +391,26 @@ describe('buildMarkdownPreviewPlan', () => {
     expect(plan.anchorIds['用法-1']).toBe('用法-1');
   });
 
+  it('keeps a block formula with internal blank lines as one block (regression)', () => {
+    // 块级公式可以含空行（`$$\na\n\nb\n$$`）：切块解析必须带 remarkMath，否则它会被
+    // 当成两个段落切开，两半进不同 MarkdownRenderer 后公式变成截断/字面量（Greptile P1）。
+    const before = '前文\n\n$$\na+b\n\nc+d\n$$\n\n后文\n';
+    const after = '前文\n\n$$\na+b\n\nc+e\n$$\n\n后文\n';
+    const plan = buildMarkdownPreviewPlan(after, before);
+
+    // 公式整体一个 revision 段，且走公式内标记（KaTeX 原子盒收外层 <del>/<ins> 的线）：
+    // 旧式子 \sout、新式子 \underline，各自完整（不再被切成两半）。
+    const revision = plan.segments.find((segment) => segment.kind === 'revision');
+    expect(revision?.content).toContain('\\sout');
+    expect(revision?.content).toContain('c+d');
+    expect(revision?.content).toContain('c+e');
+    expect(revision?.content?.endsWith('$$')).toBe(true);
+    // 前后文不受牵连：不出现把 `$$` 切成两半的片段。
+    for (const segment of plan.segments) {
+      if (segment.kind === 'context') expect(segment.content).not.toContain('$$');
+    }
+  });
+
   it('flags only injected math nodes so an author formula of the same shape stays alone (regression)', () => {
     // 作者可以写出与注入**完全同形**的公式（关键字颜色 + 画线命令）—— 形态永远分不出谁写的。
     // 计划阶段按“注入后 vs 原文”的公式集合比对判定来源：未改动的作者公式必须为 false。

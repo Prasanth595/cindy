@@ -142,6 +142,22 @@ describe('git-review markdownReader', () => {
     expect(preview.baseDir).toBe(path.join(repoPath, 'docs'));
   });
 
+  it('drops the baseline when it would push the remote payload over budget (regression)', async () => {
+    // 远程链路对整个响应有 GIT_REVIEW_MAX_JSON_BYTES 预算：基线是增强数据，塞不下时
+    // 必须丢基线保预览可用（只丢删除标记），而不是让整个请求 OVERSIZE。
+    const filler = '很长的正文段落，用来撑大体积。'.repeat(28000);
+    await writeRepoFile('docs/readme.md', `# Base\n\n${filler}`);
+    await commitAll('add markdown');
+    await writeRepoFile('docs/readme.md', `# Worktree\n\n${filler}\n\n新增一段。`);
+
+    const diff = await currentDiff('unstaged', 'docs/readme.md');
+    const preview = await readMarkdownPreview(scope(), { diff });
+
+    expect(preview.reason).toBeNull();
+    expect(preview.content).toContain('# Worktree\n');
+    expect(preview.beforeContent).toBeNull();
+  });
+
   it('reads staged markdown from the index rather than later worktree edits', async () => {
     await writeRepoFile('docs/readme.md', '# Base\n');
     await commitAll('add markdown');

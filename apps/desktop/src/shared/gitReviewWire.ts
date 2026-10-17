@@ -7,6 +7,16 @@
 
 export type ReviewSource = 'unstaged' | 'staged' | 'commit' | 'branch' | 'last-turn';
 
+/**
+ * 响应的 device-link 上帧预算。量纲对齐 file-browser/device-op 的
+ * DEVICE_READ_MAX_JSON_BYTES:relay 单帧 MAX_FRAME_BYTES=2MiB 按 UTF-8 字节判,
+ * 用 JSON.stringify 后的字节数覆盖转义膨胀,再给 envelope 留余量。
+ *
+ * 常量放共享 wire 模块：读侧（markdownReader 丢基线保预览）与发侧（device-op
+ * OVERSIZE 判定）用同一份，且不制造 main/git-review 内部的循环导入。
+ */
+export const GIT_REVIEW_MAX_JSON_BYTES = 1_800_000;
+
 export type ReviewDisableReason =
   | 'remote-session'
   | 'no-session'

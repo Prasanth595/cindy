@@ -23,6 +23,11 @@
  *    `[ref]: url` 定义会让片段里的 `[text][ref]` 解析失败。
  *  - 比较使用去行尾空白 + 去首尾空行的归一化文本：只调整缩进/空白的编辑
  *    不算改动（与“隐藏空白变更”的审查习惯一致）。
+ *
+ * 切块解析器带 remarkMath：块级公式可以含空行（`$$\na\n\nb\n$$`），不带 remark-math
+ * 的话它会被当成两个段落切开，两半进不同 MarkdownRenderer 后公式变成截断/字面量；
+ * 启用后平衡的 `$$` 对整体成一个 math 节点（未闭合的 `$$` 仍是普通段落，代码块优先，
+ * 均无副作用）。
  */
 
 import { diffArrays } from 'diff';
@@ -96,9 +101,9 @@ export interface MarkdownPreviewPlan {
  */
 export const MARKDOWN_PREVIEW_MAX_SEGMENTS = 120;
 
-const parser = unified().use(remarkParse).use(remarkGfm);
-/** 只用于「哪些公式是注入的」判定：需要 remark-math 才能把公式识别成 math / inlineMath 节点。 */
-const mathParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+/** 与切块解析器同一实例：块级对齐也需要把公式识别成 math 节点（含注入判定）。 */
+const mathParser = parser;
 
 interface SourceBlock {
   /** 比较用的归一化文本。 */

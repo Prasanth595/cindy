@@ -11,6 +11,7 @@ import { promises as fs, type Stats } from 'node:fs';
 import path from 'node:path';
 
 import { isReviewMarkdownPath } from '../../shared/reviewMarkdownExts.js';
+import { GIT_REVIEW_MAX_JSON_BYTES } from '../../shared/gitReviewWire.js';
 import { isSafeBranchBaseRef, resolveBranchBaseCommitOid } from './branchReader.js';
 import { RepoContainedPathError, repoRelativeFsPath, resolveRepoContainedRealPath } from './fsPathGuard.js';
 import { isSafeGitDiffIndexOid, isSafeGitObjectOid, isSafeGitPath } from './gitPath.js';
@@ -405,10 +406,20 @@ export async function readMarkdownPreview(
             ? await readBlobMarkdown(scope.repoRoot, diff, spec.oid, spec.path, deps)
             : await readTreeMarkdown(scope.repoRoot, diff, spec.treeish, spec.path, deps);
     if (after.content === null) return after;
-    return {
+    const preview: ReviewMarkdownPreviewData = {
       ...after,
       beforeContent: await readBeforeMarkdownContent(scope.repoRoot, request, deps),
     };
+    // 远程链路对整个响应有 1.8 MB 预算（device-op：明文或 gzB64 超预算直接 OVERSIZE，
+    // 整个预览失败）。基线是增强数据：塞不下时丢基线保预览可用（与
+    // readBeforeMarkdownContent 的降级口径一致 —— 只丢删除标记，不影响 after 可用性）。
+    if (
+      preview.beforeContent !== null &&
+      Buffer.byteLength(JSON.stringify(preview), 'utf8') > GIT_REVIEW_MAX_JSON_BYTES
+    ) {
+      return { ...preview, beforeContent: null };
+    }
+    return preview;
   } catch (err) {
     return unavailable(diff.id, 'read-error', { baseDir, error: errorMessage(err) });
   }
