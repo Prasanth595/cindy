@@ -5,7 +5,7 @@
  * 代码块/图片与聊天观感一致),但与消息气泡的 SelectableMarkdownWebView 是
  * 两种载体:这里 WebView 自身滚动(flex:1),不做测高/揭开门——文档可能几
  * 千 px 高,气泡那套"整块撑高嵌进列表"的模型在全屏阅读场景既无必要也费内存。
- * 链接点击一律拦截转系统浏览器;mermaid 以代码块形态显示(渲染成图留二期)。
+ * 链接点击一律拦截转系统浏览器；mermaid 用随包 runtime 原位升级为图，失败保留源码。
  *
  * chat-text-quote:传入 onQuoteSelection 时,经 WebView 原生 `menuItems` 在
  * 系统文字选择菜单里插入「添加到对话」项(与聊天流 UITextView 的菜单项同款
@@ -19,6 +19,7 @@ import { Linking, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 
+import { parseMobileMarkdown } from '@/session/messageMarkdown';
 import { buildSelectableMarkdownHtml } from '@/session/selectableMarkdownHtml';
 import { MARKDOWN_FILE_PAGER_SCRIPT, parseMarkdownPageSwipe } from '@/session/markdownFilePager';
 import { selectionQuoteMenuLabel } from '@/session/selectionQuote';
@@ -29,6 +30,7 @@ import { spacing, typeScale } from '@/theme/tokens';
 
 export function MarkdownFileReader({
   markdown,
+  visible,
   onPageSwipe,
   onQuoteSelection,
   targetLine,
@@ -36,6 +38,8 @@ export function MarkdownFileReader({
   viewportInsets,
 }: {
   markdown: string;
+  /** True only for the focused pager page; neighbours still prefetch text. */
+  visible: boolean;
   /** 由文件预览 pager 消费的明确横向翻页；纵向移动会让该手势失败给 WebView。 */
   onPageSwipe?: (direction: 'previous' | 'next') => void;
   /** chat-text-quote:系统菜单「添加到对话」的采集回调;未传时不加菜单项。 */
@@ -46,11 +50,21 @@ export function MarkdownFileReader({
   viewportInsets?: BrowserInsets;
 }) {
   const { t } = useTranslation();
-  const { colors } = useTheme();
+  const { colors, mode } = useTheme();
   const { viewRef, measure, viewportStyle, obscuredContentInsets } = useHtmlBrowserViewport(
     viewportInsets ?? { top: 0, bottom: 0, left: 0, right: 0 },
   );
   const quoteEnabled = !!onQuoteSelection;
+  const hasMermaid = useMemo(() => parseMobileMarkdown(markdown).some((block) => block.type === 'mermaid'), [markdown]);
+  // Unknown until the WebView reports a position; zero is a valid saved position.
+  const scrollPosition = useRef<{
+    markdown: string;
+    targetLine: number | null | undefined;
+    y: number | undefined;
+  }>({ markdown, targetLine, y: undefined });
+  if (scrollPosition.current.markdown !== markdown || scrollPosition.current.targetLine !== targetLine) {
+    scrollPosition.current = { markdown, targetLine, y: undefined };
+  }
   // 菜单项在渲染时构造(而非模块常量):label 走 i18n;依赖 t 使语言切换后随重渲更新。
   const quoteMenuItems = useMemo(
     () => [{ key: 'xdtQuote', label: selectionQuoteMenuLabel() }],
@@ -59,6 +73,9 @@ export function MarkdownFileReader({
   const html = useMemo(() => buildSelectableMarkdownHtml(markdown, {
     borderColor: colors.border,
     chipColor: colors.surfaceChip,
+    dark: mode === 'dark',
+    mermaidEnabled: visible,
+    restoreScrollY: hasMermaid && visible ? scrollPosition.current.y : undefined,
     inlineCodeColor: colors.chatInlineCodeText,
     fontSize: typeScale.body,
     // 与文件预览源码 FlatList 的 codeContent 对齐。
@@ -79,7 +96,7 @@ export function MarkdownFileReader({
     },
     textColor: colors.textPrimary,
     ...(targetLine ? { targetLine } : {}),
-  }), [colors, markdown, targetLine]);
+  }), [colors, hasMermaid, markdown, mode, targetLine, visible]);
 
   // 回调走 ref:onQuoteSelection 引用变化(页面重渲)不应重建 handler,
   // 更不应让 WebView 重载。
@@ -103,6 +120,12 @@ export function MarkdownFileReader({
   return (
     <View ref={viewRef} onLayout={measure} collapsable={false} style={[styles.fill, viewportStyle]} testID={testID}>
       <WebView
+        // A new native view releases the previous Mermaid JS heap on blur.
+        // The replacement retains the lightweight source document.
+        key={hasMermaid && visible ? 'mermaid' : 'source'}
+        onScroll={({ nativeEvent: { contentOffset } }) => {
+          if (visible) scrollPosition.current.y = contentOffset.y;
+        }}
         automaticallyAdjustContentInsets={false}
         contentInsetAdjustmentBehavior="never"
         obscuredContentInsets={obscuredContentInsets}

@@ -8,6 +8,7 @@ import {
 import { tokenizeCode } from '@/session/codeHighlight';
 import { parseSessionDeepLinkUrl } from '@/session/sessionLinks';
 import { buildKatexLoaderJs } from '@/session/mathWebViewHtml';
+import { buildMermaidLoaderJs } from '@/session/mermaidWebViewHtml';
 import { repairMermaidSource } from '@cindy/maker-shared/mermaid-autofix';
 // lineHeight 取别名:本模块内 `lineHeight` 是正文行高的局部变量(来自 options)。
 import { lightColors, lineHeight as lineHeightScale, typeScale } from '@/theme/tokens';
@@ -25,6 +26,12 @@ export interface SelectableMarkdownHtmlOptions {
   bodyGap?: number;
   borderColor?: string;
   chipColor?: string;
+  /** Mermaid follows the containing WebView theme. */
+  dark?: boolean;
+  /** Offscreen file pages keep Mermaid source without embedding its runtime. */
+  mermaidEnabled?: boolean;
+  /** Restore a revisited reader; a saved position (including zero) takes priority over targetLine. */
+  restoreScrollY?: number;
   fontSize?: number;
   /** 文件预览正文左右边距；调用方传入共享 spacing.lg。 */
   horizontalPadding?: number;
@@ -68,10 +75,14 @@ export function buildSelectableMarkdownHtml(
   markdown: string,
   options: SelectableMarkdownHtmlOptions = {},
 ): string {
+  const restoreScrollY = options.restoreScrollY !== undefined
+    && Number.isFinite(options.restoreScrollY) && options.restoreScrollY >= 0
+    ? options.restoreScrollY : undefined;
+  const targetLine = restoreScrollY === undefined ? options.targetLine : undefined;
   // srcLines 仅在有合法定位目标时开启:无 targetLine 的消费方保持原 HTML 结构,
   // 不为用不上的 data-src-line 容器多付 DOM 节点(bot review 建议)。
   const wantsTargetLine =
-    options.targetLine !== undefined && Number.isInteger(options.targetLine) && options.targetLine > 0;
+    targetLine !== undefined && Number.isInteger(targetLine) && targetLine > 0;
   const blocks = parseMobileMarkdown(markdown, { srcLines: wantsTargetLine });
   const css = buildSelectableMarkdownCss(options);
   // KaTeX runtime 只在文档确实含公式时注入(绝大多数文档没有,不为它们付
@@ -79,6 +90,7 @@ export function buildSelectableMarkdownHtml(
   // CSS/JS 一律由 loader 动态注入,不放静态 <link>/<script src>:阻塞式外链在
   // 资源请求挂起时会让 WebView 永久白屏(见 mathWebViewHtml.ts 的硬约束说明)。
   const hasMath = blocksContainMath(blocks);
+  const hasMermaid = blocks.some((block) => block.type === 'mermaid');
   return [
     '<!doctype html>',
     '<html>',
@@ -92,10 +104,121 @@ export function buildSelectableMarkdownHtml(
     renderBlocks(blocks, { sessionLinkTitles: options.sessionLinkTitles, imageSources: options.imageSources }),
     '</main>',
     hasMath ? buildMathRuntimeScript() : '',
-    buildTargetLineScript(options.targetLine),
+    hasMermaid && options.mermaidEnabled !== false ? buildMermaidRuntimeScript(options.dark === true) : '',
+    buildTargetLineScript(targetLine),
+    buildScrollRestoreScript(restoreScrollY),
     '</body>',
     '</html>',
   ].join('');
+}
+
+/** Restore during async layout only until the reader starts interacting. */
+function buildScrollRestoreScript(y: number | undefined): string {
+  if (y === undefined || !Number.isFinite(y) || y < 0) return '';
+  return `<script>(function(){
+var cancelled=false;
+var scroll=function(){if(!cancelled)window.scrollTo(0,${y});};
+var inputs=['touchstart','pointerdown','wheel','keydown'];
+var cancel=function(){
+  cancelled=true;
+  window.removeEventListener('load',scroll);
+  document.removeEventListener('cindy-mermaid-settled',scroll);
+  inputs.forEach(function(name){document.removeEventListener(name,cancel,true);});
+};
+inputs.forEach(function(name){document.addEventListener(name,cancel,{capture:true,passive:true});});
+scroll();
+window.addEventListener('load',scroll);
+document.addEventListener('cindy-mermaid-settled',scroll);
+})();</script>`;
+}
+
+/**
+ * Mermaid 原位渲染脚本：随包资源就绪后逐个把源码占位升级为 SVG。
+ * parse/render 任一步失败都不替换原节点，因此源码、行定位容器和正文选择保持可用。
+ */
+function buildMermaidRuntimeScript(dark: boolean): string {
+  const theme = dark ? 'dark' : 'default';
+  const renderAllJs = `
+function renderMermaidNodes() {
+  try {
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: '${theme}',
+      fontFamily: 'inherit',
+      flowchart: { useMaxWidth: false, htmlLabels: false },
+      sequence: { useMaxWidth: false },
+      class: { useMaxWidth: false },
+      state: { useMaxWidth: false },
+      er: { useMaxWidth: false },
+      gantt: { useMaxWidth: false, useWidth: 760 },
+      journey: { useMaxWidth: false },
+      pie: { useMaxWidth: false }
+    });
+  } catch (error) { return; }
+
+  var nodes = document.querySelectorAll('[data-mermaid-source]');
+  Array.prototype.forEach.call(nodes, function (node, index) {
+    var source = node.getAttribute('data-mermaid-source') || '';
+    var repaired = node.getAttribute('data-mermaid-repaired-source') || '';
+    function renderSource(value, suffix) {
+      return window.mermaid.parse(value).then(function () {
+        return window.mermaid.render('cindy-file-mermaid-' + index + suffix, value);
+      });
+    }
+    renderSource(source, '').catch(function () {
+      return repaired
+        ? renderSource(repaired, '-fixed')
+        : Promise.reject(new Error('mermaid-render-failed'));
+    }).then(function (rendered) {
+      var replacement = document.createElement('div');
+      replacement.className = 'xdt-mermaid';
+      replacement.innerHTML = rendered.svg;
+      // Mermaid strict mode still emits SVG links. Apply the reader's http(s)
+      // policy before attachment, and keep links in this WebView so Android's
+      // onCreateWindow cannot bypass the reader's navigation interception.
+      Array.prototype.forEach.call(replacement.querySelectorAll('a'), function (anchor) {
+        var href = anchor.getAttribute('href') || anchor.getAttribute('xlink:href') || '';
+        if (!/^https?:\\/\\//i.test(href)) {
+          while (anchor.firstChild) anchor.parentNode.insertBefore(anchor.firstChild, anchor);
+          anchor.remove();
+          return;
+        }
+        anchor.removeAttribute('xlink:href');
+        anchor.setAttribute('href', href);
+        anchor.removeAttribute('target');
+      });
+      // Gantt and other binder-based diagrams mark nodes clickable, but their
+      // bindFunctions can install callbacks/new-window navigation outside the
+      // reader's policy. Leave those unbound and remove the false affordance;
+      // only sanitized SVG anchors above provide actual navigation.
+      Array.prototype.forEach.call(replacement.querySelectorAll('.clickable'), function (element) {
+        if (!element.closest('a')) element.classList.remove('clickable');
+      });
+      // Several Mermaid diagram families ignore the per-family useMaxWidth
+      // options above and emit width="100%" plus an inline max-width. Restore
+      // the viewBox's intrinsic width so every wide diagram can overflow this
+      // container instead of being compressed to the phone viewport.
+      var svg = replacement.querySelector('svg');
+      if (svg) {
+        var viewBox = svg.getAttribute('viewBox') || '';
+        var viewBoxParts = viewBox.trim().split(/[\\s,]+/);
+        var intrinsicWidth = Number(viewBoxParts[2]);
+        if (viewBoxParts.length === 4 && isFinite(intrinsicWidth) && intrinsicWidth > 0) {
+          svg.setAttribute('width', String(intrinsicWidth));
+          svg.style.width = 'auto';
+          svg.style.maxWidth = 'none';
+        }
+      }
+      var pre = node.closest('pre');
+      if (pre) pre.replaceWith(replacement);
+    }).catch(function () { /* 保留源码占位 */ }).then(function () {
+      document.dispatchEvent(new Event('cindy-mermaid-settled'));
+    });
+  });
+}
+renderMermaidNodes();`;
+  return `<script>${buildMermaidLoaderJs(renderAllJs)}</script>`;
 }
 
 export function buildSelectableMarkdownFragmentHtml(
@@ -146,7 +269,7 @@ function buildMathRuntimeScript(): string {
 /**
  * 渲染态「定位到源码行」脚本:选出 data-src-line ≤ 目标行的最后一个块
  * (= 覆盖目标行的块),滚到视口中部并闪两下高亮。window load 后补滚一次
- * (图片加载会推移布局)。高亮走 CSS animation 两次迭代,animationend 移除
+ * (图片加载会推移布局),首次交互后停止异步重定位。高亮走 CSS animation 两次迭代,animationend 移除
  * class——闪完即恢复原样,不驻留。
  */
 function buildTargetLineScript(targetLine: number | undefined): string {
@@ -160,9 +283,20 @@ for(var i=0;i<nodes.length;i++){
   if(!isNaN(n)&&n<=${target}&&n>=bestLine){bestLine=n;best=nodes[i];}
 }
 if(!best)return;
-var scroll=function(){best.scrollIntoView({block:'center'});};
+var cancelled=false;
+var scroll=function(){if(!cancelled)best.scrollIntoView({block:'center'});};
+var onLoad=function(){setTimeout(scroll,50);};
+var inputs=['touchstart','pointerdown','wheel','keydown'];
+var cancel=function(){
+  cancelled=true;
+  window.removeEventListener('load',onLoad);
+  document.removeEventListener('cindy-mermaid-settled',scroll);
+  inputs.forEach(function(name){document.removeEventListener(name,cancel,true);});
+};
+inputs.forEach(function(name){document.addEventListener(name,cancel,{capture:true,passive:true});});
 scroll();
-window.addEventListener('load',function(){setTimeout(scroll,50);});
+window.addEventListener('load',onLoad);
+document.addEventListener('cindy-mermaid-settled',scroll);
 best.classList.add('xdt-line-flash');
 best.addEventListener('animationend',function(){best.classList.remove('xdt-line-flash');},{once:true});
 })();</script>`;
@@ -433,6 +567,17 @@ export function buildSelectableMarkdownCss(options: SelectableMarkdownHtmlOption
     }
     .xdt-math-block pre {
       text-align: left;
+    }
+    .xdt-mermaid {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    .xdt-mermaid svg {
+      display: block;
+      height: auto;
+      max-width: none;
+      min-width: 100%;
+      width: auto;
     }
   `;
 }

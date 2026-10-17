@@ -54,6 +54,18 @@ describe('remote file preview pager wiring', () => {
     expect(textPage.indexOf(sourceList![0])).toBeGreaterThan(unavailableBranch);
   });
 
+  it('keeps text prefetch while tying Mermaid runtime lifetime to page visibility', () => {
+    expect(source).toContain('active={Math.abs(index - pageIndex) <= 1}');
+    expect(source).toContain('visible={screenFocused && index === pageIndex}');
+    expect(source).toMatch(/<MarkdownFileReader\s+visible=\{visible\}/);
+    const reader = readSource('src/session/MarkdownFileReader.tsx');
+    expect(reader).toContain('mermaidEnabled: visible');
+    expect(reader).toContain('[colors, hasMermaid, markdown, mode, targetLine, visible]');
+    expect(reader).toContain("key={hasMermaid && visible ? 'mermaid' : 'source'}");
+    expect(reader).toContain('restoreScrollY: hasMermaid && visible ? scrollPosition.current.y : undefined');
+    expect(reader).toContain('if (visible) scrollPosition.current.y = contentOffset.y;');
+  });
+
   it('reserves horizontal gestures for the PDF WebView', () => {
     expect(source).toContain("current.previewKind !== 'pdf'");
   });

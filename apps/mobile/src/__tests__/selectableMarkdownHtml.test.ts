@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
 
 import { buildSelectableMarkdownHtml } from '@/session/selectableMarkdownHtml';
 
@@ -32,10 +33,354 @@ describe('buildSelectableMarkdownHtml 渲染态行定位', () => {
     expect(html).toContain('classList.remove');
   });
 
+  it.each([undefined, 'touchstart', 'pointerdown', 'wheel', 'keydown'])(
+    'only repositions the target line before reader input (%s)',
+    (input) => {
+      const html = buildSelectableMarkdownHtml(DOC, { targetLine: 5 });
+      const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+      expect(script).toBeDefined();
+      const readerWindow = new EventTarget();
+      const readerDocument = new EventTarget();
+      const best = document.createElement('div');
+      best.setAttribute('data-src-line', '4');
+      const scrollIntoView = vi.fn();
+      best.scrollIntoView = scrollIntoView;
+      const callbacks: (() => void)[] = [];
+      Function('window', 'document', 'setTimeout', script!)(
+        readerWindow,
+        Object.assign(readerDocument, { querySelectorAll: () => [best] }),
+        (callback: () => void) => callbacks.push(callback),
+      );
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'center' });
+      readerWindow.dispatchEvent(new Event('load'));
+      // Interaction can arrive after load has already queued its delayed scroll.
+      if (input) readerDocument.dispatchEvent(new Event(input));
+      callbacks.forEach((callback) => callback());
+      readerDocument.dispatchEvent(new Event('cindy-mermaid-settled'));
+      readerDocument.dispatchEvent(new Event('cindy-mermaid-settled'));
+      readerWindow.dispatchEvent(new Event('load'));
+      expect(callbacks).toHaveLength(input ? 1 : 2);
+      expect(scrollIntoView).toHaveBeenCalledTimes(input ? 1 : 4);
+      best.dispatchEvent(new Event('animationend'));
+      expect(best.classList.contains('xdt-line-flash')).toBe(false);
+    },
+  );
+
+  it.each([0, 420])('restores a saved position (%s) instead of revisiting targetLine', (y) => {
+    const html = buildSelectableMarkdownHtml(DOC, { targetLine: 5, restoreScrollY: y });
+    expect(html).not.toContain('scrollIntoView');
+    expect(html).not.toContain('data-src-line');
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeDefined();
+    const readerWindow = new EventTarget();
+    const readerDocument = new EventTarget();
+    const scrollTo = vi.fn();
+    Function('window', 'document', script!)(Object.assign(readerWindow, { scrollTo }), readerDocument);
+    readerWindow.dispatchEvent(new Event('load'));
+    readerDocument.dispatchEvent(new Event('cindy-mermaid-settled'));
+    expect(scrollTo.mock.calls).toEqual([[0, y], [0, y], [0, y]]);
+  });
+
+  it.each([undefined, -1, NaN, Infinity])('keeps initial targetLine when no valid position exists (%s)', (restoreScrollY) => {
+    const html = buildSelectableMarkdownHtml(DOC, { targetLine: 5, restoreScrollY });
+    expect(html).toContain('scrollIntoView');
+    expect(html).not.toContain('window.scrollTo');
+  });
+
   it('不传 targetLine 不注入脚本;非法值(0 / 非整数)同样不注入', () => {
     expect(buildSelectableMarkdownHtml(DOC)).not.toContain('<script>');
     expect(buildSelectableMarkdownHtml(DOC, { targetLine: 0 })).not.toContain('<script>');
     expect(buildSelectableMarkdownHtml(DOC, { targetLine: 1.5 })).not.toContain('<script>');
+  });
+});
+
+describe('buildSelectableMarkdownHtml Mermaid 渲染', () => {
+  const diagram = ['```mermaid', 'graph TD', 'A --> B', '```'].join('\n');
+
+  function runGeneratedMermaidRenderer(
+    html: string,
+    attributes: Record<string, string>,
+    mermaid: {
+      initialize: ReturnType<typeof vi.fn>;
+      parse: ReturnType<typeof vi.fn>;
+      render: ReturnType<typeof vi.fn>;
+    },
+  ): {
+    state: {
+      replacement: {
+        className: string;
+        innerHTML: string;
+        svg: {
+          attributes: Record<string, string>;
+          style: Record<string, string>;
+        };
+      } | null;
+    };
+    dispatchEvent: ReturnType<typeof vi.fn>;
+  } {
+    const start = html.indexOf('function renderMermaidNodes()');
+    const invocation = 'renderMermaidNodes();';
+    const end = html.indexOf(invocation, start) + invocation.length;
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const state: {
+      replacement: {
+        className: string;
+        innerHTML: string;
+        svg: {
+          attributes: Record<string, string>;
+          style: Record<string, string>;
+        };
+      } | null;
+    } = { replacement: null };
+    const dispatchEvent = vi.fn();
+    const svg = {
+      attributes: { viewBox: '0 0 960 540', width: '100%' } as Record<string, string>,
+      style: { maxWidth: '640px' },
+      getAttribute(name: string): string | null {
+        return this.attributes[name] ?? null;
+      },
+      setAttribute(name: string, value: string): void {
+        this.attributes[name] = value;
+      },
+    };
+    const sourceNode = {
+      getAttribute: (name: string): string | null => attributes[name] ?? null,
+      closest: (): {
+        replaceWith: (next: NonNullable<typeof state.replacement>) => void;
+      } => ({
+        replaceWith: (next) => {
+          state.replacement = next;
+        },
+      }),
+    };
+    const testDocument = {
+      querySelectorAll: (): readonly [typeof sourceNode] => [sourceNode],
+      createElement: (): {
+        className: string;
+        innerHTML: string;
+        svg: typeof svg;
+        querySelector: (selector: string) => typeof svg | null;
+        querySelectorAll: () => readonly Element[];
+      } => ({
+        className: '',
+        innerHTML: '',
+        svg,
+        querySelector: (selector) => (selector === 'svg' ? svg : null),
+        querySelectorAll: () => [],
+      }),
+      dispatchEvent,
+    };
+    class TestEvent {
+      constructor(readonly type: string) {}
+    }
+    Function('window', 'document', 'Event', html.slice(start, end))(
+      { mermaid },
+      testDocument,
+      TestEvent,
+    );
+    return { state, dispatchEvent };
+  }
+
+  it('仅含 Mermaid 时注入随包 runtime，并在成功后原位替换源码占位', () => {
+    const html = buildSelectableMarkdownHtml(diagram);
+    expect(html).toContain('data-mermaid-source="graph TD\nA --&gt; B"');
+    expect(html).toContain("document.querySelectorAll('[data-mermaid-source]')");
+    expect(html).toContain("replacement.className = 'xdt-mermaid'");
+    expect(html).toContain('__esbuild_esm_mermaid_nm');
+  });
+
+  it.each([false, true])('offscreen Mermaid retains source without runtime (dark=%s)', (dark) => {
+    const offscreen = buildSelectableMarkdownHtml(diagram, { dark, mermaidEnabled: false });
+    expect(offscreen).toContain('data-mermaid-source="graph TD\nA --&gt; B"');
+    expect(offscreen).not.toContain('__esbuild_esm_mermaid_nm');
+    expect(offscreen).not.toContain('renderMermaidNodes');
+    const visible = buildSelectableMarkdownHtml(diagram, { dark, mermaidEnabled: true });
+    expect(visible).toContain('__esbuild_esm_mermaid_nm');
+    expect(visible).toContain('renderMermaidNodes');
+  });
+
+  it.each([undefined, 'touchstart', 'pointerdown', 'wheel', 'keydown'])(
+    'restores during layout until reader input (%s)',
+    (input) => {
+      const html = buildSelectableMarkdownHtml(diagram, { restoreScrollY: 420 });
+      const script = html.match(/<script>\(function\(\)\{\nvar cancelled=false;[\s\S]*?<\/script>/)?.[0];
+      expect(script).toBeDefined();
+      const readerWindow = new EventTarget();
+      const readerDocument = new EventTarget();
+      const scrollTo = vi.fn();
+      Function('window', 'document', script!.slice(8, -9))(
+        Object.assign(readerWindow, { scrollTo }), readerDocument,
+      );
+      expect(scrollTo).toHaveBeenLastCalledWith(0, 420);
+      // Layout restoration itself must not cancel later diagram restoration.
+      readerWindow.dispatchEvent(new Event('scroll'));
+      if (input) readerDocument.dispatchEvent(new Event(input));
+      readerWindow.dispatchEvent(new Event('load'));
+      readerDocument.dispatchEvent(new Event('cindy-mermaid-settled'));
+      readerDocument.dispatchEvent(new Event('cindy-mermaid-settled'));
+      expect(scrollTo).toHaveBeenCalledTimes(input ? 1 : 4);
+      expect(buildSelectableMarkdownHtml(diagram, { restoreScrollY: Infinity })).not.toContain('window.scrollTo(0,Infinity)');
+    },
+  );
+
+  it('无 Mermaid 的文档不承担 runtime 体积', () => {
+    const html = buildSelectableMarkdownHtml('普通文档');
+    expect(html).not.toContain('__esbuild_esm_mermaid_nm');
+    expect(html).not.toContain('renderMermaidNodes');
+  });
+
+  it('在真实 Mermaid SVG 中仅保留有效链接且不暗示未绑定节点可点', async () => {
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const frameWindow = frame.contentWindow;
+    const frameDocument = frame.contentDocument;
+    expect(frameWindow).not.toBeNull();
+    expect(frameDocument).not.toBeNull();
+    const frameSvgElement = frameWindow as unknown as { SVGElement: typeof SVGElement };
+    Object.defineProperties(frameSvgElement.SVGElement.prototype, {
+      getBBox: { value: () => ({ x: 0, y: 0, width: 120, height: 40 }) },
+      getComputedTextLength: { value: () => 40 },
+    });
+
+    try {
+      frameDocument!.open();
+      // Review 4298018076 / DESIGN §14.5: strict Mermaid still emits tel/mailto
+      // anchors. Exercise the production HTML/runtime boundary, not a SVG fixture.
+      frameDocument!.write(buildSelectableMarkdownHtml([
+        '```mermaid',
+        'graph TD',
+        'A[Phone] --> B[Mail] --> C[Website]',
+        'click A href "tel:123456" _blank',
+        'click B href "mailto:reader@example.com" _blank',
+        'click C href "https://example.com" _blank',
+        '```',
+        '```mermaid',
+        'gantt',
+        'dateFormat YYYY-MM-DD',
+        'section Work',
+        'Website :website, 2026-01-01, 1d',
+        'click website href "https://example.com"',
+        '```',
+      ].join('\n')));
+      frameDocument!.close();
+      await vi.waitFor(
+        () => {
+          const rendered = frameDocument!.querySelector('.xdt-mermaid > svg');
+          expect(rendered).not.toBeNull();
+          expect(frameDocument!.querySelectorAll('.xdt-mermaid > svg')).toHaveLength(2);
+          // Review 4298995475 / DESIGN §14.5: Gantt uses bindFunctions,
+          // unlike flowchart anchors. Its unbound task/text must not look clickable.
+          const gantt = frameDocument!.querySelectorAll('.xdt-mermaid > svg')[1]!;
+          expect(gantt.textContent).toContain('Website');
+          expect(gantt.querySelectorAll('.clickable')).toHaveLength(0);
+          expect(rendered?.getAttribute('role')).toBe('graphics-document document');
+          expect(rendered?.textContent).toContain('Phone');
+          expect(rendered?.textContent).toContain('Mail');
+          const anchors = Array.from(rendered!.querySelectorAll('a'));
+          expect(anchors).toHaveLength(1);
+          expect(anchors[0]?.getAttribute('href')).toBe('https://example.com/');
+          expect(anchors[0]?.hasAttribute('xlink:href')).toBe(false);
+          expect(anchors[0]?.hasAttribute('target')).toBe(false);
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      frame.remove();
+    }
+  }, 30_000);
+
+  it('渲染失败路径不移除源码，并保留 targetLine 外层定位容器', () => {
+    const html = buildSelectableMarkdownHtml(diagram, { targetLine: 1 });
+    expect(html).toContain('<div data-src-line="0"><pre><code data-mermaid-source=');
+    expect(html).toContain('/* 保留源码占位 */');
+    expect(html).toContain("if (pre) pre.replaceWith(replacement)");
+    expect(html).toContain("dispatchEvent(new Event('cindy-mermaid-settled'))");
+    expect(html).toContain("addEventListener('cindy-mermaid-settled',scroll)");
+  });
+
+  it('按阅读器主题初始化 Mermaid，并限制宽图布局', () => {
+    const light = buildSelectableMarkdownHtml(diagram);
+    const dark = buildSelectableMarkdownHtml(diagram, { dark: true });
+    expect(light).toContain("theme: 'default'");
+    expect(dark).toContain("theme: 'dark'");
+    expect(dark).toMatch(/\.xdt-mermaid \{[^}]*overflow-x:\s*auto/s);
+    expect(dark).toMatch(/\.xdt-mermaid svg \{[^}]*min-width:\s*100%[^}]*width:\s*auto/s);
+  });
+
+  it('执行生成脚本后把成功渲染的源码占位替换为图形', async () => {
+    const initialize = vi.fn();
+    const parse = vi.fn().mockResolvedValue(undefined);
+    const render = vi.fn().mockResolvedValue({ svg: '<svg data-rendered="1"></svg>' });
+    const { state } = runGeneratedMermaidRenderer(
+      buildSelectableMarkdownHtml(diagram),
+      { 'data-mermaid-source': 'graph TD; A-->B' },
+      { initialize, parse, render },
+    );
+
+    await vi.waitFor(() => expect(state.replacement?.className).toBe('xdt-mermaid'));
+    expect(initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'default',
+      }),
+    );
+    expect(parse).toHaveBeenCalledWith('graph TD; A-->B');
+    expect(state.replacement?.innerHTML).toBe('<svg data-rendered="1"></svg>');
+  });
+
+  it('从 viewBox 恢复所有图型的固有宽度，使宽图产生横向滚动', async () => {
+    const { state } = runGeneratedMermaidRenderer(
+      buildSelectableMarkdownHtml(['```mermaid', 'gitGraph', 'commit', '```'].join('\n')),
+      { 'data-mermaid-source': 'gitGraph\ncommit' },
+      {
+        initialize: vi.fn(),
+        parse: vi.fn().mockResolvedValue(undefined),
+        render: vi.fn().mockResolvedValue({
+          svg: '<svg width="100%" style="max-width: 640px" viewBox="0 0 960 540"></svg>',
+        }),
+      },
+    );
+
+    await vi.waitFor(() => expect(state.replacement).not.toBeNull());
+    expect(state.replacement?.svg.attributes.width).toBe('960');
+    expect(state.replacement?.svg.style).toMatchObject({
+      width: 'auto',
+      maxWidth: 'none',
+    });
+  });
+
+  it('执行生成脚本时原文失败会重试修复源码', async () => {
+    const parse = vi.fn()
+      .mockRejectedValueOnce(new Error('broken'))
+      .mockResolvedValueOnce(undefined);
+    const render = vi.fn().mockResolvedValue({ svg: '<svg data-fixed="1"></svg>' });
+    const { state } = runGeneratedMermaidRenderer(
+      buildSelectableMarkdownHtml(diagram),
+      { 'data-mermaid-source': 'broken', 'data-mermaid-repaired-source': 'fixed' },
+      { initialize: vi.fn(), parse, render },
+    );
+
+    await vi.waitFor(() => expect(state.replacement?.innerHTML).toContain('data-fixed="1"'));
+    expect(parse).toHaveBeenNthCalledWith(1, 'broken');
+    expect(parse).toHaveBeenNthCalledWith(2, 'fixed');
+  });
+
+  it('执行生成脚本时两次失败仍保留源码，并发出 settled 事件', async () => {
+    const { state, dispatchEvent } = runGeneratedMermaidRenderer(
+      buildSelectableMarkdownHtml(diagram),
+      { 'data-mermaid-source': 'broken', 'data-mermaid-repaired-source': 'still-broken' },
+      {
+        initialize: vi.fn(),
+        parse: vi.fn().mockRejectedValue(new Error('invalid')),
+        render: vi.fn(),
+      },
+    );
+
+    await vi.waitFor(() => expect(dispatchEvent).toHaveBeenCalledOnce());
+    expect(dispatchEvent.mock.calls[0]?.[0]).toMatchObject({ type: 'cindy-mermaid-settled' });
+    expect(state.replacement).toBeNull();
   });
 });
 

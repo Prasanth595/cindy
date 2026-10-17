@@ -1353,6 +1353,7 @@ function TextPreviewPage({
           )
         ) : (
           <MarkdownFileReader
+            visible={visible}
             markdown={ready?.content ?? ''}
             viewportInsets={{ ...browserContentInset, top: clipped ? 0 : browserContentInset.top, left: insets.left, right: insets.right }}
             onPageSwipe={onMarkdownPageSwipe ? (direction) => onMarkdownPageSwipe(item.key, direction) : undefined}
