@@ -52,7 +52,6 @@
   main 进程静态依赖，以及主界面布局树不变量。
 - [`configuration-and-overrides.md`](configuration-and-overrides.md)：配置可见性分层、默认值
   与用户 override 分离、默认值迁移与恢复默认语义。
-- [`settings-sidebar-scroll.md`](settings-sidebar-scroll.md)：设置页左侧固定标题和搜索框，菜单列表独立滚动。#5623 的验证记录。
 - [`remote-and-mobile-adaptation.md`](remote-and-mobile-adaptation.md)：SSH 远程工作区、
   device-link allowlist、手机版入口与功能类 PR 的远程／手机三选一门禁。
 - [`development-workflow.md`](development-workflow.md)：worktree dogfooding 会话契约、提 PR
