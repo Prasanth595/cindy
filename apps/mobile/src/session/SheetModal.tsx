@@ -19,7 +19,6 @@ import { NativeBottomSheet } from './NativeBottomSheet';
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
-  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -81,14 +80,15 @@ function CompatibleSheetModal({
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const geometry = useAdaptiveWindow();
   const [contentHeight, setContentHeight] = useState(geometry.height);
-  // 键盘弹起前浮窗内容区见过的最大高度。Android 用它和当前高度比较简单,判断系统是否
-  // 已经为 IME 缩过窗(见 sheetKeyboardAvoidance)。按窗口尺寸分组记录:旋转/分屏/折叠会让
-  // 旧基线作废,否则旧的大高度会被当成「系统已缩窗」,把让位整个吃掉。
-  const contentBaseline = useRef({ width: 0, height: 0, content: 0 });
-  const contentBaselineHeight = contentBaseline.current.width === windowWidth
-    && contentBaseline.current.height === windowHeight
-    ? contentBaseline.current.content
-    : contentHeight;
+  // 窗口探针:铺满 Modal、不受本组件 padding 影响。只用它判断系统是否真的为 IME 让出了空间
+  // (MIUI 上 Dimensions/screenY 会随键盘变化但窗口并未让位)。按窗口尺寸分组记录基线,
+  // 旋转/分屏/折叠后旧基线作废。
+  const [windowProbeHeight, setWindowProbeHeight] = useState(geometry.height);
+  const windowBaseline = useRef({ width: 0, height: 0, content: 0 });
+  const windowBaselineHeight = windowBaseline.current.width === windowWidth
+    && windowBaseline.current.height === windowHeight
+    ? windowBaseline.current.content
+    : windowProbeHeight;
   // 背板淡入 + 面板滑入共用一条 progress;关闭淡出/滑出播完后再卸载 Modal。
   // sheet 是重浮层:入场 motionDuration.enter / 退场 exit(§14.4);减弱动态效果(含未查询到的
   // 首帧)时长为 0,直接到位。
@@ -106,10 +106,8 @@ function CompatibleSheetModal({
     ? computeAndroidSheetKeyboardLift({
         imeHeight: keyboard.height,
         systemBarBottom: geometry.insets.bottom,
-        windowVisibleBottom: keyboard.screenY ?? windowHeight,
-        screenHeight: Dimensions.get('screen').height,
-        contentHeight,
-        baselineContentHeight: contentBaselineHeight,
+        contentHeight: windowProbeHeight,
+        baselineContentHeight: windowBaselineHeight,
       })
     : 0;
   // iOS 的 keyboard.height 就是实际遮挡高度;Android 只把系统没让出的差值交给浮窗定位,
@@ -162,16 +160,7 @@ function CompatibleSheetModal({
   // 内容层 box-none:空白区域的点击穿透到下层背板 Pressable,面板本体照常接收触摸。
   const content = (
     <Animated.View key={contentEpoch} pointerEvents="box-none" style={contentLayerStyle}
-      onLayout={event => {
-        const measured = event.nativeEvent.layout.height;
-        const baseline = contentBaseline.current;
-        if (baseline.width !== windowWidth || baseline.height !== windowHeight) {
-          contentBaseline.current = { width: windowWidth, height: windowHeight, content: measured };
-        } else if (measured > baseline.content) {
-          baseline.content = measured;
-        }
-        setContentHeight(measured);
-      }}>
+      onLayout={event => setContentHeight(event.nativeEvent.layout.height)}>
       <PaneViewportProvider value={{ width: displaced ? region.width : geometry.width, height: contentHeight }}>
         <FloatingSheetContext.Provider value={floating}>{children}</FloatingSheetContext.Provider>
       </PaneViewportProvider>
@@ -211,6 +200,16 @@ function CompatibleSheetModal({
       <View pointerEvents="box-none" style={displaced ? {
         position: 'absolute', left: region.x, top: region.y, width: region.width, height: region.height,
       } : keyboardLift > 0 ? [styles.keyboardLayer, { paddingBottom: keyboardLift }] : styles.keyboardLayer}>
+        <View pointerEvents="none" style={StyleSheet.absoluteFill} onLayout={event => {
+          const measured = event.nativeEvent.layout.height;
+          const baseline = windowBaseline.current;
+          if (baseline.width !== windowWidth || baseline.height !== windowHeight) {
+            windowBaseline.current = { width: windowWidth, height: windowHeight, content: measured };
+          } else if (measured > baseline.content) {
+            baseline.content = measured;
+          }
+          setWindowProbeHeight(measured);
+        }} />
         <KeyboardAvoidingView
           enabled={keyboardAvoiding && !displaced && Platform.OS !== 'android'}
           behavior={keyboardAvoidingBehavior}

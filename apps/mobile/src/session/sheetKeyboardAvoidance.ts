@@ -26,17 +26,17 @@ export interface AndroidSheetKeyboardLiftInput {
   imeHeight: number;
   /** 系统栏底 inset：补回 RN 从 imeHeight 中扣掉的导航栏高度。 */
   systemBarBottom: number;
-  /** endCoordinates.screenY：窗口可见区底边（缩窗时 = 键盘顶边，未缩窗时 = 窗口底边）。 */
-  windowVisibleBottom: number;
-  /** 屏幕全高（Dimensions.get('screen').height），与 windowVisibleBottom 同一坐标系。 */
-  screenHeight: number;
-  /** 浮窗内容区当前高度（Modal 自己窗口的 onLayout 实测值）。 */
+  /**
+   * 浮窗窗口内容区当前高度：Modal 内铺满窗口、不受本次 padding 影响的探针 onLayout 实测。
+   * 键盘事件里的 screenY / Dimensions 在部分 ROM（MIUI）上会随键盘变化但窗口并未让出空间，
+   * 不能作为「系统已避让」的证据。
+   */
   contentHeight: number;
-  /** 浮窗内容区见过的最大高度 = 键盘弹起前的窗口全高；未知时传 0。 */
+  /** 同一探针在键盘弹起前见过的最大高度（按窗口尺寸分组，旋转/分屏后作废）。 */
   baselineContentHeight: number;
 }
 
-/** 大于它的缩窗才算系统真的让过位；更小的差值按亚像素抖动处理，避免让位忽有忽无。 */
+/** 大于它的缩窗才算系统真的让过位；更小的差值按亚像素抖动处理。 */
 export const ANDROID_SHEET_KEYBOARD_RESIZE_THRESHOLD = 10;
 
 function nonNegative(value: number): number {
@@ -49,13 +49,8 @@ export function computeAndroidSheetKeyboardLift(
 ): number {
   const imeFullHeight = nonNegative(input.imeHeight) + nonNegative(input.systemBarBottom);
   if (imeFullHeight <= 0) return 0;
-  // 未知（NaN）的高度不参与减法：未知值会把「系统已让出」算成真，让位被整个吃掉。
-  const screenShrink = input.screenHeight - input.windowVisibleBottom;
-  const contentShrink = input.baselineContentHeight - input.contentHeight;
-  const reserved = Math.max(
-    Number.isFinite(screenShrink) ? Math.max(0, screenShrink) : 0,
-    Number.isFinite(contentShrink) ? Math.max(0, contentShrink) : 0,
-  );
-  if (reserved <= ANDROID_SHEET_KEYBOARD_RESIZE_THRESHOLD) return Math.round(imeFullHeight);
-  return Math.max(0, Math.round(imeFullHeight - reserved));
+  const shrink = (Number.isFinite(input.baselineContentHeight) ? input.baselineContentHeight : 0)
+    - (Number.isFinite(input.contentHeight) ? input.contentHeight : 0);
+  if (!(shrink > ANDROID_SHEET_KEYBOARD_RESIZE_THRESHOLD)) return Math.round(imeFullHeight);
+  return Math.max(0, Math.round(imeFullHeight - shrink));
 }

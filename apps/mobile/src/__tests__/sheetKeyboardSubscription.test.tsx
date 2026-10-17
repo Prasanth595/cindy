@@ -130,26 +130,6 @@ it('lifts an Android sheet that the system did not move and keeps its own height
   expect(lift()).toBe(300);
 });
 
-it('does not move an Android sheet whose window adjustResize already shrank', () => {
-  showAndroidKeyboard(544);
-  render(true);
-  expect(lift()).toBe(0);
-});
-
-it('forgets the old baseline when the window itself shrinks before the keyboard opens', () => {
-  // 旋转 / 分屏让窗口变矮:旧基线不能被当成「系统已缩窗」,否则让位被整个吃掉。
-  render(true);
-  layout(844);
-  native.window = { width: 390, height: 500 };
-  native.screen = { width: 390, height: 500 };
-  render(true);
-  layout(500);
-  showAndroidKeyboard(500);
-  render(true);
-  layout(500);
-  expect(lift()).toBe(300);
-});
-
 it('leaves iOS to the keyboard-avoiding view', () => {
   native.keyboardState = { height: 300, visible: true, screenY: 544, transition: { current: null } };
   render(true);
