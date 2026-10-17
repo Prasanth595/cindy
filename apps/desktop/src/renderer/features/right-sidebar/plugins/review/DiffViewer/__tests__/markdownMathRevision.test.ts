@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import katex from 'katex';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -315,19 +312,6 @@ describe('buildMarkdownMathRevision — 渲染链回归', () => {
       .replace(/[\u200b\s]/g, '');
     expect(redText).toContain('1');
     expect(redText).toContain('2');
-  });
-
-  it('keeps formula colours out of globals.css (token-only, no sentinel literals)', () => {
-    // 公式标记的颜色全部由 rehype 插件换成 diff token 类；globals.css **不写**
-    // 字面哨兵色（写了就撞硬编码色审计，哨兵不是设计色，不该占豁免表名额）。
-    // 早期那两条属性选择器兜底已删（实测在审查页不生效），这里钉住不再回退。
-    const css = readFileSync(
-      resolve(__dirname, '..', '..', '..', '..', '..', '..', 'styles', 'globals.css'),
-      'utf8',
-    );
-    expect(css).not.toMatch(/\[style\*='color:[^']*'\]\s*\{/);
-    // 不要再引入 :has() 上溯 —— 它会命中 \frac 外层容器。
-    expect(css).not.toContain(':has(.sout)');
   });
 });
 

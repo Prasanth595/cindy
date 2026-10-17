@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
 
 import { createElement } from 'react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -144,13 +142,8 @@ describe('MarkdownDiffPreview', () => {
     // `first:mt-0 last:mb-0` 会在每个边界重新生效，间距塌成 0。
     const segments = container.querySelectorAll('.cindy-review-segments > .cindy-review-segment');
     expect(segments.length).toBeGreaterThan(1);
-
-    const css = readFileSync(
-      resolve(__dirname, '..', '..', '..', '..', '..', '..', 'styles', 'globals.css'),
-      'utf8',
-    );
-    expect(css).toContain('.cindy-review-segment:not(:first-child) > .msg-markdown > :first-child');
-    expect(css).toContain('.cindy-review-segment:not(:last-child) > .msg-markdown > :last-child');
+    // 片段间距选择器在 globals.css 的契约已收口到 guard 层
+    // markdownPluginPipeline.contract.test.ts（单测不得读源码文本）。
   });
 
   it('passes per-segment heading ids and the anchor map to each renderer (regression)', async () => {

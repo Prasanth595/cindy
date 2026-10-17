@@ -33,11 +33,6 @@ import {
 
 const rendererPath = resolve(__dirname, '..', 'components', 'chat', 'MarkdownRenderer.tsx');
 const rendererSrc = readFileSync(rendererPath, 'utf8');
-// rehype 链的注册位置 2026-09-20 起收进插件链单一事实源（审查页与聊天页共用一份）。
-const pipelineSrc = readFileSync(
-  resolve(__dirname, '..', 'components', 'chat', 'markdownPluginPipeline.ts'),
-  'utf8',
-);
 
 /** 从源码提取真实的行内 code class 串,让底色 token 改名时测试跟着走。 */
 function readInlineCodeClass(): string {
@@ -171,17 +166,5 @@ describe('marker 插件只标记 pre 的直接 code 子节点', () => {
     expect(html).toContain('<pre>');
     expect(html).toContain(FENCED_CODE_ATTR);
     expect(html).not.toContain(INLINE_BG_CLASS);
-  });
-});
-
-describe('source contract — 插件注册位置', () => {
-  it('rehypeFencedCodeMarker 注册在 rehype 链里,且排在 rehypeHighlight 之后', () => {
-    const match = pipelineSrc.match(/function buildRehypePlugins\([\s\S]*?\n(?=export const MARKDOWN_REHYPE_PLUGINS)/);
-    expect(match, 'buildRehypePlugins 未找到').toBeTruthy();
-    const chain = match![0];
-    const highlightAt = chain.indexOf('rehypeHighlight');
-    const markerAt = chain.indexOf('rehypeFencedCodeMarker');
-    expect(highlightAt).toBeGreaterThanOrEqual(0);
-    expect(markerAt).toBeGreaterThan(highlightAt);
   });
 });
