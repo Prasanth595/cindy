@@ -132,16 +132,34 @@ describe('remarkRepairLocalMarkdownLinks', () => {
     ]);
   });
 
-  it('skips repair when the source opener contains an escape or entity', () => {
+  it('skips repair when the source opener itself is escaped', () => {
     expect(firstParagraphChildren('\\[示例](/tmp/My File.md)').map(withoutPositions)).toEqual([
       { type: 'text', value: '[示例](/tmp/My File.md)' },
     ]);
-    expect(firstParagraphChildren('&amp; [示例](/tmp/My File.md)').map(withoutPositions)).toEqual([
+    expect(firstParagraphChildren('&amp; \\[示例](/tmp/My File.md)').map(withoutPositions)).toEqual([
       { type: 'text', value: '& [示例](/tmp/My File.md)' },
     ]);
   });
 
-  it('does not let an ordinary ampersand before the opener suppress repair', () => {
+  it('still repairs when a Windows path before the opener contains backslashes', () => {
+    const children = firstParagraphChildren('C:\\tmp [产物](/tmp/My File.md)');
+
+    expect(children.map(withoutPositions)).toEqual([
+      { type: 'text', value: 'C:\\tmp ' },
+      {
+        type: 'link',
+        url: '/tmp/My File.md',
+        children: [{ type: 'text', value: '产物' }],
+        data: {
+          hProperties: {
+            [RAW_LOCAL_LINK_HREF_PROP]: '/tmp/My File.md',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('does not let an ordinary ampersand or entity before the opener suppress repair', () => {
     const children = firstParagraphChildren('R&D: [产物](/tmp/My File.md)');
 
     expect(children.map(withoutPositions)).toEqual([
@@ -150,6 +168,21 @@ describe('remarkRepairLocalMarkdownLinks', () => {
         type: 'link',
         url: '/tmp/My File.md',
         children: [{ type: 'text', value: '产物' }],
+        data: {
+          hProperties: {
+            [RAW_LOCAL_LINK_HREF_PROP]: '/tmp/My File.md',
+          },
+        },
+      },
+    ]);
+
+    const afterEntity = firstParagraphChildren('&amp; [示例](/tmp/My File.md)');
+    expect(afterEntity.map(withoutPositions)).toEqual([
+      { type: 'text', value: '& ' },
+      {
+        type: 'link',
+        url: '/tmp/My File.md',
+        children: [{ type: 'text', value: '示例' }],
         data: {
           hProperties: {
             [RAW_LOCAL_LINK_HREF_PROP]: '/tmp/My File.md',
