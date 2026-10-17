@@ -1087,6 +1087,33 @@ describe("buildUserProvider (per-runtime)", () => {
     expect(p.models.codex?.[1]?.supportsImageInput).toBe(true);
   });
 
+  it("keeps an explicit supportsImageInput declaration through the projection, both polarities and absent (#6243)", () => {
+    const p = buildUserProvider({
+      id: "relay",
+      name: "Relay",
+      auth: { method: "apiKey" },
+      runtimes: {
+        pi: {
+          baseUrl: "https://chat.example/v1",
+          wireProtocol: "openai-chat",
+          models: [
+            { id: "glm-5.3", name: "GLM-5.3", supportsImageInput: false },
+            { id: "vision-model", name: "Vision", supportsImageInput: true },
+            { id: "auto", name: "Auto" },
+          ],
+        },
+      },
+    });
+    // 显式 false 必须原样到目录层：发图的本地拦截、原生请求体与徽标都按它判定，
+    // 丢成 undefined 会让用户在设置里声明的「不支持」失效（#6243）；缺省仍然不猜。
+    expect(p.models.pi?.[0]?.supportsImageInput).toBe(false);
+    expect(p.models.pi?.[1]?.supportsImageInput).toBe(true);
+    expect(p.models.pi?.[2]?.supportsImageInput).toBeUndefined();
+    // 原始三态在 userModelConfig 里始终可回读（编辑表单的真值源）。
+    expect(p.models.pi?.[0]?.userModelConfig?.supportsImageInput).toBe(false);
+    expect(p.models.pi?.[2]?.userModelConfig?.supportsImageInput).toBeUndefined();
+  });
+
   it("does not export unverified CC/Codex efforts for managed Ollama", () => {
     const p = buildUserProvider({
       id: "cindy-local-ollama",

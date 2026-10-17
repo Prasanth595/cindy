@@ -217,6 +217,7 @@ export function ModelAdvancedDrawer({
   const [priceDialogOpen, setPriceDialogOpen] = useState(false);
   const [protocolSaving, setProtocolSaving] = useState(false);
   const [imageCapabilitySaving, setImageCapabilitySaving] = useState(false);
+  const [imageInputSaving, setImageInputSaving] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   // 开关/档位写的是 renderer 本地存储，订阅 version 才能在写后重渲染。
   useModelVisibilityVersion();
@@ -393,6 +394,31 @@ export function ModelAdvancedDrawer({
   }
 
   const capabilityModel = primaryModel.mode === 'video_generation' ? videoModel ?? primaryModel : imageModel ?? videoModel ?? primaryModel;
+  /** 三态声明的持久化真值：user 存储里的 supportsImageInput（缺省 = 未声明，跟随目录/名称推断）。 */
+  const imageInputDeclared = primaryModel.userModelConfig?.supportsImageInput;
+  const imageInputValue = imageInputDeclared === true ? 'supported' : imageInputDeclared === false ? 'unsupported' : 'undeclared';
+  /**
+   * 保存「支持图片输入」三态声明。写进该 id 存在的每个 runtime —— 同一模型常同时
+   * 挂在 pi/cc/codex 下，只写主引擎会让用户在另一个引擎的发图拦截继续读旧值。
+   * 置为 `undeclared` 时删除该键，恢复缺省口径（不猜、不写回默认）。
+   */
+  const setImageInput = async (value: string) => {
+    if (imageInputSaving || !['supported', 'unsupported', 'undeclared'].includes(value)) return;
+    const config = providerViewToCustomProviderConfig(provider);
+    for (const runtime of Object.values(config.runtimes)) {
+      const model = runtime?.models.find((item) => item.id === primaryModel.id);
+      if (!model) continue;
+      if (value === 'supported') model.supportsImageInput = true;
+      else if (value === 'unsupported') model.supportsImageInput = false;
+      else delete model.supportsImageInput;
+    }
+    setImageInputSaving(true);
+    try {
+      const result = await updateCustomProvider(config, {}, { source: 'manual-settings' });
+      if (!result.ok) toast.error(t('settings.providers.custom.toast.saveFailed'));
+    } catch { toast.error(t('settings.providers.custom.toast.saveFailed')); }
+    finally { setImageInputSaving(false); }
+  };
   const vision = imageModel?.modalities
     ? imageModel.modalities.input.includes('image') ? 'vision' : 'no-vision'
     : primaryModel.supportsImageInput !== undefined
@@ -924,22 +950,52 @@ export function ModelAdvancedDrawer({
                         </p>
                       </>
                     )}
-                    <Row label={t('settings.providers.models.advanced.imageInput')}>
-                      <span
-                        title={
-                          capabilityModel.modalities || capabilityModel.supportsImageInput !== undefined
-                            ? t('settings.providers.models.advanced.catalogCapabilities')
-                            : t(`settings.providers.models.advanced.visionSource.${vision}`)
-                        }
-                      >
-                        <CapabilityValue
-                          state={
-                            vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+                    {canEditProtocol ? (
+                      <>
+                        {/* 用户自定义供应商：三态声明入口。拦截提示与这行的文案互相引用
+                            （PI_IMAGE_INPUT_UNSUPPORTED 指向的就是「支持图片输入」），
+                            设置必须真实存在才能自圆其说（#6243）。 */}
+                        <Row label={t('settings.providers.custom.fields.modelSupportsImageInput')}>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button type="button"
+                                disabled={imageInputSaving || !selectionAvailable || paymentRequired}
+                                aria-label={t('settings.providers.custom.fields.modelSupportsImageInput')}
+                                className="rounded-full px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]">
+                                {t(`settings.providers.models.advanced.${imageInputValue}`)} <ChevronDown size={12} className="inline" aria-hidden />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="z-[10003]" align="start">
+                              <DropdownMenuRadioGroup value={imageInputValue} onValueChange={value => void setImageInput(value)}>
+                                {(['supported', 'unsupported', 'undeclared'] as const).map(value => (
+                                  <DropdownMenuRadioItem key={value} value={value}>{t(`settings.providers.models.advanced.${value}`)}</DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </Row>
+                        <p className="text-12 leading-5 text-[var(--text-tertiary)]">
+                          {t('settings.providers.custom.fields.modelSupportsImageInputHelp')}
+                        </p>
+                      </>
+                    ) : (
+                      <Row label={t('settings.providers.models.advanced.imageInput')}>
+                        <span
+                          title={
+                            capabilityModel.modalities || capabilityModel.supportsImageInput !== undefined
+                              ? t('settings.providers.models.advanced.catalogCapabilities')
+                              : t(`settings.providers.models.advanced.visionSource.${vision}`)
                           }
-                          label={t(`settings.providers.models.advanced.vision.${vision}`)}
-                        />
-                      </span>
-                    </Row>
+                        >
+                          <CapabilityValue
+                            state={
+                              vision === 'vision' ? true : vision === 'no-vision' ? false : undefined
+                            }
+                            label={t(`settings.providers.models.advanced.vision.${vision}`)}
+                          />
+                        </span>
+                      </Row>
+                    )}
                     {capabilityModel.modalities &&
                       (['input', 'output'] as const).map((direction) => (
                         <Row

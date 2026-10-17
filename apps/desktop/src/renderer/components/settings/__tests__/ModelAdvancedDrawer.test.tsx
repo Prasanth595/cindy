@@ -734,3 +734,65 @@ it('keeps enterprise reference prices read-only in the model drawer', () => {
     screen.queryByRole('button', { name: 'settings.providers.models.priceOverride.menu' }),
   ).toBeNull();
 });
+
+// #6243：拦截文案指向的「支持图片输入」必须是真实存在的设置。自定义供应商上
+// 这行是三态声明（支持 / 不支持 / 未声明），写回该模型所属的每个引擎。
+it('saves the image-input declaration to every engine holding the model', async () => {
+  const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+  const previous = window.electronAPI;
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+  try {
+    const source = { ...buildUserProvider({ id: 'relay', name: 'Relay', auth: { method: 'apiKey' }, runtimes: {
+      pi: { baseUrl: 'https://chat.example.invalid/v1', models: [{ id: 'glm-5.3', name: 'GLM-5.3', supportsImageInput: false }] },
+      codex: { baseUrl: 'https://chat.example.invalid/v1', wireProtocol: 'openai-responses',
+        models: [{ id: 'glm-5.3', name: 'GLM-5.3', supportsImageInput: false }] },
+    } }), connected: true } as ProviderView;
+    render(<ModelAdvancedDrawer provider={source} row={{ id: 'glm-5.3', name: 'GLM-5.3', avail: ['pi', 'codex'],
+      byAgent: { pi: source.models.pi![0], codex: source.models.codex![0] } }} open
+      onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+    // 当前值：库中显式声明的 false → 「不支持」。
+    const trigger = screen.getByRole('button', { name: 'settings.providers.custom.fields.modelSupportsImageInput' });
+    expect(trigger.textContent).toContain('settings.providers.models.advanced.unsupported');
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'settings.providers.models.advanced.supported' }));
+    await waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const config = update.mock.calls[0]![0] as Parameters<typeof buildUserProvider>[0];
+    expect(config.runtimes.pi!.models[0]!.supportsImageInput).toBe(true);
+    expect(config.runtimes.codex!).toBeDefined();
+    expect(config.runtimes.codex!.models[0]!.supportsImageInput).toBe(true);
+    expect(update.mock.calls[0]![1]).toEqual({});
+    // 存回后重建：目录投影与编辑真值源都读到声明（发图拦截/原生请求体按它判定）。
+    const rebuilt = buildUserProvider(config);
+    expect(rebuilt.models.pi![0]!.supportsImageInput).toBe(true);
+    expect(rebuilt.models.pi![0]!.userModelConfig!.supportsImageInput).toBe(true);
+  } finally { cleanup(); Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+});
+
+it('drops the image-input declaration when set back to undeclared', async () => {
+  const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+  const previous = window.electronAPI;
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+  try {
+    const source = { ...buildUserProvider({ id: 'relay', name: 'Relay', auth: { method: 'apiKey' },
+      runtimes: { pi: { baseUrl: 'https://chat.example.invalid/v1',
+        models: [{ id: 'glm-5.3', name: 'GLM-5.3', supportsImageInput: false }] } } }), connected: true } as ProviderView;
+    render(<ModelAdvancedDrawer provider={source} row={{ id: 'glm-5.3', name: 'GLM-5.3', avail: ['pi'],
+      byAgent: { pi: source.models.pi![0] } }} open onOpenChange={vi.fn()} pricePresentationOf={() => null}
+      onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+    const trigger = screen.getByRole('button', { name: 'settings.providers.custom.fields.modelSupportsImageInput' });
+    expect(trigger.textContent).toContain('settings.providers.models.advanced.unsupported');
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'settings.providers.models.advanced.undeclared' }));
+    await waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const config = update.mock.calls[0]![0] as Parameters<typeof buildUserProvider>[0];
+    expect(config.runtimes.pi!.models[0]!).not.toHaveProperty('supportsImageInput');
+    // 未声明 ≠ 不支持：重建后不携带能力字段，跟目录/名称推断走（缺省口径不变）。
+    expect(buildUserProvider(config).models.pi![0]!.supportsImageInput).toBeUndefined();
+  } finally { cleanup(); Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+});
+
+it('keeps built-in providers\' image input read-only', () => {
+  draw();
+  expect(screen.queryByRole('button', { name: 'settings.providers.custom.fields.modelSupportsImageInput' })).toBeNull();
+  expect(screen.getByText('settings.providers.models.advanced.imageInput')).toBeTruthy();
+});
