@@ -7094,6 +7094,29 @@ export class PiAgent extends BaseAgent {
           );
         }
       }
+      // switch_session / set_model 都会把思考档位重置成模型默认（pi CLI 行为，见 switchModel
+      // 内注释与转录实证）。重载路径不会经过 switchModel 末尾的档位恢复 —— 发图触发的重载
+      // 或同路由切模触发的重载早退后，子进程实际跑在默认档而 UI 仍显示原档位。这里把会话
+      // 当前档位重新下发；失败只记 warn（与 switchModel 同一纪律：档位救不回也不能让发图/对账失败）。
+      if (mutableEffort && activeEffortSnapshot?.includes(mutableEffort)) {
+        try {
+          const restore = await proc.request({
+            type: 'set_thinking_level',
+            level: effortToPiThinkingLevel(mutableEffort),
+          });
+          if (!restore.success) {
+            deps.logger.warn('pi: restore thinking level after image capability reload failed', {
+              effort: mutableEffort,
+              error: restore.error,
+            });
+          }
+        } catch (err) {
+          deps.logger.warn('pi: restore thinking level after image capability reload errored', {
+            effort: mutableEffort,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       imageCapabilityReloadPending = false;
       this.deps.logger.debug('pi image capability refresh reloaded', {
         model,

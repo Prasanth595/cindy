@@ -73,7 +73,14 @@ export function useModelCatalogThinking(target: ModelCatalogThinkingTarget | nul
       // 界面上冒充已保存。刷新(GET)保留原值，不产生文案跳变。
       setState((prev) => ({
         ...(write
-          ? { value: write.tiers, isCustomized: write.tiers !== null }
+          ? {
+              value: write.tiers,
+              isCustomized: write.tiers !== null,
+              // 乐观期必须保留本次提交的默认档：下拉菜单在保存期间保持可用（多选不自动关），
+              // 用户在第一笔落盘前再勾一档时，抽屉会拿 state.defaultEffort 当 keptDefault ——
+              // 这里丢了它，第二笔就会把 null 写回文件，静默清掉用户原有的默认档。
+              defaultEffort: write.defaultTier,
+            }
           : prev),
         key,
         loading: !write,

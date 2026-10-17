@@ -5060,6 +5060,74 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("reapplies the session thinking level after an image capability reload reissues set_model", async () => {
+    // reload 的 switch_session/set_model 会把思考档位重置成模型默认（pi CLI 行为），而重载
+    // 路径不经过 switchModel 末尾的档位恢复 —— 发图触发的对账、同路由切模触发的对账早退后，
+    // 子进程实际跑在默认档而 UI 仍显示原档位。重载确认路由后必须把会话当前档位重发一遍。
+    const declared = { image: false };
+    const agent = new PiAgent({
+      ...byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-reload-tier",
+              name: "Native Reload Tier",
+              baseUrl: "http://reload-tier.test",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "model-a",
+                  input: ["text"],
+                  reasoning: true,
+                  thinkingLevelMap: { low: "low", max: "max" },
+                },
+                {
+                  id: "model-b",
+                  input: ["text"],
+                  reasoning: true,
+                  thinkingLevelMap: { low: "low", max: "max" },
+                },
+              ],
+            },
+          ],
+          env: {},
+        }),
+      ),
+      readModelImageInput: (providerId, modelId) =>
+        providerId === "native-reload-tier" && modelId === "model-b" && declared.image
+          ? true
+          : undefined,
+    });
+    const handle = await agent.startSession({
+      sessionId: "image-reload-thinking-restore",
+      workingDir: cwd,
+      model: "model-a",
+      providerId: "native-reload-tier",
+      effort: "max",
+    });
+    await handle.setModel!("model-b", { providerId: "native-reload-tier", effort: "max" });
+    expect(captured.runtimeModel).toBe("model-b");
+
+    // 用户此刻声明图片能力，同路由 setModel 触发对账：switch_session 重建会话 + 重发
+    // set_model（档位被重置）→ 修复后必须跟着一条 set_thinking_level 把会话档位找回来。
+    declared.image = true;
+    captured.requests.length = 0;
+    await handle.setModel!("model-b", { providerId: "native-reload-tier" });
+
+    const requestTypes = captured.requests.map((request) => request.type);
+    expect(requestTypes).toContain("switch_session");
+    expect(requestTypes.indexOf("set_model")).toBeGreaterThan(
+      requestTypes.indexOf("switch_session"),
+    );
+    expect(requestTypes.indexOf("set_thinking_level")).toBeGreaterThan(
+      requestTypes.indexOf("set_model"),
+    );
+    expect(
+      captured.requests.find((request) => request.type === "set_thinking_level"),
+    ).toEqual({ type: "set_thinking_level", level: "max" });
+    await handle.close();
+  });
+
   it("does not rewrite models.json or reload the runtime when the catalog already matches the snapshot", async () => {
     // 心跳会反复以同路由下发 setModel；声明与会话快照一致时必须零 I/O —— 不热写、不 switch_session。
     const agent = new PiAgent({

@@ -3,6 +3,14 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelCatalogThinking } from '../useModelCatalogThinking';
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 const get = vi.fn();
 const set = vi.fn();
 const ownerState = { current: true };
@@ -86,5 +94,45 @@ describe('model catalog thinking override hook', () => {
     });
     expect(get).toHaveBeenCalledTimes(1);
     expect(hook.result.current).toMatchObject({ tiers: ['low'], loading: false, error: false });
+  });
+
+  it('keeps the committed defaultEffort in optimistic state so a consecutive checkbox write does not null it', async () => {
+    // 回归（greptile P1）：乐观状态先前只保留 value/isCustomized，丢掉 defaultEffort。
+    // 下拉菜单在保存期间保持可用（多选不自动关），用户在第一笔落盘前再勾一档时，抽屉
+    // 拿 state.defaultEffort 当 keptDefault —— 丢了它，第二笔就会把 null 写回文件，
+    // 静默清掉用户原有的默认档。
+    get.mockResolvedValue({ tiers: ['low'], defaultEffort: 'low', isCustomized: false });
+    const firstWrite = deferred<void>();
+    let firstSettled = false;
+    set.mockImplementationOnce(() => {
+      firstSettled = true;
+      void firstWrite;
+      return firstWrite.promise as Promise<unknown>;
+    });
+    const hook = renderHook((props: Props) => useModelCatalogThinking(props.target), {
+      initialProps: { target } as Props,
+    });
+    await act(async () => {});
+
+    // 第一笔写入保持在途；等 React 冲出乐观渲染后，模拟用户再勾一档（抽屉按当前 state
+    // 计算 keptDefault）。第二笔立即落盘。
+    let second: Promise<boolean> | undefined;
+    await act(async () => {
+      void hook.result.current.setTiers(['low', 'high'], 'low');
+    });
+    const keptDefault = hook.result.current.defaultEffort;
+    set.mockResolvedValue({ tiers: ['low', 'high', 'max'], defaultEffort: 'low', isCustomized: true });
+    await act(async () => {
+      second = hook.result.current.setTiers(['low', 'high', 'max'], keptDefault);
+      await second;
+    });
+    await act(async () => {
+      firstWrite.resolve();
+    });
+    expect(firstSettled).toBe(true);
+
+    // 第二笔的默认档必须还是 low（被乐观状态保留），而不是 null（被丢掉后抽屉传回 null）。
+    expect(keptDefault).toBe('low');
+    expect(set.mock.calls[1]).toEqual([target, ['low', 'high', 'max'], 'low']);
   });
 });
