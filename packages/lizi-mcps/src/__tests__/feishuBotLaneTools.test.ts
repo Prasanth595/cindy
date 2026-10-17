@@ -256,7 +256,7 @@ describe('cindy_feishu_bot 轮次内直通工具', () => {
       expect((await guest.call('send_file', { path: 'report.txt' })).payload.errorCode).toBe('PATH_NOT_ABSOLUTE');
       expect(im.sendFile).not.toHaveBeenCalled();
       expect((await guest.call('send_file', { path: inside })).payload).toEqual({ ok: true, messageId: 'om_file' });
-      expect(im.sendFile).toHaveBeenLastCalledWith('g/oc_here', realpathSync(inside), undefined);
+      expect(im.sendFile).toHaveBeenLastCalledWith('g/oc_here', realpathSync.native(inside), undefined);
       await guest.close();
 
       // 没有工作目录的非主人轮次一律拒绝。

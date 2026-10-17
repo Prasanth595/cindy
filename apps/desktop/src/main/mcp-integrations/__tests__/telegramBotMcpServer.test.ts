@@ -216,7 +216,7 @@ describe('cindy_telegram_bot sends into the current lane', () => {
             messageId: '-100|501',
             file: 'chart.png',
           });
-          expect(t.sendMedia).toHaveBeenLastCalledWith('g/-100/7', { kind: 'photo', absPath: fs.realpathSync(inside), caption: 'c' });
+          expect(t.sendMedia).toHaveBeenLastCalledWith('g/-100/7', { kind: 'photo', absPath: fs.realpathSync.native(inside), caption: 'c' });
           expect(await call('send_media', { kind: 'document', path: '/etc/passwd' })).toMatchObject({
             ok: false,
             errorCode: 'PERMISSION_DENIED',
