@@ -9891,7 +9891,7 @@
         "discord": {
           "tokenLabel": "Bot Token",
           "tokenPlaceholder": "Discord Bot Token を貼り付け",
-          "ownerLabel": "自分の Discord ユーザー ID",
+          "ownerLabel": "あなたの Discord ユーザー ID",
           "ownerPlaceholder": "17〜20 桁の数字 ID",
           "ownerHint": "この ID からの DM だけが {{name}} に届き、{{name}} 自身の権限で実行されます。"
         },

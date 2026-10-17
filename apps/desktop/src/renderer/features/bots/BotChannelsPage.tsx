@@ -746,7 +746,8 @@ function BotChannelAddDialog({
               })}
             </div>
 
-            <div className="mt-4 flex min-h-0 flex-col gap-3 overflow-y-auto">
+            {/* 两字段 + 两行提示的高度；切换平台时对话框不随提示行数上下跳。 */}
+            <div className="mt-4 flex min-h-48 flex-col gap-3 overflow-y-auto">
               {existing ? (
                 <div
                   role="radiogroup"
