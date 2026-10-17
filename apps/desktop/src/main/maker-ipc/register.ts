@@ -10836,7 +10836,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }): Promise<SendToSessionInternalResult> {
     if (!params.requestReceipt) return sendToSessionInternalBase(params);
     if (!params.dispatcherSessionId || params.dispatcherSessionId.includes(':')) {
-      return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt requires a session-bound caller without \'::\' in its session id' };
+      return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt requires a session-bound caller whose session id contains no colon' };
     }
     if (params.botTaskCoordination) {
       return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt is unnecessary for delegated coordination; completion is returned automatically.' };
@@ -15858,6 +15858,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       if (!isDataOwnerBroadcastScopeCurrent(ownerScope)) {
         return { ok: false, errorCode: 'AGENT_NOT_READY', message: 'Data owner changed before delivery.' };
+      }
+      // user-visible 用途时 classification.coordination 为 null,委派互斥必须看 delegatedContinuation,
+      // 否则委派子任务会拿到回执 + 委派完成回传双重唤醒。
+      if (params.requestReceipt && classification.delegatedContinuation) {
+        return { ok: false, errorCode: 'INVALID_ARGS', message: 'request_receipt is unnecessary for delegated tasks; completion is returned automatically.' };
       }
       return sendToSessionInternal({
         ...params,

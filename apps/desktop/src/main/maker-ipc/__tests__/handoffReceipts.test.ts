@@ -16,16 +16,19 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildHandoffReceiptMessage, createHandoffReceiptSender } from '../handoffReceipts.js';
+import {
+  buildHandoffReceiptMessage,
+  createHandoffReceiptGate,
+  createHandoffReceiptSender,
+  type HandoffReceiptSend,
+} from '../handoffReceipts.js';
 
 const NONCE = '0f0e0d0c-0b0a-4999-8999-990099887766';
 const INPUT_ID = `handoff-receipt:disp-1:${NONCE}`;
 
-function fakeSend(
-  overrides?: Partial<Parameters<Parameters<typeof createHandoffReceiptSender>[0]['send']>[0]>,
-) {
-  const send = vi.fn(async () => ({ ok: true as const }));
-  return { send, overrides };
+function fakeSend() {
+  const send = vi.fn<HandoffReceiptSend>(async () => ({ ok: true }));
+  return { send };
 }
 
 describe('handoff receipt sender', () => {
@@ -41,7 +44,7 @@ describe('handoff receipt sender', () => {
         forceQueue: true,
       }),
     );
-    const [call] = send.mock.calls[0]!;
+    const call = send.mock.calls[0]![0];
     expect(call.persistedContent.startsWith('[UI_ACTION_TRIGGER]')).toBe(true);
     expect(call.message).toContain('消息 id');
     expect(call.message).toContain(INPUT_ID);
@@ -92,11 +95,38 @@ describe('handoff receipt sender', () => {
 });
 
 describe('buildHandoffReceiptMessage', () => {
-  it('声明不是用户消息, 带目标 session 与消息 id, 指引 get_chat_history', () => {
+  it('声明不是用户消息, 带目标 session 与消息 id, 指引 get_chat_history 且不承诺成功', () => {
     const text = buildHandoffReceiptMessage({ targetSessionId: 'tgt-9', inputClientId: INPUT_ID });
     expect(text).toContain('[Handoff receipt]');
     expect(text).toContain('tgt-9');
     expect(text).toContain(INPUT_ID);
     expect(text).toContain('get_chat_history');
+    expect(text).toContain('不保证成功');
+  });
+});
+
+describe('handoff receipt gate (终态失败轮次不回投)', () => {
+  it('同代次 error→done 配对被拦; 成功后不再拦截', () => {
+    const gate = createHandoffReceiptGate();
+    gate.markTerminalError('s1', 7);
+    expect(gate.isFailedTurn('s1', 7)).toBe(true);
+    // 拦截后同代次记录已清, 重放的 done 不再拦(幂等由确定性 clientId 负责)。
+    expect(gate.isFailedTurn('s1', 7)).toBe(false);
+  });
+
+  it('失败后的更新代次正常回投, 并清理陈旧记录', () => {
+    const gate = createHandoffReceiptGate();
+    gate.markTerminalError('s1', 7);
+    expect(gate.isFailedTurn('s1', 8)).toBe(false);
+    expect(gate.isFailedTurn('s1', 8)).toBe(false);
+  });
+
+  it('未标记失败(可重试 error / 从未失败)时放行; 乱序旧 done 保守拦截', () => {
+    const gate = createHandoffReceiptGate();
+    expect(gate.isFailedTurn('s2', 3)).toBe(false);
+    gate.markTerminalError('s2', 9);
+    expect(gate.isFailedTurn('s2', 4)).toBe(true);
+    gate.markTerminalError('s3', undefined);
+    expect(gate.isFailedTurn('s3', 5)).toBe(false);
   });
 });

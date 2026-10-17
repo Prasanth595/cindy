@@ -387,16 +387,21 @@ unlinked / shared-task 白名单，共享任务对端被 handler 再次拒绝。
 **send_to_session 新增可选 `request_receipt`（完成回执，仅本机目标）。** 2026-10-16。带
 `request_receipt: true` 时，投递到目标任务的输入用确定性 clientId
 `handoff-receipt:<dispatcherSessionId>:<nonce>`（幂等约定见 maker-shared `handoff-receipt`）；
-目标任务消费该输入的 turn 正常结束后，宿主向发起任务回投一条隐藏回执，clientId 为
-`handoff-receipt-done:<nonce>`，重试/重放经确定性 id + messages 表 (sessionId, clientId) 唯一索引
-幂等。回执是独立的自动发送路径：来源按目标任务盖既有 `origin`，模型说明首句
+目标任务消费该输入的 turn 收口后，宿主向发起任务回投一条隐藏回执，clientId 为
+`handoff-receipt-done:<nonce>`。幂等的真实机制：落库行由 messages 表 (sessionId, clientId)
+唯一索引去重；重复唤醒由输入协调器的进程内近期去重窗口拦截，跨重启不保留；回投仅做
+进程内有界重试（3 次），宿主在回投落库前重启的窗口内回执会丢失，不做持久重放账本。
+回执是独立的自动发送路径：来源按目标任务盖既有 `origin`，模型说明首句
 `[Handoff receipt]`（见 message-source.md），不携带对方回复正文。约束：仅本机目标
-（`deviceId::sessionId` 在工具层拒 `INVALID_ARGS`，远端通路不传该参数）；与委派协调关系互斥
-（委派已有完成自动回传，宿主拒 `INVALID_ARGS`）；dispatcher 未绑定任务或 id 含 `::` 拒绝；
-发起方传了显式 `clientId` 拒绝；回执只在 turn 正常结束时发送，错误/停止/中断的轮次不发，
-由 Agent 用 `check_session_task` / `get_chat_history` 核查。回执投递本身不再请求回执
-（clientId 前缀互斥），循环抑制由此保证；回投失败有界重试后仅记日志，不阻塞事件路径。
-工具成功结果回传 `receipt_requested: true` + `receipt_id`；旧调用方不传该参数，行为不变。
+（`deviceId::sessionId` 在工具层拒 `INVALID_ARGS`，远端通路不传该参数）；与委派任务互斥
+（委派已有完成自动回传；`coordination` 与 `user-visible` 用途都拒，宿主按
+delegatedContinuation 判定）；dispatcher 未绑定任务或 id 含冒号拒绝；
+发起方传了显式 `clientId` 拒绝。失败闸门：终态 error 的 turn 代次被记录，同代次的 done
+不回投（claude-code translator 在终态 error 后仍无条件推 done，靠该闸门拦住）；
+回执仅表示处理已收口，不保证成功，结果与实际状态由 Agent 用 `get_chat_history` 核实。
+回执投递本身不再请求回执（clientId 前缀互斥），循环抑制由此保证；回投失败仅记日志，
+不阻塞事件路径。工具成功结果回传 `receipt_requested: true` + `receipt_id`；
+旧调用方不传该参数，行为不变。
 
 **新旧版本。** 旧被控端没有 `maker:session:handoff`，返回 `CHANNEL_NOT_ALLOWED`；发起端报
 `REMOTE_UNSUPPORTED` 并说明消息没有发出，不退回成 `maker:send` 或 `maker:input:enqueue`

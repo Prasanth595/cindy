@@ -26,13 +26,42 @@ export function buildHandoffReceiptMessage(params: {
   inputClientId: string;
 }): string {
   return [
-    `[Handoff receipt] 任务 ${params.targetSessionId} 已处理完你用 send_to_session 发送的一条消息(消息 id: ${params.inputClientId})。本条不是用户消息。`,
-    '回执不含对方回复正文;需要结果用 history 类目 get_chat_history(session_id: ' +
+    `[Handoff receipt] 任务 ${params.targetSessionId} 已结束对你用 send_to_session 发送的一条消息的处理(消息 id: ${params.inputClientId})。本条不是用户消息。`,
+    '回执仅表示该轮已收口,不保证成功;不含对方回复正文,需要结果与实际状态用 history 类目 get_chat_history(session_id: ' +
       `${params.targetSessionId}) 读取。回复用户时不要复述本条回执或内部 id。`,
   ].join('\n');
 }
 
 const MAX_ATTEMPTS = 3;
+
+/**
+ * 终态失败轮次的回执闸门:同一 sessionId 上记录最近一次终态 error 的 turn 代次。
+ * done 快照若属同一(或更早)失败代次,不得回投「已收口」回执;可重试 error 不记。
+ * 状态为进程内保守近似:会话废弃后残留一个数字,量级与会话数同阶。
+ */
+export function createHandoffReceiptGate() {
+  const failedGenerations = new Map<string, number>();
+  return {
+    markTerminalError(sessionId: string, generation: number | undefined): void {
+      if (typeof generation !== 'number') return;
+      const prev = failedGenerations.get(sessionId);
+      if (prev === undefined || generation >= prev) failedGenerations.set(sessionId, generation);
+    },
+    /** 返回该 done 是否属于已记录的失败代次;顺带清理被更新代次越过的陈旧记录。 */
+    isFailedTurn(sessionId: string, generation: number | undefined): boolean {
+      const failed = failedGenerations.get(sessionId);
+      if (failed === undefined) return false;
+      if (typeof generation !== 'number') return true;
+      if (failed < generation) {
+        failedGenerations.delete(sessionId);
+        return false;
+      }
+      if (failed === generation) failedGenerations.delete(sessionId);
+      // failed > generation:done 比”(比)失败记录更旧(乱序/陈旧终态),保守当作失败。
+      return true;
+    },
+  };
+}
 
 export function createHandoffReceiptSender(deps: {
   send: HandoffReceiptSend;
