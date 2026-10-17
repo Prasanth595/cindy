@@ -145,7 +145,17 @@ let killSpy: MockInstance<(pid: number, signal?: string | number | undefined) =>
 beforeEach(() => {
   // POSIX 路径的 SIGTERM/SIGKILL 走 process.kill(负 pid):同样只在假进程上生效,
   // 真正发信号的实现被替换掉,测试因此与平台无关。
-  killSpy = vi.spyOn(process, 'kill').mockImplementation((() => {
+  // 例外是 sig === 0 的组判活探针(waitForExit 用它确认「整棵树真的停了」):
+  // 探针不能触发 exitNow(那会把「询问」变成「杀进程」),只能按假进程的退出状态
+  // 回答 —— 未退出:组还在(不抛);已退出:组已消亡(ESRCH)。
+  killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+    if (signal === 0) {
+      const entry = fake.pending.at(-1);
+      if (!entry || entry.killed) {
+        throw Object.assign(new Error('esrch'), { code: 'ESRCH' });
+      }
+      return true;
+    }
     fake.pending.at(-1)?.exitNow(1);
     return true;
   }) as unknown as typeof process.kill);
