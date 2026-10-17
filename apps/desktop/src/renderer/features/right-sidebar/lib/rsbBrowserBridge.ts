@@ -38,6 +38,7 @@ import {
 } from '../store';
 import { requestRightSidebarVisibility } from './sidebarCommands';
 import { isPopupSpawnedTab } from './popupTabs';
+import { findNativePopupSurfaceForTab } from './nativePopupTabs';
 
 const log = createLogger('rightSidebar.rsbBrowserBridge');
 
@@ -477,10 +478,10 @@ async function handleTabOpRequest(
       // with "tab not found".
       //
       // Fix: synchronously acquire the pool entry NOW. That creates the
-      // <webview> DOM node inside the off-screen parking container (already
+      // <webview> DOM node inside the invisible parking container (already
       // attached to document.body — see browserWebviewPool.ensureContainer),
       // which is enough for Electron to create the guest webContents.
-      // Setting `src` kicks off navigation. We wait for `dom-ready`, report
+      // Setting `src` kicks off navigation. We wait for guest attachment, report
       // (sessionId, tabId, webContentsId) to main, and ONLY THEN ack the
       // tab-op back to the backend — so by the time the agent's next call
       // arrives, the registry has the mapping.
@@ -510,13 +511,21 @@ async function handleTabOpRequest(
         result = { reqId, ok: false, error: `tab ${req.tabId} not found` };
       } else {
         await setActiveTab(req.sessionId, req.tabId);
+        const tab = bucket.tabs.find((t) => t.id === req.tabId);
+        if (tab?.kind === 'web-browser' && !hasNativePopupSurface(tab)) {
+          await eagerSpawnAndReport(
+            req.sessionId,
+            tab.id,
+            (tab.state as { url?: string } | null)?.url ?? 'about:blank',
+          );
+        }
         // Same rationale as open: focus implies the user should see the tab —
         // but it's still the agent acting, so no OS-level focus steal.
         requestRightSidebarVisibility('open', { sessionId: req.sessionId, userInitiated: false });
         result = { reqId, ok: true, tabId: req.tabId };
       }
     } else if (req.op === 'ensure') {
-      // 直连动作(navigate / screenshot / pdf / console / act)的 detached 恢复
+      // 直连动作(navigate / screenshot / pdf / console / act)的 guest 恢复
       // 路径:把一个已存在的 web-browser tab 的 webview 在本 renderer 重新物化
       // 并 report 回 main 的 TabRegistry。与 focus 的区别:零用户可见副作用 ——
       // 不改 activeTab、不发 visibility 请求(agent 只是要继续操作这个 tab,
@@ -528,7 +537,7 @@ async function handleTabOpRequest(
       const tab = req.tabId
         ? bucket.tabs.find((t) => t.id === req.tabId)
         : pickDefaultBrowserTab(bucket);
-      if (!tab || tab.kind !== 'web-browser') {
+      if (!tab || tab.kind !== 'web-browser' || hasNativePopupSurface(tab)) {
         result = {
           reqId,
           ok: false,
@@ -586,9 +595,17 @@ function pickDefaultBrowserTab(
   return undefined;
 }
 
+/** Native surfaces own their exact WebContents; never replay auth URLs in a second guest. */
+function hasNativePopupSurface(tab: ReturnType<typeof getBucket>['tabs'][number]): boolean {
+  return Boolean(
+    findNativePopupSurfaceForTab(tab.id)?.surfaceId
+    ?? (tab.state as { nativePopupSurfaceId?: string } | null)?.nativePopupSurfaceId,
+  );
+}
+
 /**
  * open / ensure 共用的 webview 物化:acquire pool entry → setAttribute('src')
- * → 等 dom-ready → report (sessionId, tabId, webContentsId) 给 main。
+ * → 等 did-attach(或 dom-ready 兜底) → 等 report IPC 完成后应答。
  *
  * 为什么要 eager:tab 在 store 里 ≠ `<webview>` 存在 —— `BrowserTabBody` 只在
  * 用户看着这个 session 时才 mount。agent 跨 session 自动化时 webview 永远不会
@@ -607,65 +624,46 @@ export async function eagerSpawnAndReport(
   const entry = browserWebviewPool.acquire(tabId);
   try {
     const webContentsId = entry.webview.getWebContentsId();
-    // Fire-and-forget:report 失败不致命 —— agent 下一个动作会得到清晰的
-    // "tab not found"。
-    void reportRsbBrowserTab({ sessionId, tabId, webContentsId });
+    // Wait for registration before acknowledging open / ensure / focus.
+    await reportRsbBrowserTab({ sessionId, tabId, webContentsId });
     return;
   } catch {
     /* 尚未 attach —— 走下面的首次 spawn 路径 */
   }
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     let settled = false;
-    const finish = () => {
+    let reporting = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      entry.webview.removeEventListener('did-attach', onAttach);
-      entry.webview.removeEventListener('dom-ready', onReady);
-      resolve();
+      clearTimeout(timer);
+      entry.webview.removeEventListener('did-attach', onAttached);
+      entry.webview.removeEventListener('dom-ready', onAttached);
+      if (error) reject(error);
+      else resolve();
     };
-    // 早期上报:did-attach 在导航提交前就触发,此时 getWebContentsId 已可取。
-    // 只等 dom-ready 会留一个竞态窗口 —— 页面 head 里的同步脚本能在 dom-ready
-    // 之前 window.open(),那时 registry 还没有本 tab 的记录,popup 的 opener
-    // 反查落空、归属丢失。这里提早把映射送进 main,把窗口压缩到"IPC 在途"的
-    // 毫秒级(guest 脚本要跑起来至少要等导航提交,晚于 did-attach)。
-    // report 幂等(同 tabId 重报只是替换记录),与下面 dom-ready 的兜底上报共存。
-    const onAttach = () => {
+    // Registration, not network-bound dom-ready, makes a guest controllable.
+    // Both events can fire; await one report and finish before the 5s main
+    // bridge timeout. A missing attach is a real failure, never a success ack.
+    const onAttached = () => {
+      if (reporting || settled) return;
+      let webContentsId: number;
       try {
-        const webContentsId = entry.webview.getWebContentsId();
-        void reportRsbBrowserTab({ sessionId, tabId, webContentsId });
+        webContentsId = entry.webview.getWebContentsId();
       } catch {
-        /* attach 尚未完成到可取 id —— dom-ready 兜底。 */
+        return; // dom-ready can retry if did-attach ran too early.
       }
+      reporting = true;
+      void reportRsbBrowserTab({ sessionId, tabId, webContentsId }).then(() => finish());
     };
-    const onReady = () => {
-      try {
-        const webContentsId = entry.webview.getWebContentsId();
-        // Fire-and-forget: report failures are non-fatal — the agent's
-        // next call will surface "tab not found" cleanly if it really
-        // didn't land.
-        void reportRsbBrowserTab({ sessionId, tabId, webContentsId });
-      } catch {
-        // Race: getWebContentsId throws if attach hasn't completed yet.
-        // dom-ready firing usually means attach is done, but defend
-        // anyway — useBrowserWebview will retry on its own dom-ready
-        // when the user eventually mounts the tab.
-      }
-      finish();
-    };
-    entry.webview.addEventListener('did-attach', onAttach);
-    entry.webview.addEventListener('dom-ready', onReady);
-    // 8s fallback so a broken site / network failure doesn't make the
-    // backend op hang forever. Tab persists in the bucket; user switching
-    // to the session — or agent retry — recovers.
-    setTimeout(finish, 8000);
-    // Kick off the load. `<webview>` is attached to the off-screen
-    // container, so setAttribute('src') triggers Electron's attach +
-    // navigate pathway. (loadURL needs an already-created webContents;
-    // setAttribute('src') is the safer "first navigation" form.)
+    entry.webview.addEventListener('did-attach', onAttached);
+    entry.webview.addEventListener('dom-ready', onAttached);
+    timer = setTimeout(() => finish(new Error('browser guest registration timed out')), 4000);
     try {
       entry.webview.setAttribute('src', url);
-    } catch {
-      finish();
+    } catch (err) {
+      finish(err instanceof Error ? err : new Error(String(err)));
     }
   });
 }

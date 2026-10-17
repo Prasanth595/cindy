@@ -21,6 +21,7 @@ import {
   _resetRsbBrowserBridgeForTests,
   consumePendingKillCause,
   forceKillBrowserTab,
+  eagerSpawnAndReport,
   initRsbBrowserBridge,
   PENDING_KILL_CAUSE_TTL_MS,
   releaseRsbBrowserTab,
@@ -30,6 +31,7 @@ import {
   subscribeTabResourceEvent,
 } from '../rsbBrowserBridge';
 import { _resetPopupTabsForTests, markPopupSpawnedTab } from '../popupTabs';
+import { _resetNativePopupTabsForTests, registerNativePopupTab } from '../nativePopupTabs';
 import {
   _resetStore,
   addTab,
@@ -111,12 +113,14 @@ function clearIpc(): void {
 beforeEach(() => {
   _resetRsbBrowserBridgeForTests();
   _resetPopupTabsForTests();
+  _resetNativePopupTabsForTests();
   _resetStore();
 });
 
 afterEach(() => {
   _resetRsbBrowserBridgeForTests();
   _resetPopupTabsForTests();
+  _resetNativePopupTabsForTests();
   _resetStore();
   clearIpc();
   // Drain the pool — tests share the singleton.
@@ -485,6 +489,109 @@ describe('rsbBrowserBridge — initialization & teardown', () => {
     );
 
     acquireSpy.mockRestore();
+  });
+
+  it('eager registration waits for main IPC before acknowledging an attached guest', async () => {
+    const api = installFakeIpc();
+    let registered!: () => void;
+    api.report.mockImplementation(() => new Promise<void>((resolve) => { registered = resolve; }));
+    const entry = browserWebviewPool.acquire('attached-tab');
+    entry.webview.getWebContentsId = () => 77;
+    let finished = false;
+    const pending = eagerSpawnAndReport('owner-session', 'attached-tab', 'https://example.test')
+      .then(() => { finished = true; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    registered();
+    await pending;
+    expect(finished).toBe(true);
+  });
+
+  it('registration finishes on attach without waiting for slow dom-ready', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = installFakeIpc();
+      let registered!: () => void;
+      api.report.mockImplementation(() => new Promise<void>((resolve) => { registered = resolve; }));
+      const entry = browserWebviewPool.acquire('slow-page');
+      let attached = false;
+      entry.webview.getWebContentsId = () => {
+        if (!attached) throw new Error('not attached');
+        return 79;
+      };
+      let finished = false;
+      const pending = eagerSpawnAndReport('owner', 'slow-page', 'https://example.test')
+        .then(() => { finished = true; });
+      await vi.advanceTimersByTimeAsync(3000);
+      attached = true;
+      entry.webview.dispatchEvent(new Event('did-attach'));
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      registered();
+      await pending;
+      expect(finished).toBe(true);
+      // No dom-ready event was fired and the main bridge's 5s deadline is not reached.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('missing attach rejects before the main bridge timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      installFakeIpc();
+      const entry = browserWebviewPool.acquire('broken-page');
+      entry.webview.getWebContentsId = () => { throw new Error('not attached'); };
+      const pending = eagerSpawnAndReport('owner', 'broken-page', 'https://example.test');
+      const rejected = expect(pending).rejects.toThrow('registration timed out');
+      await vi.advanceTimersByTimeAsync(4000);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['focus', 'ensure'] as const)('%s never spawns a duplicate guest for a live native auth popup', async (op) => {
+    const api = installFakeIpc();
+    initRsbBrowserBridge();
+    await ensureHydrated('owner');
+    const tab = await addTab('owner', 'web-browser', { url: 'https://example.test/one-time-auth' });
+    registerNativePopupTab(tab.id, 'owner', 'native-auth-surface');
+    api.tabOpCb?.({ reqId: 'native-op', op, sessionId: 'owner', tabId: tab.id });
+    await vi.waitFor(() => expect(api.tabOpResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reqId: 'native-op', ok: op === 'focus' }),
+    ));
+    expect(api.report).not.toHaveBeenCalled();
+    expect(browserWebviewPool.peek(tab.id)).toBeNull();
+  });
+
+  it('focus restores registration of an existing browser tab', async () => {
+    const api = installFakeIpc();
+    initRsbBrowserBridge();
+    await ensureHydrated('owner');
+    const tab = await addTab('owner', 'web-browser', { url: 'https://example.test' });
+    const entry = browserWebviewPool.acquire(tab.id);
+    entry.webview.getWebContentsId = () => 78;
+    api.tabOpCb?.({ reqId: 'focus-existing', op: 'focus', sessionId: 'owner', tabId: tab.id });
+    await vi.waitFor(() => expect(api.tabOpResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reqId: 'focus-existing', ok: true, tabId: tab.id }),
+    ));
+    expect(api.report).toHaveBeenCalledWith({ sessionId: 'owner', tabId: tab.id, webContentsId: 78 });
+  });
+
+  it('ensure cannot restore a tab belonging to another session', async () => {
+    const api = installFakeIpc();
+    initRsbBrowserBridge();
+    await ensureHydrated('owner');
+    const tab = await addTab('owner', 'web-browser', { url: 'https://example.test' });
+    api.tabOpCb?.({ reqId: 'foreign', op: 'ensure', sessionId: 'other', tabId: tab.id });
+    await vi.waitFor(() => expect(api.tabOpResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reqId: 'foreign', ok: false }),
+    ));
+    expect(api.report).not.toHaveBeenCalled();
+    expect(browserWebviewPool.peek(tab.id)).toBeNull();
   });
 
   it('tab-op request: close routes through store and acks with ok=false on unknown session (P3)', async () => {
