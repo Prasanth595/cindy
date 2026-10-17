@@ -118,6 +118,28 @@ describe('stale explicit picks', () => {
     expect(resolveBotGroupMentions('hello', { members: [], allLabels: [], tracked })).toEqual({ all: false, botIds: [] });
     expect(resolveBotGroupMentions('@Anna hello', { members: [], allLabels: [], tracked })).toEqual({ all: false, botIds: [] });
   });
+
+  it('keeps a picked companion named like a 「所有人」 label through edits; typing the word still means everyone', () => {
+    const allLabels = ['所有人', 'all', 'everyone'];
+    for (const name of allLabels) {
+      const members = [{ botId: 'namesake', name }, { botId: 'xiaoman', name: '小满' }];
+      const tracked = [{ botId: 'namesake', label: name, start: 0 }];
+      const draft = `@${name} 看下`;
+      const input = { members, allLabels, tracked };
+      expect(resolveBotGroupMentions(draft, input)).toEqual({ all: false, botIds: ['namesake'] });
+      // An edit elsewhere keeps the pick; resolving alone is not enough if retaining drops it.
+      const edited = `${draft} @小满`;
+      const kept = retainBotGroupTrackedMentions(draft, edited, { ...input, editStart: draft.length });
+      expect(kept).toEqual(tracked);
+      expect(resolveBotGroupMentions(edited, { ...input, tracked: kept })).toEqual({ all: false, botIds: ['namesake', 'xiaoman'] });
+      // Retyping the token forgets the pick, and a typed reserved word addresses everyone.
+      const retyped = retainBotGroupTrackedMentions(draft, draft, { ...input, editStart: 0, editEnd: name.length + 1 });
+      expect(retyped).toEqual([]);
+      expect(resolveBotGroupMentions(draft, { ...input, tracked: retyped })).toEqual({ all: true, botIds: [] });
+      // A departed pick stays an explicit target for the host to reject, never everyone.
+      expect(resolveBotGroupMentions(draft, { members: [], allLabels, tracked })).toEqual({ all: false, botIds: ['namesake'] });
+    }
+  });
 });
 
 describe('mention picker helpers', () => {

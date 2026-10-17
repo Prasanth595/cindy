@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  getNewTaskDraftSelection,
   getSelectedNewMakerRoute,
   getRemoteNewMakerDefaults,
   getRemoteNewMakerDefaultsByVendor,
@@ -170,6 +171,19 @@ it('does not reuse the selected default route across owners or older snapshots',
   expect(getSelectedNewMakerRoute('owner-a')).toBeUndefined();
 });
 
+it('scopes the headless new-task draft selection to the owner that pushed it', () => {
+  setNewMakerDraftCache({
+    lastByVendor: { cc: { model: 'claude-opus-5-5', providerId: 'anthropic' } },
+    modelChosenByVendor: { cc: true },
+    effortByModel: {},
+    fastModeByModel: {},
+  }, 'owner-a');
+  expect(getNewTaskDraftSelection('owner-a', 'claude-code')).toEqual({
+    model: 'claude-opus-5-5', providerId: 'anthropic', chosenByUser: true,
+  });
+  // 切账号后新 renderer 还没推快照的窗口:不拿上一个账号的偏好。
+  expect(getNewTaskDraftSelection('owner-b', 'claude-code')).toBeNull();
+});
 
 describe('owner-fenced new task and Bot default mirror', () => {
   const owner = { dataOwnerId: 'B', ownerGeneration: 3 };

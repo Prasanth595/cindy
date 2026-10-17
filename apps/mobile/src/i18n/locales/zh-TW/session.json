@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "開啟任務",
+    "loading": "正在讀取任務…",
+    "failed": "未能讀取任務資訊",
+    "missing": "這台電腦沒有傳回該任務的資訊",
+    "timedOut": "讀取任務資訊逾時",
+    "retry": "重新讀取",
+    "back": "返回"
+  },
   "failedScheduleNotice": {
     "text": "先前有自動執行失敗。",
     "precheck": "自動檢查暫時受阻。",
@@ -31,7 +40,12 @@
     "openMicPermission": "開啟麥克風權限設定",
     "maxAttachments": "最多新增 {{max}} 個附件。",
     "voiceStopRecording": "停止錄音",
-    "capabilitiesUnsupported": "無法讀取電腦端的指令和資源清單，請更新電腦上的 Cindy 後重試"
+    "capabilitiesUnsupported": "無法讀取電腦端的指令和資源清單，請更新電腦上的 Cindy 後重試",
+    "plugins": "插件",
+    "pluginsChooseDevice": "請先選擇裝置",
+    "pluginsLoading": "正在載入插件…",
+    "pluginsEmpty": "尚無已安裝插件",
+    "pluginsReload": "重新載入插件"
   },
   "presentation": {
     "collaboration": {
@@ -201,6 +215,7 @@
     "retry": "重試",
     "firstMessageNotSent": "首條訊息沒有發出，內容已還原到輸入框。",
     "attachmentsNotCarriedBack": "有 {{count}} 個附件沒能一起帶回，需要重新新增。",
+    "pendingAttachmentsNotCarriedBack": "尚未完成選取或上傳的附件沒能一起帶回，請重新新增。",
     "localStorageFull": "Cindy 在手機上的本機儲存空間已滿，訊息沒能儲存，請稍後重試。",
     "commandWaitsForSession": "任務還在建立中，這個命令要等任務就緒後才能用，請稍後再發。",
     "locateMessageNotFound": "未找到要定位的訊息。",
@@ -222,6 +237,7 @@
     "sessionNotSyncedRetry": "任務尚未同步完成，請稍後再試。",
     "savingPreviousQueueEdit": "正在儲存上一條排隊訊息的修改，完成後再編輯。",
     "attachmentsUploadingBeforeEdit": "還有附件正在上傳，等上傳完成後再編輯排隊訊息。",
+    "goalCommandAttachments": "請單獨傳送 /goal。草稿和附件已保留。",
     "goalAlreadyActive": "該任務已有進行中的目標，請先在此處理它。",
     "resetReconfirmTitle": "請重新確認",
     "resetOfferExpired": "重置憑證已過期，請確認重新整理後的配額資訊。",
@@ -237,6 +253,7 @@
     "deleteMessageTitle": "刪除本條訊息？",
     "deleteMessageBody": "使用者訊息只刪除本條；AI 訊息會刪除上一次使用者輸入之後產生的整輪輸出。之後的訊息繼續保留。下次傳送時，AI 上下文會從剩餘記錄重建。",
     "deleteMessageAction": "刪除本條訊息",
+    "deleteMessageBusy": "請等當前回覆結束後再刪除訊息",
     "readingCapabilities": "正在讀取 {{agent}} 執行能力…",
     "editingQueueMessageNumbered": "正在編輯第 {{index}} 條排隊訊息",
     "editingQueueMessage": "正在編輯排隊訊息",
@@ -281,6 +298,7 @@
     "shareMessage": "分享這條訊息"
   },
   "new": {
+    "goalCommandNeedsSession": "請進入既有任務清除目標。",
     "selectDevice": "選擇裝置",
     "workspaceDialogue": "對話",
     "workspaceProject": "專案",
@@ -353,7 +371,6 @@
     "worktreeBranchesLoading": "正在讀取分支…",
     "worktreeBranchSaving": "正在同步所選分支…",
     "worktreeBranchSyncFailed": "無法確認已儲存的源分支，請重新選擇分支",
-    "worktreeSettingsSaving": "正在同步 worktree 設定…",
     "worktreeSettingsSyncFailed": "無法儲存 worktree 預設設定，仍可依目前選擇繼續",
     "worktreeBranchesRetry": "無法讀取分支，點按重試",
     "worktreeDetecting": "檢測環境中…",
@@ -486,6 +503,8 @@
     "deleteOne": "刪除本條訊息"
   },
   "tail": {
+    "readableHistoryRecovery": "用可讀歷史建立新任務",
+    "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
     "requestFormatError": "應用程式送出的請求格式有誤，本次回覆未能完成。",
     "replyFailed": "本次回覆未能完成。請查看錯誤詳情以瞭解原因。",
     "showErrorDetails": "查看錯誤詳情",
@@ -508,10 +527,6 @@
     "moreOptions": "更多選項",
     "archiveConversation": "歸檔任務",
     "closeActionMenu": "關閉任務操作選單",
-    "referenceAroundAnchor": "連結附近",
-    "referenceRecent": "最近訊息",
-    "referenceCount": "{{num}} 條",
-    "referenceTruncated": "已截斷",
     "pinnedSection": "置頂",
     "extraDirsSummary": "當前 {{num}} 個附加目錄",
     "noExtraDirsSummary": "當前沒有附加目錄",
@@ -558,6 +573,8 @@
     "REMOTE_AGENT_EXPIRED": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
     "REMOTE_AGENT_NOT_FOUND": "這個任務在執行 Agent 的電腦上已經結束。請重新傳送。",
     "REMOTE_AGENT_BUSY": "那臺電腦上同時執行的任務太多。先結束一些任務後再試。",
+    "REMOTE_AGENT_DEVICE_LIMIT": "這台裝置保留的遠端任務數已達上限。可封存暫時不用的任務，或請遠端電腦的主人在「遠端與分享」中提高上限。",
+    "REMOTE_AGENT_TOTAL_LIMIT": "遠端電腦保留的任務總數已達上限。請那台電腦的主人釋放暫時不用的任務，或在「遠端與分享」中提高上限。",
     "REMOTE_AGENT_UNSUPPORTED": "那臺電腦上這個 Agent 無法使用。在那臺電腦上安裝或登入後再試，或換一個 Agent。",
     "REMOTE_AGENT_INVALID": "與執行 Agent 的電腦通訊時出錯。請重試；如果持續出現，請把兩臺電腦上的 Cindy 都更新到最新版。",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "那臺電腦沒有允許遠端呼叫這個供應商。請在那臺電腦的「設定 → 模型供應商」裡開啟「允許遠端呼叫」，或換一個模型。",

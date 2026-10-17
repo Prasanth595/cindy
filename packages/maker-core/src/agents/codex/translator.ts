@@ -32,6 +32,7 @@ import {
   stripInternalWebCitations,
 } from '@cindy/maker-shared/internal-citation';
 
+import { UsageTokenSpeedMeter } from '../shared/token-speed.js';
 import type { AgentEvent, AgentTaskStatus, AgentTaskUpdateEventData } from '../../types/events.js';
 import { normalizeAccountRateLimitSnapshot } from '../../types/account-rate-limits.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
@@ -79,6 +80,8 @@ export interface CodexRuntimeState {
   reasoningTextLen: Map<string, number>;
   /** item.id → agentMessage 已 emit 文本字符长度(citation 归一化后的空间,见 handleAgentMessage)。 */
   itemTextLen: Map<string, number>;
+  /** Live tok/s from accepted usage and its paired generation time. */
+  tokenSpeed: UsageTokenSpeedMeter;
   /** Current model-active interval start; null while tools/approvals own the turn. */
   generationStartedAt: number | null;
   /** Tool/approval boundaries currently owning the turn. Generation resumes after all finish. */
@@ -130,6 +133,7 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
+    tokenSpeed: new UsageTokenSpeedMeter(),
     generationStartedAt: null,
     generationPendingToolIds: new Set(),
     generationDurationMs: 0,
@@ -166,6 +170,7 @@ function sampleCodexGenerationHeartbeat(rt: CodexRuntimeState, now = Date.now())
     now - previous > CODEX_GENERATION_HEARTBEAT_MS + CODEX_GENERATION_SUSPEND_GAP_MS
   ) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
   }
   rt.generationHeartbeatAt = now;
 }
@@ -183,6 +188,7 @@ function startCodexGenerationHeartbeat(rt: CodexRuntimeState): void {
 /** Reset per-turn model-generation timing; turn wall-clock is tracked separately by the host. */
 export function resetCodexGenerationTiming(rt: CodexRuntimeState): void {
   stopCodexGenerationHeartbeat(rt);
+  rt.tokenSpeed.reset();
   rt.generationStartedAt = null;
   rt.generationPendingToolIds.clear();
   rt.generationDurationMs = 0;
@@ -199,6 +205,7 @@ function closeCodexGenerationInterval(rt: CodexRuntimeState, endedAt: number): v
   if (startedAt === null) return;
   if (endedAt < startedAt) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
     return;
   }
   rt.generationDurationMs += endedAt - startedAt;
@@ -324,6 +331,7 @@ function noteCodexGenerationBoundary(
   }
   const pauseId = `item:${item.id}`;
   if (phase === 'started') {
+    // The model finished emitting this call; its execution is not generation time.
     pauseCodexGeneration(rt, turnId, pauseId, receivedAt);
     return;
   }

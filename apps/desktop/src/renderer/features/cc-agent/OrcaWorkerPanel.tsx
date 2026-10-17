@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import { Button } from '@/components/ui/button';
 import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';
 import { toast } from '@/lib/toast';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
@@ -18,6 +19,7 @@ import { CreateWorkerPopover } from './CreateWorkerPopover';
 import { RemoteWorkerSessionPane } from './RemoteWorkerSessionPane';
 import { WorkerListToolbar } from './RolePillDropdown';
 import { useOrcaWorkerSelection } from './hooks/useOrcaWorkerSelection';
+import { useWorkerAgentDevices } from './hooks/useWorkerAgentDevices';
 import { subscribeNewWorkerShortcut } from './lib/newWorkerShortcut';
 import type { ConversationSearchJump } from '../../../shared/conversationSearchJump';
 import { isActiveWorkerStatus } from '../../../shared/orca-worker-status';
@@ -44,6 +46,11 @@ export interface OrcaWorkerPanelProps {
   onFocusWorkerSessionIdConsumed?: (revision: number) => void;
   onSelectionIntentCleared?: (revision: number) => void;
   onSearchJumpConsumed?: () => void;
+  /**
+   * 分离侧栏窗口专用：合并回主窗口并在主窗协同 tab 选中该 Worker。分离窗只有收窄的
+   * preload 和轻量入口，撑不起完整聊天视图，所以这里不嵌入 Worker 对话。
+   */
+  onViewWorkerInMainWindow?: (workerSessionId: string) => void;
 }
 
 function sameVisibleSessionPayload(
@@ -68,9 +75,19 @@ export function OrcaWorkerPanel({
   onFocusWorkerSessionIdConsumed,
   onSelectionIntentCleared,
   onSearchJumpConsumed,
+  onViewWorkerInMainWindow,
 }: OrcaWorkerPanelProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // 分离窗只显示占位、不显示 Worker 对话：不能当作用户在看这个 Worker，
+  // 否则「已完成」会被自动确认、提醒也会被清掉。
+  const workerConversationVisible = viewVisible && !isSidebarWindow();
+  // Worker 可以放 Agent 的其他电脑与分享；Lead 的 Agent 位置未解析时不提供，Worker 跟 Lead。
+  const workerAgentDevices = useWorkerAgentDevices({
+    controlledDeviceId: agentDeviceId === undefined ? undefined : deviceId,
+    leadAgentDeviceId: agentDeviceId,
+    sshRemote,
+  });
   const {
     workers,
     focusedWorker,
@@ -89,7 +106,7 @@ export function OrcaWorkerPanel({
   } = useOrcaWorkerSelection({
     leadSessionId,
     deviceId: deviceId ?? undefined,
-    viewVisible,
+    viewVisible: workerConversationVisible,
     focusWorkerSessionId,
     focusWorkerHintRevision,
     searchJump,
@@ -157,15 +174,16 @@ export function OrcaWorkerPanel({
     if (!isAgentIslandSupported()) return;
     // 可见性归属契约:协同 tab 真正可见时由 worker panel 上报 [lead, worker]；
     // 隐藏、切 tab 或折叠 RSB 时回落为 lead,避免和主 Lead 视图靠 effect 时序抢归属。
+    // 分离窗只显示占位,Worker 对话不可见,同样回落为 lead。
     const visibleSessionIds =
-      viewVisible && workerSessionId && workerSessionId !== leadSessionId
+      workerConversationVisible && workerSessionId && workerSessionId !== leadSessionId
         ? [leadSessionId, workerSessionId]
         : leadSessionId;
     if (!sameVisibleSessionPayload(lastAgentIslandPayloadRef.current, visibleSessionIds)) {
       lastAgentIslandPayloadRef.current = visibleSessionIds;
       void window.electronAPI.agentIsland?.setVisibleSession?.(visibleSessionIds);
     }
-  }, [leadSessionId, viewVisible, workerSessionId]);
+  }, [leadSessionId, workerConversationVisible, workerSessionId]);
 
   useEffect(() => {
     return () => {
@@ -191,11 +209,26 @@ export function OrcaWorkerPanel({
           onOpenCreate={() => void handleOpenCreate()}
           onOpenSettings={isSidebarWindow() || deviceId !== null ? undefined : handleOpenSettings}
           onArchiveWorker={handleArchiveWorker}
-          clearAttentionWhenVisible={viewVisible}
+          clearAttentionWhenVisible={workerConversationVisible}
         />
       </div>
       <div className="chat-rail-compact min-h-0 flex-1">
-        {workerSessionId && remoteDevice ? (
+        {workerSessionId && isSidebarWindow() ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              {t('orca.split.workerHiddenInSeparateWindow')}
+            </p>
+            {onViewWorkerInMainWindow && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onViewWorkerInMainWindow(workerSessionId)}
+              >
+                {t('orca.split.viewWorkerInMainWindow')}
+              </Button>
+            )}
+          </div>
+        ) : workerSessionId && remoteDevice ? (
           <RemoteWorkerSessionPane
             key={workerSessionId}
             leadSessionId={leadSessionId}
@@ -231,6 +264,10 @@ export function OrcaWorkerPanel({
         sshRemote={sshRemote}
         // 仅任务与 Agent 均已确认在本机的 Lead 可选择 Worker 运行设备，与主进程限制一致。
         executionDevicesEnabled={deviceId === null && agentDeviceId === null && !sshRemote}
+        // Worker 的模型目录默认跟 Lead 的 Agent 所在电脑；可在面板里换到本机或其他电脑。控制端读不到
+        // 那台目录时(见 useWorkerAgentDevices)维持被控电脑的目录，Worker 跟 Lead。
+        leadAgentDeviceId={workerAgentDevices.leadAgentDeviceId}
+        remoteAgentDevices={workerAgentDevices.devices}
       />
     </div>
   );

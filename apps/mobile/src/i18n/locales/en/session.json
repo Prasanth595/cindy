@@ -1,4 +1,13 @@
 {
+  "entry": {
+    "title": "Open Task",
+    "loading": "Loading task…",
+    "failed": "Could not load task details.",
+    "missing": "This computer did not return details for this task.",
+    "timedOut": "Loading task details timed out.",
+    "retry": "Reload Task",
+    "back": "Go Back"
+  },
   "failedScheduleNotice": {
     "text": "An automatic run failed.",
     "precheck": "Automatic checks are temporarily blocked.",
@@ -31,7 +40,12 @@
     "openMicPermission": "Open microphone settings",
     "maxAttachments": "You can add up to {{max}} attachments.",
     "voiceStopRecording": "Stop Recording",
-    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again."
+    "capabilitiesUnsupported": "Couldn't load commands and resources from your computer. Update Cindy on your computer and try again.",
+    "plugins": "Plugins",
+    "pluginsChooseDevice": "Choose a Device",
+    "pluginsLoading": "Loading plugins…",
+    "pluginsEmpty": "No Installed Plugins",
+    "pluginsReload": "Reload Plugins"
   },
   "presentation": {
     "collaboration": {
@@ -201,6 +215,7 @@
     "retry": "Retry",
     "firstMessageNotSent": "The first message wasn't sent; its content has been restored to the input box.",
     "attachmentsNotCarriedBack": "{{count}} attachment(s) couldn't be brought back — please add them again.",
+    "pendingAttachmentsNotCarriedBack": "Attachments still being selected or uploaded couldn't be brought back. Please add them again.",
     "localStorageFull": "Cindy's local storage on this phone is full, so the message couldn't be saved. Please try again.",
     "commandWaitsForSession": "The session is still being created — this command needs the session to be ready. Please try again shortly.",
     "locateMessageNotFound": "Couldn't find the message to jump to.",
@@ -222,6 +237,7 @@
     "sessionNotSyncedRetry": "The session hasn't finished syncing; try again shortly.",
     "savingPreviousQueueEdit": "Saving the previous queued message edit; edit again once it finishes.",
     "attachmentsUploadingBeforeEdit": "Attachments are still uploading; edit the queued message after they finish.",
+    "goalCommandAttachments": "Send /goal without attachments. Your draft and attachments are kept.",
     "goalAlreadyActive": "This session already has an active goal; handle it here first.",
     "resetReconfirmTitle": "Confirm Again",
     "resetOfferExpired": "The reset credential has expired; review the refreshed quota info.",
@@ -237,6 +253,7 @@
     "deleteMessageTitle": "Delete this message?",
     "deleteMessageBody": "Deleting a user message removes only that message; deleting an AI message removes the entire turn generated after the previous user input. Later messages are kept. On your next send, the AI context is rebuilt from the remaining records.",
     "deleteMessageAction": "Delete this message",
+    "deleteMessageBusy": "Wait for the current response to finish before deleting a message.",
     "readingCapabilities": "Reading {{agent}} capabilities…",
     "editingQueueMessageNumbered": "Editing queued message #{{index}}",
     "editingQueueMessage": "Editing queued message",
@@ -281,6 +298,7 @@
     "shareMessage": "Share this message"
   },
   "new": {
+    "goalCommandNeedsSession": "Open an existing session to clear its goal.",
     "selectDevice": "Select a device",
     "workspaceDialogue": "Chat",
     "workspaceProject": "Project",
@@ -353,7 +371,6 @@
     "worktreeBranchesLoading": "Loading branches…",
     "worktreeBranchSaving": "Syncing the selected branch…",
     "worktreeBranchSyncFailed": "Could not confirm the saved source branch — retry the branch selection",
-    "worktreeSettingsSaving": "Syncing the worktree setting…",
     "worktreeSettingsSyncFailed": "Could not save the worktree default. You can still use this selection.",
     "worktreeBranchesRetry": "Could not load branches. Tap to retry",
     "worktreeDetecting": "Detecting environment…",
@@ -486,6 +503,8 @@
     "deleteOne": "Delete this message"
   },
   "tail": {
+    "readableHistoryRecovery": "New task from readable history",
+    "readableHistoryRecoveryDescription": "If retry keeps failing, create a new task using readable history. Internal encrypted information is omitted. The original task is kept, and the failed message is not resent automatically.",
     "requestFormatError": "The app sent an invalid request, so this reply could not be completed.",
     "replyFailed": "This reply could not be completed. Check the error details for more information.",
     "showErrorDetails": "Show Error Details",
@@ -508,10 +527,6 @@
     "moreOptions": "More options",
     "archiveConversation": "Archive session",
     "closeActionMenu": "Close session actions menu",
-    "referenceAroundAnchor": "Around the link",
-    "referenceRecent": "Recent messages",
-    "referenceCount": "{{num}} messages",
-    "referenceTruncated": "Truncated",
     "pinnedSection": "Pinned",
     "extraDirsSummary": "{{num}} additional directories",
     "noExtraDirsSummary": "No additional directories",
@@ -558,6 +573,8 @@
     "REMOTE_AGENT_EXPIRED": "This session already ended on the computer running the Agent. Send your message again.",
     "REMOTE_AGENT_NOT_FOUND": "This session already ended on the computer running the Agent. Send your message again.",
     "REMOTE_AGENT_BUSY": "Too many sessions are running on the other computer. End some of them and try again.",
+    "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
+    "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
     "REMOTE_AGENT_UNSUPPORTED": "This Agent isn't available on the other computer. Install or sign in to it there, or pick another Agent.",
     "REMOTE_AGENT_INVALID": "Something went wrong talking to the computer running the Agent. Try again; if it keeps happening, update Cindy on both computers.",
     "REMOTE_AGENT_PROVIDER_NOT_ALLOWED": "That computer hasn’t allowed remote use of this provider. On that computer, turn on “Allow remote use” in Settings → Providers, or pick another model.",

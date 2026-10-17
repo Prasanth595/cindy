@@ -4,19 +4,20 @@
  * 点缩略图直接全屏黑底看图,交互对齐主流 IM:
  *   - 双指捏合绕焦点缩放(1x~4x,可捏过两端再弹回);放大后单指平移,
  *     越过图片边界有橡皮筋阻尼,松手带惯性滑行、越界弹回(对齐系统相册)
- *   - 双击在 1x / 2.5x 间切换并落到点击点;1x 单击关闭
- *   - 1x 下竖直下滑跟手关闭(位移 + 背景渐隐),横滑翻会话内图片集
- *   - 放大后单指只平移;单击不关(双击缩回,或先回到 1x 再单击/下滑)
+ *   - 双击在 1x / 2.5x 间切换并落到点击点;单击隐藏 / 显示 chrome(不关闭)
+ *   - 1x 下竖直下滑跟手关闭(位移 + 背景渐隐),横滑翻同一条消息里的图片 / 视频
+ *   - 原图还在取件 / 下载时,垫底的缩略图同样可缩放、单击,工具栏照常显示
+ *     (未就绪的操作置灰),不必等加载完
  *   - 捏合/平移期间 chrome 让位(不抢触摸),结束后恢复
  *   - chrome 极简:顶部关闭与多图页码,底部标注/发送/分享;关闭同时支持读屏返回
  * 手势判定全部走 imageLightboxModel.ts 纯函数;取件复用会话屏的队列 + 磁盘缓存
  * (onResolveRemoteMedia),点开时通常已被列表缩略图取过、秒出。
- * 仅图片走本组件;video / audio / 文件仍走 MessagePayloadModal。
+ * 视频页用系统原生播放器(无缩放手势,chrome 常驻);音频 / 文件仍走 MessagePayloadModal。
  * lightbox 是常黑沉浸语境,黑白系颜色为刻意豁免(对齐桌面 docs/design-rules/cindy-design-system.md overlay/lightbox 语义豁免),不走主题 token。
  */
 import { useNavigation } from 'expo-router';
 import { Image } from 'expo-image';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -48,6 +49,9 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { MobileMessageGalleryImage } from '@/session/messageGallery';
+import { RemoteMediaPlayerWebView } from '@/session/mediaPlayerWebView';
+import type { MobileMediaPlayerStatus } from '@/session/mediaPlayerWebViewHtml';
+import { NativeVideoPlayer } from '@/session/NativeVideoPlayer';
 import {
   isDesktopLocalMediaUrl,
   mediaLoadFailureKey,
@@ -79,7 +83,6 @@ import {
   nextDoubleTapScale,
   reclampLightboxPan,
   rubberBandLightboxScale,
-  shouldCloseLightboxOnTap,
   shouldDismissLightbox,
   unrubberLightboxScale,
 } from '@/session/imageLightboxModel';
@@ -171,8 +174,12 @@ export interface ImageLightboxAnnotationConfig {
 export interface ImageLightboxProps {
   images: readonly MobileMessageGalleryImage[];
   initialUrl: string;
+  /** Same-content attachment slots can share a URL; prefer the clicked attachment's identity. */
+  initialImageKey?: string;
   onClose(): void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
+  /** 关闭时逐出本次取过的视频(与通用查看器一致;图片缩略图常驻列表不逐出)。 */
+  onReleaseRemoteMedia?: (sourceUrl: string, media: MobileResolvedRemoteMedia) => void;
   /** 分享当前图(displayUri 为 file:// 或 http(s));由会话屏落地本地文件后唤起系统分享单。 */
   onShareImage?: (
     media: MobileMessageGalleryImage['payload']['media'],
@@ -208,8 +215,10 @@ export interface ImageLightboxProps {
 export const ImageLightbox = memo(function ImageLightbox({
   images,
   initialUrl,
+  initialImageKey,
   onClose,
   onResolveRemoteMedia,
+  onReleaseRemoteMedia,
   onShareImage,
   extraActions,
   showFileHeader,
@@ -220,7 +229,41 @@ export const ImageLightbox = memo(function ImageLightbox({
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const urls = useMemo(() => images.map((image) => image.url), [images]);
-  const [activeIndex, setActiveIndex] = useState(() => lightboxInitialIndex(urls, initialUrl));
+  const initialKeyIndex = initialImageKey ? images.findIndex((image) => image.key === initialImageKey) : -1;
+  const initialIndex = initialKeyIndex >= 0 ? initialKeyIndex : lightboxInitialIndex(urls, initialUrl);
+  const [activePage, setActivePage] = useState(() => {
+    const image = images[initialIndex];
+    return { key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey,
+      galleryImageSlot: image?.payload.galleryImageSlot, index: initialIndex };
+  });
+  // 地址升级或相邻附件就绪时，页码跟随图片身份，不跟随旧数组下标。
+  // 普通消息在流式工作组收尾时会换 key，仍按原地址找回；删除当前页才钳制下标。
+  const keyIndex = images.findIndex((image) => image.key === activePage.key);
+  // Replacement and earlier uploads can settle in one render. Preserve the thumbnail slot,
+  // not the old readable-page index, when the active attachment identity disappears.
+  const slotIndex = keyIndex < 0 && activePage.galleryImageKey && activePage.galleryImageSlot !== undefined
+    ? images.findIndex((image) => image.payload.galleryImageSlot === activePage.galleryImageSlot) : -1;
+  // Stable attachment keys distinguish duplicate URLs. A missing key means replacement/removal;
+  // URL fallback is only for ordinary message pages whose render keys can be rebuilt.
+  const urlIndex = keyIndex < 0 && !activePage.galleryImageKey
+    ? images.findIndex((image) => image.url === activePage.url) : -1;
+  const activeIndex = keyIndex >= 0 ? keyIndex : slotIndex >= 0 ? slotIndex : urlIndex >= 0 ? urlIndex
+    : Math.max(0, Math.min(activePage.index, images.length - 1));
+  const activePageKey = images[activeIndex]?.key;
+  const activePageUrl = images[activeIndex]?.url;
+  const activeGalleryImageKey = images[activeIndex]?.payload.galleryImageKey;
+  const activeGalleryImageSlot = images[activeIndex]?.payload.galleryImageSlot;
+  // 记住这次实际显示的身份与位置；换图或钳制后，后续更新继续跟随新图，不能找回旧图。
+  useLayoutEffect(() => {
+    if (activePageKey === undefined || activePageUrl === undefined) return;
+    setActivePage((previous) => previous.key === activePageKey
+      && previous.url === activePageUrl && previous.index === activeIndex
+      && previous.galleryImageKey === activeGalleryImageKey
+      && previous.galleryImageSlot === activeGalleryImageSlot
+      ? previous
+      : { key: activePageKey, url: activePageUrl, galleryImageKey: activeGalleryImageKey,
+        galleryImageSlot: activeGalleryImageSlot, index: activeIndex });
+  }, [activePageKey, activePageUrl, activeGalleryImageKey, activeGalleryImageSlot, activeIndex]);
   const [zoomed, setZoomed] = useState(false);
   /** 捏合/平移进行中 chrome 不接收触摸,避免底栏抢走双指。 */
   const [chromeInteractive, setChromeInteractive] = useState(true);
@@ -237,6 +280,11 @@ export const ImageLightbox = memo(function ImageLightbox({
   const handleChromeBusy = useCallback((busy: boolean) => {
     setChromeInteractive(!busy);
   }, []);
+  /** 用户单击切换的 chrome 显隐(与手势期间的临时让位独立)。 */
+  const [chromeToggledVisible, setChromeToggledVisible] = useState(true);
+  const toggleChrome = useCallback(() => {
+    setChromeToggledVisible((visible) => !visible);
+  }, []);
 
   // ---- 圈点标注状态(仅活跃页;笔迹归一化存储,显示/烧录共用同一映射)----
   // autoAnnotate 只作初值:打开即进标注(对齐桌面)。
@@ -248,6 +296,9 @@ export const ImageLightbox = memo(function ImageLightbox({
   const [sharing, setSharing] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  useEffect(() => {
+    if (images.length === 0) onCloseRef.current();
+  }, [images.length]);
   const [strokes, setStrokes] = useState<AnnotationStroke[]>([]);
   // 取消 / 返回回调经 ref 读最新笔迹与文案:它们进入手势 deps(onRequestClose),
   // 不能因每次作画 / 父层重渲染而让整张手势图重建。
@@ -274,15 +325,15 @@ export const ImageLightbox = memo(function ImageLightbox({
     });
   }, []);
 
-  // 打开/翻页时装载该页既有笔迹(托盘再编辑);标注模式中禁翻页,不会中途换页。
-  // 依赖「活跃图 key」而非 images 数组引用:父层因附件上传落定 / 流式回复等
-  // 原因重建图集(语义未变)时,不能把用户正在画的笔迹重置掉(review P1);
+  // 打开/换图时装载该图既有笔迹(托盘再编辑)，标注模式中禁用手动翻页。
+  // 只依赖「活跃图 key」，不依赖数组引用或页码：附件就绪可能让同一张图前移/后移，
+  // 不能因此重置已画笔迹或正在画的一笔；
   // 真正换图(翻页 / 打开另一张)时 key 变化,照常重载。images 经 ref 读最新。
   const activeImageKeyForStrokes = images[activeIndex]?.key ?? null;
   const imagesRef = useRef(images);
   imagesRef.current = images;
   useEffect(() => {
-    const image = imagesRef.current[activeIndex];
+    const image = imagesRef.current.find((entry) => entry.key === activeImageKeyForStrokes);
     const initial = image ? annotation?.initialStrokesFor?.(image) : undefined;
     setStrokes(initial ? [...initial] : []);
     draftStrokeRef.current = null;
@@ -291,7 +342,7 @@ export const ImageLightbox = memo(function ImageLightbox({
     setDraftStroke(null);
     // annotation 语义上只在打开时取一次快照,翻页时按新页(key)重取
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex, activeImageKeyForStrokes]);
+  }, [activeImageKeyForStrokes]);
 
   /**
    * 画笔落点(容器坐标 + 当页 transform 状态,LightboxPage 手势经 runOnJS 上抛)。
@@ -422,13 +473,10 @@ export const ImageLightbox = memo(function ImageLightbox({
   const imageErrorRetryUsedRef = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList<MobileMessageGalleryImage>>(null);
 
-  // 旋转(宽度变化)时按 activeIndex 重锚:FlatList 保留的是旧宽度下的像素
-  // contentOffset,不重锚会让可见页与页码 / 分享目标错位。
+  // 旋转或图集变动导致页码变化时重锚，保持画面、页码和分享目标一致。
   useEffect(() => {
     listRef.current?.scrollToOffset({ animated: false, offset: activeIndex * width });
-    // activeIndex 不进依赖:翻页由手势滚动驱动,这里只响应宽度突变
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width]);
+  }, [activeIndex, width]);
 
   const resolveImage = useCallback((
     image: MobileMessageGalleryImage,
@@ -498,15 +546,33 @@ export const ImageLightbox = memo(function ImageLightbox({
     resolveImage(image, true, true);
   }, [resolveImage]);
 
-  // 活跃页插队取件,相邻页顺队预取(翻页即无缝)。
+  // 活跃页插队取件,相邻图片页顺队预取(翻页即无缝)。视频体积大,只在翻到
+  // 它时才取,不为「可能会看」预先整段搬运。
   useEffect(() => {
     const active = images[activeIndex];
     if (active) resolveImage(active, true);
     const prev = images[activeIndex - 1];
-    if (prev) resolveImage(prev, false);
+    if (prev && prev.payload.media.kind === 'image') resolveImage(prev, false);
     const next = images[activeIndex + 1];
-    if (next) resolveImage(next, false);
+    if (next && next.payload.media.kind === 'image') resolveImage(next, false);
   }, [activeIndex, images, resolveImage]);
+
+  // 关闭时逐出本次取过的视频(与通用查看器同一口径:只逐出 JS 缓存,
+  // 远端对象由会话页统一回收);图片缩略图常驻列表,不逐出。
+  const resolveMapRef = useRef(resolveMap);
+  resolveMapRef.current = resolveMap;
+  const onReleaseRemoteMediaRef = useRef(onReleaseRemoteMedia);
+  onReleaseRemoteMediaRef.current = onReleaseRemoteMedia;
+  useEffect(() => () => {
+    const release = onReleaseRemoteMediaRef.current;
+    if (!release) return;
+    for (const image of imagesRef.current) {
+      const state = resolveMapRef.current[image.url];
+      if (image.payload.media.kind === 'video' && state?.status === 'ready') {
+        release(image.payload.media.url, state.media);
+      }
+    }
+  }, []);
 
   const displayUriFor = useCallback((image: MobileMessageGalleryImage): string | null => {
     const media = image.payload.media;
@@ -517,12 +583,13 @@ export const ImageLightbox = memo(function ImageLightbox({
   }, [resolveMap]);
 
   /**
-   * 该页的垫底缩略图。与原图地址相同时返回 null:磁盘缓存命中会让缩略图与
-   * 原图落到同一个 file://(缩不动的图按裸键落盘),此时垫同一张图纯属多解码
-   * 一份,且原图本就秒出。
+   * 该页的垫底缩略图。手机本地已有的同图(自己发出的图)优先:同步可用,打开第一帧
+   * 就有画面;其次是列表已取过的远程缩略图。与原图地址相同时返回 null:磁盘缓存
+   * 命中会让缩略图与原图落到同一个 file://(缩不动的图按裸键落盘),此时垫同一张图
+   * 纯属多解码一份,且原图本就秒出。
    */
   const previewUriFor = useCallback((image: MobileMessageGalleryImage): string | null => {
-    const preview = previewMap[image.url];
+    const preview = image.previewUri ?? previewMap[image.url];
     if (!preview) return null;
     return preview === displayUriFor(image) ? null : preview;
   }, [previewMap, displayUriFor]);
@@ -530,17 +597,35 @@ export const ImageLightbox = memo(function ImageLightbox({
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: lightboxBackgroundOpacity(dismissY.value, height),
   }));
+  const activeImage = images[activeIndex] ?? null;
+  const activeIsVideo = activeImage?.payload.media.kind === 'video';
+  // 视频页没有单击切换(单击交给系统播放控件),标注态的操作栏不能藏:两者 chrome 常驻。
+  const chromeShown = chromeToggledVisible || isAnnotating || activeIsVideo;
+  const chromeToggleHidden = useSharedValue(0);
+  useEffect(() => {
+    chromeToggleHidden.value = withTiming(chromeShown ? 0 : 1, { duration: motionDuration.fast });
+    // 共享值引用恒定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chromeShown]);
   const chromeStyle = useAnimatedStyle(() => ({
-    opacity: lightboxBackgroundOpacity(dismissY.value, height) * (1 - chromeHidden.value),
+    opacity: lightboxBackgroundOpacity(dismissY.value, height)
+      * (1 - chromeHidden.value)
+      * (1 - chromeToggleHidden.value),
   }));
 
-  const activeImage = images[activeIndex] ?? null;
   const activeUri = activeImage ? displayUriFor(activeImage) : null;
+  // Expo can display library handles, but sharing/annotation need the file or remote
+  // original supplied later by the existing upload pipeline. Do not enable dead-end actions.
+  const activeActionsReady = !!activeUri && !/^(?:ph|content|assets-library):\/\//.test(activeUri);
   const pageLabel = lightboxPageLabel(activeIndex, images.length);
-  const shareVisible = !!onShareImage && !!activeImage && canShareLightboxImage(activeUri);
+  // 工具栏从打开那一刻就在:原图还在取件时先置灰,就绪即可用,不让工具「晚到」。
+  // 取件结果是 data: 等不可分享地址时才收起分享。
+  const shareVisible = !!onShareImage && !!activeImage && !activeIsVideo
+    && (!activeUri || canShareLightboxImage(activeUri));
+  const shareEnabled = shareVisible && activeActionsReady;
 
   const handleShare = useCallback(() => {
-    if (!activeImage || !activeUri || !onShareImage || sharingRef.current || submittingRef.current) return;
+    if (!activeImage || !activeUri || !activeActionsReady || !onShareImage || sharingRef.current || submittingRef.current) return;
     const state = resolveMap[activeImage.url];
     const mimeType = (state?.status === 'ready' ? state.media.mimeType : undefined)
       ?? activeImage.payload.media.mimeType;
@@ -558,25 +643,27 @@ export const ImageLightbox = memo(function ImageLightbox({
         sharingRef.current = false;
         setSharing(false);
       });
-  }, [activeImage, activeUri, onShareImage, resolveMap]);
+  }, [activeImage, activeUri, activeActionsReady, onShareImage, resolveMap]);
 
   // 活跃页 MIME:取件结果优先,保留附件已知类型,最后兜底 URI 后缀。
   const activeResolveState = activeImage ? resolveMap[activeImage.url] : undefined;
   const activeMimeType = ((activeResolveState?.status === 'ready'
     ? activeResolveState.media.mimeType
     : undefined) ?? activeImage?.payload.media.mimeType)?.split(';', 1)[0].trim().toLowerCase();
-  const activeLooksGif = !!activeUri && /\.gif(?:[?#]|$)/i.test(activeUri.split('?')[0] ?? activeUri);
-  const activeLooksSvg = !!activeUri && (/\.svg(?:[?#]|$)/i.test(activeUri) || /^data:image\/svg\+xml[;,]/i.test(activeUri));
+  // 取件未完成时按原始地址判断格式,让画笔从打开起就在(置灰到可画)。
+  const activeFormatUri = activeUri ?? activeImage?.payload.media.url ?? '';
+  const activeLooksGif = /\.gif(?:[?#]|$)/i.test(activeFormatUri.split('?')[0] ?? activeFormatUri);
+  const activeLooksSvg = /\.svg(?:[?#]|$)/i.test(activeFormatUri) || /^data:image\/svg\+xml[;,]/i.test(activeFormatUri);
   const annotateVisible = !!annotation
     && !!activeImage
-    && !!activeUri
+    && !activeIsVideo
     && canAnnotateImageMime(activeMimeType)
     && !activeLooksGif
     && !activeLooksSvg;
   // 画笔要等图片自然尺寸就位(坐标换算基准),否则进入标注后作画静默无效:
   // 此前按钮置灰禁用,与撤销的禁用态同观感。宿主给出暂不可标注的原因时,按钮
   // 同样置灰但可点,点按说明原因(否则用户不知道为什么不能画)。
-  const annotateReady = annotateVisible && !!activeNaturalSize;
+  const annotateReady = annotateVisible && activeActionsReady && !!activeNaturalSize;
   const annotateBlockedReason = annotateReady && activeImage
     ? annotation?.annotationBlockedReason?.(activeImage)
     : undefined;
@@ -592,10 +679,11 @@ export const ImageLightbox = memo(function ImageLightbox({
     setIsAnnotating(true);
   }, [annotateReady, activeImage, annotation, t]);
   // 独立直发(发送到对话):不要求可标注——gif 等不可画的图同样能转发。
-  const directSubmitVisible = !!annotation?.allowDirectSubmit && !!activeImage && !!activeUri;
+  const directSubmitVisible = !!annotation?.allowDirectSubmit && !!activeImage && !activeIsVideo;
+  const directSubmitEnabled = directSubmitVisible && activeActionsReady;
 
   const handleSubmitAnnotation = useCallback(() => {
-    if (!annotation || !activeImage || !activeUri || submittingRef.current || sharingRef.current) return;
+    if (!annotation || !activeImage || !activeUri || !activeActionsReady || submittingRef.current || sharingRef.current) return;
     submittingRef.current = true;
     setAnnotationSubmitting(true);
     // 点击提交时另一根手指可能还在画,把屏幕上最后一笔也纳入同一快照。
@@ -620,7 +708,7 @@ export const ImageLightbox = memo(function ImageLightbox({
         submittingRef.current = false;
         setAnnotationSubmitting(false);
       });
-  }, [annotation, activeImage, activeUri, activeMimeType, activeNaturalSize, strokes]);
+  }, [annotation, activeImage, activeUri, activeActionsReady, activeMimeType, activeNaturalSize, strokes]);
 
   // Android 物理返回键触发 Modal.onRequestClose,不受手势层/按钮层的
   // isAnnotating 禁用覆盖(review 发现:会绕开"标注模式中关闭均禁用"保护
@@ -669,15 +757,32 @@ export const ImageLightbox = memo(function ImageLightbox({
           decelerationRate="fast"
           getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
           horizontal
-          initialScrollIndex={lightboxInitialIndex(urls, initialUrl)}
+          initialScrollIndex={initialIndex}
           keyExtractor={(image) => image.key}
           onMomentumScrollEnd={(event) => {
             const index = lightboxPageIndex(event.nativeEvent.contentOffset.x, width, images.length);
-            setActiveIndex(index);
+            const image = images[index];
+            setActivePage({ key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey,
+              galleryImageSlot: image?.payload.galleryImageSlot, index });
           }}
           pagingEnabled
           ref={listRef}
-          renderItem={({ item, index }) => (
+          renderItem={({ item, index }) => (item.payload.media.kind === 'video' ? (
+            <LightboxVideoPage
+              active={index === activeIndex}
+              height={height}
+              image={item}
+              insetBottom={insets.bottom}
+              // 让出顶部关闭 / 页码一行,系统播放控件不被压住。
+              insetTop={insets.top + 64}
+              onRetry={handleRetryPage}
+              onToggleChrome={toggleChrome}
+              previewUri={previewUriFor(item)}
+              resolveState={item.payload.media.previewable ? null : resolveMap[item.url] ?? null}
+              uri={displayUriFor(item)}
+              width={width}
+            />
+          ) : (
             <LightboxPage
               active={index === activeIndex}
               annotating={index === activeIndex && isAnnotating}
@@ -699,20 +804,21 @@ export const ImageLightbox = memo(function ImageLightbox({
               onNaturalSize={handleNaturalSize}
               onRequestClose={handleRequestClose}
               onRetry={handleRetryPage}
+              onToggleChrome={toggleChrome}
               onZoomChange={setZoomed}
               previewUri={previewUriFor(item)}
               resolveState={item.payload.media.previewable ? null : resolveMap[item.url] ?? null}
               uri={displayUriFor(item)}
               width={width}
             />
-          )}
+          ))}
           // 单图同样开启:iOS 横向拖到边缘有系统回弹,与多图首尾页手感一致。
           scrollEnabled={!zoomed && !isAnnotating && !annotationSubmitting}
           showsHorizontalScrollIndicator={false}
           windowSize={3}
         />
         <Animated.View
-          pointerEvents={chromeInteractive ? 'box-none' : 'none'}
+          pointerEvents={chromeInteractive && chromeShown ? 'box-none' : 'none'}
           // 整个操作层避开横屏两侧切口,让关闭、文件标题和所有底栏共用安全边界。
           style={[styles.chrome, chromeStyle, {
             left: insets.left,
@@ -759,7 +865,7 @@ export const ImageLightbox = memo(function ImageLightbox({
                   testID="message.imageLightboxAnnotationUndo"
                 >
                   <Undo2
-                    color={strokes.length > 0 ? '#ffffff' : 'rgba(255,255,255,0.35)'}
+                    color={strokes.length > 0 ? '#ffffff' : DISABLED_ICON_COLOR}
                     size={iconSize.action}
                     strokeWidth={iconStroke.regular}
                   />
@@ -803,14 +909,14 @@ export const ImageLightbox = memo(function ImageLightbox({
                   accessibilityLabel={t('message.lightbox.shareImage')}
                   accessibilityRole="button"
                   accessibilityState={{ busy: sharing }}
-                  disabled={sharing || annotationSubmitting}
+                  disabled={!shareEnabled || sharing || annotationSubmitting}
                   hitSlop={10}
                   onPress={handleShare}
                   testID="message.imageLightboxShareButton"
                 >
                   {sharing ? (
                     <ActivityIndicator color="#ffffff" size="small" />
-                  ) : <ShareIcon color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />}
+                  ) : <ShareIcon color={shareEnabled ? '#ffffff' : DISABLED_ICON_COLOR} size={iconSize.action} strokeWidth={iconStroke.regular} />}
                 </Pressable>
               ) : (
                 <View style={styles.fileHeaderShareSpacer} />
@@ -836,7 +942,7 @@ export const ImageLightbox = memo(function ImageLightbox({
                     testID="message.imageLightboxAnnotateButton"
                   >
                     <Pen
-                      color={annotateEnabled ? '#ffffff' : 'rgba(255,255,255,0.35)'}
+                      color={annotateEnabled ? '#ffffff' : DISABLED_ICON_COLOR}
                       size={iconSize.action}
                       strokeWidth={iconStroke.regular}
                     />
@@ -862,7 +968,7 @@ export const ImageLightbox = memo(function ImageLightbox({
                     accessibilityLabel={t('message.lightbox.shareImage')}
                     accessibilityRole="button"
                     accessibilityState={{ busy: sharing }}
-                    disabled={sharing || annotationSubmitting}
+                    disabled={!shareEnabled || sharing || annotationSubmitting}
                     hitSlop={8}
                     onPress={handleShare}
                     style={styles.actionItem}
@@ -871,9 +977,13 @@ export const ImageLightbox = memo(function ImageLightbox({
                     {sharing ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <ShareIcon color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />
+                      <ShareIcon
+                        color={shareEnabled ? '#ffffff' : DISABLED_ICON_COLOR}
+                        size={iconSize.action}
+                        strokeWidth={iconStroke.regular}
+                      />
                     )}
-                    <Text style={styles.actionLabel}>
+                    <Text style={[styles.actionLabel, !shareEnabled && styles.actionLabelDisabled]}>
                       {t('message.lightbox.exportShare')}
                     </Text>
                   </Pressable>
@@ -900,7 +1010,7 @@ export const ImageLightbox = memo(function ImageLightbox({
                     testID="message.imageLightboxAnnotateButton"
                   >
                     <Pen
-                      color={annotateEnabled ? '#ffffff' : 'rgba(255,255,255,0.35)'}
+                      color={annotateEnabled ? '#ffffff' : DISABLED_ICON_COLOR}
                       size={iconSize.action}
                       strokeWidth={iconStroke.regular}
                     />
@@ -912,7 +1022,8 @@ export const ImageLightbox = memo(function ImageLightbox({
                 {directSubmitVisible ? (
                   <Pressable
                     accessibilityLabel={annotation?.submitLabel ?? t('message.lightbox.sendToChat')}
-                    disabled={annotationSubmitting || sharing}
+                    accessibilityState={{ disabled: !directSubmitEnabled }}
+                    disabled={!directSubmitEnabled || annotationSubmitting || sharing}
                     hitSlop={8}
                     onPress={handleSubmitAnnotation}
                     style={styles.actionItem}
@@ -921,9 +1032,13 @@ export const ImageLightbox = memo(function ImageLightbox({
                     {annotationSubmitting ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <MessageSquarePlus color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />
+                      <MessageSquarePlus
+                        color={directSubmitEnabled ? '#ffffff' : DISABLED_ICON_COLOR}
+                        size={iconSize.action}
+                        strokeWidth={iconStroke.regular}
+                      />
                     )}
-                    <Text style={styles.actionLabel}>
+                    <Text style={[styles.actionLabel, !directSubmitEnabled && styles.actionLabelDisabled]}>
                       {annotation?.submitLabel ?? t('message.lightbox.sendToChat')}
                     </Text>
                   </Pressable>
@@ -936,7 +1051,7 @@ export const ImageLightbox = memo(function ImageLightbox({
                     accessibilityLabel={t('message.lightbox.shareImage')}
                     accessibilityRole="button"
                     accessibilityState={{ busy: sharing }}
-                    disabled={sharing || annotationSubmitting}
+                    disabled={!shareEnabled || sharing || annotationSubmitting}
                     hitSlop={8}
                     onPress={handleShare}
                     style={styles.actionItem}
@@ -945,9 +1060,13 @@ export const ImageLightbox = memo(function ImageLightbox({
                     {sharing ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <ShareIcon color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />
+                      <ShareIcon
+                        color={shareEnabled ? '#ffffff' : DISABLED_ICON_COLOR}
+                        size={iconSize.action}
+                        strokeWidth={iconStroke.regular}
+                      />
                     )}
-                    <Text style={styles.actionLabel}>
+                    <Text style={[styles.actionLabel, !shareEnabled && styles.actionLabelDisabled]}>
                       {t('message.lightbox.exportShare')}
                     </Text>
                   </Pressable>
@@ -960,6 +1079,9 @@ export const ImageLightbox = memo(function ImageLightbox({
     </Modal>
   );
 });
+
+/** 置灰操作的图标色(与 actionLabelDisabled 同值)。 */
+const DISABLED_ICON_COLOR = 'rgba(255,255,255,0.35)';
 
 /** 空笔迹常量:非活跃页无既有笔迹时复用同一引用,保住 LightboxPage 的 memo。 */
 const EMPTY_STROKES: readonly AnnotationStroke[] = [];
@@ -982,6 +1104,7 @@ const LightboxPage = memo(function LightboxPage({
   onNaturalSize,
   onRequestClose,
   onRetry,
+  onToggleChrome,
   onZoomChange,
   previewUri,
   resolveState,
@@ -1021,6 +1144,8 @@ const LightboxPage = memo(function LightboxPage({
   onNaturalSize(imageKey: string, size: { width: number; height: number }): void;
   onRequestClose(): void;
   onRetry(image: MobileMessageGalleryImage): void;
+  /** 单击:隐藏 / 显示 chrome。 */
+  onToggleChrome(): void;
   onZoomChange(zoomed: boolean): void;
   /** 列表缩略图(渐进出图的垫底层);无则退 spinner。见 lightboxImageLayers。 */
   previewUri: string | null;
@@ -1041,6 +1166,8 @@ const LightboxPage = memo(function LightboxPage({
   const startFocalY = useSharedValue(0);
   /** 捏合开始时的画面倍率:锚定位移按它与当前倍率之差推算。 */
   const pinchStartScale = useSharedValue(1);
+  /** 捏合当前的手指数:变化时重新锚定,先后抬指不让焦点跳变推着图走。 */
+  const pinchPointers = useSharedValue(2);
   const displayedW = useSharedValue(width);
   const displayedH = useSharedValue(height);
   /** 捏合最后的焦点(容器坐标):捏过最大倍率松手时绕它缩回。 */
@@ -1074,6 +1201,12 @@ const LightboxPage = memo(function LightboxPage({
    * 直连 http 图在本页落失败态,用户重试时清除此标记并重新挂载 Image。
    */
   const [failedFullUri, setFailedFullUri] = useState<string | null>(null);
+  /**
+   * 垫底缩略图的像素尺寸:原图未到时用它的宽高比算 contain 显示尺寸,
+   * 让缩放 / 平移的边界从打开起就对(缩略图与原图同比例)。
+   */
+  const [previewSize, setPreviewSize] = useState<{ uri: string; width: number; height: number } | null>(null);
+  const layoutSize = naturalSize ?? (previewSize && previewSize.uri === previewUri ? previewSize : null);
   const media = image.payload.media;
   // 桌面取件图可 forceRefresh;直连图重试只重新挂载原 URI,不走桌面取件。
   const retryable = !media.previewable && isDesktopLocalMediaUrl(media.url);
@@ -1084,6 +1217,14 @@ const LightboxPage = memo(function LightboxPage({
     previewFailed: !!previewUri && failedPreviewUri === previewUri,
     fullFailedTerminally: !retryable && !!uri && failedFullUri === uri,
   });
+
+  // 取件成功但 mime 非图片(unsupported)时 displayUriFor 恒为 null,若只认
+  // status==='error' 会永远停在 spinner —— 一并视为失败,给到重试按钮。
+  const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
+  // 没有原图地址、也不会再有(取件失败 / 不支持 / 无取件途径):给失败文案与重试。
+  const pageFailed = layers.showFailure || (!uri && (
+    resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
+  ));
 
   const reportZoomed = useCallback((value: boolean) => {
     onZoomChange(value);
@@ -1138,8 +1279,8 @@ const LightboxPage = memo(function LightboxPage({
     const size = lightboxContainedSize(
       width,
       height,
-      naturalSize?.width ?? 0,
-      naturalSize?.height ?? 0,
+      layoutSize?.width ?? 0,
+      layoutSize?.height ?? 0,
     );
     displayedW.value = size.width;
     displayedH.value = size.height;
@@ -1191,11 +1332,14 @@ const LightboxPage = memo(function LightboxPage({
     savedTranslateX.value = next.x;
     savedTranslateY.value = next.y;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [naturalSize, width, height]);
+  }, [layoutSize?.width, layoutSize?.height, width, height]);
 
-  // 翻走 / 换图时复位缩放与位移,避免回到本页时残留上次的缩放态。
+  // 翻走 / 换图时复位缩放与位移,避免回到本页时残留上次的缩放态。失败态同样
+  // 复位:加载中放大了垫底图、随后取件失败时手势层被卸掉,不复位就停在「已放大」,
+  // 父层锁着翻页、失败页又没有双击可缩回,只能关掉重开。
+  const transformReset = !active || pageFailed;
   useEffect(() => {
-    if (active) return;
+    if (!transformReset) return;
     scale.value = 1;
     savedScale.value = 1;
     translateX.value = 0;
@@ -1213,9 +1357,11 @@ const LightboxPage = memo(function LightboxPage({
     dragY.value = 0;
     chromeHidden.value = 0;
     onChromeBusy(false);
-    // 共享值的写入不需要依赖追踪,这里只关心 active 翻转时机
+    // 只有活跃页拥有父层的翻页锁;非活跃页复位不能改写当前页的放大状态。
+    if (active) onZoomChange(false);
+    // 共享值的写入不需要依赖追踪,这里只关心复位条件的翻转时机
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [transformReset]);
 
   const gesture = useMemo(() => {
     // 新手势接管当前帧,必须同时停掉缩放与两轴位移,避免旧动画继续推着图片走。
@@ -1297,6 +1443,32 @@ const LightboxPage = memo(function LightboxPage({
       panSettling.value = 1;
     };
 
+    /**
+     * 以当前画面为起点锚定捏合:捏合开始与手指数变化时共用。eventScale 是此刻
+     * 手势自身的累计倍率,倍率基准除掉它,下一帧 savedScale·eventScale 与画面一致。
+     */
+    const anchorPinch = (focalX: number, focalY: number, eventScale: number) => {
+      'worklet';
+      // 倍率起点存「手指量」而非画面量:回弹途中再捏时画面可能处在橡皮筋区,
+      // 直接当起点会让第一帧按阻尼重新映射而跳一下。
+      savedScale.value = unrubberLightboxScale(scale.value) / (eventScale > 0 ? eventScale : 1);
+      // 锚点取手指下那一点的图片坐标,已放大 / 平移后二次捏合才绕手指缩放。
+      const bakedX = bakeLightboxOrigin(translateX.value, originX.value, scale.value);
+      const bakedY = bakeLightboxOrigin(translateY.value, originY.value, scale.value);
+      originX.value = lightboxPinchAnchor(focalX, width, bakedX, scale.value);
+      originY.value = lightboxPinchAnchor(focalY, height, bakedY, scale.value);
+      // 已放大时 origin 会立刻贡献 origin*(1-scale);扣掉等量位移,二次捏合不跳。
+      translateX.value = compensateLightboxOrigin(bakedX, originX.value, scale.value);
+      translateY.value = compensateLightboxOrigin(bakedY, originY.value, scale.value);
+      // 起点存 bake 后的画面位移(几何量);每帧按当前倍率的边界换算手指量,
+      // 不跨倍率复用起始倍率下的换算结果(见 lightboxPinchTranslation)。
+      savedTranslateX.value = bakedX;
+      savedTranslateY.value = bakedY;
+      pinchStartScale.value = scale.value;
+      startFocalX.value = focalX;
+      startFocalY.value = focalY;
+    };
+
     // 焦点捏合:起点锁定 origin,缩放绕焦点;浏览态跟手质心,标注态只改 scale
     // (平移交给双指 pan,避免 Simultaneous 下位移被加两遍)。
     const pinch = Gesture.Pinch()
@@ -1311,32 +1483,26 @@ const LightboxPage = memo(function LightboxPage({
         // 下滑半途改捏合:关掉正在进行的 dismiss 位移,不把图和背景留在半透明上。
         dragY.value = 0;
         dismissY.value = 0;
-        // 倍率起点存「手指量」而非画面量:回弹途中再捏时画面可能处在橡皮筋区,
-        // 直接当起点会让第一帧按阻尼重新映射而跳一下。
-        savedScale.value = unrubberLightboxScale(scale.value);
-        // 锚点取手指下那一点的图片坐标,已放大 / 平移后二次捏合才绕手指缩放。
-        const bakedX = bakeLightboxOrigin(translateX.value, originX.value, scale.value);
-        const bakedY = bakeLightboxOrigin(translateY.value, originY.value, scale.value);
-        originX.value = lightboxPinchAnchor(event.focalX, width, bakedX, scale.value);
-        originY.value = lightboxPinchAnchor(event.focalY, height, bakedY, scale.value);
-        // 已放大时 origin 会立刻贡献 origin*(1-scale);扣掉等量位移,二次捏合不跳。
-        translateX.value = compensateLightboxOrigin(bakedX, originX.value, scale.value);
-        translateY.value = compensateLightboxOrigin(bakedY, originY.value, scale.value);
-        // 起点存 bake 后的画面位移(几何量);每帧按当前倍率的边界换算手指量,
-        // 不跨倍率复用起始倍率下的换算结果(见 lightboxPinchTranslation)。
-        savedTranslateX.value = bakedX;
-        savedTranslateY.value = bakedY;
-        pinchStartScale.value = scale.value;
-        startFocalX.value = event.focalX;
-        startFocalY.value = event.focalY;
+        anchorPinch(event.focalX, event.focalY, 1);
+        pinchPointers.value = event.numberOfPointers ?? 2;
         lastFocalX.value = event.focalX;
         lastFocalY.value = event.focalY;
       })
       .onChange((event) => {
+        // 两指先后抬起(或中途再加一指)时手势不结束,焦点却从双指中点跳到剩下
+        // 那根手指上,倍率基准也可能重置:按当前画面重新锚定,不让这一跳推着图走。
+        const pointers = event.numberOfPointers ?? pinchPointers.value;
+        if (pointers !== pinchPointers.value) {
+          pinchPointers.value = pointers;
+          anchorPinch(event.focalX, event.focalY, event.scale);
+        }
         // 捏过 1x / 最大倍率不再硬卡:阻尼继续缩放,松手再弹回(settlePinch)。
         scale.value = rubberBandLightboxScale(savedScale.value * event.scale);
-        lastFocalX.value = event.focalX;
-        lastFocalY.value = event.focalY;
+        // 松手绕焦点缩回只认双指焦点:单指余下的落点不是用户捏的中心。
+        if (pointers >= 2) {
+          lastFocalX.value = event.focalX;
+          lastFocalY.value = event.focalY;
+        }
         if (annotating) return;
         // 锚点跟手;越过图片边界按当前倍率的边界阻尼而不是硬钳,焦点附近捏合时
         // 图不再「粘」在边上,回弹途中再捏时锚点也不从手指下滑开。
@@ -1390,6 +1556,9 @@ const LightboxPage = memo(function LightboxPage({
         }
       })
       .onStart(() => {
+        // 浏览态的位移在捏合期间归捏合:两指先后抬起时余下那根手指可能激活单指
+        // 平移,它若接手就会改写捏合的起点、叠加位移,松手再甩出一段惯性。
+        if (!annotating && pinchBusy.value) return;
         panBusy.value = 1;
         stopTransformAnimation();
         hideChrome();
@@ -1397,6 +1566,7 @@ const LightboxPage = memo(function LightboxPage({
         savedTranslateY.value = translateY.value;
       })
       .onChange((event) => {
+        if (!panBusy.value || (!annotating && pinchBusy.value)) return;
         // 标注双指 pan 与 off-center pinch Simultaneous,origin 常非 0;
         // 浏览单指 pan 的 origin 已 bake 归零。越界部分走橡皮筋:到了边缘仍可
         // 继续拖(越拖越沉),松手再弹回(settlePan)。
@@ -1426,6 +1596,12 @@ const LightboxPage = memo(function LightboxPage({
             panCaught.value = 0;
             settlePan(0, 0);
           }
+          return;
+        }
+        if (!annotating && pinchBusy.value) {
+          // 平移先起、捏合随后接管:起点与落点都归捏合,不能覆盖它的 saved 位移。
+          panBusy.value = 0;
+          maybeShowChrome();
           return;
         }
         savedTranslateX.value = translateX.value;
@@ -1539,7 +1715,8 @@ const LightboxPage = memo(function LightboxPage({
       .numberOfTaps(1)
       .maxDistance(LIGHTBOX_TAP_MAX_DISTANCE)
       .onEnd((_event, success) => {
-        if (success && shouldCloseLightboxOnTap(scale.value)) runOnJS(onRequestClose)();
+        // 单击只切换 chrome 显隐,不关闭(关闭走按钮 / 下滑 / 系统返回)。
+        if (success) runOnJS(onToggleChrome)();
       });
 
     // 画笔:单指跟手采点(worklet 只搬运坐标 + transform 快照,归一化在 JS 侧
@@ -1578,6 +1755,7 @@ const LightboxPage = memo(function LightboxPage({
     reportZoomed,
     onDrawPoint,
     onChromeBusy,
+    onToggleChrome,
     springToTransform,
   ]);
 
@@ -1593,9 +1771,6 @@ const LightboxPage = memo(function LightboxPage({
     ],
   }));
 
-  // 取件成功但 mime 非图片(unsupported)时 displayUriFor 恒为 null,若只认
-  // status==='error' 会永远停在 spinner —— 一并视为失败,给到重试按钮。
-  const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
 
   // 标注 overlay 的锚定矩形(contain 1x):其中心恒等于容器中心,与图片层共用
   // 同一 translate/scale transform 时缩放中心一致,视觉完全跟随(纯函数,可单测)。
@@ -1643,7 +1818,9 @@ const LightboxPage = memo(function LightboxPage({
 
   return (
     <View style={{ height, width }}>
-      {uri && !layers.showFailure ? (
+      {!pageFailed ? (
+        // 取件中也挂手势层:垫底缩略图从打开起就能捏合 / 双击放大、单击切换 chrome,
+        // 原图到达后在同一层里替换像素,缩放状态不丢。
         <GestureDetector gesture={gesture}>
           <Animated.View collapsable={false} style={styles.pageFill}>
             {/*
@@ -1660,6 +1837,12 @@ const LightboxPage = memo(function LightboxPage({
                 // 一两帧,为它先挂一帧 spinner 反而每次打开都闪一下,与本次「让用户
                 // 感知不到」的目标相反。
                 onError={() => setFailedPreviewUri(previewUri)}
+                onLoad={(event) => {
+                  const source = event.source;
+                  if (source && source.width > 0 && source.height > 0) {
+                    setPreviewSize({ uri: previewUri, width: source.width, height: source.height });
+                  }
+                }}
                 contentFit="contain"
                 recyclingKey={previewUri}
                 source={{ uri: previewUri }}
@@ -1667,7 +1850,7 @@ const LightboxPage = memo(function LightboxPage({
                 testID="message.imageLightboxPreviewLayer"
               />
             ) : null}
-            <AnimatedImage
+            {uri ? <AnimatedImage
               // 两条失败路径都要接:可重取的图交父层做一次 forceRefresh 自愈(再失败
               // 落父层 error 态给重试按钮);直连图在本页落失败态,提供原地重试。
               onError={() => {
@@ -1687,7 +1870,7 @@ const LightboxPage = memo(function LightboxPage({
               recyclingKey={uri}
               source={{ uri }}
               style={[styles.pageFill, imageStyle]}
-            />
+            /> : null}
             {/* 连缩略图都没有(直连 http 图 / 缓存未命中):至少给转圈,不留纯黑无反馈。 */}
             {layers.showSpinner ? (
               <View pointerEvents="none" style={styles.pageSpinnerLayer}>
@@ -1745,66 +1928,156 @@ const LightboxPage = memo(function LightboxPage({
           </Animated.View>
         </GestureDetector>
       ) : (
-        // 取件中 / 失败分支没有图片手势层,必须自带关闭途径(单击空白处关闭),
-        // 否则 iOS 上打开离线图会困在全屏 Modal 里;重试按钮自己消费点击不受影响。
+        // 失败分支没有图片手势层:单击空白处同样切换 chrome(关闭按钮在 chrome 里);
+        // 重试按钮自己消费点击不受影响。
         <Pressable
-          accessibilityLabel={t('message.lightbox.closeImage')}
-          onPress={onRequestClose}
+          accessible={false}
+          onPress={onToggleChrome}
           style={[styles.pageFill, styles.pageCenter]}
         >
-          {layers.showFailure ||
-          resolveState?.status === 'error' ||
-          resolvedUnsupported ||
-          (!retryable && !media.previewable) ? (
-            <>
-              <Text style={styles.stateText}>
-                {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
+          <Text style={styles.stateText}>
+            {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
+          </Text>
+          {retryable || layers.showFailure ? (
+            <Pressable
+              accessibilityLabel={t('message.lightbox.retryLoadImage')}
+              accessibilityRole="button"
+              onPress={(event) => {
+                event.stopPropagation();
+                if (retryable) onRetry(image);
+                else {
+                  // 清掉失败态后重新挂载 Image,原 URI 原地重试,不改签名 URL。
+                  setFailedFullUri(null);
+                  setLoadedUri(null);
+                }
+              }}
+              style={styles.retryButton}
+              testID="message.imageLightboxRetryButton"
+            >
+              <Text style={styles.retryText}>
+                {t('message.lightbox.retry')}
               </Text>
-              {retryable || layers.showFailure ? (
-                <Pressable
-                  accessibilityLabel={t('message.lightbox.retryLoadImage')}
-                  accessibilityRole="button"
-                  onPress={(event) => {
-                    event.stopPropagation();
-                    if (retryable) onRetry(image);
-                    else {
-                      // 清掉失败态后重新挂载 Image,原 URI 原地重试,不改签名 URL。
-                      setFailedFullUri(null);
-                      setLoadedUri(null);
-                    }
-                  }}
-                  style={styles.retryButton}
-                  testID="message.imageLightboxRetryButton"
-                >
-                  <Text style={styles.retryText}>
-                    {t('message.lightbox.retry')}
-                  </Text>
-                </Pressable>
-              ) : null}
-            </>
-          ) : (
-            <>
-              {layers.showPreview && previewUri ? (
-                // 取件在途时垫列表缩略图(静态 contain,无缩放手势,点击仍由外层
-                // Pressable 单击关闭接管):首开不黑屏,原图到达切上面手势分支时
-                // 那边继续垫同一张图,两段之间不留空档。
-                <AnimatedImage
-                  // 同上:垫底失败要退回 spinner,不能让取件在途这段变成纯黑。
-                  onError={() => setFailedPreviewUri(previewUri)}
-                  contentFit="contain"
-                  recyclingKey={previewUri}
-                  source={{ uri: previewUri }}
-                  style={StyleSheet.absoluteFill}
-                  testID="message.imageLightboxPreviewLayer"
-                />
-              ) : null}
-              {layers.showSpinner ? (
-                <ActivityIndicator color="#ffffff" testID="message.imageLightboxLoading" />
-              ) : null}
-            </>
-          )}
+            </Pressable>
+          ) : null}
         </Pressable>
       )}
+    </View>
+  );
+});
+
+/**
+ * 视频页:系统原生播放器(与文件预览同一组件),无缩放手势;单击交给系统播放
+ * 控件,chrome 在视频页常驻。只有成为当前页才挂播放器,翻走即卸载停播,不在
+ * 后台为相邻页起播放器;未激活时显示列表缩略图(若有)作封面。
+ */
+const LightboxVideoPage = memo(function LightboxVideoPage({
+  active,
+  height,
+  image,
+  insetBottom,
+  insetTop,
+  onRetry,
+  onToggleChrome,
+  previewUri,
+  resolveState,
+  uri,
+  width,
+}: {
+  active: boolean;
+  height: number;
+  image: MobileMessageGalleryImage;
+  insetBottom: number;
+  insetTop: number;
+  onRetry(image: MobileMessageGalleryImage): void;
+  onToggleChrome(): void;
+  previewUri: string | null;
+  resolveState: PageResolveState | null;
+  uri: string | null;
+  width: number;
+}) {
+  const { t } = useTranslation();
+  /** 原生播放失败的地址(换地址天然失效):退到 WebView 播放器,与文件预览一致。 */
+  const [nativeFailedUri, setNativeFailedUri] = useState<string | null>(null);
+  /** WebView 兜底也播不了的地址:落失败态给重试,不能停在黑屏播放器上。 */
+  const [webFailedUri, setWebFailedUri] = useState<string | null>(null);
+  const media = image.payload.media;
+  const retryable = !media.previewable && isDesktopLocalMediaUrl(media.url);
+  const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
+  const playbackFailed = !!uri && webFailedUri === uri;
+  const failed = playbackFailed || (!uri && (
+    resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
+  ));
+  const handleNativeError = useCallback(() => {
+    if (uri) setNativeFailedUri(uri);
+  }, [uri]);
+  const handleWebStatus = useCallback((status: MobileMediaPlayerStatus) => {
+    if (status.state === 'error' && uri) setWebFailedUri(uri);
+  }, [uri]);
+  const retry = useCallback(() => {
+    // 播放失败的标记按地址记:重试先清掉,取件图再 forceRefresh 换新地址;
+    // 直连地址原地重新挂载原生播放器。
+    setNativeFailedUri(null);
+    setWebFailedUri(null);
+    if (retryable) onRetry(image);
+  }, [image, onRetry, retryable]);
+
+  let body: React.ReactNode;
+  if (failed) {
+    body = (
+      <Pressable accessible={false} onPress={onToggleChrome} style={[styles.pageFill, styles.pageCenter]}>
+        <Text style={styles.stateText}>
+          {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
+        </Text>
+        {retryable || playbackFailed ? (
+          <Pressable
+            accessibilityLabel={t('message.lightbox.retry')}
+            accessibilityRole="button"
+            onPress={(event) => {
+              event.stopPropagation();
+              retry();
+            }}
+            style={styles.retryButton}
+            testID="message.imageLightboxRetryButton"
+          >
+            <Text style={styles.retryText}>{t('message.lightbox.retry')}</Text>
+          </Pressable>
+        ) : null}
+      </Pressable>
+    );
+  } else if (active && uri) {
+    body = nativeFailedUri === uri || uri.startsWith('data:') ? (
+      <RemoteMediaPlayerWebView
+        kind="video"
+        mimeType={resolveState?.status === 'ready' ? resolveState.media.mimeType : media.mimeType}
+        onStatusChange={handleWebStatus}
+        style={styles.pageFill}
+        testID="message.imageLightboxVideoWebPlayer"
+        title={image.title}
+        url={uri}
+        visible={active}
+      />
+    ) : (
+      <NativeVideoPlayer
+        onError={handleNativeError}
+        testID="message.imageLightboxVideoPlayer"
+        url={uri}
+        visible={active}
+      />
+    );
+  } else {
+    body = (
+      <View style={[styles.pageFill, styles.pageCenter]}>
+        {previewUri ? (
+          <Image contentFit="contain" source={{ uri: previewUri }} style={StyleSheet.absoluteFill} />
+        ) : null}
+        {active ? <ActivityIndicator color="#ffffff" testID="message.imageLightboxLoading" /> : null}
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ height, paddingBottom: insetBottom, paddingTop: insetTop, width }} testID="message.imageLightboxVideoPage">
+      {body}
     </View>
   );
 });
@@ -1890,7 +2163,7 @@ const styles = StyleSheet.create({
     height: 22,
     width: StyleSheet.hairlineWidth,
   },
-  actionLabelDisabled: { color: 'rgba(255,255,255,0.35)' },
+  actionLabelDisabled: { color: DISABLED_ICON_COLOR },
   stateText: { color: 'rgba(255, 255, 255, 0.85)', fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
   retryButton: {
     borderColor: 'rgba(255, 255, 255, 0.5)',

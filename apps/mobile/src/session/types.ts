@@ -132,6 +132,8 @@ export interface RemoteSessionRuntimePending {
 }
 
 export interface RemoteMessage {
+  /** Local durable-push order, retained by the display cache. */
+  cacheReceipt?: import('@cindy/maker-shared/message-window').HistoryCacheReceipt;
   id: string;
   clientId: string;
   sessionId: string;
@@ -146,7 +148,10 @@ export interface RemoteMessage {
   mobileToolInputProjection?: MobileToolInputProjection;
   systemCardData?: Record<string, unknown>;
   systemCardType?:
-    | 'help' | 'context' | 'cost' | 'pwd' | 'status' | 'compact' | 'cmd' | 'goal-complete' | 'goal-resumed' | 'context-rebuild' | 'auto-resume' | 'learn' | 'agent-switch';
+    | 'help' | 'context' | 'cost' | 'pwd' | 'status' | 'compact' | 'cmd' | 'goal-complete' | 'goal-resumed' | 'context-rebuild' | 'auto-resume' | 'learn' | 'agent-switch'
+    /** 代输入结束留痕(由隐藏续接行派生,无输入值)。 */
+    | 'input-handoff'
+    | 'mcp-app';
 }
 
 export type RemoteAttachmentCategory = 'image' | 'pdf' | 'text' | 'office' | 'file';
@@ -307,6 +312,8 @@ export interface InputProjection {
 }
 
 export interface PendingInteraction {
+  /** Controller-only draft retention; never sent to the Host. */
+  retainedDraft?: boolean;
   request: {
     kind?: string;
     requestId?: string;

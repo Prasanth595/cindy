@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteMessage, RemoteSession } from '@/session/types';
 
@@ -192,6 +190,24 @@ describe('mobileSessionMessageCache', () => {
     expect(rows[1].content).toBe(content);
   });
 
+  // Unit regression: a blurred page's deferred write must not erase list pushes
+  // received after that write was captured; explicit replacement still wins.
+  it('preserves a later list receipt through a delayed page flush', async () => {
+    const { cacheSessionMessages, cacheSessionListMessage, getCachedSessionMessages,
+      captureSessionMessageCacheWriteAuthority, cacheSessionMessagesIfCurrent,
+      replaceCachedSessionMessages } = await import('@/session/mobileSessionMessageCache');
+    const old = makeMessage({ id: 'same', clientId: 'same', createdAt: isoAt(1), content: 'old' });
+    await cacheSessionMessages('host-a', 'session-1', [old]);
+    const authority = captureSessionMessageCacheWriteAuthority('host-a', 'session-1')!;
+    const newer = { ...old, content: 'updated', cacheReceipt: { ...authority.capturedReceipt, order: authority.capturedReceipt.order + 1 } };
+    await cacheSessionListMessage('host-a', 'session-1', newer);
+    await cacheSessionMessagesIfCurrent(authority, [old]);
+    expect(await getCachedSessionMessages('host-a', 'session-1')).toEqual([newer]);
+    await replaceCachedSessionMessages('host-a', 'session-1', []);
+    await cacheSessionMessagesIfCurrent(authority, [old]);
+    expect(await getCachedSessionMessages('host-a', 'session-1')).toEqual([]);
+  });
+
   it('returns [] for missing cache or blank ids', async () => {
     const { getCachedSessionMessages, cacheSessionMessages } = await import('@/session/mobileSessionMessageCache');
 
@@ -380,13 +396,6 @@ describe('mobileSessionMessageCache', () => {
     await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
   });
 
-  it('does not treat an empty in-memory render snapshot as a cache deletion', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/remoteSessionStore.ts'), 'utf8');
-    expect(source).toContain('空内存可能只是 regular LRU 淘汰');
-    expect(source).toContain('if (messages.length === 0) return;');
-    expect(source).toContain("if (retentionForSession(sessionId) === 'schedule')");
-  });
-
   it('clears every cached session on logout but leaves unrelated keys', async () => {
     const { __testing, cacheSessionMessages, clearCachedSessionMessages, getCachedSessionMessages } =
       await import('@/session/mobileSessionMessageCache');
@@ -447,7 +456,26 @@ describe('mobileSessionMessageCache', () => {
     await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
   });
 
-  it('removeMessages on a schedule task clears cache instead of persisting the remaining body', async () => {
+  it('removeMessages on an unopened schedule task clears cache instead of persisting the remaining body', async () => {
+    const { cacheSessionMessages, getCachedSessionMessages } =
+      await import('@/session/mobileSessionMessageCache');
+    const { remoteSessionStore } = await import('@/session/remoteSessionStore');
+    remoteSessionStore.clear();
+    remoteSessionStore.setDeviceSessions('host-a', 'Mac', [
+      makeSession('session-1', { source: 'scheduler' }),
+    ]);
+    const rows = [
+      makeMessage({ id: 'a', clientId: 'a', createdAt: isoAt(1) }),
+      makeMessage({ id: 'b', clientId: 'b', createdAt: isoAt(2) }),
+    ];
+    await cacheSessionMessages('host-a', 'session-1', rows);
+
+    remoteSessionStore.removeMessages('session-1', ['a'], 'host-a');
+
+    await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
+  });
+
+  it('removeMessages on an opened schedule task persists the remaining body like a regular task', async () => {
     const { cacheSessionMessages, getCachedSessionMessages } =
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
@@ -465,7 +493,9 @@ describe('mobileSessionMessageCache', () => {
 
     remoteSessionStore.removeMessages('session-1', ['a'], 'host-a');
 
-    await expect(getCachedSessionMessages('host-a', 'session-1')).resolves.toEqual([]);
+    await vi.waitFor(async () => {
+      expect((await getCachedSessionMessages('host-a', 'session-1')).map((row) => row.id)).toEqual(['b']);
+    });
     expect(remoteSessionStore.getMessages('session-1').map((row) => row.id)).toEqual(['b']);
   });
 
@@ -474,7 +504,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({ id: 'cached-s0', sessionId: 's0', createdAt: isoAt(1) });
     await cacheSessionMessages('host-a', 's0', [cached]);
@@ -482,7 +512,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),
@@ -630,7 +660,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({
       id: 'deleted-row',
@@ -642,7 +672,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),
