@@ -102,6 +102,14 @@ describe('sharedTask dispatch scope', () => {
       args: ['permission-1', { kind: 'permission', behavior: 'allow', permissionUpdates: [permissionSuggestion] }],
     })).not.toThrow();
   });
+  it.each(['cindy.app.update', 'cindy.app.auto_update'])('keeps the owner-only %s card away from guests', (toolName) => {
+    setSharedTaskInteractionReader(() => ({ sessionId: 'task', kind: 'permission', toolName }));
+    for (const behavior of ['allow', 'deny']) {
+      const args = ['app-update-1', { kind: 'permission', behavior }];
+      expect(() => assertSharedTaskInvoke(capture(), { channel: 'maker:resolve-interaction', args })).toThrow('PERMISSION_DENIED');
+      expect(() => assertSharedTaskInteractionResolveCurrent(capture(), args)).toThrow('PERMISSION_DENIED');
+    }
+  });
   it.each([{ command: 'different-command' }, {}, null])('rejects guest replacement input %j at admission and consumption', (updatedInput) => {
     setSharedTaskInteractionReader(() => ({ sessionId: 'task', kind: 'permission', toolName: 'Bash' }));
     const args = ['permission-1', { kind: 'permission', behavior: 'allow', updatedInput }];
@@ -161,11 +169,16 @@ describe('sharedTask dispatch scope', () => {
     expect(() => assertSharedTaskInvoke(noHistory, { channel, args: ['task', 'bash-1'] })).toThrow();
   });
   it('accepts media preparation and OSS fallback without granting the file-peer channel', () => {
-    for (const prepareOnly of [true, false]) {
-      expect(() => assertSharedTaskInvoke(capture(), {
-        channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', prepareOnly }],
-      })).not.toThrow();
+    for (const options of [{ prepareOnly: true, metadataOnly: true }, { prepareOnly: true }, { prepareOnly: false }]) {
+      const request = { channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', ...options }] };
+      for (const phase of ['invoke', 'result'] as const) {
+        expect(() => assertSharedTaskInvoke(capture(), request, undefined, phase)).not.toThrow();
+        expect(() => assertSharedTaskInvoke({ ...capture(), authorize: () => false }, request, undefined, phase)).toThrow('PERMISSION_DENIED');
+      }
     }
+    expect(() => assertSharedTaskInvoke(capture(), {
+      channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', metadataOnly: 'true' }],
+    })).toThrow('PERMISSION_DENIED');
     expect(() => assertSharedTaskInvoke(capture(), {
       channel: 'device-link:media:fetch', args: [{ url: 'xdt-image://task/a.png', prepareOnly: true, sessionId: 'other' }],
     })).toThrow();
@@ -193,6 +206,37 @@ describe('sharedTask dispatch scope', () => {
     expect(() => assertSharedTaskInvoke(capture(), payload)).not.toThrow();
     setSharedTaskQueueReader(() => undefined);
     expect(() => assertSharedTaskInvoke(capture(), payload, undefined, 'result')).not.toThrow();
+  });
+  it('lets guests read and write task files like the owner, but never run export jobs', () => {
+    const channel = 'file-browser:remote-op';
+    const call = (request: unknown, peer = capture(), extra: unknown[] = []) =>
+      () => assertSharedTaskInvoke(peer, { channel, args: [request, ...extra] });
+    for (const op of ['caps', 'listDir', 'listAllFiles', 'readFile', 'stat', 'searchCollect', 'thumbnail', 'fileUrl',
+      'writeFile', 'createFile', 'createFolder', 'renameEntry', 'deleteEntry']) {
+      expect(call({ op, workdir: '/host/task' })).not.toThrow();
+    }
+    for (const op of ['exportFileStart', 'exportFileStatus', 'exportDirStart', 'exportDirStatus', 'unknown']) {
+      expect(call({ op, workdir: '/host/task' })).toThrow('PERMISSION_DENIED');
+    }
+    expect(call({ op: 'listDir' })).toThrow('PERMISSION_DENIED');
+    expect(call({ op: 'listDir', workdir: '/host/task' }, capture(), ['extra'])).toThrow('PERMISSION_DENIED');
+    const readOnly: SharedTaskPeerCapture = { ...capture(), authorize: (operation) => operation !== 'file.write' };
+    expect(call({ op: 'readFile', workdir: '/host/task' }, readOnly)).not.toThrow();
+    expect(call({ op: 'writeFile', workdir: '/host/task' }, readOnly)).toThrow('PERMISSION_DENIED');
+    expect(call({ op: 'listDir', workdir: '/host/task' }, { ...capture(), isCurrent: () => false })).toThrow();
+  });
+  it('subscribes a workdir watch only after async admission, including merged reconnect frames', () => {
+    const subscribe = (topics: string[], verified: string[] = [], peer = capture()) =>
+      () => assertSharedTaskInvoke(peer, { channel: 'device-link:subscribe', args: [{ topics }] }, undefined, 'invoke', new Set(verified));
+    expect(subscribe(['fs-watch:/host/task'])).toThrow('PERMISSION_DENIED');
+    expect(subscribe(['fs-watch:/host/task'], ['fs-watch:/host/task'])).not.toThrow();
+    expect(subscribe(['session:task', 'fs-watch:/host/task'], ['fs-watch:/host/task'])).not.toThrow();
+    expect(subscribe(['session:other', 'fs-watch:/host/task'], ['fs-watch:/host/task'])).toThrow('PERMISSION_DENIED');
+    expect(subscribe(['fs-watch:/host/task'], ['fs-watch:/host/task'], { ...capture(), authorize: (operation) => operation !== 'file.read' }))
+      .toThrow('PERMISSION_DENIED');
+    // Results and unsubscribes carry no file data, so they only re-check access.
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'device-link:subscribe', args: [{ topics: ['fs-watch:/host/task'] }] }, undefined, 'result')).not.toThrow();
+    expect(() => assertSharedTaskInvoke(capture(), { channel: 'device-link:unsubscribe', args: [{ topics: ['fs-watch:/host/task'] }] })).not.toThrow();
   });
   it('rejects expired captured authorization and unbound sharedTask pushes without changing same-account traffic', () => {
     expect(() => assertSharedTaskInvoke({ ...capture(), isCurrent: () => false }, { channel: 'local-db:messages:list', args: ['task'] })).toThrow();

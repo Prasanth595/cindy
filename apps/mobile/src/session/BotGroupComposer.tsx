@@ -43,6 +43,7 @@ import { BOT_GROUP_STEP_AVATAR_SIZE, BotGroupAvatar } from './BotGroupAvatars';
 import { BotGroupMenu } from './BotGroupMenu';
 import type { BotGroupIdentityLookup } from './BotGroupPlan';
 import { ComposerAttachmentCollapsedBadge, ComposerAttachmentTray } from './ComposerAttachmentTray';
+import { useComposerPendingImagePreview } from './useComposerPendingImagePreview';
 import { ContextSheet, ContextSheetGroup, ContextSheetRow } from './ContextSheet';
 import { RecentPhotosStrip } from './ContextSheetMediaViews';
 import { ImageLightbox } from './ImageLightbox';
@@ -112,6 +113,7 @@ export function BotGroupComposer({
     deviceId,
     onPicked: () => { setSheetOpen(false); focusInput(); },
   });
+  const pendingImagePreview = useComposerPendingImagePreview(tray);
   const attachmentsEnabled = attachmentsSupported && online;
   // Paste handlers stay mounted for the whole screen (the input would remount otherwise); they
   // check support when an image actually arrives.
@@ -351,6 +353,7 @@ export function BotGroupComposer({
       onPasteImagesLoadFailed={() => { if (pasteAllowedRef.current) tray.failPastePlaceholders(); }}
       cardActive={cardActive}
       accessoryAbove={hasAttachments ? <ComposerAttachmentTray attachments={tray.attachments} previews={tray.previews}
+        onPreviewPending={pendingImagePreview.open}
         pendingUploads={tray.pendingUploads} pastePlaceholderCount={tray.pastePlaceholderCount}
         onPreview={setPreviewId} onRemove={tray.removeAttachment} onRemovePending={tray.removePendingUpload}
         onRetryPending={tray.retryPendingUpload} removeDisabled={sending} testIDPrefix="botGroup" /> : null}
@@ -395,6 +398,7 @@ export function BotGroupComposer({
           onPress={() => { setDivision(true); inputRef.current?.focus(); }} testID="botGroup.contextSheetDivisionRow" />
       </ContextSheetGroup>
     </ContextSheet>
+    {pendingImagePreview.host}
     {previewUrl ? <ImageLightbox images={tray.galleryImages} initialUrl={previewUrl} onClose={() => setPreviewId(null)} /> : null}
   </View>;
 }

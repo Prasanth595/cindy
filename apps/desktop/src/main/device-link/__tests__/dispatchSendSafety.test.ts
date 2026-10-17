@@ -52,6 +52,7 @@ import { currentDbRpcAdmissionClass } from '../../localDb/client/rpcAdmission';
 import { getDeviceLinkInvokeContext } from '../invoke-context';
 import { HistoryViewController, type HistoryViewPage, type HistoryMessageSource } from '@cindy/maker-shared/message-window';
 import * as subscriptions from '../subscriptions';
+import { setHistoryWorkPageReader } from '../historyViewPush';
 
 /** 最小 mock client:只实现被测路径用到的两个发送方法。 */
 function mkClient(
@@ -269,6 +270,62 @@ describe('history detail interest', () => {
       expect(client.sendPush.mock.calls).toEqual([['legacy', 'maker:event', payload]]);
     } finally {
       view.setActive(false);
+      __testing.reset();
+      vi.useRealTimers();
+    }
+  });
+  it('replaces the notice with a work patch only for a same-account work-line controller whose page shape held', async () => {
+    vi.useFakeTimers();
+    const shape = (revision: string, keys = ['c0', 'work-c1']) => ({
+      keys, fingerprints: keys.map((key) => key === 'work-c1' ? 'running:m1' : `fp-${key}`), running: new Map([['work-c1', revision]]),
+    });
+    const summary = { key: 'work-c1', firstMessageId: 'm1', lastMessageId: 'm9', startedAtMs: 1, endedAtMs: 2,
+      isStreaming: true, messageCount: 3, toolCount: 2, revision: 'r2', lines: [] };
+    let next = shape('r2');
+    setHistoryWorkPageReader(async (_sid, onShape) => {
+      onShape(next);
+      return { version: 1, hasMore: false, nextCursor: null, items: [
+        { type: 'messages', key: 'c0', messages: [] },
+        { type: 'work', key: 'work-c1', summary: { ...summary, revision: next.running.get('work-c1')! } },
+      ] };
+    });
+    try {
+      const client = mkClient();
+      __testing.setActiveClient(client as never);
+      for (const peer of ['lines', 'plain']) subscriptions.subscribe(peer, ['session:s1']);
+      subscriptions.prepareHistoryView('lines', 's1')!.update(['work-c1'], { workLines: true, shape: shape('r1') });
+      subscriptions.prepareHistoryView('plain', 's1')!.update(['work-c1']);
+      const toolUse = { sessionId: 's1', event: { type: 'tool_use', data: { toolUseId: 't9', toolName: 'Read', input: { file_path: '/a' } } } };
+      __testing.forwardPush('maker:event', toolUse);
+      await vi.advanceTimersByTimeAsync(500);
+      const sent = () => client.sendPush.mock.calls.filter(([, channel]) => channel !== 'maker:event');
+      expect(sent()).toEqual(expect.arrayContaining([
+        ['plain', 'maker:history-view-changed', { sessionId: 's1' }],
+        ['lines', 'maker:history-work-patch', { version: 1, sessionId: 's1', baseRevision: 'r1',
+          item: { type: 'work', key: 'work-c1', summary: { ...summary, revision: 'r2' } } }],
+      ]));
+      expect(sent()).toHaveLength(2);
+
+      // A new top-level item means the page itself moved: the controller re-reads as before.
+      client.sendPush.mockClear();
+      next = shape('r3', ['c0', 'c5', 'work-c1']);
+      __testing.forwardPush('maker:event', toolUse);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sent()).toEqual(expect.arrayContaining([['lines', 'maker:history-view-changed', { sessionId: 's1' }]]));
+
+      // Folded thinking deltas reach a work-line controller only while its single line can change.
+      client.sendPush.mockClear();
+      subscriptions.prepareHistoryView('lines', 's1')!.update(['work-c1'], { workLines: true, shape: shape('r3') });
+      next = shape('r4');
+      const delta = (text: string) => ({ sessionId: 's1', event: { type: 'thinking', data: { stage: 'delta', blockId: 'b7', text } } });
+      __testing.forwardPush('maker:event', delta('x'.repeat(200)));
+      await vi.advanceTimersByTimeAsync(500);
+      __testing.forwardPush('maker:event', delta('more'));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sent().filter(([peer]) => peer === 'lines')).toHaveLength(1);
+      expect(sent().filter(([peer]) => peer === 'plain')).toHaveLength(0);
+    } finally {
+      setHistoryWorkPageReader(null);
       __testing.reset();
       vi.useRealTimers();
     }

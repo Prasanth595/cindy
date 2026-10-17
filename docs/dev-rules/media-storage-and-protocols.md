@@ -32,6 +32,22 @@
   预览就复制一份。远程设备或 SSH 文件必须保留真实来源，不能把远程绝对路径当成本机路径。
 - docx、PDF、zip 等非媒体文件不进入媒体字节仓，继续使用已有 `xdt-file` 等受控文件
   通道。`xdt-audio` 只保留播放用户本地散文件的直读职责，不作为新的托管媒体写入口。
+- 飞书、Discord、Telegram、企业微信四个个人 IM 渠道的入站附件，去处只由 `@cindy/im` 的
+  `classifyInboundAttachment` 判定（MIME 或扩展名任一命中即可）：
+  - 图片与音视频经 `IMHost.media` 进总仓（`cacheImage` 一律带 `staging: true`，另有
+    `cacheMedia`），以可回收暂存写入。host 入仓前按真实字节核验类型（`im/shared/inboundMediaVerify.ts`），
+    消息落库时 pin 为用户附件；下载期间发生换代则回滚。
+  - 非媒体文件经 `IMHost.files` 暂存到按账号隔离的 `im-attachments/<渠道>/staging/`。消息路由到任务后，
+    由 `im/shared/turnRunner.ts` 调用 `adoptStagedInboundFiles`，把触发消息自己的附件移入
+    `im-attachments/<渠道>/sessions/<任务ID>/`。群历史附件和受保护内容不落库，留在暂存区按龄回收。
+    实现见 `im/shared/inboundFileStaging.ts`。
+  - host 缺对应能力或总仓拒收格式时标为不支持，不回落写 `cc-agent/*-media`。
+- 另外两个个人 IM 渠道暂未接入上述分流，各自保留现有做法：
+  - 钉钉只收图片，经 `cacheImage`（未带 `staging`）直接按用户附件入仓。
+  - 微信由 `im/wechat/mediaStaging.ts` 在已知任务后直接 `ingestMedia` 媒体，并把文件写入同一棵
+    `im-attachments/wechat/sessions/<任务ID>/`。
+  - 任务删除时，两者与上述四个渠道统一由 `removeImSessionAttachmentDirs` 清理。迁移这两个渠道前，
+    先对齐本条规则。
 
 ## 写入与记账
 
@@ -57,17 +73,61 @@
   不直接删除共享 blob；物理回收由 `recycler.ts` 根据账本统一处理。
 - `isCache: true` 只用于可以重新获取或重新生成的缓存。缓存一旦成为聊天历史、作品或其他
   不可再生用户内容，必须沿用现有 pin／引用流程转为不可按缓存回收。
+- 远程文件的长期复用（2026-10-16 用户要求）不以短 TTL 清空：媒体经 `ingestMedia` /
+  `integration-cache` 持久入仓，`remote-file` 命名空间按现有缓存预算自动 LRU 回收。
+  预算用量统计整个媒体仓的 cache 字节，但排除手动管理的 `remote-media` 长期副本；
+  命名空间只限制逐出候选，不另分配一份额度。
+  消费者持有独立副本，新写入的仓内缓存同样可逐出；其他缓存已占满额度时不强留新副本。
+  自动清理只接受该命名空间独占且仍为 `isCache` 的字节；扫描和条件删除都检查其他
+  引用与 pin，不能清理聊天附件或其他集成的共享字节。其他媒体清理维持原手动流程。
+  普通 HTML 等非媒体仍走 `remote-file-cache`。完整身份、复验与平台清理策略见
+  [`protocol-compatibility.md`](protocol-compatibility.md)「远程文件连接复用与版本缓存」。
+- 桌面聊天的不可变远程图片通过 `device-link/remoteMediaPersistentCache.ts` 复用媒体总仓，
+  `remote-media` 索引包含账号、来源设备和原始地址。先查内存、再查磁盘，缓存命中不取件；
+  重启和断连不清理，不增加自动到期或容量淘汰。设置中的「远程图片缓存」复用账本扫描和
+  条件删除，只清该命名空间独占的缓存，保护草稿、已保存附件及其他集成共享字节。
+  普通路径不按 URL 永久缓存：继续由主机复核版本，完整中转下载也可写入已有版本缓存；
+  控制端发送图片时，同一缓存还保留实际上传的字节（含压缩结果），按其最终内容地址登记，
+  覆盖直传与 OSS、文件选择与内存图片。不能用压缩前的本机原图代替历史消息中的压缩版本。
+  留存遵守远程协议既有的 64 MiB 整图读取上限，并核对上传大小、指纹和真实图片类型；
+  文件在上传后发生变化时不登记错误副本。上传开始时捕获账号与清理代次，迟到结果不能
+  写入新账号或重建用户刚清理的缓存。复用现有 `remote-media` 清理入口，不增设目录或 TTL。
+  音视频仍走流式播放。旧主机不返回版本时不把可修改文件登记为长期有效。
+  回归见 `remoteMediaPersistentCache.test.ts`、`remoteMediaProtocol.test.ts` 与 `storageIpc.test.ts`。
 - 零引用入仓只适用于已有草稿或生成结果提交链路。新增零引用窗口时，必须证明内容在消息
   落库前不会被回收，并用测试覆盖成功、失败、取消和重试。
-- 三款官方壁纸的高清 WebP 与 2304×1440 MP4 均随包，清单标记 `delivery: bundled`，
-  不访问 OSS/CDN，不重复打包低清视频。未来显式标记 `delivery: cdn` 的条目才启用
-  客户端级 CDN 下载，按清单字节数与 SHA-256 校验后入仓；当前清单保留引用，
-  下载成功后回收已不在清单的客户端视频，失败回退随包视频。
-  发布脚本只上传 CDN 条目，始终跳过 bundled 条目。发布命令为
-  `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --directory=<视频目录> --region=global`；
-  中国大陆版显式用 `--region=cn`，发布两区时分别执行。可加 `--verify-only` 离线核验。
-  CDN 文件名为 `<壁纸编号>-hd.mp4`；`--verify-only` 同时校验仓内内置视频。
+- 所有官方壁纸原图均为 OSS/CDN 按需分发（2026-10-17 用户裁决，将三款场景的已有下载链路
+  扩展到其余静态图片，替代静态原图随包的决定）。包内仅保留
+  `renderer/assets/wallpapers/previews/` 中的三款 640×400 WebP 与 `thumbnails/` 中的静态缩略图；
+  原始高清图和 2304×1440 MP4 保留为发布输入，不进入 Renderer 资源依赖图。
+  清单中静态条目只有 `delivery` 与 `image`，顶层视频元数据仅用于三款动态场景；
+  静态条目不暴露动态选项、不下载视频。默认无壁纸和浏览设置列表不下载，
+  选中且可见时下载对应高清图，动态模式且未启用减少动态效果时再下载视频；下载或解码失败保留可用背景。
+  传输复用统一下载器并保留 guardedOutboundFetch 的来源校验，清单大小及 SHA-256 校验后入仓。
+  缓存位于既有 `userData/cindy-media/client-wallpaper/`，仅以内容哈希和扩展名寻址，
+  **不含应用版本或账号**；启动与升级先核对本地文件，有效即返回，不请求 CDN。
+  只有文件缺失、损坏或素材哈希变化才重新下载。
+  官方 WebP、MP4 与自定义媒体的引用合并保留；切换壁纸及常规升级不删除当前清单内已下载素材。
+  回归见 `main/__tests__/wallpaperVideo.test.ts` 的升级离线复用及损坏修复测试，
+  `customWallpaper.test.ts` 覆盖自定义媒体操作不误删官方图片和视频。
+  发布脚本默认核验仓内原始素材，`--directory` 也接受按 hash 命名的导出目录或旧 `-hd.mp4` 输入。
+  `node scripts/publish-wallpaper-videos.mjs --verify-only` 离线核验；
+  `node scripts/publish-wallpaper-videos.mjs --check-cdn --region=global` 只读校验清单全部线上文件；
+  实际发布使用 `node --env-file=<发布配置> scripts/publish-wallpaper-videos.mjs --region=global`。
+  中国大陆版显式用 `--region=cn`，内部 dev 环境显式用 `--region=dev`；三个环境分别发布并校验，
+  资源先于对应客户端上线。只读校验优先读取本环境的 `XDT_GLOBAL_CDN_BASE_URL` / `XDT_CDN_BASE_URL` /
+  `XDT_DEVCH_CDN_BASE_URL`，未配置时读取对应 endpoint 文件；dev 不回落到生产配置。
+  对象名为 `wallpapers/<sha256>.webp` / `.mp4`；三款场景预览图可用
+  `node scripts/prepare-wallpaper-previews.mjs` 从原始图片重建，该组三张图的总预算为 300 KiB。
+  静态缩略图复用现有 `thumbnails/`，当前随包预览资源合计约 0.55 MiB。
   清单见 Desktop 的 `src/shared/wallpaper-video-manifest.json`。
+- 伙伴头像的本机副本（2026-10-17 用户裁决：读过的头像在本机缓存一份，显示前先读缓存）：另一台电脑上
+  伙伴的 `cindy-media://blobs/…` 头像与云端伙伴身份的 `https://` 公开头像，经 `companion-cloud/avatarCache.ts`
+  复用集成缓存的索引（`integration-cache` 引用行，键 `companion-avatar:…`，`isCache: true`）入仓，由回收器按
+  总量上限与 LRU 统一回收，不另建目录、store 或协议。本机已有同指纹 blob 时直接使用，不再复制。只保存主机按
+  字节识别为图片、且不超过头像上限（5 MB）的内容；公开头像走共用的受控公网图片下载。两种地址各自不可变
+  （blob 地址即内容指纹，云端换头像会生成新地址），命中不需要重新校验。Renderer 经
+  `maker:companion-avatar:resolve` 先查本机副本，未命中时照常显示原地址并在后台保存一份。
 - 可再生 HTML 临时快照缓存是独立副本的例外：仅在快照已物化自己的文件、HTTP 服务不依赖
   媒体仓 blob、且该缓存不作为持久附件提交时，使用 `isCache: true` 和空引用入仓。
   必须验证媒体仓缓存不可用时快照仍可读取，以及重复打开、失败、取消和重试不新增业务引用；

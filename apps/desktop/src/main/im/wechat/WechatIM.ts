@@ -641,6 +641,8 @@ export class WechatIM extends BaseIM implements RichChannelIM {
     const active = this.#activeTasks.get(output.userId);
     if (!active) throw new Error('WECHAT_NO_ACTIVE_TASK');
     const chunks = chunkWechatText(normalizeFinalOutputText(output.text));
+    // 持久终态需要一个 outbox 项；发送器跳过空 text，仍投递附件并确认任务完成。
+    if (chunks.length === 0) chunks.push('');
     const kind =
       output.terminal === 'done'
         ? ('final' as const)
@@ -1962,7 +1964,7 @@ export function wechatPreDispatchFailureText(reason: string): string {
 }
 
 function normalizeFinalOutputText(text: string): string {
-  return filterWechatMarkdown(text) || '✅ (本轮无文本输出)';
+  return filterWechatMarkdown(text).trim();
 }
 
 function hasWechatTaskContent(text: string, attachments: readonly WechatTaskAttachment[]): boolean {

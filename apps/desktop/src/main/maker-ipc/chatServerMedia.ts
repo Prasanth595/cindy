@@ -13,6 +13,8 @@ import type { BotGroupAttachment } from '../../shared/botGroupChat.js';
 import type { ChatApi, ChatContentBlock } from './chatServerMigration.js';
 
 const MAX_SIZE = 100 * 1024 * 1024;
+/** Files of one send uploaded at once; each holds its bytes in memory until sealed. */
+const UPLOAD_CONCURRENCY = 3;
 export function createChatMedia(api: ChatApi, current: () => boolean, log?: { warn(message: string, meta?: Record<string, unknown>): void }, options: { allowLoopback?: boolean } = {}) {
   const cache = new Map<string, Promise<BotGroupAttachment>>();
   const check = () => { if (!current()) throw new Error('OWNER_CHANGED'); };
@@ -22,9 +24,27 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
     return url.href;
   };
   return {
+    /**
+     * Uploads a send's files a few at a time (prepare → PUT → complete each), keeping the
+     * blocks in the files' order. Every file settles before a failure is reported, so no
+     * upload keeps running after the send has given up; the first failure in order wins.
+     */
     async upload(roomId: string, source: string, attachments: BotGroupAttachment[], actorId: string): Promise<ChatContentBlock[]> {
-      const blocks: ChatContentBlock[] = [];
-      for (const attachment of attachments) {
+      const results: Array<PromiseSettledResult<ChatContentBlock>> = new Array(attachments.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < attachments.length) {
+          const index = next++;
+          results[index] = await uploadOne(attachments[index]!).then(
+            value => ({ status: 'fulfilled' as const, value }), reason => ({ status: 'rejected' as const, reason }));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, attachments.length) }, worker));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+      return results.map(result => (result as PromiseFulfilledResult<ChatContentBlock>).value);
+
+      async function uploadOne(attachment: BotGroupAttachment): Promise<ChatContentBlock> {
         let stage = 'read';
         const started = Date.now();
         try {
@@ -61,14 +81,13 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
           check();
           stage = 'complete';
           await api(`/conversations/${roomId}/media/${upload.id}/complete`, 'POST', { operationId: `seal:${upload.id}` }, actorId);
-          blocks.push({ type: 'media', mediaId: upload.id, caption: attachment.name });
+          return { type: 'media', mediaId: upload.id, caption: attachment.name };
         } catch (error) {
           log?.warn('Chat media upload failed', { stage, groupId: roomId,
             trace: createHash('sha256').update(source).digest('hex').slice(0, 16), durationMs: Date.now() - started, ...chatErrorDiagnostic(error) });
           throw error;
         }
       }
-      return blocks;
     },
     async download(roomId: string, mediaId: string): Promise<BotGroupAttachment> {
       check();
@@ -82,7 +101,8 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
         const root = ownerScopedUserDataPath();
         const db = getDbClient().drizzle;
         const response = await net.fetch(signedUrl(media.url), { redirect: 'error', signal: AbortSignal.timeout(60000) });
-        if (!response.ok || !response.body) throw new Error('MEDIA_DOWNLOAD_FAILED');
+        // The status tells a file that is gone (4xx: never comes) from a failing server (retried).
+        if (!response.ok || !response.body) throw Object.assign(new Error('MEDIA_DOWNLOAD_FAILED'), response.ok ? {} : { status: response.status });
         const chunks: Uint8Array[] = []; let received = 0;
         const reader = response.body.getReader();
         try {

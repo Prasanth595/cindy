@@ -41,6 +41,7 @@ vi.mock('ws', async () => {
   } };
 });
 import { withChatServer } from '../chatServer.js';
+import { buildBotGroupThreadShareCard } from '../../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
 
 describe('server group feature parity', () => {
@@ -50,7 +51,7 @@ describe('server group feature parity', () => {
   const execution = { id: '40000000-0000-4000-8000-000000000001', conversation_id: roomId,
     source_message_id: '50000000-0000-4000-8000-000000000001', bot_id: botId,
     context_seq: '100', epoch: 1, status: 'running', access_mode: 'chat', access_revision: 1 };
-  const room = (id: string) => ({ id, name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
+  const room = (id: string) => ({ id, kind: 'group', name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
     created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z', revision: 1, archived: false });
   let service: BotGroupChatService;
   let deps: BotGroupChatServiceDeps;
@@ -63,7 +64,7 @@ describe('server group feature parity', () => {
       return { body: { execution: next } };
     }
     if (route.endsWith('/snapshot')) return { body: { room: room(route.split('/')[2]), members: [], messages: [], cursor: '1' } };
-    if (route.includes('/messages?') || route.endsWith('/executions') || route.includes('/plans')) return { body: [] };
+    if (route.includes('/messages?') || route.endsWith('/executions') || route.includes('/execution-failures?') || route.includes('/plans')) return { body: [] };
     return { body: {} };
   }
   beforeEach(() => {
@@ -131,6 +132,35 @@ describe('server group feature parity', () => {
     expect(posted.deferExecution).toBe(true);
     expect(posted.mentions).toEqual(_name === '@all' ? [botId, secondBotId] : []);
   });
+  it('gives an explicit 安排分工 the 引用回复 it quotes, in the decision and the stored request', async () => {
+    const quotedId = '80000000-0000-4000-8000-000000000001';
+    arrange();
+    const base = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, method, data) => route === `/conversations/${roomId}/messages/${quotedId}`
+      ? { body: { id: quotedId, seq: '7', authorId: secondBotId, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', deleted: false,
+        threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'text', text: 'Landing page: hero, pricing, FAQ' },
+          { type: 'media', mediaId: '80000000-0000-4000-8000-0000000000f1', caption: 'wireframe.png' }] } }
+      : base(route, method, data));
+    expect((await send({ text: 'Do this one', division: true, quote: { messageId: quotedId } })).ok).toBe(true); await flush();
+    expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced', request: 'Do this one',
+      requestQuote: { from: 'Peer (Me)', text: 'Landing page: hero, pricing, FAQ', attachments: 1, attachmentName: 'wireframe.png' } }), expect.any(AbortSignal));
+    expect(planPosts()[0]?.[2]).toMatchObject({ request: 'Do this one\n\n> Peer (Me): Landing page: hero, pricing, FAQ 📎 wireframe.png' });
+  });
+
+  it('tells the organizer which recent message re-posts a thread reply', async () => {
+    const replyId = '80000000-0000-4000-8000-000000000002';
+    const card = buildBotGroupThreadShareCard({ messageId: replyId, threadRootId: '80000000-0000-4000-8000-000000000003', authorName: 'Peer', text: '@Peer 马上开工' });
+    arrange();
+    const base = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, method, data) => route.endsWith('/snapshot')
+      ? { body: { room: room(roomId), members, cursor: '1', messages: [{ id: '80000000-0000-4000-8000-000000000004', seq: '3', authorId: 'someone',
+        author: { kind: 'human', name: 'Alice' }, origin: 'human', deleted: false, threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [card] }] } }
+      : base(route, method, data));
+    expect((await send({ text: 'Do this one', division: true })).ok).toBe(true); await flush();
+    expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({
+      recent: [expect.objectContaining({ from: 'Alice', sharedReplyId: replyId })] }), expect.any(AbortSignal));
+  });
+
   it('returns one available member to ordinary discussion using the real decision parser', async () => {
     arrange(undefined, members.slice(0, 1));
     const { parsePlanDecision } = await import('../botGroupDivision.js');
@@ -192,7 +222,7 @@ describe('server group feature parity', () => {
     finish({ needsPlan: true, steps }); await flush();
     expect(planPosts()).toHaveLength(0);
     const view = await service.getGroup(roomId);
-    expect(view.ok && view.group.planningBotId).toBeNull();
+    expect(view).toMatchObject({ ok: true, group: { planningBotId: null } });
   });
   it('keeps @all on an existing proposal as discussion, not a revision', async () => {
     arrange(proposed);
@@ -248,6 +278,44 @@ describe('server group feature parity', () => {
     await send({ division: true });await flush();
     expect(fixture.handle.mock.calls.find(([route]) => route.endsWith('/cancel-planning'))?.[2].failed).toBe(true);
     expect(fixture.handle.mock.calls.some(([route]) => route.endsWith('/continue'))).toBe(false);
+  });
+  // The send is answered once its message is stored; replacing the earlier arrangement continues
+  // afterwards. Formerly a failed cancel of that arrangement failed the whole (already stored) send
+  // and relied on the user retrying it with the same quote snapshot.
+  it('answers a stored quote reply at once and retries a failed cancel of the replaced arrangement', async () => {
+    const quotedId = '80000000-0000-4000-8000-000000000002';
+    arrange();
+    const base = fixture.handle.getMockImplementation()!;
+    let originalVisible = true;
+    let cancelFails = true;
+    fixture.handle.mockImplementation((route, method, data) => {
+      if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupDiscussionParity: 1 } } };
+      if (route === `/conversations/${roomId}/messages/${quotedId}`) return originalVisible
+        ? { body: { id: quotedId, seq: '7', authorId: secondBotId, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', deleted: false,
+          threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'text', text: 'Hero, pricing, FAQ' }] } }
+        : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+      // The server stores each operation once and answers a repeat with the same message.
+      if (route.endsWith('/messages') && method === 'POST') return { body: { id: `stored:${data.operationId}` } };
+      if (route.endsWith('/cancel-planning') && cancelFails) { cancelFails = false; return { status: 500, body: { error: { code: 'UPSTREAM_FAILED' } } }; }
+      return base(route, method, data);
+    });
+    deps.decidePlan = vi.fn(() => new Promise(() => {})) as typeof deps.decidePlan;
+    // A: an ordinary request whose arrangement is still being decided.
+    expect((await send({ clientId: 'parity:message:a' })).ok).toBe(true); await flush();
+    // B: stored by the server; the bookkeeping that replaces A's intent fails once, after the answer.
+    const quoteReply = { clientId: 'parity:message:b', text: 'Do this one', quote: { messageId: quotedId } };
+    expect(await send(quoteReply)).toEqual({ ok: true, messageId: 'stored:parity:message:b' });
+    await flush();
+    const cancels = fixture.handle.mock.calls.filter(([route]) => route === `/conversations/${roomId}/messages/stored:parity:message:a/cancel-planning`);
+    expect(cancels).toHaveLength(2);
+    expect(cancels[1]![2]).toEqual(cancels[0]![2]);
+    // A repeat of the answered send returns its receipt without posting or reading the quote again.
+    originalVisible = false;
+    expect(await send(quoteReply)).toEqual({ ok: true, messageId: 'stored:parity:message:b' });
+    const posts = fixture.handle.mock.calls.filter(([route, method, data]) => route.endsWith('/messages') && method === 'POST' && data.operationId === 'parity:message:b');
+    expect(posts).toHaveLength(1);
+    expect(posts[0]![2].content[0]).toMatchObject({ namespace: 'cindy.quote' });
+    expect(fixture.handle.mock.calls.filter(([route]) => route === `/conversations/${roomId}/messages/${quotedId}`)).toHaveLength(1);
   });
   it('keeps legacy servers without a watermark on the bounded text page', async () => {
     arrange();fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];

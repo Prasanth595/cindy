@@ -48,7 +48,7 @@ describe('sharedTask authorization', () => {
     }
     expect(isSharedTaskAttachment('file:///private/file.png', 'shared')).toBe(false);
   });
-  it.each(['history.read', 'attachment.read', 'attachment.upload', 'input.send', 'agent.stop', 'approval.resolve'])(
+  it.each(['history.read', 'attachment.read', 'attachment.upload', 'file.read', 'file.write', 'input.send', 'agent.stop', 'approval.resolve'])(
     'lets an approved guest %s without treating them as the owner', (operation) => {
       expect(authorize(parse(snapshot()), guest, 'session-1', operation)).toMatchObject({ allowed: true, role: 'guest', memberId: 'member-a' });
     },

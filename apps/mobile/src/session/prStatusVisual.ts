@@ -9,7 +9,8 @@ import type { PrStatusKind } from '@cindy/maker-shared';
 import type { ThemeColors } from '@/theme';
 
 /**
- * PR 状态 → 图标 + 颜色。形状与颜色双编码,颜色只走语义 token(浅 / 深两套主题自动适配);
+ * PR 状态 → 图标 + 颜色。形状与颜色双编码,颜色语义对齐桌面 PR_STATUS_COLOR
+ * (open 绿 / merged 焦点蓝 / closed 红 / draft 与未知 tertiary),值用手机自己的 token;
  * 状态未知(未加载 / 查询失败)时退回中性 GitPullRequest。后台任务卡与首页任务信息共用。
  */
 export function prStatusVisual(
@@ -18,7 +19,7 @@ export function prStatusVisual(
 ): { Icon: LucideIcon; color: string } {
   switch (kind) {
     case 'merged':
-      return { Icon: GitMerge, color: colors.textSecondary };
+      return { Icon: GitMerge, color: colors.prMerged };
     case 'closed':
       return { Icon: GitPullRequestClosed, color: colors.statusError };
     case 'draft':
@@ -26,6 +27,6 @@ export function prStatusVisual(
     case 'open':
       return { Icon: GitPullRequest, color: colors.statusDone };
     default:
-      return { Icon: GitPullRequest, color: colors.textSecondary };
+      return { Icon: GitPullRequest, color: colors.textTertiary };
   }
 }

@@ -170,7 +170,8 @@ function CompanionPrivateTrace({ deviceId, meta }: { deviceId: string; meta: Bot
   );
 }
 
-function CompanionTaskCard({
+/** Also the live card of a task a teammate started from a group (BotGroupTaskCard). */
+export function CompanionTaskCard({
   deviceId,
   parentSessionId,
   meta,

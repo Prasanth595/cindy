@@ -1,5 +1,5 @@
 import type { Session } from '@cindy/maker-core';
-import { publishChannelTurn } from './channelTurnSignal';
+import { publishChannelTurn, publishProviderInitiatedTurn } from './channelTurnSignal';
 import { MANAGED_LLAMACPP_PROVIDER_ID } from '../../shared/llamaCpp.js';
 import { ensureManagedOllamaReadyForSession } from '../local-model-runtime/preflight.js';
 import { createLogger } from '../logger.js';
@@ -101,6 +101,11 @@ export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps,
         session.id,
         deps.providerTurnLeaseId(session.instanceId, turnGeneration),
       );
+    },
+    onProviderInitiatedTurn: () => {
+      // Harness wake-ups (Claude Code background task notifications) skip beforeProviderStart.
+      // IM relay decides synchronously inside this call, before the first event fans out.
+      void publishProviderInitiatedTurn(session);
     },
     onTerminal: ({ turnGeneration, event, isCurrentGeneration }) => {
       if (session.remoteHostId) return;
