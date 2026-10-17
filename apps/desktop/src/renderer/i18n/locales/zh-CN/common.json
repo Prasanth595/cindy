@@ -12864,11 +12864,11 @@
         "stderr": "stderr",
         "truncated": "输出已截断",
         "noOutput": "无输出",
-        "startupUnverified": "{{appName}} 未收到 Node 启动验证，已阻止本次执行。请检查 Node 命令及其预加载配置",
+        "gateUnverified": "未收到前置检查的完成验证，已阻止本次执行。请更新检查脚本的开始和完成回报，并检查预加载配置",
         "failureWithReason": "前置检查失败：{{reason}}",
         "failureWithExitCode": "前置检查失败，退出码 {{code}}",
         "failureWithoutExitCode": "前置检查失败，未获得有效退出码",
-        "receiptUnavailable": "{{appName}} 无法准备 Node 启动验证，前置检查未执行"
+        "runtimeUnavailable": "无法准备前置检查的运行环境，已阻止本次执行。请检查运行文件和本地临时目录的访问权限"
       }
     },
     "editor": {

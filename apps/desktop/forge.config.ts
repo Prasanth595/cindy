@@ -1,3 +1,4 @@
+import { stagePreRunNode } from './forge-pre-run-node';
 import { execSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -1959,6 +1960,7 @@ const config: ForgeConfig = {
         );
         buildCindyUpdater();
       }
+      await stagePreRunNode(targetPlatform, targetArch);
       stageRipgrep(targetPlatform, targetArch);
       stageAndroidPlatformTools(targetPlatform, targetArch);
       buildWindowsVoiceInputFunctionKeyListener(targetPlatform);
