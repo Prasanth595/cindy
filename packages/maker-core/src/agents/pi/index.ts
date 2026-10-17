@@ -4063,6 +4063,10 @@ export class PiAgent extends BaseAgent {
     let mutableProviderId: string | null | undefined = opts.providerId ?? authProviderId;
     let activeEffortSnapshot = initialEffortSnapshot;
     let mutableEffort: Effort | null = startupEffort ?? null;
+    // 已确认的思考开关状态：setThinkingEnabled(false) 只发 off，不动 mutableEffort（off 不是
+    // 档位）。路由重建类操作（switch_session/set_model）会把档位重置成模型默认，恢复时需要
+    // 知道「用户是否关了思考」，否则会把关掉的思考悄悄重开（等待时间与费用都涨）。
+    let mutableThinkingEnabled = true;
     let currentAutoReviewIntent: AutoReviewUserIntent = '';
     let autoReviewIntentInitialized = false;
     const autoReviewActionContext = createAutoReviewActionContext();
@@ -7099,20 +7103,25 @@ export class PiAgent extends BaseAgent {
       // 或同路由切模触发的重载早退后，子进程实际跑在默认档而 UI 仍显示原档位。这里把会话
       // 当前档位重新下发；失败只记 warn（与 switchModel 同一纪律：档位救不回也不能让发图/对账失败）。
       if (mutableEffort && activeEffortSnapshot?.includes(mutableEffort)) {
+        // 关闭开关只发 off、不更新 mutableEffort（见 setThinkingEnabled）：恢复时优先还原
+        // 已确认的关闭状态，否则重载会把用户关掉的思考悄悄重开。
+        const restoreLevel = mutableThinkingEnabled
+          ? effortToPiThinkingLevel(mutableEffort)
+          : ('off' as const);
         try {
           const restore = await proc.request({
             type: 'set_thinking_level',
-            level: effortToPiThinkingLevel(mutableEffort),
+            level: restoreLevel,
           });
           if (!restore.success) {
             deps.logger.warn('pi: restore thinking level after image capability reload failed', {
-              effort: mutableEffort,
+              level: restoreLevel,
               error: restore.error,
             });
           }
         } catch (err) {
           deps.logger.warn('pi: restore thinking level after image capability reload errored', {
-            effort: mutableEffort,
+            level: restoreLevel,
             message: err instanceof Error ? err.message : String(err),
           });
         }
@@ -8386,6 +8395,9 @@ export class PiAgent extends BaseAgent {
           level: enabled ? 'xhigh' : 'off',
         });
         if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
+        // 只在确认生效后记录：路由重建后的恢复（reloadImageCapabilityIntoChild）靠它区分
+        // 「档位在 max 的思考」与「已关闭的思考」。
+        mutableThinkingEnabled = enabled;
       },
 
       async setPermissionMode(mode): Promise<void> {

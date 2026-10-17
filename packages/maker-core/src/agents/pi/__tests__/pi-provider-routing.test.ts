@@ -5128,6 +5128,77 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("restores the confirmed thinking-off state after an image capability reload", async () => {
+    // 关闭开关只发 off、不更新 mutableEffort；reload 恢复若只看 mutableEffort，就会把用户
+    // 关掉的思考悄悄重开（等待时间与费用都涨）。恢复时优先还原已确认的关闭状态。
+    const declared = { image: false };
+    const agent = new PiAgent({
+      ...byomDeps(
+        async () => ({
+          providers: [
+            {
+              id: "native-off-restore",
+              name: "Native Off Restore",
+              baseUrl: "http://off-restore.test",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "local-model",
+                  input: ["text"],
+                  reasoning: true,
+                  thinkingLevelMap: { low: "low", max: "max" },
+                },
+              ],
+            },
+          ],
+          env: {},
+        }),
+      ),
+      readModelImageInput: (providerId, modelId) =>
+        providerId === "native-off-restore" && modelId === "local-model" && declared.image
+          ? true
+          : undefined,
+    });
+    const handle = await agent.startSession({
+      sessionId: "image-reload-thinking-off",
+      workingDir: cwd,
+      model: "local-model",
+      providerId: "native-off-restore",
+      effort: "max",
+    });
+    // 用户关掉思考；随后声明图片能力，直接发图触发对账重载。
+    await handle.setThinkingEnabled!(false);
+    declared.image = true;
+    const imagePath = path.join(cwd, "off-restore.png");
+    writeFileSync(
+      imagePath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY4YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    captured.requests.length = 0;
+    await handle.send({
+      type: "user" as const,
+      content: [
+        {
+          type: "image" as const,
+          path: imagePath,
+          managedUrl: "xdt-image://pi-managed/off-restore.png",
+        },
+      ],
+    });
+
+    // 重载发生了（switch_session），之后的恢复必须是 off（而不是 mutableEffort 的 max）。
+    const requestTypes = captured.requests.map((request) => request.type);
+    expect(requestTypes).toContain("switch_session");
+    const restores = captured.requests.filter(
+      (request) => request.type === "set_thinking_level",
+    );
+    expect(restores).toEqual([{ type: "set_thinking_level", level: "off" }]);
+    await handle.close();
+  });
+
   it("does not rewrite models.json or reload the runtime when the catalog already matches the snapshot", async () => {
     // 心跳会反复以同路由下发 setModel；声明与会话快照一致时必须零 I/O —— 不热写、不 switch_session。
     const agent = new PiAgent({
